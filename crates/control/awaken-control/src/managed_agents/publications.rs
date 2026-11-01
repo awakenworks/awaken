@@ -5,9 +5,9 @@
 use std::collections::BTreeMap;
 
 use awaken_agent_config::{PublicationState, StoredPublication};
+use awaken_agent_contract::ScopeId;
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_protocol_managed::ManagedAgentError;
-use awaken_tenancy::ScopeId;
 
 type PublicationIndex = BTreeMap<(String, u64), StoredPublication>;
 

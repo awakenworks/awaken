@@ -8,9 +8,9 @@
 //! dependency-refresh behavior without creating another service or authority.
 
 use awaken_agent_config::{AgentLifecycle, ConfigRegistry, ConfigWrite};
+use awaken_agent_contract::ScopeId;
 use awaken_executable_agent_contract::ExecutableAgentRegistrationError;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_tenancy::ScopeId;
 
 use crate::{ConfigService, PublishError};
 

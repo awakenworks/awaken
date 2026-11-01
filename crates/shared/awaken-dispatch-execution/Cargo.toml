@@ -18,7 +18,6 @@ awaken-session-types.workspace = true
 awaken-authority-clock.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-tool-contract.workspace = true
-awaken-tenancy.workspace = true
 awaken-session-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-credential-contract.workspace = true

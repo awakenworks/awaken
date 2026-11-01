@@ -253,7 +253,7 @@ mod tests {
         let mut config = agent("remote-child", "remote child");
         config.resolved_spec.model_binding = ResolvedModelCandidate::try_remote(
             ModelBinding::new("remote", "", "a2a:https://agent.example"),
-            awaken_tenancy::ScopeId::from("default"),
+            awaken_agent_contract::ScopeId::from("default"),
             None,
             "sha256:card",
         )

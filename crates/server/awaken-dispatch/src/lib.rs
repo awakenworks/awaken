@@ -84,6 +84,7 @@ pub use application::{
     record_occupied_worker_ends, release_closed_idle_worker_evidence,
     stop_committed_terminal_attempt, stop_expired_predecessor,
 };
+pub use awaken_agent_contract::ExecutionScopeRef;
 pub use awaken_credential_contract::{AttemptCredentialBinding, CredentialRealizationReceipt};
 pub use awaken_dispatch_contract::DispatchAttemptRecordReads;
 pub use awaken_dispatch_contract::operational::{
@@ -114,7 +115,6 @@ pub use awaken_dispatch_execution::{
     RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan, WorkerResolver,
     claim_bound_ownership_verifier, publish_dispatch_hint,
 };
-pub use awaken_tenancy::ExecutionScopeRef;
 pub use awaken_worker_contract::RunClaim;
 pub use awaken_worker_contract::{
     AssignmentRejection, CURRENT_RUNTIME_PROTOCOL_VERSION, ExecutionLocation,

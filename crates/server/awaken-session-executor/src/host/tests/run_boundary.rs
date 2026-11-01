@@ -1533,7 +1533,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
                 "",
                 "a2a:http://remote.invalid",
             ),
-            awaken_tenancy::ScopeId::from("default"),
+            awaken_agent_contract::ScopeId::from("default"),
             None,
             "sha256:active-remote",
         )

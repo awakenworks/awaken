@@ -250,7 +250,7 @@ async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<ExecutorComponent
         .resolved_model(
             ResolvedModelCandidate::try_remote(
                 ModelBinding::new("remote", "", "a2a:http://remote.invalid"),
-                awaken_tenancy::ScopeId::from("default"),
+                awaken_agent_contract::ScopeId::from("default"),
                 None,
                 "test-fixed-transport",
             )
@@ -297,7 +297,7 @@ async fn published_delegating_host(
         .resolved_model(
             ResolvedModelCandidate::try_remote(
                 ModelBinding::new("remote", "", format!("a2a:{endpoint}")),
-                awaken_tenancy::ScopeId::from("default"),
+                awaken_agent_contract::ScopeId::from("default"),
                 Some(credential),
                 security_fingerprint,
             )

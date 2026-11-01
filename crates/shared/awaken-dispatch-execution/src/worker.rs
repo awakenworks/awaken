@@ -631,7 +631,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     fn execution_context_with(
         &self,
         claim: &RunClaim,
-        execution_scope: Option<&awaken_tenancy::ExecutionScopeRef>,
+        execution_scope: Option<&awaken_agent_contract::ExecutionScopeRef>,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
         credential_bindings: &[AttemptCredentialBinding],
         credential_deliveries: &[AttemptCredentialDelivery],

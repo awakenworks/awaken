@@ -177,7 +177,7 @@ async fn interrupt_with_admission_suspended(
                 "",
                 "a2a:http://blocking.invalid",
             ),
-            awaken_tenancy::ScopeId::from(host.run_assembly.local_workspace()),
+            awaken_agent_contract::ScopeId::from(host.run_assembly.local_workspace()),
             None,
             "sha256:blocking-remote",
         )

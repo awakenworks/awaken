@@ -14,10 +14,10 @@
 //! and skips `Pinned` ones; re-publish is idempotent by content address.
 
 use awaken_agent_config::ModelSelection;
+use awaken_agent_contract::ScopeId;
 use awaken_runtime_contract::resolved::{
     InvalidModelBinding, ModelBinding, ResolvedModelCandidate,
 };
-use awaken_tenancy::ScopeId;
 
 /// Stable failure vocabulary for publication-time model resolution.
 ///

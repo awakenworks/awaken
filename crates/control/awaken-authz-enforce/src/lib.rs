@@ -32,6 +32,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, MutexGuard};
 
 use async_trait::async_trait;
+use awaken_agent_contract::ScopeId;
 use awaken_iam_contract::{
     ActionKey, AuthorizationDecision, AuthorizationRequest, PrincipalRef, ScopeRef, Timestamp,
     WorkspaceId,
@@ -42,7 +43,7 @@ use awaken_iam_core::{
 };
 use awaken_iam_preset::named_role_catalog;
 use awaken_sync::InvariantLock;
-use awaken_tenancy::{Authority, ScopeClaim, ScopeId, resolve_scope};
+use awaken_tenancy::{Authority, ScopeClaim, resolve_scope};
 use axum::body::{Body, to_bytes};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};

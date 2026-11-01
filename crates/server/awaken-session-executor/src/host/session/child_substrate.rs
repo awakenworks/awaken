@@ -100,8 +100,8 @@ impl crate::RunAssembly {
             None => {
                 let workspace = self.capabilities.thread_workspace(thread)?;
                 let mut context = awaken_runtime_contract::RuntimeRunContext::new()
-                    .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                        awaken_tenancy::ScopeId::from(workspace),
+                    .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+                        awaken_agent_contract::ScopeId::from(workspace),
                     ))
                     .with_tool_executor(environment.agent_tools().tool_executor())
                     .with_tool_output_spiller(Arc::new(
@@ -216,8 +216,8 @@ mod tests {
             "run-cold-physical-child",
         ))
         .for_session(ThreadId(parent_thread.into()))
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from(projection.workspace_id.as_str()),
         ))
         .with_session_resources(
             awaken_dispatch_execution::session_envelope::resource_envelope(transition.desired())

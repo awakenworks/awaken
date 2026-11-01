@@ -2,9 +2,9 @@
 // @formal reason: Auto selects only offerings whose credential access resolves through the existing candidate path at publication; it adds no other credential or authorization decision.
 //! `Auto` publication: choose only among offerings that can execute now.
 
+use awaken_agent_contract::ScopeId;
 use awaken_config_service::{PublicationResolutionError, ResolvedPublicationModels};
 use awaken_model_catalog::{OfferingStatus, ProviderCatalog};
-use awaken_tenancy::ScopeId;
 
 use super::CatalogModelPublicationResolver;
 

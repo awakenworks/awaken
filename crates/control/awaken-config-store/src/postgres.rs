@@ -25,8 +25,8 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
+use awaken_agent_contract::ScopeId;
 use awaken_sql_storage::StoredU64;
-use awaken_tenancy::ScopeId;
 
 use crate::codec::{attach_publication_row, decode_publication_value};
 use crate::management_effect_retirement_is_admitted;

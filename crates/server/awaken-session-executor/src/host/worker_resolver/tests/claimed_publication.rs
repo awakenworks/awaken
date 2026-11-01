@@ -294,8 +294,8 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
             ingress::RunDispatch::new(complete_activation)
                 .with_agent_publications(vec![child])
                 .with_session_runtime(runtime.clone())
-                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                    awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
+                .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+                    awaken_agent_contract::ScopeId::from(projection.workspace_id.as_str()),
                 ))
                 .with_session_resources(
                     awaken_dispatch_execution::session_envelope::resource_envelope(
@@ -449,8 +449,8 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .expect("K1 exact Store-read initial Resource transition");
     let request = ingress::RunDispatch::new(activation)
         .with_agent_publications(vec![child_v2])
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from(projection.workspace_id.as_str()),
         ))
         .with_session_resources(
             awaken_dispatch_execution::session_envelope::resource_envelope(transition.desired())

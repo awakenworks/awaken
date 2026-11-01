@@ -740,8 +740,8 @@ mod tests {
                 ));
             }
             if cause != "missing_scope" {
-                dispatch = dispatch.with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                    awaken_tenancy::ScopeId::from("workspace"),
+                dispatch = dispatch.with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+                    awaken_agent_contract::ScopeId::from("workspace"),
                 ));
             }
             queue.enqueue(dispatch).await.unwrap();

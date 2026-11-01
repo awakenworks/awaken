@@ -15,7 +15,6 @@ isolates = ["sqlx"]
 
 [dependencies]
 awaken-agent-config.workspace = true
-awaken-tenancy.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

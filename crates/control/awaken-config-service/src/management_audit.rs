@@ -10,7 +10,7 @@ use std::sync::Arc;
 use awaken_agent_config::{
     AuditedConfigWrite, ManagementAuditEntry, ManagementAuditRecord, ScopedConfigRegistry,
 };
-use awaken_tenancy::ScopeId;
+use awaken_agent_contract::ScopeId;
 
 #[async_trait::async_trait]
 pub trait ManagementAuditRepository: Send + Sync {

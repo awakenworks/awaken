@@ -55,7 +55,6 @@ awaken-ext-background-task.workspace = true
 # The neutral sandbox vocabulary the sandboxed ACP channel source speaks
 # (SandboxSpec/Command/NetworkPolicy) when realizing the namespace tier.
 awaken-provisioning-contract = { workspace = true }
-awaken-tenancy = { workspace = true }
 awaken-dispatch-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-dispatch-execution.workspace = true
@@ -157,6 +156,7 @@ awaken-store-inmem = { workspace = true }
 awaken-store-sqlite = { workspace = true, features = ["test-support"] }
 awaken-credential-materializer = { workspace = true, features = ["authority"] }
 awaken-lease-testkit.workspace = true
+awaken-tenancy.workspace = true
 
 [lints]
 workspace = true

@@ -62,8 +62,8 @@ async fn claimed_dispatch(
 ) -> RunClaim {
     let resources = ResolvedSessionResources::try_new(Vec::new(), vec![frozen.clone()]).unwrap();
     let request = RunDispatch::new(support::activation("skill-bundle"))
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from("workspace-skill"),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from("workspace-skill"),
         ))
         .with_session_resources(awaken_dispatch::SessionResourceEnvelope::new(
             "workspace-skill",

@@ -22,15 +22,21 @@
 //!   protocol entry admits a metered request through before its handler runs.
 //!
 //! The authorization coordinate (`awaken_iam_contract::ScopeRef`) and the scope
-//! graph live in `awaken-iam`; a [`ScopeId`] is translated to a `ScopeRef` only at
+//! graph live in `awaken-iam`; a [`ScopeId`](awaken_agent_contract::ScopeId) is translated to a `ScopeRef` only at
 //! the PDP adapter (the ACL boundary), so this crate never depends on the authz
 //! engine.
+//!
+//! The coordinate is named from `awaken_agent_contract`, not from here:
+//!
+//! ```compile_fail
+//! use awaken_tenancy::ScopeId;
+//! ```
 
 // The coordinate itself is a Runtime SDK value (ADR-0086 §6): the engine carries
-// it as a label and never interprets it. Re-exported so Platform paths, type
-// identity and the serialized shape are unchanged; every check that gives the
-// coordinate meaning stays in this crate.
-pub use awaken_agent_contract::{ExecutionScopeRef, ScopeId};
+// it as a label and never interprets it. Callers name it from
+// `awaken_agent_contract`; every check that gives the coordinate meaning stays
+// in this crate.
+use awaken_agent_contract::{ExecutionScopeRef, ScopeId};
 
 pub mod org_admission;
 

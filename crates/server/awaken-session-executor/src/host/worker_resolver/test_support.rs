@@ -431,8 +431,8 @@ pub(crate) fn with_empty_session_resources(
         crate::session_resource::ResolvedSessionResources::default(),
     );
     request
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from(workspace_id),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from(workspace_id),
         ))
         .with_session_resources(
             awaken_dispatch_execution::session_envelope::resource_envelope(&manifest)

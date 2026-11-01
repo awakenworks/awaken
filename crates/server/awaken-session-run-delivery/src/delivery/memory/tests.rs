@@ -378,7 +378,7 @@ fn worker_memory_original_request_requires_exact_activation_scope_and_partition(
         crate::memory_extraction_input(&intent),
     );
     let exact = RunDispatch::new(activation.clone())
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
             intent.workspace_id.clone().into(),
         ))
         .with_placement(awaken_worker_contract::PlacementRequirements::remote_required());
@@ -475,7 +475,7 @@ fn parent_request(
     );
     let request = RunDispatch::new(activation)
         .for_session(ThreadId("session".into()))
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef("workspace".into()))
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef("workspace".into()))
         .with_session_resources(
             awaken_dispatch_execution::session_envelope::resource_envelope(&manifest).unwrap(),
         );

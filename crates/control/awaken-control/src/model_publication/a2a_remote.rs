@@ -3,6 +3,7 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! A2A Agent Card discovery and remote-counterparty publication.
 
+use awaken_agent_contract::ScopeId;
 use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialTarget};
 use awaken_config_resolver::{
     CredentialCandidateSet, CredentialSelectionContext, credential_candidates, derive_vendor_pool,
@@ -14,7 +15,6 @@ use awaken_credential_vault::{
     ExactCredentialAccessRequest, compile_exact_credential_access,
 };
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
-use awaken_tenancy::ScopeId;
 
 use super::{CatalogModelPublicationResolver, PublicationCredentialLookup};
 

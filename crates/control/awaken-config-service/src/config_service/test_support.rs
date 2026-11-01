@@ -14,6 +14,7 @@ use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
     ConfigWrite, ModelSelection, PublicationWrite, ScopedConfig, StoredPublication,
 };
+use awaken_agent_contract::ScopeId;
 use awaken_config_resolver::{
     AgentInputConfig, BindingId, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
 };
@@ -26,7 +27,6 @@ use awaken_executable_agent_contract::{
 };
 use awaken_runtime_contract::resolved::ContextPolicy;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_tenancy::ScopeId;
 
 use crate::binding_resolver::{PublicationResolutionError, ResolvedPublicationModels};
 use crate::publication::{PublishError, prepare_agent_publication};

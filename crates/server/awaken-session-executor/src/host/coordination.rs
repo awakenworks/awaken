@@ -543,8 +543,8 @@ mod tests {
             );
             assert_eq!(
                 claimed.request.execution_scope,
-                Some(awaken_tenancy::ExecutionScopeRef(
-                    awaken_tenancy::ScopeId::from("workspace-a")
+                Some(awaken_agent_contract::ExecutionScopeRef(
+                    awaken_agent_contract::ScopeId::from("workspace-a")
                 )),
                 "{rule}/E4 exact scope",
             );

@@ -3,6 +3,7 @@
 // @formal reason: Binds exact credential evidence into immutable model publication.
 //! Secret-free credential selection and Provider publication projection.
 
+use awaken_agent_contract::ScopeId;
 use awaken_agent_contract::credential::CredentialUsage;
 use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialTarget};
 use awaken_config_resolver::{
@@ -19,7 +20,6 @@ use awaken_model_catalog::{ApiDialect, Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::AcpExecutionProfile;
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::{InferenceEndpoint, ProviderExecutionProfile, UnspecifiedReasoning};
-use awaken_tenancy::ScopeId;
 
 use super::CatalogModelPublicationResolver;
 

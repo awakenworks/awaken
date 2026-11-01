@@ -771,7 +771,7 @@ pub async fn build_resolved_real_router() -> Router {
     .with_direct_provider_credential_execution(direct_policy, direct_holder);
     let published = awaken_config_service::ModelPublicationResolver::resolve_models(
         &resolver,
-        &awaken_tenancy::ScopeId::from("ws"),
+        &awaken_agent_contract::ScopeId::from("ws"),
         &ModelSelection::Pinned(
             ModelBinding::parse("anthropic", &model, "genai")
                 .unwrap_or_else(|error| panic!("ANTHROPIC_MODEL `{model}`: {error}")),
@@ -917,7 +917,7 @@ pub async fn build_oauth_resolved_router() -> Router {
     .with_direct_provider_credential_execution(direct_policy, direct_holder);
     let published = awaken_config_service::ModelPublicationResolver::resolve_models(
         &resolver,
-        &awaken_tenancy::ScopeId::from("ws"),
+        &awaken_agent_contract::ScopeId::from("ws"),
         &ModelSelection::Pinned(
             ModelBinding::parse("anthropic", &model, "genai")
                 .unwrap_or_else(|error| panic!("ANTHROPIC_MODEL `{model}`: {error}")),
@@ -1284,7 +1284,7 @@ pub async fn build_remote_delegation_router() -> Router {
                 ModelBinding::parse("remote", "", format!("a2a:{url}")).unwrap_or_else(|error| {
                     panic!("AWAKEN_REMOTE_AGENT_URL `{url}` is not an A2A backend: {error}")
                 }),
-                awaken_tenancy::ScopeId::from("default"),
+                awaken_agent_contract::ScopeId::from("default"),
                 None,
                 security_fingerprint,
             )

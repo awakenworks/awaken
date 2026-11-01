@@ -58,8 +58,8 @@ async fn claimed_dispatch(
     owner: &str,
 ) -> RunClaim {
     let request = RunDispatch::new(support::activation(file_id))
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from("workspace-file"),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from("workspace-file"),
         ))
         .with_session_resources(awaken_dispatch::SessionResourceEnvelope::new(
             "workspace-file",
@@ -80,8 +80,8 @@ async fn claimed_application_dispatch(
     session_id: &str,
 ) -> RunClaim {
     let request = RunDispatch::new(support::activation(session_id))
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from("workspace-file"),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from("workspace-file"),
         ))
         .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()));
     dispatch.enqueue(request).await.unwrap();
@@ -110,7 +110,9 @@ async fn claimed_model_dispatch(
         ],
     )];
     let request = RunDispatch::new(activation).with_execution_scope(
-        awaken_tenancy::ExecutionScopeRef(awaken_tenancy::ScopeId::from("workspace-file")),
+        awaken_agent_contract::ExecutionScopeRef(awaken_agent_contract::ScopeId::from(
+            "workspace-file",
+        )),
     );
     dispatch.enqueue(request).await.unwrap();
     let claimed = dispatch
@@ -178,8 +180,8 @@ async fn claimed_recovery_model_dispatch(
     dispatch
         .enqueue(
             RunDispatch::new(activation)
-                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                    awaken_tenancy::ScopeId::from("workspace-file"),
+                .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+                    awaken_agent_contract::ScopeId::from("workspace-file"),
                 ))
                 .for_session(session_thread_id.clone()),
         )

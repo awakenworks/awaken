@@ -18,7 +18,7 @@ pub trait PluginPublicationResolver: Send + Sync {
     /// references, but must not materialize credentials or perform runtime I/O.
     async fn resolve(
         &self,
-        workspace: &awaken_tenancy::ScopeId,
+        workspace: &awaken_agent_contract::ScopeId,
         toolsets: &[awaken_agent_contract::ToolsetPolicy],
         config: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, String>;
@@ -27,7 +27,7 @@ pub trait PluginPublicationResolver: Send + Sync {
 pub(crate) async fn resolve_plugin_configuration(
     configurations: &[awaken_executable_agent_contract::capability::PluginConfigurationSource],
     resolvers: &[std::sync::Arc<dyn PluginPublicationResolver>],
-    workspace: &awaken_tenancy::ScopeId,
+    workspace: &awaken_agent_contract::ScopeId,
     config: &mut AgentConfig,
 ) -> Result<(), crate::publication::ValidationIssue> {
     use awaken_executable_agent_contract::capability::PluginConfigurationSource;
@@ -190,7 +190,7 @@ mod tests {
 
         async fn resolve(
             &self,
-            workspace: &awaken_tenancy::ScopeId,
+            workspace: &awaken_agent_contract::ScopeId,
             toolsets: &[awaken_agent_contract::ToolsetPolicy],
             config: Option<&serde_json::Value>,
         ) -> Result<serde_json::Value, String> {
@@ -260,7 +260,7 @@ mod tests {
                 configuration("external", Some(|_| Ok(())), true),
             ],
             &resolvers,
-            &awaken_tenancy::ScopeId::from("workspace-a"),
+            &awaken_agent_contract::ScopeId::from("workspace-a"),
             &mut config,
         )
         .await
@@ -291,7 +291,7 @@ mod tests {
                 configuration("external", Some(|_| Ok(())), true),
             ],
             &resolvers,
-            &awaken_tenancy::ScopeId::from("workspace-a"),
+            &awaken_agent_contract::ScopeId::from("workspace-a"),
             &mut config,
         )
         .await
@@ -312,7 +312,7 @@ mod tests {
         // negating any prerequisite -> field-routed refusal before resolution.
         // An inactive malformed section remains authoring residue. A declared
         // config-free plugin needs no validator but cannot consume a section.
-        let workspace = awaken_tenancy::ScopeId::from("workspace");
+        let workspace = awaken_agent_contract::ScopeId::from("workspace");
         let base = AgentConfig {
             plugin_ids: vec!["p".into()],
             plugin_config: [
@@ -407,7 +407,7 @@ mod tests {
             ..Default::default()
         };
         let before = config.clone();
-        let workspace = awaken_tenancy::ScopeId::from("workspace");
+        let workspace = awaken_agent_contract::ScopeId::from("workspace");
         assert!(
             resolve_plugin_configuration(
                 &[configuration("owned", None, true)],
@@ -454,7 +454,7 @@ mod tests {
         // S3 duplicate selected/source/name -> ambiguous; S4 empty -> no
         // advertisable instance, never a new structural validation result.
         use crate::config_service::{mcp_configuration_source, mcp_server_binding};
-        let workspace = awaken_tenancy::ScopeId::from("workspace");
+        let workspace = awaken_agent_contract::ScopeId::from("workspace");
         let base = mcp_source_case();
         let policy = base.plugin_config["mcp:phone"].clone();
         for (declared, selected, source_count, repeat, expected) in [
@@ -557,7 +557,7 @@ mod tests {
         // S6 inactive malformed residue stays; S7 other validators still run.
         // These are the original S5-S7 inputs/assertions, without a copied DSL.
         use crate::config_service::mcp_configuration_source;
-        let workspace = awaken_tenancy::ScopeId::from("workspace");
+        let workspace = awaken_agent_contract::ScopeId::from("workspace");
         let base = mcp_source_case();
         let policy = base.plugin_config["mcp:phone"].clone();
         let mut bad_pointer = policy.clone();
@@ -625,7 +625,7 @@ mod tests {
         // preempt active missing/duplicate/validator errors. Full binding
         // legality remains at the existing complete Agent compiler (S9).
         use crate::config_service::{mcp_configuration_source, mcp_server_binding};
-        let workspace = awaken_tenancy::ScopeId::from("workspace");
+        let workspace = awaken_agent_contract::ScopeId::from("workspace");
         let base = mcp_source_case();
         let PluginConfigurationSource::McpServers {
             capability_for,

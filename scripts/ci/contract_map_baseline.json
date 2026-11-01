@@ -51,7 +51,6 @@
   "contract-reexport": {
     "awaken-executable-agent-contract": 1,
     "awaken-provisioning-contract": 1,
-    "awaken-tenancy": 2,
     "awaken-worker-contract": 2
   },
   "renamed-reexport": {

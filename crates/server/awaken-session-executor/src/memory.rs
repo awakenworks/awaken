@@ -198,10 +198,11 @@ impl MemoryRuntime {
         intent: &MemoryExtractionIntent,
     ) -> Result<(Arc<dyn LlmExecutor>, RuntimeRunContext), String> {
         let snapshot = &intent.extractor;
-        let mut request_context =
-            RuntimeRunContext::new().with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                awaken_tenancy::ScopeId::from(intent.workspace_id.clone()),
-            ));
+        let mut request_context = RuntimeRunContext::new().with_execution_scope(
+            awaken_agent_contract::ExecutionScopeRef(awaken_agent_contract::ScopeId::from(
+                intent.workspace_id.clone(),
+            )),
+        );
         if let Some(subject) = intent.execution().data_subject_id.clone() {
             request_context = request_context.with_data_subject(subject);
         }

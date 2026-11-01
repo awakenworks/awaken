@@ -365,8 +365,8 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     dispatch
         .enqueue(
             RunDispatch::new(support::activation("memory"))
-                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                    awaken_tenancy::ScopeId::from("workspace-memory"),
+                .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+                    awaken_agent_contract::ScopeId::from("workspace-memory"),
                 ))
                 .with_session_resources(awaken_dispatch::SessionResourceEnvelope::new(
                     "workspace-memory",

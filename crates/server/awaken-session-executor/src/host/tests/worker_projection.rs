@@ -2151,8 +2151,8 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     );
     assert_eq!(
         dispatch.execution_scope,
-        Some(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from("workspace-inference"),
+        Some(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from("workspace-inference"),
         )),
         "R2 exact non-default Workspace survives dispatch"
     );

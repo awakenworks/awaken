@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use awaken_agent_config::AgentConfig;
+use awaken_agent_contract::ScopeId;
 use awaken_agent_contract::credential::CredentialRef;
-use awaken_tenancy::ScopeId;
 
 /// Publication-time integrity check for one exact, secret-free revision.
 #[async_trait::async_trait]

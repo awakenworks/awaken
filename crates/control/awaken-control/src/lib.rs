@@ -106,6 +106,7 @@ pub use crate::worker_stores::{
 
 use awaken_admin_config_api::{AdminState, CredentialProbe};
 use awaken_agent_config::{AuditedConfigWrite, DEFAULT_SCOPE, ManagementAuditRecord};
+use awaken_agent_contract::ScopeId;
 use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_config_resolver::{InferenceProfileStore, WebhookStore};
 use awaken_config_service::{ConfigPlane, ManagementAuditPlane};
@@ -118,7 +119,6 @@ use awaken_protocol_managed::{
     ManagedAgentRepository, VaultState, user_profiles_router, vault_router,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_tenancy::ScopeId;
 use axum::body::{Body, to_bytes};
 use axum::extract::Extension;
 use axum::http::{Method, Request, StatusCode};

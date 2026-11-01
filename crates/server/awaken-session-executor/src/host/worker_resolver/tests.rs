@@ -165,8 +165,8 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
             ingress::RunDispatch::new(activation)
                 .for_session(parent.clone())
                 .with_session_activity_epoch(7)
-                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                    awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
+                .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+                    awaken_agent_contract::ScopeId::from(projection.workspace_id.as_str()),
                 ))
                 .with_session_resources(
                     awaken_dispatch_execution::session_envelope::resource_envelope(
@@ -552,8 +552,8 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         .enqueue(
             ingress::RunDispatch::new(activation)
                 .with_session_runtime(runtime)
-                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                    awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
+                .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+                    awaken_agent_contract::ScopeId::from(projection.workspace_id.as_str()),
                 ))
                 .with_session_resources(
                     awaken_dispatch_execution::session_envelope::resource_envelope(
@@ -1094,8 +1094,8 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
     crate::test_application_bindings::select_standalone(&host).unwrap();
     let run = RunId("run-scope-mismatch".to_string());
     let request = ingress::RunDispatch::new(test_activation("thread-scope-mismatch", &run.0))
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from("workspace-b"),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from("workspace-b"),
         ))
         .with_session_resources(ingress::SessionResourceEnvelope::new(
             "workspace-a",
@@ -1140,8 +1140,8 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
     crate::test_application_bindings::select_standalone(&host).unwrap();
     let run = RunId("run-malformed-resources".to_string());
     let request = ingress::RunDispatch::new(test_activation("thread-malformed-resources", &run.0))
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from("workspace-a"),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from("workspace-a"),
         ))
         .with_session_resources(ingress::SessionResourceEnvelope::new(
             "workspace-a",

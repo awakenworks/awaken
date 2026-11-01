@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use awaken_acp_contract::AcpPublicationCapability;
 use awaken_agent_config::ModelSelection;
+use awaken_agent_contract::ScopeId;
 use awaken_agent_contract::credential::CredentialExecutionPolicy;
 use awaken_agent_contract::credential::CredentialRef;
 use awaken_config_resolver::{
@@ -30,7 +31,6 @@ use awaken_runtime_contract::resolved::{
     Backend, BackendModelSelection, ModelBinding, ResolvedModelCandidate,
 };
 use awaken_sync::LeafLock;
-use awaken_tenancy::ScopeId;
 
 mod a2a_remote;
 mod acp_configuration;

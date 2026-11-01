@@ -537,7 +537,7 @@ mod tests {
         };
         resolver
             .resolve_models(
-                &awaken_tenancy::ScopeId::from("ws"),
+                &awaken_agent_contract::ScopeId::from("ws"),
                 &ModelSelection::Pinned(primary),
                 &fallbacks,
             )
@@ -709,7 +709,7 @@ mod tests {
         let resolved = p
             .resolver
             .resolve_models(
-                &awaken_tenancy::ScopeId::from("workspace-b"),
+                &awaken_agent_contract::ScopeId::from("workspace-b"),
                 &ModelSelection::Pinned(model),
                 &[],
             )
@@ -757,7 +757,7 @@ mod tests {
         let resolved = p
             .resolver
             .resolve_models(
-                &awaken_tenancy::ScopeId::from("ws"),
+                &awaken_agent_contract::ScopeId::from("ws"),
                 &ModelSelection::Pinned(ModelBinding::new("anthropic", "claude-x", "genai")),
                 &[],
             )
