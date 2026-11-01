@@ -4,12 +4,16 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
+use awaken_agent_contract::{
+    credential::CredentialAccess, credential::CredentialMaterialSource,
+    credential::CredentialUsage, credential::PlaintextBoundary, credential::PlaintextHolder,
+    credential::SELF_HOSTED_ACP_TRUST_DOMAIN, credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+};
 use awaken_credential_contract::{
-    CredentialAccess, CredentialMaterial, CredentialMaterialBinding, CredentialMaterialCapability,
+    CredentialMaterial, CredentialMaterialBinding, CredentialMaterialCapability,
     CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
-    CredentialMaterialSource, CredentialProviderExpectation, CredentialSourceId, CredentialUsage,
-    OAuthCredentialMaterial, PlaintextBoundary, PlaintextHolder, ResolvedCredentialMaterial,
-    SELF_HOSTED_ACP_TRUST_DOMAIN, SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    CredentialProviderExpectation, CredentialSourceId, OAuthCredentialMaterial,
+    ResolvedCredentialMaterial,
 };
 use awaken_time::WallClockExt as _;
 
@@ -275,9 +279,10 @@ mod tests {
         CredentialUsage, HttpEffectPlacement, ModelExposurePolicy, PlaintextBoundary,
         PlaintextHolder,
     };
+    use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialTarget};
     use awaken_credential_contract::{
-        CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialTarget,
-        CredentialTargetContract, OPAQUE_SECRET_MATERIAL_TYPE,
+        CredentialDescriptor, CredentialMaterialDescriptor, CredentialTargetContract,
+        OPAQUE_SECRET_MATERIAL_TYPE,
     };
     use awaken_credential_contract::{
         CredentialMaterialBinding, CredentialMaterialError, CredentialMaterialRequest,

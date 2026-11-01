@@ -656,7 +656,7 @@ pub(super) mod tests {
             }
             if shape == 2 {
                 after.id = crate::CredentialSourceId("replacement-source".into());
-                after.replacement_of = Some(awaken_credential_contract::CredentialRef {
+                after.replacement_of = Some(awaken_agent_contract::credential::CredentialRef {
                     id: before.as_ref().unwrap().id.0.clone(),
                     revision: 1,
                 });

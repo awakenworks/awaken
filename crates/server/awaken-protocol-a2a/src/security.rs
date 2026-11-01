@@ -6,7 +6,7 @@
 //! Publication and launch consume this one projection so supported anonymous /
 //! single-header requirements and their fingerprint cannot drift.
 
-use awaken_credential_contract::CredentialUsage;
+use awaken_agent_contract::credential::CredentialUsage;
 
 use crate::{AgentCard, ApiKeyLocation, SecurityScheme};
 

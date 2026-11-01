@@ -4,13 +4,13 @@
 //! Secret-free credential selection and Provider publication projection.
 
 use awaken_agent_contract::credential::CredentialUsage;
+use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialTarget};
 use awaken_config_resolver::{
     CredentialCandidateSet, CredentialSelectionContext, SourceLookup, credential_candidates,
     credential_is_executable_supply,
 };
 use awaken_config_service::PublicationResolutionError;
 use awaken_credential_contract::CredentialMaterialBinding;
-use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
 use awaken_credential_vault::{
     CredentialBinding, CredentialPool, CredentialSource, ExactCredentialAccessRequest,
     SelectionPolicy, publish_exact_credential_access,
@@ -368,11 +368,11 @@ mod tests {
         async fn issue(
             &self,
             request: awaken_credential_contract::CredentialEnvelopeIssuance,
-        ) -> Result<awaken_credential_contract::CredentialEnvelope, String> {
-            use awaken_credential_contract::{
-                CredentialEnvelope, SealedCredentialEnvelopeRef,
-                credential_envelope_payload_fingerprint,
+        ) -> Result<awaken_agent_contract::credential::CredentialEnvelope, String> {
+            use awaken_agent_contract::{
+                credential::CredentialEnvelope, credential::SealedCredentialEnvelopeRef,
             };
+            use awaken_credential_contract::credential_envelope_payload_fingerprint;
             let fingerprint = credential_envelope_payload_fingerprint(
                 &request.access,
                 &request.selected_holder,
@@ -380,7 +380,7 @@ mod tests {
             );
             let recipient = request.selected_holder.trust_domain.clone();
             let workload = request.selected_holder.boundary
-                == awaken_credential_contract::PlaintextBoundary::Workload;
+                == awaken_agent_contract::credential::PlaintextBoundary::Workload;
             self.calls.lock().unwrap().push(request);
             if self.fault == 1 {
                 return Err("injected delivery unavailable".into());
@@ -400,7 +400,7 @@ mod tests {
                     },
                 },
                 recipient: if self.fault == 3 {
-                    awaken_credential_contract::TrustDomainRef("wrong-worker".into())
+                    awaken_agent_contract::credential::TrustDomainRef("wrong-worker".into())
                 } else {
                     recipient
                 },

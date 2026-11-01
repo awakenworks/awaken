@@ -16,7 +16,7 @@ use awaken_agent_contract::credential::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage,
 };
-use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
+use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialTarget};
 use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
 use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
 use awaken_protocol_a2a::{Response, Transport};

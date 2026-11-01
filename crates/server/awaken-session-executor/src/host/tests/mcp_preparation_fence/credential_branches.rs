@@ -13,7 +13,7 @@ use awaken_session_realization::peers::EnvironmentPeer as _;
 
 /// Exact-target credential resolver gated inside `resolve_exact`.
 struct GatedResolver {
-    holder: awaken_credential_contract::PlaintextHolder,
+    holder: awaken_agent_contract::credential::PlaintextHolder,
     calls: std::sync::atomic::AtomicUsize,
     entered: tokio::sync::Notify,
     release: tokio::sync::Semaphore,
@@ -57,9 +57,9 @@ impl awaken_credential_contract::CredentialMaterialResolver for GatedResolver {
     }
 }
 
-fn worker_holder() -> awaken_credential_contract::PlaintextHolder {
-    awaken_credential_contract::PlaintextHolder::new(
-        awaken_credential_contract::PlaintextBoundary::Worker,
+fn worker_holder() -> awaken_agent_contract::credential::PlaintextHolder {
+    awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Worker,
         "awaken.worker",
     )
 }
@@ -83,9 +83,10 @@ fn materializer(
 }
 
 fn worker_held_request(session: &str, url: &str) -> crate::session_mcp::StageMcpAttachment {
-    use awaken_credential_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        CredentialUsage, ModelExposurePolicy,
+    use awaken_agent_contract::{
+        credential::CredentialAccess, credential::CredentialExecutionPolicy,
+        credential::CredentialMaterialSource, credential::CredentialRef,
+        credential::CredentialUsage, credential::ModelExposurePolicy,
     };
     let holder = worker_holder();
     let target = awaken_agent_contract::McpTarget::parse_http(url).unwrap();
@@ -104,7 +105,7 @@ fn worker_held_request(session: &str, url: &str) -> crate::session_mcp::StageMcp
             CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
         )
         .with_target(awaken_agent_contract::credential::CredentialTarget::new(
-            awaken_credential_contract::CredentialPurpose::McpAuthorization,
+            awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
             awaken_agent_contract::McpTarget::identity(target.http_url().unwrap())
                 .unwrap()
                 .canonical_url(),

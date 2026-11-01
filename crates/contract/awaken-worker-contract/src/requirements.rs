@@ -2,7 +2,7 @@
 // @formal entrypoint worker.accepted_protocol_version_is_inside_advertised_range
 use std::collections::BTreeSet;
 
-use awaken_credential_contract::CredentialRef as WorkerCredentialRevision;
+use awaken_agent_contract::credential::CredentialRef as WorkerCredentialRevision;
 use awaken_provisioning_contract::{ResourceRequests, SandboxRequirements};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

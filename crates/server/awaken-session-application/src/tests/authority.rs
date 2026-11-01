@@ -241,7 +241,7 @@ async fn register_replayed_token_repository(
 
 fn repository_retirement_resources(
     session_id: &str,
-    credential: Option<awaken_credential_contract::CredentialRef>,
+    credential: Option<awaken_agent_contract::credential::CredentialRef>,
 ) -> crate::session_resource::ResolvedSessionResources {
     let repository_id = managed_repository_id(session_id);
     let remote_url = "https://github.com/awaken/example.git";
@@ -249,18 +249,18 @@ fn repository_retirement_resources(
         .as_ref()
         .map(|_| format!("{repository_id}:credential"));
     let credential = credential.map(|credential| {
-        let holder = awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Workload,
+        let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Workload,
             "spiffe://awaken.test/sandbox",
         );
         Box::new(crate::session_resource::ResolvedRepositoryCredential {
-            access: awaken_credential_contract::CredentialAccess::new(
+            access: awaken_agent_contract::credential::CredentialAccess::new(
                 credential,
-                awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
                 crate::session_resource::repository_transport_credential_usage(),
-                awaken_credential_contract::CredentialExecutionPolicy::exact(
+                awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                     holder.clone(),
-                    awaken_credential_contract::ModelExposurePolicy::Forbidden,
+                    awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
                 ),
             )
             .with_target(
@@ -540,13 +540,13 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
                 .state
         }
     };
-    let credential_ref = |session_id: &str| awaken_credential_contract::CredentialRef {
+    let credential_ref = |session_id: &str| awaken_agent_contract::credential::CredentialRef {
         id: format!("{}:credential", managed_repository_id(session_id)),
         revision: 1,
     };
 
     let mut dual = token_repository_input("repo-dual", "Dual");
-    dual.credential = Some(awaken_credential_contract::CredentialRef {
+    dual.credential = Some(awaken_agent_contract::credential::CredentialRef {
         id: "credential-existing".into(),
         revision: 1,
     });
@@ -867,7 +867,7 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
     let sessions: Arc<dyn crate::SessionStore> = authority_repository("Session repository").await;
 
     let markerless_id = "retirement-markerless";
-    let markerless_credential = awaken_credential_contract::CredentialRef {
+    let markerless_credential = awaken_agent_contract::credential::CredentialRef {
         id: format!("{}:credential", managed_repository_id(markerless_id)),
         revision: 7,
     };
@@ -883,7 +883,7 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
     .await;
 
     let absent_id = "retirement-already-purged";
-    let absent_credential = awaken_credential_contract::CredentialRef {
+    let absent_credential = awaken_agent_contract::credential::CredentialRef {
         id: format!("{}:credential", managed_repository_id(absent_id)),
         revision: 11,
     };
@@ -960,7 +960,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
     let registry = super::creation::ephemeral_resource_registry().await;
     let ingress = Arc::new(FaultInjectingCredentialMaterialIngress::default());
     let session_id = "retirement-restart";
-    let credential = awaken_credential_contract::CredentialRef {
+    let credential = awaken_agent_contract::credential::CredentialRef {
         id: format!("{}:credential", managed_repository_id(session_id)),
         revision: 13,
     };

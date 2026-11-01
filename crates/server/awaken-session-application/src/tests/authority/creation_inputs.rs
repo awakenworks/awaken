@@ -16,7 +16,7 @@ fn attachment(target: InputResourceId) -> crate::session_resource::SessionInputA
     }
 }
 
-fn holder() -> awaken_credential_contract::PlaintextHolder {
+fn holder() -> awaken_agent_contract::credential::PlaintextHolder {
     awaken_credential_contract::CredentialRealizationProfile::self_hosted_native().resource_holder
 }
 

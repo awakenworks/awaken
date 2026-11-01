@@ -326,13 +326,13 @@ impl VaultState {
                     client_id: r.client_id.clone(),
                     token_endpoint: r.token_endpoint.clone(),
                     token_endpoint_auth: match r.token_endpoint_auth {
-                        awaken_credential_contract::TokenEndpointAuth::None => {
+                        awaken_agent_contract::credential::TokenEndpointAuth::None => {
                             TokenEndpointAuthResponse::None
                         }
-                        awaken_credential_contract::TokenEndpointAuth::ClientSecretBasic => {
+                        awaken_agent_contract::credential::TokenEndpointAuth::ClientSecretBasic => {
                             TokenEndpointAuthResponse::ClientSecretBasic
                         }
-                        awaken_credential_contract::TokenEndpointAuth::ClientSecretPost => {
+                        awaken_agent_contract::credential::TokenEndpointAuth::ClientSecretPost => {
                             TokenEndpointAuthResponse::ClientSecretPost
                         }
                     },
@@ -718,16 +718,16 @@ async fn create_credential(
                                 OAUTH_CLIENT_SECRET_SLOT.to_string(),
                                 RedactedString::new(cs),
                             );
-                            awaken_credential_contract::TokenEndpointAuth::ClientSecretBasic
+                            awaken_agent_contract::credential::TokenEndpointAuth::ClientSecretBasic
                         }
                         (TokenEndpointAuthResponse::ClientSecretPost, Some(cs)) => {
                             auxiliary.insert(
                                 OAUTH_CLIENT_SECRET_SLOT.to_string(),
                                 RedactedString::new(cs),
                             );
-                            awaken_credential_contract::TokenEndpointAuth::ClientSecretPost
+                            awaken_agent_contract::credential::TokenEndpointAuth::ClientSecretPost
                         }
-                        _ => awaken_credential_contract::TokenEndpointAuth::None,
+                        _ => awaken_agent_contract::credential::TokenEndpointAuth::None,
                     };
                     Some(McpOauthRefreshRecord {
                         client_id: projection.client_id,
@@ -1040,13 +1040,13 @@ async fn update_credential(
                         if let Some(tea) = update.token_endpoint_auth {
                             let auth = match tea {
                                 TokenEndpointAuthUpdate::None => {
-                                    awaken_credential_contract::TokenEndpointAuth::None
+                                    awaken_agent_contract::credential::TokenEndpointAuth::None
                                 }
                                 TokenEndpointAuthUpdate::ClientSecretBasic { .. } => {
-                                    awaken_credential_contract::TokenEndpointAuth::ClientSecretBasic
+                                    awaken_agent_contract::credential::TokenEndpointAuth::ClientSecretBasic
                                 }
                                 TokenEndpointAuthUpdate::ClientSecretPost { .. } => {
-                                    awaken_credential_contract::TokenEndpointAuth::ClientSecretPost
+                                    awaken_agent_contract::credential::TokenEndpointAuth::ClientSecretPost
                                 }
                             };
                             r.token_endpoint_auth = auth;

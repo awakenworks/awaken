@@ -1,6 +1,7 @@
 use super::*;
-use awaken_credential_contract::{
-    CredentialExecutionPolicy, CredentialRef, CredentialUsage, ModelExposurePolicy,
+use awaken_agent_contract::{
+    credential::CredentialExecutionPolicy, credential::CredentialRef, credential::CredentialUsage,
+    credential::ModelExposurePolicy,
 };
 use serde_json::{Value, json};
 
@@ -51,8 +52,8 @@ fn request(boundary: PlaintextBoundary) -> CredentialEnvelopeIssuance {
                 ModelExposurePolicy::Forbidden,
             ),
         )
-        .with_target(awaken_credential_contract::CredentialTarget::new(
-            awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+        .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
             "test:provider-endpoint",
         )),
         selected_holder,
@@ -68,7 +69,7 @@ fn application_request() -> CredentialEnvelopeIssuance {
         material_type: "opaque-test/v1".into(),
         public_config: json!({}),
     };
-    r.access.target = Some(awaken_credential_contract::CredentialTarget::new(
+    r.access.target = Some(awaken_agent_contract::credential::CredentialTarget::new(
         CredentialPurpose::Extension,
         "application://application-test/account-a",
     ));
@@ -287,8 +288,8 @@ async fn exact_acp_mcp_bearer_uses_the_existing_recipient_envelope() {
         name: "authorization".into(),
         scheme: Some("Bearer".into()),
     };
-    req.access.target = Some(awaken_credential_contract::CredentialTarget::new(
-        awaken_credential_contract::CredentialPurpose::McpAuthorization,
+    req.access.target = Some(awaken_agent_contract::credential::CredentialTarget::new(
+        awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
         "https://mcp.example.com/diagnosis",
     ));
     req.access.policy = CredentialExecutionPolicy::exact(
@@ -339,8 +340,8 @@ async fn exact_acp_mcp_bearer_uses_the_existing_recipient_envelope() {
         "R2 Worker may not consume the ACP client field"
     );
     let mut wrong_purpose = req.access.clone();
-    wrong_purpose.target = Some(awaken_credential_contract::CredentialTarget::new(
-        awaken_credential_contract::CredentialPurpose::RemoteAgentAuthorization,
+    wrong_purpose.target = Some(awaken_agent_contract::credential::CredentialTarget::new(
+        awaken_agent_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
         "https://mcp.example.com/diagnosis",
     ));
     assert!(
@@ -373,17 +374,19 @@ async fn exact_acp_mcp_bearer_uses_the_existing_recipient_envelope() {
         "R3 another header cannot acquire the MCP field"
     );
     let mut refresh = req.access.clone();
-    refresh.refresh = Some(awaken_credential_contract::CredentialRefreshAccess::new(
-        1,
-        "https://auth.example.com/token".into(),
-        "client".into(),
-        awaken_credential_contract::TokenEndpointAuth::None,
-        None,
-        "refresh-ref".into(),
-        "access-ref".into(),
-        None,
-        None,
-    ));
+    refresh.refresh = Some(
+        awaken_agent_contract::credential::CredentialRefreshAccess::new(
+            1,
+            "https://auth.example.com/token".into(),
+            "client".into(),
+            awaken_agent_contract::credential::TokenEndpointAuth::None,
+            None,
+            "refresh-ref".into(),
+            "access-ref".into(),
+            None,
+            None,
+        ),
+    );
     assert!(
         adapter
             .issue(CredentialEnvelopeIssuance {

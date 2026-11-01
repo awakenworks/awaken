@@ -32,7 +32,8 @@ mod cleanup;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::RedactedString;
-use awaken_credential_contract::{CredentialRef, CredentialSourceId};
+use awaken_agent_contract::credential::CredentialRef;
+use awaken_credential_contract::CredentialSourceId;
 #[cfg(feature = "postgres")]
 use awaken_credential_vault::catalog::ManagedVaultRepo;
 use awaken_credential_vault::catalog::{
@@ -465,9 +466,12 @@ async fn rotation_publication_is_revision_cas_and_idempotent(repo: &dyn Credenti
             1 => row.workspace_id.push_str("-other"),
             2 => row.kind = CredentialKind::Oauth,
             3 => {
+                use awaken_agent_contract::{
+                    credential::CredentialPurpose, credential::CredentialTarget,
+                    credential::CredentialUsage,
+                };
                 use awaken_credential_contract::{
-                    CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose,
-                    CredentialTarget, CredentialTargetContract, CredentialUsage,
+                    CredentialDescriptor, CredentialMaterialDescriptor, CredentialTargetContract,
                 };
                 row.descriptor = Some(CredentialDescriptor::new(
                     "github",

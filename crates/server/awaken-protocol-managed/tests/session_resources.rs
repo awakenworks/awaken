@@ -1602,21 +1602,21 @@ async fn publication_backend_is_the_only_session_backend_authority() {
             Some("acp:claude"),
             "genai",
             Some("acp:claude"),
-            awaken_credential_contract::PlaintextBoundary::Workload,
+            awaken_agent_contract::credential::PlaintextBoundary::Workload,
         ),
         (
             "B2",
             Some("genai"),
             "acp:codex",
             Some("genai"),
-            awaken_credential_contract::PlaintextBoundary::Worker,
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
         ),
         (
             "B3",
             None,
             "acp:codex",
             None,
-            awaken_credential_contract::PlaintextBoundary::Worker,
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
         ),
     ];
 
@@ -1927,11 +1927,11 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
                 awaken_credential_contract::OPAQUE_SECRET_MATERIAL_TYPE,
             ),
             [awaken_credential_contract::CredentialTargetContract::new(
-                awaken_credential_contract::CredentialTarget::new(
-                    awaken_credential_contract::CredentialPurpose::McpAuthorization,
+                awaken_agent_contract::credential::CredentialTarget::new(
+                    awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
                     audience,
                 ),
-                awaken_credential_contract::CredentialUsage::HttpHeader {
+                awaken_agent_contract::credential::CredentialUsage::HttpHeader {
                     name: "authorization".into(),
                     scheme: Some("Bearer".into()),
                 },
@@ -2788,8 +2788,8 @@ async fn repository_access_compiler_follows_the_decision_table() {
         let declared_usage =
             awaken_session_configuration_contract::resource::repository_transport_credential_usage(
             );
-        let declared_target = awaken_credential_contract::CredentialTarget::new(
-            awaken_credential_contract::CredentialPurpose::RepositoryTransport,
+        let declared_target = awaken_agent_contract::credential::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialPurpose::RepositoryTransport,
             awaken_credential_contract::repository_transport_audience(
                 "https://github.com/awaken/example.git",
             )
@@ -2851,7 +2851,7 @@ async fn repository_access_compiler_follows_the_decision_table() {
         let usage = if rule.usage_exact {
             declared_usage.clone()
         } else {
-            awaken_credential_contract::CredentialUsage::HttpHeader {
+            awaken_agent_contract::credential::CredentialUsage::HttpHeader {
                 name: "authorization".into(),
                 scheme: Some("Bearer".into()),
             }
@@ -2859,8 +2859,8 @@ async fn repository_access_compiler_follows_the_decision_table() {
         let target = if rule.target_exact {
             declared_target.clone()
         } else {
-            awaken_credential_contract::CredentialTarget::new(
-                awaken_credential_contract::CredentialPurpose::RepositoryTransport,
+            awaken_agent_contract::credential::CredentialTarget::new(
+                awaken_agent_contract::credential::CredentialPurpose::RepositoryTransport,
                 awaken_credential_contract::repository_transport_audience(
                     "https://github.example/awaken/other.git",
                 )
@@ -2882,9 +2882,9 @@ async fn repository_access_compiler_follows_the_decision_table() {
                 awaken_credential_contract::SessionCredentialAccessRequest {
                     target: target.clone(),
                     usage,
-                    policy: awaken_credential_contract::CredentialExecutionPolicy::exact(
+                    policy: awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                         holder.clone(),
-                        awaken_credential_contract::ModelExposurePolicy::Forbidden,
+                        awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
                     ),
                     selected_holder: holder.clone(),
                     binding,

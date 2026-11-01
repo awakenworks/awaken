@@ -398,9 +398,9 @@ impl AcpPublicationCapability {
     pub fn credential_usage(
         &self,
         environment_hint: Option<&str>,
-    ) -> Result<awaken_credential_contract::CredentialUsage, String> {
+    ) -> Result<awaken_agent_contract::credential::CredentialUsage, String> {
         let Some(name) = environment_hint else {
-            return Ok(awaken_credential_contract::CredentialUsage::ProviderAdapter);
+            return Ok(awaken_agent_contract::credential::CredentialUsage::ProviderAdapter);
         };
         if !self
             .model_delivery_credential_environments
@@ -411,9 +411,7 @@ impl AcpPublicationCapability {
                 "ACP model delivery does not accept credential environment {name}"
             ));
         }
-        Ok(awaken_credential_contract::CredentialUsage::process_env(
-            name,
-        ))
+        Ok(awaken_agent_contract::credential::CredentialUsage::process_env(name))
     }
 }
 
@@ -634,12 +632,12 @@ mod tests {
         };
         assert_eq!(
             capability.credential_usage(None).unwrap(),
-            awaken_credential_contract::CredentialUsage::ProviderAdapter,
+            awaken_agent_contract::credential::CredentialUsage::ProviderAdapter,
             "P1/E1"
         );
         assert_eq!(
             capability.credential_usage(Some("TEST_API_KEY")).unwrap(),
-            awaken_credential_contract::CredentialUsage::process_env("TEST_API_KEY"),
+            awaken_agent_contract::credential::CredentialUsage::process_env("TEST_API_KEY"),
             "P2/E2"
         );
         assert!(

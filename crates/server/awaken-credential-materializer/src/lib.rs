@@ -831,8 +831,8 @@ mod tests {
                 CredentialUsage::ProviderAdapter,
                 CredentialExecutionPolicy::exact(policy_holder, ModelExposurePolicy::Forbidden),
             )
-            .with_target(awaken_credential_contract::CredentialTarget::new(
-                awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+            .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                 "anthropic",
             ));
             if !rule.no_envelope {
@@ -926,8 +926,8 @@ mod tests {
             CredentialUsage::ProviderAdapter,
             CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
         )
-        .with_target(awaken_credential_contract::CredentialTarget::new(
-            awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+        .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
             "openai",
         ))
         .with_refresh(
@@ -1020,8 +1020,8 @@ mod tests {
                 CredentialUsage::ProviderAdapter,
                 CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
             )
-            .with_target(awaken_credential_contract::CredentialTarget::new(
-                awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+            .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                 audience,
             ))
         };
@@ -1190,8 +1190,8 @@ mod tests {
                 },
                 CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
             )
-            .with_target(awaken_credential_contract::CredentialTarget::new(
-                awaken_credential_contract::CredentialPurpose::McpAuthorization,
+            .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
                 "https://service.example/mcp",
             ))
             .with_envelope(CredentialEnvelope::SealedForWorker {
@@ -1336,8 +1336,8 @@ mod tests {
             CredentialUsage::ProviderAdapter,
             exact_access.policy.clone(),
         )
-        .with_target(awaken_credential_contract::CredentialTarget::new(
-            awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+        .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
             "anthropic",
         ))
         .with_envelope(CredentialEnvelope::SealedForWorker {
@@ -1409,37 +1409,36 @@ mod tests {
                 "credential material source is unsupported",
             ),
         ] {
-            let candidate = ResolvedModelCandidate::try_provider(
-                ModelBinding::new("anthropic", "model", "native"),
-                "anthropic@1",
-                "endpoint@1",
-                "workspace-a",
-                Some(
-                    CredentialAccess::new(
-                        CredentialRef {
-                            id: "missing".into(),
-                            revision: 1,
-                        },
-                        source,
-                        CredentialUsage::ProviderAdapter,
-                        CredentialExecutionPolicy::self_hosted_provider(),
-                    )
-                    .with_target(
-                        awaken_credential_contract::CredentialTarget::new(
-                            awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+            let candidate =
+                ResolvedModelCandidate::try_provider(
+                    ModelBinding::new("anthropic", "model", "native"),
+                    "anthropic@1",
+                    "endpoint@1",
+                    "workspace-a",
+                    Some(
+                        CredentialAccess::new(
+                            CredentialRef {
+                                id: "missing".into(),
+                                revision: 1,
+                            },
+                            source,
+                            CredentialUsage::ProviderAdapter,
+                            CredentialExecutionPolicy::self_hosted_provider(),
+                        )
+                        .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                            awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                             "anthropic",
-                        ),
+                        )),
                     ),
-                ),
-                InferenceEndpoint {
-                    adapter_kind: "anthropic".into(),
-                    api_dialect: "anthropic_messages".into(),
-                    base_url: "https://example.invalid".into(),
-                    upstream_model: "model".into(),
-                    processing_placement: None,
-                },
-            )
-            .expect("coherent unavailable-material provider candidate");
+                    InferenceEndpoint {
+                        adapter_kind: "anthropic".into(),
+                        api_dialect: "anthropic_messages".into(),
+                        base_url: "https://example.invalid".into(),
+                        upstream_model: "model".into(),
+                        processing_placement: None,
+                    },
+                )
+                .expect("coherent unavailable-material provider candidate");
             let materializer = pinned_vault(
                 Arc::new(InMemoryCredentialRepo::new()),
                 Arc::new(InMemorySecretStore::new()),
@@ -1596,8 +1595,8 @@ mod tests {
                     },
                     CredentialExecutionPolicy::self_hosted_provider(),
                 )
-                .with_target(awaken_credential_contract::CredentialTarget::new(
-                    awaken_credential_contract::CredentialPurpose::RemoteAgentAuthorization,
+                .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                    awaken_agent_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
                     "https://agent.example",
                 )),
             ),
@@ -1784,8 +1783,8 @@ mod tests {
             material_type: "example.ssh-private-key/v1".into(),
             public_config: serde_json::json!({"socket": "agent.sock"}),
         };
-        let target = awaken_credential_contract::CredentialTarget::new(
-            awaken_credential_contract::CredentialPurpose::Extension,
+        let target = awaken_agent_contract::credential::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialPurpose::Extension,
             "extension://example.ssh-agent",
         );
         let mut source = enter_credential(

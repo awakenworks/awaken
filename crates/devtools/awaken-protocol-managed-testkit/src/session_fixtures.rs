@@ -54,8 +54,8 @@ pub fn paired_projection_refresh(
 pub fn sample_persisted(id: &str) -> PersistedSession {
     let mut metadata = BTreeMap::new();
     metadata.insert("team".to_string(), "research".to_string());
-    let holder = awaken_credential_contract::PlaintextHolder::new(
-        awaken_credential_contract::PlaintextBoundary::Workload,
+    let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Workload,
         "awaken.workload.acp",
     );
     let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
@@ -162,20 +162,20 @@ pub fn persisted_with_mcp_source(
 ) -> PersistedSession {
     let mut session = sample_persisted(session_id);
     session.mcp.attachments[0].credential = Some(
-        awaken_credential_contract::CredentialAccess::new(
-            awaken_credential_contract::CredentialRef {
+        awaken_agent_contract::credential::CredentialAccess::new(
+            awaken_agent_contract::credential::CredentialRef {
                 id: source_id.into(),
                 revision: 1,
             },
-            awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
-            awaken_credential_contract::CredentialUsage::HttpHeader {
+            awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+            awaken_agent_contract::credential::CredentialUsage::HttpHeader {
                 name: "authorization".into(),
                 scheme: Some("Bearer".into()),
             },
-            awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
         )
-        .with_target(awaken_credential_contract::CredentialTarget::new(
-            awaken_credential_contract::CredentialPurpose::McpAuthorization,
+        .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
             "https://x",
         )),
     );
@@ -259,32 +259,32 @@ impl awaken_credential_contract::SessionCredentialSource for RolloutCredentialSo
         source_id: &awaken_credential_contract::CredentialSourceId,
         _workspace_id: &str,
         target: &awaken_agent_contract::McpTarget,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        selected_holder: &awaken_agent_contract::credential::PlaintextHolder,
         _binding: &awaken_credential_contract::CredentialMaterialBinding,
-    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, String> {
         let revision = if source_id.0 == "source-a" { 2 } else { 1 };
         let audience = awaken_agent_contract::McpTarget::identity(
             target.http_url().ok_or("MCP target is not HTTP")?,
         )
         .map_err(|error| error.to_string())?
         .canonical_url();
-        Ok(awaken_credential_contract::CredentialAccess::new(
-            awaken_credential_contract::CredentialRef {
+        Ok(awaken_agent_contract::credential::CredentialAccess::new(
+            awaken_agent_contract::credential::CredentialRef {
                 id: source_id.0.clone(),
                 revision,
             },
-            awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
-            awaken_credential_contract::CredentialUsage::HttpHeader {
+            awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+            awaken_agent_contract::credential::CredentialUsage::HttpHeader {
                 name: "authorization".into(),
                 scheme: Some("Bearer".into()),
             },
-            awaken_credential_contract::CredentialExecutionPolicy::exact(
+            awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                 selected_holder.clone(),
-                awaken_credential_contract::ModelExposurePolicy::Forbidden,
+                awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
             ),
         )
-        .with_target(awaken_credential_contract::CredentialTarget::new(
-            awaken_credential_contract::CredentialPurpose::McpAuthorization,
+        .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
             audience,
         )))
     }
@@ -294,7 +294,7 @@ impl awaken_credential_contract::SessionCredentialSource for RolloutCredentialSo
         _source_id: &awaken_credential_contract::CredentialSourceId,
         _workspace_id: &str,
         _request: awaken_credential_contract::SessionCredentialAccessRequest,
-    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, String> {
         Err("not used by MCP rollout fixture".into())
     }
 }

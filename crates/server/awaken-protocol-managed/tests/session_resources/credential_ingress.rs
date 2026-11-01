@@ -35,7 +35,7 @@ impl awaken_credential_contract::CredentialMaterialIngress for CountingCredentia
                 .map_err(|error| format!("Memory fixture state change failed: {error}"))?;
         }
         Ok(awaken_credential_contract::MaterialEntry {
-            credential: awaken_credential_contract::CredentialRef {
+            credential: awaken_agent_contract::credential::CredentialRef {
                 id: command.source_id.0,
                 revision: 1,
             },

@@ -16,6 +16,7 @@ separation = "contract"
 
 [dependencies]
 awaken-agent-channel.workspace = true
+awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }

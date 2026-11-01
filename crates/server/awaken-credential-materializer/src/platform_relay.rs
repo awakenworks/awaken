@@ -115,10 +115,11 @@ mod tests {
         CredentialUsage, HttpEffectPlacement, ModelExposurePolicy, PlaintextBoundary,
         PlaintextHolder,
     };
+    use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialTarget};
     use awaken_credential_contract::CredentialRealizationKind;
     use awaken_credential_contract::{
-        CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialTarget,
-        CredentialTargetContract, OPAQUE_SECRET_MATERIAL_TYPE,
+        CredentialDescriptor, CredentialMaterialDescriptor, CredentialTargetContract,
+        OPAQUE_SECRET_MATERIAL_TYPE,
     };
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};

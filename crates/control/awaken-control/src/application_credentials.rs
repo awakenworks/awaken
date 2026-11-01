@@ -4,12 +4,15 @@
 //! browser, device, selector or business workflow is interpreted here.
 use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::credential::CredentialHandlingMode;
+use awaken_agent_contract::{
+    credential::CredentialAccess, credential::CredentialExecutionPolicy,
+    credential::CredentialPurpose, credential::CredentialTarget, credential::CredentialUsage,
+    credential::ModelExposurePolicy, credential::PlaintextBoundary, credential::PlaintextHolder,
+};
 use awaken_credential_contract::{
-    CredentialAccess, CredentialDescriptor, CredentialEnvelopeIssuance,
-    CredentialExecutionAuthority, CredentialExecutionBinding, CredentialExecutionPolicy,
-    CredentialExtensionDescriptor, CredentialMaterialBinding, CredentialMaterialDescriptor,
-    CredentialPurpose, CredentialSourceId, CredentialTarget, CredentialTargetContract,
-    CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    CredentialDescriptor, CredentialEnvelopeIssuance, CredentialExecutionAuthority,
+    CredentialExecutionBinding, CredentialExtensionDescriptor, CredentialMaterialBinding,
+    CredentialMaterialDescriptor, CredentialSourceId, CredentialTargetContract,
     SessionCredentialAccessRequest,
 };
 use awaken_protocol_managed::VaultState;

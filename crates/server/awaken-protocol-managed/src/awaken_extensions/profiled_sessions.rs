@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use awaken_credential_contract::CredentialRef;
+use awaken_agent_contract::credential::CredentialRef;
 use awaken_provisioning_contract::{
     EnvVar, MountRequirement, RepositoryPublicationExpectation, RepositoryPublicationReceipt,
 };

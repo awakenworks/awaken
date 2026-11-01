@@ -193,7 +193,8 @@ impl McpSessions {
         admission: StagingAdmission,
         platform_preparation: &mut Option<staging::PlatformMcpPreparation>,
     ) -> Result<awaken_session_configuration_contract::mcp::McpRealizationReceipt, RunError> {
-        use awaken_credential_contract::{CredentialRealizationKind, PlaintextBoundary};
+        use awaken_agent_contract::credential::PlaintextBoundary;
+        use awaken_credential_contract::CredentialRealizationKind;
 
         if request.workspace_id.trim().is_empty()
             || request.generation.session_id().as_str().trim().is_empty()

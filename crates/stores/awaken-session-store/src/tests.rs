@@ -4,9 +4,8 @@ use awaken_session_contract::LifecycleOutbox as _;
 use awaken_session_types::SessionId;
 use std::collections::BTreeMap;
 
-use awaken_credential_contract::{
-    CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
-};
+use awaken_agent_contract::{credential::PlaintextBoundary, credential::PlaintextHolder};
+use awaken_credential_contract::CredentialRealizationProfile;
 use awaken_session_configuration_contract::{
     EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineState,
     SessionMcpAuthoringContext, SessionNetworkPolicy,
@@ -878,17 +877,17 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
 fn sample_with_credential_source(id: &str, source_id: &str) -> PersistedSession {
     let mut session = sample(id);
     session.mcp.attachments[0].credential =
-        Some(awaken_credential_contract::CredentialAccess::new(
-            awaken_credential_contract::CredentialRef {
+        Some(awaken_agent_contract::credential::CredentialAccess::new(
+            awaken_agent_contract::credential::CredentialRef {
                 id: source_id.into(),
                 revision: 1,
             },
-            awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
-            awaken_credential_contract::CredentialUsage::HttpHeader {
+            awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+            awaken_agent_contract::credential::CredentialUsage::HttpHeader {
                 name: "authorization".into(),
                 scheme: Some("Bearer".into()),
             },
-            awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
         ));
     session
 }

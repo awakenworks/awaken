@@ -6,7 +6,7 @@
 
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::state::*;
-use awaken_credential_contract::PlaintextHolder;
+use awaken_agent_contract::credential::PlaintextHolder;
 use awaken_session_configuration_contract::mcp::{
     McpAttachmentDraft, McpAttachmentError, McpGeneration, McpRealizationClaim, McpReplacementPlan,
 };

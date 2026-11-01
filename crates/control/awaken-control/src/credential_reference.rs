@@ -216,7 +216,8 @@ mod tests {
                 12 => {
                     candidate.descriptor.as_mut().unwrap().targets[0]
                         .target
-                        .purpose = awaken_credential_contract::CredentialPurpose::ProviderAdapter
+                        .purpose =
+                        awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter
                 }
                 _ => {
                     if let awaken_credential_contract::CredentialMaterialDescriptor::Structured {

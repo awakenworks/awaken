@@ -13,7 +13,7 @@ const UPSTREAM: &str = "https://upstream.invalid/mcp";
 struct RecordingMediator {
     url: String,
     fail: std::sync::atomic::AtomicBool,
-    provisioned: std::sync::Mutex<Vec<awaken_credential_contract::CredentialRef>>,
+    provisioned: std::sync::Mutex<Vec<awaken_agent_contract::credential::CredentialRef>>,
 }
 
 impl awaken_credential_materializer::PlatformMcpEgressProvisioner for RecordingMediator {
@@ -111,11 +111,11 @@ async fn platform_fixture() -> PlatformFixture {
             awaken_credential_contract::OPAQUE_SECRET_MATERIAL_TYPE,
         ),
         [awaken_credential_contract::CredentialTargetContract::new(
-            awaken_credential_contract::CredentialTarget::new(
-                awaken_credential_contract::CredentialPurpose::McpAuthorization,
+            awaken_agent_contract::credential::CredentialTarget::new(
+                awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
                 audience,
             ),
-            awaken_credential_contract::CredentialUsage::HttpHeader {
+            awaken_agent_contract::credential::CredentialUsage::HttpHeader {
                 name: "authorization".into(),
                 scheme: Some("Bearer".into()),
             },
@@ -149,8 +149,8 @@ async fn platform_fixture() -> PlatformFixture {
 
 fn credential_ref(
     credential: &awaken_credential_vault::CredentialSource,
-) -> awaken_credential_contract::CredentialRef {
-    awaken_credential_contract::CredentialRef {
+) -> awaken_agent_contract::credential::CredentialRef {
+    awaken_agent_contract::credential::CredentialRef {
         id: credential.id.0.clone(),
         revision: u64::try_from(credential.version).expect("nonnegative revision"),
     }
@@ -161,11 +161,13 @@ fn credential_ref(
 fn platform_request(
     host: &ExecutorComponents,
     session: &str,
-    credential: awaken_credential_contract::CredentialRef,
+    credential: awaken_agent_contract::credential::CredentialRef,
 ) -> crate::session_mcp::StageMcpAttachment {
-    use awaken_credential_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialUsage,
-        ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    use awaken_agent_contract::{
+        credential::CredentialAccess, credential::CredentialExecutionPolicy,
+        credential::CredentialMaterialSource, credential::CredentialUsage,
+        credential::ModelExposurePolicy, credential::PlaintextBoundary,
+        credential::PlaintextHolder,
     };
     host.run_assembly
         .install_session_realization_lease(
@@ -214,7 +216,7 @@ fn platform_request(
                 CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
             )
             .with_target(awaken_agent_contract::credential::CredentialTarget::new(
-                awaken_credential_contract::CredentialPurpose::McpAuthorization,
+                awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
                 awaken_agent_contract::McpTarget::identity(UPSTREAM)
                     .unwrap()
                     .canonical_url(),

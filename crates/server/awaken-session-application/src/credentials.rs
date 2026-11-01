@@ -4,9 +4,13 @@
 //! Exact Repository credential pinning at the Session application boundary.
 
 use crate::mutation::ROOT_CAS_ATTEMPTS;
+use awaken_agent_contract::{
+    credential::CredentialExecutionPolicy, credential::ModelExposurePolicy,
+    credential::PlaintextHolder,
+};
 use awaken_credential_contract::{
-    CredentialExecutionPolicy, CredentialMaterialIngress, CredentialSourceId, ModelExposurePolicy,
-    PlaintextHolder, SessionCredentialAccessRequest, SessionCredentialSource,
+    CredentialMaterialIngress, CredentialSourceId, SessionCredentialAccessRequest,
+    SessionCredentialSource,
 };
 use awaken_session_configuration_contract::resource::{
     ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,

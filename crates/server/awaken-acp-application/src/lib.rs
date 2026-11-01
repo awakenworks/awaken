@@ -11,7 +11,7 @@
 //! ```
 
 use awaken_acp_contract::{AcpLocalCredentialBinding, AcpPublicationCapability};
-use awaken_credential_contract::CredentialRef;
+use awaken_agent_contract::credential::CredentialRef;
 use awaken_credential_vault::repo::{CredentialRepo, ensure_worker_local};
 use awaken_credential_vault::{
     CredentialKind, CredentialSource, CredentialStatus, WorkerLocalBinding,

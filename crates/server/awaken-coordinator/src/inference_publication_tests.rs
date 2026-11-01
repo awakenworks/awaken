@@ -8,8 +8,8 @@ mod tests {
     use awaken_agent_contract::RedactedString;
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialTarget};
     use awaken_config_service::{ModelPublicationResolver, ResolvedPublicationModels};
-    use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
     use awaken_credential_materializer::CredentialInferenceMaterializer;
     use awaken_credential_vault::SecretStore;
     use awaken_credential_vault::repo::CredentialRepo;

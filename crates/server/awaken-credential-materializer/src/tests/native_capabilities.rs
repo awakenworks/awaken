@@ -80,8 +80,8 @@ fn native_manifest_admission_uses_installed_materializer_evidence() {
                                         ModelExposurePolicy::Forbidden,
                                     ),
                                 )
-                                .with_target(awaken_credential_contract::CredentialTarget::new(
-                                    awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+                                .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                                    awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
                                     "provider-a",
                                 ));
                             if envelope {

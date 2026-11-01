@@ -2,11 +2,14 @@
 // @formal owner crates/server/awaken-session-mcp/src/mcp/attachment.rs
 // @formal reason: Installed PlatformRelay provisioner fault cuts; no external mediator or plaintext enforcement claim.
 use super::*;
+use awaken_agent_contract::{
+    credential::CredentialAccess, credential::CredentialExecutionPolicy,
+    credential::CredentialMaterialSource, credential::CredentialRef, credential::CredentialUsage,
+    credential::ModelExposurePolicy, credential::PlaintextBoundary, credential::PlaintextHolder,
+};
 use awaken_credential_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialCapability,
-    CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
-    CredentialMaterialSource, CredentialRef, CredentialUsage, ModelExposurePolicy,
-    PlaintextBoundary, PlaintextHolder, ResolvedCredentialMaterial,
+    CredentialMaterialCapability, CredentialMaterialError, CredentialMaterialRequest,
+    CredentialMaterialResolver, ResolvedCredentialMaterial,
 };
 use awaken_credential_materializer::{MediatedMcpRoute, PlatformMcpEgressRequest};
 use std::collections::BTreeSet;
@@ -196,8 +199,8 @@ fn begin(mcp: &McpSessions, slots: &Arc<Slots>) -> PlatformPreparation {
             },
             CredentialExecutionPolicy::exact(holder(), ModelExposurePolicy::VirtualOnly),
         )
-        .with_target(awaken_credential_contract::CredentialTarget::new(
-            awaken_credential_contract::CredentialPurpose::McpAuthorization,
+        .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
             "https://fixture.test/mcp",
         )),
     );

@@ -3,14 +3,16 @@
 mod tests {
     use awaken_agent_contract::RedactedString;
     use awaken_agent_contract::credential::CandidateFingerprint;
+    use awaken_agent_contract::{
+        credential::CredentialAccess, credential::CredentialExecutionPolicy,
+        credential::CredentialMaterialSource, credential::CredentialPurpose,
+        credential::CredentialRef, credential::CredentialTarget, credential::CredentialUsage,
+        credential::PlaintextBoundary, credential::PlaintextHolder,
+    };
+    use awaken_credential_contract::CredentialMaterialBinding;
     use awaken_credential_contract::credential_access_has_same_authority;
     use awaken_credential_contract::{
         AttemptCredentialDeliveryRequest, AttemptCredentialDeliverySource,
-    };
-    use awaken_credential_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding,
-        CredentialMaterialSource, CredentialPurpose, CredentialRef, CredentialTarget,
-        CredentialUsage, PlaintextBoundary, PlaintextHolder,
     };
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{
@@ -83,13 +85,13 @@ mod tests {
             usage.clone(),
             CredentialExecutionPolicy::exact(
                 holder.clone(),
-                awaken_credential_contract::ModelExposurePolicy::Forbidden,
+                awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
             ),
         )
         .with_target(target)
         .with_envelope(
-            awaken_credential_contract::CredentialEnvelope::SealedForWorker {
-                envelope_ref: awaken_credential_contract::SealedCredentialEnvelopeRef {
+            awaken_agent_contract::credential::CredentialEnvelope::SealedForWorker {
+                envelope_ref: awaken_agent_contract::credential::SealedCredentialEnvelopeRef {
                     id: "expired".into(),
                     payload_fingerprint: "expired".into(),
                 },

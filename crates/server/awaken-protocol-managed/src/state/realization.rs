@@ -37,9 +37,8 @@ mod tests {
     use super::*;
     use awaken_agent_contract::agent::awaiting::PermissionDecision;
     use awaken_agent_contract::agent::content::ContentBlock;
-    use awaken_credential_contract::{
-        CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
-    };
+    use awaken_agent_contract::{credential::PlaintextBoundary, credential::PlaintextHolder};
+    use awaken_credential_contract::CredentialRealizationProfile;
     use awaken_session_application_contract::StepOutcome;
     use awaken_session_configuration_contract::{
         EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,

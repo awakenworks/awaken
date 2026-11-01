@@ -303,7 +303,7 @@ impl CredentialMutationIntent {
                 "credential replacement predecessor revision must be positive".into(),
             )
         })?;
-        let expected_provenance = awaken_credential_contract::CredentialRef {
+        let expected_provenance = awaken_agent_contract::credential::CredentialRef {
             id: before.id.0.clone(),
             revision: before_revision,
         };

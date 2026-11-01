@@ -2061,9 +2061,12 @@ async fn a_missing_source_or_pool_is_not_found() {
 /// | DR7 | foreign Workspace | absent | T | - | F | F | F | E6 |
 #[tokio::test]
 async fn described_replacement_is_distinct_exact_and_idempotent() {
+    use awaken_agent_contract::{
+        credential::CredentialPurpose, credential::CredentialRef, credential::CredentialUsage,
+    };
     use awaken_credential_contract::{
-        CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialRef,
-        CredentialUsage, HTTP_BASIC_MATERIAL_TYPE, http_basic_material,
+        CredentialDescriptor, CredentialMaterialDescriptor, HTTP_BASIC_MATERIAL_TYPE,
+        http_basic_material,
     };
 
     let old_descriptor = CredentialDescriptor::new(
@@ -2073,7 +2076,7 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
             ["password", "username"],
         ),
         [awaken_credential_contract::CredentialTargetContract::new(
-            awaken_credential_contract::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialTarget::new(
                 CredentialPurpose::RepositoryTransport,
                 awaken_credential_contract::repository_transport_audience(
                     "https://github.com/awaken/example.git",
@@ -2355,9 +2358,10 @@ async fn described_replacement_is_distinct_exact_and_idempotent() {
 /// | D11 | unsupported target-less consumer purpose | - | E7, zero writes |
 #[tokio::test]
 async fn described_material_is_validated_before_create_and_rotation_effects() {
+    use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialUsage};
     use awaken_credential_contract::{
-        CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialUsage,
-        HTTP_BASIC_MATERIAL_TYPE, http_basic_material,
+        CredentialDescriptor, CredentialMaterialDescriptor, HTTP_BASIC_MATERIAL_TYPE,
+        http_basic_material,
     };
 
     let descriptor = CredentialDescriptor::new(
@@ -2367,7 +2371,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
             ["password", "username"],
         ),
         [awaken_credential_contract::CredentialTargetContract::new(
-            awaken_credential_contract::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialTarget::new(
                 CredentialPurpose::RepositoryTransport,
                 awaken_credential_contract::repository_transport_audience(
                     "https://github.com/awaken/example.git",
@@ -2446,7 +2450,7 @@ async fn described_material_is_validated_before_create_and_rotation_effects() {
         "github",
         descriptor.material.clone(),
         [awaken_credential_contract::CredentialTargetContract::new(
-            awaken_credential_contract::CredentialTarget::new(
+            awaken_agent_contract::credential::CredentialTarget::new(
                 CredentialPurpose::ProviderAdapter,
                 "provider://github",
             ),

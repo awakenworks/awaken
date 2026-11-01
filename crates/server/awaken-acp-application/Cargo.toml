@@ -13,7 +13,7 @@ authority = "acp"
 
 [dependencies]
 awaken-acp-contract.workspace = true
-awaken-credential-contract.workspace = true
+awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-credential-vault.workspace = true
 

@@ -4,7 +4,8 @@
 // @formal reason: publishing evidence; moving values here adds no discovery or credential authority.
 //! Secret-free host observations consumed by capability publication and diagnostics.
 
-use awaken_credential_contract::{CredentialObservationState, CredentialRef};
+use awaken_agent_contract::credential::CredentialRef;
+use awaken_credential_contract::CredentialObservationState;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::AcpCapabilityObservationState;

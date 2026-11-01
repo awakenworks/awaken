@@ -284,7 +284,7 @@ name = "awaken-acp-application"
 version = "1.0.0"
 dependencies = [
  "awaken-acp-contract",
- "awaken-credential-contract",
+ "awaken-agent-contract",
  "awaken-credential-vault",
  "awaken-runtime-contract",
  "tokio",
@@ -296,6 +296,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-channel",
+ "awaken-agent-contract",
  "awaken-credential-contract",
  "serde",
  "serde_json",
@@ -2236,7 +2237,6 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-credential-contract",
  "awaken-lease-testkit",
  "awaken-outbound-http",
  "awaken-session-application-contract",

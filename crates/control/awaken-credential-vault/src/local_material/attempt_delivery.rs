@@ -6,12 +6,13 @@ use awaken_credential_contract::CredentialEnvelopeValidation;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::credential::CredentialUsage;
 use awaken_credential_contract::{
     AttemptCredentialDelivery, AttemptCredentialDeliveryRequest, AttemptCredentialDeliverySource,
     credential_access_without_delivery,
 };
 use awaken_credential_contract::{
-    CredentialEnvelopeIssuance, CredentialEnvelopeIssuer, CredentialMaterialError, CredentialUsage,
+    CredentialEnvelopeIssuance, CredentialEnvelopeIssuer, CredentialMaterialError,
 };
 use awaken_time::WallClockExt as _;
 

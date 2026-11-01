@@ -476,7 +476,7 @@ impl SessionBaseline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_credential_contract::{PlaintextBoundary, PlaintextHolder};
+    use awaken_agent_contract::{credential::PlaintextBoundary, credential::PlaintextHolder};
     use awaken_provisioning_contract::{
         EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement, MountSource,
         SandboxCheckpointExpiryBehavior,

@@ -848,9 +848,11 @@ fn prepared_activation(
 
 #[cfg(test)]
 mod tests {
-    use awaken_credential_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    use awaken_agent_contract::{
+        credential::CredentialAccess, credential::CredentialExecutionPolicy,
+        credential::CredentialMaterialSource, credential::CredentialRef,
+        credential::ModelExposurePolicy, credential::PlaintextBoundary,
+        credential::PlaintextHolder,
     };
     use awaken_resource_contract::{BindingId, ConfigVersion, FileId};
 

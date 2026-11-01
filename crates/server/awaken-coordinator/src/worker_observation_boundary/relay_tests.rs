@@ -119,23 +119,23 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
         mode: AtomicUsize::new(0),
         reads: AtomicUsize::new(0),
     });
-    let holder = awaken_credential_contract::PlaintextHolder::new(
-        awaken_credential_contract::PlaintextBoundary::Worker,
+    let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Worker,
         "worker.example",
     );
-    let credential = awaken_credential_contract::CredentialAccess::new(
-        awaken_credential_contract::CredentialRef {
+    let credential = awaken_agent_contract::credential::CredentialAccess::new(
+        awaken_agent_contract::credential::CredentialRef {
             id: "credential".into(),
             revision: 1,
         },
-        awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
-        awaken_credential_contract::CredentialUsage::HttpHeader {
+        awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+        awaken_agent_contract::credential::CredentialUsage::HttpHeader {
             name: "authorization".into(),
             scheme: Some("Bearer".into()),
         },
-        awaken_credential_contract::CredentialExecutionPolicy::exact(
+        awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
             holder.clone(),
-            awaken_credential_contract::ModelExposurePolicy::VirtualOnly,
+            awaken_agent_contract::credential::ModelExposurePolicy::VirtualOnly,
         ),
     );
     let mut mcp = SessionMcpAttachmentSet::from_initial(

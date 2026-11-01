@@ -49,7 +49,6 @@
     "Error": 2
   },
   "contract-reexport": {
-    "awaken-credential-contract": 29,
     "awaken-dispatch-contract": 58,
     "awaken-executable-agent-contract": 1,
     "awaken-provisioning-contract": 1,

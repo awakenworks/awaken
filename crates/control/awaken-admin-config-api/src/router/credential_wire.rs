@@ -13,7 +13,8 @@
 //! request or response shapes.
 
 use awaken_agent_contract::RedactedString;
-use awaken_credential_contract::{CredentialDescriptor, CredentialRef, CredentialSourceId};
+use awaken_agent_contract::credential::CredentialRef;
+use awaken_credential_contract::{CredentialDescriptor, CredentialSourceId};
 use awaken_credential_vault::{
     CredentialError, CredentialKind, CredentialSource, CredentialStatus, OAuthHelper,
 };

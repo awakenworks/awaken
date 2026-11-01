@@ -1540,7 +1540,7 @@ impl PersistedSession {
                 .selected_plaintext_holder
                 .as_ref()
                 .is_some_and(|holder| {
-                    holder.boundary == awaken_credential_contract::PlaintextBoundary::Worker
+                    holder.boundary == awaken_agent_contract::credential::PlaintextBoundary::Worker
                 })
         {
             return None;
@@ -1615,9 +1615,11 @@ fn decide_terminal_cleanup(
 mod worker_relay_route_tests {
     use super::*;
     use crate::state::session_repo::mutation_tests::session;
-    use awaken_credential_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    use awaken_agent_contract::{
+        credential::CredentialAccess, credential::CredentialExecutionPolicy,
+        credential::CredentialMaterialSource, credential::CredentialRef,
+        credential::CredentialUsage, credential::ModelExposurePolicy,
+        credential::PlaintextBoundary, credential::PlaintextHolder,
     };
     use awaken_session_configuration_contract::mcp::{
         McpAttachmentDraft, McpAttachmentId, McpAttachmentOrigin, McpAttachmentState,

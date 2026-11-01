@@ -6,9 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use awaken_credential_contract::{
-    CredentialAccess, CredentialRealizationKind, McpCredentialDelivery, PlaintextHolder,
-};
+use awaken_agent_contract::{credential::CredentialAccess, credential::PlaintextHolder};
+use awaken_credential_contract::{CredentialRealizationKind, McpCredentialDelivery};
 use serde::{Deserialize, Serialize};
 
 use awaken_agent_contract::McpTarget;
@@ -1012,9 +1011,10 @@ mod quiescence;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_credential_contract::{
-        CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef, CredentialUsage,
-        ModelExposurePolicy, PlaintextBoundary,
+    use awaken_agent_contract::{
+        credential::CredentialExecutionPolicy, credential::CredentialMaterialSource,
+        credential::CredentialRef, credential::CredentialUsage, credential::ModelExposurePolicy,
+        credential::PlaintextBoundary,
     };
 
     #[test]

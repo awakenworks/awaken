@@ -130,9 +130,10 @@ async fn repository() -> Arc<awaken_session_store::SqliteManagedSessionRepositor
 }
 
 fn credential_root(id: &str) -> PersistedSession {
-    use awaken_credential_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        CredentialUsage, ModelExposurePolicy,
+    use awaken_agent_contract::{
+        credential::CredentialAccess, credential::CredentialExecutionPolicy,
+        credential::CredentialMaterialSource, credential::CredentialRef,
+        credential::CredentialUsage, credential::ModelExposurePolicy,
     };
     let prepared = authority::unattempted_profiled_release::unattempted_with_placement(
         id,

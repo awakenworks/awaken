@@ -331,11 +331,12 @@ const RENEWAL_SOURCE: &str = "unkeyed-renewal-source";
 
 fn renewal_access(
     revision: u64,
-    holder: &awaken_credential_contract::PlaintextHolder,
-) -> awaken_credential_contract::CredentialAccess {
-    use awaken_credential_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        CredentialUsage, ModelExposurePolicy,
+    holder: &awaken_agent_contract::credential::PlaintextHolder,
+) -> awaken_agent_contract::credential::CredentialAccess {
+    use awaken_agent_contract::{
+        credential::CredentialAccess, credential::CredentialExecutionPolicy,
+        credential::CredentialMaterialSource, credential::CredentialRef,
+        credential::CredentialUsage, credential::ModelExposurePolicy,
     };
     CredentialAccess::new(
         CredentialRef {
@@ -373,12 +374,12 @@ impl awaken_credential_contract::SessionCredentialSource for RenewedMcpCredentia
         source: &awaken_credential_contract::CredentialSourceId,
         workspace: &str,
         target: &McpTarget,
-        holder: &awaken_credential_contract::PlaintextHolder,
+        holder: &awaken_agent_contract::credential::PlaintextHolder,
         binding: &awaken_credential_contract::CredentialMaterialBinding,
-    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, String> {
         assert_eq!(source.0, RENEWAL_SOURCE);
         assert_eq!(target.http_url(), Some("https://docs.example.test/mcp"));
-        let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+        let usage = awaken_agent_contract::credential::CredentialUsage::HttpHeader {
             name: "authorization".into(),
             scheme: Some("Bearer".into()),
         };
@@ -396,7 +397,7 @@ impl awaken_credential_contract::SessionCredentialSource for RenewedMcpCredentia
         _: &awaken_credential_contract::CredentialSourceId,
         _: &str,
         _: awaken_credential_contract::SessionCredentialAccessRequest,
-    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, String> {
         unreachable!("MCP renewal must use its existing MCP credential role")
     }
 }

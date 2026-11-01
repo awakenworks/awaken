@@ -383,10 +383,11 @@ async fn invalid_credential_binding_leaves_no_preparation_or_tombstone() {
     let slots = Slots::live();
     let mcp = McpSessions::new(None, awaken_time::system_clock());
     let mut request = request("http://127.0.0.1:1/mcp");
-    request.selected_plaintext_holder = Some(awaken_credential_contract::PlaintextHolder::new(
-        awaken_credential_contract::PlaintextBoundary::Worker,
-        "fixture.worker",
-    ));
+    request.selected_plaintext_holder =
+        Some(awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
+            "fixture.worker",
+        ));
     let error = stage(mcp.clone(), slots.clone(), request.clone())
         .await
         .unwrap()

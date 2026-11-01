@@ -6,7 +6,7 @@ const REMOTE: &str = "https://github.com/awaken/finalized.git";
 fn profiled_request(
     id: &str,
     agent: &str,
-    credential: Option<awaken_credential_contract::CredentialRef>,
+    credential: Option<awaken_agent_contract::credential::CredentialRef>,
 ) -> Value {
     json!({
         "session_id": id, "mode": "work_unit", "agent_id": agent,
@@ -65,7 +65,7 @@ async fn both_create_routes_finalize_resources_before_root_or_runtime_effects() 
                     profiled_request(
                         "finalizer-profiled-failure",
                         agent,
-                        Some(awaken_credential_contract::CredentialRef {
+                        Some(awaken_agent_contract::credential::CredentialRef {
                             id: "external-original-source".into(),
                             revision: 1,
                         }),
@@ -368,7 +368,7 @@ async fn failed_finalization_commits_no_root_or_lifecycle_fact_on_either_route()
                 profiled_request(
                     "ordering-profiled-failure",
                     "a",
-                    Some(awaken_credential_contract::CredentialRef {
+                    Some(awaken_agent_contract::credential::CredentialRef {
                         id: "external-ordering-source".into(),
                         revision: 1,
                     }),
