@@ -40,8 +40,8 @@ equality implies the original strict-order bridge. The oracle resembles the
 standard library's unit decomposition; it is not another independent
 implementation. The native conversion test retains its linear oracle.
 
-Production time code, the wire domain and the independent Expiry `Ord` lemma
-are unchanged. The two successor covers still require `wire < u64::MAX`,
+Production time code and the wire domain are unchanged. Expiry `Ord` has the
+independent compositional check described below. The two successor covers still require `wire < u64::MAX`,
 because `MAX` has no successor; separate zero/MAX covers exercise the full
 image's endpoints. The harness selects the existing `solver-z3-v1` profile,
 with all checks and the original 1,800-second ceiling retained.
@@ -53,6 +53,46 @@ reached its requested 300-second limit in the independent Expiry lemma; that
 is neither a complete batch PASS nor evidence of a 1,800-second failure.
 The source-derived nanos batch and final-source full formal qualification
 retain their separate receipts; the obligation rerun markers are unchanged.
+
+## Current Expiry ordering formulation
+
+The existing `expiry_from_epoch_ms_is_strictly_monotone` harness checks two
+links rather than constructing two adjacent millisecond conversions. First,
+every `u64` wire, including zero and `MAX`, must construct the same complete
+Expiry as `Expiry::at(UtcTime::from_epoch_ms(wire))`. Second, the real Expiry
+comparison over two independent canonical `Duration` coordinate pairs must
+equal their integer lexicographic comparison. Both seconds inputs range over
+all `u64`; only the `u32` nanos inputs are bounded below 1,000,000,000, the
+valid representation of every Duration. No wire or seconds bound is added.
+The two explicit nanos assumptions define only that canonical representation;
+they do not assume an ordering or exclude any valid Duration. They replace
+surjective modulo generators over precisely the same legal domain.
+
+The composition uses the actual single-field Expiry/UtcTime wrappers,
+`Duration::new` preserving canonical inputs, and the actual `as_nanos`
+projection `P(s,n) = u128(s) * 1_000_000_000 + u128(n)`. This projection is an
+order embedding: equal seconds compare their nanos, and a one-second increase
+exceeds the largest possible reversed nanos difference by at least one.
+Its largest value is below 2^94. The full-width nanos-image harness already
+checks `P(from_epoch_ms(w)) = u128(w) * 1_000_000`; together these links prove
+the original strict successor law and the order of every millisecond pair.
+The image harness carries the same two obligation anchors, without a second
+formula or proof owner. A changed wrapper or canonical representation requires
+this composition to be reviewed again; an opaque image equality alone would
+not prove the actual Ord implementation.
+
+The original default two-harness run on clean `a191b5ee` reached its requested
+300-second diagnostic limit with succession complete and Expiry unfinished.
+That is not a failure of the original 1,800-second ceiling. The compositional
+candidate still requires its own source-derived complete batches and vacuity
+check; neither this argument nor a focused PASS qualifies the full formal gate.
+The modulo-generator diagnostic was deliberately stopped at 311.4888s/raw143
+with two of three results complete; it did not exhaust the 1,800-second budget.
+The direct canonical-bound diagnostic was stopped at 346.601s/raw143 for the
+solver comparison, again without exhausting that budget. The existing Ord
+harness now reuses `solver-z3-v1`, joining the nanos harness in its derived
+Z3 batch; succession stays in the default batch. Inputs, checks, covers and
+the 1,800-second ceiling are unchanged by that profile selection.
 
 ## Current fixed-target checkpoint formulation
 
