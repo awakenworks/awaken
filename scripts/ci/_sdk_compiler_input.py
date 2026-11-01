@@ -5,9 +5,12 @@ import hashlib
 from pathlib import Path, PurePosixPath
 import posixpath
 import re
+import tempfile
 import tomllib
 
 import formal_sources
+import _sdk_archives
+import _crate_boundary_workspace as workspace
 from public_api_selection import selected_crates
 from _crate_boundary_workspace import dependency_declarations
 
@@ -15,12 +18,82 @@ ENVIRONMENT_KEY = "K8S_OPENAPI_ENABLED_VERSION"
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 
 
-def observe_source(root: Path, revision: str, members: dict, sdk: list[str]) -> dict:
+def source_package(document: dict) -> dict:
+    """Project authored identity into the existing metadata SDK selector."""
+    package = document["package"]
+    if not isinstance(package.get("name"), str) or not package["name"]:
+        raise ValueError("SDK source has an incomplete package identity")
+    return {"name": package["name"], "metadata": package.get("metadata"),
+            "publish": [] if package.get("publish") is False else package.get("publish")}
+
+
+def baseline_inventory(root: Path, revision: str) -> dict:
+    """Discover names and historical paths from the baseline's complete source."""
+    if "commit" in formal_sources.git_paths(
+            root, "ls-tree", "-r", "--format=%(objecttype)", "-z", revision):
+        raise ValueError("SDK baseline gitlinks cannot establish a complete source inventory")
+    archive_bytes = formal_sources.git_output(root, "archive", "--format=tar", revision)
+    with tempfile.TemporaryDirectory(prefix="sdk-baseline-inventory-") as temporary:
+        directory = Path(temporary)
+        archive = directory / "source.tar"
+        archive.write_bytes(archive_bytes)
+        source = directory / "source"
+        source.mkdir()
+        _sdk_archives.unpack_source_archive(archive, source)
+        # Git archive applies export-ignore/export-subst (including local
+        # info/attributes). Only the revision's complete Git manifest inventory
+        # and exact compiler documents may authorize first-release classification.
+        documents = [path for path in formal_sources.git_paths(
+            root, "ls-tree", "-r", "--name-only", "-z", revision)
+            if path in ("Cargo.toml", "Cargo.lock") or path.endswith("/Cargo.toml")]
+        hashes = {}
+        for path in documents:
+            archived = source / path
+            if not archived.is_file() or archived.is_symlink():
+                raise ValueError("SDK baseline archive omits a historical compiler document: " + path)
+            original = formal_sources.git_output(root, "show", revision + ":" + path)
+            if archived.read_bytes() != original:
+                raise ValueError("SDK baseline archive rewrites a historical compiler document: " + path)
+            hashes[path] = hashlib.sha256(original).hexdigest()
+        root_manifest = workspace.load_manifest(source / "Cargo.toml")
+        patterns = root_manifest.get("workspace", {}).get("members")
+        if (not isinstance(patterns, list) or not patterns
+                or any(not isinstance(pattern, str) or not pattern for pattern in patterns)):
+            raise ValueError("SDK baseline has no complete declared workspace")
+        for pattern in patterns:
+            if PurePosixPath(pattern).is_absolute() or ".." in PurePosixPath(pattern).parts:
+                raise ValueError("SDK baseline workspace member escapes its source")
+            if not any((path / "Cargo.toml").is_file() for path in source.glob(pattern)):
+                raise ValueError("SDK baseline is missing a declared workspace member")
+        members = workspace.workspace_member_dirs(source)
+        if {path.parent.resolve() for path in workspace.crate_manifests(source / "crates")} != set(members):
+            raise ValueError("SDK baseline manifest discovery differs from its workspace")
+        packages, selected = {}, []
+        for directory in members:
+            manifest = directory / "Cargo.toml"
+            package = source_package(workspace.load_manifest(manifest))
+            name = package["name"]
+            if name in packages:
+                raise ValueError("SDK baseline has duplicate package identities")
+            path = manifest.relative_to(source).as_posix()
+            packages[name] = {"manifest_path": path}
+            selected.append(package)
+        sdk = selected_crates(selected)[1]
+        if not sdk:
+            raise ValueError("SDK baseline has no publishable SDK inventory")
+        return {"revision": revision, "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
+                "members": packages, "sdk_crates": sdk, "source_hashes": hashes}
+
+
+def observe_source(root: Path, revision: str, members: dict, sdk: list[str], *,
+                   git_manifest_paths: dict[str, str] | None = None) -> dict:
     """Read only this selected source's manifests/lock through the Git owner.
 
     Normal/build edges include every optional/target declaration. External lock
     versions are unioned by name: absence in this conservative graph is useful;
     it is not an enabled-feature graph or an executed build observation.
+    Verified historical paths stay Git-relative and never resolve through the
+    current filesystem; current Cargo metadata keeps its original root check.
     """
     hashes, manifests = {}, {}
 
@@ -44,13 +117,13 @@ def observe_source(root: Path, revision: str, members: dict, sdk: list[str]) -> 
     selected = []
     pending = []
     for name in sdk:
-        path = Path(members[name]["manifest_path"]).resolve().relative_to(root.resolve()).as_posix()
+        path = (PurePosixPath(git_manifest_paths[name]).as_posix() if git_manifest_paths is not None else
+                Path(members[name]["manifest_path"]).resolve().relative_to(root.resolve()).as_posix())
         document = read(path)
         package = document["package"]
         if package["name"] != name:
             raise ValueError("SDK compiler source differs from the metadata selection")
-        selected.append({"name": name, "metadata": package.get("metadata"),
-                         "publish": [] if package.get("publish") is False else package.get("publish")})
+        selected.append(source_package(document))
         manifests[path] = document
         pending.append(("manifest", path))
     if selected_crates(selected)[1] != sdk:
@@ -114,10 +187,22 @@ def model(source: dict, package: dict) -> dict:
 def qualification(root: Path, revision: str, members: dict, sdk: list[str], metadata: dict,
                   values: dict, baseline_rev: str = "") -> dict:
     current = observe_source(root, revision, members, sdk)
-    baseline = observe_source(root, baseline_rev, members, sdk) if baseline_rev else None
+    inventory, baseline = None, None
+    if baseline_rev:
+        inventory = baseline_inventory(root, baseline_rev)
+        historical = set(inventory["sdk_crates"])
+        if historical - set(sdk):
+            raise ValueError("SDK baseline members disappeared from the current SDK selection")
+        if (set(sdk) & set(inventory["members"])) - historical:
+            raise ValueError("SDK package changed its historical publication identity")
+        historical_paths = {name: row["manifest_path"] for name, row in inventory["members"].items()}
+        baseline = observe_source(root, baseline_rev, {}, inventory["sdk_crates"],
+                                  git_manifest_paths=historical_paths)
     result = {"current": current, "environment": {}, "ambient": "unused"}
     if baseline is not None:
         result["baseline"] = baseline
+        result["baseline_inventory"] = inventory
+        result["first_release_crates"] = sorted(set(sdk) - set(inventory["members"]))
     if current["applicability"] == "not_applicable":
         if baseline is not None and baseline["applicability"] != "not_applicable":
             raise ValueError("SDK compiler input cannot borrow a model from the baseline")
