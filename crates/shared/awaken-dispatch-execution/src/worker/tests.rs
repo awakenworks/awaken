@@ -212,14 +212,22 @@ fn renewal_stop_records_the_cause_that_decides_the_run_effect() {
 
 #[tokio::test]
 async fn renewal_tags_durable_cancellation_and_claim_loss_with_their_causes() {
-    // RC1 and RC2 through the real renewal loop over the memory store: a
-    // durable cancellation fires the token as `Requested`; a peer replacing
-    // the expired claim fires it as `ClaimLost`.
+    // Cause/effect table RC: C1 durable cancellation / peer takeover;
+    // C2 exact physical slot installed / not started. RC1 C1=cancel+C2=slot
+    // => Requested; RC2 cancel+no slot => ClaimLost, because the revoked
+    // lease owns no executing effect; RC3/RC4 peer takeover => ClaimLost for
+    // either slot state. All rows use the real Dispatch store and renewal loop.
+    // First-cause absorption is checked again after dropping the renewal guard.
     use awaken_lease_testkit::ManualClock;
-    for durable_cancel in [true, false] {
+    for (durable_cancel, physical_started, expected) in [
+        (true, true, CancellationCause::Requested),
+        (true, false, CancellationCause::ClaimLost),
+        (false, true, CancellationCause::ClaimLost),
+        (false, false, CancellationCause::ClaimLost),
+    ] {
         let clock = Arc::new(ManualClock::new(0));
         let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-        let run_id = RunId(format!("renewal-cause-{durable_cancel}"));
+        let run_id = RunId(format!("renewal-cause-{durable_cancel}-{physical_started}"));
         store
             .enqueue(crate::RunDispatch::new(RunActivation::new(
                 run_id.clone(),
@@ -242,20 +250,20 @@ async fn renewal_tags_durable_cancellation_and_claim_loss_with_their_causes() {
             .expect("claim")
             .expect("runnable");
         let claim = RunClaim::from(&claimed.lease);
-        // The drive admits its physical attempt before Runtime runs: durable
-        // cancellation is signalled only to that exact admitted attempt.
-        assert_eq!(
-            store
-                .begin_attempt(&claim, None)
-                .await
-                .expect("admit the physical attempt"),
-            awaken_dispatch_contract::AttemptAdmission::Applied
-        );
+        if physical_started {
+            assert_eq!(
+                store
+                    .begin_attempt(&claim, None)
+                    .await
+                    .expect("physical admission"),
+                awaken_dispatch_contract::AttemptAdmission::Applied,
+                "RC1/RC3 install the actual physical slot"
+            );
+        }
         let renewal = super::renew_claim_while_active(store.clone(), &claim, 90);
         let attempt = renewal.attempt_cancellation();
-        let expected = if durable_cancel {
+        if durable_cancel {
             store.cancel(&run_id).await.expect("durable cancellation");
-            CancellationCause::Requested
         } else {
             clock.set(91);
             store
@@ -263,8 +271,7 @@ async fn renewal_tags_durable_cancellation_and_claim_loss_with_their_causes() {
                 .await
                 .expect("peer claim")
                 .expect("peer replaces the expired claim");
-            CancellationCause::ClaimLost
-        };
+        }
         tokio::time::timeout(
             std::time::Duration::from_secs(30),
             attempt.token.cancelled(),
