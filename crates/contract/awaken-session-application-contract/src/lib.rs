@@ -84,8 +84,8 @@ pub use run_coordination::{
 pub use step_outcome::StepOutcome;
 pub use task_attention::{
     PRIVATE_TASK_INPUT_VERSION, PrivateTaskInput, PrivateTaskInputError, RegisteredTaskControl,
-    TASK_TENURE_RECORD_VERSION, TaskAttention, TaskAttentionAck, TaskTenureRead, TaskTenureRecord,
-    TaskTenureRecordError, WORKER_TASK_ATTENTION_PATH, WORKER_TASK_TENURE_PATH,
+    TASK_TENURE_RECORD_VERSION, TaskAttention, TaskAttentionAck, TaskReadPartition, TaskTenureRead,
+    TaskTenureRecord, TaskTenureRecordError, WORKER_TASK_ATTENTION_PATH, WORKER_TASK_TENURE_PATH,
     registered_task_holder,
 };
 

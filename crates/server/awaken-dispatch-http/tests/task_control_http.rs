@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::state::{Action, Command, Key, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::background_task::background_task_state_key;
@@ -20,7 +20,7 @@ use awaken_dispatch_testkit::worker_http::ready_worker;
 use awaken_lease_testkit::ManualClock;
 use awaken_session_application_contract::{
     PrivateTaskInput, RegisteredTaskControl, RunApplicationError, SessionRunBackgroundApplication,
-    TaskAttention, TaskAttentionAck, TaskTenureRead, registered_task_holder,
+    TaskAttention, TaskAttentionAck, TaskReadPartition, TaskTenureRead, registered_task_holder,
 };
 use awaken_session_types::{RunError, RunErrorKind};
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
@@ -84,10 +84,14 @@ impl SessionRunBackgroundApplication for RecordingApplication {
     }
 }
 
-/// The Coordinator's committed reads: one Thread whose State holds the given
-/// Task slots, or an unavailable store.
+/// The Coordinator's committed reads: one Thread, committed in one Session
+/// partition, whose State holds the given Task slots and whose origin Run is
+/// committed there; or an unavailable store. Like a partitioned store, a read
+/// of any other partition answers an empty Thread.
 struct ScriptedCommitted {
     slots: Option<Vec<(String, serde_json::Value)>>,
+    session_thread: &'static str,
+    thread: &'static str,
 }
 
 #[async_trait::async_trait]
@@ -97,42 +101,73 @@ impl RunRecoverySource for ScriptedCommitted {
         thread_id: &ThreadId,
         claimed_run_id: &RunId,
     ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        self.recovery_snapshot_in_session(thread_id, thread_id, claimed_run_id)
+            .await
+    }
+
+    async fn recovery_snapshot_in_session(
+        &self,
+        session_thread_id: &ThreadId,
+        thread_id: &ThreadId,
+        claimed_run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
         let slots = self
             .slots
             .as_ref()
             .ok_or_else(|| RecoveryError::Rejected("committed store unavailable".into()))?;
+        let committed_here =
+            session_thread_id.0 == self.session_thread && thread_id.0 == self.thread;
         Ok(RunRecoverySnapshot {
             thread_id: thread_id.clone(),
             claimed_run_id: claimed_run_id.clone(),
-            runs: Vec::new(),
+            runs: if committed_here {
+                vec![RunRecord {
+                    id: claimed_run_id.clone(),
+                    thread_id: thread_id.clone(),
+                    state: RunState::Running,
+                }]
+            } else {
+                Vec::new()
+            },
             latest_run_id: None,
             messages: Vec::new(),
             message_commit_cursors: Vec::new(),
             commit_timestamps: Default::default(),
-            state: slots
-                .iter()
-                .map(|(task, slot)| Command {
-                    key: Key(background_task_state_key(task)),
-                    scope: Scope::Thread,
-                    merge: MergePolicy::Exclusive,
-                    run_id: None,
-                    action: Action::Set(slot.clone()),
-                })
-                .collect(),
+            state: if committed_here {
+                slots
+                    .iter()
+                    .map(|(task, slot)| Command {
+                        key: Key(background_task_state_key(task)),
+                        scope: Scope::Thread,
+                        merge: MergePolicy::Exclusive,
+                        run_id: None,
+                        action: Action::Set(slot.clone()),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
             state_commit_cursors: Vec::new(),
             events: Vec::new(),
             resume_tickets: Vec::new(),
-            thread_version: 1,
+            thread_version: u64::from(committed_here),
             store_cursor: 0,
             next_commit_ordinal: 0,
         })
     }
 }
 
-fn no_committed_reads() -> Arc<ScriptedCommitted> {
+/// A root Thread: its own Session partition.
+fn root_committed(slots: Option<Vec<(String, serde_json::Value)>>) -> Arc<ScriptedCommitted> {
     Arc::new(ScriptedCommitted {
-        slots: Some(Vec::new()),
+        slots,
+        session_thread: "attention-thread",
+        thread: "attention-thread",
     })
+}
+
+fn no_committed_reads() -> Arc<ScriptedCommitted> {
+    root_committed(Some(Vec::new()))
 }
 
 /// Abort-on-drop also closes the server on assertion failure.
@@ -328,8 +363,23 @@ fn attempt(holder: &str) -> serde_json::Value {
 }
 
 fn tenure_read(task: &str, holder: &str) -> TaskTenureRead {
+    partitioned_read(
+        "attention-thread",
+        TaskReadPartition::Thread {},
+        task,
+        holder,
+    )
+}
+
+fn partitioned_read(
+    thread: &str,
+    partition: TaskReadPartition,
+    task: &str,
+    holder: &str,
+) -> TaskTenureRead {
     TaskTenureRead {
-        thread: "attention-thread".into(),
+        thread: thread.into(),
+        partition,
         run: "origin-run".into(),
         task: task.into(),
         holder: holder.into(),
@@ -351,26 +401,24 @@ async fn a_registered_worker_reads_only_the_committed_tenure_it_holds() {
         "held",
         serde_json::json!({"state": "waiting", "attempt": attempt(&holder)}),
     );
-    let committed = Arc::new(ScriptedCommitted {
-        slots: Some(vec![
-            ("held".into(), held.clone()),
-            (
-                "ended".into(),
-                slot(
-                    "ended",
-                    serde_json::json!({"state": "ended", "end": {"outcome": "cancelled"}}),
-                ),
+    let committed = root_committed(Some(vec![
+        ("held".into(), held.clone()),
+        (
+            "ended".into(),
+            slot(
+                "ended",
+                serde_json::json!({"state": "ended", "end": {"outcome": "cancelled"}}),
             ),
-            (
-                "other".into(),
-                slot(
-                    "other",
-                    serde_json::json!({"state": "running", "attempt": attempt(&previous)}),
-                ),
+        ),
+        (
+            "other".into(),
+            slot(
+                "other",
+                serde_json::json!({"state": "running", "attempt": attempt(&previous)}),
             ),
-            ("malformed".into(), serde_json::json!("not a task")),
-        ]),
-    });
+        ),
+        ("malformed".into(), serde_json::json!("not a task")),
+    ]));
     let (_server, _, client) = serve(RecordingApplication::new(0, false), committed).await;
     assert_eq!(client.holder(), holder);
 
@@ -406,16 +454,73 @@ async fn a_registered_worker_reads_only_the_committed_tenure_it_holds() {
     assert_eq!(error.kind, RunErrorKind::Unavailable, "H5 malformed");
 
     // H5: the committed store is unavailable.
-    let (_down, _, down_client) = serve(
-        RecordingApplication::new(0, false),
-        Arc::new(ScriptedCommitted { slots: None }),
-    )
-    .await;
+    let (_down, _, down_client) =
+        serve(RecordingApplication::new(0, false), root_committed(None)).await;
     let error = down_client
         .read_tenure(tenure_read("held", &holder))
         .await
         .unwrap_err();
     assert_eq!(error.kind, RunErrorKind::Unavailable, "H5 unavailable");
+}
+
+/// The partition a tenure read addresses through the real transport:
+/// | Rule | cause | effect |
+/// |---|---|---|
+/// | P1 | a root-Thread Task read with `thread` | read (the H2 row above) |
+/// | P2 | a child-Thread Task read in its Session's partition | the exact committed slot |
+/// | P3 | `session` naming the Thread itself | `BadRequest` |
+/// | P4 | a child-Thread Task read as a root Thread, or in another Session | `BadRequest`: refused, never an empty read |
+#[tokio::test]
+async fn a_child_thread_task_is_read_only_in_its_session_partition() {
+    let holder = registered_task_holder("attention-worker", "attention-worker-boot");
+    let held = slot(
+        "held",
+        serde_json::json!({"state": "running", "attempt": attempt(&holder)}),
+    );
+    let committed = Arc::new(ScriptedCommitted {
+        slots: Some(vec![("held".into(), held.clone())]),
+        session_thread: "session-thread",
+        thread: "child-thread",
+    });
+    let (_server, _, client) = serve(RecordingApplication::new(0, false), committed).await;
+    let in_session = |session: &str| TaskReadPartition::Session {
+        session_thread: session.into(),
+    };
+
+    // P2
+    let record = client
+        .read_tenure(partitioned_read(
+            "child-thread",
+            in_session("session-thread"),
+            "held",
+            &holder,
+        ))
+        .await
+        .expect("P2")
+        .expect("P2 slot");
+    assert_eq!(record.slot(), &held, "P2 the exact committed slot");
+    // P3
+    let error = client
+        .read_tenure(partitioned_read(
+            "session-thread",
+            in_session("session-thread"),
+            "held",
+            &holder,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, RunErrorKind::BadRequest, "P3");
+    // P4: the wrong partition answers an empty Thread; the read is refused.
+    for (row, partition) in [
+        ("P4 as a root Thread", TaskReadPartition::Thread {}),
+        ("P4 another Session", in_session("other-session")),
+    ] {
+        let error = client
+            .read_tenure(partitioned_read("child-thread", partition, "held", &holder))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, RunErrorKind::BadRequest, "{row}");
+    }
 }
 
 /// The tenure request admits only its current shape.
@@ -433,6 +538,13 @@ async fn a_historical_task_tenure_body_is_refused() {
     with_epoch["epoch"] = serde_json::json!(1);
     let mut without_run = current.clone();
     without_run.as_object_mut().unwrap().remove("run");
+    let mut without_partition = current.clone();
+    without_partition
+        .as_object_mut()
+        .unwrap()
+        .remove("partition");
+    let mut unknown_partition = current.clone();
+    unknown_partition["partition"] = serde_json::json!({"kind": "root"});
     let http = reqwest::Client::new();
     for (row, body) in [
         (
@@ -442,6 +554,14 @@ async fn a_historical_task_tenure_body_is_refused() {
         (
             "pre-run read",
             serde_json::json!({ "identity": identity, "read": without_run }),
+        ),
+        (
+            "pre-partition read",
+            serde_json::json!({ "identity": identity, "read": without_partition }),
+        ),
+        (
+            "unknown partition",
+            serde_json::json!({ "identity": identity, "read": unknown_partition }),
         ),
         (
             "unknown envelope field",

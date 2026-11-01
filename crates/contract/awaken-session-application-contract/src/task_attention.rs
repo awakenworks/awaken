@@ -117,15 +117,51 @@ pub const WORKER_TASK_TENURE_PATH: &str = "/v1/worker/task/tenure";
 pub const TASK_TENURE_RECORD_VERSION: u32 = 1;
 
 /// Which Task's committed slot a holder reads: the Task, the Thread whose
-/// State holds it, a committed Run of that Thread (the Task's origin Run)
-/// that addresses the committed read, and the holder the reader claims.
+/// State holds it, the Session partition that Thread is committed in, a
+/// committed Run of that Thread (the Task's origin Run) that addresses the
+/// committed read, and the holder the reader claims. No claim exists when the
+/// read happens and the holder names only the incarnation, so the partition
+/// travels with the read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskTenureRead {
     pub thread: String,
+    pub partition: TaskReadPartition,
     pub run: String,
     pub task: String,
     pub holder: String,
+}
+
+/// The Session partition a Task's Thread is committed in. It is required on
+/// the wire: a read without it is refused, never taken as a root Thread.
+///
+/// Decision table (partition → committed read on the Coordinator):
+/// | Rule | partition | read |
+/// |---|---|---|
+/// | P1 | `thread` | the Thread is its own partition (a root Thread or a Thread with no Session) |
+/// | P2 | `session` naming another Thread | the child Thread inside that Session's partition |
+/// | P3 | `session` naming the Thread itself | refused: a root Thread is `thread` |
+/// | P4 | the origin Run is not committed in the addressed partition | refused, never read as an empty slot |
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskReadPartition {
+    Thread {},
+    Session { session_thread: String },
+}
+
+impl TaskReadPartition {
+    /// The partition of `thread` when the reading Session is `session_thread`
+    /// (P1 for the Session's own Thread, P2 for a child Thread).
+    #[must_use]
+    pub fn of(thread: &str, session_thread: &str) -> Self {
+        if thread == session_thread {
+            Self::Thread {}
+        } else {
+            Self::Session {
+                session_thread: session_thread.to_owned(),
+            }
+        }
+    }
 }
 
 /// The committed slot of a Task whose current attempt names the requesting
@@ -324,11 +360,59 @@ mod tests {
         // A bare slot (no record envelope) is not a record.
         assert!(serde_json::from_value::<TaskTenureRecord>(json!({"id": "task-1"})).is_err());
         // The read admits only its current fields.
-        let read = json!({"thread": "t", "run": "r", "task": "k", "holder": "h"});
+        let read = json!({
+            "thread": "t", "partition": {"kind": "thread"}, "run": "r", "task": "k", "holder": "h"
+        });
         assert!(serde_json::from_value::<TaskTenureRead>(read.clone()).is_ok());
-        let mut extra = read;
+        let mut extra = read.clone();
         extra["epoch"] = json!(1);
         assert!(serde_json::from_value::<TaskTenureRead>(extra).is_err());
+        // A read from before the partition existed is refused, not read as a
+        // root Thread; so is an unknown partition or a partition field.
+        let mut historical = read.clone();
+        historical.as_object_mut().unwrap().remove("partition");
+        assert!(serde_json::from_value::<TaskTenureRead>(historical).is_err());
+        for partition in [
+            json!({"kind": "root"}),
+            json!({"kind": "thread", "session_thread": "s"}),
+            json!({"kind": "session"}),
+            json!({"kind": "session", "session_thread": "s", "depth": 1}),
+            json!("thread"),
+            serde_json::Value::Null,
+        ] {
+            let mut changed = read.clone();
+            changed["partition"] = partition.clone();
+            assert!(
+                serde_json::from_value::<TaskTenureRead>(changed).is_err(),
+                "{partition}"
+            );
+        }
+        let mut child = read;
+        child["partition"] = json!({"kind": "session", "session_thread": "s"});
+        assert_eq!(
+            serde_json::from_value::<TaskTenureRead>(child)
+                .unwrap()
+                .partition,
+            TaskReadPartition::Session {
+                session_thread: "s".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_task_partition_is_its_own_thread_or_the_session_it_is_a_child_of() {
+        assert_eq!(
+            TaskReadPartition::of("t", "t"),
+            TaskReadPartition::Thread {},
+            "P1"
+        );
+        assert_eq!(
+            TaskReadPartition::of("child", "session"),
+            TaskReadPartition::Session {
+                session_thread: "session".into()
+            },
+            "P2"
+        );
     }
 
     #[test]

@@ -33,8 +33,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::background_task::{committed_task_holder, committed_task_slot};
 use awaken_dispatch::{WorkerDirectory, WorkerIdentity};
 use awaken_session_application_contract::{
-    SessionRunBackgroundApplication, TaskAttention, TaskTenureRead, TaskTenureRecord,
-    WORKER_TASK_ATTENTION_PATH, WORKER_TASK_TENURE_PATH, registered_task_holder,
+    SessionRunBackgroundApplication, TaskAttention, TaskReadPartition, TaskTenureRead,
+    TaskTenureRecord, WORKER_TASK_ATTENTION_PATH, WORKER_TASK_TENURE_PATH, registered_task_holder,
 };
 use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_transport_security::{
@@ -90,6 +90,43 @@ fn held_task_slot(
     };
     let holder = committed_task_holder(&read.task, &slot).map_err(ApplicationError::internal)?;
     Ok((holder.as_deref() == Some(read.holder.as_str())).then_some(slot))
+}
+
+/// The Session partition a tenure read addresses (rows P1-P3): `None` for a
+/// Thread that is its own partition, the Session Thread for a child Thread.
+fn partition_read(read: &TaskTenureRead) -> Result<Option<ThreadId>, ApplicationError> {
+    match &read.partition {
+        TaskReadPartition::Thread {} => Ok(None),
+        TaskReadPartition::Session { session_thread } if session_thread == &read.thread => {
+            Err(ApplicationError::invalid(
+                "a Task on its Session's own Thread is read with the `thread` partition",
+            ))
+        }
+        TaskReadPartition::Session { session_thread } => Ok(Some(ThreadId(session_thread.clone()))),
+    }
+}
+
+/// Whether a committed read answered from the partition the Task was committed
+/// in (row P4): the read names the Thread, and the Task's origin Run is
+/// committed there. A read of another partition is refused rather than taken
+/// as a Thread whose Task slot is absent.
+fn admit_partition_snapshot(
+    snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    thread: &ThreadId,
+    run: &RunId,
+) -> Result<(), ApplicationError> {
+    if &snapshot.thread_id != thread {
+        return Err(ApplicationError::internal(
+            "committed read answered for another Thread",
+        ));
+    }
+    match snapshot.run_record(run) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(ApplicationError::invalid(
+            "the Task's origin Run is not committed in the addressed Session partition",
+        )),
+        Err(error) => Err(ApplicationError::internal(error.to_string())),
+    }
 }
 
 /// Map the application's refusal once: a definitive refusal stays definitive
@@ -171,16 +208,20 @@ pub fn worker_task_control_router(
             // H4: only this incarnation's own holder is read.
             admit_task_holder(&request.identity, &request.read.holder)?;
             let thread = ThreadId(request.read.thread.clone());
-            let snapshot = state
-                .committed
-                .recovery_snapshot(&thread, &RunId(request.read.run.clone()))
-                .await
-                .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
-            if snapshot.thread_id != thread {
-                return Err(ApplicationError::internal(
-                    "committed read answered for another Thread",
-                ));
+            let run = RunId(request.read.run.clone());
+            // P1/P2 address the partition the Task was committed in; P3 refused.
+            let snapshot = match partition_read(&request.read)? {
+                None => state.committed.recovery_snapshot(&thread, &run).await,
+                Some(session_thread) => {
+                    state
+                        .committed
+                        .recovery_snapshot_in_session(&session_thread, &thread, &run)
+                        .await
+                }
             }
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+            // P4: the origin Run must be committed in the addressed partition.
+            admit_partition_snapshot(&snapshot, &thread, &run)?;
             let slot = held_task_slot(&snapshot.state, &request.read)?;
             Ok(json!({ "tenure": slot.map(TaskTenureRecord::new) }))
         }
@@ -247,6 +288,7 @@ mod tests {
         let holder = registered_task_holder("worker-a", "incarnation-1");
         let read = TaskTenureRead {
             thread: "thread".into(),
+            partition: TaskReadPartition::Thread {},
             run: "run".into(),
             task: "task-1".into(),
             holder: holder.clone(),
@@ -299,6 +341,92 @@ mod tests {
                 "H5"
             );
         }
+    }
+
+    #[test]
+    fn a_tenure_read_addresses_the_partition_its_task_was_committed_in() {
+        use awaken_agent_contract::agent::run::{Record as RunRecord, RunState};
+        use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
+        use awaken_session_execution_contract::ApplicationErrorKind;
+        let read = |thread: &str, partition: TaskReadPartition| TaskTenureRead {
+            thread: thread.into(),
+            partition,
+            run: "origin".into(),
+            task: "task".into(),
+            holder: "holder".into(),
+        };
+        // P1 root Thread, P2 child Thread in a Session, P3 a Session naming the
+        // Thread itself.
+        assert_eq!(
+            partition_read(&read("root", TaskReadPartition::Thread {})).unwrap(),
+            None,
+            "P1"
+        );
+        assert_eq!(
+            partition_read(&read(
+                "child",
+                TaskReadPartition::Session {
+                    session_thread: "session".into()
+                }
+            ))
+            .unwrap(),
+            Some(ThreadId("session".into())),
+            "P2"
+        );
+        assert_eq!(
+            partition_read(&read(
+                "root",
+                TaskReadPartition::Session {
+                    session_thread: "root".into()
+                }
+            ))
+            .unwrap_err()
+            .kind,
+            ApplicationErrorKind::InvalidRequest,
+            "P3"
+        );
+        // P4: the origin Run must be committed in the answered partition.
+        let snapshot = |thread: &str, runs: Vec<RunRecord>| RunRecoverySnapshot {
+            thread_id: ThreadId(thread.into()),
+            claimed_run_id: RunId("origin".into()),
+            runs,
+            latest_run_id: None,
+            messages: Vec::new(),
+            message_commit_cursors: Vec::new(),
+            commit_timestamps: Default::default(),
+            state: Vec::new(),
+            state_commit_cursors: Vec::new(),
+            events: Vec::new(),
+            resume_tickets: Vec::new(),
+            thread_version: 0,
+            store_cursor: 0,
+            next_commit_ordinal: 0,
+        };
+        let origin = RunRecord {
+            id: RunId("origin".into()),
+            thread_id: ThreadId("child".into()),
+            state: RunState::Running,
+        };
+        let child = ThreadId("child".into());
+        let run = RunId("origin".into());
+        assert!(
+            admit_partition_snapshot(&snapshot("child", vec![origin]), &child, &run).is_ok(),
+            "P4 the Task's partition"
+        );
+        assert_eq!(
+            admit_partition_snapshot(&snapshot("child", Vec::new()), &child, &run)
+                .unwrap_err()
+                .kind,
+            ApplicationErrorKind::InvalidRequest,
+            "P4 another partition answers empty: refused, not an absent slot"
+        );
+        assert_eq!(
+            admit_partition_snapshot(&snapshot("other", Vec::new()), &child, &run)
+                .unwrap_err()
+                .kind,
+            ApplicationErrorKind::Internal,
+            "another Thread"
+        );
     }
 
     #[test]

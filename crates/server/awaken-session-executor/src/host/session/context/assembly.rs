@@ -446,6 +446,7 @@ pub(super) async fn assemble(
             &commit,
             &claimed_terminal_reads,
             host.capabilities.worker.task_control.as_ref(),
+            thread,
         )
         .map_err(SessionExecutionError::internal)?;
         terminal_observers.push(Arc::new(

@@ -131,7 +131,8 @@ Removal condition for `SessionApplicationBinding`: Q2 no longer exists.
   Worker manifest.
 - `PrivateTaskInput { version: 1, observations: [TaskObservationRecord] }`.
 - Route `/v1/worker/task/tenure`: request `{identity, read: TaskTenureRead
-  {thread, run, task, holder}}`, response `{tenure: TaskTenureRecord
+  {thread, partition, run, task, holder}}` with `partition` either
+  `{"kind": "thread"}` or `{"kind": "session", "session_thread"}` (required), response `{tenure: TaskTenureRecord
   {version: 1, slot} | null}`. Both shapes refuse unknown fields; a record of
   any other version is refused.
 - `awaken_agent_contract::thread::background_task`: the slot's state key and
@@ -196,12 +197,23 @@ admits attention (A2/A3).
 | H4 | the holder is not this incarnation's | refused before any read (A3) |
 | H5 | transport failure or Coordinator unavailable | `Unavailable`; the effect does not run |
 
-The Worker sends `TaskTenureRead {thread, run, task, holder}` with its own
-holder and the Task's origin Run, over the authenticated route
-`/v1/worker/task/tenure`. The Coordinator checks the holder like attention
-(H4), reads the Thread's committed State through its committed recovery read
-(`RunRecoverySource::recovery_snapshot`, addressed by the origin Run), and
-returns the slot only when its current attempt names that holder. It decodes
+The Worker sends `TaskTenureRead {thread, partition, run, task, holder}` with
+its own holder, the Task's origin Run and the Session partition the Task's
+Thread is committed in, over the authenticated route `/v1/worker/task/tenure`.
+No claim exists at that point and the holder names only the incarnation, so
+the partition travels with the read; the Worker derives it from the Session
+its observer belongs to (`TaskReadPartition::of`). The Coordinator checks the
+holder like attention (H4), reads the Thread's committed State through the
+same partitioned read the Run's own commits use, and returns the slot only
+when its current attempt names that holder.
+
+| Row | Partition | Committed read |
+|---|---|---|
+| P1 | `thread`: the Task's Thread is its own partition (root, or no Session) | `RunRecoverySource::recovery_snapshot` |
+| P2 | `session` naming the Session Thread of a child Thread | `recovery_snapshot_in_session(session, thread, origin Run)` |
+| P3 | `session` naming the Task's own Thread | refused: one encoding per partition |
+| P4 | the origin Run is not committed in the answered partition | refused (`BadRequest`), never read as an absent slot |
+ It decodes
 the holder through `awaken_agent_contract::thread::background_task`
 (`committed_task_slot`, `committed_task_holder`), so the Coordinator closure
 never depends on the extension: the extension keeps the aggregate, its

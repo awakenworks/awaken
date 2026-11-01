@@ -12,7 +12,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_background_task::{BackgroundTask, task_state_cell};
 use awaken_session_application_contract::{
     RegisteredTaskControl, SessionRunBackgroundApplication, TaskAttention, TaskAttentionAck,
-    TaskTenureRead,
+    TaskReadPartition, TaskTenureRead,
 };
 use awaken_session_execution_contract::SessionApplicationBinding;
 use awaken_session_run_delivery::CommittedAuthority;
@@ -28,6 +28,9 @@ pub(crate) enum TaskCommittedReads {
     Registered {
         terminal: awaken_dispatch_execution::ClaimedTerminalReads,
         control: Arc<dyn RegisteredTaskControl>,
+        /// The Session Thread whose partition this Session's Threads are
+        /// committed in.
+        session_thread: String,
     },
 }
 
@@ -43,17 +46,20 @@ impl TaskCommittedReads {
     /// delivers its terminals (R2-R5) and this incarnation's Task control
     /// (H2-H5). Only a database-less Worker's Dispatch Worker records
     /// delivering claims in them. A Worker without Task control has no
-    /// committed read for a Task (W4).
+    /// committed read for a Task (W4). `session_thread` is the Session Thread
+    /// these reads belong to.
     pub(crate) fn of(
         commit: &awaken_session_run_delivery::SessionCommit,
         claimed: &awaken_dispatch_execution::ClaimedTerminalReads,
         control: Option<&Arc<dyn RegisteredTaskControl>>,
+        session_thread: &str,
     ) -> Result<Self, &'static str> {
         match (commit.committed_authority(), control) {
             (Some(authority), _) => Ok(Self::Local(authority)),
             (None, Some(control)) => Ok(Self::Registered {
                 terminal: claimed.clone(),
                 control: control.clone(),
+                session_thread: session_thread.to_owned(),
             }),
             (None, None) => Err(
                 "BackgroundTask on a registered Worker requires its Task control for committed reads",
@@ -99,9 +105,16 @@ impl TaskCommittedReads {
                     .load(&state)
                     .map_err(|error| error.to_string())
             }
-            Self::Registered { control, .. } => {
+            Self::Registered {
+                control,
+                session_thread,
+                ..
+            } => {
+                // P1/P2: the read addresses the partition the Task's Thread
+                // is committed in, as the Run's own committed reads do.
                 let read = TaskTenureRead {
                     thread: expected.origin.thread_id.0.clone(),
+                    partition: TaskReadPartition::of(&expected.origin.thread_id.0, session_thread),
                     run: expected.origin.run_id.0.clone(),
                     task: expected.id.as_str().to_owned(),
                     holder: control.holder().to_owned(),
@@ -370,13 +383,13 @@ mod tests {
         );
         assert!(
             matches!(
-                TaskCommittedReads::of(&remote, &claimed, Some(&control)),
+                TaskCommittedReads::of(&remote, &claimed, Some(&control), "session"),
                 Ok(TaskCommittedReads::Registered { .. })
             ),
             "R2-R6 and H2-H5"
         );
         assert!(
-            TaskCommittedReads::of(&remote, &claimed, None).is_err(),
+            TaskCommittedReads::of(&remote, &claimed, None, "session").is_err(),
             "W4 no committed read without Task control"
         );
         let local = awaken_session_run_delivery::SessionCommit::Local(Arc::new(
@@ -387,7 +400,7 @@ mod tests {
         for control in [None, Some(&control)] {
             assert!(
                 matches!(
-                    TaskCommittedReads::of(&local, &claimed, control),
+                    TaskCommittedReads::of(&local, &claimed, control, "session"),
                     Ok(TaskCommittedReads::Local(_))
                 ),
                 "R1/H1"
@@ -400,6 +413,7 @@ mod tests {
         let reads = TaskCommittedReads::Registered {
             terminal: Default::default(),
             control: Arc::new(UnusedDelivery),
+            session_thread: "thread".into(),
         };
         assert!(
             reads
@@ -454,11 +468,11 @@ mod tests {
         }
     }
 
-    fn held_task() -> BackgroundTask {
+    fn held_task(thread: &str) -> BackgroundTask {
         let mut task = BackgroundTask::requested(
             awaken_ext_background_task::BackgroundTaskId::new("held-task").expect("task id"),
             awaken_ext_background_task::BackgroundTaskOrigin {
-                thread_id: ThreadId("thread".into()),
+                thread_id: ThreadId(thread.into()),
                 run_id: RunId("origin-run".into()),
                 operation_id: "operation".into(),
             },
@@ -485,7 +499,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_registered_worker_reads_a_held_task_with_its_own_holder() {
-        let expected = held_task();
+        let expected = held_task("thread");
         let slot = serde_json::to_value(&expected).expect("slot");
         let rows = [
             ("H2", Ok(Some(slot)), Ok(Some(expected.clone()))),
@@ -514,6 +528,7 @@ mod tests {
             let reads = TaskCommittedReads::Registered {
                 terminal: Default::default(),
                 control: control.clone(),
+                session_thread: "thread".into(),
             };
             let read = reads.committed_task(&expected).await;
             assert_eq!(read.map_err(|_| ()), effect, "{rule}");
@@ -525,12 +540,54 @@ mod tests {
                     .as_slice(),
                 &[TaskTenureRead {
                     thread: "thread".into(),
+                    partition: TaskReadPartition::Thread {},
                     run: "origin-run".into(),
                     task: "held-task".into(),
                     holder: "registered-holder".into(),
                 }],
                 "{rule} one read with this incarnation's holder"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_task_on_a_child_thread_is_read_in_its_session_partition() {
+        // P1: a Task on the Session's own Thread reads that Thread as its own
+        // partition; P2: a Task on a child Thread reads the child inside the
+        // Session's partition.
+        for (rule, thread, partition) in [
+            ("P1", "session", TaskReadPartition::Thread {}),
+            (
+                "P2",
+                "child",
+                TaskReadPartition::Session {
+                    session_thread: "session".into(),
+                },
+            ),
+        ] {
+            let expected = held_task(thread);
+            let control = Arc::new(ScriptedTaskControl {
+                answer: Ok(Some(serde_json::to_value(&expected).expect("slot"))),
+                reads: Default::default(),
+            });
+            let reads = TaskCommittedReads::Registered {
+                terminal: Default::default(),
+                control: control.clone(),
+                session_thread: "session".into(),
+            };
+            assert_eq!(
+                reads.committed_task(&expected).await,
+                Ok(Some(expected.clone())),
+                "{rule}"
+            );
+            let sent = control
+                .reads
+                .lock()
+                .expect("tenure reads mutex poisoned")
+                .clone();
+            assert_eq!(sent.len(), 1, "{rule}");
+            assert_eq!(sent[0].thread, thread, "{rule}");
+            assert_eq!(sent[0].partition, partition, "{rule}");
         }
     }
 }
