@@ -145,7 +145,7 @@ where
         assert!(
             matches!(
                 reopened
-                    .heartbeat(ENV, id, "worker", 1, LeaseHeartbeat::unconditional())
+                    .heartbeat(ENV, id, "worker", LeaseHeartbeat::unconditional())
                     .await
                     .unwrap(),
                 HeartbeatResult::NotFound

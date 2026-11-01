@@ -55,14 +55,16 @@ async fn sqlite_both_published_histories_preserve_live_leases_and_fence_deleted_
             before.1, 0,
             "migration creates independent identity authority; remaining MAX cannot reconstruct deleted history"
         );
+        // The legacy lease was granted on the epoch-zero timeline; the store
+        // judges it on its own clock, here still before that lease's deadline.
         let queue = SqliteWorkQueue {
             pool: pool.clone(),
             book: LeaseBook::default(),
-            clock: awaken_time::system_clock(),
+            clock: std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
         };
         let digest = test_session_access_digest(59);
         let access = queue
-            .authenticate_session_access(&digest, 0)
+            .authenticate_session_access(&digest)
             .await
             .unwrap()
             .unwrap();
@@ -144,13 +146,16 @@ async fn postgres_both_published_histories_preserve_live_leases_and_fence_delete
             before.1, 0,
             "migration creates independent identity authority; remaining MAX cannot reconstruct deleted history"
         );
-        let queue =
-            PostgresWorkQueue::with_existing_pool(pool.clone(), awaken_time::system_clock())
-                .await
-                .unwrap();
+        // The legacy lease is judged on the store clock, before its deadline.
+        let queue = PostgresWorkQueue::with_existing_pool(
+            pool.clone(),
+            std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
+        )
+        .await
+        .unwrap();
         let digest = test_session_access_digest(59);
         let access = queue
-            .authenticate_session_access(&digest, 0)
+            .authenticate_session_access(&digest)
             .await
             .unwrap()
             .unwrap();

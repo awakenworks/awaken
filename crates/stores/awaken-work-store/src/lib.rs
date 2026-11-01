@@ -40,6 +40,13 @@
 //! authority and Session digest. Its successful retry returns the stopped
 //! decision without sampling a clock or restoring either grant. Historical
 //! rows without a recorded stop subject cannot be attributed retroactively.
+//!
+//! One lease, one clock: every lease reading — claim, renewal, Session
+//! acquisition, bearer authentication, acknowledgement and stop — is a sample
+//! of the clock this backend was opened with, taken under its write lock. No
+//! operation accepts a caller's time, so a skewed caller can neither mint a
+//! deadline that is then judged on another clock nor make a live lease refuse
+//! its acknowledgement.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -53,9 +60,9 @@ use awaken_executable_environment_contract::{
     WorkSessionAccess, WorkerLeaseObservation, session_work_release_admission,
 };
 use awaken_session_types::SessionWorkLease;
-use awaken_time::WallClock;
 #[cfg(all(test, not(feature = "loom")))]
 use awaken_time::system_clock;
+use awaken_time::{Expiry, WallClock};
 fn storage(error: impl std::fmt::Display) -> WorkQueueError {
     WorkQueueError::Storage(error.to_string().into())
 }
@@ -137,7 +144,7 @@ impl WorkQueries for SqliteWorkQueue {
         Self::owned(&mut tx, env_id, wid).await
     }
 
-    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
+    async fn stats(&self, env_id: &str) -> Result<QueueStats, WorkQueueError> {
         let mut conn = self.connection().await?;
         // The oldest unfinished item's own durable acceptance instant.
         // A drained queue has no such row, so the absence is the answer
@@ -172,7 +179,7 @@ impl WorkQueries for SqliteWorkQueue {
             depth,
             pending,
             oldest_queued_at,
-            workers_polling: self.book.workers_polling(env_id, now_ms),
+            workers_polling: self.book.workers_polling(env_id, self.clock.now_ms()),
         })
     }
 }
@@ -183,9 +190,8 @@ impl WorkConsumer for SqliteWorkQueue {
         &self,
         env_id: &str,
         worker_id: &str,
-        now_ms: u64,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        self.claim_with_reclaim(env_id, worker_id, worker_id, now_ms, None)
+        self.claim_with_reclaim(env_id, worker_id, worker_id, None)
             .await
     }
 
@@ -194,14 +200,21 @@ impl WorkConsumer for SqliteWorkQueue {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         age_ms: Option<u64>,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        self.book.record_poll(env_id, poller_id, now_ms);
+        self.book
+            .record_poll(env_id, poller_id, self.clock.now_ms());
         let mut conn = self.connection().await?;
-        Self::claim_inner(&mut conn, env_id, lease_owner, now_ms, age_ms, None)
-            .await
-            .map(|claim| claim.map(|claim| claim.item))
+        Self::claim_inner(
+            &mut conn,
+            env_id,
+            lease_owner,
+            self.clock.as_ref(),
+            age_ms,
+            None,
+        )
+        .await
+        .map(|claim| claim.map(|claim| claim.item))
     }
 
     async fn claim_with_session_access(
@@ -209,17 +222,17 @@ impl WorkConsumer for SqliteWorkQueue {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
         session_access: &SessionAccessDigest,
     ) -> Result<Option<WorkClaim>, WorkQueueError> {
-        self.book.record_poll(env_id, poller_id, now_ms);
+        self.book
+            .record_poll(env_id, poller_id, self.clock.now_ms());
         let mut conn = self.connection().await?;
         Self::claim_inner(
             &mut conn,
             env_id,
             lease_owner,
-            now_ms,
+            self.clock.as_ref(),
             reclaim_older_than_ms,
             Some(session_access.clone()),
         )
@@ -249,7 +262,6 @@ impl WorkConsumer for SqliteWorkQueue {
         env_id: &str,
         wid: &str,
         worker_id: &str,
-        now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
         let mut conn = self.connection().await?;
@@ -259,7 +271,7 @@ impl WorkConsumer for SqliteWorkQueue {
             wid,
             worker_id,
             LeaseFence::OwnerOnly,
-            now_ms,
+            self.clock.as_ref(),
             heartbeat,
         )
         .await
@@ -289,20 +301,23 @@ impl SessionAccessAuthenticator for SqliteWorkQueue {
     async fn authenticate_session_access(
         &self,
         presented: &SessionAccessDigest,
-        now_ms: u64,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
         let digest = presented.as_str();
         let mut conn = self.connection().await?;
         let row: Option<(String, String, String, String, i64, u64)> = sqlx::query_as(
             "SELECT work_id, environment_id, data_id, lease_owner, lease_epoch, lease_expires_ms \
              FROM work_queue_item WHERE data_type = 'session' AND state = 'active' \
-               AND session_token_sha256 = ?1 AND lease_expires_ms > ?2 LIMIT 1",
+               AND session_token_sha256 = ?1 AND lease_expires_ms IS NOT NULL \
+             ORDER BY lease_expires_ms DESC LIMIT 1",
         )
         .bind(digest)
-        .bind(db_millis(now_ms))
         .fetch_optional(&mut *conn)
         .await
         .map_err(storage)?;
+        // Subject fencing precedes the one clock sample: liveness is judged on
+        // the clock that granted and renewed the lease, and only when a bound
+        // lease exists to judge.
+        let row = row.filter(|row| Expiry::from_epoch_ms(row.5).is_live_at(self.clock.now()));
         row.map(
             |(work_id, environment_id, session, lease_owner, epoch, expires_at_unix_ms)| {
                 Ok(WorkSessionAccess {
@@ -340,7 +355,6 @@ impl SessionWorkLeaseControl for SqliteWorkQueue {
     async fn heartbeat_with_session_access(
         &self,
         access: &WorkSessionAccess,
-        now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
         let mut conn = self.connection().await?;
@@ -350,7 +364,7 @@ impl SessionWorkLeaseControl for SqliteWorkQueue {
             &access.work_id,
             &access.lease_owner,
             LeaseFence::Exact(access.lease_epoch),
-            now_ms,
+            self.clock.as_ref(),
             heartbeat,
         )
         .await
@@ -554,9 +568,8 @@ impl SessionWorkerLeaseStore for SqliteWorkQueue {
         env_id: &str,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
-        now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        self.acquire_session_inner(env_id, session_id, worker_owner, now_ms)
+        self.acquire_session_inner(env_id, session_id, worker_owner)
             .await
     }
 }
@@ -630,7 +643,7 @@ impl WorkQueries for PostgresWorkQueue {
         self.fetch_owned(env_id, wid).await
     }
 
-    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
+    async fn stats(&self, env_id: &str) -> Result<QueueStats, WorkQueueError> {
         let count = |clause: &'static str| {
             let pool = self.pool.clone();
             let env = env_id.to_string();
@@ -664,7 +677,7 @@ impl WorkQueries for PostgresWorkQueue {
             depth,
             pending,
             oldest_queued_at,
-            workers_polling: self.book.workers_polling(env_id, now_ms),
+            workers_polling: self.book.workers_polling(env_id, self.clock.now_ms()),
         })
     }
 }
@@ -675,9 +688,8 @@ impl WorkConsumer for PostgresWorkQueue {
         &self,
         env_id: &str,
         worker_id: &str,
-        now_ms: u64,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        self.claim_with_reclaim(env_id, worker_id, worker_id, now_ms, None)
+        self.claim_with_reclaim(env_id, worker_id, worker_id, None)
             .await
     }
 
@@ -686,11 +698,10 @@ impl WorkConsumer for PostgresWorkQueue {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         age_ms: Option<u64>,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         Ok(self
-            .claim_inner(env_id, lease_owner, poller_id, now_ms, age_ms, None)
+            .claim_inner(env_id, lease_owner, poller_id, age_ms, None)
             .await?
             .map(|claim| claim.item))
     }
@@ -700,7 +711,6 @@ impl WorkConsumer for PostgresWorkQueue {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
         session_access: &SessionAccessDigest,
     ) -> Result<Option<WorkClaim>, WorkQueueError> {
@@ -708,7 +718,6 @@ impl WorkConsumer for PostgresWorkQueue {
             env_id,
             lease_owner,
             poller_id,
-            now_ms,
             reclaim_older_than_ms,
             Some(session_access.clone()),
         )
@@ -730,18 +739,10 @@ impl WorkConsumer for PostgresWorkQueue {
         env_id: &str,
         wid: &str,
         worker_id: &str,
-        now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
-        self.heartbeat_inner(
-            env_id,
-            wid,
-            worker_id,
-            LeaseFence::OwnerOnly,
-            now_ms,
-            heartbeat,
-        )
-        .await
+        self.heartbeat_inner(env_id, wid, worker_id, LeaseFence::OwnerOnly, heartbeat)
+            .await
     }
 
     async fn stop(
@@ -760,33 +761,38 @@ impl SessionAccessAuthenticator for PostgresWorkQueue {
     async fn authenticate_session_access(
         &self,
         presented: &SessionAccessDigest,
-        now_ms: u64,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
         let digest = presented.as_str();
         let row = sqlx::query(
             "SELECT work_id, environment_id, data_id, lease_owner, lease_epoch, lease_expires_ms \
              FROM work_queue_item WHERE data_type = 'session' AND state = 'active' \
-               AND session_token_sha256 = $1 AND lease_expires_ms > $2 LIMIT 1",
+               AND session_token_sha256 = $1 AND lease_expires_ms IS NOT NULL \
+             ORDER BY lease_expires_ms DESC LIMIT 1",
         )
         .bind(digest)
-        .bind(db_millis(now_ms))
         .fetch_optional(&self.pool)
         .await
         .map_err(storage)?;
-        row.map(|row| {
-            Ok(WorkSessionAccess {
-                work_id: row.try_get(0).map_err(storage)?,
-                environment_id: row.try_get(1).map_err(storage)?,
-                session_id: awaken_session_types::SessionId::from(
-                    row.try_get::<String, _>(2).map_err(storage)?,
-                ),
-                lease_owner: row.try_get(3).map_err(storage)?,
-                lease_epoch: granted_session_epoch(row.try_get::<i64, _>(4).map_err(storage)?)?,
-                expires_at_unix_ms: u64::try_from(row.try_get::<i64, _>(5).map_err(storage)?)
-                    .map_err(storage)?,
-            })
-        })
-        .transpose()
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let expires_at_unix_ms =
+            u64::try_from(row.try_get::<i64, _>(5).map_err(storage)?).map_err(storage)?;
+        // Subject fencing precedes the one clock sample: liveness is judged on
+        // the clock that granted and renewed the lease.
+        if Expiry::from_epoch_ms(expires_at_unix_ms).is_expired_at(self.clock.now()) {
+            return Ok(None);
+        }
+        Ok(Some(WorkSessionAccess {
+            work_id: row.try_get(0).map_err(storage)?,
+            environment_id: row.try_get(1).map_err(storage)?,
+            session_id: awaken_session_types::SessionId::from(
+                row.try_get::<String, _>(2).map_err(storage)?,
+            ),
+            lease_owner: row.try_get(3).map_err(storage)?,
+            lease_epoch: granted_session_epoch(row.try_get::<i64, _>(4).map_err(storage)?)?,
+            expires_at_unix_ms,
+        }))
     }
 }
 
@@ -808,7 +814,6 @@ impl SessionWorkLeaseControl for PostgresWorkQueue {
     async fn heartbeat_with_session_access(
         &self,
         access: &WorkSessionAccess,
-        now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
         self.heartbeat_inner(
@@ -816,7 +821,6 @@ impl SessionWorkLeaseControl for PostgresWorkQueue {
             &access.work_id,
             &access.lease_owner,
             LeaseFence::Exact(access.lease_epoch),
-            now_ms,
             heartbeat,
         )
         .await
@@ -999,7 +1003,6 @@ impl SessionWorkerLeaseStore for PostgresWorkQueue {
         env_id: &str,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
-        now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
         let work_id = self
             .insert(env_id, "session", Some(session_id.as_str()))
@@ -1012,6 +1015,9 @@ impl SessionWorkerLeaseStore for PostgresWorkQueue {
         .fetch_all(&mut *tx)
         .await
         .map_err(storage)?;
+        // The one reading this grant is minted and judged on, sampled under the
+        // Environment lock so no later writer can commit an earlier deadline.
+        let now_ms = self.clock.now_ms();
         let cleared = reclaimed_lease_authority();
         sqlx::query(
             "UPDATE work_queue_item SET state = 'queued', lease_owner = $1, \

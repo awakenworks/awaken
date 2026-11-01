@@ -6,25 +6,28 @@ use awaken_executable_environment_contract::{
     EnvironmentWorkRevisionOperation as Operation, EnvironmentWorkRevisionOutcome as Outcome,
     HeartbeatResult, LeaseHeartbeat, SessionAccessAuthenticator as _, WorkSessionAccess,
 };
+use awaken_lease_testkit::ManualClock;
 use awaken_store_conformance::work_queue::WorkBackend;
 use awaken_work_store::{
     InMemoryWorkQueue, PostgresWorkQueue, SqliteWorkQueue, test_session_access_digest,
 };
+use std::sync::Arc;
 #[path = "support/work_postgres.rs"]
 mod work_postgres_fixture;
 
-async fn archived_lease<Q: WorkBackend>(q: &Q) -> WorkSessionAccess {
+async fn archived_lease<Q: WorkBackend>(q: &Q, clock: &ManualClock) -> WorkSessionAccess {
     let session = q
         .enqueue_session("archive", &"existing".into())
         .await
         .unwrap();
     let digest = test_session_access_digest(907);
-    q.claim_with_session_access("archive", "owner", "poller", 0, None, &digest)
+    q.claim_with_session_access("archive", "owner", "poller", None, &digest)
         .await
         .unwrap()
         .unwrap();
+    clock.set(1);
     let proof = q
-        .authenticate_session_access(&digest, 1)
+        .authenticate_session_access(&digest)
         .await
         .unwrap()
         .unwrap();
@@ -74,7 +77,7 @@ async fn archived_lease<Q: WorkBackend>(q: &Q) -> WorkSessionAccess {
         "only the healthcheck is removed"
     );
     assert_eq!(
-        q.authenticate_session_access(&digest, 1).await.unwrap(),
+        q.authenticate_session_access(&digest).await.unwrap(),
         Some(proof.clone()),
         "same digest must retain exact owner, epoch and expiry"
     );
@@ -99,13 +102,13 @@ async fn archived_lease<Q: WorkBackend>(q: &Q) -> WorkSessionAccess {
     proof
 }
 
-async fn retained_mutations<Q: WorkBackend>(q: &Q, proof: &WorkSessionAccess) {
+async fn retained_mutations<Q: WorkBackend>(q: &Q, clock: &ManualClock, proof: &WorkSessionAccess) {
+    clock.set(2);
     assert!(matches!(
         q.heartbeat(
             "archive",
             &proof.work_id,
             "other-owner",
-            2,
             LeaseHeartbeat::unconditional()
         )
         .await
@@ -121,7 +124,7 @@ async fn retained_mutations<Q: WorkBackend>(q: &Q, proof: &WorkSessionAccess) {
             .is_accepted()
     );
     assert!(matches!(
-        q.heartbeat_with_session_access(proof, 2, LeaseHeartbeat::unconditional())
+        q.heartbeat_with_session_access(proof, LeaseHeartbeat::unconditional())
             .await
             .unwrap(),
         HeartbeatResult::Accepted(_)
@@ -144,8 +147,9 @@ async fn retained_mutations<Q: WorkBackend>(q: &Q, proof: &WorkSessionAccess) {
             .unwrap()
             .is_accepted()
     );
+    clock.set(3);
     assert!(
-        q.authenticate_session_access(&test_session_access_digest(907), 3)
+        q.authenticate_session_access(&test_session_access_digest(907))
             .await
             .unwrap()
             .is_none(),
@@ -156,7 +160,6 @@ async fn retained_mutations<Q: WorkBackend>(q: &Q, proof: &WorkSessionAccess) {
             "archive",
             "next-owner",
             "next-poller",
-            3,
             None,
             &test_session_access_digest(908),
         )
@@ -179,39 +182,35 @@ async fn retained_mutations<Q: WorkBackend>(q: &Q, proof: &WorkSessionAccess) {
 
 #[tokio::test]
 async fn inmemory_archive_keeps_existing_session_authority() {
-    let q = InMemoryWorkQueue::new(std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(
-        0,
-    )));
-    let proof = archived_lease(&q).await;
-    retained_mutations(&q, &proof).await;
+    let clock = Arc::new(ManualClock::new(0));
+    let q = InMemoryWorkQueue::new(clock.clone());
+    let proof = archived_lease(&q, &clock).await;
+    retained_mutations(&q, &clock, &proof).await;
 }
 
 #[tokio::test]
 async fn sqlite_archive_keeps_existing_session_authority_after_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("archive.db");
-    let q = SqliteWorkQueue::open(
-        path.to_str().unwrap(),
-        std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
-    )
-    .await
-    .unwrap();
-    let proof = archived_lease(&q).await;
+    // One store clock across the reopen judges the one persisted lease.
+    let clock = Arc::new(ManualClock::new(0));
+    let q = SqliteWorkQueue::open(path.to_str().unwrap(), clock.clone())
+        .await
+        .unwrap();
+    let proof = archived_lease(&q, &clock).await;
     drop(q);
-    let q = SqliteWorkQueue::open(
-        path.to_str().unwrap(),
-        std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
-    )
-    .await
-    .unwrap();
+    let q = SqliteWorkQueue::open(path.to_str().unwrap(), clock.clone())
+        .await
+        .unwrap();
+    clock.set(1);
     assert_eq!(
-        q.authenticate_session_access(&test_session_access_digest(907), 1)
+        q.authenticate_session_access(&test_session_access_digest(907))
             .await
             .unwrap(),
         Some(proof.clone()),
         "reopen must recover the same persisted digest and lease"
     );
-    retained_mutations(&q, &proof).await;
+    retained_mutations(&q, &clock, &proof).await;
 }
 
 #[tokio::test]
@@ -224,28 +223,25 @@ async fn postgres_archive_keeps_existing_session_authority_after_reconnect() {
         return;
     };
     let fixture = work_postgres_fixture::WorkPostgresFixture::new(&url, 2).await;
-    let q = PostgresWorkQueue::with_pool(
-        fixture.pool.clone(),
-        std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
-    )
-    .await
-    .unwrap();
-    let proof = archived_lease(&q).await;
+    // One store clock across the reconnect judges the one persisted lease.
+    let clock = Arc::new(ManualClock::new(0));
+    let q = PostgresWorkQueue::with_pool(fixture.pool.clone(), clock.clone())
+        .await
+        .unwrap();
+    let proof = archived_lease(&q, &clock).await;
     drop(q);
-    let q = PostgresWorkQueue::connect(
-        &fixture.scoped_url,
-        std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
-    )
-    .await
-    .unwrap();
+    let q = PostgresWorkQueue::connect(&fixture.scoped_url, clock.clone())
+        .await
+        .unwrap();
+    clock.set(1);
     assert_eq!(
-        q.authenticate_session_access(&test_session_access_digest(907), 1)
+        q.authenticate_session_access(&test_session_access_digest(907))
             .await
             .unwrap(),
         Some(proof.clone()),
         "new pool must recover the same persisted digest and lease"
     );
-    retained_mutations(&q, &proof).await;
+    retained_mutations(&q, &clock, &proof).await;
     drop(q);
     fixture.cleanup().await;
 }

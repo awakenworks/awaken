@@ -21,6 +21,33 @@ fn complete<F: Future>(future: F) -> F::Output {
     }
 }
 
+loom::thread_local! {
+    static READING_MS: std::cell::Cell<u64> = std::cell::Cell::new(0);
+}
+
+/// The store clock as each competing thread samples it. The queue still owns
+/// every reading; a thread only fixes the instant at which its own operations
+/// sample, so the model can order a commit at one instant against a commit at
+/// another, including the order a monotone clock would forbid.
+struct ThreadReadings;
+
+impl ThreadReadings {
+    fn queue() -> Arc<InMemoryWorkQueue> {
+        Arc::new(InMemoryWorkQueue::new(std::sync::Arc::new(Self)))
+    }
+
+    /// This thread's operations sample the store clock at `now_ms`.
+    fn at(now_ms: u64) {
+        READING_MS.with(|reading| reading.set(now_ms));
+    }
+}
+
+impl WallClock for ThreadReadings {
+    fn now(&self) -> awaken_time::UtcTime {
+        awaken_time::UtcTime::from_epoch_ms(READING_MS.with(std::cell::Cell::get))
+    }
+}
+
 fn check_interleavings(run: impl Fn() + Send + Sync + 'static) {
     let mut model = loom::model::Builder::new();
     model.preemption_bound = Some(2);
@@ -54,17 +81,18 @@ fn release_and_reacquire_preserve_one_complete_authority() {
     // active. No schedule may expose active Work with absent lease authority,
     // nor may the old release clear a successor installed after its check.
     check_interleavings(|| {
-        let queue = Arc::new(InMemoryWorkQueue::new(awaken_time::system_clock()));
-        let lease = complete(queue.acquire_session("env", &SessionId::from("session"), "owner", 0))
+        let queue = ThreadReadings::queue();
+        ThreadReadings::at(0);
+        let lease = complete(queue.acquire_session("env", &SessionId::from("session"), "owner"))
             .unwrap()
             .unwrap();
         let releasing = Arc::clone(&queue);
         let release = thread::spawn(move || complete(releasing.release_session(&lease)).unwrap());
         let waking = Arc::clone(&queue);
         let wake = thread::spawn(move || {
+            ThreadReadings::at(1);
             complete(waking.wake_session("env", &SessionId::from("session"))).unwrap();
-            complete(waking.acquire_session("env", &SessionId::from("session"), "owner", 1))
-                .unwrap();
+            complete(waking.acquire_session("env", &SessionId::from("session"), "owner")).unwrap();
         });
         assert!(release.join().unwrap());
         wake.join().unwrap();
@@ -88,13 +116,13 @@ fn token_authentication_never_borrows_a_replacement_epoch() {
     // expiry/reclaim minting T2 for B/epoch two. R1 auth before reclaim -> A/1;
     // R2 auth after reclaim -> None. Mixed T1 + B/2 is never a valid snapshot.
     check_interleavings(|| {
-        let queue = Arc::new(InMemoryWorkQueue::new(awaken_time::system_clock()));
+        let queue = ThreadReadings::queue();
         complete(queue.enqueue_session("env", &SessionId::from("session"))).unwrap();
+        ThreadReadings::at(0);
         let claim = complete(queue.claim_with_session_access(
             "env",
             "owner-a",
             "poller",
-            0,
             None,
             &test_session_access_digest(1),
         ))
@@ -103,15 +131,16 @@ fn token_authentication_never_borrows_a_replacement_epoch() {
         let token = claim.session_access.unwrap();
         let authenticating = Arc::clone(&queue);
         let auth = thread::spawn(move || {
-            complete(authenticating.authenticate_session_access(&token, 1)).unwrap()
+            ThreadReadings::at(1);
+            complete(authenticating.authenticate_session_access(&token)).unwrap()
         });
         let claiming = Arc::clone(&queue);
         let replacement = thread::spawn(move || {
+            ThreadReadings::at(LEASE_TTL_MS);
             complete(claiming.claim_with_session_access(
                 "env",
                 "owner-b",
                 "poller",
-                LEASE_TTL_MS,
                 None,
                 &test_session_access_digest(2),
             ))
@@ -140,13 +169,13 @@ fn owner_teardown_cannot_clear_an_intervening_reclaim() {
     // R1 teardown first -> queued then B/2; R2 reclaim first -> teardown(A)
     // affects zero rows. Both orders leave B/2 active with its fresh token.
     check_interleavings(|| {
-        let queue = Arc::new(InMemoryWorkQueue::new(awaken_time::system_clock()));
+        let queue = ThreadReadings::queue();
         complete(queue.enqueue_session("env", &SessionId::from("session"))).unwrap();
+        ThreadReadings::at(0);
         complete(queue.claim_with_session_access(
             "env",
             "owner-a",
             "poller",
-            0,
             None,
             &test_session_access_digest(3),
         ))
@@ -156,11 +185,11 @@ fn owner_teardown_cannot_clear_an_intervening_reclaim() {
         let release = thread::spawn(move || complete(retiring.release_owner("owner-a")).unwrap());
         let claiming = Arc::clone(&queue);
         let replacement = thread::spawn(move || {
+            ThreadReadings::at(LEASE_TTL_MS);
             complete(claiming.claim_with_session_access(
                 "env",
                 "owner-b",
                 "poller",
-                LEASE_TTL_MS,
                 None,
                 &test_session_access_digest(4),
             ))
@@ -169,7 +198,8 @@ fn owner_teardown_cannot_clear_an_intervening_reclaim() {
         });
         release.join().unwrap();
         let token = replacement.join().unwrap().session_access.unwrap();
-        let access = complete(queue.authenticate_session_access(&token, LEASE_TTL_MS))
+        ThreadReadings::at(LEASE_TTL_MS);
+        let access = complete(queue.authenticate_session_access(&token))
             .unwrap()
             .expect("teardown of A cannot revoke B's claim");
         assert_eq!(
@@ -186,18 +216,21 @@ fn renewal_and_reclaim_return_complete_lease_snapshots() {
     // R2 reclaim first -> B/2 with 2*TTL, and A observes B without extending it.
     // A stale snapshot must not overwrite B's expiry with the shorter A lease.
     check_interleavings(|| {
-        let queue = Arc::new(InMemoryWorkQueue::new(awaken_time::system_clock()));
-        complete(queue.acquire_session("env", &SessionId::from("session"), "owner-a", 0))
+        let queue = ThreadReadings::queue();
+        ThreadReadings::at(0);
+        complete(queue.acquire_session("env", &SessionId::from("session"), "owner-a"))
             .unwrap()
             .unwrap();
         let renewing = Arc::clone(&queue);
         let renewal = thread::spawn(move || {
-            complete(renewing.acquire_session("env", &SessionId::from("session"), "owner-a", 1))
+            ThreadReadings::at(1);
+            complete(renewing.acquire_session("env", &SessionId::from("session"), "owner-a"))
                 .unwrap()
         });
         let claiming = Arc::clone(&queue);
         let replacement = thread::spawn(move || {
-            complete(claiming.claim("env", "owner-b", LEASE_TTL_MS)).unwrap()
+            ThreadReadings::at(LEASE_TTL_MS);
+            complete(claiming.claim("env", "owner-b")).unwrap()
         });
         let renewed = renewal
             .join()

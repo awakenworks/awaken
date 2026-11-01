@@ -330,7 +330,6 @@ pub(super) async fn session_resume(
             &service,
             &awaken_session_types::SessionId::from(&request.session_id),
             &request.identity.lease_owner(),
-            authority.now_ms,
             awaken_session_application_contract::SessionWorkAcquisition::RealizationRenewal,
         )
         .await
@@ -540,14 +539,12 @@ pub(super) async fn acquire_session_work_owner(
     service: &WorkerDispatchService,
     session_id: &str,
     worker_owner: &str,
-    now_ms: u64,
     acquisition: awaken_session_application_contract::SessionWorkAcquisition,
 ) -> Result<(), RealizationHttpError> {
     let ownership = session_work_ownership(
         service,
         &awaken_session_types::SessionId::from(session_id),
         worker_owner,
-        now_ms,
         acquisition,
     )
     .await
@@ -565,7 +562,6 @@ async fn session_work_ownership(
     service: &WorkerDispatchService,
     session_id: &awaken_session_types::SessionId,
     worker_owner: &str,
-    now_ms: u64,
     acquisition: awaken_session_application_contract::SessionWorkAcquisition,
 ) -> Result<awaken_session_application_contract::SessionWorkOwnership, ApplicationError> {
     let authority = service
@@ -573,7 +569,7 @@ async fn session_work_ownership(
         .as_ref()
         .ok_or_else(|| ApplicationError::internal("Session Work authority is not configured"))?;
     authority
-        .acquire_session_work(session_id, worker_owner, now_ms, acquisition)
+        .acquire_session_work(session_id, worker_owner, acquisition)
         .await
         .map_err(|error| ApplicationError::internal(error.to_string()))
 }
@@ -658,7 +654,6 @@ pub(super) async fn renew_session_realization(
             &service,
             &command.session_id,
             &request.identity.lease_owner(),
-            authority.now_ms,
             awaken_session_application_contract::SessionWorkAcquisition::RealizationRenewal,
         )
         .instrument(tracing::info_span!("session.realization.work_ownership"))

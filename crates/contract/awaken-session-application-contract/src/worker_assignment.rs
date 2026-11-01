@@ -25,7 +25,9 @@ pub trait SessionWorkerAssignment: Send + Sync {
 }
 
 /// Environment adapter over its canonical lease authority. Session decides
-/// topology, terminal eligibility and revival before invoking this role.
+/// topology, terminal eligibility and revival before invoking this role. The
+/// lease is granted and judged on the Work store's own clock; no caller time
+/// crosses this port.
 #[async_trait::async_trait]
 pub trait SessionWorkerLeases: Send + Sync {
     async fn acquire_session(
@@ -33,7 +35,6 @@ pub trait SessionWorkerLeases: Send + Sync {
         environment_id: &str,
         session_id: &SessionId,
         worker_owner: &str,
-        now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, RunError>;
     async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, RunError>;
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, RunError>;

@@ -430,8 +430,9 @@ pub trait WorkQueries: Send + Sync {
     async fn list(&self, env_id: &str) -> Result<Vec<WorkItem>, WorkQueueError>;
     /// The work item under `wid` when it belongs to `env_id`.
     async fn get(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError>;
-    /// Queue stats for `env_id` as of `now_ms` (for the `workers_polling` window).
-    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError>;
+    /// Queue stats for `env_id` as of the store's own clock (for the
+    /// `workers_polling` window).
+    async fn stats(&self, env_id: &str) -> Result<QueueStats, WorkQueueError>;
 }
 
 /// Environment-credential Worker polling and owner mutations. Session access is bound atomically at claim.
@@ -443,17 +444,24 @@ pub trait WorkQueries: Send + Sync {
 /// identify a restarted process. For Session Work, [`SessionWorkLeaseControl`]
 /// supplies the exact authenticated Work generation. Healthchecks on this role
 /// retain the credential-principal boundary.
+///
+/// **One lease, one clock.** No operation on this port, or on any other Work
+/// lease port, takes a caller's time. A lease's deadline is minted, extended and
+/// judged on the store's own injected [`WallClock`](awaken_time::WallClock):
+/// a caller whose clock is skewed can neither make an acknowledgement refuse a
+/// live lease nor make an expired lease accept one, because it supplies no
+/// reading the store could disagree with.
 #[async_trait]
 pub trait WorkConsumer: Send + Sync {
-    /// Poll as `worker_id` at wall time `now_ms`: first reclaim any `active` item
-    /// whose lease has lapsed (its worker went away), then lease the oldest queued
-    /// item (queued→active) when none is actively leased. `None` when the queue is
-    /// empty or one is still live-leased. The poll is recorded for `workers_polling`.
+    /// Poll as `worker_id` at the store's current reading: first reclaim any
+    /// `active` item whose lease has lapsed (its worker went away), then lease
+    /// the oldest queued item (queued→active) when none is actively leased.
+    /// `None` when the queue is empty or one is still live-leased. The poll is
+    /// recorded for `workers_polling`.
     async fn claim(
         &self,
         env_id: &str,
         worker_id: &str,
-        now_ms: u64,
     ) -> Result<Option<WorkItem>, WorkQueueError>;
     /// Claim with an optional caller-requested reclaim age, recording the poll
     /// under `poller_id`.
@@ -469,7 +477,6 @@ pub trait WorkConsumer: Send + Sync {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
     ) -> Result<Option<WorkItem>, WorkQueueError>;
     /// Claim through the public self-hosted Worker protocol. When the selected
@@ -491,7 +498,6 @@ pub trait WorkConsumer: Send + Sync {
         env_id: &str,
         lease_owner: &str,
         poller_id: &str,
-        now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
         session_access: &SessionAccessDigest,
     ) -> Result<Option<WorkClaim>, WorkQueueError>;
@@ -503,13 +509,12 @@ pub trait WorkConsumer: Send + Sync {
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError>;
     /// Atomically compare the preceding heartbeat and, when it matches, record a
-    /// new heartbeat at `now_ms` and extend the lease.
+    /// new heartbeat at the store's current reading and extend the lease from it.
     async fn heartbeat(
         &self,
         env_id: &str,
         wid: &str,
         worker_id: &str,
-        now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError>;
     /// Request a stop (→stopped).
@@ -524,12 +529,12 @@ pub trait WorkConsumer: Send + Sync {
 /// Resolve a bearer digest against a live lease. This port grants no mutation capability.
 #[async_trait]
 pub trait SessionAccessAuthenticator: Send + Sync {
-    /// Resolve one bearer digest against the current live Work lease. Expired,
-    /// reclaimed, stopped, retired, or replaced leases return `None`.
+    /// Resolve one bearer digest against the current live Work lease, judged on
+    /// the store's own clock. Expired, reclaimed, stopped, retired, or replaced
+    /// leases return `None`.
     async fn authenticate_session_access(
         &self,
         _presented: &SessionAccessDigest,
-        _now_ms: u64,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError>;
 }
 
@@ -543,11 +548,11 @@ pub trait SessionWorkLeaseControl: Send + Sync {
         &self,
         _access: &WorkSessionAccess,
     ) -> Result<WorkMutationResult, WorkQueueError>;
-    /// Extend only the exact lease epoch recovered from a sessions token.
+    /// Extend only the exact lease epoch recovered from a sessions token, from
+    /// the store's current reading.
     async fn heartbeat_with_session_access(
         &self,
         _access: &WorkSessionAccess,
-        _now_ms: u64,
         _heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError>;
     /// Stop only the exact lease epoch recovered from a sessions token. A
@@ -605,13 +610,13 @@ pub trait SessionWorkerLeaseStore: Send + Sync {
     /// When the exact Session is actively held by another owner, return that
     /// current lease so the caller can distinguish stale ownership from a
     /// retired or capacity-blocked item. The Environment single-active cap and
-    /// non-claimable states otherwise fail closed with `None`.
+    /// non-claimable states otherwise fail closed with `None`. The lease is
+    /// granted and judged on the store's own clock.
     async fn acquire_session(
         &self,
         env_id: &str,
         session_id: &SessionId,
         worker_owner: &str,
-        now_ms: u64,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
 }
 
@@ -777,7 +782,6 @@ mod tests {
                 env_id: &str,
                 lease_owner: &str,
                 poller_id: &str,
-                now_ms: u64,
                 reclaim_older_than_ms: Option<u64>,
                 session_access: &SessionAccessDigest,
             ) -> Result<Option<WorkClaim>, WorkQueueError> {
@@ -785,7 +789,6 @@ mod tests {
                     env_id,
                     lease_owner,
                     poller_id,
-                    now_ms,
                     reclaim_older_than_ms,
                     session_access,
                 );
@@ -794,12 +797,7 @@ mod tests {
                 ))
             }
 
-            async fn claim(
-                &self,
-                _: &str,
-                _: &str,
-                _: u64,
-            ) -> Result<Option<WorkItem>, WorkQueueError> {
+            async fn claim(&self, _: &str, _: &str) -> Result<Option<WorkItem>, WorkQueueError> {
                 Ok(Some(item()))
             }
             async fn claim_with_reclaim(
@@ -807,7 +805,6 @@ mod tests {
                 _: &str,
                 _: &str,
                 _: &str,
-                _: u64,
                 _: Option<u64>,
             ) -> Result<Option<WorkItem>, WorkQueueError> {
                 Ok(Some(item()))
@@ -825,7 +822,6 @@ mod tests {
                 _: &str,
                 _: &str,
                 _: &str,
-                _: u64,
                 _: LeaseHeartbeat,
             ) -> Result<HeartbeatResult, WorkQueueError> {
                 Ok(HeartbeatResult::NotFound)
@@ -860,7 +856,7 @@ mod tests {
 
         let digest = SessionAccessDigest::from_hex("a".repeat(64)).expect("D1 digest");
         let refused = Unbinding
-            .claim_with_session_access("env", "owner", "poller", 0, None, &digest)
+            .claim_with_session_access("env", "owner", "poller", None, &digest)
             .await;
         let Err(WorkQueueError::Storage(detail)) = refused else {
             panic!("D1/E1: the adapter must refuse, not hand back a digest-less claim");
@@ -873,7 +869,7 @@ mod tests {
         // the qualifier and not about claiming at all.
         assert!(
             Unbinding
-                .claim_with_reclaim("env", "owner", "poller", 0, None)
+                .claim_with_reclaim("env", "owner", "poller", None)
                 .await
                 .expect("D2")
                 .is_some(),

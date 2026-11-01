@@ -23,7 +23,6 @@ fn app() -> Router {
         execution.work_consumer(),
         execution.work_metadata(),
         execution.session_work_leases(),
-        awaken_time::system_clock(),
     ))
 }
 
@@ -929,7 +928,6 @@ async fn snapshot_normalizes_the_networking_policy() {
         execution.work_consumer(),
         execution.work_metadata(),
         execution.session_work_leases(),
-        awaken_time::system_clock(),
     ));
     async fn make(app: &Router, cfg: Value) -> String {
         let e = call(
@@ -1019,7 +1017,6 @@ async fn environment_application_replay_converges_one_environment_and_healthchec
         execution.work_consumer(),
         execution.work_metadata(),
         execution.session_work_leases(),
-        awaken_time::system_clock(),
     ));
     let mut http_id = None;
     for (name, expected) in [

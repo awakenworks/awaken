@@ -813,7 +813,6 @@ mod environment_renewal {
             &self,
             _session_id: &awaken_session_types::SessionId,
             _worker_owner: &str,
-            _now_ms: u64,
             _acquisition: SessionWorkAcquisition,
         ) -> Result<SessionWorkOwnership, awaken_session_types::RunError> {
             Ok(self.0.clone())
