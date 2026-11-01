@@ -1,4 +1,11 @@
 //! Immutable Session configuration and its resolution ports.
+//!
+//! Sandbox provisioning and idle-retention values are named from their owner,
+//! `awaken-provisioning-contract`, under their own names:
+//!
+//! ```compile_fail
+//! use awaken_session_configuration_contract::EnvironmentIdleRetentionMode;
+//! ```
 
 mod accepted_agent;
 pub use accepted_agent::{
@@ -42,8 +49,7 @@ pub use agent_config::{
 pub use application_origin::{ApplicationOriginBinding, ApplicationOriginBindingError};
 pub use baseline::{
     CompiledSessionCreation, ControlSessionCreationInputs, EnvironmentFingerprint,
-    EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy, EnvironmentSnapshot,
-    SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint, SessionBaselineInputs,
+    EnvironmentSnapshot, SessionBaseline, SessionBaselineFingerprint, SessionBaselineInputs,
     SessionBaselineState, SessionCreationFinalizeError, SessionCreationIntent,
     SessionMcpAuthoringContext, SessionSystemPromptSelection,
     resolved_environment_snapshot_is_exact,

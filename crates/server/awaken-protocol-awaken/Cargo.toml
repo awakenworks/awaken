@@ -19,7 +19,6 @@ awaken-agent-contract.workspace = true
 awaken-environment-application.workspace = true
 awaken-environment-contract.workspace = true
 awaken-provisioning-contract.workspace = true
-awaken-session-configuration-contract.workspace = true
 awaken-session-dream-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-tenancy.workspace = true

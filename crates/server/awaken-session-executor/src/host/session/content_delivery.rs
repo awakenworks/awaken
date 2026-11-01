@@ -435,7 +435,7 @@ impl crate::RunAssembly {
                         .as_ref()
                         .is_some_and(|projection| {
                             projection.provisioning
-                                == awaken_session_configuration_contract::SandboxProvisioning::OnToolUse
+                                == awaken_provisioning_contract::SandboxProvisioning::OnToolUse
                         })
             })?
             .unwrap_or(false);

@@ -2325,7 +2325,6 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-sandbox-policy-store",
  "awaken-session-application-contract",
- "awaken-session-configuration-contract",
  "awaken-session-dream-contract",
  "awaken-session-types",
  "awaken-tenancy",

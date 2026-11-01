@@ -220,7 +220,7 @@ async fn worker_retirement_of_idle_no_create_sessions_requires_positive_closed_r
         let mut baseline = fixture.frozen_baseline().unwrap().clone();
         baseline.environment.self_hosted = false;
         baseline.environment.sandbox_provisioning =
-            awaken_session_configuration_contract::SandboxProvisioning::OnToolUse;
+            awaken_provisioning_contract::SandboxProvisioning::OnToolUse;
         let mut root = PersistedSession::frozen_with_budget(
             id.as_str(),
             baseline,

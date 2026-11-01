@@ -108,7 +108,7 @@ pub(crate) fn deferred_environment() -> awaken_session_configuration_contract::E
             "lazy-env-v1".into(),
         ),
         sandbox: Default::default(),
-        sandbox_provisioning: awaken_session_configuration_contract::SandboxProvisioning::OnToolUse,
+        sandbox_provisioning: awaken_provisioning_contract::SandboxProvisioning::OnToolUse,
         idle_retention: Default::default(),
         packages: Default::default(),
         prepared_image: None,

@@ -64,11 +64,10 @@ impl SessionPlacementClass {
     #[must_use]
     pub fn supports_idle_retention(
         self,
-        idle_retention: &crate::state::EnvironmentIdleRetentionPolicy,
+        idle_retention: &crate::state::SandboxIdleRetentionPolicy,
     ) -> bool {
         !(self.requires_external_environment_owner()
-            && idle_retention.mode
-                == crate::state::EnvironmentIdleRetentionMode::CheckpointAndRelease)
+            && idle_retention.mode == crate::state::SandboxIdleRetentionMode::CheckpointAndRelease)
     }
 }
 

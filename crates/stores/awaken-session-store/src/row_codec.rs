@@ -111,10 +111,8 @@ fn migrate_legacy_baseline(
         "local"
     };
     environment.entry("idle_retention").or_insert_with(|| {
-        serde_json::to_value(
-            awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy::default(),
-        )
-        .expect("default idle-retention policy serializes")
+        serde_json::to_value(awaken_provisioning_contract::SandboxIdleRetentionPolicy::default())
+            .expect("default idle-retention policy serializes")
     });
     match baseline
         .get("runtime_placement")

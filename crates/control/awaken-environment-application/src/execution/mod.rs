@@ -528,7 +528,7 @@ async fn snapshot_from_registration(
         ),
         None => (
             Default::default(),
-            awaken_session_configuration_contract::SandboxProvisioning::Eager,
+            awaken_provisioning_contract::SandboxProvisioning::Eager,
             Default::default(),
         ),
     };
@@ -1173,7 +1173,7 @@ mod tests {
         let eager = application.snapshot("policy", None).await.unwrap().unwrap();
         assert_eq!(
             eager.sandbox_provisioning,
-            awaken_session_configuration_contract::SandboxProvisioning::Eager,
+            awaken_provisioning_contract::SandboxProvisioning::Eager,
             "P1"
         );
 
@@ -1184,7 +1184,7 @@ mod tests {
                 isolation: Some(IsolationClass::Namespace),
                 ..Default::default()
             },
-            provisioning: awaken_session_configuration_contract::SandboxProvisioning::OnToolUse,
+            provisioning: awaken_provisioning_contract::SandboxProvisioning::OnToolUse,
             idle_retention: Default::default(),
             disabled: false,
         };
@@ -1196,7 +1196,7 @@ mod tests {
         assert_eq!(frozen.isolation, Some(IsolationClass::Namespace), "P2");
         assert_eq!(
             lazy.sandbox_provisioning,
-            awaken_session_configuration_contract::SandboxProvisioning::OnToolUse,
+            awaken_provisioning_contract::SandboxProvisioning::OnToolUse,
             "P2"
         );
         assert_ne!(eager.config_fingerprint, lazy.config_fingerprint, "P2");
@@ -1207,7 +1207,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .sandbox_provisioning,
-            awaken_session_configuration_contract::SandboxProvisioning::Eager,
+            awaken_provisioning_contract::SandboxProvisioning::Eager,
             "P3"
         );
 
@@ -1215,7 +1215,7 @@ mod tests {
             id: SandboxExecutionPolicyId("policy-a".into()),
             version: SandboxExecutionPolicyVersion(2),
             config: SandboxOverride::default(),
-            provisioning: awaken_session_configuration_contract::SandboxProvisioning::Eager,
+            provisioning: awaken_provisioning_contract::SandboxProvisioning::Eager,
             idle_retention: Default::default(),
             disabled: true,
         };

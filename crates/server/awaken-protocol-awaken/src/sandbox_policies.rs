@@ -57,9 +57,9 @@ pub struct SandboxPolicyCreate {
     pub id: String,
     pub config: awaken_provisioning_contract::SandboxOverride,
     #[serde(default)]
-    pub provisioning: awaken_session_configuration_contract::SandboxProvisioning,
+    pub provisioning: awaken_provisioning_contract::SandboxProvisioning,
     #[serde(default)]
-    pub idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
+    pub idle_retention: awaken_provisioning_contract::SandboxIdleRetentionPolicy,
     #[serde(default)]
     pub disabled: bool,
 }
@@ -70,9 +70,9 @@ struct SandboxPolicyPublish {
     expected_current: u64,
     config: awaken_provisioning_contract::SandboxOverride,
     #[serde(default)]
-    provisioning: awaken_session_configuration_contract::SandboxProvisioning,
+    provisioning: awaken_provisioning_contract::SandboxProvisioning,
     #[serde(default)]
-    idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
+    idle_retention: awaken_provisioning_contract::SandboxIdleRetentionPolicy,
     #[serde(default)]
     disabled: bool,
 }
@@ -107,7 +107,7 @@ struct SandboxPolicyBindingOutput {
     policy_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<u64>,
-    provisioning: awaken_session_configuration_contract::SandboxProvisioning,
+    provisioning: awaken_provisioning_contract::SandboxProvisioning,
 }
 
 fn policy_store(
@@ -417,7 +417,7 @@ mod tests {
         let policy = SandboxPolicyCreate {
             id: "scoped-policy".into(),
             config: Default::default(),
-            provisioning: awaken_session_configuration_contract::SandboxProvisioning::OnToolUse,
+            provisioning: awaken_provisioning_contract::SandboxProvisioning::OnToolUse,
             idle_retention: Default::default(),
             disabled: false,
         };
@@ -621,7 +621,7 @@ mod tests {
                 environment_id,
                 policy_id: None,
                 version: None,
-                provisioning: awaken_session_configuration_contract::SandboxProvisioning::Eager,
+                provisioning: awaken_provisioning_contract::SandboxProvisioning::Eager,
             }
         );
         let encoded = std::str::from_utf8(&body).expect("projection response is UTF-8 JSON");

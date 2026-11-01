@@ -664,7 +664,7 @@ mod retry_hint_tests {
         let mut baseline = super::super::remote_terminal_cleanup_projection().baseline;
         baseline.environment.self_hosted = false;
         baseline.environment.sandbox_provisioning =
-            awaken_session_configuration_contract::SandboxProvisioning::OnToolUse;
+            awaken_provisioning_contract::SandboxProvisioning::OnToolUse;
         let mut root = awaken_session_contract::PersistedSession::frozen_with_budget(
             "live-no-create-composition",
             baseline,

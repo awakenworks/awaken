@@ -34,7 +34,7 @@ pub(crate) fn bind_deferred_executor(
                     .as_ref()
                     .is_some_and(|env| {
                         env.provisioning
-                            == awaken_session_configuration_contract::SandboxProvisioning::OnToolUse
+                            == awaken_provisioning_contract::SandboxProvisioning::OnToolUse
                     })
         })?
         .unwrap_or(false);

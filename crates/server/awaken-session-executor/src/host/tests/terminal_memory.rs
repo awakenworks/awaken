@@ -38,7 +38,7 @@ pub(super) fn terminal_memory_projection()
 }
 
 fn terminal_memory_projection_with_idle_retention(
-    idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
+    idle_retention: awaken_provisioning_contract::SandboxIdleRetentionPolicy,
 ) -> awaken_session_execution_contract::FrozenSessionProjection {
     let resources = terminal_memory_resources();
     let mut projection = remote_terminal_cleanup_projection_with_idle_retention(idle_retention);
@@ -1408,8 +1408,8 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
 
-    let idle_retention = awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy {
-        mode: awaken_session_configuration_contract::EnvironmentIdleRetentionMode::CheckpointAndRelease,
+    let idle_retention = awaken_provisioning_contract::SandboxIdleRetentionPolicy {
+        mode: awaken_provisioning_contract::SandboxIdleRetentionMode::CheckpointAndRelease,
         checkpoint_after_secs: 1,
         retention_secs: 3_600,
         expiry_behavior: Default::default(),

@@ -356,7 +356,7 @@ impl SessionEnvironmentState {
         &self,
         workspace_id: &str,
         session_id: &SessionId,
-        policy: &crate::state::EnvironmentIdleRetentionPolicy,
+        policy: &crate::state::SandboxIdleRetentionPolicy,
     ) -> Result<Option<SandboxCheckpointRequest>, SessionEnvironmentTransitionError> {
         let (operation, generation) = match self {
             Self::Suspending {
@@ -377,7 +377,7 @@ impl SessionEnvironmentState {
             }
             _ => return Ok(None),
         };
-        if policy.mode != crate::state::EnvironmentIdleRetentionMode::CheckpointAndRelease {
+        if policy.mode != crate::state::SandboxIdleRetentionMode::CheckpointAndRelease {
             return Err(SessionEnvironmentTransitionError::InvalidCheckpointPolicy(
                 "checkpoint operation requires checkpoint-and-release mode",
             ));
@@ -1336,8 +1336,8 @@ mod tests {
         // and byte bound; R3 Uploading+invalid policy=>error without an I/O
         // request; R4 Uploading+checkpoint=>fail closed instead of replaying an
         // upload while another path treats the object as known.
-        let policy = crate::state::EnvironmentIdleRetentionPolicy {
-            mode: crate::state::EnvironmentIdleRetentionMode::CheckpointAndRelease,
+        let policy = crate::state::SandboxIdleRetentionPolicy {
+            mode: crate::state::SandboxIdleRetentionMode::CheckpointAndRelease,
             checkpoint_after_secs: 1,
             retention_secs: 100,
             expiry_behavior: Default::default(),
@@ -1396,7 +1396,7 @@ mod tests {
         assert_eq!(request.format, "awaken-fs-tar-v1", "R2 format");
         assert_eq!(request.max_bytes, 4_096, "R2 byte bound");
 
-        let invalid_policy = crate::state::EnvironmentIdleRetentionPolicy {
+        let invalid_policy = crate::state::SandboxIdleRetentionPolicy {
             max_checkpoint_bytes: 0,
             ..policy.clone()
         };
@@ -1415,7 +1415,7 @@ mod tests {
             state.checkpoint_request(
                 "workspace-a",
                 &crate::state::SessionId::from("s1"),
-                &crate::state::EnvironmentIdleRetentionPolicy::default(),
+                &crate::state::SandboxIdleRetentionPolicy::default(),
             ),
             Err(SessionEnvironmentTransitionError::InvalidCheckpointPolicy(
                 "checkpoint operation requires checkpoint-and-release mode"
