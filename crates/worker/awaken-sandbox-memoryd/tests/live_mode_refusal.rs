@@ -135,8 +135,14 @@ impl MemoryFilesystem for BusBound {
         )
         .await
     }
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
-        MemoryFilesystem::rename(self.repository.as_ref(), store, from, to).await
+    async fn rename_as(
+        &self,
+        store: &str,
+        from: &str,
+        to: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        MemoryFilesystem::rename_as(self.repository.as_ref(), store, from, to, actor).await
     }
     async fn delete_by_path_as(
         &self,

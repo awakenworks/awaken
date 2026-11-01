@@ -222,26 +222,26 @@
     "source_locations": [
       {
         "path": "crates/worker/awaken-sandbox-memoryd/tests/live_mode_refusal.rs",
-        "line": 158,
+        "line": 164,
         "file_sha256": "fda3e733ed78d0ce501b46c1d9cff0e6bcb231a45dd702002848afe7c0f83546"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/worker/awaken-sandbox-memoryd/tests/live_mode_refusal.rs",
-        "line": 170
+        "line": 176
       },
       {
         "path": "crates/worker/awaken-sandbox-memoryd/tests/live_mode_refusal.rs",
-        "line": 178
+        "line": 184
       },
       {
         "path": "crates/worker/awaken-sandbox-memoryd/tests/live_mode_refusal.rs",
-        "line": 183
+        "line": 189
       },
       {
         "path": "crates/worker/awaken-sandbox-memoryd/tests/live_mode_refusal.rs",
-        "line": 195
+        "line": 201
       }
     ],
     "execution_witnesses": [

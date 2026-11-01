@@ -85,7 +85,7 @@ pub trait MemoryRepository: Send + Sync {
     async fn update_head(&self, store: &str, id: &str, content: &str, base_sha: &str,
                          target_path: Option<&str>) -> Result<Memory, MemErr>;
     async fn update(&self, store: &str, id: &str, content: &str, base_sha: &str) -> Result<Memory, MemErr>;
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr>;
+    async fn rename_as(&self, store: &str, from: &str, to: &str, actor: Option<&MemoryActor>) -> Result<Memory, MemErr>;
     async fn delete_by_path(&self, store: &str, path: &str) -> Result<(), MemErr>;
 }
 // Memory { id, path, content_sha256, content_size, updated_at, created_at, version, content: Option<String> }
@@ -107,6 +107,10 @@ Store invariants required by everything downstream:
 - `update` is **compare-and-swap on `base_sha`** — mismatch returns
   `Conflict{current}` (carrying the current sha + content for diagnostics), never
   overwrites.
+- `rename_as` carries the existing optional `MemoryActor` to that same transaction:
+  both displaced deletion and source move name the actual rename caller. `None`
+  remains an explicit system/NoActor operation, never the source creator. The
+  invalidating decorator forwards that value and publishes only after success.
 - **`rename` over an existing target is a defined, atomic operation** — the store
   either atomically replaces the target within the transaction or rejects with a
   clear error; it is never left to incidental behaviour.

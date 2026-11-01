@@ -588,7 +588,13 @@ impl VolatileMemoryRepository {
             .await
     }
 
-    async fn rename_inner(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
+    async fn rename_as_inner(
+        &self,
+        store: &str,
+        from: &str,
+        to: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
         validate_path(to)?;
         let mut guard = self.inner.lock();
         let store_map = guard
@@ -621,7 +627,7 @@ impl VolatileMemoryRepository {
                 &displaced,
                 MemoryVersionOperation::Deleted,
                 None,
-                None,
+                actor,
                 now,
             );
         }
@@ -631,7 +637,7 @@ impl VolatileMemoryRepository {
             &record,
             MemoryVersionOperation::Modified,
             Some(record.content.clone()),
-            None,
+            actor,
             now,
         );
         Ok(memory)
@@ -1009,8 +1015,14 @@ impl MemoryFilesystem for VolatileMemoryRepository {
         )
         .await
     }
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
-        VolatileMemoryRepository::rename_inner(self, store, from, to).await
+    async fn rename_as(
+        &self,
+        store: &str,
+        from: &str,
+        to: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        VolatileMemoryRepository::rename_as_inner(self, store, from, to, actor).await
     }
     async fn delete_by_path_as(
         &self,
@@ -1266,7 +1278,7 @@ pub(crate) mod tests {
         let displaced = MemoryWriter::create(fs, store, "/b.md", "old")
             .await
             .unwrap();
-        MemoryFilesystem::rename(fs, store, "/a.md", "/b.md")
+        MemoryFilesystem::rename_as(fs, store, "/a.md", "/b.md", None)
             .await
             .unwrap();
         let after_rename = MemoryVersionQueries::list_versions(fs, store)

@@ -617,7 +617,13 @@ impl PostgresMemoryRepository {
             .await
     }
 
-    async fn rename_inner(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
+    async fn rename_as_inner(
+        &self,
+        store: &str,
+        from: &str,
+        to: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
         validate_path(to)?;
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
         let row = sqlx::query(&format!(
@@ -679,7 +685,7 @@ impl PostgresMemoryRepository {
                     path: to,
                     content: None,
                     created: now,
-                    actor: None,
+                    actor,
                 },
             )
             .await?;
@@ -694,7 +700,7 @@ impl PostgresMemoryRepository {
                 path: to,
                 content: Some(&content),
                 created: now,
-                actor: None,
+                actor,
             },
         )
         .await?;
@@ -1224,8 +1230,14 @@ impl MemoryFilesystem for PostgresMemoryRepository {
         )
         .await
     }
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
-        PostgresMemoryRepository::rename_inner(self, store, from, to).await
+    async fn rename_as(
+        &self,
+        store: &str,
+        from: &str,
+        to: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        PostgresMemoryRepository::rename_as_inner(self, store, from, to, actor).await
     }
     async fn delete_by_path_as(
         &self,

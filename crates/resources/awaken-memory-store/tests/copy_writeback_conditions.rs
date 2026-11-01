@@ -100,10 +100,10 @@ where
     let first = MemoryWriter::create(other, store, "/a.md", "same")
         .await
         .unwrap();
-    MemoryFilesystem::rename(other, store, "/a.md", "/b.md")
+    MemoryFilesystem::rename_as(other, store, "/a.md", "/b.md", None)
         .await
         .unwrap();
-    let current = MemoryFilesystem::rename(other, store, "/b.md", "/a.md")
+    let current = MemoryFilesystem::rename_as(other, store, "/b.md", "/a.md", None)
         .await
         .unwrap();
     let history = MemoryVersionQueries::list_versions(other, store)
@@ -130,7 +130,7 @@ where
     let source = MemoryWriter::create(other, store, "/p.md", "same")
         .await
         .unwrap();
-    let moved = MemoryFilesystem::rename(other, store, "/p.md", "/q.md")
+    let moved = MemoryFilesystem::rename_as(other, store, "/p.md", "/q.md", None)
         .await
         .unwrap();
     let result = copy
@@ -173,7 +173,7 @@ where
         let generation = base.generation();
         let (update, rename) = tokio::join!(
             copy.update_materialized(&store, "/a.md", &generation, "edit"),
-            MemoryFilesystem::rename(other, &store, "/a.md", "/b.md"),
+            MemoryFilesystem::rename_as(other, &store, "/a.md", "/b.md", None),
         );
         let renamed = match rename {
             Ok(renamed) => renamed,
