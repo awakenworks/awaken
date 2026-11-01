@@ -7,62 +7,6 @@ ignore_filename_regex = '''(awaken-store-conformance|awaken-runtime-examples|awa
 # line only while its LCOV counter is zero, rejects stale entries, and caps this
 # ledger at 15% of changed executable lines.
 
-[[waiver]]
-path = "crates/bin/awaken-cli/src/acp_local_credentials.rs"
-ranges = ["83-95", "163", "197-200", "276-278", "295-324", "338-344", "367-379", "390", "392", "421-426"]
-reason = "These branches require changing immutable startup adapters, corrupting the private WorkerLocal row written by ensure_worker_local, forging a duplicate or non-positive revision despite repository uniqueness, manufacturing observation states that no catalog login probe emits, poisoning an in-process lock, or asking the typed WorkerReference resolver for plaintext. None is selectable through a served request."
-evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-cli acp_local_credentials"
-
-[[waiver]]
-path = "crates/control/awaken-config-service/src/publication.rs"
-ranges = ["59-84"]
-reason = "The duplicate-candidate and incoherent backend-default checks guard the publication service against an invalid injected ModelPublicationResolver result. The production resolver constructs a unique BackendOwned candidate with the exact backend and policy before this boundary, and public authoring cannot replace that port."
-evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-config-service publication"
-
-[[waiver]]
-path = "crates/control/awaken-credential-vault/src/repo.rs"
-ranges = ["84-94", "210-249"]
-reason = "The first range is the in-memory reference repository, while served production uses SQLite or Postgres. The remaining guards require an empty internal binding or a primary-key collision with a differently shaped private WorkerLocal row; the public credential API cannot author WorkerLocal sources and startup always supplies non-empty catalog identities."
-evidence = "e2e/acp_local_discovery_e2e.mjs; e2e/control_plane_postgres_e2e.mjs; cargo test -p awaken-credential-vault"
-
-[[waiver]]
-path = "crates/stores/awaken-credential-store/src/postgres.rs"
-ranges = ["139-155"]
-reason = "Postgres put_if_absent for a WorkerLocal source is selected only while the immutable local Worker is composed before the listener binds. Served credential routes deliberately reject WorkerLocal authoring and therefore cannot invoke this adapter operation after startup."
-evidence = "e2e/control_plane_postgres_e2e.mjs; cargo test -p awaken-credential-store --features postgres"
-
-[[waiver]]
-path = "crates/server/awaken-run-executor-acp/src/acp_cli.rs"
-ranges = ["33-54", "343-354", "433-437", "466-474", "491-496", "513-515"]
-reason = "These are catalog/acquisition composition accessors, the Cloud gateway constructor boundary, and launch-corruption guards for empty argv, incoherent default/exact policy, unsupported exact selection, or a logically impossible enum fallthrough. Production discovery and publication validate each cause before a served run can reach launch projection."
-evidence = "e2e/acp_local_discovery_e2e.mjs; e2e/acp_gateway_e2e.mjs; cargo test -p awaken-run-executor-acp acp_cli"
-
-[[waiver]]
-path = "crates/server/awaken-run-executor-acp/src/subprocess.rs"
-ranges = ["171-174", "437-445"]
-reason = "The subprocess empty-argv check is dominated by AcpCli projection, and backend-owned config-file MCP injection is impossible for every production catalog row because all use in-band AcpSession delivery. Only the retired test fixture can construct that legacy combination."
-evidence = "e2e/acp_local_discovery_e2e.mjs; e2e/acp_managed_mcp_e2e.mjs; cargo test -p awaken-run-executor-acp subprocess"
-
-[[waiver]]
-path = "crates/worker/awaken-execution-composition/src/acp_provision.rs"
-ranges = ["40-53", "69-89", "153-160"]
-reason = "These guards require a forged immutable activation: a model outside its candidate set, incoherent BackendOwned coordinates, or HostExecutor provisioning routed into ACP. The publication resolver and route selection reject those combinations before installation, and no served API mutates a frozen activation."
-evidence = "e2e/acp_projected_local_e2e.mjs; e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-execution-composition acp_provision"
-
-[[waiver]]
-path = "crates/server/awaken-session-executor/src/host/session.rs"
-ranges = ["337-347"]
-reason = "These checks compare two projections derived atomically from the same installed Agent publication. Reaching them requires corrupting the private session slot so its backend differs from, or exists without, that immutable publication; session HTTP input cannot write either internal field independently."
-evidence = "e2e/agent_publication_truth_e2e.ts; cargo test -p awaken-session-executor host::session"
-
-[[waiver]]
-path = "crates/worker/awaken-execution-composition/src/sandbox_source.rs"
-ranges = ["144-146"]
-reason = "Host-identity support is an immutable SandboxBackend composition fact. Served runs consume the completed capability manifest but cannot replace Namespace with Workdir, or vice versa, after the process has bound."
-evidence = "e2e/acp_projected_local_e2e.mjs; e2e/acp_projected_container_e2e.mjs; cargo test -p awaken-execution-composition sandbox_source"
-
-[[waiver]]
-path = "crates/shared/awaken-deployment-config/src/lib.rs"
-ranges = ["99-104"]
-reason = "Only the startup acquisition service can install resolved ACP argv, and it supplies a catalog-selected id plus a non-empty absolute wrapper/direct command. The served configuration API has no operation that mutates a Worker's launch registry."
-evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-deployment-config"
+# Old coordinates no longer identify their audited causes after owner migration.
+# An empty array waives no line; actual final-source coverage is still required.
+waiver = []

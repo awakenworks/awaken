@@ -78,6 +78,22 @@ evidence = "cargo test -p example"
         self.assertEqual(by_path["crates/example/src/lib.rs"], {2, 3, 5})
         self.assertEqual(len(entries), 1)
 
+    def test_empty_waivers_exclude_nothing_and_non_array_data_is_rejected(self) -> None:
+        # C/E table: E1 no waiver key and E2 an explicit empty array both mean
+        # zero exceptions: return ({}, []) and exclude no source line. E3 a
+        # string/table/number/bool is not an array and remains ValueError.
+        # Nonempty rows still use the original version/path/range/reason/
+        # evidence/overlap checks; existing stale/zero-hit/15% and strict95%
+        # decisions are unchanged. Empty exceptions are not coverage evidence.
+        for rule, waiver in [("E1", ""), ("E2", "waiver = []\n")]:
+            self.write_manifest("version = 1\n" + waiver)
+            self.assertEqual(MODULE.unreachable_lines("waivers.toml"), ({}, []), rule)
+        for value in ['"invalid"', "{}", "0", "false"]:
+            with self.subTest(value=value):
+                self.write_manifest("version = 1\nwaiver = " + value + "\n")
+                with self.assertRaises(ValueError, msg="E3 non-array input stays invalid"):
+                    MODULE.unreachable_lines("waivers.toml")
+
     def test_reports_share_one_validated_exclusion_policy(self) -> None:
         # Causes C1 a versioned scope exists, C2 its regex is valid.
         # Effects E1 both reports obtain the exact same scope, E2 invalid or
