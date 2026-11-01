@@ -1257,8 +1257,8 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
         );
         assert_eq!(
             repository.list_copy_conflicts("s").await.unwrap().len(),
-            2 * usize::from(!oversized),
-            "a repeated harvest with old generation evidence retains both stale proposals"
+            usize::from(!oversized),
+            "a repeated harvest adopts the committed a.md bytes and retains only the z.md loser"
         );
         assert_eq!(
             awaken_resource_contract::MemoryQueries::get_by_path(repository.as_ref(), "s", "/a.md")
@@ -1289,8 +1289,9 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
 #[tokio::test]
 async fn recovered_copy_retries_committed_write_without_a_second_version() {
     // R5: durable commit + lost response/local snapshot + process replacement
-    // => original generation evidence is stale even for exact committed bytes;
-    // the proposal is retained once and the durable head remains unchanged.
+    // => the original generation evidence is stale, but the durable head holds
+    // exactly the candidate bytes, so the replay adopts it: no proposal, no
+    // second version, head unchanged (ADR-0104).
     // R6: another writer advances after R5 => old proposal is retained, never
     // reverts the head or adds a successful version.
     // This exercises the real SQLite commit boundary, not a mocked CAS result;
@@ -1373,8 +1374,8 @@ async fn concurrent_identical_edits_converge_but_different_creates_conflict() {
     // Decision table completes the operation/equality partition of the race:
     // R7 absent base + different creates => 1 success / 1 conflict / version 1.
     // R8 absent base + identical creates => 2 successes / version 1.
-    // R9 present base + identical updates => 1 success + 1 retained conflict;
-    // the old same-content generation cannot masquerade as a retry.
+    // R9 present base + identical updates => 2 successes / version 2: the loser
+    // finds its exact content already durable and adopts it, like R8 (ADR-0104).
     // R10 present base + two deletes => 2 successes / absent head.
     // All retries preserve the exact head including version and timestamps.
     // The barrier is after BOTH materializations and edits, not before mount.
@@ -1439,11 +1440,7 @@ async fn concurrent_identical_edits_converge_but_different_creates_conflict() {
         let successes = usize::from(a.is_ok()) + usize::from(b.is_ok());
         assert_eq!(
             successes,
-            if matches!(rule, "different-create" | "same-update") {
-                1
-            } else {
-                2
-            },
+            if rule == "different-create" { 1 } else { 2 },
             "{rule}"
         );
         let durable = awaken_resource_contract::MemoryQueries::get_by_path(

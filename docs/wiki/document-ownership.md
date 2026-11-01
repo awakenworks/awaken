@@ -172,6 +172,7 @@ Source documents own behavior. Wiki pages own retrieval facts only.
 | [adr/0101-acp-application-execution-context.md](../adr/0101-acp-application-execution-context.md) | opted-in native/ACP execution correlation and reserved metadata headers | [index.md](index.md) |
 | [adr/0102-session-execution-product-gap-closure.md](../adr/0102-session-execution-product-gap-closure.md) | pre-root creation intents, determinate admission refusal and bounded execution limits | [index.md](index.md) |
 | [adr/0103-session-execution-product-gap-closure-2.md](../adr/0103-session-execution-product-gap-closure-2.md) | running budget tightening, Stop receipts, classified adapter faults and cross-base realization takeover | [index.md](index.md) |
+| [adr/0104-memory-copy-reconciliation-adopts-identical-heads.md](../adr/0104-memory-copy-reconciliation-adopts-identical-heads.md) | Memory Copy replay adopts an identical durable head and refuses a lost Copy directory | [index.md](index.md) |
 | [INVARIANTS.md](../INVARIANTS.md) | guardrail registry and DDD review checklist | all fact pages |
 
 ## Cross-Theme Anchors

@@ -369,6 +369,24 @@ async fn reconcile_files(
                         report.changed += 1;
                     }
                     Err(MemErr::Conflict { .. } | MemErr::NotFound(_)) => {
+                        // The same rule as a create: when the durable head already
+                        // holds exactly this content (a replayed reconciliation whose
+                        // first CAS committed), adopt it; nothing is written, so no
+                        // concurrent head can be clobbered (ADR-0104).
+                        if let Some(current) = queries.get_by_path(store, path).await?
+                            && current.content_sha256 == sha256_hex(content)
+                        {
+                            snapshot.heads.insert(
+                                path.clone(),
+                                MemoryMaterializationHead {
+                                    path: path.clone(),
+                                    id: current.id,
+                                    version: current.version,
+                                    content_sha256: current.content_sha256,
+                                },
+                            );
+                            continue;
+                        }
                         report.conflicts.push(HarvestConflict {
                             reason: "durable head changed",
                             candidate: MemoryCopyConflict {

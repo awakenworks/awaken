@@ -204,9 +204,10 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             let retry_result = tokio::time::timeout(std::time::Duration::from_secs(5), retry)
                 .await
                 .unwrap();
-            assert_eq!(retry_result.is_err(), operation == "UPDATE");
+            // The committed bytes equal the candidate, so the retry adopts them (ADR-0104).
+            assert!(retry_result.is_ok(), "operation={operation}");
             if operation != "CONFLICT" {
-                assert_eq!(mount.teardown().await.is_err(), operation == "UPDATE");
+                assert!(mount.teardown().await.is_ok(), "operation={operation}");
             }
             let heads = repository.snapshot_heads("s").await.unwrap();
             let history = repository.list_versions("s").await.unwrap();
@@ -250,8 +251,8 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             let reopened_retained = reopened.list_copy_conflicts("s").await.unwrap();
             assert_eq!(
                 reopened_retained.len(),
-                usize::from(matches!(operation, "CONFLICT" | "UPDATE")),
-                "recovered old generation retains an UPDATE proposal"
+                usize::from(operation == "CONFLICT"),
+                "recovered old generation adopts committed UPDATE bytes; only a different winner is retained"
             );
         }
     }
@@ -262,6 +263,26 @@ fn recovery_has_no_temp_directory_dependency_even_when_cancelled() {
     // T1-T3 temp location is a FILE (unusable for staging); success, abort before
     // commit and abort after commit must work without touching it. Environment
     // mutation is child-only, so other tests cannot race a global TMPDIR change.
+    let child_ran = |output: &std::process::Output| {
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line == "test recovery_without_temp_child ... ok")
+    };
+    // A zero-match libtest child exits successfully. Require its named outcome;
+    // otherwise deleting or renaming the private witness would pass this test.
+    let empty = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "__missing_recovery_temp_child", "--ignored"])
+        .output()
+        .unwrap();
+    assert!(
+        empty.status.success(),
+        "zero selection is the negative control"
+    );
+    assert!(
+        !child_ran(&empty),
+        "exit zero alone is not execution evidence"
+    );
     let root = tempfile::tempdir().unwrap();
     let sentinel = root.path().join("not-a-directory");
     std::fs::write(&sentinel, b"sentinel").unwrap();
@@ -279,8 +300,9 @@ fn recovery_has_no_temp_directory_dependency_even_when_cancelled() {
         .output()
         .unwrap();
     assert!(
-        output.status.success(),
-        "{}",
+        child_ran(&output),
+        "private recovery witness did not run: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel");
@@ -647,9 +669,10 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
     for operation in ["create", "update", "delete"] {
         // F5 queued mutation outlives caller cancellation; F6 a newer writer
         // wins before that queued mutation runs => stale CAS must not overwrite
-        // it. Live same-guard retry remains a conflict; terminal recovered-copy
-        // retry may finish only after preserving the loser in the Memory
-        // aggregate, with unchanged winner/history and idempotent conflict data.
+        // it. A retry whose committed bytes already equal the candidate adopts
+        // them (ADR-0104); only a different winner remains a conflict, and the
+        // terminal recovered-copy retry finishes only after preserving that
+        // loser, with unchanged winner/history and idempotent conflict data.
         for (after, detached, competitor) in [
             (false, false, false),
             (true, false, false),
@@ -799,10 +822,9 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                         );
                     }
                     for _ in 0..2 {
-                        let stale_update = operation == "update" && (after || detached);
                         assert_eq!(
                             mount.teardown().await.is_err(),
-                            competitor || stale_update,
+                            competitor,
                             "F4/F6 retry operation={operation} after={after} detached={detached} prefix={prefix}"
                         );
                     }
@@ -846,13 +868,14 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                     let conflicts = repository.list_copy_conflicts("s").await.unwrap();
                     assert_eq!(
                         conflicts.len(),
-                        usize::from(prefix) + usize::from(competitor || operation == "update"),
+                        usize::from(competitor),
                         "F6 exact conflict retention"
                     );
-                    if prefix {
-                        assert!(conflicts.iter().any(|conflict| conflict.path == "/a.md"));
-                    }
-                    if competitor || operation == "update" {
+                    assert!(
+                        conflicts.iter().all(|conflict| conflict.path != "/a.md"),
+                        "F4 the committed prefix is adopted, not retained"
+                    );
+                    if competitor {
                         let conflict = conflicts
                             .iter()
                             .find(|conflict| conflict.path == "/z.md")
