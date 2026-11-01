@@ -164,12 +164,19 @@ run_coverage_suites
 popd >/dev/null
 
 lcov_directory="$CARGO_LLVM_COV_TARGET_DIR/awaken-homogeneous-lcov"
-mapfile -t lcov_reports < <(
+# Capture the export status before parsing paths: process substitution would
+# discard it and an empty array would select the checker's ungrouped fallback.
+lcov_report_paths="$(
   "$coverage_python" scripts/ci/export_homogeneous_lcov.py \
     --profile-directory "$CARGO_LLVM_COV_TARGET_DIR" \
     --output-directory "$lcov_directory" \
     --ignore-filename-regex "$IGNORE"
-)
+)" || exit "$?"
+if [ -z "$lcov_report_paths" ]; then
+  echo "homogeneous LCOV export returned no report paths" >&2
+  exit 1
+fi
+mapfile -t lcov_reports <<< "$lcov_report_paths"
 lcov_arguments=()
 for report in "${lcov_reports[@]}"; do
   lcov_arguments+=(--lcov-path "$report")

@@ -407,15 +407,84 @@ qualification are separate claims.
   restoration of the exact immutable object and owned cleanup;
   `check_public_api.sh` compared all 24 snapshots, generated contracts and
   docs passed. The follow-up poison guard reuses the canonical item reader
-  and has separate original-oracle regression evidence; normal commit,
-  protected FF and full13 remain separate claims.
-- **G and release boundary.** G has retained-origin, inherited-permission
-  and replay source changes without a compiled result; the candidate's
-  `principle_status.py --guards` counts are reported in
-  [STATUS](../STATUS.md#architecture-execution), not as main measurements.
-  V6/L/V7/V8 and Windows remain unqualified on the final
-  source; `verified/20261101-0249` (`f03c55823bbe`) and
-  `verified/20261031-1847` (`af4d10ec22a1`) retain only their historical scope.
+  and has separate original-oracle regression evidence. These `d6b21b3eee3f`
+  results keep their historical subject; later normal delivery does not turn
+  them into executions on a newer tree.
+- **Delivered V4 (`7ca5281a4199`, tree `5e75fea042ac`).** The complete
+  App/SDK/guard/clock source and its reviewed poison/fixture corrections were
+  normally committed and protected-fast-forwarded. This records that source's
+  delivery; the earlier `d6b21b3eee3f` suite receipts remain separate.
+- **E2E continuation (`862d06298f09`, tree `5104c16e414c`).** The E2E caller and
+  fixture continuation was normally committed and protected-fast-forwarded on
+  V4. Its executed scope is not reassigned to later G changes.
+- **SDK baseline qualifier (`b074299c9f67`, tree `745808be7fd0`).** The four-Python
+  historical-baseline classification repair passed its original 49 pure tests,
+  version-floor/docs checks and normal hooks, then normal commit and protected
+  FF. It retains 24 current package/artifact subjects, 22 historical SemVer
+  subjects and two first-release crates; code delivery is not an actual
+  package/artifact/SemVer, registry or Windows release qualification.
+- **G runtime qualification (tree `2903a249449aa612e2b8a3c3c73a84bef0f7d21f`).**
+  The original whole-Rust entrypoint recorded 10,473 passed / 133 original
+  skips, both Clippy passes and doctests. Full structure and contract-shape
+  checks exited 0, the original API gate compared all 24 snapshots, and the
+  original generated-contract and documentation gates passed. The original
+  9,255-name retention requirement and skip accounting remain explicit;
+  neither name counts nor PASS/skip totals establish a coverage baseline or
+  prove branch/MC/DC, physical or product coverage.
+- **G PostgreSQL follow-up.** The budget-cancelled PG attempt remains incomplete,
+  with its owned cleanup results preserved. The fresh complete original run
+  from the beginning passed required PG/S3/PITR in 1,208 seconds and completed
+  owned cleanup with exit 0 on the runtime-qualified source; the earlier
+  cancellation is not relabelled as passed.
+- **G normal delivery (`a4402c05ca68c9e4313b2ca85ffff6f983219fec`, tree
+  `5f032a8939f7ecbdde256d6c9577cd978567a4c7`).** Normal commit completed in
+  688.095 seconds with exit 0, followed by protected FF of main and integration,
+  both clean with no push. Relative to runtime-qualified tree `2903a249449a`,
+  only four opening formal annotations were added in each of two files; runtime
+  bodies remain byte-identical. Formal-surface classification recorded
+  95 candidate / 165 selected sources and zero unclassified sources; this is
+  source classification, not a proof PASS or a new verified tag.
+- **Nanos-image follow-up (`fcf046d5150e1637b6ca986735fb8cd449ea1860`, tree
+  `90c2adf8e7d74ad33d49b167c3f09148b78d70fe`).** The source-derived singleton
+  selection of the existing full-u64 nanos-image harness passed with the
+  existing Z3 profile in 1.822049229 seconds, satisfying all four covers; the
+  original vacuity and formal-coverage checks and docs exited 0. Normal commit
+  completed in 455.335422086 seconds with exit 0, followed by protected FF of
+  clean main and integration with no push. This changes only the existing
+  proof and its [trust record](formal-proof-trust.md#current-nanos-image-proof-2026-11-02);
+  production time code and the other proofs remain unchanged. G's earlier
+  runtime tree `2903a249449a` and normal commit `a4402c05ca68` keep their own
+  results; this singleton is not a rerun of that complete runtime scope.
+- **BackgroundTask consolidation (`2d195c4174b70ef079cbae52b7b085ae35c8f71e`,
+  tree `87e0b06d897ae3383356bbf6f812fe6086ac2009`).** The final source-derived
+  complete retained eight-harness selection passed in 27.776845485 seconds;
+  after the new BackgroundTask anchor, the original nanos singleton passed
+  in 1.526809494 seconds. All nine regular results and original vacuity,
+  proof-input, formal-coverage, plan and docs checks exited 0. Only the old
+  combined duplicate was retired; the retained scalar table uses joint ranks
+  0–3 and unwind 16 with all unwinding assertions and real Drop preserved.
+  Original replay, stale-fence and full-revision domains remain unchanged;
+  no particular loop was identified as the root cause. The existing
+  [proof-trust owner](formal-proof-trust.md#current-fixed-target-checkpoint-formulation)
+  records the formulation and limits. Normal commit completed in
+  468.252214448 seconds with exit 0, followed by protected FF of clean main
+  and integration with no push at that checkpoint; the independent `fcf046d5150e`
+  nanos history above is unchanged.
+- **Remaining V6 proof boundary.** The preceding Z3 comparison of the original
+  three selections used a requested 300-second limit: succession and nanos
+  completed, while independent Expiry Ord did not complete. That short
+  diagnostic is neither a complete three-harness PASS nor a 1,800-second
+  Expiry failure. Expiry Ord, the 65 unchanged rerun markers and the complete
+  formal gate remain open; the historical inventory stays with the existing
+  proof-trust owner.
+- **Open release/formal/product boundary.** Beyond these two scoped proof slices,
+  current-source formal qualification, actual L release
+  package/artifact/SemVer and registry/Windows evidence, V7 cohort execution
+  and V8 live acceptance remain open. No coverage baseline has been obtained;
+  the formal-coverage source check is not such a measurement. Historical tags
+  `verified/20261101-0249` (`f03c55823bbe`) and `verified/20261031-1847`
+  (`af4d10ec22a1`) retain only their own scope; G and these scoped proof
+  deliveries establish neither a new verified tag nor current-SHA full13.
 
 The following records are history, not current open-failure counts.
 

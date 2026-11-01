@@ -14,13 +14,13 @@ from _strict_unittest import main
 
 @unittest.skipIf(os.name == "nt", "Bash orchestration is qualified in the Linux gate")
 class CombinedCoverageTests(unittest.TestCase):
-    def exercise(self, case: str, arguments: list[str] | None = None) -> tuple[int, list[dict], bool, bool]:
+    def exercise(self, case: str, arguments: list[str] | None = None, *, entry: str = "combined-coverage.sh") -> tuple[int, list[dict], bool, bool]:
         root = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as temporary:
             fixture = Path(temporary)
             scripts = fixture / "scripts/ci"
             scripts.mkdir(parents=True)
-            for name in ("combined-coverage.sh", "_provider_environment.sh", "_deadline.sh", "deadline.py"):
+            for name in ("combined-coverage.sh", "e2e-coverage.sh", "_provider_environment.sh", "_deadline.sh", "deadline.py"):
                 shutil.copyfile(root / "scripts/ci" / name, scripts / name)
             (fixture / "e2e").mkdir()
             binary = fixture / "bin"
@@ -64,7 +64,18 @@ elif name == 'python3':
     elif script == 'export_homogeneous_lcov.py':
         destination = pathlib.Path(args[args.index('--output-directory')+1])
         destination.mkdir()
-        (destination/'fixture.lcov').write_text('DA:1,1\\n')
+        first = destination/'fixture.lcov'
+        first.write_text('DA:1,1\\n')
+        if case == 'export-fails-empty': raise SystemExit(37)
+        if case == 'export-fails-partial':
+            print(first)
+            raise SystemExit(37)
+        if case != 'export-empty':
+            print(first)
+            if case == 'export-multiple':
+                second = destination/'second.lcov'
+                second.write_text('DA:1,1\\n')
+                print(second)
     elif script == 'coverage_summary.py':
         pathlib.Path(args[args.index('--output')+1]).write_text('{}')
     elif script == 'deadline.py':
@@ -73,8 +84,8 @@ elif name == 'python3':
             driver.chmod(0o755)
             for name in ("cargo", "git", "node", "npm", "python3"):
                 (binary / name).symlink_to(driver)
-            environment = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", COV_DIR=str(target), CASE=case, CALLS=str(fixture / "calls"), REAL_PYTHON=os.sys.executable)
-            result = subprocess.run(["bash", "scripts/ci/combined-coverage.sh", *(arguments or [])], cwd=fixture, env=environment, capture_output=True, text=True, timeout=15)
+            environment = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", COV_DIR=str(target), CARGO_TARGET_DIR=str(target), AWAKEN_COVERAGE_REAL="0", AWAKEN_COVERAGE_RESUME="0", CASE=case, CALLS=str(fixture / "calls"), REAL_PYTHON=os.sys.executable)
+            result = subprocess.run(["bash", "scripts/ci/" + entry, *(arguments or [])], cwd=fixture, env=environment, capture_output=True, text=True, timeout=15)
             calls = [json.loads(line) for line in (fixture / "calls").read_text().splitlines()] if (fixture / "calls").exists() else []
             return result.returncode, calls, (target / "retained-build").is_file(), (target / "old.profraw").exists()
 
@@ -99,6 +110,38 @@ elif name == 'python3':
                 self.assertEqual(status, expected)
                 self.assertTrue(retained)
                 self.assertFalse(any(c["args"][0].endswith("coverage_summary.py") for c in calls if c["name"] == "python3"))
+
+    def test_e2e_export_keeps_exact_paths_and_refuses_incomplete_exports(self) -> None:
+        # C/E table, using the same original shell fixture (all tool IO mocked):
+        # E1 exporter0+one path / E2 exporter0+two paths => exact repeated
+        # --lcov-path values in original order. E3 nonzero+no stdout and E4
+        # nonzero+partial stdout => exact status37, no terminal checker call.
+        # E5 success+empty stdout => refusal1, no checker/ungrouped fallback.
+        # These fixture LCOV bytes are not actual coverage measurements.
+        def terminal_checks(calls: list[dict]) -> list[dict]:
+            return [c for c in calls if c["name"] == "python3"
+                    and c["args"][0].endswith("check_changed_e2e_line_coverage.py")
+                    and "--print-ignore-filename-regex" not in c["args"]]
+
+        for case, names in [("passing", ["fixture.lcov"]),
+                            ("export-multiple", ["fixture.lcov", "second.lcov"])]:
+            with self.subTest(case=case):
+                status, calls, _, _ = self.exercise(case, entry="e2e-coverage.sh")
+                self.assertEqual(status, 0)
+                exporter = next(c for c in calls if c["name"] == "python3"
+                                and c["args"][0].endswith("export_homogeneous_lcov.py"))
+                directory = Path(exporter["args"][exporter["args"].index("--output-directory")+1])
+                checks = terminal_checks(calls)
+                self.assertEqual(len(checks), 1)
+                args = checks[0]["args"]
+                actual = [args[i+1] for i, value in enumerate(args) if value == "--lcov-path"]
+                self.assertEqual(actual, [str(directory/name) for name in names])
+        for case, expected in [("export-fails-empty", 37),
+                               ("export-fails-partial", 37), ("export-empty", 1)]:
+            with self.subTest(case=case):
+                status, calls, _, _ = self.exercise(case, entry="e2e-coverage.sh")
+                self.assertEqual(status, expected)
+                self.assertEqual(terminal_checks(calls), [])
 
     def test_unknown_arguments_fail_before_work(self) -> None:
         status, calls, retained, stale = self.exercise("passing", ["--quick"])
