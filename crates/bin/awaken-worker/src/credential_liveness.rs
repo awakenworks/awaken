@@ -266,7 +266,6 @@ mod tests {
     use awaken_credential_contract::{
         CredentialObservation, CredentialObservationSource, WorkerLocalReferenceRevalidator,
     };
-    use awaken_worker_contract::WorkerCredentialRevision;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Notify;
 
@@ -413,7 +412,7 @@ mod tests {
                 next_observation_batch_coordinate(0, 100, 30).expect("one batch"),
             ),
             BTreeSet::from([WorkerCredentialObservation::available(
-                WorkerCredentialRevision {
+                CredentialRef {
                     id: "cred:worker".into(),
                     revision: 4,
                 },

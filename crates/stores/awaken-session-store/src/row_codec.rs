@@ -73,63 +73,6 @@ fn verify_aggregate(session: &PersistedSession) -> Result<(), serde_json::Error>
         })
 }
 
-fn migrate_legacy_baseline(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-) -> Result<(), serde_json::Error> {
-    let Some(baseline) = object
-        .get_mut("baseline")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return Err(invalid("managed Session aggregate has no baseline object"));
-    };
-    let state = baseline
-        .get("state")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| invalid("managed Session baseline has no state"))?;
-    if state != "frozen" {
-        return Err(invalid(format!(
-            "unsupported legacy managed Session baseline state `{state}`"
-        )));
-    }
-    // Application contributions were fully consumed into these frozen fields;
-    // the nullable receipt was retired and must not become a second authority.
-    baseline.remove("application");
-    let environment = baseline
-        .get_mut("environment")
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or_else(|| invalid("managed Session baseline has no environment snapshot"))?;
-    environment
-        .entry("self_hosted")
-        .or_insert_with(|| serde_json::json!(false));
-    let runtime_placement = if environment
-        .get("self_hosted")
-        .and_then(serde_json::Value::as_bool)
-        .ok_or_else(|| invalid("Session self_hosted placement is not boolean"))?
-    {
-        "worker"
-    } else {
-        "local"
-    };
-    environment.entry("idle_retention").or_insert_with(|| {
-        serde_json::to_value(awaken_provisioning_contract::SandboxIdleRetentionPolicy::default())
-            .expect("default idle-retention policy serializes")
-    });
-    match baseline
-        .get("runtime_placement")
-        .and_then(serde_json::Value::as_str)
-    {
-        None | Some("legacy_unspecified") => {
-            baseline.insert(
-                "runtime_placement".into(),
-                serde_json::json!(runtime_placement),
-            );
-        }
-        Some("local" | "worker") => {}
-        Some(_) => return Err(invalid("unknown Session runtime placement")),
-    }
-    Ok(())
-}
-
 fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
     let mut value: serde_json::Value = serde_json::from_str(data)?;
     if value.get("format").is_some() || value.get("aggregate").is_some() {
@@ -151,7 +94,14 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
     let object = value
         .as_object_mut()
         .ok_or_else(|| invalid("managed Session aggregate must be an object"))?;
-    migrate_legacy_baseline(object)?;
+    let baseline = object
+        .get_mut("baseline")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| invalid("managed Session aggregate has no baseline object"))?;
+    awaken_session_configuration_contract::SessionBaselineState::normalize_legacy_baseline(
+        baseline,
+    )
+    .map_err(|error| invalid(error.to_string()))?;
 
     // Published pre-envelope rows used one lifecycle axis plus an optional
     // archive timestamp. This is the sole historical interpretation; SQL
@@ -1263,6 +1213,90 @@ mod tests {
         assert!(
             super::decode_aggregate(&duplicate.to_string()).is_err(),
             "P2"
+        );
+
+        // B1-B12: current/recognized pre-envelope x retention absent/explicit
+        // nondefault x self_hosted absent/false/true. Only the historical branch
+        // may fill missing facts. Strict current inputs reject a missing field;
+        // accepted rows retain explicit retention and the original fingerprint.
+        let session = sample("baseline-format-cut");
+        let original = serde_json::to_value(&session).unwrap();
+        let resident = original["baseline"]["environment"]["idle_retention"].clone();
+        let mut explicit = resident.clone();
+        explicit["retention_secs"] = serde_json::json!(73);
+        for historical in [false, true] {
+            for policy_present in [false, true] {
+                for hosted in [None, Some(false), Some(true)] {
+                    let mut wire = original.clone();
+                    let snapshot = wire["baseline"]["environment"].as_object_mut().unwrap();
+                    if policy_present {
+                        snapshot.insert("idle_retention".into(), explicit.clone());
+                    } else {
+                        snapshot.remove("idle_retention");
+                    }
+                    if let Some(hosted) = hosted {
+                        snapshot.insert("self_hosted".into(), serde_json::json!(hosted));
+                    } else {
+                        snapshot.remove("self_hosted");
+                    }
+                    if historical {
+                        wire["baseline"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("runtime_placement");
+                    } else {
+                        wire = serde_json::json!({"format": super::CURRENT_AGGREGATE_FORMAT,
+                                                 "aggregate": wire});
+                    }
+                    let decoded = super::decode_aggregate(&wire.to_string());
+                    if historical || (policy_present && hosted.is_some()) {
+                        let decoded = decoded.unwrap();
+                        let baseline = decoded.frozen_baseline().unwrap();
+                        assert_eq!(
+                            serde_json::to_value(&baseline.environment.idle_retention).unwrap(),
+                            if policy_present {
+                                explicit.clone()
+                            } else {
+                                resident.clone()
+                            }
+                        );
+                        assert_eq!(baseline.environment.self_hosted, hosted.unwrap_or(false));
+                        if historical {
+                            assert_eq!(
+                                serde_json::to_value(baseline.runtime_placement).unwrap(),
+                                if hosted == Some(true) {
+                                    "worker"
+                                } else {
+                                    "local"
+                                }
+                            );
+                        }
+                        assert_eq!(
+                            serde_json::to_value(&baseline.fingerprint).unwrap(),
+                            original["baseline"]["fingerprint"]
+                        );
+                    } else {
+                        assert!(
+                            decoded.is_err(),
+                            "current input never takes legacy defaults"
+                        );
+                    }
+                }
+            }
+        }
+        // B13 the owner error is mapped back into the Store's original IO
+        // invalid-data grade, without adding parser coordinates or reclassifying.
+        let mut malformed = original;
+        malformed["baseline"]["state"] = serde_json::json!("preparing");
+        let failure = super::decode_aggregate(&malformed.to_string()).unwrap_err();
+        assert!(failure.is_io());
+        assert_eq!(
+            failure.io_error_kind(),
+            Some(std::io::ErrorKind::InvalidData)
+        );
+        assert_eq!(
+            failure.to_string(),
+            "unsupported legacy managed Session baseline state `preparing`"
         );
     }
 }

@@ -578,7 +578,7 @@ pub(crate) async fn resume_with_continuation(
             return finalize::finish_with_reader(
                 runtime,
                 &context,
-                Some(reader),
+                finalize::TerminalStateRead::Committed(reader),
                 &command.thread_id,
                 command.run_id.clone(),
                 RunStepResult::ended_with_messages(command.run_id, cause, context_messages)
@@ -621,7 +621,7 @@ pub(crate) async fn resume_with_continuation(
             return finalize::finish_with_reader(
                 runtime,
                 &context,
-                Some(reader),
+                finalize::TerminalStateRead::Committed(reader),
                 &thread_id,
                 run_id,
                 step,

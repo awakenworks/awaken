@@ -9,7 +9,6 @@ from functools import lru_cache
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import NamedTuple
 
-import _arch_fitness
 import _crate_dependency_fitness
 
 
@@ -921,6 +920,41 @@ def _selftest_manifest_source_projection() -> None:
             (third / "Cargo.toml").write_text('[package]\nname = "awaken-third"\n')
             (third / "src/lib.rs").write_text("pub use awaken_delta::Thing;\n")
             assert project() == {"awaken-third": frozenset({"awaken_delta"})}, "M3 root switch"
+            # M5 causes: dependency-only projection, then Arch projection of
+            # the same metadata and facade; all seven fields must agree and
+            # product/bounded_context must survive. M6 forbids source discovery
+            # in the dependency-only path. M7 same-length/mtime metadata edits
+            # must be visible on both fresh calls, never cached by path/stat.
+            manifest = third / "Cargo.toml"
+            manifest.write_text(manifest.read_text() +
+                '\n[package.metadata.awaken]\ncontext = "runtime"\nlayer = "contract"\n'
+                'authority = "alpha"\nproduct = "sdk"\nbounded_context = "agent-runtime"\n'
+                '[dependencies]\nneutral = "1"\n')
+            before = calls
+            _manifest_source_files = refuse_lookup
+            metadata_specs = dependency_fitness_specs()
+            assert calls == before + 1, "M5/M6 one metadata discovery, no source scan"
+            expected = ("awaken-third", "runtime", "contract", "alpha", frozenset({"neutral"}), "sdk", "agent-runtime")
+            assert tuple(metadata_specs[0][:7]) == expected, "M5 all canonical metadata fields"
+            assert metadata_specs[0].public_first_party_reexports == frozenset(), "M6 dependency source facts stay empty"
+            try:
+                architecture_fitness_specs()
+            except AssertionError as error:
+                assert str(error) == "M1 redundant name-based workspace discovery", "M6 Arch really requests source"
+            else:
+                raise AssertionError("M6 Arch bypassed its source projection")
+            _manifest_source_files = original_sources
+            before = calls
+            architecture_specs = architecture_fitness_specs()
+            assert calls == before + 1, "M5 one Arch discovery"
+            assert tuple(architecture_specs[0][:7]) == expected, "M5 Arch retains product and bounded context"
+            assert architecture_specs[0].public_first_party_reexports == frozenset({"awaken_delta"}), "M5 same facade facts"
+            stamp = manifest.stat()
+            manifest.write_text(manifest.read_text().replace('authority = "alpha"', 'authority = "bravo"'))
+            os.utime(manifest, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            assert manifest.stat().st_size == stamp.st_size, "M7 equal-length metadata edit"
+            assert dependency_fitness_specs()[0].authority == "bravo", "M7 fresh dependency metadata"
+            assert architecture_fitness_specs()[0].authority == "bravo", "M7 fresh Arch metadata"
         finally:
             iter_crate_manifests, crate_manifest = original_iter, original_lookup
             _manifest_source_files = original_sources
@@ -1076,44 +1110,38 @@ def _awaken_metadata(manifest: dict) -> dict:
     return manifest.get("package", {}).get("metadata", {}).get("awaken", {})
 
 
+def _metadata_fitness_spec(
+    manifest: dict, *, public_first_party_reexports: frozenset[str] = frozenset(),
+) -> _crate_dependency_fitness.CrateSpec:
+    """One canonical DTO construction; source observation remains caller-owned."""
+    metadata = _awaken_metadata(manifest)
+    return _crate_dependency_fitness.CrateSpec(
+        name=package_name(manifest),
+        context=str(metadata.get("context", "")),
+        layer=str(metadata.get("layer", "")),
+        authority=str(metadata.get("authority", "")),
+        normal_deps=frozenset(normal_dependency_names(manifest)),
+        product=str(metadata.get("product", "")),
+        bounded_context=str(metadata.get("bounded_context", "")),
+        public_first_party_reexports=public_first_party_reexports,
+    )
+
+
 def dependency_fitness_specs() -> list[_crate_dependency_fitness.CrateSpec]:
-    """Build the one metadata-derived workspace dependency model."""
+    """Build the metadata-only model, with one fresh workspace discovery."""
+    return [_metadata_fitness_spec(load_manifest(path)) for path in iter_crate_manifests()]
+
+
+def architecture_fitness_specs() -> list[_crate_dependency_fitness.CrateSpec]:
+    """Add caller-owned facade facts to the same canonical metadata model."""
     specs: list[_crate_dependency_fitness.CrateSpec] = []
     for manifest_path in iter_crate_manifests():
         manifest = load_manifest(manifest_path)
-        metadata = _awaken_metadata(manifest)
-        specs.append(
-            _crate_dependency_fitness.CrateSpec(
-                name=package_name(manifest),
-                context=str(metadata.get("context", "")),
-                layer=str(metadata.get("layer", "")),
-                authority=str(metadata.get("authority", "")),
-                normal_deps=frozenset(normal_dependency_names(manifest)),
-                product=str(metadata.get("product", "")),
-                bounded_context=str(metadata.get("bounded_context", "")),
-            )
-        )
-    return specs
-
-
-def architecture_fitness_specs() -> list[_arch_fitness.CrateSpec]:
-    """Build filesystem-free architecture-fitness specs for every workspace crate."""
-    specs: list[_arch_fitness.CrateSpec] = []
-    for manifest_path in iter_crate_manifests():
-        manifest = load_manifest(manifest_path)
-        awaken_metadata = _awaken_metadata(manifest)
         public_reexports = public_first_party_reexports(
             path.read_text(encoding="utf-8")
             for path in _manifest_source_files(manifest_path)
         )
-        specs.append(
-            _arch_fitness.CrateSpec(
-                name=package_name(manifest),
-                normal_deps=frozenset(normal_dependency_names(manifest)),
-                context=str(awaken_metadata.get("context", "")),
-                layer=str(awaken_metadata.get("layer", "")),
-                authority=str(awaken_metadata.get("authority", "")),
-                public_first_party_reexports=public_reexports,
-            )
-        )
+        specs.append(_metadata_fitness_spec(
+            manifest, public_first_party_reexports=public_reexports,
+        ))
     return specs

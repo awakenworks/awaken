@@ -40,6 +40,10 @@ async fn publication_race_fixture(
                     Arc::new(awaken_lease_testkit::ManualClock::new(time)),
                 ),
                 Arc::new(RecordingEnvironmentSource::default()),
+                {
+                    let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+                    crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+                },
                 std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             )
             .build()

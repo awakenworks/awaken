@@ -1,6 +1,16 @@
 // @formal entrypoint dream.lifecycle_is_closed_exact_and_terminal_absorbing
 // @formal entrypoint dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
 //! Neutral Coordinator Dream request and projection vocabulary.
+//!
+//! # Boundary
+//!
+//! Between the Dream application and its store (a separate aggregate and recovery protocol).
+//!
+//! Implemented by: `awaken-dream-application`, `awaken-session-store`.
+//!
+//! Called by: `awaken-config-service`, `awaken-coordinator`, `awaken-dream-application`,
+//! `awaken-process-startup`, `awaken-protocol-awaken`, `awaken-protocol-managed`,
+//! `awaken-session-store`, `awaken-store-conformance`.
 
 use async_trait::async_trait;
 use awaken_runtime_contract::agent_bindings::InferenceSpeed;

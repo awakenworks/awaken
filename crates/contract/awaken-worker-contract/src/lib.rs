@@ -13,6 +13,29 @@
 //! This crate deliberately separates the non-replaceable eligibility kernel from
 //! replaceable ranking policy. A policy may order workers that already satisfy the
 //! durable requirements, but it cannot widen authority; mutable adapters live elsewhere.
+//!
+//! Worker credential evidence uses the canonical credential identity and state
+//! under their owners' names; there are no Worker aliases:
+//!
+//! ```compile_fail
+//! use awaken_worker_contract::WorkerCredentialRevision;
+//! ```
+//!
+//! # Boundary
+//!
+//! Context: `dispatch`.
+//!
+//! Implemented by: `awaken-coordinator`, `awaken-dispatch-testkit`, `awaken-process-startup`,
+//! `awaken-session-application`, `awaken-worker-registry`.
+//!
+//! Called by: `awaken-cli`, `awaken-control`, `awaken-coordinator`, `awaken-coordinator-client`,
+//! `awaken-credential-materializer`, `awaken-dispatch`, `awaken-dispatch-contract`,
+//! `awaken-dispatch-erasure`,
+//! `awaken-dispatch-execution`, `awaken-dispatch-testkit`, `awaken-process-startup`,
+//! `awaken-resource-worker-http`, `awaken-session-application`,
+//! `awaken-session-execution-contract`, `awaken-session-realization`,
+//! `awaken-session-run-delivery`, `awaken-store-conformance`, `awaken-worker`,
+//! `awaken-worker-registry`, `awaken-worker-transport-security`.
 
 mod capability_agreement;
 mod fleet_readiness;
@@ -26,8 +49,6 @@ mod requirements;
 mod run_claim;
 mod source_retention;
 
-pub use awaken_agent_contract::credential::CredentialRef as WorkerCredentialRevision;
-pub use awaken_credential_contract::CredentialObservationState as WorkerCredentialState;
 pub use fleet_readiness::{FleetReadiness, fleet_readiness};
 pub use manifest::{
     BACKGROUND_TASK_CONTROL_CAPABILITY, CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION,
@@ -344,6 +365,8 @@ mod verification {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::credential::CredentialRef;
+    use awaken_credential_contract::CredentialObservationState;
     use proptest::prelude::*;
 
     fn manifest(id: &str, load: u32) -> WorkerSnapshot {
@@ -432,25 +455,21 @@ mod tests {
 
     #[test]
     fn worker_credential_evidence_reuses_the_canonical_credential_identity_and_state() {
-        // Cause/effect decision table: R1 a canonical CredentialRef is accepted by
-        // Worker placement without translation; R2 the canonical observation state
-        // is stored unchanged. This compile-time assignment prevents a second Worker
-        // identity/state representation from returning.
-        let canonical = awaken_agent_contract::credential::CredentialRef {
+        // Cause/effect decision table: R1 Worker placement stores the canonical
+        // CredentialRef without translation; R2 the canonical observation state
+        // is stored unchanged. Worker evidence has no second identity/state type.
+        let canonical = CredentialRef {
             id: "cred:canonical".into(),
             revision: 11,
         };
-        let worker_key: WorkerCredentialRevision = canonical.clone();
-        let canonical_again: awaken_agent_contract::credential::CredentialRef = worker_key.clone();
-        assert_eq!(canonical_again, canonical);
-
-        let state = awaken_credential_contract::CredentialObservationState::Available;
-        let worker_state: WorkerCredentialState = state;
-        assert_eq!(worker_state, state);
-        assert!(
-            WorkerCredentialObservation::available(worker_key, 5, 10)
-                .is_selectable_at(&canonical, 5)
+        let observation = WorkerCredentialObservation::available(canonical.clone(), 5, 10);
+        assert_eq!(observation.credential, canonical, "R1");
+        assert_eq!(
+            observation.state,
+            CredentialObservationState::Available,
+            "R2"
         );
+        assert!(observation.is_selectable_at(&canonical, 5));
     }
 
     #[test]
@@ -782,7 +801,7 @@ mod tests {
 
     #[test]
     fn worker_private_credential_requires_the_exact_live_revision() {
-        let required = WorkerCredentialRevision {
+        let required = CredentialRef {
             id: "cred:worker".into(),
             revision: 7,
         };
@@ -794,7 +813,7 @@ mod tests {
         worker
             .credential_observations
             .insert(WorkerCredentialObservation::available(
-                WorkerCredentialRevision {
+                CredentialRef {
                     id: required.id.clone(),
                     revision: 6,
                 },
@@ -806,7 +825,7 @@ mod tests {
             .credential_observations
             .insert(WorkerCredentialObservation {
                 credential: required.clone(),
-                state: WorkerCredentialState::LoginRequired,
+                state: CredentialObservationState::LoginRequired,
                 observed_at_ms: 10,
                 valid_until_ms: 100,
                 reason_code: Some("credential_login_required".into()),
@@ -823,7 +842,7 @@ mod tests {
 
     #[test]
     fn worker_private_credential_observation_is_a_bounded_fact() {
-        let required = WorkerCredentialRevision {
+        let required = CredentialRef {
             id: "cred:worker".into(),
             revision: 7,
         };
@@ -955,7 +974,7 @@ mod tests {
         // evidence is unavailable; E3 disagreement is incompatible.
         // Decision table: R1 C1+C2+C3+C4 -> E1; R2 !C1|!C2|!C3 -> E2;
         // R3 C1+C2+C3+!C4 -> E3. Reversing input order must preserve every rule.
-        let credential = WorkerCredentialRevision {
+        let credential = CredentialRef {
             id: "credential-1".into(),
             revision: 1,
         };
@@ -1047,7 +1066,7 @@ mod tests {
 
     #[test]
     fn one_failed_credential_observation_does_not_block_an_unrelated_requirement() {
-        let required = WorkerCredentialRevision {
+        let required = CredentialRef {
             id: "cred:healthy".into(),
             revision: 2,
         };
@@ -1057,11 +1076,11 @@ mod tests {
         worker
             .credential_observations
             .insert(WorkerCredentialObservation {
-                credential: WorkerCredentialRevision {
+                credential: CredentialRef {
                     id: "cred:failed".into(),
                     revision: 1,
                 },
-                state: WorkerCredentialState::ProbeFailed,
+                state: CredentialObservationState::ProbeFailed,
                 observed_at_ms: 100,
                 valid_until_ms: 200,
                 reason_code: Some("credential_probe_failed".into()),
@@ -1218,7 +1237,7 @@ mod tests {
         // eligible Worker, even with a stronger Container candidate available.
         // Each negative row starts from the same successful snapshot; no row
         // can be satisfied by accidentally failing an unrelated precondition.
-        let credential = WorkerCredentialRevision {
+        let credential = CredentialRef {
             id: "host-login".into(),
             revision: 1,
         };
@@ -1256,7 +1275,7 @@ mod tests {
                         .credential_observations
                         .insert(WorkerCredentialObservation {
                             credential: credential.clone(),
-                            state: WorkerCredentialState::LoginRequired,
+                            state: CredentialObservationState::LoginRequired,
                             observed_at_ms: 5,
                             valid_until_ms: 20,
                             reason_code: None,
@@ -1316,7 +1335,7 @@ mod tests {
                 let mut observation =
                     WorkerCredentialObservation::available(credential.clone(), 5, 20);
                 if mask & 2 == 0 {
-                    observation.state = WorkerCredentialState::LoginRequired;
+                    observation.state = CredentialObservationState::LoginRequired;
                 }
                 if mask & 4 == 0 {
                     observation.credential.revision += 1;

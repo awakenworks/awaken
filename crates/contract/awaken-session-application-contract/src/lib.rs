@@ -26,6 +26,23 @@
 //! ```compile_fail
 //! use awaken_session_application_contract::SessionApplicationConfiguration;
 //! ```
+//!
+//! # Boundary
+//!
+//! Between callers and the Session use cases (the narrow port protocol adapters drive).
+//!
+//! Implemented by: `awaken-coordinator`, `awaken-environment-application`,
+//! `awaken-process-startup`, `awaken-protocol-managed-testkit`, `awaken-session-application`,
+//! `awaken-session-execution-contract`, `awaken-session-executor`, `awaken-session-run-delivery`.
+//!
+//! Called by: `awaken-cli`, `awaken-coordinator`, `awaken-coordinator-client`,
+//! `awaken-deployment-application`, `awaken-dispatch-contract`, `awaken-dispatch-erasure`,
+//! `awaken-dispatch-http`, `awaken-environment-application`, `awaken-managed-session-events`,
+//! `awaken-process-startup`, `awaken-protocol-a2a`, `awaken-protocol-ag-ui`,
+//! `awaken-protocol-ai-sdk`, `awaken-protocol-awaken`, `awaken-protocol-managed`,
+//! `awaken-protocol-managed-testkit`, `awaken-session-application`,
+//! `awaken-session-execution-contract`, `awaken-session-executor`, `awaken-session-realization`,
+//! `awaken-session-run-delivery`.
 
 mod execution_observation;
 pub use execution_observation::{

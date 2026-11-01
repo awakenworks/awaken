@@ -32,6 +32,25 @@
 //! ```compile_fail
 //! use awaken_session_execution_contract::SessionThreadTarget;
 //! ```
+//!
+//! # Boundary
+//!
+//! Between the Session and its Worker-side executors (execution, realization and coordination
+//! roles).
+//!
+//! Implemented by: `awaken-coordinator-client`, `awaken-dispatch-execution`,
+//! `awaken-protocol-managed`, `awaken-protocol-managed-testkit`, `awaken-scenario-host`,
+//! `awaken-session-application`, `awaken-session-executor`, `awaken-session-mcp`,
+//! `awaken-session-realization`, `awaken-session-realization-driver`,
+//! `awaken-session-run-delivery`.
+//!
+//! Called by: `awaken-cli`, `awaken-coordinator`, `awaken-coordinator-client`, `awaken-dispatch`,
+//! `awaken-dispatch-execution`, `awaken-dispatch-http`, `awaken-dispatch-testkit`,
+//! `awaken-managed-session-events`, `awaken-process-startup`, `awaken-protocol-managed`,
+//! `awaken-protocol-managed-testkit`, `awaken-resource-worker-http`, `awaken-scenario-host`,
+//! `awaken-session-application`, `awaken-session-executor`, `awaken-session-mcp`,
+//! `awaken-session-realization`, `awaken-session-realization-driver`,
+//! `awaken-session-run-delivery`, `awaken-worker`.
 
 mod application_binding;
 mod bound_source_end;
@@ -163,7 +182,8 @@ pub use session_realization::{
     ENVIRONMENT_REJECTED_CODE, ENVIRONMENT_UNAVAILABLE_CODE, FailSessionRealization,
     FrozenAgentPublicationDecision, FrozenProjectionReceipt, FrozenResourceTransitionUse,
     FrozenSessionProjection, ObservedSessionRealizationLease, ProjectionReceiptRefusal,
-    RealizationFailureOutcome, RenewSessionRealization, SESSION_REALIZATION_NOT_READY_CODE,
+    RealizationFailureOutcome, RenewSessionRealization,
+    SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE, SESSION_REALIZATION_NOT_READY_CODE,
     STALE_PROJECTION_CODE, SessionCheckpointArtifactControl, SessionFileReadAuthorization,
     SessionPreparationAssignment, SessionPreparationControl, SessionPreparationPlacement,
     SessionProjectionInstallMode, SessionProjectionSynchronizer, SessionRealizationAction,
@@ -181,9 +201,9 @@ pub use session_realization::{
     WorkerSessionRealizationControl, effect_failure_disposition, environment_effect_error,
     frozen_agent_publication_decision, frozen_sandbox_layout_publication_decision,
     frozen_session_requires_opaque_process, is_environment_effect_code, is_not_ready_code,
-    legacy_agent_publication_decision, model_candidates_require_opaque_process,
-    project_effective_agent_publication, provisioning_disposition,
-    realization_generation_authorizes, requires_local_environment,
+    is_permanent_conflict_code, legacy_agent_publication_decision,
+    model_candidates_require_opaque_process, project_effective_agent_publication,
+    provisioning_disposition, realization_generation_authorizes, requires_local_environment,
     resolve_canonical_session_projection, session_realization_assignment,
     session_realization_exclusion_admits, synchronize_or_supersede,
     terminal_cleanup_worker_requirements, validate_terminal_no_create_witness,

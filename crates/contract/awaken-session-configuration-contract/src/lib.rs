@@ -6,6 +6,24 @@
 //! ```compile_fail
 //! use awaken_session_configuration_contract::EnvironmentIdleRetentionMode;
 //! ```
+//!
+//! # Boundary
+//!
+//! Between the Control plane and the Session (immutable configuration and its resolution ports).
+//!
+//! Implemented by: `awaken-config-service`, `awaken-control`, `awaken-coordinator`,
+//! `awaken-environment-application`, `awaken-resource-application`, `awaken-resource-worker-http`,
+//! `awaken-scenario-host`, `awaken-session-application`.
+//!
+//! Called by: `awaken-admin-assistant`, `awaken-config-service`, `awaken-control`,
+//! `awaken-coordinator`, `awaken-coordinator-client`, `awaken-dispatch-contract`,
+//! `awaken-dispatch-execution`, `awaken-dispatch-http`, `awaken-environment-application`,
+//! `awaken-protocol-managed`, `awaken-protocol-managed-testkit`, `awaken-resource-application`,
+//! `awaken-resource-worker-http`, `awaken-scenario-host`, `awaken-session-application`,
+//! `awaken-session-contract`, `awaken-session-environment`, `awaken-session-execution-contract`,
+//! `awaken-session-executor`, `awaken-session-mcp`, `awaken-session-realization`,
+//! `awaken-session-realization-driver`, `awaken-session-run-delivery`, `awaken-session-store`,
+//! `awaken-store-conformance`, `awaken-worker`.
 
 mod accepted_agent;
 pub use accepted_agent::{

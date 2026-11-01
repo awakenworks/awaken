@@ -3,13 +3,12 @@
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
-use awaken_agent_contract::RedactedString;
+use awaken_agent_contract::{RedactedString, StructuredCredentialMaterial};
 use serde::{Deserialize, Serialize};
 
 use super::{
     CredentialAccess, CredentialMaterialBinding, CredentialMaterialSource, CredentialRef,
-    CredentialUsage, HTTP_BASIC_MATERIAL_TYPE, PlaintextHolder, StructuredCredentialMaterial,
-    http_effect,
+    CredentialUsage, HTTP_BASIC_MATERIAL_TYPE, PlaintextHolder, http_effect,
 };
 
 /// Exact OAuth token set owned by a provider driver. Refresh tokens never enter

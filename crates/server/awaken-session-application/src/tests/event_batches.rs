@@ -2748,6 +2748,10 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
                 Arc::new(NoopMcpRealizer),
                 SessionPersistence::new(faulting.clone(), clock.clone()),
                 Arc::new(RecordingEnvironmentSource::default()),
+                {
+                    let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+                    crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+                },
                 std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             )
             .build()
@@ -2864,6 +2868,10 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
                 Arc::new(NoopMcpRealizer),
                 SessionPersistence::new(repository.clone(), Arc::new(ManualClock::new(900))),
                 Arc::new(RecordingEnvironmentSource::default()),
+                {
+                    let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+                    crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+                },
                 std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             )
             .build()

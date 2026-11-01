@@ -26,6 +26,9 @@ async fn assert_unavailable_delegation_seals(withdraw_tool_handling: bool) {
     // CancelRequested and clear the ticket, with zero child resumes. An absent
     // executor defers delivery to original reconciliation; a retained service
     // delivers after commit and its same-Runtime reconciliation is inert.
+    // The internal terminal mode is Committed(explicit reader) on both paths,
+    // even when the optional SDK context reader is absent: it must never select
+    // StagedOnly or reread another context while sealing this resume prefix.
     // No inserted state or physical-stop receipt. This is pre-effect sealing;
     // no child/approval commit has superseded the explicit prefix.
     for context_reader_present in [true, false] {

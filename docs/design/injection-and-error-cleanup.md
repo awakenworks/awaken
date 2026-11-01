@@ -1,6 +1,6 @@
 # Construction-Time Injection and Typed Errors
 
-Status: classification complete; (v) done, (iv) decided by item L, (iii) done except two test-fixture sites (rule below), (i) designed; Family A converged into one typed late binding (remedy (c)); its removal (remedy (a)) is designed in [remote-task-control.md](remote-task-control.md) and waits for the `LocalWorker` placement to retire. Family B classified: one redundant edge removed, containment edges exempt with a removal condition.
+Status: classification complete; (v) done, (iv) decided by item L, (iii) done, including complete test-fixture construction (rule below), (i) designed; Family A converged into one typed late binding (remedy (c)); its removal (remedy (a)) is designed in [remote-task-control.md](remote-task-control.md) and waits for the `LocalWorker` placement to retire. Family B classified: one redundant edge removed, containment edges exempt with a removal condition.
 Principles: P5 (interface segregation, construction-time injection) and P6
 (errors are values, classified once) of the architecture plan.
 
@@ -28,8 +28,8 @@ Family B, from 41 before it).
 |---|---|---:|---:|
 | (i) cycle | replace with build order, an injected role port, or a split component | 31 | Family A: 14 converged (c); Family B: 6 done, 4 exempt (containment), 7 moved to (ii) |
 | (ii) legitimate weak | observer, lifetime that must not keep its target alive, or cache; exempt with a reason | 22 + 7 | exempt (Family B: 2 of the 7 done, a duplicate spelling) |
-| (iii) optional role | required at construction, or a closed enum naming each case; a feature left off stays optional (exempt) | 60 | 21 done, 37 exempt, 2 planned |
-| (iv) SDK public API | decided by item L: kept as reviewed SDK shapes ([SDK versioning](sdk-versioning.md#optional-roles-in-the-sdk-api)) | 18 | 15 kept (L); 3 found by the widened count await L |
+| (iii) optional role | required at construction, or a closed enum naming each case; a feature left off stays optional (exempt) | 60 | 23 done, 37 exempt |
+| (iv) SDK public API / forwarding | decided by item L: reviewed SDK shapes stay; private finite modes are explicit | 18 | 16 kept (L, including the ACP policy forwarder); 2 private mode arguments closed |
 | (v) error flattening | typed variant that keeps its source, classified once | 13 | 13 |
 
 ## Optional roles (iii): the rule applied
@@ -48,9 +48,26 @@ site was decided by what `None` means:
    property of the backend, not a selected role) and for the
    `std::error::Error::source` signature.
 
+The widened count's two private Runtime methods now name their existing modes:
+`TerminalStateRead::{Committed, StagedOnly}` preserves the direct SDK's absent
+reader and the resume path's explicit committed reader; `ToolConcurrencySource`
+keeps Brain, wired Sandbox and MissingSandbox separate without changing the
+invocation refusal. Neither adds a public SDK type or changes a feature-off
+role into a required fake. The ACP narrowing field forwards the already-kept
+`policy: Option<&dyn ToolPermissionPolicy>` input to its one SDK decision law.
+
 Counts (`python3 scripts/ci/principle_status.py`, P5 optional roles): 76 at
-`504872e23d`, 59 after this batch: 18 deferred to L, 39 exempt (37 feature-off or
+`504872e23d`, 59 at the V3 classification checkpoint: 18 deferred to L, 39 exempt (37 feature-off or
 capability-query sites and 2 `Error::source` signatures), 2 planned.
+
+The two App fixture rows are now complete: every fixture passes the same complete
+`SessionExecutionAdmission::new` value that production already requires. The
+existing recording Probe is shared from the App's gated fixture leaf, while
+Scenario composition selects its real Registry before App publication and gives
+that exact handle to the mount. No second Registry or late completion remains.
+The former missing-role runtime cases are unrepresentable; constructor controls
+own their refusal, and real source-outage cases keep their original assertions.
+Use `principle_status.py` for the combined source count after subsequent slices.
 
 ## Typed errors (v)
 
@@ -400,28 +417,28 @@ Lines are at `1b56f9aea0`, except the rows this batch added (`durable_control.rs
 | `runtime/awaken-ext-goal/src/controller.rs:128` | - | exempt | `std::error::Error::source` signature |
 | `runtime/awaken-ext-goal/src/controller.rs:148` | (iii) | done | private closed enum `RunCapability { Executing(&dyn OutcomeRuns), Preparation }` fixed by the constructor; rows X1-X2 (`run_capability_decides_whether_a_controller_may_touch_runs`) |
 | `runtime/awaken-ext-mcp/src/tool.rs:170` | (iv) | kept (L) | SDK impl of the DurableTaskTool query |
-| `runtime/awaken-runtime/src/engine/finalize.rs:89` | (iv) | deferred-L | awaken-runtime (SDK) internals: closed enum of the committed reader, with L |
+| `runtime/awaken-runtime/src/engine/finalize.rs:89` | (iv) | done | private `TerminalStateRead`: Committed uses the selected prefix; StagedOnly keeps the bare direct topology |
 | `runtime/awaken-runtime/src/engine/inference.rs:245` | (iv) | kept (L) | forwards RuntimeRunContext ownership to verify_attempt_ownership |
 | `runtime/awaken-runtime/src/engine/inference.rs:399` | (iv) | kept (L) | forwards RuntimeRunContext ownership to verify_attempt_ownership |
 | `runtime/awaken-runtime/src/engine/tool_execution.rs:945` | (iv) | kept (L) | SDK impl of the DurableTaskExecutor query |
-| `runtime/awaken-runtime/src/engine/tool_execution.rs:1081` | (iv) | deferred-L | awaken-runtime (SDK) internals: carry the executor in `ToolExecutionTarget::Sandbox`, with L |
+| `runtime/awaken-runtime/src/engine/tool_execution.rs:1081` | (iv) | done | private `ToolConcurrencySource` carries the selected Brain/Sandbox reader, or the existing MissingSandbox claim; public `ToolExecutionTarget` is unchanged |
 | `server/awaken-coordinator/src/worker_observation_boundary.rs:262` | (iii) | exempt | feature off: a Coordinator without a Worker provider cannot seal bootstrap ledgers and answers 503 (row R3) |
 | `server/awaken-inference-endpoint/src/brokered_inference.rs:781` | (iii) | done | closed enum ResponseDelivery {Whole, Streamed(sink)} |
 | `server/awaken-protocol-mcp/src/session_export.rs:98` | (iii) | exempt | implements the `AcpToolExporter::attached_channels` capability query above |
-| `server/awaken-run-executor-acp/src/permission.rs:81` | (iv) | deferred-L | passes the narrowing to the SDK `evaluate_run_policy(Option<&dyn ..>)`; changes with that signature |
+| `server/awaken-run-executor-acp/src/permission.rs:81` | (iv) | kept (L) | forwards the SDK's reviewed `policy=None` meaning unchanged to the sole `evaluate_run_policy`; its existing ACP policy matrix owns the effect |
 | `server/awaken-run-executor-acp/src/permission.rs:211` | (iii) | exempt | optional observer: absent when the Session exports no Awaken tools to the ACP CLI |
 | `server/awaken-run-executor-acp/src/permission.rs:249` | (iii) | exempt | same as `:211` |
 | `server/awaken-run-executor-acp/src/permission.rs:263` | (iii) | exempt | same as `:211` |
 | `server/awaken-run-executor-acp/src/tool_continuation.rs:52` | (iii) | exempt | feature off: an ACP Run that owns no Awaken tools has no tool continuation |
 | `server/awaken-session-application/src/credentials.rs:69` | (iii) | exempt | feature off: the optional `.credentials()` builder feature; without it vault-backed requests are refused and `missing_vault` is `Ok(None)` |
 | `server/awaken-session-application/src/credentials.rs:74` | (iii) | exempt | feature off: without material ingress the deployment's credentials are read-only (`SessionCredentialAuthorities::read_only`) |
-| `server/awaken-session-application/src/realization.rs:276` | (iii) | planned | production `SessionExecutionAdmission::new` already requires the role (compile_fail doctests); the `OnceLock` serves only the test-support partial fixture, whose rework spans about 12 test files in 6 crates |
+| `server/awaken-session-application/src/realization.rs:276` | (iii) | done | the placement role is an immutable Arc in the existing complete admission value; fixtures select it before App publication, using the same constructor as production |
 | `server/awaken-session-application/src/resource_lowering.rs:79` | (iii) | exempt | feature off: the optional `.resources()` builder feature; without it the tested refusal rows (N2/N7, `NotFound`) apply |
 | `server/awaken-session-application/src/resource_lowering.rs:100` | (iii) | exempt | feature off: the optional `.resources()` builder feature; without it the tested refusal rows (N2/N7, `NotFound`) apply |
 | `server/awaken-session-application/src/resource_lowering.rs:110` | (iii) | exempt | feature off: the optional `.resources()` builder feature; without it the tested refusal rows (N2/N7, `NotFound`) apply |
 | `server/awaken-session-application/src/session_input.rs:343` | (iii) | exempt | feature off: the optional `.resources()` builder feature; without it the tested refusal rows (N2/N7, `NotFound`) apply |
 | `server/awaken-session-application/src/session_input.rs:366` | (iii) | exempt | feature off: the optional `.resources()` builder feature; without it the tested refusal rows (N2/N7, `NotFound`) apply |
-| `server/awaken-session-application/src/terminal_cleanup/claims.rs:82` | (iii) | planned | same as `realization.rs:276`: required in production, optional only for the partial test fixture |
+| `server/awaken-session-application/src/terminal_cleanup/claims.rs:82` | (iii) | done | the exact Worker reader comes from the same complete admission value; no missing-slot runtime branch or test-only completion remains |
 | `server/awaken-session-executor/src/application/realization_renewal.rs:195` | (iii) | exempt | feature off: a process without a Session Control client (local `awaken-cli`) renews nothing (`Ok(0)`) or refuses a due lease with the existing error |
 | `server/awaken-session-executor/src/application/realization_renewal.rs:237` | (iii) | exempt | same as `:195` |
 | `server/awaken-session-executor/src/delegate.rs:242` | (iii) | done | required: `HostRunDelegationService` holds its publication source; `Some(..)` only at the SDK `resolve_delegate_snapshot` call; tests share `no_publications()` |

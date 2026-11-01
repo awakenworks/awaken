@@ -2,7 +2,7 @@
 // @formal entrypoint worker.accepted_protocol_version_is_inside_advertised_range
 use std::collections::BTreeSet;
 
-use awaken_agent_contract::credential::CredentialRef as WorkerCredentialRevision;
+use awaken_agent_contract::credential::CredentialRef;
 use awaken_provisioning_contract::{ResourceRequests, SandboxRequirements};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -53,7 +53,7 @@ pub struct PlacementRequirements {
     /// Worker-private credential revisions required by the complete published
     /// candidate set. Shared-vault references do not belong here.
     #[serde(default)]
-    pub required_credentials: BTreeSet<WorkerCredentialRevision>,
+    pub required_credentials: BTreeSet<CredentialRef>,
     /// Exact, expiring ACP profiles frozen by BackendOwned publications.
     #[serde(default)]
     pub required_acp_capabilities: BTreeSet<WorkerAcpCapabilityRequirement>,

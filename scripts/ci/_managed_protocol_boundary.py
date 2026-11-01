@@ -202,35 +202,22 @@ def _rust_struct_fields(source: str, name: str) -> set[str]:
 
 
 def _rust_function_body_spans(source: str, names: set[str]) -> list[tuple[int, int]]:
-    """Find the owned function bodies, ignoring braces inside ordinary strings."""
+    """Owned body ranges through the canonical offset-preserving Rust lexer."""
+    syntax = _crate_boundary_workspace.rust_syntax(source)
     spans: list[tuple[int, int]] = []
-    for function in re.finditer(r"\bfn\s+([A-Za-z_]\w*)\b", source):
+    for function in re.finditer(r"\bfn\s+([A-Za-z_]\w*)\b", syntax):
         if function.group(1) not in names:
             continue
-        opening = source.find("{", function.end())
-        if opening < 0:
+        end = _crate_boundary_workspace._rust_item_end(syntax, function.start())
+        if end is None or syntax[end - 1] != "}":
             continue
-        depth = 0
-        quoted = False
-        escaped = False
-        for position in range(opening, len(source)):
-            char = source[position]
-            if quoted:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    quoted = False
-            elif char == '"':
-                quoted = True
-            elif char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    spans.append((opening, position + 1))
-                    break
+        # Reuse the same item/balance owners as modularity. A header's const
+        # expression may have braces, but only the function body closes the item.
+        for brace in re.finditer(r"\{", syntax[function.end():end]):
+            opening = function.end() + brace.start()
+            if _crate_boundary_workspace._balanced_end(syntax, opening, "{", "}") == end:
+                spans.append((opening, end))
+                break
     return spans
 
 
@@ -347,17 +334,25 @@ def check_projection_input_boundary(repo_root: Path) -> list[str]:
         / "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs"
     )
     record = module.parent.parent / "session_record.rs"
+    reducer_paths = sorted(module.with_suffix("").rglob("*.rs"))
+    adjacent_paths = sorted(module.parent.rglob("*.rs"))
+    # One invocation observes every original path once, in first-read order.
+    # Keep both inventories and their predicates; this is no cross-call cache.
+    sources = {
+        path: path.read_text(encoding="utf-8")
+        for path in dict.fromkeys([*reducer_paths, *adjacent_paths, module, record])
+    }
     reducers = {
-        _crate_boundary_workspace.repository_path(path, repo_root): path.read_text(encoding="utf-8")
-        for path in sorted(module.with_suffix("").rglob("*.rs"))
+        _crate_boundary_workspace.repository_path(path, repo_root): sources[path]
+        for path in reducer_paths
     }
     adjacent_modules = {
-        _crate_boundary_workspace.repository_path(path, repo_root): path.read_text(encoding="utf-8")
-        for path in sorted(module.parent.rglob("*.rs"))
+        _crate_boundary_workspace.repository_path(path, repo_root): sources[path]
+        for path in adjacent_paths
     }
     return projection_input_boundary_violations(
-        module.read_text(encoding="utf-8"),
-        record.read_text(encoding="utf-8"),
+        sources[module],
+        sources[record],
         reducers,
         adjacent_modules,
     )
@@ -551,6 +546,47 @@ fn into_delivery_memo(self) {
         "publisher.rs": "fn publish_projection_candidate(&self) { self.sessions.lock(); }"
     }
     assert projection_input_boundary_violations(entry, record, publisher) == [], "P1/E1 CAS owner"
+    # Lexical ownership decision table: L1 ordinary escaped quotes and L2 raw
+    # quotes/character braces are literals, not a premature end of the SAME
+    # allowed publisher. L3 an adjacent real reducer still cannot borrow that
+    # permission; L4 an unclosed body grants no permission. L5 a literal spelling
+    # a function is not an owner. Reuse P1/P5's actual guard inputs/oracle, not a
+    # parallel protocol classifier; offsets still index the original source.
+    for row, literal in (
+        ("L1", 'let text = "}\\\"{";'),
+        ("L2 char", "let brace = '}';"),
+        ("L2 raw", 'let text = r#""}""#;'),
+    ):
+        source = publisher["publisher.rs"].replace("{ self.sessions", "{ " + literal + " self.sessions")
+        assert projection_input_boundary_violations(entry, record, {"publisher.rs": source}) == [], row
+        assert _rust_function_body_spans(source, {"publish_projection_candidate"}) == [
+            (source.index("{"), len(source))], row + " original offsets"
+        assert projection_input_boundary_violations(entry, record, {"publisher.rs": source +
+            " fn reduce(&self) { self.sessions.lock(); }"}), "L3 " + row
+    assert projection_input_boundary_violations(entry, record, {"publisher.rs":
+        "fn publish_projection_candidate(&self) { self.sessions.lock();"}), "L4 unclosed"
+    assert _rust_function_body_spans('const DOC: &str = "fn publish_projection_candidate() {}";',
+        {"publish_projection_candidate"}) == [], "L5 literal is not an owner"
+    # L6 a bodyless trait declaration ends at its semicolon: it cannot grant
+    # its delivery exception to the next reducer. L7 const-generic header braces
+    # are not that function's body, either; only the canonical complete item
+    # boundary can grant the original publisher body. The same real oracle must
+    # still reject cache reads in headers and in an adjacent reducer.
+    for row, header in (
+        ("L6", "fn publish_projection_candidate(&self);"),
+        ("L7 declaration", "fn publish_projection_candidate<const N: usize = { 1 }>(&self);"),
+    ):
+        source = "trait Publisher { " + header + " fn reduce(&self) { self.sessions.lock(); } }"
+        assert projection_input_boundary_violations(entry, record, {"publisher.rs": source}), row
+        assert _rust_function_body_spans(source, {"publish_projection_candidate"}) == [], row
+    source = "fn publish_projection_candidate<const N: usize = { 1 }>(&self) { self.sessions.lock(); }"
+    assert projection_input_boundary_violations(entry, record, {"publisher.rs": source}) == [], "L7 body"
+    assert _rust_function_body_spans(source, {"publish_projection_candidate"}) == [
+        (source.index("{ self.sessions"), len(source))], "L7 exact body offsets"
+    assert projection_input_boundary_violations(entry, record, {"publisher.rs": source +
+        " fn reduce(&self) { self.sessions.lock(); }"}), "L7 adjacent reducer"
+    assert projection_input_boundary_violations(entry, record, {"publisher.rs":
+        "fn publish_projection_candidate<const N: usize = { self.sessions.lock(); 1 }>(&self) {}"}), "L7 header is not body"
     alias_leak = {
         "publisher.rs": publisher["publisher.rs"]
         + " fn reduce(shared: &ManagedState) { let alias = &shared.sessions; alias.lock(); }"
@@ -607,3 +643,29 @@ fn into_delivery_memo(self) {
         subtree.mkdir()
         (subtree / "future.rs").write_text(leak["future.rs"], encoding="utf-8")
         assert check_projection_input_boundary(root), "P4/E3 newly split reducer included"
+        # I1 reducer/adjacent/entry inventories overlap: each physical path is
+        # read once in this invocation, with both original dictionaries/scopes.
+        # I2 an equal-size/equal-mtime next invocation reads changed source afresh;
+        # no mutable-source cache may replace the actual input observation.
+        from unittest import mock
+        import os
+        reads: dict[Path, int] = {}
+        original_read = Path.read_text
+        def counted_read(path, *args, **kwargs):
+            reads[path] = reads.get(path, 0) + 1
+            return original_read(path, *args, **kwargs)
+        with mock.patch.object(Path, "read_text", counted_read):
+            assert check_projection_input_boundary(root), "I1 original warm-read refusal"
+        assert set(reads) == {module, module.parent.parent / "session_record.rs", subtree / "future.rs"}, "I1 exact original inputs"
+        assert all(count == 1 for count in reads.values()), ("I1 one fresh read", reads)
+        future = subtree / "future.rs"
+        original_stat = future.stat()
+        old_text = future.read_text(encoding="utf-8")
+        future.write_text("fn clean() {}".ljust(len(old_text)), encoding="utf-8")
+        os.utime(future, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+        assert future.stat().st_size == original_stat.st_size
+        assert future.stat().st_mtime_ns == original_stat.st_mtime_ns
+        reads.clear()
+        with mock.patch.object(Path, "read_text", counted_read):
+            assert check_projection_input_boundary(root) == [], "I2 source changed despite equal size/mtime"
+        assert all(count == 1 for count in reads.values()), "I2 one new observation per call"

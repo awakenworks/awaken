@@ -4,7 +4,7 @@
 //!
 //! Dispatch never derives these choices from a configuration file. Each value
 //! names the one decision it carries: whether a foreground Run is delivered
-//! through the durable queue ([`RunIngress`]), whether this process drains that
+//! through the durable queue ([`ForegroundRunDelivery`]), whether this process drains that
 //! queue itself and with how many slots ([`LocalExecution`]), the identity its
 //! dispatch leases are fenced with ([`LeaseOwnerId`]), how long a lost wake can
 //! delay recovery, and who observes queue depth ([`QueueDepthSource`]).
@@ -18,7 +18,7 @@ pub const DEFAULT_DISPATCH_POLL_INTERVAL: std::time::Duration =
 
 /// Whether a foreground Run is delivered through the durable dispatch queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunIngress {
+pub enum ForegroundRunDelivery {
     /// The submitting Session drives its attempt directly; queued, crashed and
     /// scheduled work is not recovered across a restart.
     Direct,
@@ -27,7 +27,7 @@ pub enum RunIngress {
     Durable,
 }
 
-impl RunIngress {
+impl ForegroundRunDelivery {
     #[must_use]
     pub const fn is_durable(self) -> bool {
         matches!(self, Self::Durable)
@@ -156,7 +156,7 @@ pub enum QueueDepthSource {
 /// The process's part in Run execution, selected once by its composition root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionTopology {
-    pub ingress: RunIngress,
+    pub foreground_delivery: ForegroundRunDelivery,
     pub local: LocalExecution,
     pub lease_owner: LeaseOwnerId,
     /// Maximum fallback wait before a pool checks durable dispatch again after
@@ -186,7 +186,7 @@ mod tests {
     /// A standalone process: direct ingress, CPU-sized pool, built-in sampler.
     fn standalone() -> ExecutionTopology {
         ExecutionTopology {
-            ingress: RunIngress::Direct,
+            foreground_delivery: ForegroundRunDelivery::Direct,
             local: LocalExecution::in_process_pool(),
             lease_owner: LeaseOwnerId::new("node-a").unwrap(),
             lost_wake_recovery_bound: std::time::Duration::from_millis(250),
@@ -219,6 +219,9 @@ mod tests {
     fn lease_owner_and_local_execution_are_total() {
         // Owner: blank -> refused; non-blank -> kept verbatim. Local execution:
         // only an in-process pool has sizing and drains locally.
+        // Naming-only migration: Durable -> durable delivery, Direct -> direct
+        // delivery. The original variants and predicate remain the same; the
+        // crate's retired-path doctest refuses the former RunIngress facade.
         assert!(LeaseOwnerId::new("  ").is_err());
         assert_eq!(LeaseOwnerId::new("node-a").unwrap().as_str(), "node-a");
         let sizing = DispatchPoolSizing::Registered(std::num::NonZeroUsize::new(3).unwrap());
@@ -229,6 +232,9 @@ mod tests {
         assert!(LocalExecution::InProcessPool(sizing).runs_local_pool());
         assert_eq!(LocalExecution::RemoteWorkersOnly.pool_sizing(), None);
         assert!(!LocalExecution::RemoteWorkersOnly.runs_local_pool());
-        assert!(RunIngress::Durable.is_durable() && !RunIngress::Direct.is_durable());
+        assert!(
+            ForegroundRunDelivery::Durable.is_durable()
+                && !ForegroundRunDelivery::Direct.is_durable()
+        );
     }
 }

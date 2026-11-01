@@ -226,6 +226,10 @@ async fn service_on(
         Arc::new(RecordingEnvironmentSource::default()),
         Default::default(),
         None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
     );
     app.set_resource_registry(registry.clone());
     app.set_resource_purge_scheduler(purge.clone());

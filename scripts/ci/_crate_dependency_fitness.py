@@ -123,6 +123,7 @@ class CrateSpec(NamedTuple):
     normal_deps: frozenset[str]
     product: str = ""
     bounded_context: str = ""
+    public_first_party_reexports: frozenset[str] = frozenset()
 
 
 def placement_violations(spec: CrateSpec) -> list[str]:
@@ -379,3 +380,8 @@ def selftest() -> None:
             c("ext", "runtime", "infrastructure", "ext-example"),
         ]
     ), "R12 contract must not depend on extension"
+    # DTO2: the original seven positional fields/order remain compatible;
+    # reexports default empty, so dependency-only callers need no Rust scan.
+    positional = CrateSpec("x", "shared", "contract", "x", frozenset(), "sdk", "agent-runtime")
+    assert positional[:7] == ("x", "shared", "contract", "x", frozenset(), "sdk", "agent-runtime"), "DTO2 old positional contract"
+    assert positional.public_first_party_reexports == frozenset(), "DTO2 default source facts"

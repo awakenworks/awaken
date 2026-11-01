@@ -49,7 +49,8 @@ async fn delayed_interruption_preserves_the_successor(
     let mut dependencies = crate::SessionExecutorBuilder::ephemeral(model.clone(), "scripted")
         .await
         .with_ephemeral_dispatch(dispatch);
-    dependencies.execution.ingress = crate::RunIngress::Direct;
+    dependencies.execution.foreground_delivery =
+        awaken_deployment_config::ForegroundRunDelivery::Direct;
     let host = dependencies.build().expect("complete Host composition");
     let _managed = host.clone();
     let thread = match (start_with_active_run, fail_read) {

@@ -497,11 +497,13 @@ mod loom_tests {
         // invariant counterexample; preemptions/permutations stay exhaustive.
         loom::model(|| {
             let scenario = snapshot_actor(|| {
+                use awaken_agent_contract::credential::CredentialRef;
+                use awaken_credential_contract::CredentialObservationState;
                 use awaken_worker_contract::{
                     PlacementRequirements, TRUSTED_HOST_SANDBOX_BACKEND,
-                    WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState,
+                    WorkerCredentialObservation,
                 };
-                let credential = WorkerCredentialRevision {
+                let credential = CredentialRef {
                     id: "host-login".into(),
                     revision: 1,
                 };
@@ -543,7 +545,7 @@ mod loom_tests {
                     let identity = identity.clone();
                     let mut observation = available.clone();
                     if sequence == 2 {
-                        observation.state = WorkerCredentialState::LoginRequired;
+                        observation.state = CredentialObservationState::LoginRequired;
                     }
                     handles.push(snapshot_actor(move || {
                         directory

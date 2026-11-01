@@ -20,6 +20,14 @@
 //! is constructed in (`SessionExecutionProcess::from_deployment`), so a
 //! Coordinator resolves the same file without linking the executor (ADR-0091 composition boundary). Dispatch topology and storage selection live beside it
 //! because they are read from the same file by the same roots.
+//!
+//! [`ForegroundRunDelivery`] names whether a foreground Run is delivered through
+//! the durable dispatch queue; the retired name of the run-ingress crates is
+//! gone:
+//!
+//! ```compile_fail
+//! use awaken_deployment_config::RunIngress;
+//! ```
 #![warn(unreachable_pub)]
 
 /// Mint a fresh process-unique platform Workspace coordinate without reading
@@ -37,8 +45,8 @@ mod process_environment;
 
 pub use coordinator_storage::{CoordinatorStorage, DispatchBackend, StoreKind, Wake};
 pub use execution_topology::{
-    DEFAULT_DISPATCH_POLL_INTERVAL, DispatchPoolSizing, ExecutionTopology, LeaseOwnerId,
-    LocalExecution, QueueDepthSource, RunIngress,
+    DEFAULT_DISPATCH_POLL_INTERVAL, DispatchPoolSizing, ExecutionTopology, ForegroundRunDelivery,
+    LeaseOwnerId, LocalExecution, QueueDepthSource,
 };
 pub use process_environment::{AmbientApiKeyEnvironmentError, reject_ambient_api_key_environment};
 
@@ -574,10 +582,10 @@ impl DeploymentConfig {
     /// `dispatch_owner`, the poll bound or the depth flag.
     pub fn execution_topology(&self) -> Result<crate::ExecutionTopology, String> {
         let topology = crate::ExecutionTopology {
-            ingress: if self.durable {
-                crate::RunIngress::Durable
+            foreground_delivery: if self.durable {
+                crate::ForegroundRunDelivery::Durable
             } else {
-                crate::RunIngress::Direct
+                crate::ForegroundRunDelivery::Direct
             },
             local: if self.disable_local_pool {
                 crate::LocalExecution::RemoteWorkersOnly
@@ -1029,7 +1037,11 @@ mod tests {
         let mut config = base();
         config.dispatch_poll_interval = std::time::Duration::from_millis(750);
         let direct = config.execution_topology().expect("valid");
-        assert_eq!(direct.ingress, crate::RunIngress::Direct, "E1");
+        assert_eq!(
+            direct.foreground_delivery,
+            crate::ForegroundRunDelivery::Direct,
+            "E1"
+        );
         assert_eq!(direct.local, crate::LocalExecution::in_process_pool(), "E2");
         assert_eq!(direct.lease_owner.as_str(), "host-1", "E5");
         assert_eq!(
@@ -1047,7 +1059,11 @@ mod tests {
         config.disable_local_pool = true;
         config.sample_dispatch_queue_depth = false;
         let coordinator = config.execution_topology().expect("valid");
-        assert_eq!(coordinator.ingress, crate::RunIngress::Durable, "C1/E1");
+        assert_eq!(
+            coordinator.foreground_delivery,
+            crate::ForegroundRunDelivery::Durable,
+            "C1/E1"
+        );
         assert_eq!(
             coordinator.local,
             crate::LocalExecution::RemoteWorkersOnly,

@@ -231,12 +231,12 @@ pub(crate) struct ChildExecutionSubstrate {
 /// This replaces the former trait object, boolean, and optional concrete durable
 /// ingress that all encoded the same decision. Durable execution is admitted by
 /// `RunDispatch`; direct execution alone carries an inline attempt driver.
-pub(crate) enum ForegroundRunDelivery {
+pub(crate) enum ForegroundRunDriver {
     Direct(Arc<DirectAttemptDriver>),
     Durable,
 }
 
-impl ForegroundRunDelivery {
+impl ForegroundRunDriver {
     pub(crate) fn is_durable(&self) -> bool {
         matches!(self, Self::Durable)
     }
@@ -256,7 +256,7 @@ pub(crate) struct SessionCtx {
     pub(crate) runtime: Arc<Runtime>,
     /// One authoritative foreground delivery choice; no parallel boolean or
     /// erased/concrete pair is retained.
-    pub(crate) delivery: ForegroundRunDelivery,
+    pub(crate) delivery: ForegroundRunDriver,
     /// The one fully configured Worker that executes a claim already accepted by
     /// this process's dispatch authority. Foreground delivery durability is an
     /// independent choice: durable contexts share this exact `Arc` with their

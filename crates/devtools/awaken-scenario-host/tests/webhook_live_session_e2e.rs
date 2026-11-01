@@ -141,6 +141,18 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
                 awaken_protocol_managed_testkit::environment_fixture(session_fixture_clock.clone())
                     .execution,
                 session_fixture_clock,
+                {
+                    let probe = std::sync::Arc::new(
+                        awaken_session_application::ExecutionObservationProbe::default(),
+                    );
+                    awaken_session_application::SessionExecutionAdmission::new(
+                        host.coordination()
+                            .dispatch_observation_source()
+                            .expect("original Host dispatch observation"),
+                        probe.clone(),
+                        host.dispatch().preparation_placement(),
+                    )
+                },
                 std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             ),
             awaken_data_governance_contract::CapturePolicy::default(),

@@ -135,9 +135,7 @@ pub use crate::host::{
 pub use crate::no_model::NoModelConfiguredExecutor;
 use awaken_credential_contract::CredentialRefreshFactory;
 use awaken_credential_materializer::PinnedCredentialMaterializer;
-pub(crate) use awaken_deployment_config::{
-    DispatchPoolSizing, ExecutionTopology, LocalExecution, RunIngress,
-};
+pub(crate) use awaken_deployment_config::{DispatchPoolSizing, ExecutionTopology, LocalExecution};
 use awaken_resource_contract::FileContentSource;
 #[cfg(test)]
 use awaken_resource_contract::RepositoryBindingVerifier;

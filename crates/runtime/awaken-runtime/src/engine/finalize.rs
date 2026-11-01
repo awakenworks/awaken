@@ -74,7 +74,10 @@ pub(super) async fn finish(
     finish_with_reader(
         runtime,
         context,
-        context.reader.as_deref(),
+        match context.reader.as_deref() {
+            Some(reader) => TerminalStateRead::Committed(reader),
+            None => TerminalStateRead::StagedOnly,
+        },
         thread_id,
         run_id,
         step,
@@ -82,12 +85,20 @@ pub(super) async fn finish(
     .await
 }
 
+/// The already selected state-read mode for terminal sealing. Bare direct
+/// execution may have only this attempt's staged state; resume always supplies
+/// its authoritative committed prefix instead of rediscovering a context role.
+pub(super) enum TerminalStateRead<'a> {
+    Committed(&'a dyn CommittedThreadView),
+    StagedOnly,
+}
+
 /// Resume already has an authoritative borrowed view. Use it for sealing too;
 /// the optional context reader is not a second source of resume truth.
 pub(super) async fn finish_with_reader(
     runtime: &Runtime,
     context: &RuntimeRunContext,
-    reader: Option<&dyn CommittedThreadView>,
+    reader: TerminalStateRead<'_>,
     thread_id: &ThreadId,
     run_id: RunId,
     step: RunStepResult,
@@ -122,9 +133,10 @@ pub(super) async fn finish_with_reader(
     // and child-cancellation intent become one ThreadCommit.
     if matches!(run_state, RunState::Ended(_)) {
         let mut store = store_from_run_commands(
-            reader
-                .map(|reader| reader.committed_state(thread_id))
-                .unwrap_or_default(),
+            match reader {
+                TerminalStateRead::Committed(reader) => reader.committed_state(thread_id),
+                TerminalStateRead::StagedOnly => Vec::new(),
+            },
             &run_id,
         );
         for command in &staged_state {

@@ -6,6 +6,20 @@
 //! packages, networking, and an exact sandbox-policy reference. Coordinator
 //! receives an executable projection through a registration port; it never opens
 //! this registry. The in-memory and durable adapters live in `awaken-env-store`.
+//!
+//! # Boundary
+//!
+//! Context: `environment`.
+//!
+//! Implemented by: `awaken-admin-assistant`, `awaken-env-store`, `awaken-environment-application`.
+//!
+//! Called by: `awaken-admin-assistant`, `awaken-container-contract`, `awaken-control`,
+//! `awaken-coordinator`, `awaken-env-store`, `awaken-environment-application`,
+//! `awaken-environment-package-image-builder`, `awaken-executable-environment-catalog`,
+//! `awaken-executable-environment-contract`, `awaken-package-image`, `awaken-process-startup`,
+//! `awaken-protocol-awaken`, `awaken-protocol-managed`, `awaken-protocol-managed-testkit`,
+//! `awaken-provisioning-contract`, `awaken-sandbox-container`, `awaken-session-application`,
+//! `awaken-session-configuration-contract`, `awaken-store-conformance`, `awaken-work-store`.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};

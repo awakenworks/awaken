@@ -143,6 +143,7 @@ async fn cold_cleanup_does_not_transfer_an_unsettled_source_to_a_new_worker() {
                 successor.clone(),
             );
         }
+        let workers = Arc::new(RecordingWorkerObservations::default());
         let app = configured_application(
             runtime.clone(),
             crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
@@ -152,8 +153,12 @@ async fn cold_cleanup_does_not_transfer_an_unsettled_source_to_a_new_worker() {
                 ..Default::default()
             },
             None,
+            {
+                let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), workers.clone(), probe)
+            },
         );
-        let workers = Arc::new(RecordingWorkerObservations::default());
+
         let current = terminal_cleanup_worker(&target, terminal_cleanup_manifest());
         let mut predecessor = terminal_cleanup_worker(&old_target, terminal_cleanup_manifest());
         predecessor.snapshot.state = awaken_worker_contract::WorkerState::Dead;
@@ -166,9 +171,7 @@ async fn cold_cleanup_does_not_transfer_an_unsettled_source_to_a_new_worker() {
             .unwrap(),
         );
         workers.replace(vec![current, predecessor]);
-        app.execution_admission()
-            .set_worker_observation_source(workers)
-            .unwrap();
+        drop(workers);
         let assignment = app
             .terminal_cleanups
             .claim_next_terminal_cleanup(target, None)
@@ -251,23 +254,27 @@ async fn draining_cleanup_claim_only_continues_its_owned_terminal_root() {
             )
             .await;
             let before = repo.get(&id).await.unwrap();
-            let application = application_with_configuration(
-                repo.clone(),
+            let workers = Arc::new(RecordingWorkerObservations::default());
+            let application = configured_application(
+                Arc::new(NoopRuntime),
+                SessionPersistence::new(repo.clone(), system_clock()),
                 Arc::new(RecordingEnvironmentSource::default()),
                 SessionApplicationConfiguration {
                     execution_placement: SessionExecutionPlacement::RegisteredWorker,
                     ..Default::default()
                 },
+                None,
+                {
+                    let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                    crate::SessionExecutionAdmission::new(probe.clone(), workers.clone(), probe)
+                },
             );
-            let workers = Arc::new(RecordingWorkerObservations::default());
+
             let mut worker = terminal_cleanup_worker(&target, terminal_cleanup_manifest());
             worker.snapshot.state = state;
             worker.snapshot.in_flight = worker.snapshot.manifest.capacity.max_concurrent;
             workers.replace(vec![worker]);
-            application
-                .execution_admission()
-                .set_worker_observation_source(workers)
-                .unwrap();
+            drop(workers);
             let assignment = application
                 .terminal_cleanups
                 .claim_next_terminal_cleanup(target, None)
@@ -333,15 +340,22 @@ async fn draining_cleanup_claim_races_preserve_owned_roots_and_compensate_new_on
                     successor.clone(),
                 );
             }
-            let application = application_with_configuration(
-                repo,
+            let workers = Arc::new(RecordingWorkerObservations::default());
+            let application = configured_application(
+                Arc::new(NoopRuntime),
+                SessionPersistence::new(repo, system_clock()),
                 Arc::new(RecordingEnvironmentSource::default()),
                 SessionApplicationConfiguration {
                     execution_placement: SessionExecutionPlacement::RegisteredWorker,
                     ..Default::default()
                 },
+                None,
+                {
+                    let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                    crate::SessionExecutionAdmission::new(probe.clone(), workers.clone(), probe)
+                },
             );
-            let workers = Arc::new(RecordingWorkerObservations::default());
+
             let ready = terminal_cleanup_worker(&target, terminal_cleanup_manifest());
             let mut draining = ready.clone();
             draining.snapshot.state = awaken_worker_contract::WorkerState::Draining;
@@ -352,10 +366,7 @@ async fn draining_cleanup_claim_races_preserve_owned_roots_and_compensate_new_on
             }
             steps.push(WorkerObservationStep::Workers(vec![draining]));
             workers.script(steps);
-            application
-                .execution_admission()
-                .set_worker_observation_source(workers)
-                .unwrap();
+            drop(workers);
             let claimed = application
                 .terminal_cleanups
                 .claim_next_terminal_cleanup(target, None)
@@ -517,10 +528,12 @@ async fn independently_exited_predecessor_allows_terminal_assignment_without_cle
                 ..Default::default()
             },
             None,
+            {
+                let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), workers.clone(), probe)
+            },
         );
-        app.execution_admission()
-            .set_worker_observation_source(workers)
-            .unwrap();
+        drop(workers);
         let observed = awaken_session_execution_contract::SessionTerminalCleanupQueue::claim_next_terminal_cleanup(app.terminal_cleanups.as_ref(), target.clone(), None).await;
         if !allowed {
             if rule == "read-error" {
@@ -793,7 +806,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     //
     // | Rule | source | protocol | resources | Environment | Effect |
     // |---|---|---|---|---|---|
-    // | W1a | absent | - | - | unmaterialized | E2 unavailable |
+    // | W1a | absent | - | - | unmaterialized | constructor rejection |
     // | W1b | read failure | - | - | unmaterialized | E2 unavailable |
     // | W2 | stale incarnation | current | present | unmaterialized | E2 skip |
     // | W3 | Starting | current | present | unmaterialized | E2 skip |
@@ -820,6 +833,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     create(repo.as_ref(), requested).await;
 
     let observation_runtime = Arc::new(RecordingCleanupRuntime::default());
+    let workers = Arc::new(RecordingWorkerObservations::default());
     let application = configured_application(
         observation_runtime.clone(),
         crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
@@ -829,19 +843,15 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
             ..Default::default()
         },
         None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), workers.clone(), probe)
+        },
     );
-    assert!(
-        matches!(
-            application
-                .terminal_cleanups
-                .claim_next_terminal_cleanup(target.clone(), None)
-                .await,
-            Err(
-                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(_)
-            )
-        ),
-        "W1/E2"
-    );
+    // W1a's missing-reader App is excluded by the complete constructor (its
+    // existing E0061 control), so this row asserts zero root mutation before
+    // any claim. W1b below still supplies a real selected reader outage.
+
     assert!(
         repo.get(&SessionId::from("claim-compatible"))
             .await
@@ -851,15 +861,11 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
         "W1/E2 zero root mutation"
     );
 
-    let workers = Arc::new(RecordingWorkerObservations::default());
     let mut stale = terminal_cleanup_worker(&target, terminal_cleanup_manifest());
     stale.snapshot.identity =
         awaken_worker_contract::WorkerIdentity::new(target.owner.clone(), "stale-boot", 4);
     workers.replace(vec![stale]);
-    application
-        .execution_admission()
-        .set_worker_observation_source(workers.clone())
-        .expect("install exact Worker observations");
+
     workers.fail.store(true, Ordering::SeqCst);
     assert!(
         matches!(

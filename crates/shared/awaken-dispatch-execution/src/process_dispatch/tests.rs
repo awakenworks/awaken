@@ -226,7 +226,7 @@ fn coordinator_fixture_with_wake(
     let owner = Arc::new(AnyCoordinatorDispatch::from_durable_dispatch(store));
     let dispatch = ProcessDispatch::new(
         ExecutionTopology {
-            ingress: awaken_deployment_config::RunIngress::Durable,
+            foreground_delivery: awaken_deployment_config::ForegroundRunDelivery::Durable,
             local,
             lease_owner: awaken_deployment_config::LeaseOwnerId::new("coordinator").unwrap(),
             lost_wake_recovery_bound: std::time::Duration::from_millis(5),

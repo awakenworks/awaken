@@ -70,12 +70,6 @@ impl crate::SessionRunAdmissions {
         } else {
             self.execution_admission
                 .dispatch
-                .get()
-                .ok_or_else(|| {
-                    SessionProjectionRecoveryError::Unavailable(
-                        "Session dispatch observation source is unavailable".into(),
-                    )
-                })?
                 .events_after(dispatch_after, limit, Some(run_id))
                 .await
                 .map_err(|error| SessionProjectionRecoveryError::Unavailable(error.to_string()))?

@@ -11,6 +11,18 @@
 //! [`SplitChannel`]); a distributed provider backs the same channel with a
 //! socket — the consumer (an ACP bridge) is written once against
 //! [`AgentChannel`].
+//!
+//! # Boundary
+//!
+//! Context: `environment`.
+//!
+//! Implemented by: none (values only).
+//!
+//! Called by: `awaken-acp-contract`, `awaken-connection-plan`, `awaken-protocol-acp`,
+//! `awaken-protocol-mcp`, `awaken-provisioning-contract`, `awaken-run-executor-acp`,
+//! `awaken-sandbox-container`, `awaken-sandbox-kubernetes`, `awaken-sandbox-local`,
+//! `awaken-session-environment`, `awaken-session-environment-contract`, `awaken-session-mcp`,
+//! `awaken-tool-relay`.
 
 use tokio::io::{AsyncRead, AsyncWrite};
 

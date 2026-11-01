@@ -258,7 +258,7 @@ share `formal_model_mutation_runner.py`.
 Every rule that leaves Python has exactly one replacement; nothing is dropped.
 "Wider" means the replacement refuses more than the guard did.
 
-| # | Retired rule (guard) | Replacement | Difference | Step |
+| # | Rule (guard) | Enforcement / retirement condition | Difference | Step |
 |---|---|---|---|---|
 | R1 | `_module_layer_fitness` `upward-edge`, `shared-host-impl` | the `awaken-session-realization` crate boundary; Cargo refuses the back edge as a cycle | none: no realization module is left in the executor | M1 |
 | R2 | `_runtime_secret_boundary` | the secret types exist only in `awaken-credential-vault`; `sdk-standalone` (at 0) refuses an SDK→Platform edge | a local type reusing a secret name moves to the vocabulary table (R20) | M1 |
@@ -274,9 +274,9 @@ Every rule that leaves Python has exactly one replacement; nothing is dropped.
 | R12 | `_provider_env_fitness` ambient genai constructors | `disallowed-methods` on `GenaiExecutor::new` and `genai::Client::default`; `#[expect]` in the one adapter | the `Default` path must be checked in the compile slot | M4 |
 | R13 | `check_fabricated_facts` R2 ambient clock | `disallowed-methods` `SystemTime::now`, `Instant::now`, `Utc::now`, `Local::now`; `#[expect]` in `awaken-time` and binaries | a concrete `SystemClock` read in place stays in the guard | M4 |
 | R14 | `check_authority_arithmetic` `as i64`/`as u64` in SQL adapters | `#![deny(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]` in each SQL adapter module | wider: every cast there | M4 |
-| R15 | `_session_state_ownership_fitness` direct writes and `&mut PersistedSession`; `_contract_map_fitness` `aggregate-pub-field` (54); `_single_owner_fitness` `environment-rewrite` (1) | private aggregate fields; stores build values through one constructor; Environment laws become `pub(crate)`; conformance fixtures use a test-support constructor | wider: every crate | M5 |
-| R16 | `_single_owner_fitness` `state-construction` (4) | `#[non_exhaustive]` on each `SessionExecutionState` and `SessionEnvironmentState` variant | matches outside the contract need `..` on struct variants | M5 |
-| R17 | `check_observation_collapse` R1 (`Default`, `From<Observed>` for `Option`) | `static_assertions::assert_not_impl_any!` in `awaken-agent-contract` | an inherent `Observed::ok()` is not a trait; that spelling stays in the guard | M5 |
+| R15 | `_session_state_ownership_fitness` DTO writes/escapes; `_contract_map_fitness` public-field ratchet; `_single_owner_fitness` Environment rewrites | Keep the semantic rules: `SessionAggregate` privacy/read-only access already protects its working candidate, not every compatible DTO or module ownership rule. | Private DTO fields or a mirror DTO are not an equivalent replacement; see the M5 decision below. | M5, retained |
+| R16 | `_single_owner_fitness` state construction | Keep the external-module construction rule until an actual equivalent capability boundary is demonstrated. | `#[non_exhaustive]` alone neither owns deserialization nor decides which module may construct a valid state value. | M5, retained |
+| R17 | `check_observation_collapse` R1, R2 and R3 | Keep escape-hatch, typed-port/translator and derived-corpus rules; reuse the canonical Rust lexer. | A trait assertion would not cover inherent escape methods, translators or call-site collapse; no new negative-trait dependency is required. | M5, retained |
 | R18 | `_poisoned_lock_fitness` L1 | `disallowed-methods` on the `std::sync` lock methods; the V2 sync module holds the only `#[expect]` | wider: all production code instead of two crates (640 sites, V2) | M6 |
 | R19 | `_poisoned_lock_fitness` L2 (poison-naming `.expect`) | the V2 lock API returns a typed refusal; until V2 ends, the one pattern moves into the merged error module | none | M6 |
 | R20 | retired-name tombstones in `_execution_ownership_fitness` (22), `_service_data_ownership_fitness`, `_session_state_ownership_fitness`, `check_crate_boundaries` (tools, `TypedTool`) | one retired-vocabulary table in `_naming_fitness` | none | M7 |
@@ -293,6 +293,28 @@ Rules that stay (b) and how each retires:
 | `check_tenancy_is_not_optional` | handlers take only `RequiredWorkspaceScope` and the scope is not inserted as a plain `Extension` |
 | `check_model_binding_producers_are_ratcheted` (404) | `ModelBinding::new` is removed or test-only |
 | dependency direction, protocol translation, ownership, effects, wire closure, migrations, vocabulary, size reports | they hold semantics the compiler cannot see; they stay, merged as below |
+
+### M5 decision: aggregate authority is not writable DTO syntax
+
+The existing [SessionAggregate](../../crates/contract/awaken-session-contract/src/state/aggregate/mod.rs)
+has private state, read-only `Deref`, no `DerefMut`, validated `TryFrom`, and
+three compile-fail controls against direct/nested writes and mutable DTO escape.
+[SessionMutations](../../crates/server/awaken-session-application/src/mutation.rs)
+retains the repository CAS; a public `PersistedSession` transport/store value is
+not itself a second writable aggregate authority.
+
+| Existing control | What it holds | What still needs the semantic guard |
+|---|---|---|
+| Aggregate privacy and E0594/E0596 compile-fail controls | A caller cannot mutate the working aggregate through its read snapshot. | `_session_state_ownership_fitness` also owns allowed write modules, DTO escape/direct-coordinate writes, and authoritative DTO/state layout; `_contract_map_fitness` measures public fields, a different rule. |
+| State value types and canonical transition methods | Typed calls decide aggregate transitions; serialized state can remain a compatible value. | `_single_owner_fitness` restricts external construction and Environment rewrites by actual owner; serialization or `#[non_exhaustive]` alone does not establish that policy. |
+| `Observed`'s three variants, absent collapse methods and `#[must_use]` | Existing code must name the result variants; dropping an observation is diagnosed. | The observation guard forbids future escape APIs, preserves the tri-state checkpoint/transport mapping, and checks real consumers; ordinary type checking cannot forbid a later legal `Default`/conversion implementation or an explicit Unknown-to-Absent branch. |
+
+R15–R17 therefore have no blanket retirement commitment. Retire only a
+particular predicate after an existing compiler/capability control and its
+positive/negative cases cover the same scope; otherwise retain it. Do not add a
+mirror DTO, bulk getters, marker type or dependency merely to lower script
+counts. This is a source/ownership decision, not a claim that M5 runtime
+qualification has run.
 
 ## Proposed compiler configuration
 
@@ -333,11 +355,16 @@ Each step lands as its own commits and is checked on its own. Steps marked
 | M2 | R6, R7 | `cargo deny check bans` (Cargo metadata only) | no | done |
 | M3 | `[lints] workspace = true` in the 9 crates without it; R8, R9 | both clippy passes `-D warnings` | yes | written; awaits the compile slot |
 | M4 | `clippy.toml`; the two-pass `check-rust.sh`; R10–R14 with owner `#[expect]`s | both clippy passes; `check_crate_boundaries.py` | yes | written; awaits the compile slot |
-| M5 | R15–R17, with V3/V4 | workspace build and tests | yes | open |
+| M5 | Check R15–R17 per-rule equivalence; retain the distinct semantic rules above | existing compiler controls plus each rule's positive/negative cases | only if controls change | no blanket retirement |
 | M6 | R18, R19, with V2 | both clippy passes; the V2 decision table | yes | written; awaits the compile slot |
 | M7 | the merges above and R20; `_input_closure` for every `INPUT_GLOBS` checker | each guard's `--self-test`; `check_crate_boundaries.py` | no | input closure done; merges in part (see outcome) |
 
 ## Expected reductions
+
+These are the phase-1 forecast, not measured completion or a reason to remove
+semantic checks. The current source diagnostics are linked from
+[STATUS](../STATUS.md#architecture-execution); 191 scripts does not mean V1's
+numerical targets have been achieved.
 
 | Measure | Now | After M7 |
 |---|---:|---:|
@@ -432,8 +459,9 @@ the rest of the dependency-direction module.
    `sqlx`/`chrono` re-export paths, `genai::Client::default`, and whether
    clippy 1.96 has `allow-*-in-tests` for these lints; add owner `#[expect]`s;
    retire R10–R14.
-3. M5 (with V3/V4): private aggregate fields, `#[non_exhaustive]` state
-   variants, `assert_not_impl_any!` for `Observed`; retire R15–R17.
+3. M5 (with V3/V4): preserve the existing aggregate authority and the
+   non-equivalent DTO/module/observation rules described above; no blanket
+   R15–R17 retirement or new negative-trait dependency is planned.
 4. M6 (with V2): the sync module and `disallowed-methods` on `std::sync`
    locks; delete `_poisoned_lock_fitness.py`.
 
@@ -502,3 +530,12 @@ The first batch must confirm, and each item names its fallback:
    `awaken-runtime-examples`, `awaken-ext-skills`, `awaken-coordinator` and
    `awaken-webhook` bring no new `unsafe_code`/`unexpected_cfgs` errors, and
    `awaken-outbound-http`'s proxy test compiles with its file-level allow.
+
+
+### 2026-11-01 source consolidation
+
+The combined candidate reuses one canonical CrateSpec and the shared Rust
+lexer/balance reader instead of parallel implementations; their original pure
+self-tests passed. The observation R1/R2/R3 rules remain, including malformed
+input and offset behavior; this is not Rust/normal qualification of V4/G or a
+claim that every V1 reduction is complete.

@@ -3,6 +3,15 @@
 //!
 //! This leaf owns no HTTP framework, identity store, authorization policy, or
 //! domain command. Adapters pass raw header bytes after transport parsing.
+//!
+//! # Boundary
+//!
+//! Context: `access`.
+//!
+//! Implemented by: `awaken-coordinator`.
+//!
+//! Called by: `awaken-coordinator`, `awaken-executable-agent-catalog`,
+//! `awaken-executable-environment-catalog`, `awaken-process-startup`.
 
 use std::path::PathBuf;
 use std::sync::Arc;

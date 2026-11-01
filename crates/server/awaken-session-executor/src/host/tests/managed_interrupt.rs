@@ -160,7 +160,7 @@ async fn interrupt_with_admission_suspended(
     // Managed Session Events use the dispatch authority independently of the
     // ordinary foreground-ingress choice. Mirror the scenario-host topology:
     // direct foreground plus a co-located process pool.
-    host.execution.ingress = crate::RunIngress::Direct;
+    host.execution.foreground_delivery = awaken_deployment_config::ForegroundRunDelivery::Direct;
     let host = (host).build().expect("validated Host dependencies");
     install_recording_session_application(&host);
     let managed = host.clone();

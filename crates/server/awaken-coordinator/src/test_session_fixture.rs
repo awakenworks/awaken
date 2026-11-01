@@ -28,9 +28,16 @@ pub(crate) async fn session_read_fixture(
                 clock,
             ),
             environments.clone(),
-            awaken_session_application::SessionExecutionAdmission::fixture_with_dispatch(
-                dispatch.clone(),
-            ),
+            {
+                let probe = std::sync::Arc::new(
+                    awaken_session_application::ExecutionObservationProbe::default(),
+                );
+                awaken_session_application::SessionExecutionAdmission::new(
+                    dispatch.clone(),
+                    probe.clone(),
+                    probe,
+                )
+            },
             Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .resources(awaken_session_application::SessionResources::catalog(
