@@ -865,7 +865,6 @@ mod epoch_tests {
                     &env,
                     "worker",
                     "poller",
-                    0,
                     None,
                     &test_session_access_digest(1),
                 )
@@ -936,7 +935,6 @@ mod epoch_tests {
                     &env,
                     "worker",
                     "poller",
-                    0,
                     None,
                     &test_session_access_digest(2),
                 )

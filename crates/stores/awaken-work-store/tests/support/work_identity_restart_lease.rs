@@ -25,14 +25,6 @@ const ENV: &str = "restart-lease";
 const SESSION: &str = "same-session";
 const OWNER: &str = "same-worker";
 
-/// The grant instant on the store's own clock. The store fences ack and stop
-/// on that clock (the queue is opened with the system clock), so a lease
-/// granted at the epoch would already be expired when W2's bearer acts (E4).
-fn granted_at() -> u64 {
-    use awaken_time::WallClockExt as _;
-    awaken_time::system_clock().now_ms()
-}
-
 fn record_line(access: &WorkSessionAccess) -> String {
     serde_json::json!({
         "work_id": access.work_id,
@@ -86,12 +78,12 @@ pub(super) async fn seed<Q: WorkBackend>(queue: &Q, record: &str) {
     let digest = awaken_work_store::test_session_access_digest(9301);
     queue.enqueue_session(ENV, &SESSION.into()).await.unwrap();
     queue
-        .claim_with_session_access(ENV, OWNER, "poller", granted_at(), None, &digest)
+        .claim_with_session_access(ENV, OWNER, "poller", None, &digest)
         .await
         .unwrap()
         .expect("C1 claim");
     let access = queue
-        .authenticate_session_access(&digest, 0)
+        .authenticate_session_access(&digest)
         .await
         .unwrap()
         .expect("C1 bearer");
@@ -105,7 +97,7 @@ pub(super) async fn assert_after_restart<Q: WorkBackend>(queue: &Q, record: &str
     let old_digest = awaken_work_store::test_session_access_digest(9301);
     assert!(
         queue
-            .authenticate_session_access(&old_digest, 0)
+            .authenticate_session_access(&old_digest)
             .await
             .unwrap()
             .is_none(),
@@ -114,12 +106,12 @@ pub(super) async fn assert_after_restart<Q: WorkBackend>(queue: &Q, record: &str
     queue.enqueue_session(ENV, &SESSION.into()).await.unwrap();
     let new_digest = awaken_work_store::test_session_access_digest(9302);
     queue
-        .claim_with_session_access(ENV, OWNER, "poller", granted_at(), None, &new_digest)
+        .claim_with_session_access(ENV, OWNER, "poller", None, &new_digest)
         .await
         .unwrap()
         .expect("C3 claim");
     let new = queue
-        .authenticate_session_access(&new_digest, 0)
+        .authenticate_session_access(&new_digest)
         .await
         .unwrap()
         .expect("E4 current bearer");
@@ -129,7 +121,7 @@ pub(super) async fn assert_after_restart<Q: WorkBackend>(queue: &Q, record: &str
         .unwrap()
         .is_not_found();
     let heartbeat_refused = queue
-        .heartbeat_with_session_access(&old, 1, LeaseHeartbeat::unconditional())
+        .heartbeat_with_session_access(&old, LeaseHeartbeat::unconditional())
         .await
         .unwrap()
         .is_not_found();
@@ -158,7 +150,7 @@ pub(super) async fn assert_after_restart<Q: WorkBackend>(queue: &Q, record: &str
 
     assert_eq!(
         queue
-            .authenticate_session_access(&new_digest, 0)
+            .authenticate_session_access(&new_digest)
             .await
             .unwrap(),
         Some(new.clone()),

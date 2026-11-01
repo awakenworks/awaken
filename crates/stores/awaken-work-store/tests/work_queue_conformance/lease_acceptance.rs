@@ -221,17 +221,19 @@ where
     (l, r, probe.max.load(Ordering::SeqCst))
 }
 
-async fn access(q: &Handle, digest: &SessionAccessDigest, now: u64) -> Option<WorkSessionAccess> {
-    q.authenticate_session_access(digest, now)
+/// Authenticate on the store's own clock, at whatever reading the scenario set.
+async fn access(q: &Handle, digest: &SessionAccessDigest) -> Option<WorkSessionAccess> {
+    q.authenticate_session_access(digest)
         .await
         .expect("authenticate")
 }
 
+/// Claim on the store's own clock: racing claims share the one reading the
+/// scenario set before the race, as two clients of one store do.
 fn claim_as(
     q: &Handle,
     env: &str,
     owner: &'static str,
-    now: u64,
     digest: SessionAccessDigest,
 ) -> impl std::future::Future<Output = bool> + Send + 'static {
     let q = q.clone();
@@ -240,7 +242,7 @@ fn claim_as(
         // A storage-level refusal under contention is a failed claim: it must
         // never grant authority, which the caller checks independently.
         matches!(
-            q.claim_with_session_access(&env, owner, owner, now, None, &digest)
+            q.claim_with_session_access(&env, owner, owner, None, &digest)
                 .await,
             Ok(Some(_))
         )
@@ -262,28 +264,18 @@ async fn concurrent_takeover(pair: &Pair) {
         .enqueue_session(env, &SessionId::from("race-session"))
         .await
         .unwrap();
-    assert!(claim_as(&pair.a, env, "owner-old", 0, session_access_digest(1)).await);
-    let old = access(&pair.a, &session_access_digest(1), 0)
+    pair.clock.set(0);
+    assert!(claim_as(&pair.a, env, "owner-old", session_access_digest(1)).await);
+    let old = access(&pair.a, &session_access_digest(1))
         .await
         .expect("old access");
 
     // C1
+    pair.clock.set(LEASE_TTL_MS);
     let (left, right, concurrent) = race(
         false,
-        claim_as(
-            &pair.a,
-            env,
-            "owner-a",
-            LEASE_TTL_MS,
-            session_access_digest(2),
-        ),
-        claim_as(
-            &pair.b,
-            env,
-            "owner-b",
-            LEASE_TTL_MS,
-            session_access_digest(3),
-        ),
+        claim_as(&pair.a, env, "owner-a", session_access_digest(2)),
+        claim_as(&pair.b, env, "owner-b", session_access_digest(3)),
     )
     .await;
     assert_eq!(
@@ -310,24 +302,23 @@ async fn concurrent_takeover(pair: &Pair) {
             "owner-a",
         )
     };
-    let winner = access(&pair.b, &winner_digest, LEASE_TTL_MS)
+    let winner = access(&pair.b, &winner_digest)
         .await
         .expect("C1 winner access");
     assert_eq!(winner.lease_owner, winner_owner, "{label} C1");
     assert_eq!(winner.work_id, work, "{label} C1 same Work");
     assert!(winner.lease_epoch > old.lease_epoch, "{label} C1 new epoch");
     assert!(
-        access(&pair.a, &loser_digest, LEASE_TTL_MS).await.is_none(),
+        access(&pair.a, &loser_digest).await.is_none(),
         "{label} C1 a failed claim does not widen authority"
     );
     assert!(
-        access(&pair.a, &session_access_digest(1), LEASE_TTL_MS)
-            .await
-            .is_none(),
+        access(&pair.a, &session_access_digest(1)).await.is_none(),
         "{label} C1 stale bearer revoked"
     );
 
     // C2: the stale owner keeps committing while the winner renews.
+    pair.clock.set(LEASE_TTL_MS + 1);
     let (stale_ack, renewed, concurrent) = race(
         false,
         {
@@ -337,13 +328,9 @@ async fn concurrent_takeover(pair: &Pair) {
         {
             let (q, winner) = (pair.b.clone(), winner.clone());
             async move {
-                q.heartbeat_with_session_access(
-                    &winner,
-                    LEASE_TTL_MS + 1,
-                    LeaseHeartbeat::unconditional(),
-                )
-                .await
-                .unwrap()
+                q.heartbeat_with_session_access(&winner, LeaseHeartbeat::unconditional())
+                    .await
+                    .unwrap()
             }
         },
     )
@@ -359,7 +346,7 @@ async fn concurrent_takeover(pair: &Pair) {
     );
     assert!(matches!(
         pair.a
-            .heartbeat_with_session_access(&old, LEASE_TTL_MS + 1, LeaseHeartbeat::unconditional())
+            .heartbeat_with_session_access(&old, LeaseHeartbeat::unconditional())
             .await
             .unwrap(),
         HeartbeatResult::PreconditionFailed
@@ -382,7 +369,7 @@ async fn concurrent_takeover(pair: &Pair) {
         WorkState::Active,
         "{label} C2 rejected commits left the Work active"
     );
-    let current = access(&pair.a, &winner_digest, LEASE_TTL_MS + 1)
+    let current = access(&pair.a, &winner_digest)
         .await
         .expect("C2 winner still current");
     assert_eq!(
@@ -392,23 +379,20 @@ async fn concurrent_takeover(pair: &Pair) {
 
     // C3: renewal races a third client's takeover at the renewed expiry.
     let expiry = current.expires_at_unix_ms;
+    pair.clock.set(expiry);
     let (renew, takeover, concurrent) = race(
         false,
         {
             let (q, current) = (pair.a.clone(), current.clone());
             async move {
                 matches!(
-                    q.heartbeat_with_session_access(
-                        &current,
-                        expiry,
-                        LeaseHeartbeat::unconditional()
-                    )
-                    .await,
+                    q.heartbeat_with_session_access(&current, LeaseHeartbeat::unconditional())
+                        .await,
                     Ok(HeartbeatResult::Accepted(_))
                 )
             }
         },
-        claim_as(&pair.b, env, "owner-c", expiry, session_access_digest(4)),
+        claim_as(&pair.b, env, "owner-c", session_access_digest(4)),
     )
     .await;
     assert_eq!(concurrent, 2, "{label} C3 NC");
@@ -420,7 +404,7 @@ async fn concurrent_takeover(pair: &Pair) {
     let live = [winner_digest, session_access_digest(4)];
     let mut live_count = 0;
     for digest in &live {
-        live_count += usize::from(access(&pair.b, digest, expiry).await.is_some());
+        live_count += usize::from(access(&pair.b, digest).await.is_some());
     }
     assert_eq!(live_count, 1, "{label} C3 one live authority");
 }
@@ -447,15 +431,17 @@ async fn session_and_healthcheck_takeover(pair: &Pair) {
         .enqueue_session("session-env", &session)
         .await
         .unwrap();
+    pair.clock.set(0);
     let first = pair
         .a
-        .acquire_session("session-env", &session, "owner-a", 0)
+        .acquire_session("session-env", &session, "owner-a")
         .await
         .unwrap()
         .expect("first Session lease");
+    pair.clock.set(LEASE_TTL_MS);
     let second = pair
         .b
-        .acquire_session("session-env", &session, "owner-b", LEASE_TTL_MS)
+        .acquire_session("session-env", &session, "owner-b")
         .await
         .unwrap()
         .expect("expired Session lease is taken over");
@@ -467,17 +453,19 @@ async fn session_and_healthcheck_takeover(pair: &Pair) {
     );
 
     let hc = pair.a.enqueue_healthcheck("hc-env").await.unwrap();
+    pair.clock.set(0);
     assert_eq!(
         pair.a
-            .claim("hc-env", "hc-old", 0)
+            .claim("hc-env", "hc-old")
             .await
             .unwrap()
             .map(|w| w.id),
         Some(hc.clone())
     );
+    pair.clock.set(LEASE_TTL_MS);
     assert_eq!(
         pair.b
-            .claim("hc-env", "hc-new", LEASE_TTL_MS)
+            .claim("hc-env", "hc-new")
             .await
             .unwrap()
             .map(|w| w.id),
@@ -514,9 +502,10 @@ async fn session_and_healthcheck_takeover(pair: &Pair) {
         WorkState::Stopped,
         "{label} healthcheck completed independently"
     );
+    pair.clock.set(LEASE_TTL_MS + 1);
     let observed = pair
         .a
-        .acquire_session("session-env", &session, "observer", LEASE_TTL_MS + 1)
+        .acquire_session("session-env", &session, "observer")
         .await
         .unwrap()
         .expect("Session lease remains");
@@ -536,8 +525,9 @@ async fn terminal_ack_retry(pair: &Pair) {
         .enqueue_session(env, &SessionId::from("ack-session"))
         .await
         .unwrap();
-    assert!(claim_as(&pair.a, env, "owner", 0, session_access_digest(7)).await);
-    let lease_access = access(&pair.a, &session_access_digest(7), 0).await.unwrap();
+    pair.clock.set(0);
+    assert!(claim_as(&pair.a, env, "owner", session_access_digest(7)).await);
+    let lease_access = access(&pair.a, &session_access_digest(7)).await.unwrap();
     pair.clock.set(100);
     let first = pair
         .a
@@ -556,9 +546,10 @@ async fn terminal_ack_retry(pair: &Pair) {
         .expect("retried original ack");
     assert_eq!(retry.state, first.state, "{label} retry changes no state");
     assert_eq!(retry.acknowledged_at, first.acknowledged_at, "{label}");
+    pair.clock.set(1);
     let lease = pair
         .a
-        .acquire_session(env, &SessionId::from("ack-session"), "owner", 1)
+        .acquire_session(env, &SessionId::from("ack-session"), "owner")
         .await
         .unwrap()
         .expect("current lease");
@@ -574,11 +565,12 @@ async fn terminal_ack_retry(pair: &Pair) {
         pair.a.get(env, &work).await.unwrap().unwrap().state,
         WorkState::Stopped
     );
+    pair.clock.set(2);
     assert!(
-        pair.b.claim(env, "other", 2).await.unwrap().is_none()
+        pair.b.claim(env, "other").await.unwrap().is_none()
             && pair
                 .b
-                .acquire_session(env, &SessionId::from("ack-session"), "owner", 2)
+                .acquire_session(env, &SessionId::from("ack-session"), "owner")
                 .await
                 .unwrap()
                 .is_none(),
@@ -778,11 +770,11 @@ async fn claimed_work(
             .await
             .unwrap();
         let digest = session_access_digest(base + 901);
-        assert!(claim_as(&pair.a, env, "owner", base, digest.clone()).await);
-        (work, Some(access(&pair.a, &digest, base).await.unwrap()))
+        assert!(claim_as(&pair.a, env, "owner", digest.clone()).await);
+        (work, Some(access(&pair.a, &digest).await.unwrap()))
     } else {
         let work = pair.a.enqueue_healthcheck(env).await.unwrap();
-        pair.a.claim(env, "owner", base).await.unwrap().unwrap();
+        pair.a.claim(env, "owner").await.unwrap().unwrap();
         (work, None)
     }
 }
@@ -823,14 +815,10 @@ async fn acknowledgement_receipts_do_not_cross_lease_generations() {
                 pair.clock.set(next_start);
                 let next = if bound {
                     let digest = session_access_digest(base + 902);
-                    assert!(claim_as(&pair.b, &env, "owner", next_start, digest.clone()).await);
-                    Some(access(&pair.b, &digest, next_start).await.unwrap())
+                    assert!(claim_as(&pair.b, &env, "owner", digest.clone()).await);
+                    Some(access(&pair.b, &digest).await.unwrap())
                 } else {
-                    pair.b
-                        .claim(&env, "owner", next_start)
-                        .await
-                        .unwrap()
-                        .unwrap();
+                    pair.b.claim(&env, "owner").await.unwrap().unwrap();
                     None
                 };
                 let before = pair.a.get(&env, &work).await.unwrap().unwrap();
@@ -1067,12 +1055,7 @@ async fn postgres_mutation_snapshot_matches(
             work
         );
     }
-    let replacement = pair
-        .b
-        .claim(env, "replacement", LEASE_TTL_MS + 1)
-        .await
-        .unwrap()
-        .unwrap();
+    let replacement = pair.b.claim(env, "replacement").await.unwrap().unwrap();
     assert_eq!(replacement.id, work, "actual reclaim of the original item");
     assert_ne!(
         replacement.started_at, expected.started_at,

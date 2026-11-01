@@ -1465,7 +1465,7 @@ mod process_role_surface_tests {
             .unwrap();
         domain_work
             .consumer()
-            .claim("domain-env", &domain_identity.lease_owner(), 0)
+            .claim("domain-env", &domain_identity.lease_owner())
             .await
             .unwrap()
             .expect("R4 Work claim");

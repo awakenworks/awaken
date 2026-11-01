@@ -75,7 +75,7 @@ async fn ledger_and_allocator(path: &str) -> (i64, (String, i64)) {
 /// E1: the exact legacy bearer, or `None` when the store has no such lease.
 async fn legacy_bearer(queue: &SqliteWorkQueue) -> Option<WorkSessionAccess> {
     let access = queue
-        .authenticate_session_access(&test_session_access_digest(59), 0)
+        .authenticate_session_access(&test_session_access_digest(59))
         .await
         .unwrap()?;
     (access.work_id == LIVE
@@ -93,10 +93,13 @@ async fn file_upgrade_of_both_published_histories_preserves_the_live_lease_acros
         let path = path.to_str().unwrap();
         write_published_history(path, legacy).await;
 
-        let upgraded = SqliteWorkQueue::open(path, awaken_time::system_clock())
+        // Every handle judges the legacy lease on one store clock, starting on
+        // the epoch-zero timeline that granted it.
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+        let upgraded = SqliteWorkQueue::open(path, clock.clone())
             .await
             .expect("C2 production open upgrades the published file");
-        let peer = SqliteWorkQueue::open(path, awaken_time::system_clock())
+        let peer = SqliteWorkQueue::open(path, clock.clone())
             .await
             .expect("C3 independent handle");
         let (ledger, allocator) = ledger_and_allocator(path).await;
@@ -115,10 +118,11 @@ async fn file_upgrade_of_both_published_histories_preserves_the_live_lease_acros
             lease_epoch: Epoch::from_persisted(6).unwrap(),
             ..access.clone()
         };
+        clock.set(1_000);
         assert!(
             matches!(
                 upgraded
-                    .heartbeat_with_session_access(&stale, 1_000, LeaseHeartbeat::unconditional())
+                    .heartbeat_with_session_access(&stale, LeaseHeartbeat::unconditional())
                     .await
                     .unwrap(),
                 HeartbeatResult::PreconditionFailed | HeartbeatResult::NotFound
@@ -132,7 +136,7 @@ async fn file_upgrade_of_both_published_histories_preserves_the_live_lease_acros
         );
         assert!(
             matches!(
-                peer.heartbeat_with_session_access(&access, 1_000, LeaseHeartbeat::unconditional())
+                peer.heartbeat_with_session_access(&access, LeaseHeartbeat::unconditional())
                     .await
                     .unwrap(),
                 HeartbeatResult::Accepted(_)
@@ -150,7 +154,7 @@ async fn file_upgrade_of_both_published_histories_preserves_the_live_lease_acros
         assert!(upgraded.get("deleted", DELETED).await.unwrap().is_none());
         drop((upgraded, peer));
 
-        let reopened = SqliteWorkQueue::open(path, awaken_time::system_clock())
+        let reopened = SqliteWorkQueue::open(path, clock.clone())
             .await
             .expect("reopen");
         let (ledger_after, allocator_after) = ledger_and_allocator(path).await;
@@ -161,7 +165,7 @@ async fn file_upgrade_of_both_published_histories_preserves_the_live_lease_acros
             "{legacy} E3 reopen never replaces generation or counter"
         );
         let renewed = reopened
-            .authenticate_session_access(&test_session_access_digest(59), 1_000)
+            .authenticate_session_access(&test_session_access_digest(59))
             .await
             .unwrap()
             .expect("E1 bearer survives reopen");

@@ -69,18 +69,14 @@ pub(super) async fn retry_matrix() {
                     );
                     correct &= matches!(
                         pair.b
-                            .heartbeat_with_session_access(
-                                &proof,
-                                base + 200,
-                                LeaseHeartbeat::unconditional()
-                            )
+                            .heartbeat_with_session_access(&proof, LeaseHeartbeat::unconditional())
                             .await
                             .unwrap(),
                         HeartbeatResult::PreconditionFailed
                     );
                     correct &= pair
                         .b
-                        .authenticate_session_access(&session_access_digest(base + 901), base + 100)
+                        .authenticate_session_access(&session_access_digest(base + 901))
                         .await
                         .unwrap()
                         .is_none();
@@ -163,8 +159,9 @@ async fn old_stop_receipts_never_authorize_a_woken_generation() {
                 work
             );
             let digest = session_access_digest(902);
-            assert!(claim_as(&pair.b, env, "owner", 200, digest.clone()).await);
-            let current = access(&pair.b, &digest, 200).await.unwrap();
+            pair.clock.set(200);
+            assert!(claim_as(&pair.b, env, "owner", digest.clone()).await);
+            let current = access(&pair.b, &digest).await.unwrap();
             assert!(current.lease_epoch > old.lease_epoch);
             let before = pair.a.get(env, &work).await.unwrap().unwrap();
             let reads = pair.clock.observations();
@@ -221,8 +218,9 @@ async fn first_stop(
         .await
         .unwrap();
     let digest = session_access_digest(991);
-    assert!(claim_as(queue, "stop-reopen", "owner", 0, digest.clone()).await);
-    let proof = access(queue, &digest, 0).await.unwrap();
+    clock.set(0);
+    assert!(claim_as(queue, "stop-reopen", "owner", digest.clone()).await);
+    let proof = access(queue, &digest).await.unwrap();
     clock.set(100);
     let first = queue
         .stop_with_session_access(&proof)
@@ -250,7 +248,7 @@ async fn reopened_receipt(
     result.is_some_and(|retry| same_item(&retry, first))
         && clock.observations() == reads
         && queue
-            .authenticate_session_access(&session_access_digest(991), 200)
+            .authenticate_session_access(&session_access_digest(991))
             .await
             .unwrap()
             .is_none()

@@ -9,8 +9,9 @@
 //! substrate — runs [`run_suite`] with its own `fresh_with` factory and its own
 //! lease TTL. A divergence here is a parity bug: the single-active-lease cap,
 //! reclaim-at-TTL, environment isolation, stop-frees-next, remove_env purge,
-//! Session ownership fencing, and injected-clock observation are the port's
-//! observable contract, not one backend's behaviour.
+//! Session ownership fencing, injected-clock observation and the one-clock
+//! lease law (every lease granted, renewed and judged on the store's own clock)
+//! are the port's observable contract, not one backend's behaviour.
 
 use awaken_environment_contract::EnvironmentRevision;
 use awaken_executable_environment_contract::{
@@ -40,7 +41,7 @@ pub fn session_access_digest(
 
 /// The single-active-lease cap: with items queued, repeated claims at one instant hand
 /// out exactly ONE lease, and exactly one item is Active.
-pub async fn single_active_cap<Q: WorkBackend>(q: &Q) {
+pub async fn single_active_cap<Q: WorkBackend>(q: &Q, clock: &ManualClock) {
     for i in 0..5 {
         q.enqueue_session("env", &SessionId::from(format!("s{i}")))
             .await
@@ -49,7 +50,8 @@ pub async fn single_active_cap<Q: WorkBackend>(q: &Q) {
     let handed = {
         let mut n = 0;
         for _ in 0..4 {
-            if q.claim("env", "w", 0).await.expect("claim").is_some() {
+            clock.set(0);
+            if q.claim("env", "w").await.expect("claim").is_some() {
                 n += 1;
             }
         }
@@ -68,47 +70,43 @@ pub async fn single_active_cap<Q: WorkBackend>(q: &Q) {
 
 /// Reclaim is exact at the TTL boundary: a live lease caps the env until `now == expiry`,
 /// then the lapsed item is reclaimable.
-pub async fn reclaim_at_ttl<Q: WorkBackend>(q: &Q, lease_ttl_ms: u64) {
+pub async fn reclaim_at_ttl<Q: WorkBackend>(q: &Q, clock: &ManualClock, lease_ttl_ms: u64) {
     q.enqueue_session("env", &SessionId::from("s0"))
         .await
         .expect("enqueue");
     assert!(
-        q.claim("env", "a", 0).await.expect("claim").is_some(),
+        q.claim("env", "a").await.expect("claim").is_some(),
         "first claim leases"
     );
+    clock.set(lease_ttl_ms - 1);
     assert!(
-        q.claim("env", "b", lease_ttl_ms - 1)
-            .await
-            .expect("claim")
-            .is_none(),
+        q.claim("env", "b").await.expect("claim").is_none(),
         "held until the last ms before expiry"
     );
+    clock.set(lease_ttl_ms);
     assert!(
-        q.claim("env", "b", lease_ttl_ms)
-            .await
-            .expect("claim")
-            .is_some(),
+        q.claim("env", "b").await.expect("claim").is_some(),
         "reclaimable at exactly the TTL boundary"
     );
 }
 
 /// Requested reclaim age is measured from the last lease refresh, independently
 /// of the TTL selected by that heartbeat.
-pub async fn requested_reclaim_uses_refresh_clock<Q: WorkBackend>(q: &Q) {
+pub async fn requested_reclaim_uses_refresh_clock<Q: WorkBackend>(q: &Q, clock: &ManualClock) {
     let id = q
         .enqueue_session("env", &SessionId::from("s0"))
         .await
         .expect("enqueue");
-    q.claim("env", "worker-a", 0)
+    q.claim("env", "worker-a")
         .await
         .expect("claim query")
         .expect("initial claim");
+    clock.set(1_000);
     assert!(matches!(
         q.heartbeat(
             "env",
             &id,
             "worker-a",
-            1_000,
             LeaseHeartbeat {
                 condition: HeartbeatCondition::First,
                 desired_ttl_seconds: Some(120),
@@ -118,15 +116,17 @@ pub async fn requested_reclaim_uses_refresh_clock<Q: WorkBackend>(q: &Q) {
         .expect("heartbeat"),
         HeartbeatResult::Accepted(_)
     ));
+    clock.set(1_001);
     assert!(
-        q.claim_with_reclaim("env", "worker-b", "worker-b", 1_001, Some(2))
+        q.claim_with_reclaim("env", "worker-b", "worker-b", Some(2))
             .await
             .expect("claim")
             .is_none(),
         "a one-millisecond-old refresh is younger than the requested age"
     );
+    clock.set(1_002);
     assert!(
-        q.claim_with_reclaim("env", "worker-b", "worker-b", 1_002, Some(2))
+        q.claim_with_reclaim("env", "worker-b", "worker-b", Some(2))
             .await
             .expect("claim")
             .is_some(),
@@ -143,12 +143,12 @@ pub async fn env_isolation<Q: WorkBackend>(q: &Q) {
         .await
         .expect("enqueue b");
     let la = q
-        .claim("env_a", "w", 0)
+        .claim("env_a", "w")
         .await
         .expect("claim query")
         .expect("env_a leases");
     let lb = q
-        .claim("env_b", "w", 0)
+        .claim("env_b", "w")
         .await
         .expect("claim query")
         .expect("env_b leases independently");
@@ -176,17 +176,17 @@ pub async fn stop_frees_next<Q: WorkBackend>(q: &Q) {
             .expect("enqueue");
     }
     let first = q
-        .claim("env", "w", 0)
+        .claim("env", "w")
         .await
         .expect("claim query")
         .expect("first");
     assert!(
-        q.claim("env", "w", 0).await.expect("claim").is_none(),
+        q.claim("env", "w").await.expect("claim").is_none(),
         "capped while active"
     );
     q.stop("env", &first.id, "w").await.expect("stop");
     assert!(
-        q.claim("env", "w", 0).await.expect("claim").is_some(),
+        q.claim("env", "w").await.expect("claim").is_some(),
         "next claimable after stop"
     );
     assert_eq!(
@@ -209,7 +209,7 @@ pub async fn remove_env_purges<Q: WorkBackend>(q: &Q) {
         "list empty after remove_env"
     );
     assert!(
-        q.claim("env", "w", 0).await.expect("claim").is_none(),
+        q.claim("env", "w").await.expect("claim").is_none(),
         "nothing to claim after remove_env"
     );
 }
@@ -255,22 +255,22 @@ pub async fn session_enqueue_is_idempotent<Q: WorkBackend>(q: &Q) {
 /// The official heartbeat compare token is an atomic CAS: first succeeds once,
 /// the returned token advances monotonically, and a stale token cannot extend
 /// the lease after a newer heartbeat has committed.
-pub async fn heartbeat_compare_and_extend<Q: WorkBackend>(q: &Q) {
+pub async fn heartbeat_compare_and_extend<Q: WorkBackend>(q: &Q, clock: &ManualClock) {
     let id = q
         .enqueue_session("env", &SessionId::from("s0"))
         .await
         .expect("enqueue");
-    q.claim("env", "worker", 0)
+    q.claim("env", "worker")
         .await
         .expect("claim query")
         .expect("claim");
 
+    clock.set(1);
     assert!(matches!(
         q.heartbeat(
             "env",
             &id,
             "other-worker",
-            1,
             LeaseHeartbeat {
                 condition: HeartbeatCondition::First,
                 desired_ttl_seconds: None,
@@ -286,7 +286,6 @@ pub async fn heartbeat_compare_and_extend<Q: WorkBackend>(q: &Q) {
             "env",
             &id,
             "worker",
-            1,
             LeaseHeartbeat {
                 condition: HeartbeatCondition::First,
                 desired_ttl_seconds: Some(7),
@@ -301,12 +300,12 @@ pub async fn heartbeat_compare_and_extend<Q: WorkBackend>(q: &Q) {
     assert!(first.lease_extended);
     assert_eq!(first.ttl_seconds, 7);
 
+    clock.set(2);
     assert!(matches!(
         q.heartbeat(
             "env",
             &id,
             "worker",
-            2,
             LeaseHeartbeat {
                 condition: HeartbeatCondition::First,
                 desired_ttl_seconds: None,
@@ -322,7 +321,6 @@ pub async fn heartbeat_compare_and_extend<Q: WorkBackend>(q: &Q) {
             "env",
             &id,
             "worker",
-            2,
             LeaseHeartbeat {
                 condition: HeartbeatCondition::Matching(first.last_heartbeat.clone()),
                 desired_ttl_seconds: None,
@@ -334,12 +332,12 @@ pub async fn heartbeat_compare_and_extend<Q: WorkBackend>(q: &Q) {
         .expect("matching heartbeat");
     assert_ne!(second.last_heartbeat, first.last_heartbeat);
 
+    clock.set(3);
     assert!(matches!(
         q.heartbeat(
             "env",
             &id,
             "worker",
-            3,
             LeaseHeartbeat {
                 condition: HeartbeatCondition::Matching(first.last_heartbeat),
                 desired_ttl_seconds: None,
@@ -376,20 +374,24 @@ pub async fn heartbeat_compare_and_extend<Q: WorkBackend>(q: &Q) {
 /// reject; checking the complete lease and Work projection detects a false
 /// return after a partial mutation. L9 is an accepted replay, not a new owner-
 /// authorized effect: the stopped row intentionally no longer stores its owner.
-pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkBackend>(q: &Q) {
+pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkBackend>(
+    q: &Q,
+    clock: &ManualClock,
+) {
     let id = q
         .enqueue_session("env", &SessionId::from("session"))
         .await
         .expect("L1");
     let first = q
-        .acquire_session("env", &SessionId::from("session"), "owner-a", 0)
+        .acquire_session("env", &SessionId::from("session"), "owner-a")
         .await
         .expect("L1")
         .expect("L1 lease");
     assert_eq!((first.work_id(), first.epoch()), (id.as_str(), 1), "L1/E1");
 
+    clock.set(10);
     let renewed = q
-        .acquire_session("env", &SessionId::from("session"), "owner-a", 10)
+        .acquire_session("env", &SessionId::from("session"), "owner-a")
         .await
         .expect("L2")
         .expect("L2 lease");
@@ -398,8 +400,9 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkBackend>(q:
         renewed.expires_at_unix_ms() > first.expires_at_unix_ms(),
         "L2/E1"
     );
+    clock.set(11);
     let fenced = q
-        .acquire_session("env", &SessionId::from("session"), "owner-b", 11)
+        .acquire_session("env", &SessionId::from("session"), "owner-b")
         .await
         .expect("L3")
         .expect("L3 returns the current lease for typed fencing");
@@ -436,8 +439,9 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkBackend>(q:
         WorkState::Stopped,
         "L4/E3"
     );
+    clock.set(20);
     assert!(
-        q.acquire_session("env", &SessionId::from("session"), "owner-b", 20)
+        q.acquire_session("env", &SessionId::from("session"), "owner-b")
             .await
             .expect("L4")
             .is_none(),
@@ -450,7 +454,7 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkBackend>(q:
         id
     );
     let replacement = q
-        .acquire_session("env", &SessionId::from("session"), "owner-a", 20)
+        .acquire_session("env", &SessionId::from("session"), "owner-a")
         .await
         .expect("L5")
         .expect("L5 lease");
@@ -518,10 +522,11 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkBackend>(q:
             projection(&active),
             "L7/E2 mismatched {field} must preserve the complete Work projection"
         );
+        clock.set(20);
         // The existing acquire contract returns another owner's current lease
         // without renewing it; this observes owner/epoch/expiry, not a repair.
         let current = q
-            .acquire_session("env", &SessionId::from("session"), "observer", 20)
+            .acquire_session("env", &SessionId::from("session"), "observer")
             .await
             .expect("L7 read current authority");
         assert_eq!(current.as_ref(), Some(&replacement), "L7/E2 {field}");
@@ -541,8 +546,9 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkBackend>(q:
         );
         let after = q.get("env", &id).await.unwrap().unwrap();
         assert_eq!(projection(&after), projection(&stopped), "L9/E5");
+        clock.set(20);
         assert!(
-            q.acquire_session("env", &SessionId::from("session"), "observer", 20)
+            q.acquire_session("env", &SessionId::from("session"), "observer")
                 .await
                 .expect("L9 no authority")
                 .is_none(),
@@ -560,7 +566,7 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkBackend>(q:
 /// 60-second lease stalls every restart; permanently stopping a non-terminal
 /// Session makes recovery impossible; releasing by reusable worker id would revoke
 /// a replacement generation. Exact incarnation requeue avoids all three.
-pub async fn graceful_owner_release_is_exact<Q: WorkBackend>(q: &Q) {
+pub async fn graceful_owner_release_is_exact<Q: WorkBackend>(q: &Q, clock: &ManualClock) {
     let first = q
         .enqueue_session("env-a", &SessionId::from("first"))
         .await
@@ -576,9 +582,9 @@ pub async fn graceful_owner_release_is_exact<Q: WorkBackend>(q: &Q) {
         .enqueue_session("env-c", &SessionId::from("other"))
         .await
         .expect("G2");
-    q.claim("env-a", "worker:1:old", 0).await.unwrap().unwrap();
-    q.claim("env-b", "worker:1:old", 0).await.unwrap().unwrap();
-    q.claim("env-c", "worker:2:new", 0).await.unwrap().unwrap();
+    q.claim("env-a", "worker:1:old").await.unwrap().unwrap();
+    q.claim("env-b", "worker:1:old").await.unwrap().unwrap();
+    q.claim("env-c", "worker:2:new").await.unwrap().unwrap();
 
     assert_eq!(
         q.release_owner("worker:1:old").await.expect("G1"),
@@ -600,8 +606,9 @@ pub async fn graceful_owner_release_is_exact<Q: WorkBackend>(q: &Q) {
         WorkState::Active,
         "G2/E2"
     );
+    clock.set(1);
     assert!(
-        q.claim("env-a", "worker:2:new", 1)
+        q.claim("env-a", "worker:2:new")
             .await
             .unwrap()
             .is_some_and(|work| work.id == first),
@@ -638,8 +645,8 @@ pub async fn exact_owner_observation_is_read_only(
         .enqueue_healthcheck("owner-env-b")
         .await
         .expect("fixture healthcheck");
-    q.claim("owner-env-a", old, 0).await.unwrap().unwrap();
-    q.claim("owner-env-b", new, 0).await.unwrap().unwrap();
+    q.claim("owner-env-a", old).await.unwrap().unwrap();
+    q.claim("owner-env-b", new).await.unwrap().unwrap();
     let before_session = q.get("owner-env-a", &session).await.unwrap().unwrap();
     let before_health = q.get("owner-env-b", &health).await.unwrap().unwrap();
     assert!(q.has_owner_claims(old).await.expect("QO2 Session"));
@@ -677,7 +684,7 @@ pub async fn exact_owner_observation_is_read_only(
             .await
             .expect("QO4 other owner retained")
     );
-    q.claim("owner-env-b", "worker:3:replacement", after_expiry)
+    q.claim("owner-env-b", "worker:3:replacement")
         .await
         .unwrap()
         .unwrap();
@@ -693,7 +700,7 @@ pub async fn exact_owner_observation_is_read_only(
     );
 }
 
-pub async fn reclaim_age_boundary_cases(q: &impl WorkBackend) {
+pub async fn reclaim_age_boundary_cases(q: &impl WorkBackend, clock: &ManualClock) {
     // Adapter decision table: live TTL throughout; absent age or age > now
     // must retain the current lease. age == now selects refresh zero;
     // after re-claim at time one, age 1000 at time 1001 selects refresh one.
@@ -704,15 +711,16 @@ pub async fn reclaim_age_boundary_cases(q: &impl WorkBackend) {
         .enqueue_session(environment, &SessionId::from("s1"))
         .await
         .unwrap();
-    assert_eq!(q.claim(environment, "a", 0).await.unwrap().unwrap().id, id);
+    assert_eq!(q.claim(environment, "a").await.unwrap().unwrap().id, id);
     for (now, age, expected) in [
         (1, None, false),
         (1, Some(2), false),
         (1, Some(1), true),
         (1_001, Some(1_000), true),
     ] {
+        clock.set(now);
         let actual = q
-            .claim_with_reclaim(environment, "b", "b", now, age)
+            .claim_with_reclaim(environment, "b", "b", age)
             .await
             .unwrap();
         assert_eq!(
@@ -731,16 +739,16 @@ pub async fn reclaim_age_boundary_cases(q: &impl WorkBackend) {
 /// Every observation timestamp a backend writes is a reading of the clock it was
 /// built with — never a constant, and never the host's wall clock.
 ///
-/// Decision table. Causes: C1 the queue accepts an item; C2 a claim carries its
-/// own sampled `now_ms`; C3 an acknowledgement, which carries none; C4 a stop,
+/// Decision table. Causes: C1 the queue accepts an item; C2 a claim, which
+/// carries no time; C3 an acknowledgement, which carries none; C4 a stop,
 /// which carries none; C5 the store is asked for queue stats; C6 the queue is
 /// drained. Effects: E1 `created_at` is the injected reading at acceptance;
-/// E2 `started_at` is the claim's own `now_ms`, so the durable start and the
-/// lease window cannot disagree; E3/E4 the acknowledgement and stop instants are
-/// the injected reading *at that moment*, which is how advancing the clock
-/// between commands is observable; E5 `oldest_queued_at` is the oldest
-/// unfinished item's own `created_at`; E6 a drained queue reports absence rather
-/// than a stand-in. Rules R1..R6 pair C1..C6 with E1..E6.
+/// E2 `started_at` is the injected reading at the claim, the reading its lease
+/// window is minted from, so the two cannot disagree; E3/E4 the acknowledgement
+/// and stop instants are the injected reading *at that moment*, which is how
+/// advancing the clock between commands is observable; E5 `oldest_queued_at` is
+/// the oldest unfinished item's own `created_at`; E6 a drained queue reports
+/// absence rather than a stand-in. Rules R1..R6 pair C1..C6 with E1..E6.
 ///
 /// Diffusion: the sibling objects in the same store — the Environment's
 /// healthcheck item and a second Session item accepted later — are checked too,
@@ -784,20 +792,17 @@ pub async fn observation_timestamps_are_the_injected_clock<Q: WorkBackend>(
         );
     }
 
+    clock.set(CLAIMED);
     assert_eq!(
-        q.stats("obs-env", CLAIMED)
-            .await
-            .expect("R5")
-            .oldest_queued_at,
+        q.stats("obs-env").await.expect("R5").oldest_queued_at,
         Some(epoch_millis_to_rfc3339(ACCEPTED)),
         "R5 oldest unfinished item's own acceptance instant"
     );
 
-    // R2: the claim samples its own instant; the clock is deliberately parked
-    // somewhere else so a backend that reached for the ambient reading is caught.
-    clock.set(ACCEPTED);
+    // R2: the claim samples the store clock once, under its write lock; the
+    // reading moved since acceptance, so a reused acceptance stamp is caught.
     let claimed = q
-        .claim("obs-env", "obs-worker", CLAIMED)
+        .claim("obs-env", "obs-worker")
         .await
         .expect("R2")
         .expect("R2 lease");
@@ -805,7 +810,7 @@ pub async fn observation_timestamps_are_the_injected_clock<Q: WorkBackend>(
     assert_eq!(
         claimed.started_at,
         Some(epoch_millis_to_rfc3339(CLAIMED)),
-        "R2 started_at is the claim's own now_ms"
+        "R2 started_at is the store reading at the claim"
     );
     assert_eq!(
         claimed.created_at,
@@ -846,52 +851,263 @@ pub async fn observation_timestamps_are_the_injected_clock<Q: WorkBackend>(
     // R6: drain everything; absence is then the answer, not a stand-in value.
     for item in q.list("obs-env").await.expect("R6 list") {
         if item.state != WorkState::Stopped {
-            q.claim("obs-env", "obs-worker", STOPPED)
-                .await
-                .expect("R6 claim");
+            clock.set(STOPPED);
+            q.claim("obs-env", "obs-worker").await.expect("R6 claim");
             let _ = q
                 .stop("obs-env", &item.id, "obs-worker")
                 .await
                 .expect("R6 stop");
         }
     }
-    let drained = q.stats("obs-env", STOPPED).await.expect("R6");
+    clock.set(STOPPED);
+    let drained = q.stats("obs-env").await.expect("R6");
     assert_eq!(drained.depth, 0, "R6 drained");
     assert_eq!(drained.pending, 0, "R6 drained");
     assert_eq!(drained.oldest_queued_at, None, "R6 absence is stated");
     q.remove_env("obs-env").await.expect("R6 cleanup");
 }
 
-/// Run the whole contract against a freshly-built backend `Q`. The factory takes
-/// the clock so the observation rules can name the instants they expect;
-/// `clock` is the caller's timeline for every rule that does not.
+/// Run the whole contract against a freshly-built backend `Q`. Every rule gets
+/// its own backend over its own [`ManualClock`] starting at zero: the store's
+/// clock is the only time any rule can drive, because no Work lease operation
+/// accepts a caller's reading.
 pub async fn run_suite<Q: WorkBackend, F: std::future::Future<Output = Q>>(
-    clock: Arc<dyn WallClock>,
     fresh_with: impl Fn(Arc<dyn WallClock>) -> F,
     lease_ttl_ms: u64,
 ) {
-    let fresh = || fresh_with(clock.clone());
-    environment_revision_replay_is_atomic(&fresh().await).await;
-    environment_revision_races_preserve_the_maximum(&fresh().await).await;
-    single_active_cap(&fresh().await).await;
-    reclaim_at_ttl(&fresh().await, lease_ttl_ms).await;
-    requested_reclaim_uses_refresh_clock(&fresh().await).await;
-    env_isolation(&fresh().await).await;
-    stop_frees_next(&fresh().await).await;
-    remove_env_purges(&fresh().await).await;
-    session_enqueue_is_idempotent(&fresh().await).await;
-    heartbeat_compare_and_extend(&fresh().await).await;
-    session_ownership_lifecycle_is_single_and_fenced(&fresh().await).await;
-    graceful_owner_release_is_exact(&fresh().await).await;
-    let owner_clock = Arc::new(ManualClock::new(0));
-    let owner_queue = fresh_with(owner_clock.clone()).await;
-    exact_owner_observation_is_read_only(&owner_queue, &owner_clock, lease_ttl_ms).await;
-    reclaim_age_boundary_cases(&fresh().await).await;
-    session_access::capability_and_metadata_contract(&fresh().await, lease_ttl_ms).await;
-    role_views_share_state_without_widening_authority(&fresh().await, lease_ttl_ms).await;
+    let (q, _) = on_fresh_clock(&fresh_with).await;
+    environment_revision_replay_is_atomic(&q).await;
+    let (q, _) = on_fresh_clock(&fresh_with).await;
+    environment_revision_races_preserve_the_maximum(&q).await;
+    let (q, clock) = on_fresh_clock(&fresh_with).await;
+    single_active_cap(&q, &clock).await;
+    let (q, clock) = on_fresh_clock(&fresh_with).await;
+    reclaim_at_ttl(&q, &clock, lease_ttl_ms).await;
+    let (q, clock) = on_fresh_clock(&fresh_with).await;
+    requested_reclaim_uses_refresh_clock(&q, &clock).await;
+    let (q, _) = on_fresh_clock(&fresh_with).await;
+    env_isolation(&q).await;
+    let (q, _) = on_fresh_clock(&fresh_with).await;
+    stop_frees_next(&q).await;
+    let (q, _) = on_fresh_clock(&fresh_with).await;
+    remove_env_purges(&q).await;
+    let (q, _) = on_fresh_clock(&fresh_with).await;
+    session_enqueue_is_idempotent(&q).await;
+    let (q, clock) = on_fresh_clock(&fresh_with).await;
+    heartbeat_compare_and_extend(&q, &clock).await;
+    let (q, clock) = on_fresh_clock(&fresh_with).await;
+    session_ownership_lifecycle_is_single_and_fenced(&q, &clock).await;
+    let (q, clock) = on_fresh_clock(&fresh_with).await;
+    graceful_owner_release_is_exact(&q, &clock).await;
+    let (q, clock) = on_fresh_clock(&fresh_with).await;
+    exact_owner_observation_is_read_only(&q, &clock, lease_ttl_ms).await;
+    let (q, clock) = on_fresh_clock(&fresh_with).await;
+    reclaim_age_boundary_cases(&q, &clock).await;
+    let (q, clock) = on_fresh_clock(&fresh_with).await;
+    session_access::capability_and_metadata_contract(&q, &clock, lease_ttl_ms).await;
+    let (q, clock) = on_fresh_clock(&fresh_with).await;
+    role_views_share_state_without_widening_authority(&q, &clock, lease_ttl_ms).await;
+    let (q, clock) = on_fresh_clock(&fresh_with).await;
+    observation_timestamps_are_the_injected_clock(&q, &clock).await;
+    let (q, clock) = on_fresh_clock(&fresh_with).await;
+    lease_time_is_the_store_clock(&q, &clock, lease_ttl_ms).await;
+}
+
+/// A backend built over a new [`ManualClock`] at zero, and that clock.
+async fn on_fresh_clock<Q, F: std::future::Future<Output = Q>>(
+    fresh_with: &impl Fn(Arc<dyn WallClock>) -> F,
+) -> (Q, Arc<ManualClock>) {
     let clock = Arc::new(ManualClock::new(0));
-    let queue = fresh_with(clock.clone()).await;
-    observation_timestamps_are_the_injected_clock(&queue, &clock).await;
+    (fresh_with(clock.clone()).await, clock)
+}
+
+/// One lease, one clock: every Work lease is granted, renewed and judged on the
+/// store's own injected clock, and no operation accepts a caller's time.
+///
+/// The failure this replaces: `claim` and `heartbeat` took the caller's
+/// `now_ms` while `ack`, `stop` and their Session-access forms read the store
+/// clock, so a lease's deadline was minted on one clock and judged on another.
+/// A caller running ahead of the store had its live lease refused at
+/// acknowledgement; a caller running behind minted a deadline the store had
+/// already passed, or kept an expired lease acknowledgeable. The caller now
+/// supplies no reading at all (K1, enforced by the port signatures), so the
+/// rows below vary only the store's reading and must hold for every backend.
+///
+/// Causes: C1 the store reading at the grant; C2 the store reading at the
+/// judgement, relative to the deadline (D-1, D); C3 a heartbeat renews with a
+/// requested TTL; C4 the grant is a Worker claim or a Session acquisition.
+/// Effects: E1 the deadline is the grant's store reading plus the TTL and
+/// `started_at` is that same reading; E2 a live lease is acknowledged; E3 an
+/// expired lease is refused acknowledgement and left unchanged; E4 a heartbeat
+/// moves the deadline to its own store reading plus the requested TTL; E5
+/// bearer authentication is live strictly before the deadline and absent at it.
+///
+/// | Rule | C1 grant | C2 judgement     | C3 renew | C4 grant kind | Effect     |
+/// |------|----------|------------------|----------|---------------|------------|
+/// | S1   | T0       | -                | -        | claim         | E1         |
+/// | S2   | G        | ack at G+L-1     | -        | claim         | E2         |
+/// | S3   | G        | ack at G+L       | -        | claim         | E3         |
+/// | S4   | T0       | -                | at T1    | claim         | E4         |
+/// | S5   | T0       | auth at D-1, D   | at T1    | claim         | E5 on E4's D |
+/// | S6   | T2       | -                | -        | acquisition   | E1         |
+///
+/// S2 and S3 are the two skew directions of the replaced defect: a caller ahead
+/// of the store could refuse S2, and a caller behind it could accept S3.
+pub async fn lease_time_is_the_store_clock<Q: WorkBackend>(
+    q: &Q,
+    clock: &ManualClock,
+    lease_ttl_ms: u64,
+) {
+    const T0: u64 = 1_700_000_000_000;
+    const RENEWED_TTL_SECONDS: u64 = 120;
+
+    // S1: the deadline and `started_at` are the grant's store reading.
+    clock.set(T0);
+    let renewed = q
+        .enqueue_session("clock-renewed", &SessionId::from("renewed"))
+        .await
+        .expect("S1 enqueue");
+    let claim = q
+        .claim_with_session_access(
+            "clock-renewed",
+            "owner",
+            "owner",
+            None,
+            &session_access_digest(41),
+        )
+        .await
+        .expect("S1 claim")
+        .expect("S1 lease");
+    assert_eq!(
+        claim.item.started_at,
+        Some(epoch_millis_to_rfc3339(T0)),
+        "S1/E1 started_at is the store reading at the grant"
+    );
+    let token = claim.session_access.expect("S1 bound digest");
+    let granted = q
+        .authenticate_session_access(&token)
+        .await
+        .expect("S1 authenticate")
+        .expect("S1 live bearer");
+    assert_eq!(
+        granted.expires_at_unix_ms,
+        T0 + lease_ttl_ms,
+        "S1/E1 the deadline is the store reading plus the TTL"
+    );
+
+    // S4: the heartbeat extends from its own store reading.
+    let renewed_at = T0 + lease_ttl_ms / 2;
+    clock.set(renewed_at);
+    let receipt = q
+        .heartbeat(
+            "clock-renewed",
+            &renewed,
+            "owner",
+            LeaseHeartbeat {
+                condition: HeartbeatCondition::First,
+                desired_ttl_seconds: Some(RENEWED_TTL_SECONDS),
+            },
+        )
+        .await
+        .expect("S4 heartbeat")
+        .into_receipt()
+        .expect("S4 accepted");
+    assert!(receipt.lease_extended, "S4/E4 an active lease extends");
+    let deadline = renewed_at + RENEWED_TTL_SECONDS * 1_000;
+    assert_eq!(
+        q.authenticate_session_access(&token)
+            .await
+            .expect("S4 authenticate")
+            .expect("S4 live")
+            .expires_at_unix_ms,
+        deadline,
+        "S4/E4 the renewed deadline is the heartbeat's store reading plus its TTL"
+    );
+
+    // S5: the renewed deadline is judged on the same clock that set it.
+    clock.set(deadline - 1);
+    assert!(
+        q.authenticate_session_access(&token)
+            .await
+            .expect("S5 authenticate")
+            .is_some(),
+        "S5/E5 live strictly before the deadline"
+    );
+    clock.set(deadline);
+    assert!(
+        q.authenticate_session_access(&token)
+            .await
+            .expect("S5 authenticate")
+            .is_none(),
+        "S5/E5 absent at the deadline"
+    );
+
+    // S2/S3: the same deadline judged on the same clock, either side of it.
+    // Each row grants at its own later base so the timeline only moves forward.
+    let mut granted_at = deadline;
+    for (rule, held_for, accepted) in [("S2", lease_ttl_ms - 1, true), ("S3", lease_ttl_ms, false)]
+    {
+        let env = format!("clock-ack-{rule}");
+        granted_at += lease_ttl_ms * 2;
+        let judged_at = granted_at + held_for;
+        clock.set(granted_at);
+        let work = q
+            .enqueue_session(&env, &SessionId::from(rule))
+            .await
+            .expect("S2/S3 enqueue");
+        q.claim(&env, "owner")
+            .await
+            .expect("S2/S3 claim")
+            .expect("S2/S3 lease");
+        let before = q.get(&env, &work).await.unwrap().unwrap();
+        clock.set(judged_at);
+        let acked = q.ack(&env, &work, "owner").await.expect("S2/S3 ack");
+        if accepted {
+            let WorkMutationResult::Accepted(item) = acked else {
+                panic!("{rule}/E2 a live lease must be acknowledged, got {acked:?}");
+            };
+            assert_eq!(
+                item.acknowledged_at,
+                Some(epoch_millis_to_rfc3339(judged_at)),
+                "{rule}/E2 acknowledged on the store reading"
+            );
+        } else {
+            assert!(
+                matches!(acked, WorkMutationResult::PreconditionFailed),
+                "{rule}/E3 an expired lease must be refused, got {acked:?}"
+            );
+            let after = q.get(&env, &work).await.unwrap().unwrap();
+            assert_eq!(after.state, before.state, "{rule}/E3 state unchanged");
+            assert_eq!(after.acknowledged_at, None, "{rule}/E3 nothing stamped");
+        }
+    }
+
+    // S6: a Session acquisition grants on the same clock.
+    let acquired_at = granted_at + lease_ttl_ms * 2;
+    clock.set(acquired_at);
+    q.enqueue_session("clock-acquire", &SessionId::from("acquired"))
+        .await
+        .expect("S6 enqueue");
+    let lease = q
+        .acquire_session("clock-acquire", &SessionId::from("acquired"), "owner")
+        .await
+        .expect("S6 acquire")
+        .expect("S6 lease");
+    assert_eq!(
+        lease.expires_at_unix_ms(),
+        acquired_at + lease_ttl_ms,
+        "S6/E1 the acquisition deadline is the store reading plus the TTL"
+    );
+    let acquired = q
+        .get("clock-acquire", lease.work_id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        acquired.started_at,
+        Some(epoch_millis_to_rfc3339(acquired_at)),
+        "S6/E1 started_at is the same reading"
+    );
 }
 
 /// Decision sequence for separately injected roles over the same backend.
@@ -903,6 +1119,7 @@ pub async fn run_suite<Q: WorkBackend, F: std::future::Future<Output = Q>>(
 /// credential and owner-occupancy observations.
 pub async fn role_views_share_state_without_widening_authority<Q: WorkBackend>(
     backend: &Q,
+    clock: &ManualClock,
     lease_ttl_ms: u64,
 ) {
     let queries: &dyn WorkQueries = backend;
@@ -922,12 +1139,12 @@ pub async fn role_views_share_state_without_widening_authority<Q: WorkBackend>(
         .unwrap();
     let first_digest = session_access_digest(91);
     consumer
-        .claim_with_session_access("role-env", "same-owner", "poller", 0, None, &first_digest)
+        .claim_with_session_access("role-env", "same-owner", "poller", None, &first_digest)
         .await
         .unwrap()
         .expect("R1 claim");
     let first_access = authentication
-        .authenticate_session_access(&first_digest, 0)
+        .authenticate_session_access(&first_digest)
         .await
         .unwrap()
         .expect("R1 complete proof");
@@ -975,7 +1192,7 @@ pub async fn role_views_share_state_without_widening_authority<Q: WorkBackend>(
     assert_eq!(read.stopped_at, before.stopped_at, "R1 terminal");
     assert_eq!(
         authentication
-            .authenticate_session_access(&first_digest, 0)
+            .authenticate_session_access(&first_digest)
             .await
             .unwrap(),
         Some(first_access.clone()),
@@ -1002,20 +1219,14 @@ pub async fn role_views_share_state_without_widening_authority<Q: WorkBackend>(
         "R2 no side effect"
     );
     let next_digest = session_access_digest(92);
+    clock.set(lease_ttl_ms);
     consumer
-        .claim_with_session_access(
-            "role-env",
-            "same-owner",
-            "poller",
-            lease_ttl_ms,
-            None,
-            &next_digest,
-        )
+        .claim_with_session_access("role-env", "same-owner", "poller", None, &next_digest)
         .await
         .unwrap()
         .expect("R3 exact expiry reclaim");
     let next_access = authentication
-        .authenticate_session_access(&next_digest, lease_ttl_ms)
+        .authenticate_session_access(&next_digest)
         .await
         .unwrap()
         .expect("R3 successor");
@@ -1025,7 +1236,7 @@ pub async fn role_views_share_state_without_widening_authority<Q: WorkBackend>(
     );
     assert!(
         authentication
-            .authenticate_session_access(&first_digest, lease_ttl_ms)
+            .authenticate_session_access(&first_digest)
             .await
             .unwrap()
             .is_none(),
@@ -1044,11 +1255,7 @@ pub async fn role_views_share_state_without_widening_authority<Q: WorkBackend>(
     assert!(
         matches!(
             control
-                .heartbeat_with_session_access(
-                    &first_access,
-                    lease_ttl_ms,
-                    LeaseHeartbeat::unconditional()
-                )
+                .heartbeat_with_session_access(&first_access, LeaseHeartbeat::unconditional())
                 .await
                 .unwrap(),
             HeartbeatResult::PreconditionFailed
@@ -1073,13 +1280,10 @@ pub async fn role_views_share_state_without_widening_authority<Q: WorkBackend>(
             .is_accepted(),
         "R4 owner-only protocol"
     );
+    clock.set(lease_ttl_ms + 1);
     assert!(
         control
-            .heartbeat_with_session_access(
-                &next_access,
-                lease_ttl_ms + 1,
-                LeaseHeartbeat::unconditional()
-            )
+            .heartbeat_with_session_access(&next_access, LeaseHeartbeat::unconditional())
             .await
             .unwrap()
             .into_receipt()
@@ -1088,7 +1292,7 @@ pub async fn role_views_share_state_without_widening_authority<Q: WorkBackend>(
     );
     assert!(
         authentication
-            .authenticate_session_access(&next_digest, lease_ttl_ms + 1)
+            .authenticate_session_access(&next_digest)
             .await
             .unwrap()
             .is_some(),
@@ -1105,7 +1309,7 @@ pub async fn role_views_share_state_without_widening_authority<Q: WorkBackend>(
     );
     assert!(
         authentication
-            .authenticate_session_access(&next_digest, lease_ttl_ms + 1)
+            .authenticate_session_access(&next_digest)
             .await
             .unwrap()
             .is_none(),
@@ -1117,7 +1321,7 @@ pub async fn role_views_share_state_without_widening_authority<Q: WorkBackend>(
 
 pub mod session_access {
     //! The portable capability/metadata sequence formerly covered only PostgreSQL.
-    use super::{WorkBackend, session_access_digest};
+    use super::{ManualClock, WorkBackend, session_access_digest};
     use awaken_executable_environment_contract::{
         HeartbeatResult, LeaseHeartbeat, WorkMutationResult,
     };
@@ -1130,7 +1334,11 @@ pub mod session_access {
     /// accepted; purge => empty. These are sequential state constraints rather than
     /// independent Boolean combinations. Each transition checks its effect before
     /// triggering the next, and all backends run this same sequence.
-    pub async fn capability_and_metadata_contract(q: &impl WorkBackend, lease_ttl_ms: u64) {
+    pub async fn capability_and_metadata_contract(
+        q: &impl WorkBackend,
+        clock: &ManualClock,
+        lease_ttl_ms: u64,
+    ) {
         let hc = q.enqueue_healthcheck("env_a").await.expect("enqueue");
         let w1 = q
             .enqueue_session("env_a", &awaken_session_types::SessionId::from("s1"))
@@ -1151,7 +1359,7 @@ pub mod session_access {
         assert_eq!(ids, vec![hc.clone(), w1.clone(), w2]);
         // claim leases the oldest + single-active cap
         assert_eq!(
-            q.claim("env_a", "w", 0)
+            q.claim("env_a", "w")
                 .await
                 .expect("claim query")
                 .expect("lease")
@@ -1159,7 +1367,7 @@ pub mod session_access {
             hc
         );
         assert!(
-            q.claim("env_a", "w", 0).await.expect("claim").is_none(),
+            q.claim("env_a", "w").await.expect("claim").is_none(),
             "single active lease"
         );
         // The active healthcheck owner cannot acknowledge another queued item.
@@ -1168,7 +1376,7 @@ pub mod session_access {
             WorkMutationResult::PreconditionFailed
         ));
         assert!(matches!(
-            q.heartbeat("env_a", &w1, "w", 0, LeaseHeartbeat::unconditional())
+            q.heartbeat("env_a", &w1, "w", LeaseHeartbeat::unconditional())
                 .await
                 .expect("heartbeat"),
             HeartbeatResult::PreconditionFailed
@@ -1178,13 +1386,13 @@ pub mod session_access {
             "wrong env → none"
         );
         assert!(
-            q.heartbeat("env_b", &w1, "w", 0, LeaseHeartbeat::unconditional())
+            q.heartbeat("env_b", &w1, "w", LeaseHeartbeat::unconditional())
                 .await
                 .expect("heartbeat")
                 .is_not_found()
         );
         // stats reflect the active healthcheck and queued Session work.
-        let st = q.stats("env_a", 0).await.expect("stats");
+        let st = q.stats("env_a").await.expect("stats");
         assert!(st.pending >= 1 && st.workers_polling == 1);
         // metadata + stop + remove_env
         let patch = BTreeMap::from([("k".to_string(), Some("v".to_string()))]);
@@ -1199,8 +1407,9 @@ pub mod session_access {
             Some("v")
         );
         assert!(q.stop("env_a", &hc, "w").await.expect("stop").is_accepted());
+        clock.set(1);
         let session_claim = q
-            .claim_with_session_access("env_a", "w", "w", 1, None, &session_access_digest(1))
+            .claim_with_session_access("env_a", "w", "w", None, &session_access_digest(1))
             .await
             .expect("session claim")
             .expect("queued Session");
@@ -1209,7 +1418,7 @@ pub mod session_access {
             .as_ref()
             .expect("Session claim token");
         let access = q
-            .authenticate_session_access(token, 1)
+            .authenticate_session_access(token)
             .await
             .expect("token lookup")
             .expect("current token");
@@ -1221,12 +1430,12 @@ pub mod session_access {
         // proof is fenced, E2 the epoch-two proof remains live. Constraint K1
         // the adapter command + lease_epoch is the sole mutation authority. Decision
         // row PT1=C1+C2+C3->E1+E2.
+        clock.set(lease_ttl_ms + 1);
         let replacement = q
             .claim_with_session_access(
                 "env_a",
                 "w-replacement",
                 "w-replacement",
-                lease_ttl_ms + 1,
                 None,
                 &session_access_digest(2),
             )
@@ -1239,7 +1448,6 @@ pub mod session_access {
                     .session_access
                     .as_ref()
                     .expect("replacement token"),
-                lease_ttl_ms + 1,
             )
             .await
             .expect("replacement lookup")
@@ -1251,16 +1459,13 @@ pub mod session_access {
             ),
             "PT1/E1"
         );
+        clock.set(lease_ttl_ms + 2);
         assert!(
-            q.heartbeat_with_session_access(
-                &replacement_access,
-                lease_ttl_ms + 2,
-                LeaseHeartbeat::unconditional(),
-            )
-            .await
-            .unwrap()
-            .into_receipt()
-            .is_some(),
+            q.heartbeat_with_session_access(&replacement_access, LeaseHeartbeat::unconditional())
+                .await
+                .unwrap()
+                .into_receipt()
+                .is_some(),
             "PT1/E2"
         );
         q.remove_env("env_a").await.unwrap();
@@ -1310,12 +1515,12 @@ pub async fn environment_revision_replay_is_atomic<Q: WorkBackend>(q: &Q) {
         .await
         .unwrap();
     let digest = session_access_digest(701);
-    q.claim_with_session_access(env, "original-owner", "poller", 0, None, &digest)
+    q.claim_with_session_access(env, "original-owner", "poller", None, &digest)
         .await
         .unwrap()
         .unwrap();
     let proof = q
-        .authenticate_session_access(&digest, 0)
+        .authenticate_session_access(&digest)
         .await
         .unwrap()
         .unwrap();
@@ -1376,7 +1581,7 @@ pub async fn environment_revision_replay_is_atomic<Q: WorkBackend>(q: &Q) {
         [session.as_str()]
     );
     assert_eq!(
-        q.authenticate_session_access(&digest, 0).await.unwrap(),
+        q.authenticate_session_access(&digest).await.unwrap(),
         Some(proof.clone())
     );
     assert!(
@@ -1406,7 +1611,7 @@ pub async fn environment_revision_replay_is_atomic<Q: WorkBackend>(q: &Q) {
     assert_eq!(retained.len(), 1);
     assert_eq!(retained[0].id, session);
     assert_eq!(
-        q.authenticate_session_access(&digest, 0).await.unwrap(),
+        q.authenticate_session_access(&digest).await.unwrap(),
         Some(proof)
     );
     assert!(q.enqueue_healthcheck(env).await.is_err());
@@ -1514,9 +1719,12 @@ pub async fn environment_revision_races_preserve_the_maximum<Q: WorkBackend>(q: 
 /// | R5 | `reopen()` | the original owner's ack is accepted |
 ///
 /// A factory that does not reach the same durable authority fails R1.
+/// `clock` is the one clock both handles were opened with, so the reopened
+/// store judges the surviving lease on the reading that granted it.
 pub async fn reopen_preserves_authority<Q: WorkBackend, F: std::future::Future<Output = Q>>(
     first: Q,
     reopen: impl Fn() -> F,
+    clock: &ManualClock,
 ) {
     use RevisionOperation::Register;
     use RevisionOutcome::{AlreadyApplied, Applied, Superseded};
@@ -1556,7 +1764,7 @@ pub async fn reopen_preserves_authority<Q: WorkBackend, F: std::future::Future<O
     assert_ne!(a, b, "S1 distinct identities");
     // S2
     let lease = first
-        .acquire_session(env, &SessionId::from("reopen-a"), "owner-a", 0)
+        .acquire_session(env, &SessionId::from("reopen-a"), "owner-a")
         .await
         .expect("S2 acquire")
         .expect("S2 lease");
@@ -1580,8 +1788,9 @@ pub async fn reopen_preserves_authority<Q: WorkBackend, F: std::future::Future<O
     );
     assert_eq!(image(&reopened).await, before, "R2 no new row");
     // R3
+    clock.set(1);
     let fenced = reopened
-        .acquire_session(env, &SessionId::from("reopen-a"), "owner-b", 1)
+        .acquire_session(env, &SessionId::from("reopen-a"), "owner-b")
         .await
         .expect("R3 acquire")
         .expect("R3 returns the current lease for typed fencing");

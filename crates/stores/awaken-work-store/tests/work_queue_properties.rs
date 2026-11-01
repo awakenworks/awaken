@@ -29,7 +29,7 @@ proptest! {
             block(q.enqueue_session("env", &SessionId::from(format!("s{i}")))).expect("enqueue");
         }
         let handed: usize = (0..claims)
-            .filter(|_| block(q.claim("env", "w", 0)).expect("claim").is_some())
+            .filter(|_| block(q.claim("env", "w")).expect("claim").is_some())
             .count();
         prop_assert_eq!(handed, 1, "more than one lease was live at once");
         // Exactly one item is Active; the rest stay Queued.
@@ -41,14 +41,17 @@ proptest! {
     /// succeeds again — a dead worker never wedges the environment forever.
     #[test]
     fn an_expired_lease_is_reclaimable(n in 1usize..8) {
-        let q = InMemoryWorkQueue::new(awaken_time::system_clock());
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+        let q = InMemoryWorkQueue::new(clock.clone());
         for i in 0..n {
             block(q.enqueue_session("env", &SessionId::from(format!("s{i}")))).expect("enqueue");
         }
-        prop_assert!(block(q.claim("env", "a", 0)).expect("claim").is_some(), "first claim leases");
-        prop_assert!(block(q.claim("env", "b", 1)).expect("claim").is_none(), "a live lease caps the env");
+        prop_assert!(block(q.claim("env", "a")).expect("claim").is_some(), "first claim leases");
+        clock.set(1);
+        prop_assert!(block(q.claim("env", "b")).expect("claim").is_none(), "a live lease caps the env");
         // At exactly the TTL boundary the lapsed lease is reclaimable.
-        prop_assert!(block(q.claim("env", "b", LEASE_TTL_MS)).expect("claim").is_some(), "expired lease not reclaimed");
+        clock.set(LEASE_TTL_MS);
+        prop_assert!(block(q.claim("env", "b")).expect("claim").is_some(), "expired lease not reclaimed");
     }
 
     /// ENVIRONMENT ISOLATION: a claim in one environment never leases another's work; each
@@ -58,8 +61,8 @@ proptest! {
         let q = InMemoryWorkQueue::new(awaken_time::system_clock());
         for i in 0..a { block(q.enqueue_session("env_a", &SessionId::from(format!("a{i}")))).expect("enqueue a"); }
         for i in 0..b { block(q.enqueue_session("env_b", &SessionId::from(format!("b{i}")))).expect("enqueue b"); }
-        let la = block(q.claim("env_a", "w", 0)).expect("claim query").expect("env_a leases");
-        let lb = block(q.claim("env_b", "w", 0)).expect("claim query").expect("env_b leases independently");
+        let la = block(q.claim("env_a", "w")).expect("claim query").expect("env_a leases");
+        let lb = block(q.claim("env_b", "w")).expect("claim query").expect("env_b leases independently");
         prop_assert_eq!(block(q.get("env_a", &la.id)).expect("get").map(|w| w.environment_id), Some("env_a".to_string()));
         prop_assert_eq!(block(q.get("env_b", &lb.id)).expect("get").map(|w| w.environment_id), Some("env_b".to_string()));
     }
@@ -70,10 +73,10 @@ proptest! {
     fn stopping_the_active_item_frees_the_next(n in 2usize..8) {
         let q = InMemoryWorkQueue::new(awaken_time::system_clock());
         for i in 0..n { block(q.enqueue_session("env", &SessionId::from(format!("s{i}")))).expect("enqueue"); }
-        let first = block(q.claim("env", "w", 0)).expect("claim query").expect("first");
-        prop_assert!(block(q.claim("env", "w", 0)).expect("claim").is_none(), "capped while active");
+        let first = block(q.claim("env", "w")).expect("claim query").expect("first");
+        prop_assert!(block(q.claim("env", "w")).expect("claim").is_none(), "capped while active");
         block(q.stop("env", &first.id, "w")).expect("stop");
-        prop_assert!(block(q.claim("env", "w", 0)).expect("claim").is_some(), "next claimable after stop");
+        prop_assert!(block(q.claim("env", "w")).expect("claim").is_some(), "next claimable after stop");
         // No item was lost or duplicated.
         prop_assert_eq!(block(q.list("env")).expect("list").len(), n);
     }
@@ -85,6 +88,6 @@ proptest! {
         for i in 0..n { block(q.enqueue_session("env", &SessionId::from(format!("s{i}")))).expect("enqueue"); }
         block(q.remove_env("env")).unwrap();
         prop_assert!(block(q.list("env")).expect("list").is_empty());
-        prop_assert!(block(q.claim("env", "w", 0)).expect("claim").is_none());
+        prop_assert!(block(q.claim("env", "w")).expect("claim").is_none());
     }
 }

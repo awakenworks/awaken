@@ -37,7 +37,6 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 #[test]
 fn in_memory_backend_conforms() {
     block(run_suite(
-        std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
         async |clock| InMemoryWorkQueue::new(clock),
         LEASE_TTL_MS,
     ));
@@ -46,7 +45,6 @@ fn in_memory_backend_conforms() {
 #[test]
 fn sqlite_backend_conforms() {
     block(run_suite(
-        std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
         async |clock| {
             SqliteWorkQueue::open_in_memory(clock)
                 .await
@@ -73,7 +71,6 @@ async fn postgres_backend_conforms() {
     };
     let fixtures = tokio::sync::Mutex::new(Vec::new());
     run_suite(
-        std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0)),
         async |clock| {
             let fixture = work_postgres_fixture::WorkPostgresFixture::new(&url, 16).await;
             let store = PostgresWorkQueue::with_pool(fixture.pool.clone(), clock)

@@ -4,8 +4,8 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 682,
-        "file_sha256": "1b80c744f65e7089e318e6bd1974ea7bd6fe1bd06c4db7e03dcc36f4e519a627"
+        "line": 674,
+        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2"
       }
     ],
     "execution_witnesses": [],
@@ -418,7 +418,7 @@
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance/credential_generation.rs",
         "line": 5,
-        "file_sha256": "020463db9800302a6ac2797b101bb04f0189134538dcd05dc9917920195d7c2a"
+        "file_sha256": "f0548b4111946484b2f7d2d8bec126c9c8a442edc875fdbdbee13430006ba828"
       }
     ],
     "execution_witnesses": [],

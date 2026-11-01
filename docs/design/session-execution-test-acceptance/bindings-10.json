@@ -575,17 +575,17 @@
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
         "line": 52,
-        "file_sha256": "da781760466f223297b7ac98be3c112e983462244c018b0830b991622076564c"
+        "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 65
+        "line": 64
       },
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 70
+        "line": 69
       }
     ],
     "execution_witnesses": [
@@ -620,18 +620,18 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 77,
-        "file_sha256": "da781760466f223297b7ac98be3c112e983462244c018b0830b991622076564c"
+        "line": 76,
+        "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 96
+        "line": 93
       },
       {
         "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
-        "line": 1571
+        "line": 1779
       }
     ],
     "execution_witnesses": [
