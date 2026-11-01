@@ -177,7 +177,7 @@ impl SessionWorkerResolver {
                 .into(),
             ));
         }
-        let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
+        let claim = awaken_worker_contract::RunClaim::from(&claimed.lease);
         // A failed/NotReady resolve must not publish an attempt claim into the
         // shared Session projection: lifecycle recovery is independently owned
         // by its realization lease. Once the complete projection is installed,

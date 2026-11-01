@@ -1,5 +1,5 @@
 use awaken_agent_config::{ConfigStoreError, StoredPublication};
-use awaken_tenancy::ScopeId;
+use awaken_agent_contract::ScopeId;
 
 fn bind_legacy_execution_workspace(
     value: &mut serde_json::Value,

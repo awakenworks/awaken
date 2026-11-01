@@ -38,7 +38,7 @@ pub(super) fn terminal_memory_projection()
 }
 
 fn terminal_memory_projection_with_idle_retention(
-    idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
+    idle_retention: awaken_provisioning_contract::SandboxIdleRetentionPolicy,
 ) -> awaken_session_execution_contract::FrozenSessionProjection {
     let resources = terminal_memory_resources();
     let mut projection = remote_terminal_cleanup_projection_with_idle_retention(idle_retention);
@@ -75,7 +75,7 @@ struct RecordingTerminalMemoryReferenceEncoder {
 
 impl
     awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-        awaken_dispatch_contract::RunClaim,
+        awaken_worker_contract::RunClaim,
     > for RecordingTerminalMemoryReferenceEncoder
 {
     fn encode(
@@ -84,7 +84,7 @@ impl
         _memory_store_id: &str,
         _config_version: awaken_resource_contract::ConfigVersion,
         _access: awaken_resource_contract::ResourceAccess,
-        _fence: &awaken_dispatch_contract::RunClaim,
+        _fence: &awaken_worker_contract::RunClaim,
     ) -> Result<String, awaken_resource_contract::MemoryMaterializationReferenceError> {
         self.events.lock().unwrap().push("encode-run-v1");
         Ok("run-v1-reference".into())
@@ -360,7 +360,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         };
         materialization_reference.as_deref()
     }
-    let claim = awaken_dispatch_contract::RunClaim {
+    let claim = awaken_worker_contract::RunClaim {
         run_id: RunId("realization-run".into()),
         owner: "realization-memory-worker".into(),
         epoch: 2,
@@ -1408,8 +1408,8 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
 
-    let idle_retention = awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy {
-        mode: awaken_session_configuration_contract::EnvironmentIdleRetentionMode::CheckpointAndRelease,
+    let idle_retention = awaken_provisioning_contract::SandboxIdleRetentionPolicy {
+        mode: awaken_provisioning_contract::SandboxIdleRetentionMode::CheckpointAndRelease,
         checkpoint_after_secs: 1,
         retention_secs: 3_600,
         expiry_behavior: Default::default(),
@@ -1418,7 +1418,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         checkpoint_format: "awaken-fs-tar-v1".into(),
     };
     let mut projection = terminal_memory_projection_with_idle_retention(idle_retention);
-    let run_claim = awaken_dispatch_contract::RunClaim {
+    let run_claim = awaken_worker_contract::RunClaim {
         run_id: awaken_agent_contract::agent::run::Id("terminal-refresh-run".into()),
         owner: "terminal-refresh-run-worker".into(),
         epoch: 1,
@@ -2366,7 +2366,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
 
         let mut projection = terminal_memory_projection();
         let resources = projection.resources.clone();
-        let run_claim = awaken_dispatch_contract::RunClaim {
+        let run_claim = awaken_worker_contract::RunClaim {
             run_id: awaken_agent_contract::agent::run::Id(format!(
                 "terminal-memory-{}-run",
                 rule.name

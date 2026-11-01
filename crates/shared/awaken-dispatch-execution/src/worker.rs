@@ -64,13 +64,14 @@ use tracing::Instrument;
 
 use crate::Error;
 use crate::commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
-use crate::dispatch::{
-    Claimed, DispatchOutcome, PendingInput, RunClaim, SessionRunReservationResolution,
-    SettleOutcome,
-};
 use crate::execution_capacity::ExecutionCapacity;
 use crate::worker_context::WorkerContext;
+use crate::{
+    dispatch::Claimed, dispatch::DispatchOutcome, dispatch::PendingInput,
+    dispatch::SessionRunReservationResolution, dispatch::SettleOutcome,
+};
 use awaken_time::WallClock;
+use awaken_worker_contract::RunClaim;
 
 mod claim_renewal;
 mod physical_attempt;
@@ -630,7 +631,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     fn execution_context_with(
         &self,
         claim: &RunClaim,
-        execution_scope: Option<&awaken_dispatch_contract::ExecutionScopeRef>,
+        execution_scope: Option<&awaken_agent_contract::ExecutionScopeRef>,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
         credential_bindings: &[AttemptCredentialBinding],
         credential_deliveries: &[AttemptCredentialDelivery],

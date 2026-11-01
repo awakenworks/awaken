@@ -366,7 +366,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             .unwrap()
     }
 
-    let claim = awaken_dispatch_contract::RunClaim {
+    let claim = awaken_worker_contract::RunClaim {
         run_id: awaken_agent_contract::agent::run::Id("run-platform-repository".into()),
         owner: "worker-platform".into(),
         epoch: 7,

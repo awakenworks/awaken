@@ -386,8 +386,7 @@ fn on_tool_use_environment() -> awaken_session_configuration_contract::Environme
         awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
         serde_json::json!({}),
     );
-    environment.sandbox_provisioning =
-        awaken_session_configuration_contract::SandboxProvisioning::OnToolUse;
+    environment.sandbox_provisioning = awaken_provisioning_contract::SandboxProvisioning::OnToolUse;
     environment
 }
 
@@ -2678,7 +2677,7 @@ fn remote_terminal_cleanup_projection() -> awaken_session_execution_contract::Fr
 }
 
 fn remote_terminal_cleanup_projection_with_idle_retention(
-    idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
+    idle_retention: awaken_provisioning_contract::SandboxIdleRetentionPolicy,
 ) -> awaken_session_execution_contract::FrozenSessionProjection {
     let mut environment = session_environment(
         awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,

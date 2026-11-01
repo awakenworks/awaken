@@ -155,13 +155,13 @@ pub trait SessionRunQuery {
     /// The Session's dispatch crosses the claimed Session realization boundary.
     fn session_dispatch(&self) -> bool;
     /// The durable dispatch claim the Session currently serves.
-    fn dispatch_claim(&self) -> Option<&awaken_dispatch_contract::RunClaim>;
+    fn dispatch_claim(&self) -> Option<&awaken_worker_contract::RunClaim>;
     /// The realization the run context was built on changed: drop the context
     /// so the next run rebuilds it.
     fn drop_context(&mut self);
     /// Mark the Session's dispatch as entered through the Session application.
     fn enter_session_dispatch(&mut self);
-    fn install_dispatch_claim(&mut self, claim: awaken_dispatch_contract::RunClaim);
+    fn install_dispatch_claim(&mut self, claim: awaken_worker_contract::RunClaim);
 }
 
 /// One installed Session as the realization executor sees it, borrowed under the lock.
@@ -625,7 +625,7 @@ impl SessionRealizations {
     pub fn dispatch_claim(
         &self,
         session: &str,
-    ) -> Result<Option<awaken_dispatch_contract::RunClaim>, RealizationError> {
+    ) -> Result<Option<awaken_worker_contract::RunClaim>, RealizationError> {
         Ok(self
             .modify_session(session, |access| access.run.dispatch_claim().cloned())?
             .flatten())

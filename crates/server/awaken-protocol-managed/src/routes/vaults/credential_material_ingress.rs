@@ -34,7 +34,7 @@ mod tests {
     fn enter(
         source_id: CredentialSourceId,
         workspace_id: &str,
-        target: awaken_credential_contract::CredentialTarget,
+        target: awaken_agent_contract::credential::CredentialTarget,
         provider: &str,
         token: &str,
     ) -> CredentialMaterialIngressCommand {
@@ -51,7 +51,7 @@ mod tests {
         source_id: CredentialSourceId,
         expected_revision: u64,
         workspace_id: &str,
-        target: awaken_credential_contract::CredentialTarget,
+        target: awaken_agent_contract::credential::CredentialTarget,
         provider: &str,
         token: &str,
     ) -> CredentialMaterialRotationCommand {

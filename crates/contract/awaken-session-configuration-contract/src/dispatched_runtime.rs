@@ -81,9 +81,11 @@ impl SessionRuntimeProjection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_credential_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    use awaken_agent_contract::{
+        credential::CredentialAccess, credential::CredentialExecutionPolicy,
+        credential::CredentialMaterialSource, credential::CredentialRef,
+        credential::CredentialUsage, credential::ModelExposurePolicy,
+        credential::PlaintextBoundary, credential::PlaintextHolder,
     };
 
     fn environment() -> EnvironmentSnapshot {

@@ -16,7 +16,7 @@ use awaken_session_execution_contract::{CanonicalSessionProjection, requires_loc
 pub struct WorkerProjectionSynchronizer<'a, T> {
     /// The projection execution role the synchronizer drives.
     pub execution: &'a T,
-    pub claim: Option<&'a awaken_dispatch_contract::RunClaim>,
+    pub claim: Option<&'a awaken_worker_contract::RunClaim>,
     pub published_snapshot: Option<&'a awaken_runtime_contract::ExecutableAgentSnapshot>,
     pub rebuild_unavailable_environment: bool,
     pub requires_runtime_before_effects: bool,
@@ -34,7 +34,7 @@ where
         session_id: &str,
         directive: &awaken_session_execution_contract::SessionRealizationDirective,
         claimed: Option<&'a awaken_dispatch_contract::Claimed>,
-        claim: Option<&'a awaken_dispatch_contract::RunClaim>,
+        claim: Option<&'a awaken_worker_contract::RunClaim>,
     ) -> Self {
         let published_snapshot = claimed.and_then(|claimed| {
             (claimed.request.thread_id().0 == session_id)
@@ -42,7 +42,7 @@ where
         });
         let rebuild_unavailable_environment = claimed.is_some_and(|claimed| {
             claimed.request.placement.recovery
-                == awaken_dispatch_contract::WorkerRecoveryMode::RebuildFromCommittedTruth
+                == awaken_worker_contract::WorkerRecoveryMode::RebuildFromCommittedTruth
         });
         let claimed_environment_binding = claimed.and_then(|claimed| claimed.sandbox.as_deref());
         Self::for_directive(
@@ -61,7 +61,7 @@ where
     pub fn for_directive(
         execution: &'a T,
         directive: &awaken_session_execution_contract::SessionRealizationDirective,
-        claim: Option<&'a awaken_dispatch_contract::RunClaim>,
+        claim: Option<&'a awaken_worker_contract::RunClaim>,
         published_snapshot: Option<&'a awaken_runtime_contract::ExecutableAgentSnapshot>,
         rebuild_unavailable_environment: bool,
         claimed_environment_binding: Option<&'a str>,

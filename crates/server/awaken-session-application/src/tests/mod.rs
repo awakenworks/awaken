@@ -23,16 +23,14 @@ use std::sync::{
 };
 
 use awaken_executable_environment_contract::EnvironmentImageBuildError;
+use awaken_provisioning_contract::SandboxProvisioning;
 use awaken_service_lifecycle::run_composed_async_test;
 use awaken_session_contract::PersistedSession;
 use awaken_session_contract::SessionRepository;
 use awaken_session_execution_contract::{McpAttachmentRealizer, SessionRuns};
 use awaken_session_types::RunError;
+use awaken_session_types::SessionRuntimePlacement;
 use awaken_time::system_clock;
-use {
-    awaken_session_configuration_contract::SandboxProvisioning,
-    awaken_session_types::SessionRuntimePlacement,
-};
 
 use super::*;
 use crate::work_assignments::reconcile_work_dispatches;

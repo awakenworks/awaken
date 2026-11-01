@@ -724,7 +724,7 @@ impl crate::SessionCredentials {
     pub(crate) async fn retire_owned_repository_credential(
         &self,
         owner_scope: &str,
-        credential: &awaken_credential_contract::CredentialRef,
+        credential: &awaken_agent_contract::credential::CredentialRef,
     ) -> bool {
         let Some(ingress) = self.credential_material_ingress() else {
             return false;

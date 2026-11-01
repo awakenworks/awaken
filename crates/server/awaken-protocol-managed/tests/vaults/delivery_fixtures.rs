@@ -16,8 +16,8 @@ pub(super) struct RecordingCustodian {
 impl awaken_credential_contract::CredentialMaterialCustodian for RecordingCustodian {
     fn handles(
         &self,
-        _selected_holder: &awaken_credential_contract::PlaintextHolder,
-        _usage: &awaken_credential_contract::CredentialUsage,
+        _selected_holder: &awaken_agent_contract::credential::PlaintextHolder,
+        _usage: &awaken_agent_contract::credential::CredentialUsage,
     ) -> bool {
         true
     }
@@ -36,8 +36,8 @@ impl awaken_credential_contract::CredentialMaterialCustodian for RecordingCustod
 }
 
 pub(super) struct SelectiveCustodian {
-    pub(super) holder: awaken_credential_contract::PlaintextHolder,
-    pub(super) usage: awaken_credential_contract::CredentialUsage,
+    pub(super) holder: awaken_agent_contract::credential::PlaintextHolder,
+    pub(super) usage: awaken_agent_contract::credential::CredentialUsage,
     pub(super) published: Mutex<usize>,
 }
 
@@ -45,8 +45,8 @@ pub(super) struct SelectiveCustodian {
 impl awaken_credential_contract::CredentialMaterialCustodian for SelectiveCustodian {
     fn handles(
         &self,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
-        usage: &awaken_credential_contract::CredentialUsage,
+        selected_holder: &awaken_agent_contract::credential::PlaintextHolder,
+        usage: &awaken_agent_contract::credential::CredentialUsage,
     ) -> bool {
         selected_holder == &self.holder && usage == &self.usage
     }
@@ -72,15 +72,15 @@ impl awaken_credential_contract::CredentialEnvelopeIssuer for RecordingEnvelopeI
     async fn issue(
         &self,
         request: awaken_credential_contract::CredentialEnvelopeIssuance,
-    ) -> Result<awaken_credential_contract::CredentialEnvelope, String> {
+    ) -> Result<awaken_agent_contract::credential::CredentialEnvelope, String> {
         self.issued.lock().unwrap().push((
             request.access.credential.id.clone(),
             request.access.credential.revision,
             request.material.expose_secret().to_string(),
         ));
         Ok(
-            awaken_credential_contract::CredentialEnvelope::SealedForWorker {
-                envelope_ref: awaken_credential_contract::SealedCredentialEnvelopeRef {
+            awaken_agent_contract::credential::CredentialEnvelope::SealedForWorker {
+                envelope_ref: awaken_agent_contract::credential::SealedCredentialEnvelopeRef {
                     id: "test-envelope".into(),
                     payload_fingerprint:
                         awaken_credential_contract::credential_envelope_payload_fingerprint(
@@ -101,12 +101,12 @@ impl awaken_credential_contract::CredentialEnvelopeIssuer for AdversarialEnvelop
     async fn issue(
         &self,
         request: awaken_credential_contract::CredentialEnvelopeIssuance,
-    ) -> Result<awaken_credential_contract::CredentialEnvelope, String> {
+    ) -> Result<awaken_agent_contract::credential::CredentialEnvelope, String> {
         match self.0 {
             AdversarialEnvelopeResponse::Failure => Err("issuer unavailable".into()),
             AdversarialEnvelopeResponse::SubstitutedPayload => Ok(
-                awaken_credential_contract::CredentialEnvelope::SealedForWorker {
-                    envelope_ref: awaken_credential_contract::SealedCredentialEnvelopeRef {
+                awaken_agent_contract::credential::CredentialEnvelope::SealedForWorker {
+                    envelope_ref: awaken_agent_contract::credential::SealedCredentialEnvelopeRef {
                         id: "substituted-envelope".into(),
                         payload_fingerprint: "substituted-payload".into(),
                     },

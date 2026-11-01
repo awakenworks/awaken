@@ -829,7 +829,7 @@ mod runtime_session_store_tests {
         };
         let resolved = resolver
             .resolve_models(
-                &awaken_tenancy::ScopeId::from("workspace-a"),
+                &awaken_agent_contract::ScopeId::from("workspace-a"),
                 &awaken_agent_config::ModelSelection::Pinned(binding.clone()),
                 &[],
             )
@@ -856,7 +856,7 @@ mod runtime_session_store_tests {
 
         let error = resolver
             .resolve_models(
-                &awaken_tenancy::ScopeId::from("workspace-a"),
+                &awaken_agent_contract::ScopeId::from("workspace-a"),
                 &awaken_agent_config::ModelSelection::Pinned(
                     awaken_runtime_contract::resolved::ModelBinding::new(
                         "other", "scenario", "default",
@@ -1646,7 +1646,7 @@ mod process_role_surface_tests {
     impl awaken_config_service::ModelPublicationResolver for RecordingHostedResolver {
         async fn resolve_models(
             &self,
-            _workspace: &awaken_tenancy::ScopeId,
+            _workspace: &awaken_agent_contract::ScopeId,
             _selection: &awaken_agent_config::ModelSelection,
             _candidates: &[awaken_runtime_contract::resolved::ModelBinding],
         ) -> Result<

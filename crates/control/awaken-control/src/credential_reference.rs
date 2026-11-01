@@ -11,12 +11,12 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::ScopeId;
 use awaken_agent_contract::credential::CredentialRef;
 use awaken_config_service::CredentialReferenceValidator;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::CredentialStatus;
 use awaken_credential_vault::repo::CredentialRepo;
-use awaken_tenancy::ScopeId;
 
 pub struct CredentialRevisionValidator {
     credentials: Arc<dyn CredentialRepo>,
@@ -216,7 +216,8 @@ mod tests {
                 12 => {
                     candidate.descriptor.as_mut().unwrap().targets[0]
                         .target
-                        .purpose = awaken_credential_contract::CredentialPurpose::ProviderAdapter
+                        .purpose =
+                        awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter
                 }
                 _ => {
                     if let awaken_credential_contract::CredentialMaterialDescriptor::Structured {

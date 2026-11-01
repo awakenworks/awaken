@@ -3,18 +3,18 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! A2A Agent Card discovery and remote-counterparty publication.
 
+use awaken_agent_contract::ScopeId;
+use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialTarget};
 use awaken_config_resolver::{
     CredentialCandidateSet, CredentialSelectionContext, credential_candidates, derive_vendor_pool,
 };
 use awaken_config_service::PublicationResolutionError;
 use awaken_credential_contract::CredentialMaterialBinding;
-use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
 use awaken_credential_vault::{
     CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,
     ExactCredentialAccessRequest, compile_exact_credential_access,
 };
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
-use awaken_tenancy::ScopeId;
 
 use super::{CatalogModelPublicationResolver, PublicationCredentialLookup};
 
@@ -178,10 +178,14 @@ mod tests {
     use awaken_agent_config::ModelSelection;
     use awaken_agent_contract::RedactedString;
     use awaken_agent_contract::credential::{CredentialExecutionPolicy, CredentialUsage};
+    use awaken_agent_contract::{
+        credential::CredentialPurpose, credential::CredentialTarget,
+        credential::HttpEffectPlacement,
+    };
     use awaken_config_service::ModelPublicationResolver;
     use awaken_credential_contract::{
-        CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialTarget,
-        CredentialTargetContract, HttpEffectPlacement, OPAQUE_SECRET_MATERIAL_TYPE,
+        CredentialDescriptor, CredentialMaterialDescriptor, CredentialTargetContract,
+        OPAQUE_SECRET_MATERIAL_TYPE,
     };
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{CredentialCreateParams, InMemorySecretStore};

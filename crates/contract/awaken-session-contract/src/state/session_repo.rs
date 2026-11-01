@@ -79,9 +79,8 @@ mod mutation_tests {
     }
 
     pub(super) fn session(id: &str, revision: SessionRevision) -> PersistedSession {
-        use awaken_credential_contract::{
-            CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
-        };
+        use awaken_agent_contract::{credential::PlaintextBoundary, credential::PlaintextHolder};
+        use awaken_credential_contract::CredentialRealizationProfile;
 
         PersistedSession {
             created_at_unix_ms: None,

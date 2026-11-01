@@ -4,9 +4,10 @@ use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
-use awaken_dispatch_contract::{DispatchError, PhysicalAttemptSlot, WorkerIdentity};
+use awaken_dispatch_contract::{DispatchError, PhysicalAttemptSlot};
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation};
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_worker_contract::WorkerIdentity;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 struct Authority {

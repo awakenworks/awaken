@@ -13,13 +13,14 @@ use awaken_credential_contract::CredentialEnvelopeValidation;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use awaken_agent_contract::StructuredCredentialMaterial;
 use awaken_agent_contract::{
     RedactedString,
     credential::{CredentialEnvelope, CredentialMaterialSource, CredentialUsage, PlaintextHolder},
 };
 use awaken_credential_contract::{
     CredentialMaterial, CredentialMaterialError, CredentialMaterialRequest,
-    CredentialMaterialResolver, ResolvedCredentialMaterial, StructuredCredentialMaterial,
+    CredentialMaterialResolver, ResolvedCredentialMaterial,
 };
 
 #[path = "worker_projection.rs"]

@@ -68,12 +68,13 @@ mod tests {
         use awaken_dispatch::WorkerResolver as _;
         use awaken_dispatch_contract::{
             DispatchClaimOwnership as _, DispatchClaims as _, DispatchEnqueue as _,
-            DispatchReads as _, DispatchState, RunClaim, RunDispatch, SessionRuntimeEnvelope,
+            DispatchReads as _, DispatchState, RunDispatch, SessionRuntimeEnvelope,
         };
         use awaken_session_environment::SandboxEnvironmentProvider;
         use awaken_session_environment::test_support::{
             FakeContainerProvider, FakeHandExecutorFactory,
         };
+        use awaken_worker_contract::RunClaim;
         use std::sync::Arc;
         use std::sync::atomic::Ordering;
 

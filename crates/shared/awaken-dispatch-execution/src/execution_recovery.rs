@@ -90,9 +90,9 @@ pub async fn read_source_dispatch_observation<
 }
 
 fn expired_claim_for_fast_pending(
-    claim: awaken_dispatch_contract::RunClaim,
+    claim: awaken_worker_contract::RunClaim,
     was_current: Option<bool>,
-) -> Option<awaken_dispatch_contract::RunClaim> {
+) -> Option<awaken_worker_contract::RunClaim> {
     (was_current == Some(false)).then_some(claim)
 }
 
@@ -100,7 +100,7 @@ fn expired_claim_for_fast_pending(
 /// occupies the physical slot. This comparison grants no retirement receipt.
 #[must_use]
 pub fn exact_expired_slot_remains(
-    expected: &awaken_dispatch_contract::RunClaim,
+    expected: &awaken_worker_contract::RunClaim,
     observed: Option<&awaken_dispatch_contract::dispatch::PhysicalAttempt>,
 ) -> bool {
     observed.is_some_and(|physical| physical.claim == *expected)
@@ -111,7 +111,7 @@ pub fn exact_expired_slot_remains(
 pub async fn read_expired_physical_attempt<S>(
     source: &S,
     run_id: &awaken_agent_contract::agent::run::Id,
-) -> Result<Option<awaken_dispatch_contract::RunClaim>, awaken_dispatch_contract::DispatchError>
+) -> Result<Option<awaken_worker_contract::RunClaim>, awaken_dispatch_contract::DispatchError>
 where
     S: awaken_dispatch_contract::DispatchControlReads
         + awaken_dispatch_contract::DispatchClaimOwnership
@@ -499,7 +499,8 @@ mod tests {
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_dispatch_contract::dispatch::AttemptAcknowledgementRecord;
-    use awaken_dispatch_contract::{AttemptClosureKind, AttemptReturnCause, RunClaim};
+    use awaken_dispatch_contract::{AttemptClosureKind, AttemptReturnCause};
+    use awaken_worker_contract::RunClaim;
 
     use awaken_agent_contract::agent::run::{EndCause, Record as RunRecord, RunState};
     use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
@@ -1156,11 +1157,12 @@ mod tests {
         use awaken_dispatch_contract::dispatch::PhysicalAttempt;
         use awaken_dispatch_contract::{
             AttemptClosureEvent, AttemptClosureKind, AttemptClosureRecord, AttemptPhysicalFact,
-            DispatchCursor, DispatchOperation, DispatchOperationalEvent, RunClaim,
+            DispatchCursor, DispatchOperation, DispatchOperationalEvent,
         };
         use awaken_session_execution_contract::{
             SessionExecutionRecoveryGap as Gap, SessionExecutionRecoveryObservation as Observation,
         };
+        use awaken_worker_contract::RunClaim;
         // Cause/effect graph: terminal fence F, complete frozen scope S, each
         // member's history H, complete entry inventory I, exact independent
         // closure C. R1 F+S+H+I+C -> closed effects, while cleanup stays Requested.
@@ -1460,7 +1462,7 @@ mod fast_pending_tests {
         // P2=(current|unknown,any)|(expired,missing|replaced|unknown)=>E2.
         // Probe failure is an optimization miss, never a reason to skip
         // durable cancellation or to accept physical quiescence.
-        let claim = awaken_dispatch_contract::RunClaim {
+        let claim = awaken_worker_contract::RunClaim {
             run_id: RunId("fast-pending-run".into()),
             owner: "worker-a".into(),
             epoch: 1,
@@ -1480,7 +1482,7 @@ mod fast_pending_tests {
             session_thread_id: None,
         };
         let replacement = awaken_dispatch_contract::dispatch::PhysicalAttempt {
-            claim: awaken_dispatch_contract::RunClaim {
+            claim: awaken_worker_contract::RunClaim {
                 epoch: 2,
                 ..claim.clone()
             },

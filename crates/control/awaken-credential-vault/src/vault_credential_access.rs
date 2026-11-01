@@ -17,14 +17,17 @@ use crate::{
     ExactCredentialAccessRequest, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore,
 };
 use awaken_agent_contract::RedactedString;
+use awaken_agent_contract::{
+    credential::CredentialAccess, credential::CredentialPurpose, credential::CredentialRef,
+    credential::CredentialRefreshAccess, credential::CredentialTarget,
+    credential::TokenEndpointAuth,
+};
 use awaken_credential_contract::{
-    CredentialAccess, CredentialDescriptor, CredentialMaterialDelivery,
-    CredentialMaterialDescriptor, CredentialMaterialIngress, CredentialMaterialIngressCommand,
-    CredentialMaterialInput, CredentialMaterialRetirementCommand,
-    CredentialMaterialRotationCommand, CredentialPlaintext, CredentialPurpose, CredentialRef,
-    CredentialRefreshAccess, CredentialSourceId, CredentialTarget, CredentialTargetContract,
-    MaterialEntry, OPAQUE_SECRET_MATERIAL_TYPE, SessionCredentialAccessRequest,
-    SessionCredentialSource, TokenEndpointAuth,
+    CredentialDescriptor, CredentialMaterialDelivery, CredentialMaterialDescriptor,
+    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialInput,
+    CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand, CredentialPlaintext,
+    CredentialSourceId, CredentialTargetContract, MaterialEntry, OPAQUE_SECRET_MATERIAL_TYPE,
+    SessionCredentialAccessRequest, SessionCredentialSource,
 };
 use awaken_time::WallClock;
 use std::collections::BTreeMap;
@@ -185,7 +188,7 @@ impl VaultCredentialAccess {
         source_id: &CredentialSourceId,
         workspace_id: Option<&str>,
         audience: String,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        selected_holder: &awaken_agent_contract::credential::PlaintextHolder,
         binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<CredentialAccess, CredentialError> {
         let (source, mut access) = self
@@ -196,7 +199,8 @@ impl VaultCredentialAccess {
                     audience,
                 )),
                 usage: bearer_usage(),
-                policy: awaken_credential_contract::CredentialExecutionPolicy::self_hosted_mcp(),
+                policy:
+                    awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_mcp(),
                 selected_holder,
                 binding,
                 now_unix_ms,
@@ -405,7 +409,7 @@ impl VaultCredentialAccess {
         source_id: &CredentialSourceId,
         workspace_id: &str,
         request: SessionCredentialAccessRequest,
-    ) -> Result<awaken_credential_contract::CredentialAccess, CredentialError> {
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, CredentialError> {
         let SessionCredentialAccessRequest {
             target,
             usage,
@@ -432,10 +436,10 @@ impl VaultCredentialAccess {
     pub async fn mcp_access_for_source(
         &self,
         source_id: &CredentialSourceId,
-    ) -> Result<awaken_credential_contract::CredentialAccess, CredentialError> {
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, CredentialError> {
         let holder = awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
             .mcp_holder;
-        let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+        let usage = awaken_agent_contract::credential::CredentialUsage::HttpHeader {
             name: "authorization".into(),
             scheme: Some("Bearer".into()),
         };
@@ -477,9 +481,9 @@ impl VaultCredentialAccess {
         source_id: &CredentialSourceId,
         workspace_id: Option<&str>,
         target: &awaken_agent_contract::McpTarget,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        selected_holder: &awaken_agent_contract::credential::PlaintextHolder,
         binding: &awaken_credential_contract::CredentialMaterialBinding,
-    ) -> Result<awaken_credential_contract::CredentialAccess, CredentialError> {
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, CredentialError> {
         let target_url = target.http_url().ok_or_else(|| {
             CredentialError::InvalidSource("MCP credentials require an HTTP target".into())
         })?;
@@ -521,9 +525,9 @@ impl SessionCredentialSource for VaultCredentialAccess {
         source_id: &CredentialSourceId,
         workspace_id: &str,
         target: &awaken_agent_contract::McpTarget,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        selected_holder: &awaken_agent_contract::credential::PlaintextHolder,
         binding: &awaken_credential_contract::CredentialMaterialBinding,
-    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, String> {
         self.compile_mcp_access_for_source(
             source_id,
             Some(workspace_id),
@@ -540,7 +544,7 @@ impl SessionCredentialSource for VaultCredentialAccess {
         source_id: &CredentialSourceId,
         workspace_id: &str,
         request: SessionCredentialAccessRequest,
-    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, String> {
         VaultCredentialAccess::credential_access_for_source(self, source_id, workspace_id, request)
             .await
             .map_err(|error| error.to_string())

@@ -19,7 +19,7 @@ pub(super) struct FaultInjectingCredentialMaterialIngress {
     failures: AtomicUsize,
     retirement_failures: AtomicUsize,
     entered_sources: Mutex<BTreeSet<String>>,
-    retirements: Mutex<Vec<awaken_credential_contract::CredentialRef>>,
+    retirements: Mutex<Vec<awaken_agent_contract::credential::CredentialRef>>,
 }
 
 impl FaultInjectingCredentialMaterialIngress {
@@ -38,7 +38,7 @@ impl FaultInjectingCredentialMaterialIngress {
             .insert(format!("{repository_id}:credential"));
     }
 
-    pub(super) fn retirements(&self) -> Vec<awaken_credential_contract::CredentialRef> {
+    pub(super) fn retirements(&self) -> Vec<awaken_agent_contract::credential::CredentialRef> {
         self.retirements.lock().unwrap().clone()
     }
 }
@@ -60,7 +60,7 @@ impl CredentialMaterialIngress for FaultInjectingCredentialMaterialIngress {
                 .unwrap()
                 .insert(source_id.0.clone());
             Ok(MaterialEntry {
-                credential: awaken_credential_contract::CredentialRef {
+                credential: awaken_agent_contract::credential::CredentialRef {
                     id: source_id.0,
                     revision: 1,
                 },

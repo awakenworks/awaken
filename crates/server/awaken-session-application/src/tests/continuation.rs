@@ -685,9 +685,9 @@ impl awaken_session_execution_contract::Outcomes for ContinuationRuntime {
 }
 
 pub(super) fn checkpoint_release_retention()
--> awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy {
-    awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy {
-        mode: awaken_session_configuration_contract::EnvironmentIdleRetentionMode::CheckpointAndRelease,
+-> awaken_provisioning_contract::SandboxIdleRetentionPolicy {
+    awaken_provisioning_contract::SandboxIdleRetentionPolicy {
+        mode: awaken_provisioning_contract::SandboxIdleRetentionMode::CheckpointAndRelease,
         checkpoint_after_secs: 1,
         retention_secs: 100,
         expiry_behavior: Default::default(),

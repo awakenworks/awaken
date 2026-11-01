@@ -74,7 +74,7 @@ pub(super) struct ExactHostModelPublicationResolver {
 impl awaken_config_service::ModelPublicationResolver for ExactHostModelPublicationResolver {
     async fn resolve_models(
         &self,
-        _workspace: &awaken_tenancy::ScopeId,
+        _workspace: &awaken_agent_contract::ScopeId,
         selection: &awaken_agent_config::ModelSelection,
         candidates: &[awaken_runtime_contract::resolved::ModelBinding],
     ) -> Result<

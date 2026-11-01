@@ -11,10 +11,10 @@ use awaken_agent_config::{
     ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ManagementEffectReceipt,
     ScopedConfig, ScopedConfigRegistry, StoredPublication,
 };
+use awaken_agent_contract::ScopeId;
 use awaken_config_resolver::AgentInputConfig;
 use awaken_executable_agent_contract::ExecutableAgentWithdrawal;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_tenancy::ScopeId;
 
 use crate::config_service::ConfigService;
 use crate::management_audit::ManagementAuditPlane;

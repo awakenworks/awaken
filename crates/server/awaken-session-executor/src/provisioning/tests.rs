@@ -577,8 +577,8 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     )
     .baseline
     .environment;
-    environment.idle_retention = awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy {
-        mode: awaken_session_configuration_contract::EnvironmentIdleRetentionMode::CheckpointAndRelease,
+    environment.idle_retention = awaken_provisioning_contract::SandboxIdleRetentionPolicy {
+        mode: awaken_provisioning_contract::SandboxIdleRetentionMode::CheckpointAndRelease,
         checkpoint_after_secs: 1,
         retention_secs: 60,
         expiry_behavior: Default::default(),

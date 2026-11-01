@@ -20,8 +20,9 @@ use awaken_agent_contract::stream::checkpoint::{
 };
 
 use awaken_dispatch_contract::{
-    ClaimedCheckpointTransport, DispatchCommitAuthority, RunClaim, SettleOutcome,
+    ClaimedCheckpointTransport, DispatchCommitAuthority, SettleOutcome,
 };
+use awaken_worker_contract::RunClaim;
 
 pub struct FencedStreamCheckpointStore {
     authority: CheckpointAuthority,

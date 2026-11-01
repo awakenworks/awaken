@@ -9,9 +9,7 @@
 
 use std::sync::{Arc, Weak};
 
-use awaken_dispatch_contract::{
-    DispatchSettlementError, DispatchSettlementObserver, RunClaim, RunDispatch,
-};
+use awaken_dispatch_contract::{DispatchSettlementError, DispatchSettlementObserver, RunDispatch};
 use awaken_ext_builtin_tools::{
     AgentCoordinator, AgentListRequest, AgentMessageReceipt, AgentMessageRequest,
     AgentMessageTarget, AgentRosterEntry,
@@ -25,6 +23,7 @@ use awaken_session_execution_contract::{
     SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };
 use awaken_tool_contract::tool::ToolError;
+use awaken_worker_contract::RunClaim;
 
 #[cfg(test)]
 use awaken_session_execution_contract::{SessionAgentBoundaryCommand, SessionAgentCoordination};

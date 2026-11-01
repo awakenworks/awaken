@@ -20,6 +20,7 @@ use awaken_admin_assistant::{
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ManagementEffect, ModelSelection,
 };
+use awaken_agent_contract::ScopeId;
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, BindingId, FileId, InputBinding,
     InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
@@ -28,7 +29,6 @@ use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_executable_agent_contract::capability::PluginCapability;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_tenancy::ScopeId;
 use awaken_tool_contract::tool::current_tool_operation_context;
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde_json::{Value, json};
@@ -738,7 +738,7 @@ mod tests {
     impl ModelPublicationResolver for FirstOfferingResolver {
         async fn resolve_models(
             &self,
-            _workspace: &awaken_tenancy::ScopeId,
+            _workspace: &awaken_agent_contract::ScopeId,
             selection: &ModelSelection,
             fallbacks: &[ModelBinding],
         ) -> Result<ResolvedPublicationModels, awaken_config_service::PublicationResolutionError>
@@ -1296,7 +1296,7 @@ mod tests {
             thread_id: None,
             operation_id: "operation-tenant".into(),
             call_id: None,
-            execution_scope: Some(awaken_tenancy::ExecutionScopeRef(ScopeId::from(
+            execution_scope: Some(awaken_agent_contract::ExecutionScopeRef(ScopeId::from(
                 "workspace-tenant",
             ))),
         };

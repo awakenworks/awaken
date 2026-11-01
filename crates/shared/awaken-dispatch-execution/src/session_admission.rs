@@ -12,10 +12,11 @@
 //! `SessionRunReservationResolution`.
 
 use async_trait::async_trait;
-use awaken_dispatch_contract::{DispatchSettlementError, RunClaim, RunDispatch};
+use awaken_dispatch_contract::{DispatchSettlementError, RunDispatch};
 use awaken_session_execution_contract::{
     SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };
+use awaken_worker_contract::RunClaim;
 
 /// Exact Session activity admission used only while repairing a claimed
 /// reservation. Non-Session terminal observers do not implement this role.

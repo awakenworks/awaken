@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_config::ModelSelection;
+use awaken_agent_contract::ScopeId;
 use awaken_config_service::{
     ConfigService, ManagementAuditRepository, ModelPublicationResolver, PublicationResolutionError,
     ResolvedPublicationModels, StaticToolCatalog,
@@ -11,7 +12,7 @@ use awaken_config_service::{
 use awaken_config_store::SqliteConfigStore;
 use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_tenancy::{ScopeId, WorkspaceScope};
+use awaken_tenancy::WorkspaceScope;
 use axum::middleware::Next;
 use axum::routing::post;
 use http_body_util::BodyExt as _;

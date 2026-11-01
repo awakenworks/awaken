@@ -142,7 +142,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
             rule.desired_revision,
             desired,
         );
-        let claim = rule.claimed.then(|| awaken_dispatch_contract::RunClaim {
+        let claim = rule.claimed.then(|| awaken_worker_contract::RunClaim {
             run_id: awaken_agent_contract::agent::run::Id(format!("run-{}", rule.id)),
             owner: "claimed-worker".into(),
             epoch: 1,
@@ -292,7 +292,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     struct PromptRecorder(Arc<Mutex<Vec<ChatRequest>>>);
 
     #[derive(Default)]
-    struct RepositoryClaimRecorder(Mutex<Vec<Option<awaken_dispatch_contract::RunClaim>>>);
+    struct RepositoryClaimRecorder(Mutex<Vec<Option<awaken_worker_contract::RunClaim>>>);
 
     struct FailingRepositoryVerifier;
 
@@ -760,7 +760,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "/workspace/authority-amendment",
             None,
         );
-        let amendment_claim = awaken_dispatch_contract::RunClaim {
+        let amendment_claim = awaken_worker_contract::RunClaim {
             run_id: RunId("authority-amendment-run".into()),
             owner: "claimed-worker".into(),
             epoch: 1,
@@ -1286,7 +1286,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "/workspace/repository",
             None,
         );
-        let claim = |epoch| awaken_dispatch_contract::RunClaim {
+        let claim = |epoch| awaken_worker_contract::RunClaim {
             run_id: RunId("repository-claim-run".into()),
             owner: "repository-worker".into(),
             epoch,
@@ -1555,7 +1555,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert_eq!(
         dispatch
             .resolve_claimed_session_run_reservation(
-                &awaken_dispatch_contract::RunClaim::from(&recovery_claim.lease),
+                &awaken_worker_contract::RunClaim::from(&recovery_claim.lease),
                 awaken_dispatch_contract::SessionRunReservationResolution::Rejected,
             )
             .await
@@ -1587,11 +1587,11 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         },
         "R1/E5 Activated"
     );
-    let mut manifest = awaken_dispatch_contract::WorkerManifest::default();
+    let mut manifest = awaken_worker_contract::WorkerManifest::default();
     // R1 assumes an executable current Worker; protocol rejection must not
     // mask the reservation/physical-realization ordering being exercised.
     manifest.runtime_protocol.min = 1;
-    manifest.runtime_protocol.max = awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    manifest.runtime_protocol.max = awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
     manifest
         .capabilities
         .insert("application:test-session-envelope/v1".into());
@@ -1605,9 +1605,9 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     let capability_fingerprint = manifest
         .fingerprint()
         .expect("R1 deterministic Worker capability fingerprint");
-    let worker = awaken_dispatch_contract::WorkerSnapshot {
-        identity: awaken_dispatch_contract::WorkerIdentity::new("inspection-worker", "boot-1", 1),
-        state: awaken_dispatch_contract::WorkerState::Ready,
+    let worker = awaken_worker_contract::WorkerSnapshot {
+        identity: awaken_worker_contract::WorkerIdentity::new("inspection-worker", "boot-1", 1),
+        state: awaken_worker_contract::WorkerState::Ready,
         manifest,
         capability_fingerprint,
         in_flight: 0,
@@ -1629,7 +1629,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         claimed.request.placement.location,
-        awaken_dispatch_contract::ExecutionLocation::RemoteRequired,
+        awaken_worker_contract::ExecutionLocation::RemoteRequired,
         "R1/E4 application protocol cannot fall back to a generic local executor"
     );
     assert!(
@@ -2151,8 +2151,8 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     );
     assert_eq!(
         dispatch.execution_scope,
-        Some(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from("workspace-inference"),
+        Some(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from("workspace-inference"),
         )),
         "R2 exact non-default Workspace survives dispatch"
     );

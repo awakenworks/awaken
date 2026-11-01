@@ -8,11 +8,11 @@
 
 use super::{SessionRealizationAccess, SessionRealizations};
 use crate::realization_error::RealizationError;
-use awaken_dispatch_contract::RunClaim;
 use awaken_session_configuration_contract::SessionRuntimeProjection;
 use awaken_session_configuration_contract::resource::{
     SessionRealizationLease, SessionResourceManifest,
 };
+use awaken_worker_contract::RunClaim;
 use std::sync::Arc;
 
 /// One correlated read of the installed inputs a dispatch envelope carries.

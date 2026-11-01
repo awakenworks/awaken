@@ -43,8 +43,8 @@ pub fn at(unix_seconds: u64) -> String {
 }
 
 pub fn session(id: &str, title: &str) -> PersistedSession {
-    let holder = awaken_credential_contract::PlaintextHolder::new(
-        awaken_credential_contract::PlaintextBoundary::Workload,
+    let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Workload,
         "awaken.workload.acp",
     );
     let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
@@ -69,17 +69,17 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
             resource_holder: holder.clone(),
         },
     };
-    let access = awaken_credential_contract::CredentialAccess::new(
-        awaken_credential_contract::CredentialRef {
+    let access = awaken_agent_contract::credential::CredentialAccess::new(
+        awaken_agent_contract::credential::CredentialRef {
             id: "cred-1".into(),
             revision: 3,
         },
-        awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
-        awaken_credential_contract::CredentialUsage::HttpHeader {
+        awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+        awaken_agent_contract::credential::CredentialUsage::HttpHeader {
             name: "authorization".into(),
             scheme: Some("Bearer".into()),
         },
-        awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
+        awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
     );
     let mut legacy = PersistedSession::frozen_with_budget(
         SessionId::from(id),

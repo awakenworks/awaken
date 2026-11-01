@@ -10,7 +10,7 @@ use crate::state::{
 
 const NOW: u64 = 100_000;
 
-fn root(policy: Option<crate::state::EnvironmentIdleRetentionPolicy>) -> PersistedSession {
+fn root(policy: Option<crate::state::SandboxIdleRetentionPolicy>) -> PersistedSession {
     let mut session = mutation_tests::session("facts", SessionRevision(1));
     let crate::state::SessionBaselineState::Preparing(mut intent) = session.baseline.clone() else {
         unreachable!("fixture starts Preparing")
@@ -24,9 +24,9 @@ fn root(policy: Option<crate::state::EnvironmentIdleRetentionPolicy>) -> Persist
     session
 }
 
-fn checkpoint_and_release() -> crate::state::EnvironmentIdleRetentionPolicy {
-    crate::state::EnvironmentIdleRetentionPolicy {
-        mode: crate::state::EnvironmentIdleRetentionMode::CheckpointAndRelease,
+fn checkpoint_and_release() -> crate::state::SandboxIdleRetentionPolicy {
+    crate::state::SandboxIdleRetentionPolicy {
+        mode: crate::state::SandboxIdleRetentionMode::CheckpointAndRelease,
         checkpoint_after_secs: 10,
         retention_secs: 1_000,
         expiry_behavior: Default::default(),
@@ -293,7 +293,7 @@ fn transition_decides_over_the_projected_aggregate_facts() {
 
 fn placed(
     runtime_placement: crate::state::SessionRuntimePlacement,
-    policy: crate::state::EnvironmentIdleRetentionPolicy,
+    policy: crate::state::SandboxIdleRetentionPolicy,
 ) -> PersistedSession {
     let mut session = root(Some(policy));
     let crate::state::SessionBaselineState::Frozen(baseline) = &mut session.baseline else {
@@ -320,7 +320,7 @@ fn continuation_topology_follows_the_frozen_placement_and_retention() {
     );
     let external_default = placed(
         crate::state::SessionRuntimePlacement::Worker,
-        crate::state::EnvironmentIdleRetentionPolicy::default(),
+        crate::state::SandboxIdleRetentionPolicy::default(),
     );
     let preparing = mutation_tests::session("facts", SessionRevision(1));
     for (rule, session, expected) in [

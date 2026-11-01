@@ -165,8 +165,8 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
             ingress::RunDispatch::new(activation)
                 .for_session(parent.clone())
                 .with_session_activity_epoch(7)
-                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                    awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
+                .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+                    awaken_agent_contract::ScopeId::from(projection.workspace_id.as_str()),
                 ))
                 .with_session_resources(
                     awaken_dispatch_execution::session_envelope::resource_envelope(
@@ -552,8 +552,8 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         .enqueue(
             ingress::RunDispatch::new(activation)
                 .with_session_runtime(runtime)
-                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                    awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
+                .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+                    awaken_agent_contract::ScopeId::from(projection.workspace_id.as_str()),
                 ))
                 .with_session_resources(
                     awaken_dispatch_execution::session_envelope::resource_envelope(
@@ -596,7 +596,7 @@ impl awaken_session_execution_contract::ClaimedSessionRealizationControl
 {
     async fn resume_frozen(
         &self,
-        claim: &ingress::RunClaim,
+        claim: &awaken_worker_contract::RunClaim,
         _session_id: &str,
         _session_work_authority: Option<
             &awaken_session_application_contract::SessionWorkAuthorityReceipt,
@@ -857,7 +857,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     // frozen publication binds claim and lease together; CR3 same-Run retry
     // then sends precisely that installed lease. This sequence catches the
     // early-claim-publication bug that the static 20-case selector cannot.
-    let predecessor = ingress::RunClaim {
+    let predecessor = awaken_worker_contract::RunClaim {
         run_id: awaken_agent_contract::agent::run::Id("previous-run".into()),
         owner: claimed.lease.owner().to_owned(),
         epoch: 0,
@@ -914,7 +914,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         .read("ordinary-remote", |installed| {
             assert_eq!(
                 installed.run.dispatch_claim,
-                Some(ingress::RunClaim::from(&claimed.lease)),
+                Some(awaken_worker_contract::RunClaim::from(&claimed.lease)),
                 "CR2"
             );
             installed.realization.execution().authority.lease().cloned()
@@ -1094,8 +1094,8 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
     crate::test_application_bindings::select_standalone(&host).unwrap();
     let run = RunId("run-scope-mismatch".to_string());
     let request = ingress::RunDispatch::new(test_activation("thread-scope-mismatch", &run.0))
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from("workspace-b"),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from("workspace-b"),
         ))
         .with_session_resources(ingress::SessionResourceEnvelope::new(
             "workspace-a",
@@ -1140,8 +1140,8 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
     crate::test_application_bindings::select_standalone(&host).unwrap();
     let run = RunId("run-malformed-resources".to_string());
     let request = ingress::RunDispatch::new(test_activation("thread-malformed-resources", &run.0))
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from("workspace-a"),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from("workspace-a"),
         ))
         .with_session_resources(ingress::SessionResourceEnvelope::new(
             "workspace-a",
@@ -1669,7 +1669,7 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         )
         .unwrap(),
     );
-    let claim = ingress::RunClaim {
+    let claim = awaken_worker_contract::RunClaim {
         run_id: RunId("run-remote".into()),
         owner: "worker-remote".into(),
         epoch: 7,
@@ -1815,7 +1815,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
         thread,
         &run_id,
         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-        ingress::WorkerRecoveryMode::RequireSandboxContinuity,
+        awaken_worker_contract::WorkerRecoveryMode::RequireSandboxContinuity,
     )
     .await
     .expect("continuity mode adopts the durable handle");
@@ -1953,7 +1953,7 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
             missing_thread,
             &run_id,
             &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-            ingress::WorkerRecoveryMode::RequireSandboxContinuity,
+            awaken_worker_contract::WorkerRecoveryMode::RequireSandboxContinuity,
         )
         .await
         .is_err(),
@@ -2043,7 +2043,7 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
         thread,
         &RunId("run-backend-owned-adoption".into()),
         &provisioning,
-        ingress::WorkerRecoveryMode::RequireSandboxContinuity,
+        awaken_worker_contract::WorkerRecoveryMode::RequireSandboxContinuity,
     )
     .await
     .expect("A2 adopt from the provisioning-selected provider");
@@ -2090,7 +2090,7 @@ async fn a_resident_environment_is_reused_without_a_second_adoption() {
         thread,
         &RunId("resident-run".into()),
         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-        ingress::WorkerRecoveryMode::RequireSandboxContinuity,
+        awaken_worker_contract::WorkerRecoveryMode::RequireSandboxContinuity,
     )
     .await
     .expect("resident handle is already adopted");
@@ -2137,7 +2137,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
             thread,
             &run,
             &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-            ingress::WorkerRecoveryMode::RequireSandboxContinuity,
+            awaken_worker_contract::WorkerRecoveryMode::RequireSandboxContinuity,
         )
         .await
         .is_err(),
@@ -2155,7 +2155,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
         thread,
         &run,
         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-        ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
+        awaken_worker_contract::WorkerRecoveryMode::RebuildFromCommittedTruth,
     )
     .await
     .expect("explicit rebuild may discard the dead resident environment");
@@ -2211,7 +2211,7 @@ async fn a_stale_binding_cannot_evict_a_different_resident_environment() {
             thread,
             &RunId("stale-binding-run".into()),
             &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-            ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
+            awaken_worker_contract::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await
         .is_err(),
@@ -2265,7 +2265,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
         thread,
         &RunId("aba-fixture-run".into()),
         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-        ingress::WorkerRecoveryMode::RequireSandboxContinuity,
+        awaken_worker_contract::WorkerRecoveryMode::RequireSandboxContinuity,
     )
     .await
     .expect("C1 publish first exact owner");

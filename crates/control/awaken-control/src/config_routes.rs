@@ -7,9 +7,10 @@
 //! only binds request scope, maps wire JSON, and translates outcomes to HTTP.
 
 use awaken_agent_config::ConfigWrite;
+use awaken_agent_contract::ScopeId;
 use awaken_executable_agent_contract::ExecutableAgentRegistrationError;
 use awaken_session_configuration_contract::preserve_runtime_agent_overrides;
-use awaken_tenancy::{ExecutionWorkspace, ScopeId, WorkspaceScope};
+use awaken_tenancy::{ExecutionWorkspace, WorkspaceScope};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};

@@ -70,7 +70,7 @@ impl SessionCredentials {
         workspace_id: &str,
         candidates: Vec<McpAttachmentCandidate>,
         ordered_vault_ids: &[String],
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        selected_holder: &awaken_agent_contract::credential::PlaintextHolder,
     ) -> Result<Vec<McpAttachmentDraft>, RunError> {
         let (candidates, _) = Self::normalize_mcp_candidate_targets(candidates)?;
         let mut drafts = Vec::with_capacity(candidates.len());
@@ -79,7 +79,7 @@ impl SessionCredentials {
             let McpAttachmentCandidateTarget::Normalized(target) = candidate.target else {
                 unreachable!("MCP targets are normalized above")
             };
-            let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+            let usage = awaken_agent_contract::credential::CredentialUsage::HttpHeader {
                 name: "authorization".into(),
                 scheme: Some("Bearer".into()),
             };

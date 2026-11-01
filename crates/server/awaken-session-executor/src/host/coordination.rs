@@ -543,8 +543,8 @@ mod tests {
             );
             assert_eq!(
                 claimed.request.execution_scope,
-                Some(awaken_tenancy::ExecutionScopeRef(
-                    awaken_tenancy::ScopeId::from("workspace-a")
+                Some(awaken_agent_contract::ExecutionScopeRef(
+                    awaken_agent_contract::ScopeId::from("workspace-a")
                 )),
                 "{rule}/E4 exact scope",
             );
@@ -553,7 +553,7 @@ mod tests {
                     .request
                     .placement
                     .required_capabilities
-                    .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY),
+                    .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
                 "{rule}/E4 eligible Worker capability",
             );
             assert_eq!(

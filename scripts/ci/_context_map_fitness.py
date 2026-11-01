@@ -68,7 +68,7 @@ ALLOWED_CONTEXT_PAIRS: dict[str, frozenset[str]] = {
     "config": frozenset({"access", "credentials", "environment", "resources", "session"}),
     "credentials": frozenset({"environment"}),
     "deployment": frozenset({"config", "resources", "session"}),
-    "dispatch": frozenset({"access", "credentials", "environment", "execution", "session"}),
+    "dispatch": frozenset({"credentials", "environment", "execution", "session"}),
     "environment": frozenset(
         {"access", "credentials", "execution", "resources", "sandbox", "session"}
     ),
@@ -76,7 +76,7 @@ ALLOWED_CONTEXT_PAIRS: dict[str, frozenset[str]] = {
     # ACP session home erases captured content; ADR-0086 §2 moved those ports out
     # of the Runtime SDK into awaken-data-governance-contract.
     "execution": frozenset(
-        {"access", "credentials", "dispatch", "environment", "governance", "protocols", "resources", "sandbox", "session"}
+        {"credentials", "dispatch", "environment", "governance", "protocols", "resources", "sandbox", "session"}
     ),
     "protocols": frozenset(
         {"access", "config", "credentials", "deployment", "dispatch", "environment", "governance", "resources", "session"}

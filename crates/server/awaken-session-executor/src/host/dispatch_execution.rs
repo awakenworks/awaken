@@ -4,7 +4,7 @@
 //! routing policy: the topology chooses the resolver's construction once.
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
-use awaken_dispatch_contract::{Claimed, RunClaim, RunDispatch};
+use awaken_dispatch_contract::{Claimed, RunDispatch};
 use awaken_dispatch_execution::session_execution::{
     ClaimedRunPreparation, ClaimedRunWorkers, ClaimedSessionInstallation, ObservedProjection,
     SessionInstallation, execution_error,
@@ -19,6 +19,7 @@ use awaken_session_execution_contract::{FrozenSessionProjection, ObservedSession
 use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_session_realization::realization_error::RealizationError;
 use awaken_session_realization::worker_projection::SessionProjectionExecution;
+use awaken_worker_contract::RunClaim;
 
 /// The one construction of this Host's claimed-run resolver. The topology
 /// selects the construction: a process running the local pool resolves claimed
@@ -110,7 +111,7 @@ pub(crate) async fn adopt_bound_sandbox(
     expected_sandbox_id: &str,
     run_id: &RunId,
     provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-    recovery: awaken_dispatch_contract::WorkerRecoveryMode,
+    recovery: awaken_worker_contract::WorkerRecoveryMode,
 ) -> Result<crate::session_environment::SessionEnvironmentAdoptionDisposition, Error> {
     let provider = host
         .realization_executor
@@ -123,7 +124,7 @@ pub(crate) async fn adopt_bound_sandbox(
             encoded,
             provider,
             None,
-            recovery == awaken_dispatch_contract::WorkerRecoveryMode::RebuildFromCommittedTruth,
+            recovery == awaken_worker_contract::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await
         .map_err(|error| adoption_claim_outcome(run_id, &error))
@@ -267,7 +268,7 @@ impl ClaimedSessionInstallation for ClaimedRunAssembly {
         encoded: Option<&str>,
         run_id: &RunId,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-        recovery: awaken_dispatch_contract::WorkerRecoveryMode,
+        recovery: awaken_worker_contract::WorkerRecoveryMode,
     ) -> Result<(), Error> {
         adopt_bound_sandbox(
             self.assembly.as_ref(),

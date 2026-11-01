@@ -10,26 +10,35 @@
 //! exposure are intentionally separate.  This module is the one admission
 //! kernel shared by model, MCP and resource adapters; adapters realize an exact
 //! admitted plan and never choose a different holder after failure.
+//!
+//! The credential reference vocabulary is a Runtime SDK value named from its
+//! owner, `awaken_agent_contract::credential`; this contract does not
+//! re-publish it:
+//!
+//! ```compile_fail
+//! use awaken_credential_contract::CredentialRef;
+//! ```
 
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
-pub use awaken_agent_contract::StructuredCredentialMaterial;
 use awaken_agent_contract::credential::CredentialHandlingMode;
 use serde::{Deserialize, Serialize};
 
-// The credential reference vocabulary is a Runtime SDK value (ADR-0086 §7).
-// Re-exported so Platform paths and type identity are unchanged.
-pub use awaken_agent_contract::credential::{
+// The credential reference vocabulary is a Runtime SDK value (ADR-0086 §7);
+// callers name it from `awaken_agent_contract::credential`.
+use awaken_agent_contract::credential::{
     CandidateFingerprint, CredentialAccess, CredentialAudienceRef, CredentialEnvelope,
     CredentialExecutionPolicy, CredentialMaterialSource, CredentialPurpose, CredentialRef,
-    CredentialRefreshAccess, CredentialTarget, CredentialUsage, CredentialUsageError,
-    HttpEffectPlacement, ModelExposurePolicy, PRIVATE_FILE_CONSUMER, PRIVATE_FILE_MATERIAL_TYPE,
-    PROCESS_ENV_CONSUMER, PROCESS_ENV_MATERIAL_TYPE, PlaintextBoundary, PlaintextHolder,
-    SELF_HOSTED_ACP_TRUST_DOMAIN, SELF_HOSTED_SANDBOX_TRUST_DOMAIN,
-    SELF_HOSTED_WORKER_TRUST_DOMAIN, SealedCredentialEnvelopeRef, SignatureVerificationAlgorithm,
-    TokenEndpointAuth, TrustDomainRef, is_core_delivery_consumer,
+    CredentialTarget, CredentialUsage, CredentialUsageError, HttpEffectPlacement,
+    ModelExposurePolicy, PlaintextBoundary, PlaintextHolder, SELF_HOSTED_ACP_TRUST_DOMAIN,
+    SELF_HOSTED_SANDBOX_TRUST_DOMAIN, SELF_HOSTED_WORKER_TRUST_DOMAIN, is_core_delivery_consumer,
+};
+#[cfg(test)]
+use awaken_agent_contract::credential::{
+    CredentialRefreshAccess, SealedCredentialEnvelopeRef, SignatureVerificationAlgorithm,
+    TokenEndpointAuth, TrustDomainRef,
 };
 
 /// The receipt of one consumer-neutral credential material entry.

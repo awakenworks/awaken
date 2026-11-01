@@ -20,7 +20,7 @@ use awaken_time::{WallClock, WallClockExt as _};
 
 async fn compile_target_access(
     credentials: &dyn CredentialRepo,
-    workspace: &awaken_tenancy::ScopeId,
+    workspace: &awaken_agent_contract::ScopeId,
     target: &mut awaken_ext_builtin_tools::WebProviderTarget,
     requirement: awaken_ext_builtin_tools::WebSearchCredentialRequirement,
     now_ms: u64,
@@ -74,7 +74,7 @@ async fn compile_target_access(
 
 async fn compile_config_accesses(
     credentials: &dyn CredentialRepo,
-    workspace: &awaken_tenancy::ScopeId,
+    workspace: &awaken_agent_contract::ScopeId,
     providers: &awaken_ext_builtin_tools::WebSearchProviderRegistry,
     config: &mut awaken_ext_builtin_tools::WebSearchConfig,
     fetch: bool,
@@ -137,7 +137,7 @@ impl PluginPublicationResolver for WebSearchPublicationResolver {
 
     async fn resolve(
         &self,
-        workspace: &awaken_tenancy::ScopeId,
+        workspace: &awaken_agent_contract::ScopeId,
         toolsets: &[awaken_agent_contract::ToolsetPolicy],
         config: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
@@ -194,7 +194,7 @@ impl PluginPublicationResolver for WebFetchPublicationResolver {
 
     async fn resolve(
         &self,
-        workspace: &awaken_tenancy::ScopeId,
+        workspace: &awaken_agent_contract::ScopeId,
         toolsets: &[awaken_agent_contract::ToolsetPolicy],
         config: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
@@ -335,7 +335,7 @@ mod tests {
         assert_eq!(
             resolver
                 .resolve(
-                    &awaken_tenancy::ScopeId::from("workspace-a"),
+                    &awaken_agent_contract::ScopeId::from("workspace-a"),
                     &[],
                     Some(&serde_json::json!({ "provider_id": "duckduckgo", "options": {} })),
                 )
@@ -346,7 +346,7 @@ mod tests {
         assert!(
             resolver
                 .resolve(
-                    &awaken_tenancy::ScopeId::from("workspace-a"),
+                    &awaken_agent_contract::ScopeId::from("workspace-a"),
                     &[],
                     Some(&serde_json::json!({ "provider_id": "brave", "options": {} })),
                 )
@@ -357,7 +357,7 @@ mod tests {
         assert!(
             resolver
                 .resolve(
-                    &awaken_tenancy::ScopeId::from("workspace-a"),
+                    &awaken_agent_contract::ScopeId::from("workspace-a"),
                     &[agent_policy(
                         "web_search",
                         serde_json::json!({
@@ -379,7 +379,7 @@ mod tests {
         assert!(
             fetch
                 .resolve(
-                    &awaken_tenancy::ScopeId::from("workspace-a"),
+                    &awaken_agent_contract::ScopeId::from("workspace-a"),
                     &[agent_policy(
                         "web_fetch",
                         serde_json::json!({"type": "web_fetch", "max_content_tokens": 512}),
@@ -422,7 +422,7 @@ mod tests {
         });
         let published = resolver
             .resolve(
-                &awaken_tenancy::ScopeId::from("workspace-a"),
+                &awaken_agent_contract::ScopeId::from("workspace-a"),
                 &[],
                 Some(&authored),
             )
@@ -451,7 +451,7 @@ mod tests {
             awaken_time::system_clock(),
         )
         .resolve(
-            &awaken_tenancy::ScopeId::from("workspace-a"),
+            &awaken_agent_contract::ScopeId::from("workspace-a"),
             &[],
             Some(&authored),
         )
@@ -465,7 +465,7 @@ mod tests {
         assert!(
             resolver
                 .resolve(
-                    &awaken_tenancy::ScopeId::from("workspace-a"),
+                    &awaken_agent_contract::ScopeId::from("workspace-a"),
                     &[],
                     Some(&stale)
                 )
@@ -476,7 +476,7 @@ mod tests {
         assert!(
             resolver
                 .resolve(
-                    &awaken_tenancy::ScopeId::from("workspace-b"),
+                    &awaken_agent_contract::ScopeId::from("workspace-b"),
                     &[],
                     Some(&authored)
                 )
@@ -491,7 +491,7 @@ mod tests {
         assert!(
             resolver
                 .resolve(
-                    &awaken_tenancy::ScopeId::from("workspace-a"),
+                    &awaken_agent_contract::ScopeId::from("workspace-a"),
                     &[],
                     Some(&authored)
                 )
@@ -516,7 +516,7 @@ mod tests {
                 awaken_time::system_clock(),
             )
             .resolve(
-                &awaken_tenancy::ScopeId::from("workspace-a"),
+                &awaken_agent_contract::ScopeId::from("workspace-a"),
                 &[],
                 Some(&other_authored)
             )
@@ -551,7 +551,7 @@ mod tests {
             "credential": {"id": source.id.0, "revision": source.version},
             "options": {"safesearch": "strict"}
         });
-        let workspace = awaken_tenancy::ScopeId::from("workspace-a");
+        let workspace = awaken_agent_contract::ScopeId::from("workspace-a");
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(199));
         let search = WebSearchPublicationResolver::new(
             awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),

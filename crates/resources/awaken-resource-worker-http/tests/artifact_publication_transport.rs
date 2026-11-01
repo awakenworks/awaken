@@ -33,7 +33,9 @@ async fn claimed_dispatch(
     owner: &str,
 ) -> RunClaim {
     let request = RunDispatch::new(support::activation(session)).with_execution_scope(
-        awaken_tenancy::ExecutionScopeRef(awaken_tenancy::ScopeId::from("workspace-artifacts")),
+        awaken_agent_contract::ExecutionScopeRef(awaken_agent_contract::ScopeId::from(
+            "workspace-artifacts",
+        )),
     );
     dispatch.enqueue(request).await.unwrap();
     let claimed = dispatch
@@ -1845,8 +1847,8 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     // I/O. The parent's committed capture and immutable Files remain unchanged.
     let child_request = RunDispatch::new(support::activation("capture-child"))
         .for_session(awaken_agent_contract::agent::thread::Id(session.into()))
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from(workspace),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from(workspace),
         ));
     let child_session = child_request.thread_id().0.clone();
     dispatch.enqueue(child_request).await.unwrap();

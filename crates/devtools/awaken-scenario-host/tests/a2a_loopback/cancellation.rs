@@ -90,7 +90,7 @@ async fn cancellation_case(case: Case) {
             .resolved_model(
                 ResolvedModelCandidate::try_remote(
                     ModelBinding::new("remote", "", format!("a2a:{}", peer.endpoint)),
-                    awaken_tenancy::ScopeId::from("default"),
+                    awaken_agent_contract::ScopeId::from("default"),
                     Some(peer.access.clone()),
                     peer.security_fingerprint.clone(),
                 )

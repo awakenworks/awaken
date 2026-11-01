@@ -10,6 +10,19 @@
 //! (caller-specific dispatch roles / `Inbox` / `Outbox`) and the
 //! serializable [`RunDispatch`] a durable queue persists and replays — no live
 //! handles (G3). Worker wiring stays private to the host.
+//!
+//! Worker placement, registry and claim vocabulary is named from
+//! `awaken-worker-contract`, credential receipts from `awaken-credential-contract`
+//! and the execution scope from `awaken-agent-contract`; this contract publishes
+//! none of them:
+//!
+//! ```compile_fail
+//! use awaken_dispatch_contract::RunClaim;
+//! ```
+//!
+//! ```compile_fail
+//! use awaken_dispatch_contract::ExecutionLocation;
+//! ```
 
 mod claimed_commit;
 mod claimed_stream;
@@ -28,37 +41,18 @@ pub use wake::WakeSignal;
 
 pub use session_run_events::SessionRunEventPage;
 
-pub use awaken_credential_contract::{
-    AttemptCredentialBinding, CredentialRealizationPersistenceDecision,
-    CredentialRealizationReceipt, CredentialReceiptError,
-    credential_realization_persistence_decision, verify_credential_realization_receipt,
-};
-
-pub use awaken_worker_contract::{
-    AssignmentRejection, CURRENT_RUNTIME_PROTOCOL_VERSION, ExecutionLocation,
-    HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy, PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE,
-    PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError, PlacementPolicy,
-    REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredCapacity, RegisteredWorker,
-    RegistryError, RegistryMutation, SESSION_RESOURCES_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND,
-    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
-    WorkerAcpCapabilityRequirement, WorkerAssignment, WorkerCreateLedger,
-    WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory,
-    WorkerHeartbeat, WorkerIdentity, WorkerIncarnationGuard, WorkerManifest,
-    WorkerObservationSource, WorkerProcessExit, WorkerRecoveryMode, WorkerRegistration,
-    WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally, place_assignment,
-};
 pub use claimed_commit::ClaimedRunCommit;
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use dispatch::{
     AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosureKind,
-    AttemptClosurePage, AttemptClosureRecord, AttemptCredentialBindingError, AttemptPhysicalFact,
-    AttemptReturnCause, CasOutcome, ClaimCredentialOperation, Claimed, ClaimedCheckpointTransport,
-    ClaimedCommitCommand, ClaimedCredentialDeliveryTransport, CommitEpochAdmission,
-    CommitEpochBoundary, CommitEpochCompletion, CommitEpochGuard, ContinuationAdmission,
-    DispatchCompletion, DispatchCredentialAdmissionError, DispatchDepths, DispatchError,
-    DispatchLease, DispatchOutcome, DispatchSettlementError, DispatchSettlementObserver,
-    DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox, PendingInput,
-    PendingRecord, PreparedRunRecovery, RunClaim, SessionChildAdmission, SessionContinuationOutbox,
+    AttemptClosurePage, AttemptClosureRecord, AttemptPhysicalFact, AttemptReturnCause, CasOutcome,
+    ClaimCredentialOperation, Claimed, ClaimedCheckpointTransport, ClaimedCommitCommand,
+    ClaimedCredentialDeliveryTransport, CommitEpochAdmission, CommitEpochBoundary,
+    CommitEpochCompletion, CommitEpochGuard, ContinuationAdmission, DispatchCompletion,
+    DispatchCredentialAdmissionError, DispatchDepths, DispatchError, DispatchLease,
+    DispatchOutcome, DispatchSettlementError, DispatchSettlementObserver, DispatchState,
+    DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord,
+    PreparedRunRecovery, SessionChildAdmission, SessionContinuationOutbox,
     SessionRunAdmissionObservation, SessionRunReservationActivation, SessionRunReservationOutcome,
     SessionRunReservationResolution, SettleOutcome, SubmitOptions, can_admit_claim_credentials,
     claim_credential_operation, classify_commit_epoch_admission,
@@ -85,8 +79,8 @@ pub use operational::{
     DispatchPage, LeaseLossReason,
 };
 pub use run_dispatch::{
-    DispatchAdmissionShape, DispatchIdentityScope, ExecutionScopeRef, PlacementRequirements,
-    RunDispatch, SessionResourceEnvelope, SessionRuntimeEnvelope,
+    DispatchAdmissionShape, DispatchIdentityScope, RunDispatch, SessionResourceEnvelope,
+    SessionRuntimeEnvelope,
 };
 pub use worker_transport::{
     AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,

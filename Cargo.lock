@@ -284,7 +284,7 @@ name = "awaken-acp-application"
 version = "1.0.0"
 dependencies = [
  "awaken-acp-contract",
- "awaken-credential-contract",
+ "awaken-agent-contract",
  "awaken-credential-vault",
  "awaken-runtime-contract",
  "tokio",
@@ -296,6 +296,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-channel",
+ "awaken-agent-contract",
  "awaken-credential-contract",
  "serde",
  "serde_json",
@@ -419,6 +420,7 @@ name = "awaken-authz-enforce"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
  "awaken-iam-contract",
  "awaken-iam-core",
  "awaken-iam-preset",
@@ -570,7 +572,6 @@ dependencies = [
  "awaken-sqlite-pool",
  "awaken-store-inmem",
  "awaken-store-sqlite",
- "awaken-tenancy",
  "awaken-time",
  "proptest",
  "serde",
@@ -1132,6 +1133,7 @@ dependencies = [
  "awaken-store-inmem",
  "awaken-sync",
  "awaken-time",
+ "awaken-worker-contract",
  "thiserror",
  "tokio",
 ]
@@ -1162,7 +1164,6 @@ dependencies = [
  "awaken-session-types",
  "awaken-store-inmem",
  "awaken-sync",
- "awaken-tenancy",
  "awaken-time",
  "awaken-tool-contract",
  "awaken-worker-contract",
@@ -2236,7 +2237,6 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-credential-contract",
  "awaken-lease-testkit",
  "awaken-outbound-http",
  "awaken-session-application-contract",
@@ -2325,7 +2325,6 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-sandbox-policy-store",
  "awaken-session-application-contract",
- "awaken-session-configuration-contract",
  "awaken-session-dream-contract",
  "awaken-session-types",
  "awaken-tenancy",
@@ -3513,6 +3512,7 @@ dependencies = [
  "awaken-sync",
  "awaken-time",
  "awaken-tool-contract",
+ "awaken-worker-contract",
  "futures-util",
  "serde_json",
  "tempfile",
@@ -3576,7 +3576,6 @@ dependencies = [
  "awaken-session-types",
  "awaken-store-inmem",
  "awaken-sync",
- "awaken-tenancy",
  "awaken-time",
  "awaken-tool-contract",
  "awaken-worker-contract",
@@ -4040,7 +4039,6 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-dispatch-contract",
  "awaken-lease-testkit",
  "awaken-outbound-http",
  "awaken-sync",

@@ -1873,9 +1873,11 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
 /// property under test: mediation resolves nothing into this process.
 #[tokio::test]
 async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host() {
-    use awaken_credential_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    use awaken_agent_contract::{
+        credential::CredentialAccess, credential::CredentialExecutionPolicy,
+        credential::CredentialMaterialSource, credential::CredentialRef,
+        credential::CredentialUsage, credential::ModelExposurePolicy,
+        credential::PlaintextBoundary, credential::PlaintextHolder,
     };
 
     #[derive(Clone)]
@@ -1973,7 +1975,7 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
                 CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
             )
             .with_target(awaken_agent_contract::credential::CredentialTarget::new(
-                awaken_credential_contract::CredentialPurpose::McpAuthorization,
+                awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
                 audience,
             )),
         ),

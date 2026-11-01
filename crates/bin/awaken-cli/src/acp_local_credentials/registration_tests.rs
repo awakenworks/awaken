@@ -8,9 +8,8 @@ use awaken_acp_contract::{
     AcpCapabilityObservationSource, AcpCapabilityObservationState, AcpDetectionState,
     AcpHostObservation, AcpLocalCredentialBinding,
 };
-use awaken_credential_contract::{
-    CredentialObservationSource, CredentialRef, WorkerLocalReferenceRevalidator,
-};
+use awaken_agent_contract::credential::CredentialRef;
+use awaken_credential_contract::{CredentialObservationSource, WorkerLocalReferenceRevalidator};
 use awaken_credential_vault::{
     CredentialStatus, WorkerLocalBinding,
     repo::{InMemoryCredentialRepo, ensure_worker_local},

@@ -9,7 +9,8 @@
 //! validation reports.
 
 use awaken_agent_contract::RedactedString;
-use awaken_credential_contract::{CredentialRefreshAccess, CredentialSourceId};
+use awaken_agent_contract::credential::CredentialRefreshAccess;
+use awaken_credential_contract::CredentialSourceId;
 
 /// Upper bound on the body bytes a [`ProbeHttpResponse`] carries.
 pub const PROBE_HTTP_BODY_LIMIT: usize = 4096;

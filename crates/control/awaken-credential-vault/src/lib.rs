@@ -69,9 +69,12 @@ pub struct SecretRef(pub String);
 pub const OAUTH_REFRESH_TOKEN_SLOT: &str = "oauth_refresh_token";
 pub const OAUTH_CLIENT_SECRET_SLOT: &str = "oauth_client_secret";
 
+use awaken_agent_contract::{
+    credential::CredentialPurpose, credential::CredentialRef, credential::CredentialTarget,
+    credential::CredentialUsage,
+};
 use awaken_credential_contract::{
-    CredentialDescriptor, CredentialPurpose, CredentialRef, CredentialSourceId, CredentialTarget,
-    CredentialUsage, validate_credential_target_usage,
+    CredentialDescriptor, CredentialSourceId, validate_credential_target_usage,
 };
 
 /// Non-secret identity of material owned by one Worker-local driver. The
@@ -1269,14 +1272,14 @@ mod tests {
                 ["password", "username"],
             ),
             [awaken_credential_contract::CredentialTargetContract::new(
-                awaken_credential_contract::CredentialTarget::new(
-                    awaken_credential_contract::CredentialPurpose::RepositoryTransport,
+                awaken_agent_contract::credential::CredentialTarget::new(
+                    awaken_agent_contract::credential::CredentialPurpose::RepositoryTransport,
                     awaken_credential_contract::repository_transport_audience(
                         "https://github.com/awaken/example.git",
                     )
                     .unwrap(),
                 ),
-                awaken_credential_contract::CredentialUsage::HttpBasicAuth,
+                awaken_agent_contract::credential::CredentialUsage::HttpBasicAuth,
             )],
         ));
 

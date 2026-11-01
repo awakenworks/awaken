@@ -198,7 +198,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
-        "line": 461,
+        "line": 463,
         "file_sha256": "f3745a00f6775c09473599250ac4b9704ab429735b389ae2619e9290b15e7283"
       }
     ],
@@ -233,35 +233,35 @@
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
-        "line": 465
+        "line": 467
       },
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
-        "line": 471
+        "line": 473
       },
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
-        "line": 478
+        "line": 480
       },
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
-        "line": 484
+        "line": 486
       },
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
-        "line": 497
+        "line": 499
       },
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
-        "line": 502
+        "line": 504
       },
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
-        "line": 516
+        "line": 518
       },
       {
         "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
-        "line": 517
+        "line": 519
       }
     ]
   },

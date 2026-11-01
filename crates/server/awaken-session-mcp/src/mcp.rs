@@ -361,19 +361,19 @@ mod acp_projection_tests {
             name: "gh".into(),
             target: awaken_agent_contract::McpTarget::parse_http("https://mcp.gh").unwrap(),
             prompts_as_skills: false,
-            credential: Some(awaken_credential_contract::CredentialAccess::new(
-                awaken_credential_contract::CredentialRef {
+            credential: Some(awaken_agent_contract::credential::CredentialAccess::new(
+                awaken_agent_contract::credential::CredentialRef {
                     id: "credential-gh".into(),
                     revision: 2,
                 },
-                awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
-                awaken_credential_contract::CredentialUsage::HttpHeader {
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                awaken_agent_contract::credential::CredentialUsage::HttpHeader {
                     name: "authorization".into(),
                     scheme: Some("Bearer".into()),
                 },
-                awaken_credential_contract::CredentialExecutionPolicy::exact(
+                awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
                     holder.clone(),
-                    awaken_credential_contract::ModelExposurePolicy::VirtualOnly,
+                    awaken_agent_contract::credential::ModelExposurePolicy::VirtualOnly,
                 ),
             )),
             selected_plaintext_holder: Some(holder),

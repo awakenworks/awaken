@@ -16,7 +16,8 @@
 //! mediated and the Worker-held contract, and the distinction between them
 //! would stop being checkable.
 
-use awaken_credential_contract::{CredentialMaterialError, CredentialRef, PlaintextHolder};
+use awaken_agent_contract::{credential::CredentialRef, credential::PlaintextHolder};
+use awaken_credential_contract::CredentialMaterialError;
 use std::sync::Arc;
 
 /// One generation-scoped request for a mediated MCP route.

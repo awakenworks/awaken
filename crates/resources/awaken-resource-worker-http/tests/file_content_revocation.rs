@@ -190,8 +190,8 @@ async fn build_fixture() -> Fixture {
     let (directory, identity) = support::ready_worker("worker-file").await;
     let dispatch = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let request = RunDispatch::new(support::activation(FILE))
-        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-            awaken_tenancy::ScopeId::from(WORKSPACE),
+        .with_execution_scope(awaken_agent_contract::ExecutionScopeRef(
+            awaken_agent_contract::ScopeId::from(WORKSPACE),
         ))
         .with_session_resources(awaken_dispatch::SessionResourceEnvelope::new(
             WORKSPACE,

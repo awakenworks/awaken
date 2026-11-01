@@ -14,9 +14,9 @@ pub mod mcp_config;
 mod store;
 
 pub use agent_inputs::{AgentEnvironmentBinding, AgentInputConfig};
+pub use awaken_agent_contract::ScopeId;
 pub use awaken_agent_contract::{AgentSkillBinding, ModelTarget};
 pub use awaken_runtime_contract::{ExecutableAgentSnapshot, ExecutableAgentSnapshotBuilder};
-pub use awaken_tenancy::ScopeId;
 pub use compile::{CompileError, compile_published, compile_resolved};
 pub use config::{
     AgentConfig, AgentKind, AgentLifecycle, CompactionStrategy, ModelSelection, MultiagentConfig,

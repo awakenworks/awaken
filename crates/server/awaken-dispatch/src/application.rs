@@ -1200,7 +1200,7 @@ pub(crate) async fn admit_with_incarnation_guard(
     dispatch: &dyn DispatchExecution,
     claim: &crate::RunClaim,
     binding: Option<&crate::AttemptExecutionBinding>,
-    guard: awaken_dispatch_contract::WorkerIncarnationGuard,
+    guard: awaken_worker_contract::WorkerIncarnationGuard,
     handoff: bool,
 ) -> Result<crate::AttemptAdmission, crate::DispatchError> {
     let snapshot = guard.snapshot();

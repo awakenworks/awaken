@@ -29,12 +29,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
+use awaken_agent_contract::{
+    credential::CredentialAccess, credential::CredentialEnvelope,
+    credential::CredentialMaterialSource, credential::CredentialPurpose,
+    credential::CredentialUsage, credential::PlaintextBoundary, credential::PlaintextHolder,
+    credential::SealedCredentialEnvelopeRef,
+};
 use awaken_credential_contract::{
-    CredentialAccess, CredentialEnvelope, CredentialEnvelopeIssuance, CredentialEnvelopeIssuer,
-    CredentialMaterial, CredentialMaterialBinding, CredentialMaterialCapability,
-    CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
-    CredentialMaterialSource, CredentialPurpose, CredentialUsage, PlaintextBoundary,
-    PlaintextHolder, ResolvedCredentialMaterial, SealedCredentialEnvelopeRef,
+    CredentialEnvelopeIssuance, CredentialEnvelopeIssuer, CredentialMaterial,
+    CredentialMaterialBinding, CredentialMaterialCapability, CredentialMaterialError,
+    CredentialMaterialRequest, CredentialMaterialResolver, ResolvedCredentialMaterial,
     credential_envelope_payload_fingerprint,
 };
 use awaken_time::WallClockExt as _;
@@ -281,10 +285,10 @@ impl RecipientKeyEnvelope {
         };
         if consumer_id != &consumer.consumer_id
             || !consumer.material_types.contains(material_type)
-            || awaken_credential_contract::is_core_delivery_consumer(consumer_id)
+            || awaken_agent_contract::credential::is_core_delivery_consumer(consumer_id)
             || request.selected_holder.boundary != PlaintextBoundary::Workload
             || request.access.policy.model_exposure
-                != awaken_credential_contract::ModelExposurePolicy::Forbidden
+                != awaken_agent_contract::credential::ModelExposurePolicy::Forbidden
             || request
                 .access
                 .target

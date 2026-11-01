@@ -7,8 +7,8 @@
 //! module only owns their ConfigService orchestration boundary.
 
 use awaken_agent_config::{ConfigRegistry, StoredPublication};
+use awaken_agent_contract::ScopeId;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_tenancy::ScopeId;
 
 use super::{ConfigService, publication_build};
 use crate::publication::{PreparedPublication, PublishError};

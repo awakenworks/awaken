@@ -5,6 +5,7 @@ use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, ConfigStoreError, ModelSelection, PublicationWrite,
     ScopedConfigRegistry, StoredPublication,
 };
+use awaken_agent_contract::ScopeId;
 use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_config_service::{
     ConfigPlane, ConfigService, ModelPublicationResolver, PublicationResolutionError,
@@ -18,7 +19,6 @@ use awaken_executable_agent_contract::{
     ExecutableAgentWithdrawalOutcome,
 };
 use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding};
-use awaken_tenancy::ScopeId;
 use std::sync::Arc;
 pub(crate) fn agent_config(id: &str) -> AgentConfig {
     AgentConfig {

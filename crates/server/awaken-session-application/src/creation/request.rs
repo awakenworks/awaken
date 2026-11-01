@@ -241,7 +241,7 @@ impl SessionCreationCommands {
         agent_defaults: &[awaken_resource_contract::InputBinding],
         attachments: &[crate::session_resource::SessionInputAttachment],
         resolved_skills: Option<Vec<crate::session_resource::ResolvedSkillBinding>>,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        selected_holder: &awaken_agent_contract::credential::PlaintextHolder,
         map_pin_error: impl FnOnce(SessionPreparationError) -> E,
     ) -> Result<crate::session_resource::ResolvedSessionResources, (E, &'static str)> {
         let mut resources = crate::resource_lowering::resolve_session_inputs(

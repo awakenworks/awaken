@@ -251,10 +251,13 @@ mod tests {
     };
     use crate::{CredentialCreateParams, CredentialKind, InMemorySecretStore, SecretStore};
     use awaken_agent_contract::RedactedString;
+    use awaken_agent_contract::{
+        credential::CredentialPurpose, credential::CredentialTarget, credential::CredentialUsage,
+        credential::HttpEffectPlacement,
+    };
     use awaken_credential_contract::{
-        CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId,
-        CredentialTarget, CredentialTargetContract, CredentialUsage, HttpEffectPlacement,
-        OPAQUE_SECRET_MATERIAL_TYPE,
+        CredentialDescriptor, CredentialMaterialDescriptor, CredentialSourceId,
+        CredentialTargetContract, OPAQUE_SECRET_MATERIAL_TYPE,
     };
     use awaken_provisioning_contract::{SecretBroker, SecretWritebackEffect};
 

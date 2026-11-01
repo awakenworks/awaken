@@ -26,9 +26,8 @@ mod requirements;
 mod run_claim;
 mod source_retention;
 
-pub use awaken_credential_contract::{
-    CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,
-};
+pub use awaken_agent_contract::credential::CredentialRef as WorkerCredentialRevision;
+pub use awaken_credential_contract::CredentialObservationState as WorkerCredentialState;
 pub use fleet_readiness::{FleetReadiness, fleet_readiness};
 pub use manifest::{
     BACKGROUND_TASK_CONTROL_CAPABILITY, CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION,
@@ -437,12 +436,12 @@ mod tests {
         // Worker placement without translation; R2 the canonical observation state
         // is stored unchanged. This compile-time assignment prevents a second Worker
         // identity/state representation from returning.
-        let canonical = awaken_credential_contract::CredentialRef {
+        let canonical = awaken_agent_contract::credential::CredentialRef {
             id: "cred:canonical".into(),
             revision: 11,
         };
         let worker_key: WorkerCredentialRevision = canonical.clone();
-        let canonical_again: awaken_credential_contract::CredentialRef = worker_key.clone();
+        let canonical_again: awaken_agent_contract::credential::CredentialRef = worker_key.clone();
         assert_eq!(canonical_again, canonical);
 
         let state = awaken_credential_contract::CredentialObservationState::Available;

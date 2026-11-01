@@ -124,7 +124,7 @@ fn publication_resolution_invokes_exactly_one_owner() {
 }
 
 fn validate_candidate_scope_and_proof(
-    workspace: &awaken_tenancy::ScopeId,
+    workspace: &awaken_agent_contract::ScopeId,
     candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
 ) -> Result<(), PublishError> {
     let candidate_scope = match candidate.provisioning() {
@@ -177,7 +177,7 @@ fn validate_candidate_scope_and_proof(
 /// Runtime and worker paths receive only the resulting immutable snapshot.
 pub(crate) async fn prepare_agent_publication(
     model_resolver: &dyn ModelPublicationResolver,
-    workspace: &awaken_tenancy::ScopeId,
+    workspace: &awaken_agent_contract::ScopeId,
     source: AgentConfigRevision,
 ) -> Result<AgentPublicationDraft, PublishError> {
     let source_revision = source.revision;
@@ -409,7 +409,7 @@ mod tests {
     impl ModelPublicationResolver for FixedResolver {
         async fn resolve_models(
             &self,
-            workspace: &awaken_tenancy::ScopeId,
+            workspace: &awaken_agent_contract::ScopeId,
             _selection: &ModelSelection,
             _candidates: &[ModelBinding],
         ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
@@ -435,7 +435,7 @@ mod tests {
         };
         let draft = prepare_agent_publication(
             &resolver,
-            &awaken_tenancy::ScopeId::from("workspace-real"),
+            &awaken_agent_contract::ScopeId::from("workspace-real"),
             revision(ModelSelection::Auto, Vec::new()),
         )
         .await
@@ -458,7 +458,7 @@ mod tests {
         };
         let error = prepare_agent_publication(
             &resolver,
-            &awaken_tenancy::ScopeId::from("workspace-a"),
+            &awaken_agent_contract::ScopeId::from("workspace-a"),
             revision(
                 ModelSelection::Pinned(ModelBinding::new("", "", "genai")),
                 vec![],
@@ -481,7 +481,7 @@ mod tests {
         };
         let error = prepare_agent_publication(
             &resolver,
-            &awaken_tenancy::ScopeId::from("workspace-a"),
+            &awaken_agent_contract::ScopeId::from("workspace-a"),
             revision(ModelSelection::Pinned(primary), vec![fallback]),
         )
         .await
@@ -499,7 +499,7 @@ mod tests {
 
         let error = prepare_agent_publication(
             &resolver,
-            &awaken_tenancy::ScopeId::from("workspace-a"),
+            &awaken_agent_contract::ScopeId::from("workspace-a"),
             revision(ModelSelection::Auto, Vec::new()),
         )
         .await
@@ -562,7 +562,7 @@ mod tests {
             };
             prepare_agent_publication(
                 &resolver,
-                &awaken_tenancy::ScopeId::from("workspace-a"),
+                &awaken_agent_contract::ScopeId::from("workspace-a"),
                 revision(ModelSelection::Auto, Vec::new()),
             )
             .await
@@ -583,7 +583,7 @@ mod tests {
             };
             let error = prepare_agent_publication(
                 &resolver,
-                &awaken_tenancy::ScopeId::from("workspace-a"),
+                &awaken_agent_contract::ScopeId::from("workspace-a"),
                 revision(ModelSelection::Auto, Vec::new()),
             )
             .await
@@ -631,7 +631,7 @@ mod tests {
         };
         let draft = prepare_agent_publication(
             &resolver,
-            &awaken_tenancy::ScopeId::from("workspace-a"),
+            &awaken_agent_contract::ScopeId::from("workspace-a"),
             revision(
                 ModelSelection::try_backend_default("acp:codex", Default::default())
                     .expect("exact ACP backend"),
@@ -665,7 +665,7 @@ mod tests {
             };
             let error = prepare_agent_publication(
                 &resolver,
-                &awaken_tenancy::ScopeId::from("workspace-a"),
+                &awaken_agent_contract::ScopeId::from("workspace-a"),
                 revision(
                     ModelSelection::try_backend_default("acp:codex", Default::default())
                         .expect("exact ACP backend"),
@@ -717,7 +717,7 @@ mod tests {
         };
         prepare_agent_publication(
             &valid,
-            &awaken_tenancy::ScopeId::from("workspace-a"),
+            &awaken_agent_contract::ScopeId::from("workspace-a"),
             revision(),
         )
         .await

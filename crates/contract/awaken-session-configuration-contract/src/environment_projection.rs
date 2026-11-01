@@ -18,8 +18,8 @@ pub struct FrozenEnvironmentInputs {
     pub network: pc::NetworkPolicy,
     pub packages: awaken_environment_contract::PackageRequirements,
     pub sandbox: Option<pc::SandboxOverride>,
-    pub provisioning: crate::SandboxProvisioning,
-    pub idle_retention: crate::EnvironmentIdleRetentionPolicy,
+    pub provisioning: awaken_provisioning_contract::SandboxProvisioning,
+    pub idle_retention: awaken_provisioning_contract::SandboxIdleRetentionPolicy,
 }
 
 /// Canonical projection from the frozen Session Environment into neutral

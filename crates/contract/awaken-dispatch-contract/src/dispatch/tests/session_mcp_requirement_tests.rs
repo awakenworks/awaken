@@ -447,7 +447,7 @@ fn published_requirements_wire_is_additive_to_legacy_placement_rows() {
         "W1 legacy placement omitted"
     );
     let mut placed = a_request();
-    placed.placement = crate::PlacementRequirements::remote_required();
+    placed.placement = awaken_worker_contract::PlacementRequirements::remote_required();
     let placed_wire = serde_json::to_value(&placed).expect("W1 encodes");
     assert!(
         placed_wire["placement"]

@@ -26,8 +26,8 @@ const DB_PATH: &str = "AWAKEN_SESSION_CRASH_DB";
 const MARKER_PATH: &str = "AWAKEN_SESSION_CRASH_MARKER";
 
 fn session() -> PersistedSession {
-    let holder = awaken_credential_contract::PlaintextHolder::new(
-        awaken_credential_contract::PlaintextBoundary::Worker,
+    let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Worker,
         "awaken.worker",
     );
     let environment = awaken_session_configuration_contract::EnvironmentSnapshot {

@@ -10,9 +10,9 @@
 //! without mixing it into the service's authoring and reconciliation methods.
 
 use awaken_agent_config::{ConfigRegistry, StoredPublication};
+use awaken_agent_contract::ScopeId;
 use awaken_executable_agent_contract::ExecutableAgentRegistration;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_tenancy::ScopeId;
 
 use super::ConfigService;
 use crate::agent_projection::registered_session_profile;

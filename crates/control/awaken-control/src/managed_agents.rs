@@ -14,6 +14,7 @@ use awaken_agent_config::{
     MultiagentConfig, MultiagentTarget,
 };
 use awaken_agent_contract::AgentSkillBinding;
+use awaken_agent_contract::ScopeId;
 use awaken_agent_contract::ToolsetPolicy;
 use awaken_config_service::{
     ConfigPlane, RESERVED_ADMIN_SCOPE, parse_managed_model_id, render_managed_model_id,
@@ -29,7 +30,6 @@ use awaken_protocol_managed::{AgentArchiveReceipt, ManagedAgentError, ManagedAge
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_session_configuration_contract::preserve_runtime_agent_overrides;
-use awaken_tenancy::ScopeId;
 use awaken_time::WallClock;
 
 mod lifecycle_identity;
