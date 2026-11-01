@@ -102,6 +102,24 @@ pub const ENVIRONMENT_PROVISIONING_CODE: &str = "environment_provisioning";
 /// retry against the same provider cannot succeed.
 pub const ENVIRONMENT_REJECTED_CODE: &str = "environment_rejected";
 
+/// Stable `RunError` code of a Rebuild whose closed Environment source has
+/// nothing to rebuild from (no live checkpoint, retained volume or
+/// Repository). It is a state conflict (HTTP 409) that no retry can resolve.
+pub const SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE: &str =
+    "session_environment_rebuild_source_unavailable";
+
+/// The closed set of permanent state-conflict codes. An ordinary `Conflict`
+/// is a lost compare-and-swap race that a fresh read may win, so it retries;
+/// a code listed here names a conflict with committed state that no retry can
+/// change, so the Worker fails it once instead of spending its budget.
+const PERMANENT_CONFLICT_CODES: &[&str] = &[SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE];
+
+/// Whether `code` names a permanent state conflict rather than a lost race.
+#[must_use]
+pub fn is_permanent_conflict_code(code: &str) -> bool {
+    PERMANENT_CONFLICT_CODES.contains(&code)
+}
+
 /// The Worker class of an Environment the provider still reports
 /// provisioning. Waiting is no failure until the provider's deadline passes:
 /// before it the request defers (`NotReady`, no budget); from it on, or with
@@ -169,15 +187,20 @@ pub fn is_environment_effect_code(code: &str) -> bool {
 /// within its deadline is `NotReady` (the request-local deferral that keeps
 /// every retry budget); any other Unavailable fault, a state conflict and an
 /// internal fault no producer classified are `Retryable` within the caller's
-/// retry budget; a request fault and a classified internal fault are
-/// `Terminal`. A not-ready code on a non-Unavailable fault is no deferral: it
-/// keeps its fault's class.
+/// retry budget; a request fault, a classified internal fault and a permanent
+/// state conflict ([`is_permanent_conflict_code`]) are `Terminal`. A not-ready
+/// code on a non-Unavailable fault is no deferral: it keeps its fault's class.
 #[must_use]
 pub fn effect_failure_disposition(error: &RunError) -> SessionRealizationControlDisposition {
     use awaken_session_types::RunErrorKind;
     match error.kind {
         RunErrorKind::Unavailable if is_not_ready_code(&error.code) => {
             SessionRealizationControlDisposition::NotReady
+        }
+        // An ordinary Conflict lost a race and may win on a fresh read; a
+        // permanent conflict code conflicts with committed state for good.
+        RunErrorKind::Conflict if is_permanent_conflict_code(&error.code) => {
+            SessionRealizationControlDisposition::Terminal
         }
         RunErrorKind::Unavailable | RunErrorKind::Conflict => {
             SessionRealizationControlDisposition::Retryable
@@ -570,6 +593,7 @@ mod tests {
         // | F2 | Unavailable | no | Retryable | (true, false) |
         // | F4 | Conflict / unclassified Internal (C3) | no | Retryable | (true, false) |
         // | F3 | classified Internal/BadRequest | any | Terminal | (false, false) |
+        // | F5 | Conflict with a permanent conflict code | no | Terminal | (false, false) |
         use awaken_provisioning_contract::SandboxError;
         let capacity =
             environment_effect_error(&SandboxError::capacity_unavailable("exceeded quota"));
@@ -609,6 +633,15 @@ mod tests {
                 RunError::internal("unknown"),
                 SessionRealizationControlDisposition::Retryable,
                 (true, false),
+            ),
+            (
+                "F5",
+                RunError::conflict_classified(
+                    SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE,
+                    "closed source, nothing to rebuild from",
+                ),
+                SessionRealizationControlDisposition::Terminal,
+                (false, false),
             ),
             (
                 "F3",
@@ -694,7 +727,8 @@ mod tests {
         // from the row, not the table: only Unavailable + capacity code defers;
         // any other Unavailable, any Conflict and an Internal fault carrying the
         // unclassified code retry; BadRequest and a classified Internal fault
-        // are terminal whatever the code.
+        // are terminal whatever the code; a Conflict carrying a permanent
+        // conflict code is terminal (no retry changes committed state).
         use awaken_session_types::RunErrorKind;
         use awaken_session_types::error::UNCLASSIFIED_INTERNAL_CODE;
         for kind in [
@@ -710,6 +744,7 @@ mod tests {
                 ENVIRONMENT_UNAVAILABLE_CODE,
                 ENVIRONMENT_REJECTED_CODE,
                 UNCLASSIFIED_INTERNAL_CODE,
+                SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE,
                 "unavailable",
                 "conflict",
                 "",
@@ -723,7 +758,10 @@ mod tests {
                     || code == ENVIRONMENT_PROVISIONING_CODE
                     || code == super::super::control_failure::SESSION_REALIZATION_NOT_READY_CODE;
                 let unclassified = code == UNCLASSIFIED_INTERNAL_CODE;
+                let permanent_conflict = kind == RunErrorKind::Conflict
+                    && code == SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE;
                 let expected = match (kind, capacity, unclassified) {
+                    _ if permanent_conflict => SessionRealizationControlDisposition::Terminal,
                     (RunErrorKind::Unavailable, true, _) => {
                         SessionRealizationControlDisposition::NotReady
                     }

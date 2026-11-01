@@ -55,8 +55,9 @@ mod effect_failure;
 pub use effect_failure::{
     ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, ENVIRONMENT_PROVISIONING_CODE,
     ENVIRONMENT_REJECTED_CODE, ENVIRONMENT_UNAVAILABLE_CODE, RealizationFailureOutcome,
-    SessionRealizationEffectFailure, effect_failure_disposition, environment_effect_error,
-    is_environment_effect_code, is_not_ready_code, provisioning_disposition,
+    SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE, SessionRealizationEffectFailure,
+    effect_failure_disposition, environment_effect_error, is_environment_effect_code,
+    is_not_ready_code, is_permanent_conflict_code, provisioning_disposition,
 };
 pub use lease_receipt::{ObservedSessionRealizationLease, SessionRealizationLeaseReceipt};
 mod terminal_cleanup_authorization;

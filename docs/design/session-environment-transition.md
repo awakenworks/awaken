@@ -95,7 +95,7 @@ written before it decode as no evidence):
 |---|---|
 | `source_closed` and `source_access` | `Materialize(Rebuild)`, written ahead as the pending effect |
 | not `source_closed` | `MaterializationPending` (retry), unchanged |
-| `source_closed`, no `source_access` | `RebuildSourceUnavailable`: permanent, `RunError` code `session_environment_rebuild_source_unavailable` (Internal, not 503); Managed `session.error` `unknown_error`, retry status terminal |
+| `source_closed`, no `source_access` | `RebuildSourceUnavailable`: permanent, `RunError` code `session_environment_rebuild_source_unavailable` (Conflict, HTTP 409, a permanent conflict the Worker fails once, never 503); Managed `session.error` `unknown_error`, retry status terminal |
 
 A replay of a recorded Rebuild stays. `session-realization`
 (`rebuild_source`, tables RS/RA) derives the facts: closed means the provider

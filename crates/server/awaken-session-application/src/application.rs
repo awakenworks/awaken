@@ -776,7 +776,9 @@ impl RepositoryEnvironmentBindingSink {
                 RunError::unavailable_classified(code, error.to_string())
             }
             // A closed source with nothing to rebuild from is a permanent
-            // Session environment failure, reported once under its own code.
+            // conflict with the Session's committed state (HTTP 409), reported
+            // once under its own code: the Worker classifies this code as a
+            // terminal conflict, never a budgeted retry.
             SessionEnvironmentReceiptRecoveryAction::Reject
                 if matches!(
                     error,
@@ -785,8 +787,8 @@ impl RepositoryEnvironmentBindingSink {
                     )
                 ) =>
             {
-                RunError::classified(
-                    "session_environment_rebuild_source_unavailable",
+                RunError::conflict_classified(
+                    awaken_session_realization_contract::SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE,
                     error.to_string(),
                 )
             }

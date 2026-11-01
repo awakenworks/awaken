@@ -285,7 +285,7 @@ async fn rebuild_admission_maps_each_source_decision_to_one_run_error() {
     // sink over a completed Create origin.
     // | Rule | source evidence | aggregate decision | RunError |
     // | M1 | none / open | MaterializationPending | Unavailable `session_environment_materialization_pending` (retry, 503) |
-    // | M2 | closed, no access | RebuildSourceUnavailable | Internal `session_environment_rebuild_source_unavailable` (permanent, never 503) |
+    // | M2 | closed, no access | RebuildSourceUnavailable | Conflict `session_environment_rebuild_source_unavailable` (409, permanent: Worker class Terminal, never 503) |
     // | M3 | closed + Repository | Materialize(Rebuild) | admitted write-ahead; the exact receipt lands as the new origin |
     // M1 and M2 leave the stored root byte-identical.
     use awaken_session_contract::{
@@ -369,12 +369,17 @@ async fn rebuild_admission_maps_each_source_decision_to_one_run_error() {
     let error = sink.authorize(&lost).await.unwrap_err();
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::Internal,
-        "M2 permanent, never Unavailable"
+        awaken_session_types::RunErrorKind::Conflict,
+        "M2 a 409 state conflict, never Unavailable"
     );
     assert_eq!(
         error.code, "session_environment_rebuild_source_unavailable",
         "M2"
+    );
+    assert_eq!(
+        awaken_session_realization_contract::effect_failure_disposition(&error),
+        awaken_session_realization_contract::SessionRealizationControlDisposition::Terminal,
+        "M2 permanent: reported once, never a budgeted retry"
     );
     assert_eq!(
         repo.get(&resident.session_id).await.unwrap(),
