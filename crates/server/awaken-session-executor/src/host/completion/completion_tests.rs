@@ -631,11 +631,11 @@ fn worker_local_candidates_pin_every_exact_credential_for_claim_admission() {
     assert_eq!(
         placement.required_credentials,
         std::collections::BTreeSet::from([
-            awaken_worker_contract::WorkerCredentialRevision {
+            awaken_agent_contract::credential::CredentialRef {
                 id: "cred:fallback".into(),
                 revision: 5,
             },
-            awaken_worker_contract::WorkerCredentialRevision {
+            awaken_agent_contract::credential::CredentialRef {
                 id: "cred:primary".into(),
                 revision: 2,
             },
@@ -677,7 +677,7 @@ fn backend_owned_candidate_uses_the_same_exact_worker_placement_fence() {
     );
     assert_eq!(
         placement.required_credentials,
-        std::collections::BTreeSet::from([awaken_worker_contract::WorkerCredentialRevision {
+        std::collections::BTreeSet::from([awaken_agent_contract::credential::CredentialRef {
             id: "cred:local".into(),
             revision: 7,
         },])

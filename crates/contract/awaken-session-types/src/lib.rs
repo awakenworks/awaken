@@ -1,4 +1,24 @@
 //! Low-level Session identity, source ordering and runtime failure vocabulary.
+//!
+//! # Boundary
+//!
+//! Between every Session boundary: the shared identity and error vocabulary, with no trait.
+//!
+//! Implemented by: none (values only).
+//!
+//! Called by: `awaken-coordinator`, `awaken-coordinator-client`, `awaken-dispatch`,
+//! `awaken-dispatch-contract`, `awaken-dispatch-erasure`, `awaken-dispatch-execution`,
+//! `awaken-dispatch-http`, `awaken-dispatch-testkit`, `awaken-dream-application`,
+//! `awaken-environment-application`, `awaken-executable-environment-contract`,
+//! `awaken-managed-session-events`, `awaken-protocol-a2a`, `awaken-protocol-ag-ui`,
+//! `awaken-protocol-ai-sdk`, `awaken-protocol-awaken`, `awaken-protocol-managed`,
+//! `awaken-protocol-managed-testkit`, `awaken-resource-worker-http`, `awaken-scenario-host`,
+//! `awaken-session-application`, `awaken-session-application-contract`,
+//! `awaken-session-configuration-contract`, `awaken-session-contract`,
+//! `awaken-session-dream-contract`, `awaken-session-execution-contract`, `awaken-session-executor`,
+//! `awaken-session-mcp`, `awaken-session-realization`, `awaken-session-realization-driver`,
+//! `awaken-session-run-delivery`, `awaken-session-store`, `awaken-store-conformance`,
+//! `awaken-work-store`.
 
 use std::borrow::Borrow;
 use std::fmt;

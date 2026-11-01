@@ -467,7 +467,7 @@ async fn drive_resumed_attempt(
                 return super::finalize::finish_with_reader(
                     runtime,
                     context,
-                    Some(reader),
+                    super::finalize::TerminalStateRead::Committed(reader),
                     thread_id,
                     run_id.clone(),
                     ledger.into_step_result(RunDisposition::ended(

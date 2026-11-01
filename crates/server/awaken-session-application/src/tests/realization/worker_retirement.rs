@@ -57,6 +57,10 @@ async fn ordinary_worker_occupancy_does_not_depend_on_source_provider_availabili
         Arc::new(RecordingEnvironmentSource::default()),
         Default::default(),
         None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
     );
     let read = app
         .worker_occupancy()
@@ -100,6 +104,10 @@ async fn worker_retirement_observes_the_existing_disposal_action_without_acknowl
         Arc::new(RecordingEnvironmentSource::default()),
         Default::default(),
         None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
     );
     let (observed, subjects) =
         qualify_retirement(&app, &identity, |subjects| report(subjects, true)).await;
@@ -161,6 +169,10 @@ async fn active_resident_source_retirement_preserves_the_original_session() {
             ..Default::default()
         },
         None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
     );
     let (observed, subjects) =
         qualify_retirement(&app, &identity, |subjects| report(subjects, true)).await;
@@ -370,6 +382,10 @@ async fn worker_retirement_of_idle_no_create_sessions_requires_positive_closed_r
             Arc::new(RecordingEnvironmentSource::default()),
             Default::default(),
             None,
+            {
+                let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+            },
         );
         let (observed, subjects) = qualify_retirement(&app, &identity, |subjects| {
             if rule == "mixed-missing" {
@@ -554,6 +570,10 @@ async fn worker_retirement_requires_each_terminal_source_without_mutating_roots(
                 ..Default::default()
             },
             None,
+            {
+                let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+            },
         );
         let (result, subjects) = qualify_retirement(&app, &identity, |subjects| {
             if row.ends_with("report-missing") {
@@ -699,6 +719,10 @@ async fn worker_retirement_never_publishes_a_successful_source_prefix() {
                 ..Default::default()
             },
             None,
+            {
+                let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+            },
         );
         let (observed, subjects) =
             qualify_retirement(&app, &identity, |subjects| report(subjects, true)).await;
@@ -760,6 +784,10 @@ async fn worker_retirement_explains_every_refusing_session_without_changing_the_
                 ..Default::default()
             },
             None,
+            {
+                let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+            },
         )
     };
 

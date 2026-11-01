@@ -29,6 +29,7 @@ awaken-session-environment-contract.workspace = true
 # The neutral session substrate (ExecutorComponents) and its caller-role components
 # live here; the assembly bin mounts them.
 awaken-agent-contract.workspace = true
+awaken-worker-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-authority-clock.workspace = true
 awaken-session-application-contract.workspace = true
@@ -112,7 +113,6 @@ awaken-sandbox-control.workspace = true
 awaken-ext-mcp.workspace = true
 
 awaken-session-realization = { workspace = true, features = ["test-support"] }
-awaken-worker-contract.workspace = true
 # Managed fixtures use the real Session Root/sink and its existing Store port.
 awaken-session-application = { workspace = true, features = ["test-support"] }
 # Private Root fixtures guard unused Environment roles; ScenarioHost owns real Work composition.

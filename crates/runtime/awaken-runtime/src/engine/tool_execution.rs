@@ -853,7 +853,7 @@ impl ToolExecutionFactsResolver for CurrentToolExecutionFacts {
         let (capability, concurrency) = match tool.execution_target() {
             ToolExecutionTarget::Brain => (
                 tool.recovery_capability(),
-                intrinsic_tool_concurrency(ToolExecutionTarget::Brain, tool.as_ref(), None, call),
+                intrinsic_tool_concurrency(ToolConcurrencySource::Brain(tool.as_ref()), call),
             ),
             ToolExecutionTarget::Sandbox => {
                 let sandbox = self.sandbox.as_deref().ok_or_else(|| {
@@ -864,12 +864,7 @@ impl ToolExecutionFactsResolver for CurrentToolExecutionFacts {
                 })?;
                 (
                     sandbox.recovery_capability(&call.tool_id),
-                    intrinsic_tool_concurrency(
-                        ToolExecutionTarget::Sandbox,
-                        tool.as_ref(),
-                        Some(sandbox),
-                        call,
-                    ),
+                    intrinsic_tool_concurrency(ToolConcurrencySource::Sandbox(sandbox), call),
                 )
             }
         };
@@ -1064,29 +1059,39 @@ pub(crate) fn tool_concurrency(
     let intrinsic = local
         .tool(&call.tool_id)
         .map_or(ToolConcurrency::Serial, |tool| {
-            intrinsic_tool_concurrency(
-                tool.execution_target(),
-                tool.as_ref(),
-                context.tool_executor.as_deref(),
-                call,
-            )
+            let source = match tool.execution_target() {
+                ToolExecutionTarget::Brain => ToolConcurrencySource::Brain(tool.as_ref()),
+                ToolExecutionTarget::Sandbox => match context.tool_executor.as_deref() {
+                    Some(executor) => ToolConcurrencySource::Sandbox(executor),
+                    None => ToolConcurrencySource::MissingSandbox,
+                },
+            };
+            intrinsic_tool_concurrency(source, call)
         });
     constrain_tool_concurrency(intrinsic, env.tool_constraints(), call)
+}
+
+/// The selected source of an intrinsic claim, not execution authority.
+/// Missing Sandbox wiring keeps the conservative claim while invocation and
+/// immutable-catalog admission retain their existing fail-closed boundaries.
+enum ToolConcurrencySource<'a> {
+    Brain(&'a dyn RawTool),
+    Sandbox(&'a dyn ToolExecutor),
+    MissingSandbox,
 }
 
 /// Placement's intrinsic claim, shared with the immutable execution catalog.
 /// The catalog validates missing Sandbox wiring before using this calculation.
 fn intrinsic_tool_concurrency(
-    target: ToolExecutionTarget,
-    tool: &dyn RawTool,
-    sandbox: Option<&dyn ToolExecutor>,
+    source: ToolConcurrencySource<'_>,
     call: &ToolCall,
 ) -> ToolConcurrency {
-    match target {
-        ToolExecutionTarget::Brain => tool.concurrency(&call.arguments),
-        ToolExecutionTarget::Sandbox => sandbox.map_or_else(ToolConcurrency::default, |executor| {
+    match source {
+        ToolConcurrencySource::Brain(tool) => tool.concurrency(&call.arguments),
+        ToolConcurrencySource::Sandbox(executor) => {
             executor.concurrency(&call.tool_id, &call.arguments)
-        }),
+        }
+        ToolConcurrencySource::MissingSandbox => ToolConcurrency::default(),
     }
 }
 

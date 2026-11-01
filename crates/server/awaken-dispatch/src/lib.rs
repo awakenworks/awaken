@@ -85,6 +85,8 @@ pub use application::{
     stop_committed_terminal_attempt, stop_expired_predecessor,
 };
 pub use awaken_agent_contract::ExecutionScopeRef;
+pub use awaken_agent_contract::credential::CredentialRef;
+pub use awaken_credential_contract::CredentialObservationState;
 pub use awaken_credential_contract::{AttemptCredentialBinding, CredentialRealizationReceipt};
 pub use awaken_dispatch_contract::DispatchAttemptRecordReads;
 pub use awaken_dispatch_contract::operational::{
@@ -124,10 +126,9 @@ pub use awaken_worker_contract::{
     RegistryError, RegistryMutation, SESSION_RESOURCES_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND,
     WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
     WorkerAcpCapabilityRequirement, WorkerAssignment, WorkerCreateLedger,
-    WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory,
-    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerProcessExit,
-    WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim,
-    can_claim_locally, place_assignment,
+    WorkerCredentialObservation, WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
+    WorkerObservationSource, WorkerProcessExit, WorkerRecoveryMode, WorkerRegistration,
+    WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally, place_assignment,
 };
 pub use dispatch::{
     AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosurePage,

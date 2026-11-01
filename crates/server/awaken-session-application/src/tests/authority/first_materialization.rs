@@ -198,6 +198,10 @@ async fn first_admission_waits_for_real_cas_and_returns_the_durable_winner_after
         Arc::new(NoopMcpRealizer),
         persistence,
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .build()
@@ -307,6 +311,10 @@ async fn rebuild_admission_maps_each_source_decision_to_one_run_error() {
         Arc::new(NoopMcpRealizer),
         persistence,
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .build()
@@ -377,8 +385,8 @@ async fn rebuild_admission_maps_each_source_decision_to_one_run_error() {
         "M2"
     );
     assert_eq!(
-        awaken_session_realization_contract::effect_failure_disposition(&error),
-        awaken_session_realization_contract::SessionRealizationControlDisposition::Terminal,
+        awaken_session_execution_contract::effect_failure_disposition(&error),
+        awaken_session_execution_contract::SessionRealizationControlDisposition::Terminal,
         "M2 permanent: reported once, never a budgeted retry"
     );
     assert_eq!(

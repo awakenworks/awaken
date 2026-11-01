@@ -789,7 +789,7 @@ impl RepositoryEnvironmentBindingSink {
                 ) =>
             {
                 RunError::conflict_classified(
-                    awaken_session_realization_contract::SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE,
+                    awaken_session_execution_contract::SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE,
                     error.to_string(),
                 )
             }

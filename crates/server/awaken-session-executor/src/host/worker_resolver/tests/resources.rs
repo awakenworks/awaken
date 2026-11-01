@@ -301,7 +301,7 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         .into_provider_roles();
     let host = raw_host.build().unwrap();
     let managed = managed_test_host(host.clone());
-    let claim = ingress::RunClaim {
+    let claim = awaken_worker_contract::RunClaim {
         run_id: RunId("run-generation-fence".into()),
         owner: "worker-generation-fence".into(),
         epoch: 1,

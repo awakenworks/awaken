@@ -46,8 +46,7 @@ use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 use awaken_worker_contract::RunClaim;
 use awaken_worker_contract::{
     LeastLoadedPolicy, PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
-    WorkerCredentialObservation, WorkerCredentialRevision, WorkerIdentity, WorkerManifest,
-    WorkerSnapshot, WorkerState,
+    WorkerCredentialObservation, WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState,
 };
 
 /// Minimum live lease used by cross-backend conformance journeys. A live

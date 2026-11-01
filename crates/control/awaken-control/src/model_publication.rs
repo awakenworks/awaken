@@ -361,6 +361,7 @@ mod tests {
 
     use super::*;
     use awaken_agent_contract::RedactedString;
+    use awaken_agent_contract::credential::CredentialRef;
     use awaken_agent_contract::credential::{CredentialMaterialSource, CredentialUsage};
     use awaken_agent_contract::{credential::CredentialPurpose, credential::CredentialTarget};
     use awaken_config_resolver::InferenceProfile;
@@ -382,8 +383,7 @@ mod tests {
     use awaken_runtime_contract::resolved::ModelProvisioning;
     use awaken_worker_registry::{
         MemoryWorkerDirectory, WorkerAcpCapabilityObservation, WorkerCredentialObservation,
-        WorkerCredentialRevision, WorkerDirectory, WorkerHeartbeat, WorkerManifest,
-        WorkerRegistration,
+        WorkerDirectory, WorkerHeartbeat, WorkerManifest, WorkerRegistration,
     };
 
     /// The wall clock these fixtures compose resolvers with.
@@ -456,7 +456,7 @@ mod tests {
                     in_flight: 0,
                     warm_environment_shapes: Default::default(),
                     credential_observations: [WorkerCredentialObservation::available(
-                        WorkerCredentialRevision {
+                        CredentialRef {
                             id: credential_id.into(),
                             revision: 1,
                         },

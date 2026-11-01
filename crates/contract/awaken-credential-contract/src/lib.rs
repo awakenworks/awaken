@@ -18,6 +18,29 @@
 //! ```compile_fail
 //! use awaken_credential_contract::CredentialRef;
 //! ```
+//!
+//! # Boundary
+//!
+//! Context: `credentials`.
+//!
+//! Implemented by: `awaken-control`, `awaken-coordinator`, `awaken-credential-envelope`,
+//! `awaken-credential-materializer`, `awaken-credential-vault`, `awaken-dispatch-execution`,
+//! `awaken-process-startup`, `awaken-protocol-managed-testkit`, `awaken-run-executor-acp`,
+//! `awaken-scenario-host`, `awaken-session-application`, `awaken-session-executor`,
+//! `awaken-session-mcp`, `awaken-worker`.
+//!
+//! Called by: `awaken-acp-contract`, `awaken-admin-config-api`, `awaken-cli`, `awaken-control`,
+//! `awaken-coordinator`, `awaken-coordinator-client`, `awaken-credential-envelope`,
+//! `awaken-credential-materializer`, `awaken-credential-store`, `awaken-credential-vault`,
+//! `awaken-dispatch`, `awaken-dispatch-contract`, `awaken-dispatch-erasure`,
+//! `awaken-dispatch-execution`, `awaken-dispatch-http`, `awaken-dispatch-testkit`,
+//! `awaken-environment-application`, `awaken-execution-composition`, `awaken-inference-endpoint`,
+//! `awaken-process-startup`, `awaken-protocol-managed`, `awaken-protocol-managed-testkit`,
+//! `awaken-run-executor-acp`, `awaken-scenario-host`, `awaken-session-application`,
+//! `awaken-session-configuration-contract`, `awaken-session-contract`,
+//! `awaken-session-environment-contract`, `awaken-session-executor`, `awaken-session-mcp`,
+//! `awaken-session-realization`, `awaken-session-run-delivery`, `awaken-session-store`,
+//! `awaken-store-conformance`, `awaken-worker`, `awaken-worker-contract`.
 
 use std::collections::BTreeSet;
 

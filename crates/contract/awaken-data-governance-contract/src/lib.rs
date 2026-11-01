@@ -7,6 +7,17 @@
 //! lives here (ADR-0086 §2). The consent port is consulted at the Run boundary,
 //! never on the inference hot path, and so is the Workspace layer of the
 //! telemetry ceiling ([`TelemetryNarrowingSource`]).
+//!
+//! # Boundary
+//!
+//! Context: `governance`.
+//!
+//! Implemented by: `awaken-captured-content-store`, `awaken-control`, `awaken-coordinator`,
+//! `awaken-data-subject-application`, `awaken-run-executor-acp`, `awaken-session-executor`.
+//!
+//! Called by: `awaken-captured-content-store`, `awaken-control`, `awaken-coordinator`,
+//! `awaken-data-subject-application`, `awaken-process-startup`, `awaken-protocol-managed`,
+//! `awaken-protocol-managed-testkit`, `awaken-run-executor-acp`, `awaken-session-executor`.
 
 #![warn(unreachable_pub)]
 

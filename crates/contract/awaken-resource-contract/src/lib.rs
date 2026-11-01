@@ -19,6 +19,30 @@
 //! Note there is deliberately **no `SecretSource` port**: a secret is resolved by
 //! reference through `awaken_provisioning_contract::BlobSource` straight into the
 //! sandbox, never surfaced as a value here.
+//!
+//! # Boundary
+//!
+//! Context: `resources`.
+//!
+//! Implemented by: `awaken-control`, `awaken-coordinator`, `awaken-file-store`,
+//! `awaken-memory-store`, `awaken-resource-application`, `awaken-resource-store`,
+//! `awaken-resource-worker-http`, `awaken-sandbox-container`, `awaken-sandbox-local`,
+//! `awaken-sandbox-memoryd`, `awaken-session-application`, `awaken-session-configuration-contract`,
+//! `awaken-session-executor`, `awaken-skill-store`.
+//!
+//! Called by: `awaken-agent-config`, `awaken-cli`, `awaken-config-resolver`, `awaken-control`,
+//! `awaken-coordinator`, `awaken-deployment-contract`, `awaken-eval`,
+//! `awaken-executable-agent-catalog`, `awaken-executable-agent-contract`, `awaken-file-store`,
+//! `awaken-memory-store`, `awaken-process-startup`, `awaken-protocol-managed`,
+//! `awaken-protocol-managed-testkit`, `awaken-provisioning-contract`,
+//! `awaken-resource-application`, `awaken-resource-persistence`, `awaken-resource-reclaimer`,
+//! `awaken-resource-store`, `awaken-resource-worker-http`, `awaken-sandbox-container`,
+//! `awaken-sandbox-local`, `awaken-sandbox-memoryd`, `awaken-scenario-host`,
+//! `awaken-session-application`, `awaken-session-configuration-contract`,
+//! `awaken-session-contract`, `awaken-session-environment`, `awaken-session-execution-contract`,
+//! `awaken-session-executor`, `awaken-session-executor-testkit`, `awaken-session-realization`,
+//! `awaken-session-run-delivery`, `awaken-skill-store`, `awaken-store-conformance`,
+//! `awaken-worker`.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

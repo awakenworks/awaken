@@ -162,7 +162,10 @@ async fn profiled_without_a_profile_keeps_capability_selection_and_missing_child
         roles,
         SessionPersistence::new(repository, system_clock()),
         Arc::new(AdmissionEnvironment),
-        crate::SessionExecutionAdmission::fixture(),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .build()

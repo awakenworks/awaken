@@ -14,6 +14,13 @@
 //! in `awaken-time`, the Runtime SDK's depth-0 clock leaf. The fence kernel
 //! depends on it for `Expiry` and `UtcTime`; nothing else, so the SDK can use
 //! the clock without linking the fence.
+//!
+//! # Boundary
+//!
+//! Context: `agent-runtime`.
+//!
+//! Published SDK contract (ADR-0086): every context may read it, so its readers are not listed
+//! here; `cargo tree -e normal -i awaken-lease-contract` prints them.
 
 pub mod authority;
 pub mod fence;

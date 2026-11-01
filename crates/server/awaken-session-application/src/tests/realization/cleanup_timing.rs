@@ -47,6 +47,10 @@ async fn live_session_usage_projects_the_same_clock_that_opened_its_root_interva
         Arc::new(NoopMcpRealizer),
         SessionPersistence::new(repo.clone(), clock.clone()),
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .build()
@@ -167,6 +171,10 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             Arc::new(NoopMcpRealizer),
             SessionPersistence::new(repo.clone(), clock.clone()),
             Arc::new(RecordingEnvironmentSource::default()),
+            {
+                let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), workers.clone(), probe)
+            },
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .configuration(SessionApplicationConfiguration {
@@ -175,9 +183,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
         })
         .build()
         .expect("valid fixture Store/Clock composition");
-        app.execution_admission()
-            .set_worker_observation_source(workers.clone())
-            .unwrap();
+
         let target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: registered.snapshot.identity.worker_id.clone(),
             runtime_incarnation: registered.snapshot.identity.lease_owner(),

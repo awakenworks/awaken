@@ -269,7 +269,7 @@ impl ProcessDispatch {
         resolver: impl FnOnce() -> Option<Arc<dyn WorkerResolver<AnyDispatchStore>>>,
     ) -> bool {
         if !starts_terminal_reconciliation(
-            self.topology.ingress.is_durable(),
+            self.topology.foreground_delivery.is_durable(),
             self.topology.local.runs_local_pool(),
             scans_committed_terminals,
             self.terminal_reconciler.get().is_some(),

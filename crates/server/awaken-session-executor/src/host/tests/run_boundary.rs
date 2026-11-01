@@ -1114,10 +1114,10 @@ async fn durable_resume_commands_read_committed_tickets_without_a_pool_or_enviro
                     crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
                         .await
                         .with_ephemeral_dispatch(dispatch.clone());
-                builder.execution.ingress = if durable {
-                    crate::RunIngress::Durable
+                builder.execution.foreground_delivery = if durable {
+                    awaken_deployment_config::ForegroundRunDelivery::Durable
                 } else {
-                    crate::RunIngress::Direct
+                    awaken_deployment_config::ForegroundRunDelivery::Direct
                 };
                 builder.execution.local = if local {
                     crate::LocalExecution::in_process_pool()

@@ -2,6 +2,13 @@
 //! ports, the durable tool-call batch, and the tool-discovery input.
 //!
 //! Consumers name these types and ports directly through this defining crate.
+//!
+//! # Boundary
+//!
+//! Context: `agent-runtime`.
+//!
+//! Published SDK contract (ADR-0086): every context may read it, so its readers are not listed
+//! here; `cargo tree -e normal -i awaken-tool-contract` prints them.
 
 pub mod tool;
 pub mod tool_batch;

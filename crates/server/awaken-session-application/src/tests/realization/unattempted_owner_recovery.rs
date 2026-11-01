@@ -29,11 +29,16 @@ async fn seed_expired_cleanup_affinity(
     let witness = matches!(evidence, NoCreateEvidence::ArchiveReceipt);
     let modern = matches!(evidence, NoCreateEvidence::FreshEmpty);
     let runtime = Arc::new(RecordingCleanupRuntime::default());
+    let workers = Arc::new(RecordingWorkerObservations::default());
     let app = SessionApplicationBuilder::fixture(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(repository.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), workers.clone(), probe)
+        },
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(SessionApplicationConfiguration {
@@ -138,7 +143,7 @@ async fn seed_expired_cleanup_affinity(
         "fixture reads the real archive command receipt, never authors missing history",
     );
     let target = target(incumbent_owner);
-    let workers = Arc::new(RecordingWorkerObservations::default());
+
     let registered = terminal_cleanup_worker(&target, terminal_cleanup_manifest());
     assert_eq!(
         registered.snapshot.identity.lease_owner(),
@@ -146,9 +151,7 @@ async fn seed_expired_cleanup_affinity(
         "fixture uses the existing Registry's exact owner/generation/incarnation"
     );
     workers.replace(vec![registered]);
-    app.execution_admission()
-        .set_worker_observation_source(workers.clone())
-        .unwrap();
+
     (app, runtime, workers)
 }
 

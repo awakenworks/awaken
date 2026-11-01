@@ -1,5 +1,12 @@
 // @formal entrypoint tool_policy.selector_fails_closed_for_unregistered_widened_or_mismatched_calls
 //! Agent-domain contract for runtime truth, commits, facts, and neutral events.
+//!
+//! # Boundary
+//!
+//! Context: `agent-runtime`.
+//!
+//! Published SDK contract (ADR-0086): every context may read it, so its readers are not listed
+//! here; `cargo tree -e normal -i awaken-agent-contract` prints them.
 
 pub mod acp;
 pub mod agent;

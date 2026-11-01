@@ -122,20 +122,21 @@ pub struct SessionApplicationBuilder {
 }
 
 impl SessionApplicationBuilder {
-    /// Explicit partial assembly for fixtures only.
+    /// Fixture assembly with complete execution observations selected by its caller.
     #[cfg(any(test, feature = "test-support"))]
     pub fn fixture(
         runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
         mcp: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
         persistence: SessionPersistence,
         environments: impl Into<SessionEnvironments>,
+        execution: SessionExecutionAdmission,
         tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
     ) -> Self {
         Self::new(
             SessionExecutor::colocated(runtime, mcp),
             persistence,
             environments,
-            SessionExecutionAdmission::fixture(),
+            execution,
             tool_configuration_compiler,
         )
     }

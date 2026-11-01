@@ -202,14 +202,14 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 434,
+        "line": 438,
         "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 435
+        "line": 439
       }
     ],
     "execution_witnesses": [
@@ -244,14 +244,14 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 446,
+        "line": 450,
         "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 456
+        "line": 460
       }
     ],
     "execution_witnesses": [
@@ -286,22 +286,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 548,
+        "line": 552,
         "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 554
+        "line": 558
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 565
+        "line": 569
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 567
+        "line": 571
       }
     ],
     "execution_witnesses": [
@@ -336,22 +336,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 646,
+        "line": 650,
         "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 648
+        "line": 652
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 667
+        "line": 671
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 672
+        "line": 676
       }
     ],
     "execution_witnesses": [
@@ -387,22 +387,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 708,
+        "line": 712,
         "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 712
-      },
-      {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 722
+        "line": 716
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 726
+      },
+      {
+        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "line": 730
       }
     ],
     "execution_witnesses": [
@@ -436,22 +436,22 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 764,
+        "line": 768,
         "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 767
+        "line": 771
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 776
+        "line": 780
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 784
+        "line": 788
       }
     ],
     "execution_witnesses": [

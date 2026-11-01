@@ -128,6 +128,8 @@ pub struct ScenarioManagedState {
     pub local_workspace: String,
     /// The executor's clock: the Worker transport and Dreams judge time on it.
     pub clock: Arc<dyn awaken_time::WallClock>,
+    /// The exact Registry selected before this scenario's Session application.
+    pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
 }
 
 // The **worker** lifecycle moved to the production `awaken-worker` crate. In the
@@ -364,7 +366,7 @@ pub async fn mount_with_managed_and_application_access_and_models(
             worker_create_broker_router: None,
             credential_deliveries: None,
             repository_transport_authorizer: None,
-            worker_directory: test_worker_directory(),
+            worker_directory: managed_state.worker_directory.clone(),
             ai_sdk_browser_cors: AiSdkBrowserCors::default(),
             worker_clock,
             org_admission: None,
@@ -845,7 +847,7 @@ async fn mount_with_managed_over(
                 worker_create_broker_router: None,
                 credential_deliveries: None,
                 repository_transport_authorizer: None,
-                worker_directory: test_worker_directory(),
+                worker_directory: managed_state.worker_directory.clone(),
                 ai_sdk_browser_cors: AiSdkBrowserCors::default(),
                 worker_clock,
                 org_admission: None,
@@ -1000,11 +1002,6 @@ async fn mount_with_managed_over_and_models(
         worker_directory.clone();
     let preparation: Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement> =
         execution.dispatch.preparation_placement();
-    #[cfg(feature = "test-support")]
-    session_application
-        .execution_admission()
-        .complete_fixture_worker_admission(worker_observations.clone(), preparation.clone())
-        .map_err(|error| WorkerTransportBuildError::Dispatch(error.into()))?;
     session_application
         .execution_admission()
         .verify_worker_admission(&worker_observations, &preparation)

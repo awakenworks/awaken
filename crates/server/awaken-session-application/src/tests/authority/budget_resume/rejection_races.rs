@@ -31,7 +31,10 @@ async fn race_fixture(id: &str) -> BudgetAdmissionRace {
             roles,
             SessionPersistence::new(repository.clone(), system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
-            crate::SessionExecutionAdmission::fixture(),
+            {
+                let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+            },
             Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .build()

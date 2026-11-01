@@ -1,4 +1,11 @@
 //! Closed URL-source selection shared by authored tool policy and Web execution.
+//!
+//! # Boundary
+//!
+//! Context: `agent-runtime`.
+//!
+//! Published SDK contract (ADR-0086): every context may read it, so its readers are not listed
+//! here; `cargo tree -e normal -i awaken-web-policy-contract` prints them.
 
 #![warn(unreachable_pub)]
 

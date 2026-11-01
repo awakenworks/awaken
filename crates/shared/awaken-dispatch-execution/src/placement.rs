@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 pub fn worker_local_credentials(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
-) -> BTreeSet<awaken_worker_contract::WorkerCredentialRevision> {
+) -> BTreeSet<awaken_agent_contract::credential::CredentialRef> {
     std::iter::once(&models.model_binding)
         .chain(models.model_candidates.iter())
         .filter_map(|candidate| match candidate.provisioning() {

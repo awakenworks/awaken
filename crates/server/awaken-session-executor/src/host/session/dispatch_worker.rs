@@ -18,7 +18,7 @@
 
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
-use crate::host::session_ctx::ForegroundRunDelivery;
+use crate::host::session_ctx::ForegroundRunDriver;
 
 impl crate::RunAssembly {
     /// Build the one claimed Worker for this Thread, then select its independent
@@ -37,7 +37,7 @@ impl crate::RunAssembly {
         run_context: awaken_runtime_contract::RuntimeRunContext,
     ) -> Result<
         (
-            ForegroundRunDelivery,
+            ForegroundRunDriver,
             Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
         ),
         SessionExecutionError,
@@ -100,14 +100,14 @@ impl crate::RunAssembly {
         // with every other, so a claim would grab foreign threads' runs. The
         // process-level `DispatchPool` owns recovery — it claims each crashed run and
         // routes it to the session (this one included) that owns its thread.
-        if self.execution.ingress.is_durable() {
-            Ok((ForegroundRunDelivery::Durable, claimed_worker))
+        if self.execution.foreground_delivery.is_durable() {
+            Ok((ForegroundRunDriver::Durable, claimed_worker))
         } else {
             let direct = Arc::new(DirectAttemptDriver::with_attempt_executor(
                 runtime,
                 attempt_executor,
             ));
-            Ok((ForegroundRunDelivery::Direct(direct), claimed_worker))
+            Ok((ForegroundRunDriver::Direct(direct), claimed_worker))
         }
     }
 

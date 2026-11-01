@@ -2,8 +2,8 @@
 // @formal entrypoint worker_credential.dynamic_observation_requires_exact_fact_and_half_open_lease
 // @formal entrypoint worker_credential.expired_observation_never_executes
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationState};
-use awaken_agent_contract::credential::CredentialRef as WorkerCredentialRevision;
-use awaken_credential_contract::CredentialObservationState as WorkerCredentialState;
+use awaken_agent_contract::credential::CredentialRef;
+use awaken_credential_contract::CredentialObservationState;
 use serde::{Deserialize, Serialize};
 
 use crate::capability_agreement::{CapabilityEvidenceAgreement, merge_capability_evidence};
@@ -41,8 +41,8 @@ pub const fn dynamic_evidence_admits(
 /// Point-in-time, non-secret credential evidence published by one Worker.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct WorkerCredentialObservation {
-    pub credential: WorkerCredentialRevision,
-    pub state: WorkerCredentialState,
+    pub credential: CredentialRef,
+    pub state: CredentialObservationState,
     pub observed_at_ms: u64,
     /// Exclusive deadline after which this observation is no longer placement
     /// evidence. A missing field from an older sender decodes to zero and
@@ -55,14 +55,10 @@ pub struct WorkerCredentialObservation {
 
 impl WorkerCredentialObservation {
     #[must_use]
-    pub fn available(
-        credential: WorkerCredentialRevision,
-        observed_at_ms: u64,
-        valid_until_ms: u64,
-    ) -> Self {
+    pub fn available(credential: CredentialRef, observed_at_ms: u64, valid_until_ms: u64) -> Self {
         Self {
             credential,
-            state: WorkerCredentialState::Available,
+            state: CredentialObservationState::Available,
             observed_at_ms,
             valid_until_ms,
             reason_code: None,
@@ -70,9 +66,9 @@ impl WorkerCredentialObservation {
     }
 
     #[must_use]
-    pub fn is_selectable_at(&self, credential: &WorkerCredentialRevision, now_ms: u64) -> bool {
+    pub fn is_selectable_at(&self, credential: &CredentialRef, now_ms: u64) -> bool {
         dynamic_observation_admitted(
-            self.state == WorkerCredentialState::Available && &self.credential == credential,
+            self.state == CredentialObservationState::Available && &self.credential == credential,
             self.observed_at_ms,
             now_ms,
             self.valid_until_ms,
@@ -133,7 +129,7 @@ pub enum VerifiedAcpCapabilitySelection {
 pub fn select_verified_acp_capability<'a>(
     workers: impl IntoIterator<Item = &'a RegisteredWorker>,
     backend_ref: &str,
-    credential: Option<&WorkerCredentialRevision>,
+    credential: Option<&CredentialRef>,
     now_ms: u64,
 ) -> VerifiedAcpCapabilitySelection {
     let evidence = workers
@@ -177,7 +173,7 @@ pub fn select_verified_acp_capability<'a>(
 
 fn worker_accepts_dynamic_evidence(
     worker: &WorkerSnapshot,
-    credential: Option<&WorkerCredentialRevision>,
+    credential: Option<&CredentialRef>,
     now_ms: u64,
 ) -> bool {
     worker.state.accepts_work()

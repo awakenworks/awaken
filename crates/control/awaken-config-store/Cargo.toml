@@ -15,6 +15,7 @@ isolates = ["sqlx"]
 
 [dependencies]
 awaken-agent-config.workspace = true
+awaken-agent-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -28,7 +29,6 @@ awaken-sql-storage = { workspace = true, features = ["postgres"] }
 [dev-dependencies]
 tempfile = "3"
 proptest.workspace = true
-awaken-agent-contract.workspace = true
 awaken-time.workspace = true
 awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 awaken-runtime-contract.workspace = true

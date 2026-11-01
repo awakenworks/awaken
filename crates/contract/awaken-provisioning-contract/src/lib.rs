@@ -28,6 +28,41 @@
 //! The two planes are named distinctly: [`EnvironmentKind`] is the *declared*
 //! control-plane config (persisted, admitted); a live realized environment is the
 //! provider's own type behind [`Sandbox`].
+//!
+//! Sandbox control service kinds are named from `awaken-sandbox-control`:
+//!
+//! ```compile_fail
+//! use awaken_provisioning_contract::SandboxControlServiceKind;
+//! ```
+//!
+//! # Boundary
+//!
+//! Context: `environment`.
+//!
+//! Implemented by: `awaken-credential-materializer`, `awaken-credential-vault`,
+//! `awaken-environment-application`, `awaken-execution-composition`, `awaken-local-process`,
+//! `awaken-protocol-acp`, `awaken-run-executor-acp`, `awaken-sandbox-container`,
+//! `awaken-sandbox-kubernetes`, `awaken-sandbox-local`, `awaken-sandbox-memoryd`,
+//! `awaken-sandbox-policy-store`, `awaken-session-environment`,
+//! `awaken-session-environment-contract`, `awaken-session-executor`, `awaken-session-realization`,
+//! `awaken-worker`.
+//!
+//! Called by: `awaken-admin-config-api`, `awaken-config-service`, `awaken-container-contract`,
+//! `awaken-control`, `awaken-coordinator`, `awaken-credential-materializer`,
+//! `awaken-credential-vault`, `awaken-deployment-config`, `awaken-dispatch-contract`,
+//! `awaken-dispatch-execution`, `awaken-environment-application`,
+//! `awaken-environment-package-image-builder`, `awaken-executable-environment-contract`,
+//! `awaken-execution-composition`, `awaken-local-process`, `awaken-package-image`,
+//! `awaken-process-startup`, `awaken-protocol-acp`, `awaken-protocol-awaken`,
+//! `awaken-protocol-managed`, `awaken-protocol-managed-testkit`, `awaken-resource-worker-http`,
+//! `awaken-run-executor-acp`, `awaken-sandbox`, `awaken-sandbox-container`,
+//! `awaken-sandbox-kubernetes`, `awaken-sandbox-local`, `awaken-sandbox-memoryd`,
+//! `awaken-sandbox-policy-store`, `awaken-session-application`,
+//! `awaken-session-configuration-contract`, `awaken-session-contract`,
+//! `awaken-session-environment`, `awaken-session-environment-contract`,
+//! `awaken-session-execution-contract`, `awaken-session-executor`, `awaken-session-mcp`,
+//! `awaken-session-realization`, `awaken-store-conformance`, `awaken-worker`,
+//! `awaken-worker-contract`, `awaken-worker-fleet-kubernetes`.
 
 mod admission;
 mod claimed_effect;
@@ -42,8 +77,6 @@ mod vocab;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-
-pub use awaken_sandbox_control::SandboxControlServiceKind;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
 pub use claimed_effect::{ClaimedEffect, ClaimedEffectInFlight, EffectClaim};

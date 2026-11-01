@@ -49,6 +49,19 @@
 //! Auxiliary Agent Runs (judge, compactor, Memory selection and extraction,
 //! isolated Skill forks) use the separate [`AuxiliarySandboxFactory`] port:
 //! they never share the Session-owned environment.
+//!
+//! # Boundary
+//!
+//! Context: `environment`.
+//!
+//! Implemented by: `awaken-execution-composition`, `awaken-protocol-acp`, `awaken-protocol-mcp`,
+//! `awaken-run-executor-acp`, `awaken-sandbox-local`, `awaken-session-environment`,
+//! `awaken-session-executor`, `awaken-session-mcp`, `awaken-tool-relay`.
+//!
+//! Called by: `awaken-deployment-config`, `awaken-execution-composition`, `awaken-process-startup`,
+//! `awaken-protocol-acp`, `awaken-protocol-mcp`, `awaken-run-executor-acp`, `awaken-sandbox-local`,
+//! `awaken-session-environment`, `awaken-session-executor`, `awaken-session-mcp`,
+//! `awaken-session-realization`, `awaken-tool-relay`, `awaken-worker`.
 
 pub mod tool_export;
 
@@ -150,7 +163,7 @@ pub fn namespace_capabilities() -> pc::SandboxCapabilities {
         package_provisioning: false,
         control_services: if cfg!(target_os = "linux") {
             std::collections::BTreeSet::from([
-                pc::SandboxControlServiceKind::RepositoryGitCredential,
+                awaken_sandbox_control::SandboxControlServiceKind::RepositoryGitCredential,
             ])
         } else {
             Default::default()

@@ -543,7 +543,7 @@ mod tests {
         let completion = Arc::new(CompletionRegistry::new(hub.clone()));
         let process = Arc::new(awaken_dispatch_execution::ProcessDispatch::new(
             awaken_deployment_config::ExecutionTopology {
-                ingress: awaken_deployment_config::RunIngress::Durable,
+                foreground_delivery: awaken_deployment_config::ForegroundRunDelivery::Durable,
                 local: awaken_deployment_config::LocalExecution::RemoteWorkersOnly,
                 lease_owner: awaken_deployment_config::LeaseOwnerId::new("coordinator")
                     .expect("lease owner"),

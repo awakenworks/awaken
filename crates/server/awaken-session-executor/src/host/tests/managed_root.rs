@@ -323,7 +323,18 @@ impl ManagedSessionRootFixture {
                             .take()
                             .expect("one selected Persistence"),
                         environments,
-                        awaken_session_application::SessionExecutionAdmission::fixture(),
+                        {
+                            let probe = std::sync::Arc::new(
+                                awaken_session_application::ExecutionObservationProbe::default(),
+                            );
+                            awaken_session_application::SessionExecutionAdmission::new(
+                                std::sync::Arc::new(awaken_dispatch::MemoryDispatchStore::new(
+                                    self.clock.clone(),
+                                )),
+                                probe.clone(),
+                                probe,
+                            )
+                        },
                         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
                     )
                     .configuration(configuration)

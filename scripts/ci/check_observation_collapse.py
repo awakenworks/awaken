@@ -137,56 +137,6 @@ TRI_STATE_READ = re.compile(
 )
 
 
-def strip_rust(source: str) -> str:
-    """Blank out comments and string/char literals, preserving offsets.
-
-    Chain scanning must not trip over a `.ok()` inside a doc comment or a SQL
-    string. Replacing with spaces rather than deleting keeps every reported
-    offset usable against the original text.
-    """
-    out = list(source)
-    index = 0
-    length = len(source)
-    while index < length:
-        two = source[index : index + 2]
-        if two == "//":
-            end = source.find("\n", index)
-            end = length if end < 0 else end
-            out[index:end] = " " * (end - index)
-            index = end
-        elif two == "/*":
-            end = source.find("*/", index + 2)
-            end = length if end < 0 else end + 2
-            out[index:end] = " " * (end - index)
-            index = end
-        elif source[index] == '"':
-            cursor = index + 1
-            while cursor < length and source[cursor] != '"':
-                cursor += 2 if source[cursor] == "\\" else 1
-            cursor = min(cursor + 1, length)
-            out[index:cursor] = " " * (cursor - index)
-            index = cursor
-        else:
-            index += 1
-    return "".join(out)
-
-
-def skip_balanced(source: str, index: int, opening: str, closing: str) -> int:
-    """Index just past the group that starts at `index`, or `index` if none."""
-    if index >= len(source) or source[index] != opening:
-        return index
-    depth = 0
-    while index < len(source):
-        if source[index] == opening:
-            depth += 1
-        elif source[index] == closing:
-            depth -= 1
-            if depth == 0:
-                return index + 1
-        index += 1
-    return index
-
-
 IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 
 
@@ -215,8 +165,13 @@ def method_chain(source: str, index: int) -> list[str]:
         names.append(match.group(0))
         index = match.end()
         if source[index : index + 2] == "::":
-            index = skip_balanced(source, source.find("<", index), "<", ">")
-        index = skip_balanced(source, index, "(", ")")
+            index = source.find("<", index)
+            if index < length and source[index] == "<":
+                end = _crate_boundary_workspace._balanced_end(source, index, "<", ">")
+                index = length if end is None else end
+        if index < length and source[index] == "(":
+            end = _crate_boundary_workspace._balanced_end(source, index, "(", ")")
+            index = length if end is None else end
     return names
 
 
@@ -232,11 +187,15 @@ def observation_chains(source: str) -> list[tuple[int, list[str]]]:
     """
     found: list[tuple[int, list[str]]] = []
     for match in AWAITED_READ.finditer(source):
-        chain = method_chain(source, skip_balanced(source, match.end() - 1, "(", ")"))
+        end = _crate_boundary_workspace._balanced_end(source, match.end() - 1, "(", ")")
+        chain = method_chain(source, len(source) if end is None else end)
         if chain[:1] == ["await"]:
             found.append((match.start(), chain[1:]))
     for match in OBSERVED_EXPRESSION.finditer(source):
-        end = skip_balanced(source, match.end(), "(", ")")
+        end = match.end()
+        if end < len(source) and source[end] == "(":
+            closing = _crate_boundary_workspace._balanced_end(source, end, "(", ")")
+            end = len(source) if closing is None else closing
         found.append((match.start(), method_chain(source, end)))
     return found
 
@@ -260,7 +219,7 @@ def validation_errors(sources: dict[str, str]) -> list[str]:
             "is looking at nothing: " + ", ".join(sorted(missing))
         )
 
-    observation = strip_rust(sources.get(OBSERVATION, ""))
+    observation = _crate_boundary_workspace.rust_syntax(sources.get(OBSERVATION, ""))
     for pattern, reason in ESCAPE_HATCHES:
         hit = pattern.search(observation)
         if hit:
@@ -270,7 +229,7 @@ def validation_errors(sources: dict[str, str]) -> list[str]:
                 "is an explicit match."
             )
 
-    port = strip_rust(sources.get(PORT, ""))
+    port = _crate_boundary_workspace.rust_syntax(sources.get(PORT, ""))
     if port and not TRI_STATE_READ.search(port):
         errors.append(
             f"{PORT}: the checkpoint read must be declared "
@@ -281,7 +240,7 @@ def validation_errors(sources: dict[str, str]) -> list[str]:
     # The registered transport declarations are only admitted while the single
     # translation that justifies them is still there, and while each registered
     # file still carries the shape it was registered for.
-    translator = strip_rust(sources.get(TRANSLATOR, ""))
+    translator = _crate_boundary_workspace.rust_syntax(sources.get(TRANSLATOR, ""))
     if TRANSLATED_TRANSPORT and not TRANSLATION.search(translator):
         errors.append(
             f"{TRANSLATOR}: the dispatch transport is allowed to keep "
@@ -290,7 +249,7 @@ def validation_errors(sources: dict[str, str]) -> list[str]:
             "registered transport declarations are now an unguarded fail-open."
         )
     for path in sorted(TRANSLATED_TRANSPORT):
-        if path not in sources or not OLD_SHAPE.search(strip_rust(sources[path])):
+        if path not in sources or not OLD_SHAPE.search(_crate_boundary_workspace.rust_syntax(sources[path])):
             errors.append(
                 f"{path} is registered as a transport declaration that keeps "
                 "Result<Option<StreamCheckpoint>>, but no longer carries it; drop the "
@@ -298,7 +257,7 @@ def validation_errors(sources: dict[str, str]) -> list[str]:
             )
 
     for path in sorted(sources):
-        text = strip_rust(sources[path])
+        text = _crate_boundary_workspace.rust_syntax(sources[path])
         hit = OLD_SHAPE.search(text)
         if hit and path not in TRANSLATED_TRANSPORT:
             errors.append(
@@ -423,7 +382,7 @@ class ObservationCollapseTests(unittest.TestCase):
         self.assertTrue(TRANSLATED_TRANSPORT, "R7")
         for path in TRANSLATED_TRANSPORT:
             self.assertIn(path, self.sources, "R7")
-            self.assertTrue(OLD_SHAPE.search(strip_rust(self.sources[path])), "R7")
+            self.assertTrue(OLD_SHAPE.search(_crate_boundary_workspace.rust_syntax(self.sources[path])), "R7")
 
     def test_losing_the_single_translation_revokes_the_exception(self) -> None:
         # R8: the transport may keep `Result<Option<_>>` only while exactly one
@@ -492,6 +451,89 @@ class ObservationCollapseTests(unittest.TestCase):
             + 'const SQL: &str = "get(x).await.unwrap_or_default()";\n'
         )
         self.assertEqual(validation_errors(clean), [], "R3")
+
+    def test_nested_and_raw_rust_trivia_never_becomes_a_collapse(self) -> None:
+        # L1 nested block comments may contain both an inner terminator and
+        # recovery-looking code; L2 raw strings may contain ordinary quotes.
+        # Both are legal trivia/literals, so R1/R2/R3 must ignore their tokens.
+        # Reuse the real derived corpus: these are lexer corrections, never
+        # exemptions for an actual get(...).await chain in executable code.
+        for injected in (
+            "\n/* outer\n /* inner */\n checkpoints.get(id).await.ok();\n*/\n",
+            '\nconst NOTE: &str = r###"quoted " get(id).await.ok() " literal"###;\n',
+            '\nconst BYTE_NOTE: &[u8] = br##"quoted " get(id).await.ok() " bytes"##;\n',
+        ):
+            clean = dict(self.sources)
+            path = _probe_file(clean)
+            clean[path] += injected
+            with self.subTest(injected=injected):
+                self.assertEqual(validation_errors(clean), [], "L1/L2 trivia is not code")
+
+    def test_characters_lifetimes_and_lines_keep_the_real_awaited_read(self) -> None:
+        # L3 escaped quote characters must not start a string hiding the read;
+        # L4 a parenthesis character inside the get argument is not a delimiter;
+        # L5 a lifetime remains syntax and multiline trivia preserves line data.
+        # Every actual read below still collapses Unknown through .unwrap(), so
+        # its exact original get offset/line/message must be refused by R3.
+        for prefix, argument in (
+            (r"let quote = '\"';", "run_id"),
+            (r"let apostrophe = '\'';", "{ let _open = '('; run_id }"),
+            ("/* first\n nested /* second */\n end */", "run_id"),
+        ):
+            path = _probe_file(self.sources)
+            original = self.sources[path]
+            injected = (
+                "\nasync fn read<'a>(checkpoints: &'a dyn StreamCheckpointStore, run_id: &'a str) {\n"
+                + prefix + "\nlet partial = checkpoints.get(" + argument + ").await.unwrap();\n}\n"
+            )
+            broken = dict(self.sources)
+            broken[path] = original + injected
+            offset = len(original) + injected.index("checkpoints.get(") + len("checkpoints.")
+            line = broken[path].count("\n", 0, offset) + 1
+            expected = (
+                f"{path}:{line}: an observation is collapsed by .unwrap(); consume it with a match that names "
+                "Present, Absent and Unknown separately."
+            )
+            with self.subTest(prefix=prefix, argument=argument):
+                self.assertEqual(validation_errors(broken), [expected], "L3-L5 exact read/line")
+
+    def test_chain_groups_keep_closed_unclosed_and_no_opening_behavior(self) -> None:
+        # B1 a closed argument/turbofish is skipped just past its delimiter;
+        # B2 an unclosed group consumes the rest of the input (old behavior);
+        # B3 no opening delimiter does not skip the following method/field.
+        # These malformed-input rows preserve scan behavior, not Rust validity.
+        rows = (
+            ("get(run).await.unwrap_or_else::<Vec<_>>(build)", [(0, ["unwrap_or_else"])]),
+            ("get((run).await.unwrap()", []),
+            ("Observed::Absent.ok()", [(0, ["ok"])]),
+            ("Observed::Present(value).unwrap(", [(0, ["unwrap"])]),
+            ("Observed::Present(value", [(0, [])]),
+            ("Observed::Absent.field", [(0, ["field"])]),
+        )
+        for text, expected in rows:
+            with self.subTest(text=text):
+                self.assertEqual(observation_chains(text), expected, "B1-B3")
+
+    def test_syntax_and_group_scanning_call_the_canonical_owners(self) -> None:
+        # O1 lexical projection and O2 every real group use the existing shared
+        # implementations. No local lexer/balance alias may survive the move.
+        # O3 no-opening field access invokes no group scan, while malformed
+        # group None stays EOF under B2 instead of hiding a following method.
+        from unittest.mock import patch
+
+        self.assertNotIn("strip_rust", globals(), "O1 no second lexer")
+        self.assertNotIn("skip_balanced", globals(), "O2 no second group scan")
+        lexical = _crate_boundary_workspace.rust_syntax
+        balanced = _crate_boundary_workspace._balanced_end
+        with patch.object(_crate_boundary_workspace, "rust_syntax", wraps=lexical) as syntax, \
+                patch.object(_crate_boundary_workspace, "_balanced_end", wraps=balanced) as group:
+            self.assertEqual(validation_errors(self.sources), [], "O1 real corpus")
+            self.assertGreater(syntax.call_count, 0, "O1 original lexical function")
+            self.assertEqual(observation_chains("get(id).await.ok::<Vec<_>>()"), [(0, ["ok"])])
+            self.assertGreater(group.call_count, 0, "O2 original group function")
+        with patch.object(_crate_boundary_workspace, "_balanced_end", wraps=balanced) as group:
+            self.assertEqual(observation_chains("Observed::Absent.field"), [(0, ["field"])])
+            group.assert_not_called()
 
     def test_a_moved_recovery_file_fails_instead_of_passing_vacuously(self) -> None:
         # R0: an empty corpus must not look like a clean one.

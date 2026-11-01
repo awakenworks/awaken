@@ -49,17 +49,14 @@ pub enum FuseError {
     /// Buffered or spliced bytes are not UTF-8; the memory store holds text.
     #[error("internal: {0}")]
     NonUtf8(#[from] std::string::FromUtf8Error),
+    /// A poisoned inode table keeps its typed cause until the Sandbox boundary.
+    /// FUSE reports the same local EIO as every other internal fault.
+    #[error("internal: {0}")]
+    LockPoisoned(#[from] awaken_sync::LockPoisoned),
     /// A violated memoryd invariant (an invalid head, a negative offset)
     /// described by its own fixed message.
     #[error("internal: {0}")]
     Internal(String),
-}
-
-impl From<awaken_sync::LockPoisoned> for FuseError {
-    /// A poisoned inode table is a FUSE-local fault (surfaced as `EIO`).
-    fn from(poisoned: awaken_sync::LockPoisoned) -> Self {
-        Self::Internal(poisoned.to_string())
-    }
 }
 
 impl From<FuseError> for awaken_provisioning_contract::SandboxError {
@@ -74,6 +71,7 @@ impl From<FuseError> for awaken_provisioning_contract::SandboxError {
             FuseError::TooLarge => Self::Invalid(detail),
             FuseError::Io(cause) => Self::backend("memory FUSE", cause),
             FuseError::NonUtf8(cause) => Self::backend("memory FUSE", cause),
+            FuseError::LockPoisoned(cause) => Self::backend("memory FUSE", cause),
             FuseError::Internal(cause) => Self::backend("memory FUSE", cause),
         }
     }
@@ -173,13 +171,37 @@ mod tests {
         // invariant message each keep their own variant, render the same
         // `internal:` text, and map to the one memory-FUSE backend failure
         // whose detail is the source's own text.
+        // P1 holder panic under the actual InvariantLock -> later acquisition
+        // refuses with LockPoisoned; P2 conversion preserves that typed source,
+        // rather than flattening it into an invariant message. P3 only the
+        // existing Sandbox boundary renders it to Backend("memory FUSE", text).
+        // Display remains `internal: {text}`; fuse::errno's existing fallback
+        // remains EIO. This local test does not require a mounted filesystem.
         use awaken_provisioning_contract::SandboxError;
+        let lock = awaken_sync::InvariantLock::new(());
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = lock.lock().unwrap();
+                panic!("poison the inode-table boundary fixture");
+            })
+            .is_err()
+        );
+        let poisoned = lock.lock().unwrap_err();
+        let poison_text = poisoned.to_string();
+        let poison_error = FuseError::from(poisoned);
+        assert!(matches!(&poison_error, FuseError::LockPoisoned(source) if *source == poisoned));
+        assert_eq!(
+            std::error::Error::source(&poison_error)
+                .and_then(|source| source.downcast_ref::<awaken_sync::LockPoisoned>()),
+            Some(&poisoned),
+        );
         let io = std::io::Error::other("mount refused");
         let utf8 = String::from_utf8(vec![0xFF]).unwrap_err();
         let utf8_text = utf8.to_string();
         for (error, detail) in [
             (FuseError::from(io), "mount refused".to_string()),
             (FuseError::from(utf8), utf8_text),
+            (poison_error, poison_text),
             (
                 FuseError::Internal("invariant".into()),
                 "invariant".to_string(),

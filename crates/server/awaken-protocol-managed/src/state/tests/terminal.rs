@@ -181,16 +181,26 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
     let prepared = runtime.prepared.clone();
     let runtime = Arc::new(runtime);
     let repo = Arc::new(ephemeral_session_repo().await);
+    let admission_clock = awaken_time::system_clock();
     let environments =
-        awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock()).execution;
+        awaken_protocol_managed_testkit::environment_fixture(admission_clock.clone()).execution;
     let application = awaken_session_application::SessionApplicationBuilder::fixture(
         runtime.clone(),
         Arc::new(awaken_session_execution_contract::NeutralRuntime),
-        awaken_session_application::SessionPersistence::new(
-            repo.clone(),
-            awaken_time::system_clock(),
-        ),
+        awaken_session_application::SessionPersistence::new(repo.clone(), admission_clock.clone()),
         environments.clone(),
+        {
+            let probe = std::sync::Arc::new(
+                awaken_session_application::ExecutionObservationProbe::default(),
+            );
+            awaken_session_application::SessionExecutionAdmission::new(
+                std::sync::Arc::new(awaken_dispatch::MemoryDispatchStore::new(
+                    admission_clock.clone(),
+                )),
+                probe.clone(),
+                probe,
+            )
+        },
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(

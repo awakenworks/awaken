@@ -1,7 +1,9 @@
 # Contract convergence by bounded context
 
-Status: design (plan v5 item V4), measured on `1b56f9aea0` (descends from main
-`72518f3094`). Implementation follows V0; no code moves with this document.
+Status: implemented in the current source. The implementation record below
+describes the completed contract and ownership changes. The original design
+measurements used `1b56f9aea0` (descends from main `72518f3094`).
+Build and runtime qualification remain separate evidence.
 
 ## Rule
 
@@ -228,26 +230,88 @@ Each absorbing or narrowed crate gains `compile_fail` doctests, as
 | `session-application-contract` | `use awaken_session_application_contract::SessionEventAdmission;` `…::LifecycleFactDelivery;` `…::session_usage_from_thread_usage;` `…::epoch_millis_to_rfc3339;` `…::SessionApplicationConfiguration;` |
 | `session-configuration-contract` | `use awaken_session_configuration_contract::EnvironmentIdleRetentionMode;` |
 | `credential-contract` | `use awaken_credential_contract::CredentialRef;` |
-| `dispatch-contract` | `use awaken_dispatch_contract::RunClaim;` |
+| `dispatch-contract` | `use awaken_dispatch_contract::RunClaim;` `use awaken_dispatch_contract::ExecutionLocation;` |
 | `tenancy` | `use awaken_tenancy::ScopeId;` |
 | `worker-contract` | `use awaken_worker_contract::WorkerCredentialRevision;` |
 | `executable-agent-contract` | `use awaken_executable_agent_contract::ExecutableAgentSnapshot;` |
 | `provisioning-contract` | `use awaken_provisioning_contract::SandboxControlServiceKind;` |
 | `deployment-config` | `use awaken_deployment_config::RunIngress;` |
 
+## Implementation record
+
+- Contract layer after V4: 30 crates (counted by `python3 scripts/ci/_contract_map_fitness.py`): 28 under `crates/contract` plus `awaken-time` and
+  `awaken-sync`, which joined the layer with the lock-poisoning law after this
+  design was measured. Realization is the one crate removed.
+- First-party re-exports by contracts: 0. Package L had already removed the
+  `awaken-runtime-contract` ThreadUsage facade, so `contract-reexport` and
+  `renamed-reexport` are hard rules with no baseline and no exception.
+- `awaken-session-execution-contract` holds the merged realization vocabulary;
+  its line ceiling is raised with a dated review record in
+  `modularity_baseline.json`.
+- Each contract's crate documentation has a `Boundary` section listing its
+  implementers and callers (SDK contracts state that every context reads them).
+- Additions found during implementation: the Kani harness
+  `public_millisecond_projection_is_exact_bounded_and_nonwrapping` proves an
+  `awaken-time` function and moved to `awaken-time::utc` with the re-export;
+  the `retained-accepted-two-replay-v1` profile is bound to
+  `awaken-session-contract`; `awaken-tenancy` also stopped re-exporting
+  `ExecutionScopeRef` (owner `awaken-agent-contract`); the
+  `awaken_dispatch_contract::dispatch` module stopped re-exporting the credential
+  receipt and `RunClaim` items, so `awaken-dispatch` and
+  `awaken-dispatch-execution` name them from their owners.
+
 ## awaken-cloud impact
 
-Read from its tracked sources at `b735ddb3`. Its pin predates the Core merge;
-the paths below are only those this design changes. They are recorded in a dated
-ADR-0088 amendment with the step that changes them (ADR-0091 D9):
+Read from its tracked sources at `b735ddb3` (the V7 scan of every
+`awaken_*` path awaken-cloud names). These are all the paths V4 changes; they
+are recorded in the ADR-0088 amendment of 2026-10-31 (ADR-0091 D9):
 
-| Step | Path today | Path after | Files |
+| Step | Path at `b735ddb3` | Path after | Files (under `crates/`) |
 |---|---|---|---|
+| 6 credential | `awaken_credential_contract::CredentialAccess` | `awaken_agent_contract::credential::CredentialAccess` | `awaken-cloud-console/src/connector_route_grant.rs`, `awaken-cloud-credential-envelope/src/lib.rs`, `awaken-cloud/src/gateway.rs`, `awaken-cloud/src/gateway/connector_composition_tests.rs`, `awaken-cloud/src/gateway/repository_composition_tests.rs`, `awaken-egress-gateway/src/capability.rs`, `awaken-egress-gateway/src/http/git.rs`, `awaken-egress-gateway/src/http/tests/http_route.rs`, `awaken-egress-gateway/src/inference_target.rs`, `awaken-egress-gateway/src/prod_backends.rs`, `awaken-egress-gateway/src/repository_grant.rs`, `awaken-egress-gateway/src/resolve.rs`, `awaken-egress-gateway/src/types.rs` |
+| 6 credential | `awaken_credential_contract::CredentialAccess::new` | `awaken_agent_contract::credential::CredentialAccess::new` | `awaken-egress-gateway/src/http/tests/api_key.rs`, `awaken-egress-gateway/src/pool.rs`, `awaken-provider-control/src/vault_exact_credential_custodian.rs` |
+| 6 credential | `awaken_credential_contract::CredentialEnvelope` | `awaken_agent_contract::credential::CredentialEnvelope` | `awaken-cloud-credential-envelope/src/lib.rs` |
+| 6 credential | `awaken_credential_contract::CredentialExecutionPolicy` | `awaken_agent_contract::credential::CredentialExecutionPolicy` | `awaken-cloud-console/src/connector_route_grant.rs`, `awaken-cloud-credential-envelope/src/lib.rs`, `awaken-cloud/src/gateway/connector_composition_tests.rs`, `awaken-egress-gateway/src/http/tests/http_route.rs`, `awaken-egress-gateway/src/prod_backends.rs`, `awaken-egress-gateway/src/types.rs`, `awaken-provider-control/src/provider_boundary.rs` |
+| 6 credential | `awaken_credential_contract::CredentialExecutionPolicy::exact` | `awaken_agent_contract::credential::CredentialExecutionPolicy::exact` | `awaken-egress-gateway/src/capability.rs`, `awaken-egress-gateway/src/http/git.rs`, `awaken-egress-gateway/src/repository_grant.rs`, `awaken-egress-gateway/src/resolve.rs`, `awaken-provider-control/src/provider_boundary.rs` |
+| 6 credential | `awaken_credential_contract::CredentialMaterialSource` | `awaken_agent_contract::credential::CredentialMaterialSource` | `awaken-cloud-console/src/connector_route_grant.rs`, `awaken-cloud-credential-envelope/src/lib.rs`, `awaken-cloud/src/gateway.rs`, `awaken-cloud/src/gateway/connector_composition_tests.rs`, `awaken-cloud/src/gateway/repository_composition_tests.rs`, `awaken-egress-gateway/src/capability.rs`, `awaken-egress-gateway/src/http/git.rs`, `awaken-egress-gateway/src/http/tests/http_route.rs`, `awaken-egress-gateway/src/prod_backends.rs`, `awaken-egress-gateway/src/repository_grant.rs`, `awaken-egress-gateway/src/resolve.rs`, `awaken-egress-gateway/src/types.rs` |
+| 6 credential | `awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference` | `awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference` | `awaken-egress-gateway/src/http/tests/api_key.rs`, `awaken-egress-gateway/src/pool.rs`, `awaken-provider-control/src/vault_exact_credential_custodian.rs` |
+| 6 credential | `awaken_credential_contract::CredentialPurpose` | `awaken_agent_contract::credential::CredentialPurpose` | `awaken-cloud-console/src/connector_route_grant.rs`, `awaken-cloud/src/gateway/connector_composition_tests.rs`, `awaken-egress-gateway/src/http/tests/http_route.rs`, `awaken-egress-gateway/src/prod_backends.rs`, `awaken-egress-gateway/src/repository_grant.rs`, `awaken-egress-gateway/src/types.rs` |
+| 6 credential | `awaken_credential_contract::CredentialPurpose::HttpEffect` | `awaken_agent_contract::credential::CredentialPurpose::HttpEffect` | `awaken-egress-gateway/src/types.rs` |
+| 6 credential | `awaken_credential_contract::CredentialPurpose::RepositoryTransport` | `awaken_agent_contract::credential::CredentialPurpose::RepositoryTransport` | `awaken-egress-gateway/src/capability.rs`, `awaken-egress-gateway/src/http/git.rs`, `awaken-egress-gateway/src/repository_grant.rs`, `awaken-egress-gateway/src/resolve.rs` |
+| 6 credential | `awaken_credential_contract::CredentialRef` | `awaken_agent_contract::credential::CredentialRef` | `awaken-cloud-console/src/connector_route_grant.rs`, `awaken-cloud-credential-envelope/src/lib.rs`, `awaken-cloud/src/gateway.rs`, `awaken-cloud/src/gateway/connector_composition_tests.rs`, `awaken-cloud/src/gateway/repository_composition_tests.rs`, `awaken-egress-gateway/src/capability.rs`, `awaken-egress-gateway/src/http/git.rs`, `awaken-egress-gateway/src/http/tests/api_key.rs`, `awaken-egress-gateway/src/http/tests/http_route.rs`, `awaken-egress-gateway/src/pool.rs`, `awaken-egress-gateway/src/prod_backends.rs`, `awaken-egress-gateway/src/repository_grant.rs`, `awaken-egress-gateway/src/resolve.rs`, `awaken-egress-gateway/src/types.rs`, `awaken-provider-control/src/vault_exact_credential_custodian.rs` |
+| 6 credential | `awaken_credential_contract::CredentialTarget` | `awaken_agent_contract::credential::CredentialTarget` | `awaken-cloud-console/src/connector_route_grant.rs`, `awaken-cloud/src/gateway/connector_composition_tests.rs`, `awaken-egress-gateway/src/http/tests/http_route.rs`, `awaken-egress-gateway/src/prod_backends.rs`, `awaken-egress-gateway/src/repository_grant.rs`, `awaken-egress-gateway/src/types.rs` |
+| 6 credential | `awaken_credential_contract::CredentialTarget::new` | `awaken_agent_contract::credential::CredentialTarget::new` | `awaken-egress-gateway/src/capability.rs`, `awaken-egress-gateway/src/http/git.rs`, `awaken-egress-gateway/src/repository_grant.rs`, `awaken-egress-gateway/src/resolve.rs`, `awaken-egress-gateway/src/types.rs` |
+| 6 credential | `awaken_credential_contract::CredentialUsage` | `awaken_agent_contract::credential::CredentialUsage` | `awaken-cloud-console/src/connector_route_grant.rs`, `awaken-cloud-credential-envelope/src/lib.rs`, `awaken-cloud/src/gateway.rs`, `awaken-cloud/src/gateway/connector_composition_tests.rs`, `awaken-cloud/src/gateway/repository_composition_tests.rs`, `awaken-egress-gateway/src/capability.rs`, `awaken-egress-gateway/src/http/git.rs`, `awaken-egress-gateway/src/http/tests/http_route.rs`, `awaken-egress-gateway/src/prod_backends.rs`, `awaken-egress-gateway/src/repository_grant.rs`, `awaken-egress-gateway/src/resolve.rs`, `awaken-egress-gateway/src/types.rs`, `awaken-provider-control/src/vault_exact_credential_custodian.rs` |
+| 6 credential | `awaken_credential_contract::CredentialUsage::HttpEffect` | `awaken_agent_contract::credential::CredentialUsage::HttpEffect` | `awaken-cloud/src/gateway.rs` |
+| 6 credential | `awaken_credential_contract::CredentialUsage::ProviderAdapter` | `awaken_agent_contract::credential::CredentialUsage::ProviderAdapter` | `awaken-egress-gateway/src/http/tests/api_key.rs`, `awaken-egress-gateway/src/pool.rs` |
+| 6 credential | `awaken_credential_contract::HttpEffectPlacement` | `awaken_agent_contract::credential::HttpEffectPlacement` | `awaken-cloud-console/src/connector_route_grant.rs`, `awaken-cloud/src/gateway/connector_composition_tests.rs`, `awaken-egress-gateway/src/connector_effect.rs`, `awaken-egress-gateway/src/prod_backends.rs`, `awaken-egress-gateway/src/types.rs` |
+| 6 credential | `awaken_credential_contract::ModelExposurePolicy` | `awaken_agent_contract::credential::ModelExposurePolicy` | `awaken-cloud-console/src/connector_route_grant.rs`, `awaken-cloud-credential-envelope/src/lib.rs`, `awaken-cloud/src/gateway/connector_composition_tests.rs`, `awaken-egress-gateway/src/capability.rs`, `awaken-egress-gateway/src/http/git.rs`, `awaken-egress-gateway/src/http/tests/http_route.rs`, `awaken-egress-gateway/src/prod_backends.rs`, `awaken-egress-gateway/src/repository_grant.rs`, `awaken-egress-gateway/src/resolve.rs`, `awaken-egress-gateway/src/types.rs` |
+| 6 credential | `awaken_credential_contract::ModelExposurePolicy::Forbidden` | `awaken_agent_contract::credential::ModelExposurePolicy::Forbidden` | `awaken-provider-control/src/provider_boundary.rs` |
+| 6 credential | `awaken_credential_contract::PlaintextBoundary` | `awaken_agent_contract::credential::PlaintextBoundary` | `awaken-cloud-console/src/connector_route_grant.rs`, `awaken-cloud-credential-envelope/src/lib.rs`, `awaken-cloud/src/gateway/connector_composition_tests.rs`, `awaken-egress-gateway/src/http/tests/http_route.rs`, `awaken-egress-gateway/src/prod_backends.rs`, `awaken-egress-gateway/src/repository_grant.rs`, `awaken-egress-gateway/src/types.rs`, `awaken-pro/tests/composition_boundary.rs` |
+| 6 credential | `awaken_credential_contract::PlaintextBoundary::Platform` | `awaken_agent_contract::credential::PlaintextBoundary::Platform` | `awaken-provider-control/src/provider_boundary.rs` |
+| 6 credential | `awaken_credential_contract::PlaintextBoundary::Worker` | `awaken_agent_contract::credential::PlaintextBoundary::Worker` | `awaken-egress-gateway/src/repository_grant.rs` |
+| 6 credential | `awaken_credential_contract::PlaintextHolder` | `awaken_agent_contract::credential::PlaintextHolder` | `awaken-cloud-console/src/connector_route_grant.rs`, `awaken-cloud-credential-envelope/src/lib.rs`, `awaken-cloud/src/gateway/connector_composition_tests.rs`, `awaken-egress-gateway/src/http/tests/http_route.rs`, `awaken-egress-gateway/src/prod_backends.rs`, `awaken-egress-gateway/src/types.rs`, `awaken-provider-control/src/provider_boundary.rs`, `awaken-provider-control/src/vault_exact_credential_custodian.rs` |
+| 6 credential | `awaken_credential_contract::PlaintextHolder::new` | `awaken_agent_contract::credential::PlaintextHolder::new` | `awaken-egress-gateway/src/repository_grant.rs`, `awaken-provider-control/src/provider_boundary.rs` |
+| 6 credential | `awaken_credential_contract::SealedCredentialEnvelopeRef` | `awaken_agent_contract::credential::SealedCredentialEnvelopeRef` | `awaken-cloud-credential-envelope/src/lib.rs` |
+| 6 dispatch | `awaken_dispatch_contract::ExecutionLocation::RemoteRequired` | `awaken_worker_contract::ExecutionLocation::RemoteRequired` | `awaken-hosting-durable/tests/deployed_cluster_causal.rs` |
+| 6 dispatch | `awaken_dispatch_contract::ExecutionScopeRef` | `awaken_agent_contract::ExecutionScopeRef` | `awaken-hosting-durable/src/query_consumption.rs`, `awaken-hosting-durable/tests/deployed_cluster_causal.rs`, `awaken-hosting-durable/tests/phase1_cross_process.rs`, `awaken-model-access/tests/materialize.rs` |
+| 6 dispatch | `awaken_dispatch_contract::RunClaim` | `awaken_worker_contract::RunClaim` | `awaken-cloud-billing/src/compute_metering.rs`, `awaken-hosting-durable/src/worker_model_access.rs` |
 | 1 | `awaken_session_application_contract::LifecycleFactDelivery` | `awaken_session_contract::LifecycleFactDelivery` | `awaken-cloud-billing/src/session_runtime_metering.rs`, `awaken-cloud-management/src/main.rs` |
-| 4 | `awaken_session_realization_contract::{SessionResourceMaterializationIntent, SessionResourceMaterializationTarget}` | `awaken_session_execution_contract::…` | `awaken-hosting-durable/src/worker_model_access.rs` |
-| 6 | `awaken_credential_contract::{CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource, CredentialPurpose, CredentialRef, CredentialTarget, CredentialUsage, HttpEffectPlacement, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder, SealedCredentialEnvelopeRef}` | `awaken_agent_contract::credential::…` | 19 files in `awaken-cloud`, `awaken-cloud-console`, `awaken-cloud-credential-envelope`, `awaken-egress-gateway`, `awaken-provider-control`, `awaken-pro` |
-| 6 | `awaken_tenancy::ScopeId` | `awaken_agent_contract::ScopeId` | 13 files in `awaken-cloud`, `awaken-cloud-console`, `awaken-cloud-management`, `awaken-hosted-run`, `awaken-hosting-durable`, `awaken-model-access`, `awaken-model-publication` |
+| 1 | `awaken_session_application_contract::LifecycleFactDelivery::deliver` | `awaken_session_contract::LifecycleFactDelivery::deliver` | `awaken-cloud-billing/src/session_runtime_metering.rs` |
+| 4 | `awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new` | `awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new` | `awaken-hosting-durable/src/worker_model_access.rs` |
+| 4 | `awaken_session_realization_contract::SessionResourceMaterializationTarget` | `awaken_session_execution_contract::SessionResourceMaterializationTarget` | `awaken-hosting-durable/src/worker_model_access.rs` |
+| 6 tenancy | `awaken_tenancy::ScopeId` | `awaken_agent_contract::ScopeId` | `awaken-cloud-management/src/main.rs`, `awaken-cloud/src/gateway.rs`, `awaken-cloud/src/gateway/byok_publication.rs`, `awaken-hosted-run/src/completion.rs`, `awaken-hosted-run/src/lib.rs`, `awaken-hosted-run/src/postgres.rs`, `awaken-hosted-run/src/state_model.rs`, `awaken-hosted-run/tests/hosted_run.rs`, `awaken-hosting-durable/src/query_consumption.rs`, `awaken-hosting-durable/tests/deployed_cluster_causal.rs`, `awaken-hosting-durable/tests/phase1_cross_process.rs`, `awaken-model-access/tests/materialize.rs`, `awaken-model-publication/src/lib.rs` |
+| 6 tenancy | `awaken_tenancy::ScopeId::from` | `awaken_agent_contract::ScopeId::from` | `awaken-cloud-console/tests/e2e/hosted_model_supply.rs`, `awaken-cloud-management/src/main.rs` |
 
-Cloud names no `dispatch-contract`, `session-execution-contract`, `worker-contract`
-alias or `RunIngress` path. Cloud crates that do not yet depend on
-`awaken-agent-contract` add it in the same upgrade (V7).
+Manifests: `awaken-hosting-durable` replaces its
+`awaken-session-realization-contract` dependency with
+`awaken-session-execution-contract`. Crates that gain a dependency on the owner
+they now name: `awaken-cloud-billing` (`awaken-session-contract`,
+`awaken-worker-contract`), `awaken-cloud-management` (`awaken-agent-contract`,
+`awaken-session-contract`), `awaken-model-publication` and `awaken-pro`
+(`awaken-agent-contract`).
+
+Cloud names no other path this design changes: no `session-execution-contract`
+re-export, no `worker-contract` or configuration alias, no time re-export, no
+`executable-agent-contract` or `provisioning-contract` re-export and no
+`RunIngress`.

@@ -726,6 +726,10 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(repository.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(SessionApplicationConfiguration {
@@ -1208,6 +1212,11 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                     Arc::new(NoopMcpRealizer),
                     crate::SessionPersistence::new(repository.clone(), awaken_time::system_clock()),
                     Arc::new(RecordingEnvironmentSource::default()),
+                    {
+                        let probe =
+                            std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+                        crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+                    },
                     std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
                 )
                 .build()
@@ -1300,6 +1309,10 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 Arc::new(NoopMcpRealizer),
                 crate::SessionPersistence::new(faulting.clone(), awaken_time::system_clock()),
                 Arc::new(RecordingEnvironmentSource::default()),
+                {
+                    let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+                    crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+                },
                 std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             )
             .build()
@@ -1451,6 +1464,10 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(repository.clone(), awaken_time::system_clock()),
         environments.clone(),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(SessionApplicationConfiguration {
@@ -1701,6 +1718,10 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
             Arc::new(NoopMcpRealizer),
             crate::SessionPersistence::new(faulting, awaken_time::system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
+            {
+                let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+            },
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .build()
@@ -1809,6 +1830,10 @@ async fn create_failure_cleanup_is_authorized_only_by_a_terminal_durable_root() 
             Arc::new(NoopMcpRealizer),
             crate::SessionPersistence::new(repository.clone(), awaken_time::system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
+            {
+                let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+            },
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .build()
@@ -2735,6 +2760,10 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(captured.clone(), clock.clone()),
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(SessionApplicationConfiguration {
@@ -2813,6 +2842,10 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(historical.clone(), clock.clone()),
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(SessionApplicationConfiguration {

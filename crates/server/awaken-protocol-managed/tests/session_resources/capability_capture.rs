@@ -240,7 +240,17 @@ fn state(
         roles,
         repo,
         awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
-        clock,
+        clock.clone(),
+        {
+            let probe = std::sync::Arc::new(
+                awaken_session_application::ExecutionObservationProbe::default(),
+            );
+            awaken_session_application::SessionExecutionAdmission::new(
+                std::sync::Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock.clone())),
+                probe.clone(),
+                probe,
+            )
+        },
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     );
     ManagedState::from_application(application, Default::default())

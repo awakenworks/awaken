@@ -232,14 +232,19 @@ async fn local_managed_state_over(
     let local_realization_owner = host.dispatch().topology().lease_owner.as_str().to_owned();
     let environments =
         environments.unwrap_or_else(|| volatile_environment_execution(clock.clone()));
+    // Select the original scenario Registry once, before sharing the App.
+    // The mounts consume this same handle; no post-build completion remains.
+    let worker_directory = awaken_coordinator::test_worker_directory();
     let mut builder = awaken_session_application::SessionApplicationBuilder::new(
         host.session_execution_roles(),
         persistence,
         environments.clone(),
-        awaken_session_application::SessionExecutionAdmission::fixture_with_dispatch(
+        awaken_session_application::SessionExecutionAdmission::new(
             host.coordination()
                 .dispatch_observation_source()
                 .expect("fixture canonical dispatch feed"),
+            worker_directory.clone(),
+            host.dispatch().preparation_placement(),
         ),
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
@@ -285,6 +290,7 @@ async fn local_managed_state_over(
             environment_warmups: environments,
             local_workspace: host.local_workspace().to_owned(),
             clock: host.clock(),
+            worker_directory,
         },
         host,
     }
