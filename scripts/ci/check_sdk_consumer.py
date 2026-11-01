@@ -339,10 +339,7 @@ def run_major_consumer_audit(spec_path: Path) -> int:
             return status
         baseline = work / "baseline-source"
         baseline.mkdir()
-        if not hasattr(tarfile, "data_filter"):
-            raise ValueError("SDK baseline extraction requires Python's standard tar data filter")
-        with tarfile.open(archive, "r:") as source:
-            source.extractall(baseline, filter="data")
+        _sdk_archives.unpack_source_archive(archive, baseline)
         owned_subjects[baseline] = (_sdk_archives.file_hashes(baseline), False)
         for current, sdk_root in ((False, baseline), (True, ROOT)):
             side = "current" if current else "baseline"
@@ -530,7 +527,7 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
                 audit = document.get("major_audits", {}).get(feature)
                 if major_commands and audit is None:
                     raise ValueError("SDK major observation has no same-feature audited changes")
-                validate_semver_evidence(completed.stdout + completed.stderr, document["sdk_crates"],
+                validate_semver_evidence(completed.stdout + completed.stderr, document["semver_crates"],
                                          audit["packages"] if audit else None)
             if rows[-1]["exit_code"] == 0 and qualification == "package":
                 archive_directory = Path(values["CARGO_BUILD_BUILD_DIR"])
@@ -594,6 +591,9 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
                 document["compiler_inputs"] = _sdk_compiler_input.qualification(
                     ROOT, document["source"]["revision"], members, sdk, metadata, values, baseline_rev)
                 values.update(document["compiler_inputs"]["environment"])
+                if qualification == "semver":
+                    document["semver_crates"] = document["compiler_inputs"]["baseline"]["sdk_crates"]
+                    document["first_release_crates"] = document["compiler_inputs"]["first_release_crates"]
             target = Path(values["CARGO_BUILD_BUILD_DIR"])
             if not target.is_absolute():
                 target = ROOT / target
@@ -601,7 +601,7 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
             target.mkdir(parents=True, exist_ok=True)
             evidence = Path(tempfile.mkdtemp(prefix="sdk-qualification-", dir=target))
             (evidence / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
-            selectors = [word for name in sdk for word in ("-p", name)]
+            selectors = [word for name in document.get("semver_crates", sdk) for word in ("-p", name)]
             if qualification in ("package", "artifact"):
                 command = ["cargo", "+1.96.0", "package", "--locked", "--target", document["target"]]
                 if qualification == "package":
@@ -791,6 +791,13 @@ class SdkConsumerTests(unittest.TestCase):
             metadata = {"workspace_root": str(root), "workspace_members": [p["id"] for p in packages],
                         "packages": packages,
                         "resolve": {"nodes": [{"id": p["id"], "deps": []} for p in packages]}}
+            if metadata_cause == "first-release":
+                for name in ("fixture-new-sync", "fixture-new-windows"):
+                    package = {"id": name, "name": name, "version": "1.0.0", "publish": None,
+                        "dependencies": [], "metadata": {"awaken": {"product": "sdk", "api_snapshot": True}}}
+                    packages.append(package)
+                    metadata["workspace_members"].append(name)
+                    metadata["resolve"]["nodes"].append({"id": name, "deps": []})
             if compiler_cause:
                 registry = "registry+https://github.com/rust-lang/crates.io-index"
                 identity = registry + "#k8s-openapi@0.28.0"
@@ -834,7 +841,9 @@ class SdkConsumerTests(unittest.TestCase):
                 # qualification. Real Source/artifact receipts remain Root's.
                 archive_root = root / "target/package"
                 archive_root.mkdir(parents=True, exist_ok=True)
-                for package in packages[:3] if qualification == "artifact" else packages[:2]:
+                archive_packages = (packages[:3] if qualification == "artifact" else
+                    [package for package in packages if package["name"] in selected_crates(packages)[1]])
+                for package in archive_packages:
                     filename = package["name"] + "-" + package["version"]
                     with tarfile.open(archive_root / (filename + ".crate"), "w:gz") as archive:
                         for member in ("Cargo.toml", "Cargo.toml.orig", "Cargo.lock", ".cargo_vcs_info.json"):

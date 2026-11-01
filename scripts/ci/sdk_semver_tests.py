@@ -1402,9 +1402,14 @@ def compiler_input_tests(owner):
             # never a live Root manifest. Original compiler profiles stay exact.
             import _crate_boundary_workspace
             original = owner._sdk_compiler_input.observe_source
+            load = _crate_boundary_workspace.load_manifest
             def observe(*arguments, **keywords):
+                def archived_only(path):
+                    if Path(path).resolve().is_relative_to(root.resolve()):
+                        raise AssertionError("live workspace read")
+                    return load(path)
                 with mock.patch.object(_crate_boundary_workspace, "load_manifest",
-                                       side_effect=AssertionError("live workspace read")):
+                                       side_effect=archived_only):
                     return original(*arguments, **keywords)
             for mode in ("package", "semver"):
                 for cause in ("renamed-target", "inherited-target"):
@@ -1420,6 +1425,7 @@ def compiler_input_tests(owner):
             with self.subject(baseline_model="v1_33") as (helper, root):
                 status, calls = helper.execute(root, qualification="semver", compiler_cause="valid")
                 self.assertEqual((status, self.compiles(calls)), (1, []))
+
             # The compatible branch requires both independent source/lock model
             # declarations, not a value copied from current. A current SDK that
             # no longer reaches K8s also cannot silently borrow baseline policy.
@@ -1433,6 +1439,207 @@ def compiler_input_tests(owner):
             with self.subject(baseline_model="v1_32", current_k8s=False) as (helper, root):
                 status, calls = helper.execute(root, qualification="semver", compiler_cause="valid")
                 self.assertEqual((status, self.compiles(calls)), (1, []))
+
+        def test_baseline_inventory_tracks_existing_package_names_across_historical_paths(self):
+            # B1 baseline has the same SDK package at a different directory;
+            # current metadata names its current directory. Effect: resolve
+            # historical manifest/dependency/model facts by baseline's own
+            # complete workspace inventory, never classify the moved package
+            # as first release or omit it from either original SemVer profile.
+            with tempfile.TemporaryDirectory() as temporary:
+                helper = owner.SdkConsumerTests()
+                root = helper.repository(Path(temporary))
+                original = root / "crates/fixture-provider"
+                historical = root / "crates/historical-provider"
+                original.rename(historical)
+                helper.git(root, "add", ".")
+                helper.git(root, "commit", "--quiet", "-m", "private historical package location")
+                baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,
+                    env=owner.formal_sources.detached_git_environment(), text=True).strip()
+                historical.rename(original)
+                (root / "tracked.txt").write_text("current moved SDK\n")
+                helper.git(root, "add", ".")
+                helper.git(root, "commit", "--quiet", "-m", "private moved package")
+                status, calls = helper.execute(root, qualification="semver", baseline_rev=baseline)
+                self.assertEqual((status, len(self.compiles(calls))), (0, 2))
+                path = next((root / "target/test-timings").glob("sdk-qualification-*/commands.json"))
+                receipt = json.loads(path.read_text())
+                self.assertEqual(receipt["semver_crates"], ["fixture-contract", "fixture-provider"])
+                self.assertEqual(receipt["first_release_crates"], [])
+                inventory = receipt["compiler_inputs"]["baseline_inventory"]
+                self.assertEqual(inventory["members"]["fixture-provider"]["manifest_path"],
+                                 "crates/historical-provider/Cargo.toml")
+
+        def test_first_release_packages_remain_packaged_but_do_not_claim_backward_semver(self):
+            # B2 complete valid baseline lacks these package names in its whole
+            # workspace; current has two new SDK leaves. Effect: package keeps
+            # the full four-member current selector; SemVer keeps both real
+            # historical packages in default/all, with explicit first-release
+            # N/A rather than fabricated compatibility. Both original profile
+            # commands still run and retain exact source/record validation.
+            for mode in ("package", "semver"):
+                with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                    helper = owner.SdkConsumerTests()
+                    root = helper.repository(Path(temporary))
+                    for name in ("fixture-new-sync", "fixture-new-windows"):
+                        manifest = root / "crates" / name / "Cargo.toml"
+                        manifest.parent.mkdir()
+                        manifest.write_text('[package]\nname=' + json.dumps(name)
+                            + '\nversion="1.0.0"\n[package.metadata.awaken]\nproduct="sdk"\napi_snapshot=true\n')
+                    helper.git(root, "add", ".")
+                    helper.git(root, "commit", "--quiet", "-m", "private first release SDK leaves")
+                    status, calls = helper.execute(root, qualification=mode, metadata_cause="first-release")
+                    self.assertEqual((status, len(self.compiles(calls))), (0, 2))
+                    path = next((root / "target/test-timings").glob("sdk-qualification-*/commands.json"))
+                    receipt = json.loads(path.read_text())
+                    self.assertEqual(len(receipt["sdk_crates"]), 4)
+                    for command in self.compiles(calls):
+                        names = [command[index + 1] for index, word in enumerate(command) if word == "-p"]
+                        self.assertEqual(len(names), 4 if mode == "package" else 2)
+                    if mode == "semver":
+                        self.assertEqual(receipt["first_release_crates"],
+                                         ["fixture-new-sync", "fixture-new-windows"])
+                        self.assertEqual(receipt["semver_crates"], ["fixture-contract", "fixture-provider"])
+
+        def test_invalid_or_colliding_baseline_inventory_never_becomes_first_release(self):
+            # B3 duplicate package name; B4 missing explicitly declared member;
+            # B5 malformed historical manifest; B6 historical package was not
+            # SDK but reuses a current SDK name; B7 a historical SDK disappears;
+            # B8 member path escapes the archive. Every row refuses before any
+            # compiler. The valid moved/current-only positives above prevent
+            # a blanket refusal from satisfying this table. Baseline model
+            # conflict and original raw75/101/143 precedence remain covered by
+            # their original adjacent tests, not a separate failure classifier.
+            for cause in ("collision", "missing-member", "malformed", "changed-publication",
+                          "retired-sdk", "escaping-member"):
+                with self.subTest(cause=cause), tempfile.TemporaryDirectory() as temporary:
+                    helper = owner.SdkConsumerTests()
+                    root = helper.repository(Path(temporary))
+                    manifest = root / "crates/fixture-provider/Cargo.toml"
+                    original = manifest.read_text()
+                    if cause in ("collision", "retired-sdk"):
+                        duplicate = root / "crates/duplicate/Cargo.toml"
+                        duplicate.parent.mkdir()
+                        duplicate.write_text(original if cause == "collision" else
+                            original.replace('name="fixture-provider"', 'name="fixture-retired"'))
+                    elif cause in ("missing-member", "escaping-member"):
+                        workspace = root / "Cargo.toml"
+                        workspace.write_text(workspace.read_text().replace('members=["crates/*"]',
+                            'members=["crates/fixture-contract","crates/fixture-provider",'
+                            + json.dumps("crates/missing" if cause == "missing-member" else "../outside")
+                            + ',"crates/fixture-internal"]'))
+                    elif cause == "malformed":
+                        manifest.write_text("[package\n")
+                    else:
+                        manifest.write_text(original.replace('product="sdk"', 'product="platform"'))
+                    helper.git(root, "add", ".")
+                    helper.git(root, "commit", "--quiet", "-m", "private invalid historical inventory")
+                    baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,
+                        env=owner.formal_sources.detached_git_environment(), text=True).strip()
+                    if cause in ("collision", "retired-sdk"):
+                        (root / "crates/duplicate/Cargo.toml").unlink()
+                        (root / "crates/duplicate").rmdir()
+                    helper.compiler_source(root)
+                    (root / "tracked.txt").write_text("restored current SDK\n")
+                    helper.git(root, "add", ".")
+                    helper.git(root, "commit", "--quiet", "-m", "private valid current inventory")
+                    status, calls = helper.execute(root, qualification="semver", baseline_rev=baseline)
+                    self.assertEqual((status, self.compiles(calls)), (1, []))
+
+        def test_archive_attributes_cannot_hide_or_rewrite_historical_sdk_evidence(self):
+            # B9 tracked export-ignore can omit one existing SDK while the
+            # wildcard still finds other packages; B10 local info/attributes
+            # can do the same without changing the Git tree; B11 export-subst
+            # can rewrite a participating manifest or lock in an archive.
+            # Effects: the existing historical manifest remains provably in
+            # Git, but every incomplete/rewritten archive refuses BEFORE any
+            # compiler, never classifies it as first release. The original
+            # complete/moved/true-new positives above prevent blanket refusal.
+            for cause in ("export-ignore", "info-ignore", "info-ignore-lock",
+                          "export-subst-manifest", "export-subst-lock", "info-subst-manifest"):
+                with self.subTest(cause=cause), tempfile.TemporaryDirectory() as temporary:
+                    helper = owner.SdkConsumerTests()
+                    root = helper.repository(Path(temporary))
+                    target = "Cargo.lock" if "lock" in cause else "crates/fixture-provider/Cargo.toml"
+                    if "subst" in cause:
+                        path = root / target
+                        path.write_text(path.read_text() + "# $Format:%H$\n")
+                    attribute = ("Cargo.lock" if "lock" in cause else
+                                 "crates/fixture-provider" if "ignore" in cause else target)
+                    content = attribute + (" export-ignore\n" if "ignore" in cause else " export-subst\n")
+                    if not cause.startswith("info-"):
+                        (root / ".gitattributes").write_text(content)
+                    helper.git(root, "add", ".")
+                    helper.git(root, "commit", "--quiet", "-m", "private historical archive attributes",
+                               "--allow-empty")
+                    baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,
+                        env=owner.formal_sources.detached_git_environment(), text=True).strip()
+                    if cause.startswith("info-"):
+                        info = root / ".git/info/attributes"
+                        info.parent.mkdir(exist_ok=True)
+                        info.write_text(content)
+                    (root / "tracked.txt").write_text("current SDK after historical archive attributes\n")
+                    helper.git(root, "add", ".")
+                    helper.git(root, "commit", "--quiet", "-m", "private current SDK")
+                    historical = owner.formal_sources.git_output(root, "show",
+                        baseline + ":crates/fixture-provider/Cargo.toml")
+                    self.assertIn(b'name="fixture-provider"', historical)
+                    self.assertIn(b'product="sdk"', historical)
+                    status, calls = helper.execute(root, qualification="semver", baseline_rev=baseline)
+                    self.assertEqual((status, self.compiles(calls)), (1, []))
+
+        def test_git_subject_rejects_gitlinks_and_ignores_unselected_current_path_aliases(self):
+            # B12 an unexpanded historical gitlink cannot prove an absent SDK:
+            # refuse before compiler, rather than classify it as first release.
+            # B13 historical package moved and its old directory is reused by
+            # a current, unselected symlink: read the original relative Git path,
+            # not that live filesystem alias. Current metadata still obeys its
+            # original absolute/resolve/root gate; historical ../ and absolute
+            # Git paths refuse through the same read owner, with no fallback.
+            for cause in ("gitlink", "historical-alias"):
+                with self.subTest(cause=cause), tempfile.TemporaryDirectory() as temporary:
+                    helper = owner.SdkConsumerTests()
+                    root = helper.repository(Path(temporary))
+                    original = root / "crates/fixture-provider"
+                    historical = root / "crates/historical-provider"
+                    if cause == "gitlink":
+                        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,
+                            env=owner.formal_sources.detached_git_environment(), text=True).strip()
+                        helper.git(root, "rm", "-r", "crates/fixture-provider")
+                        helper.git(root, "update-index", "--add", "--cacheinfo",
+                                   "160000," + commit + ",crates/fixture-provider")
+                    else:
+                        original.rename(historical)
+                        helper.git(root, "add", ".")
+                    helper.git(root, "commit", "--quiet", "-m", "private historical Git subject")
+                    baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,
+                        env=owner.formal_sources.detached_git_environment(), text=True).strip()
+                    if cause == "gitlink":
+                        self.assertEqual(owner.formal_sources.git_paths(root, "ls-tree", "-z",
+                            "--format=%(objecttype)", baseline, "--", "crates/fixture-provider"), ["commit"])
+                        helper.git(root, "rm", "--cached", "crates/fixture-provider")
+                        helper.compiler_source(root)
+                    else:
+                        historical.rename(original)
+                        historical.symlink_to(root / "crates/fixture-internal", target_is_directory=True)
+                        workspace = root / "Cargo.toml"
+                        workspace.write_text(workspace.read_text().replace('members=["crates/*"]',
+                            'members=["crates/fixture-contract","crates/fixture-provider","crates/fixture-internal"]'))
+                    (root / "tracked.txt").write_text("current SDK with separate filesystem paths\n")
+                    helper.git(root, "add", ".")
+                    helper.git(root, "commit", "--quiet", "-m", "private current Git subject")
+                    status, calls = helper.execute(root, qualification="semver", baseline_rev=baseline)
+                    self.assertEqual((status, len(self.compiles(calls))),
+                                     (1, 0) if cause == "gitlink" else (0, 2))
+                    if cause == "historical-alias":
+                        for path in ("../outside/Cargo.toml", "/outside/Cargo.toml"):
+                            with self.subTest(historical_escape=path), self.assertRaises(ValueError):
+                                owner._sdk_compiler_input.observe_source(root, baseline, {}, ["fixture-provider"],
+                                    git_manifest_paths={"fixture-provider": path})
+                        with self.assertRaises(ValueError):
+                            owner._sdk_compiler_input.observe_source(root, baseline,
+                                {"fixture-provider": {"manifest_path": str(root.parent / "outside/Cargo.toml")}},
+                                ["fixture-provider"])
 
         def test_unreadable_inputs_and_post_child_faults_preserve_first_status(self):
             # K7 a Git source read failure retains its original status (75) or
