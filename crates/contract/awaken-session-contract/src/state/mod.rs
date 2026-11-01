@@ -17,7 +17,11 @@ mod archive_intent;
 mod environment;
 mod event_history;
 pub use event_history::SessionEventHistory;
+mod preparation_observation;
 mod realization_progress;
+pub use preparation_observation::{
+    SessionPreparationFailure, SessionPreparationObservation, SessionPreparationStatus,
+};
 mod resource_activation;
 mod session_repo;
 mod terminal_cleanup;
