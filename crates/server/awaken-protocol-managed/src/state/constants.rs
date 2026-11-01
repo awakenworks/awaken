@@ -10,6 +10,6 @@ pub const COMMITTED_PREFIX_READ_CONFLICT: &str =
 
 pub(crate) fn persisted_time(epoch_ms: Option<u64>) -> String {
     epoch_ms
-        .map(awaken_session_application_contract::epoch_millis_to_rfc3339)
+        .map(awaken_time::utc::epoch_millis_to_rfc3339)
         .unwrap_or_else(|| LEGACY_UNRECORDED_AT.to_string())
 }

@@ -11,5 +11,5 @@ pub(super) fn new_agent_id() -> String {
 
 /// A reading of `clock` spelled as a Managed lifecycle timestamp.
 pub(super) fn lifecycle_timestamp_at(clock: &dyn WallClock) -> String {
-    awaken_session_application_contract::epoch_millis_to_rfc3339(clock.now_ms())
+    awaken_time::utc::epoch_millis_to_rfc3339(clock.now_ms())
 }

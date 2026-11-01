@@ -937,7 +937,7 @@ async fn archive_session_disposes_on_the_terminal_transition_only() {
         first
             .archived_at
             .as_deref()
-            .and_then(awaken_session_application_contract::rfc3339_to_epoch_millis)
+            .and_then(awaken_time::utc::rfc3339_to_epoch_millis)
             .is_some(),
         "A3 valid time"
     );

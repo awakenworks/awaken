@@ -19,7 +19,6 @@ test-support = []
 awaken-sync.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-time.workspace = true
-awaken-session-application-contract.workspace = true
 awaken-session-dream-contract.workspace = true
 awaken-session-types.workspace = true
 async-trait.workspace = true

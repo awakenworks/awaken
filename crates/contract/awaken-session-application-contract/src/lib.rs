@@ -14,6 +14,18 @@
 //! ```compile_fail
 //! use awaken_session_application_contract::session_usage_from_thread_usage;
 //! ```
+//!
+//! The contract holds ports only. Wall-clock codecs are named from
+//! `awaken_time::utc`, and the Session application's process configuration
+//! from `awaken-session-application`:
+//!
+//! ```compile_fail
+//! use awaken_session_application_contract::epoch_millis_to_rfc3339;
+//! ```
+//!
+//! ```compile_fail
+//! use awaken_session_application_contract::SessionApplicationConfiguration;
+//! ```
 
 mod execution_observation;
 pub use execution_observation::{
@@ -41,8 +53,7 @@ pub use pending::Pending;
 pub use run_application::{
     EventForwardingSink, OwnerScopedRunApplication, RunApplication, RunApplicationError, RunMode,
     RunResume, SessionRunBackgroundApplication, SessionRunReplacementApplication, StopReceipt,
-    blocks_text, epoch_millis_to_rfc3339, paginate_history, project_epoch_millis,
-    rfc3339_to_epoch_millis,
+    blocks_text, paginate_history,
 };
 pub use run_coordination::{
     DelegatedRun, DelegatedRunSnapshot, SessionBudgetResumeDelivery,
@@ -53,14 +64,6 @@ pub use task_attention::{
     PRIVATE_TASK_INPUT_VERSION, PrivateTaskInput, PrivateTaskInputError, TaskAttention,
     TaskAttentionAck, WORKER_TASK_ATTENTION_PATH, registered_task_holder,
 };
-
-mod composition;
-mod session_services;
-pub use composition::{
-    SessionApplicationBuildError, SessionApplicationConfiguration, SessionExecutionPlacement,
-    WorkDispatchFailure, WorkDispatchReconciliation, runtime_placement_for_topology,
-};
-pub use session_services::SessionParticipantProvenance;
 
 mod worker_lease_value;
 pub use worker_lease_value::{SessionWorkGrant, WorkLeaseEpoch};

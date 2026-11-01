@@ -110,7 +110,7 @@ impl ManagedState {
                 {
                     evaluation.completed_at = index
                         .time_for(&session_id, source_commit_cursor)
-                        .map(awaken_session_application_contract::epoch_millis_to_rfc3339);
+                        .map(awaken_time::utc::epoch_millis_to_rfc3339);
                 }
             }
         }
@@ -161,7 +161,7 @@ impl ManagedState {
                 event.processed_at = event.processed_at.or_else(|| {
                     order
                         .processed_at_unix_ms
-                        .map(awaken_session_application_contract::epoch_millis_to_rfc3339)
+                        .map(awaken_time::utc::epoch_millis_to_rfc3339)
                 });
                 durable.push((order, event));
             }

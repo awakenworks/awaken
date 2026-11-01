@@ -160,9 +160,10 @@ impl SessionRecoveryCandidates {
 }
 
 mod mutation;
+mod participant_provenance;
 mod recovery_sweep;
-pub use awaken_session_application_contract::SessionParticipantProvenance;
 pub use mutation::{SessionMutationError, SessionMutations, SessionStateViolation, SnapshotCommit};
+pub use participant_provenance::SessionParticipantProvenance;
 mod event_batch_cutover_validation;
 pub use event_batch_cutover_validation::{
     SessionEventBatchCutoverValidationSnapshot, SessionEventBatchCutoverValidationSource,
@@ -278,7 +279,8 @@ mod tests;
 
 use awaken_session_contract::SessionAggregate;
 
-pub use awaken_session_application_contract::{
+mod configuration;
+pub use configuration::{
     SessionApplicationBuildError, SessionApplicationConfiguration, SessionExecutionPlacement,
     WorkDispatchFailure, WorkDispatchReconciliation, runtime_placement_for_topology,
 };

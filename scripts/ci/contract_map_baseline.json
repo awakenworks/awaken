@@ -53,7 +53,6 @@
     "awaken-dispatch-contract": 58,
     "awaken-executable-agent-contract": 1,
     "awaken-provisioning-contract": 1,
-    "awaken-session-application-contract": 3,
     "awaken-session-configuration-contract": 3,
     "awaken-session-execution-contract": 51,
     "awaken-session-realization-contract": 3,

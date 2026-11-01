@@ -124,7 +124,7 @@ async fn failed_terminal_times_survive_archive_and_cold_reconstruction() {
             for event in terminals {
                 assert_eq!(
                     event.processed_at,
-                    failure_time.map(awaken_session_application_contract::epoch_millis_to_rfc3339),
+                    failure_time.map(awaken_time::utc::epoch_millis_to_rfc3339),
                     "E1 failure owns terminal time, sourced={sourced}"
                 );
             }

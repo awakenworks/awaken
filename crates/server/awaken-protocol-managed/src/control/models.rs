@@ -110,8 +110,8 @@ impl ModelEntry {
     ) -> Self {
         let mut entry = Self::without_time(&reference.model_reference, &reference.model_reference);
         entry.created_at = reference.first_published_at_unix_ms.and_then(|time| {
-            (awaken_session_application_contract::project_epoch_millis(u128::from(time)) == time)
-                .then(|| awaken_session_application_contract::epoch_millis_to_rfc3339(time))
+            (awaken_time::utc::project_epoch_millis(u128::from(time)) == time)
+                .then(|| awaken_time::utc::epoch_millis_to_rfc3339(time))
         });
         entry
     }
@@ -202,7 +202,7 @@ impl AvailableModels {
 /// caller supplies the fixture's publication instant explicitly.
 #[must_use]
 pub fn default_models(published_at_unix_ms: u64) -> Vec<ModelEntry> {
-    let at = awaken_session_application_contract::epoch_millis_to_rfc3339(published_at_unix_ms);
+    let at = awaken_time::utc::epoch_millis_to_rfc3339(published_at_unix_ms);
     vec![
         // Published context windows (max input tokens) — the intrinsic attribute the
         // compaction window derives from; 200K is the standard Claude context.

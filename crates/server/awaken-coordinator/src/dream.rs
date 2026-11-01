@@ -598,7 +598,7 @@ impl DreamExecutor for BuiltInDreamAgent {
         if let Some(preparation) = preparation {
             // The Dream's facts are stamped on the Session application's clock.
             let now_ms = awaken_time::WallClockExt::now_ms(self.sessions.clock().as_ref());
-            let archived_at = awaken_session_application_contract::epoch_millis_to_rfc3339(now_ms);
+            let archived_at = awaken_time::utc::epoch_millis_to_rfc3339(now_ms);
             let fact = ManagedLifecycleFact {
                 id: awaken_session_contract::session_terminated_fact_id(&preparation.session_id),
                 object_id: preparation.session_id.clone(),

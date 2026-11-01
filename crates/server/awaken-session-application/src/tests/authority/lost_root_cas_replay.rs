@@ -58,7 +58,7 @@ fn publication_command(
     SessionArchiveWithRepositoryPublicationCommand {
         owner_scope: "workspace".into(),
         session_id: session_id.into(),
-        archived_at: awaken_session_application_contract::epoch_millis_to_rfc3339(route_sample_ms),
+        archived_at: awaken_time::utc::epoch_millis_to_rfc3339(route_sample_ms),
         lifecycle_fact: ManagedLifecycleFact {
             id: format!("{session_id}:terminated"),
             object_id: session_id.into(),

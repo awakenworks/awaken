@@ -1090,10 +1090,8 @@ pub(crate) fn history_time_v2<T: Serialize>(
     for &(field, time) in fields {
         object.insert(
             field.to_owned(),
-            serde_json::to_value(
-                time.map(awaken_session_application_contract::epoch_millis_to_rfc3339),
-            )
-            .expect("optional timestamp serializes"),
+            serde_json::to_value(time.map(awaken_time::utc::epoch_millis_to_rfc3339))
+                .expect("optional timestamp serializes"),
         );
     }
     value
