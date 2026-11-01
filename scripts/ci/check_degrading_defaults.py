@@ -420,7 +420,7 @@ def _sources(root: Path) -> dict[str, str]:
     return {
         path.relative_to(root).as_posix(): path.read_text(encoding="utf-8", errors="ignore")
         for path in sorted((root / "crates").rglob("*.rs"))
-        if not path.name.endswith(("tests.rs", "test_support.rs")) and "/tests/" not in str(path)
+        if not path.name.endswith(("tests.rs", "test_support.rs")) and "/tests/" not in path.as_posix()
     }
 
 
