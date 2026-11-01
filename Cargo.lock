@@ -2332,7 +2332,6 @@ dependencies = [
  "awaken-session-application-contract",
  "awaken-session-configuration-contract",
  "awaken-session-dream-contract",
- "awaken-session-execution-contract",
  "awaken-session-types",
  "awaken-tenancy",
  "awaken-time",
@@ -3210,6 +3209,7 @@ dependencies = [
  "awaken-time",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
 ]
 

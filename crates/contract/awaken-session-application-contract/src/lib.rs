@@ -33,6 +33,7 @@ pub use execution_observation::{
 };
 mod executable_projection;
 mod lifecycle_notifier;
+mod live_inbox;
 mod pending;
 mod run_application;
 mod run_coordination;
@@ -49,6 +50,10 @@ pub use executable_projection::{
 };
 
 pub use lifecycle_notifier::LifecycleFactNotifier;
+pub use live_inbox::{
+    LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
+    LiveInboxSnapshot,
+};
 pub use pending::Pending;
 pub use run_application::{
     EventForwardingSink, OwnerScopedRunApplication, RunApplication, RunApplicationError, RunMode,

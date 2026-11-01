@@ -42,6 +42,7 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
 #[cfg(test)]
 use awaken_agent_contract::agent::run::{EndCause, Failure};
+use awaken_session_application_contract::{LiveInboxError, LiveInboxSnapshot};
 
 /// A human-in-the-loop tool decision, delivered by `user.tool_confirmation`.
 pub use awaken_agent_contract::agent::awaiting::PermissionDecision as ToolPermissionDecision;
@@ -95,10 +96,6 @@ pub enum OutcomeDrive {
     Awaiting,
     Completed(OutcomeReport),
 }
-
-// Keep the live-inbox names' public defining path at `session::…` while their
-// implementation remains physically split below the repository file limit.
-include!("session/live_inbox.rs");
 
 /// Public exact-generation realization port owned by the Session application
 /// boundary. Local Host relay/connection code and downstream platform gateways
@@ -554,50 +551,6 @@ mod tests {
 
     // Item 1: `run_streaming`'s default delegates to `run` — the committed outcome is
     // identical (the sink only mirrors in-flight events, which the default ignores).
-    // Item 4: `LiveInboxError` Display messages are stable, distinct wire text.
-    #[test]
-    fn live_inbox_error_display_messages_are_pinned() {
-        // Test design — Causes: each closed LiveInbox failure variant is rendered.
-        // Effects: it produces its exact distinct operator-facing text.
-        // Constraints/invariants: display text is a pinned wire/debug boundary;
-        // variants never alias. Decision rule L1: enumerate all variants=>five
-        // exact, pairwise-distinct messages.
-        assert_eq!(
-            LiveInboxError::Inactive.to_string(),
-            "no Run is in flight; send the message as a normal event",
-        );
-        assert_eq!(
-            LiveInboxError::UnknownMessage.to_string(),
-            "no queued message with that id",
-        );
-        assert_eq!(
-            LiveInboxError::StaleOrder.to_string(),
-            "proposed order does not match the current queue",
-        );
-        assert_eq!(
-            LiveInboxError::Unavailable.to_string(),
-            "the live-inbox owner registry is unreadable",
-        );
-        assert_eq!(
-            LiveInboxError::Full.to_string(),
-            "the live inbox is full; retry after the Run drains it",
-        );
-    }
-
-    // Item 5: `LiveInboxSnapshot::inactive()` invariants.
-    #[test]
-    fn inactive_snapshot_is_empty_versionless_and_inactive() {
-        // Test design — Cause: no Run is in flight, so the canonical inactive
-        // constructor is selected. Effects: active=false, version=0, and no
-        // queued messages. Constraints/invariants: absence carries neither a
-        // resumable version nor latent inbox state. Decision rule I1: inactive
-        // constructor=>assert the complete three-field boundary tuple.
-        let snap = LiveInboxSnapshot::inactive();
-        assert!(!snap.active);
-        assert_eq!(snap.version, 0);
-        assert!(snap.messages.is_empty());
-    }
-
     #[test]
     fn committed_resume_ticket_has_one_pending_projection_decision_table() {
         use awaken_agent_contract::agent::awaiting::{
