@@ -153,6 +153,31 @@ impl WorkerControlClient {
         }
     }
 
+    /// Deliver one Task observation this incarnation holds (rows K1-K6 of the
+    /// remote Task control design). `Ok` means the Coordinator durably admitted
+    /// the Run that carries it; `BadRequest` is definitive; every other error
+    /// is retried by the sender with the same attention.
+    pub async fn deliver_task_attention(
+        &self,
+        identity: &WorkerIdentity,
+        attention: &awaken_session_application_contract::TaskAttention,
+    ) -> Result<awaken_session_application_contract::TaskAttentionAck, awaken_session_types::RunError>
+    {
+        match self
+            .post_response(
+                awaken_session_application_contract::WORKER_TASK_ATTENTION_PATH,
+                json!({ "identity": identity, "attention": attention }),
+            )
+            .await
+        {
+            Ok((status, body)) => task_attention_outcome(status, &body),
+            Err(error) if error.retryable => {
+                Err(awaken_session_types::RunError::unavailable(error.message))
+            }
+            Err(error) => Err(awaken_session_types::RunError::bad_request(error.message)),
+        }
+    }
+
     pub async fn authorize_session_environment_effect(
         &self,
         identity: &WorkerIdentity,
@@ -902,6 +927,100 @@ impl WorkerControlClient {
         let body = self.post(path, body).await?;
         serde_json::from_value(body.get("mutation").cloned().unwrap_or(Value::Null))
             .map_err(|error| format!("worker mutation decode: {error}"))
+    }
+}
+
+/// Classify one Task attention response. Only a decoded acknowledgement is an
+/// ACK: the Coordinator returns it after the carrying Run is durably admitted.
+///
+/// Decision table (response → result):
+/// | Rule | status | body | result |
+/// |---|---|---|---|
+/// | K1 | 2xx | `ack` decodes as `TaskAttentionAck` | `Ok(ack)` |
+/// | K6 | 2xx | `ack` missing or undecodable (unknown field, other shape) | `Unavailable` |
+/// | K4 | 4xx other than 429 | any | `BadRequest` (definitive) |
+/// | K5 | 429, 5xx or any other status | any | `Unavailable` (retryable) |
+fn task_attention_outcome(
+    status: reqwest::StatusCode,
+    body: &Value,
+) -> Result<awaken_session_application_contract::TaskAttentionAck, awaken_session_types::RunError> {
+    if status.is_success() {
+        let ack = body.get("ack").cloned().ok_or_else(|| {
+            awaken_session_types::RunError::unavailable(
+                "Task attention response carries no acknowledgement",
+            )
+        })?;
+        return serde_json::from_value(ack).map_err(|error| {
+            awaken_session_types::RunError::unavailable(format!(
+                "Task attention acknowledgement does not decode: {error}"
+            ))
+        });
+    }
+    let message = body
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("Task attention rejected")
+        .to_owned();
+    if status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS {
+        Err(awaken_session_types::RunError::bad_request(message))
+    } else {
+        Err(awaken_session_types::RunError::unavailable(message))
+    }
+}
+
+#[cfg(test)]
+mod task_attention_outcome_tests {
+    use super::task_attention_outcome;
+    use awaken_session_types::RunErrorKind;
+    use reqwest::StatusCode;
+    use serde_json::json;
+
+    #[test]
+    fn only_a_decoded_acknowledgement_is_an_ack() {
+        // K1: the current acknowledgement.
+        let ack = task_attention_outcome(StatusCode::OK, &json!({ "ack": { "run_id": "run-1" } }))
+            .expect("K1");
+        assert_eq!(ack.run_id.0, "run-1", "K1");
+        // K6: historical or future shapes are never read as an ACK.
+        for body in [
+            json!({}),
+            json!({ "ack": null }),
+            json!({ "ack": "run-1" }),
+            json!({ "ack": {} }),
+            json!({ "ack": { "run_id": "run-1", "admitted": true } }),
+            json!({ "run_id": "run-1" }),
+        ] {
+            let error = task_attention_outcome(StatusCode::OK, &body).unwrap_err();
+            assert_eq!(error.kind, RunErrorKind::Unavailable, "K6 {body}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_is_definitive_and_every_other_failure_is_retryable() {
+        let body = json!({ "error": "the Task attention names a Task this Worker incarnation does not hold" });
+        // K4: a client error other than 429 stops the sender.
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::CONFLICT,
+        ] {
+            let error = task_attention_outcome(status, &body).unwrap_err();
+            assert_eq!(error.kind, RunErrorKind::BadRequest, "K4 {status}");
+            assert!(error.message.contains("does not hold"), "K4 {status}");
+        }
+        // K5: throttling, server failure and anything unexpected retry.
+        for status in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::PERMANENT_REDIRECT,
+        ] {
+            let error = task_attention_outcome(status, &json!({})).unwrap_err();
+            assert_eq!(error.kind, RunErrorKind::Unavailable, "K5 {status}");
+        }
     }
 }
 

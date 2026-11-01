@@ -12,6 +12,8 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::RunError;
+
 /// The registered Worker route that delivers a [`TaskAttention`].
 pub const WORKER_TASK_ATTENTION_PATH: &str = "/v1/worker/task/attention";
 
@@ -105,6 +107,29 @@ pub struct TaskAttention {
 #[serde(deny_unknown_fields)]
 pub struct TaskAttentionAck {
     pub run_id: RunId,
+}
+
+/// A registered Worker incarnation's delivery of the Task observations it
+/// holds to the Session application, over its authenticated transport.
+///
+/// The delivery carries the holder it is authenticated as, so the holder that
+/// tenures a Task and the identity that delivers its attention cannot belong
+/// to different incarnations.
+///
+/// Decision table (delivery result → sender):
+/// | Rule | result | sender |
+/// |---|---|---|
+/// | K1 | `Ok(ack)` | the carrying Run is durably admitted; stop |
+/// | K2 | any retry | resend the same attention: same operation id, same Run |
+/// | K4 | `BadRequest` | definitive; stop; the Task lease law takes over |
+/// | K5/K6 | any other error, including an undecodable acknowledgement | retry with the same attention |
+#[async_trait::async_trait]
+pub trait TaskAttentionDelivery: Send + Sync {
+    /// The [`registered_task_holder`] of the authenticated incarnation.
+    fn holder(&self) -> &str;
+
+    /// Deliver one observation this incarnation holds.
+    async fn deliver(&self, attention: TaskAttention) -> Result<TaskAttentionAck, RunError>;
 }
 
 const REGISTERED_HOLDER_TAG: &str = "registered-task-holder-v1";
