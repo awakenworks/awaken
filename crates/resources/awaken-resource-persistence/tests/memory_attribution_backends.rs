@@ -60,6 +60,7 @@ fn unique_store(label: &str) -> String {
 /// (the shape the decorator had before attribution forwarding).
 async fn authored_script(
     writer: &dyn MemoryWriter,
+    filesystem: &dyn awaken_resource_contract::MemoryFilesystem,
     versions: &dyn awaken_resource_contract::MemoryVersionQueries,
     store: &str,
     forwarding: Forwarding,
@@ -109,6 +110,47 @@ async fn authored_script(
     assert_eq!(moved.path, "/b.md", "O0");
     writer
         .delete_by_path_as(store, "/b.md", alice.as_ref())
+        .await
+        .unwrap();
+    // RA1 separate from update_head_as: the mounted-filesystem operation must
+    // preserve the caller Bob through the same production decorator and atomic
+    // replace; RA2 same-path Carol appends nothing, so the existing no-Carol
+    // oracle also covers rename no-op. Both durable backend scripts reuse this.
+    let source = writer
+        .create_as(store, "/rename-source.md", "rename-source", alice.as_ref())
+        .await
+        .unwrap();
+    writer
+        .create_as(store, "/rename-target.md", "rename-target", alice.as_ref())
+        .await
+        .unwrap();
+    let renamed = filesystem
+        .rename_as(
+            store,
+            "/rename-source.md",
+            "/rename-target.md",
+            bob.as_ref(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.id, source.id, "RA1 source identity");
+    let before_noop = versions.list_versions(store).await.unwrap();
+    filesystem
+        .rename_as(
+            store,
+            "/rename-target.md",
+            "/rename-target.md",
+            carol.as_ref(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        versions.list_versions(store).await.unwrap(),
+        before_noop,
+        "RA2 no-op history"
+    );
+    writer
+        .delete_by_path_as(store, "/rename-target.md", alice.as_ref())
         .await
         .unwrap();
     moved
@@ -196,6 +238,26 @@ fn attribution_is_complete(versions: &[MemoryVersion], moved: &Memory) -> Result
         "alice",
         "delete",
     )?;
+    expect(
+        find(
+            versions,
+            MemoryVersionOperation::Deleted,
+            "/rename-target.md",
+            None,
+        ),
+        "bob",
+        "filesystem displaced deletion",
+    )?;
+    expect(
+        find(
+            versions,
+            MemoryVersionOperation::Modified,
+            "/rename-target.md",
+            Some("rename-source"),
+        ),
+        "bob",
+        "filesystem moved head",
+    )?;
     Ok(())
 }
 
@@ -214,6 +276,7 @@ async fn sqlite_decorated_writes_keep_every_author_across_reopen() {
         let authorities = application.authorities();
         authored_script(
             authorities.memory_writer().as_ref(),
+            authorities.memory_filesystem().as_ref(),
             authorities.memory_versions().as_ref(),
             &store,
             Forwarding::Stated,
@@ -274,6 +337,7 @@ async fn sqlite_decorated_writes_keep_every_author_across_reopen() {
     let mutant_store = unique_store("attribution-mutant");
     let mutant_moved = authored_script(
         authorities.memory_writer().as_ref(),
+        authorities.memory_filesystem().as_ref(),
         authorities.memory_versions().as_ref(),
         &mutant_store,
         Forwarding::Dropped,
@@ -319,6 +383,7 @@ async fn postgres_decorated_writes_keep_every_author_across_independent_pools() 
     let writer = writer_app.authorities();
     let moved = authored_script(
         writer.memory_writer().as_ref(),
+        writer.memory_filesystem().as_ref(),
         writer.memory_versions().as_ref(),
         &store,
         Forwarding::Stated,
@@ -369,9 +434,11 @@ fn postgres_attribution_fixture_admission() {
     );
 }
 
-/// A filesystem rename is an authored mutation but the port carries no actor.
+/// Cause/effect RA1: Alice creates a head; Bob performs the filesystem rename
+/// through the composed application. The Modified history must name Bob, not
+/// infer Alice from the create row. The same original case now exercises the
+/// actor-bearing canonical port; the durable reopen/pool cases cover retention.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "product gap: MemoryFilesystem::rename takes no actor and SQLite records rename history with actor None (sqlite.rs:653,667)"]
 async fn sqlite_rename_history_records_an_author() {
     let root = tempfile::tempdir().unwrap();
     let store = unique_store("attribution-rename");
@@ -390,7 +457,7 @@ async fn sqlite_rename_history_records_an_author() {
         .unwrap();
     authorities
         .memory_filesystem()
-        .rename(&store, "/x.md", "/y.md")
+        .rename_as(&store, "/x.md", "/y.md", Some(&user("bob")))
         .await
         .unwrap();
     let versions = authorities
@@ -403,5 +470,11 @@ async fn sqlite_rename_history_records_an_author() {
     assert!(
         renamed.iter().all(|version| version.created_by.is_some()),
         "rename history must name its author: {renamed:?}"
+    );
+    assert!(
+        renamed
+            .iter()
+            .all(|version| version.created_by == Some(user("bob"))),
+        "RA1 explicit Bob, never inherited Alice"
     );
 }

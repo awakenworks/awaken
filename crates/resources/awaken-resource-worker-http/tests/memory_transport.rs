@@ -518,11 +518,12 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     )
     .await
     .unwrap();
-    awaken_resource_contract::MemoryFilesystem::rename(
+    awaken_resource_contract::MemoryFilesystem::rename_as(
         repository.as_ref(),
         "memory-rw",
         "/copy.md",
         "/copy-moved.md",
+        None,
     )
     .await
     .unwrap();
@@ -985,11 +986,12 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     // MP-HTTP: exact terminal A fence + content-preserving rename after B =>
     // both the old wire client (no expected_path) and Copy client reject. Even
     // equal candidate bytes at the new path cannot authorize an acknowledgement.
-    awaken_resource_contract::MemoryFilesystem::rename(
+    awaken_resource_contract::MemoryFilesystem::rename_as(
         repository.as_ref(),
         "memory-terminal",
         "/note.md",
         "/moved.md",
+        None,
     )
     .await
     .unwrap();

@@ -607,9 +607,16 @@ impl SqliteMemoryRepository {
             .await
     }
 
-    async fn rename_inner(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
+    async fn rename_as_inner(
+        &self,
+        store: &str,
+        from: &str,
+        to: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
         validate_path(to)?;
         let (store, from, to) = (store.to_string(), from.to_string(), to.to_string());
+        let actor = actor.cloned();
         let clock = self.clock.clone();
         with_conn_mem(&self.pool, move |mut conn| async move {
             // Atomic POSIX replace: drop the destination and move the source in ONE
@@ -672,7 +679,7 @@ impl SqliteMemoryRepository {
                         path: &to,
                         content: None,
                         created: now,
-                        actor: None,
+                        actor: actor.as_ref(),
                     },
                 )
                 .await?;
@@ -687,7 +694,7 @@ impl SqliteMemoryRepository {
                     path: &to,
                     content: Some(&content),
                     created: now,
-                    actor: None,
+                    actor: actor.as_ref(),
                 },
             )
             .await?;
@@ -1363,7 +1370,7 @@ mod memory_repository_tests {
             .await
             .unwrap()
             .unwrap();
-        let renamed = fs.rename("s", "/from.md", "/to.md").await.unwrap();
+        let renamed = fs.rename_as("s", "/from.md", "/to.md", None).await.unwrap();
         assert_eq!(renamed.id, src.id, "the moved memory keeps its id");
         assert_eq!(renamed.path, "/to.md");
         assert!(
@@ -1504,8 +1511,14 @@ impl MemoryFilesystem for SqliteMemoryRepository {
         SqliteMemoryRepository::update_head_as_inner(self, store, base, content, target_path, actor)
             .await
     }
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
-        SqliteMemoryRepository::rename_inner(self, store, from, to).await
+    async fn rename_as(
+        &self,
+        store: &str,
+        from: &str,
+        to: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        SqliteMemoryRepository::rename_as_inner(self, store, from, to, actor).await
     }
     async fn delete_by_path_as(
         &self,

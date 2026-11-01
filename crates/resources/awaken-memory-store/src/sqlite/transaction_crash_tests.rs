@@ -54,7 +54,10 @@ async fn mutate(repository: &SqliteMemoryRepository, operation: &str) {
             .unwrap();
         }
         "rename" => {
-            repository.rename("s", "/from.md", "/to.md").await.unwrap();
+            repository
+                .rename_as("s", "/from.md", "/to.md", None)
+                .await
+                .unwrap();
         }
         "redact" => {
             let version = repository.list_versions("s").await.unwrap().remove(0);

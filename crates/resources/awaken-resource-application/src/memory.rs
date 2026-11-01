@@ -162,8 +162,15 @@ impl<T: MemoryFilesystem + ?Sized> MemoryFilesystem for InvalidatingMemoryReposi
         }
         Ok(memory)
     }
-    async fn rename(&self, store: &str, from: &str, to: &str) -> Result<Memory, MemErr> {
-        let memory = MemoryFilesystem::rename(self.inner.as_ref(), store, from, to).await?;
+    async fn rename_as(
+        &self,
+        store: &str,
+        from: &str,
+        to: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Memory, MemErr> {
+        let memory =
+            MemoryFilesystem::rename_as(self.inner.as_ref(), store, from, to, actor).await?;
         self.invalidator.publish(store, "/");
         Ok(memory)
     }
@@ -493,7 +500,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rx.try_recv().unwrap(), ("s".into(), "/a".into()));
-        inner.rename("s", "/a", "/b").await.unwrap();
+        inner.rename_as("s", "/a", "/b", None).await.unwrap();
         assert!(matches!(
             fs.update_materialized("s", "/a", &base.generation(), "edit")
                 .await,
@@ -592,8 +599,24 @@ mod tests {
             ("s".to_string(), "/".to_string())
         );
 
-        // rename → one store-wide notification clears source and displaced destination.
-        fs.rename("s", "/b.md", "/c.md").await.unwrap();
+        // RA1 an authored rename still commits before exactly one store-wide
+        // notification. Attribution is inner history, not an invalidator side log.
+        let bob = MemoryActor::UserActor {
+            user_id: "bob".into(),
+        };
+        fs.rename_as("s", "/b.md", "/c.md", Some(&bob))
+            .await
+            .unwrap();
+        assert_eq!(
+            MemoryVersionQueries::list_versions(&fs, "s")
+                .await
+                .unwrap()
+                .last()
+                .unwrap()
+                .created_by
+                .as_ref(),
+            Some(&bob)
+        );
         assert_eq!(
             rx.try_recv().expect("committed synchronous invalidation"),
             ("s".to_string(), "/".to_string())

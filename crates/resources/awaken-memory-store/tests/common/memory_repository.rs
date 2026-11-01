@@ -86,7 +86,7 @@ where
         .await
         .unwrap();
     clock.advance(1);
-    let renamed = MemoryFilesystem::rename(fs, "timestamp-conformance", "/a.md", "/b.md")
+    let renamed = MemoryFilesystem::rename_as(fs, "timestamp-conformance", "/a.md", "/b.md", None)
         .await
         .unwrap();
     assert_eq!(renamed.id, first.id, "TM5");
@@ -227,6 +227,23 @@ where
             .unwrap(),
         head,
         "TS2"
+    );
+    // TS2b an authored same-path rename reaches the original no-op before
+    // the SQL clock range check; actor presence must not append a history row.
+    assert_eq!(
+        MemoryFilesystem::rename_as(
+            overflow,
+            "timestamp-range",
+            "/a.md",
+            "/a.md",
+            Some(&awaken_resource_contract::MemoryActor::UserActor {
+                user_id: "bob".into()
+            })
+        )
+        .await
+        .unwrap(),
+        head,
+        "TS2b"
     );
     let stale = MemoryGeneration::new(
         head.id.clone(),
@@ -576,7 +593,7 @@ where
     .await
     .unwrap();
     assert_eq!(applied, replay, "MP1/MP2");
-    MemoryFilesystem::rename(fs, store, "/original.md", "/renamed.md")
+    MemoryFilesystem::rename_as(fs, store, "/original.md", "/renamed.md", None)
         .await
         .unwrap();
     MemoryWriter::create(fs, store, "/original.md", "replacement")
@@ -672,7 +689,7 @@ where
         history
     );
     // MP6 ordinary API/FUSE updates still follow an open identity after rename.
-    let renamed = MemoryFilesystem::rename(fs, store, "/renamed.md", "/again.md")
+    let renamed = MemoryFilesystem::rename_as(fs, store, "/renamed.md", "/again.md", None)
         .await
         .unwrap();
     assert_eq!(
@@ -709,7 +726,7 @@ where
         let generation = base.generation();
         let (update, rename) = tokio::join!(
             MemoryCopyWriteback::update_materialized(fs, &store, "/a.md", &generation, "edit"),
-            MemoryFilesystem::rename(fs, &store, "/a.md", "/b.md"),
+            MemoryFilesystem::rename_as(fs, &store, "/a.md", "/b.md", None),
         );
         let renamed = rename.unwrap();
         let expected = match update {
@@ -761,11 +778,11 @@ where
     let first = MemoryWriter::create(fs, store, "/a.md", "same")
         .await
         .unwrap();
-    let moved = MemoryFilesystem::rename(fs, store, "/a.md", "/b.md")
+    let moved = MemoryFilesystem::rename_as(fs, store, "/a.md", "/b.md", None)
         .await
         .unwrap();
     assert_eq!(moved.content_sha256, first.content_sha256);
-    let current = MemoryFilesystem::rename(fs, store, "/b.md", "/a.md")
+    let current = MemoryFilesystem::rename_as(fs, store, "/b.md", "/a.md", None)
         .await
         .unwrap();
     assert_eq!(current.content_sha256, first.content_sha256);
@@ -842,7 +859,7 @@ where
         .await
         .unwrap();
     assert_ne!(dst.id, src.id);
-    let moved = MemoryFilesystem::rename(fs, store, "/src.md", "/dst.md")
+    let moved = MemoryFilesystem::rename_as(fs, store, "/src.md", "/dst.md", None)
         .await
         .unwrap();
     assert_eq!(moved.id, src.id, "R1 keeps the source id");
@@ -861,7 +878,7 @@ where
     assert_eq!(at_dst.id, src.id);
     assert_eq!(at_dst.content.as_deref(), Some("src"));
     assert!(matches!(
-        MemoryFilesystem::rename(fs, store, "/src.md", "/dst.md").await,
+        MemoryFilesystem::rename_as(fs, store, "/src.md", "/dst.md", None).await,
         Err(MemErr::NotFound(_))
     ));
     assert_eq!(
@@ -1006,12 +1023,23 @@ where
         .await
         .unwrap()
         .unwrap();
-    let moved = MemoryFilesystem::rename(fs, store, "/notes/today.md", "/notes/other.md")
+    let moved = MemoryFilesystem::rename_as(fs, store, "/notes/today.md", "/notes/other.md", None)
         .await
         .unwrap();
     assert_eq!(moved.id, before.id, "rename preserves the memory id");
     assert_eq!(moved.path, "/notes/other.md");
     assert_eq!(moved.content.as_deref(), Some("beta"));
+    // RA3 system/NoActor rename records no invented principal on either row.
+    assert!(
+        MemoryVersionQueries::list_versions(fs, store)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|row| row.path == "/notes/other.md"
+                && row.operation != MemoryVersionOperation::Created)
+            .all(|row| row.created_by.is_none()),
+        "RA3"
+    );
     assert!(
         MemoryQueries::get_by_path(fs, store, "/notes/today.md")
             .await
@@ -1143,7 +1171,7 @@ where
         .await
         .unwrap();
     assert!(matches!(
-        MemoryFilesystem::rename(fs, store, "/src.md", "relative").await,
+        MemoryFilesystem::rename_as(fs, store, "/src.md", "relative", None).await,
         Err(MemErr::InvalidPath(_))
     ));
     assert!(
@@ -1160,7 +1188,7 @@ where
         .await
         .unwrap()
         .unwrap();
-    let same = MemoryFilesystem::rename(fs, store, "/src.md", "/src.md")
+    let same = MemoryFilesystem::rename_as(fs, store, "/src.md", "/src.md", None)
         .await
         .unwrap();
     assert_eq!(same.id, src.id);
@@ -1170,7 +1198,7 @@ where
     );
 
     // G-R3: a pure move (destination absent) preserves the id and bumps version.
-    let moved = MemoryFilesystem::rename(fs, store, "/src.md", "/moved.md")
+    let moved = MemoryFilesystem::rename_as(fs, store, "/src.md", "/moved.md", None)
         .await
         .unwrap();
     assert_eq!(moved.id, src.id, "a move preserves the memory id");
@@ -1260,14 +1288,28 @@ where
         .await,
         Err(MemErr::NotFound(_))
     ));
+    // RA4 invalid destination still precedes source absence and author/history work.
+    assert!(matches!(
+        MemoryFilesystem::rename_as(
+            fs,
+            store,
+            "/gone.md",
+            "relative",
+            Some(&awaken_resource_contract::MemoryActor::UserActor {
+                user_id: "bob".into()
+            })
+        )
+        .await,
+        Err(MemErr::InvalidPath(_))
+    ));
     // rename a source that does not exist → NotFound (both the from==to and the
     // from!=to shapes).
     assert!(matches!(
-        MemoryFilesystem::rename(fs, store, "/gone.md", "/x.md").await,
+        MemoryFilesystem::rename_as(fs, store, "/gone.md", "/x.md", None).await,
         Err(MemErr::NotFound(_))
     ));
     assert!(matches!(
-        MemoryFilesystem::rename(fs, store, "/gone.md", "/gone.md").await,
+        MemoryFilesystem::rename_as(fs, store, "/gone.md", "/gone.md", None).await,
         Err(MemErr::NotFound(_))
     ));
 }
@@ -1560,12 +1602,59 @@ where
         snapshots.snapshot_heads("role-store").await.unwrap().len(),
         2
     );
+    // RA1 source creation and rename are different actions: the rename's Bob
+    // must author BOTH the displaced deletion and moved head, never inherit
+    // the source's original actor. All three backend role cases use this table.
+    let bob = MemoryActor::UserActor {
+        user_id: "bob".into(),
+    };
+    let before_rename = versions.list_versions("role-store").await.unwrap();
     let renamed = filesystem
-        .rename("role-store", "/source", "/target")
+        .rename_as("role-store", "/source", "/target", Some(&bob))
         .await
         .unwrap();
     assert_eq!(renamed.id, initial.id);
     assert_ne!(renamed.id, displaced.id);
+    let after_rename = versions.list_versions("role-store").await.unwrap();
+    assert_eq!(
+        &after_rename[..before_rename.len()],
+        before_rename.as_slice(),
+        "RA1 old history"
+    );
+    let appended = &after_rename[before_rename.len()..];
+    assert_eq!(appended.len(), 2, "RA1 exactly one replace transaction");
+    assert!(
+        appended
+            .iter()
+            .all(|row| row.created_by.as_ref() == Some(&bob)),
+        "RA1 both Bob"
+    );
+    assert!(
+        appended
+            .iter()
+            .any(|row| row.memory_id == displaced.id
+                && row.operation == MemoryVersionOperation::Deleted),
+        "RA1 destination"
+    );
+    assert!(
+        appended
+            .iter()
+            .any(|row| row.memory_id == initial.id
+                && row.operation == MemoryVersionOperation::Modified),
+        "RA1 source"
+    );
+    // RA2 changing only the actor on from==to is still an original no-op:
+    // no new generation/history; it does not rewrite an old author.
+    let same = filesystem
+        .rename_as("role-store", "/target", "/target", Some(&actor))
+        .await
+        .unwrap();
+    assert_eq!(same.generation(), renamed.generation(), "RA2");
+    assert_eq!(
+        versions.list_versions("role-store").await.unwrap(),
+        after_rename,
+        "RA2"
+    );
     assert!(
         queries
             .get_by_path("role-store", "/source")

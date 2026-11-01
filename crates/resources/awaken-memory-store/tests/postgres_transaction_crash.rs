@@ -112,7 +112,7 @@ async fn mutate(repository: &PostgresMemoryRepository, operation: &str) {
             .unwrap();
         }
         "rename" => {
-            MemoryFilesystem::rename(repository, "s", "/from.md", "/to.md")
+            MemoryFilesystem::rename_as(repository, "s", "/from.md", "/to.md", None)
                 .await
                 .unwrap();
         }
@@ -486,7 +486,7 @@ async fn sql_error_inside(url: &str, operation: &str) {
             .await
             .map(|_| ())
         }
-        _ => MemoryFilesystem::rename(&setup, "s", "/from.md", "/to.md")
+        _ => MemoryFilesystem::rename_as(&setup, "s", "/from.md", "/to.md", None)
             .await
             .map(|_| ()),
     };

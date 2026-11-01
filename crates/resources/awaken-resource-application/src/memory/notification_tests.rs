@@ -130,7 +130,10 @@ async fn committed_writes_survive_an_undeliverable_notification() {
         .update("s", &created.generation(), "two")
         .await
         .expect("E1 update");
-    let renamed = fs.rename("s", "/a.md", "/b.md").await.expect("E1 rename");
+    let renamed = fs
+        .rename_as("s", "/a.md", "/b.md", None)
+        .await
+        .expect("E1 rename");
     assert_eq!(renamed.id, updated.id, "E2 rename keeps the identity");
     fs.create("s", "/c.md", "gone").await.expect("E1 create c");
     fs.delete_by_path("s", "/c.md").await.expect("E1 delete");
@@ -185,7 +188,7 @@ async fn every_rejected_mutation_publishes_nothing() {
         Err(MemErr::PathConflict(_))
     ));
     assert!(matches!(
-        MemoryFilesystem::rename(&fs, "s", "/missing.md", "/z.md").await,
+        MemoryFilesystem::rename_as(&fs, "s", "/missing.md", "/z.md", None).await,
         Err(MemErr::NotFound(_))
     ));
     assert!(
@@ -219,7 +222,7 @@ async fn every_rejected_mutation_publishes_nothing() {
         "rejected writes changed no head"
     );
 
-    MemoryFilesystem::rename(&fs, "s", "/a.md", "/b.md")
+    MemoryFilesystem::rename_as(&fs, "s", "/a.md", "/b.md", None)
         .await
         .unwrap();
     assert_eq!(
@@ -250,5 +253,5 @@ async fn publish_before_commit_rename(
     to: &str,
 ) -> Result<Memory, MemErr> {
     sink.publish("s", "/");
-    MemoryFilesystem::rename(inner, "s", from, to).await
+    MemoryFilesystem::rename_as(inner, "s", from, to, None).await
 }
