@@ -23,19 +23,24 @@ data:
     error_log /dev/stderr notice;
     events { worker_connections 1024; }
     http {
-      access_log /dev/stdout;
+      # Nonsecret exact identity joins a held finish to its captured container;
+      # Authorization/projected tokens are intentionally absent from this format.
+      log_format worker '$request $status $http_x_awaken_worker_id $http_x_awaken_worker_incarnation';
+      access_log /dev/stdout worker;
       client_body_temp_path /tmp/client_temp;
       proxy_temp_path /tmp/proxy_temp;
       fastcgi_temp_path /tmp/fastcgi_temp;
       uwsgi_temp_path /tmp/uwsgi_temp;
       scgi_temp_path /tmp/scgi_temp;
-      # Test-only failure injection: the final k3d stage uses one exact
-      # non-restarting Pod name. Its terminal ThreadCommit must become durable
-      # before the Worker can acknowledge physical return. Ordinary Pod-bound
-      # Workers and the replacement Pod use the same proxy path.
-      map "$uri|$http_x_awaken_worker_id" $reject_old_native_finish {
+      # Test-only finish-ACK fault: the original Never name remains blocked.
+      # The in-place name is blocked only for canonical registered generation1;
+      # the new container's higher generation uses the same unblocked route.
+      # This selects a fault, never authenticates a Worker or fabricates closure.
+      map "$uri|$http_x_awaken_worker_id|$http_x_awaken_worker_incarnation" $reject_old_native_finish {
         default 0;
         ~^/v1/worker/dispatch/attempt/finish\|k8s:awaken-adr71:native-crash-old: 1;
+        '~^/v1/worker/dispatch/attempt/finish\|k8s:awaken-adr71:native-inplace:[^|]+\|.*generation[^0-9]*1}$' 1;
+        '~^/v1/worker/dispatch/attempt/finish\|k8s:awaken-adr71:native-checkpoint:[^|]+\|.*generation[^0-9]*1}$' 1;
       }
       server {
         listen 3443 ssl;

@@ -229,6 +229,24 @@ k3d_hard_stop_cri_container() {
   return 2
 }
 
+# One deliberate API fault for a caller-owned Pod. This returns only DELETE
+# acceptance: never process closure, lost evidence, a successful Rebuild or a
+# cleanup receipt. UID and RV come from the SAME original metadata observation.
+# Conflicts/404/transport failures remain failures; no re-read or retry is added.
+k3d_delete_exact_pod() {
+  local cluster="${1:-}" namespace="${2:-}" pod="${3:-}" uid="${4:-}" version="${5:-}"
+  k3d_validate_name "$cluster" || return 2
+  [[ -n "$namespace" && -n "$pod" && -n "$uid" && -n "$version" \
+    && "$namespace" != */* && "$pod" != */* ]] || return 2
+  k3d_validate_deadline "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" || return 2
+  # Reuse the existing bounded kubectl budget/standard client and JSON encoder.
+  # No Bearer/key material or Pod response is printed by the fault primitive.
+  python3 -c 'import json,sys; json.dump({"apiVersion":"v1","kind":"DeleteOptions","preconditions":{"uid":sys.argv[1],"resourceVersion":sys.argv[2]}},sys.stdout)' \
+    "$uid" "$version" | run_with_deadline "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" \
+    kubectl --context "k3d-$cluster" --request-timeout="${K3D_DIAGNOSTIC_TIMEOUT_SECONDS}s" \
+    delete --raw "/api/v1/namespaces/$namespace/pods/$pod" -f - >/dev/null
+}
+
 # Capture the exact running node and underlay interface before the fault. Keep
 # this receipt in the caller before any effect, so failed post-observation still
 # leaves enough identity for cleanup. Docker disconnect destroys the interface;
@@ -854,7 +872,49 @@ resolve_cargo_executable() {
     node "$(dirname "${BASH_SOURCE[0]}")/../cargo_binary.mjs" "$@"
 }
 
+# Cause/effect table for the exact fault IO (not a fake Kubernetes authority):
+# D1 complete original metadata -> one standard DELETE with exact UID/RV/body;
+# D2 missing UID/RV or invalid cluster -> no kubectl; D3 conflict/transport failure
+# -> original nonzero and exactly one call, never retry or claim closure.
+k3d_delete_exact_pod_selftest() (
+  local fixture
+  fixture=$(mktemp -d)
+  trap 'rm -f -- "$fixture/args" "$fixture/body" "$fixture/calls"; rmdir -- "$fixture"' EXIT
+  local api_status=0
+  run_with_deadline() { shift; "$@"; }
+  kubectl() {
+    printf '%s\0' "$@" >"$fixture/args"
+    cat >"$fixture/body"
+    printf 'call\n' >>"$fixture/calls"
+    return "$api_status"
+  }
+  k3d_delete_exact_pod awaken-test exact source-pod original-uid original-rv
+  python3 - "$fixture" "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" <<'PYTEST'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+assert root.joinpath('args').read_bytes().split(b'\0')[:-1] == [
+    b'--context', b'k3d-awaken-test',
+    f'--request-timeout={sys.argv[2]}s'.encode(), b'delete', b'--raw',
+    b'/api/v1/namespaces/exact/pods/source-pod', b'-f', b'-']
+assert json.loads(root.joinpath('body').read_bytes()) == {
+    'apiVersion': 'v1', 'kind': 'DeleteOptions',
+    'preconditions': {'uid': 'original-uid', 'resourceVersion': 'original-rv'}}
+PYTEST
+  [[ "$(wc -l <"$fixture/calls")" = 1 ]]
+  ! k3d_delete_exact_pod awaken-test exact source-pod '' original-rv
+  ! k3d_delete_exact_pod awaken-test exact source-pod original-uid ''
+  ! k3d_delete_exact_pod --all exact source-pod original-uid original-rv
+  [[ "$(wc -l <"$fixture/calls")" = 1 ]]
+  for api_status in 41 42; do
+    local result=0 before
+    before=$(wc -l <"$fixture/calls")
+    k3d_delete_exact_pod awaken-test exact source-pod original-uid original-rv || result=$?
+    [[ "$result" = "$api_status" && "$(wc -l <"$fixture/calls")" = "$((before + 1))" ]]
+  done
+)
+
 k3d_harness_selftest() (
+  k3d_delete_exact_pod_selftest
   python3 "$(dirname "${BASH_SOURCE[0]}")/capacity.py" --self-test
   python3 "$(dirname "${BASH_SOURCE[0]}")/test_image_archive.py"
   # Private-context decision table: P1 valid caller-owned path before create
