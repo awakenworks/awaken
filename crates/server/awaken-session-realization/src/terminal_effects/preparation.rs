@@ -41,7 +41,7 @@ impl crate::terminal_effects::TerminalEffects {
                         "terminal cleanup has no installed realization generation",
                     )
                 })?;
-                if !awaken_session_realization_contract::realization_lease_generation_authorizes(current, lease) {
+                if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(current, lease) {
                     return Err(RealizationError::authority_lost(
                         AuthorityLoss::CleanupGenerationStale,
                         "terminal cleanup realization generation was replaced",
@@ -257,7 +257,7 @@ impl crate::terminal_effects::TerminalEffects {
         } else {
             None
         };
-        awaken_session_realization_contract::validate_terminal_no_create_witness(
+        awaken_session_execution_contract::validate_terminal_no_create_witness(
             assignment.environment_creation_not_attempted,
             &state,
             matches!(owner, SessionEnvironmentOwner::Vacant),

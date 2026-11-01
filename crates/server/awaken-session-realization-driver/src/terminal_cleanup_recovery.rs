@@ -16,7 +16,7 @@
 
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_execution_contract::{RealizationEffects, RealizationRuntime, TerminalCleanup};
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     SessionRealizationControlFailure, SessionRealizationDriveError, SessionRealizationTarget,
     SessionTerminalCleanupControl,
 };

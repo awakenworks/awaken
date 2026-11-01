@@ -32,7 +32,7 @@ The named harnesses in the strict gate invoke production pure functions directly
     child invocation also requires its exact committed Open relationship.
   - cancellation delivery is enabled only by a durable cancellation-requested
     relationship.
-- `awaken-session-realization-contract`: all seven Session realization Control
+- `awaken-session-execution-contract`: all seven Session realization Control
     failures map to the exact closed
     disposition table; Runtime Worker effects map NotReady to defer, Retryable
     to relinquish, and Terminal to absorbing settlement, while renewal retires
@@ -55,7 +55,7 @@ The named harnesses in the strict gate invoke production pure functions directly
     cleanup together; Deleting/Deleted replays are inert.
   - a Session tombstone is admitted only for a hidden, terminal aggregate with
     verified cleanup completion.
-- `awaken-session-realization-contract`: Session realization reuses one exact live
+- `awaken-session-execution-contract`: Session realization reuses one exact live
   owner/incarnation; restart or authorized reassignment advances the epoch exactly
   once, and exhaustion fails closed.
 - `awaken-dispatch-contract`
@@ -132,7 +132,7 @@ The named harnesses in the strict gate invoke production pure functions directly
   - a resolved Environment snapshot must retain the selected identity and a
     positive revision; a publication-pinned resolution must also return the
     exact requested revision before the snapshot can be frozen.
-- `awaken-session-realization-contract`: a Worker accepts a frozen Agent publication only when Agent identity,
+- `awaken-session-execution-contract`: a Worker accepts a frozen Agent publication only when Agent identity,
     revision, and runtime identity all match; missing/conflicting pins fail closed.
 - `awaken-file-store`
   - object-store allocation accepts exactly a nonempty normalized bucket/prefix

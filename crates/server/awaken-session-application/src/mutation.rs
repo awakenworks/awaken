@@ -193,7 +193,7 @@ impl From<SessionMutationError> for awaken_session_types::RunError {
 /// Project a canonical mutation failure at the existing realization interface.
 /// Phase commands delegate to this conversion instead of owning error policy.
 impl From<SessionMutationError>
-    for awaken_session_realization_contract::SessionRealizationControlFailure
+    for awaken_session_execution_contract::SessionRealizationControlFailure
 {
     fn from(error: SessionMutationError) -> Self {
         match error {

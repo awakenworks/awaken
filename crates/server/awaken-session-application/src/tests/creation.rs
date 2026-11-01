@@ -34,7 +34,7 @@ impl SessionRuns for RecordingCreateRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_session_execution_contract::ToolPermissionDecision,
+        _decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
         unreachable!("create replay test never resumes")
     }
@@ -87,7 +87,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -100,14 +100,14 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
     async fn install_session_projection(
         &self,
         _thread: &str,
-        _projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        _projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         self.baseline_installs.fetch_add(1, Ordering::SeqCst);
         if matches!(
             mode,
-            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch
-                | awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
+            awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch
+                | awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                     prepare_session: true,
                     ..
                 }
@@ -130,9 +130,9 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
             3 => return Err((RunError::internal("injected unknown projection failure")).into()),
             4 => {
                 return Err(
-                    awaken_session_realization_contract::SessionRealizationEffectFailure::new(
+                    awaken_session_execution_contract::SessionRealizationEffectFailure::new(
                         RunError::unavailable_classified(
-                            awaken_session_realization_contract::ENVIRONMENT_PROVISIONING_CODE,
+                            awaken_session_execution_contract::ENVIRONMENT_PROVISIONING_CODE,
                             "provider still provisioning",
                         ),
                         Some(std::time::Duration::from_secs(6)),
@@ -152,7 +152,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -193,11 +193,8 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCreateRu
     async fn checkpoint_session_environment(
         &self,
         thread: &str,
-        request: awaken_session_execution_contract::__macro_support::SandboxCheckpointRequest,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::CheckpointReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .checkpoint_session_environment(thread, request)
             .await
@@ -206,13 +203,11 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCreateRu
     async fn prepare_checkpoint_source_disposal(
         &self,
         thread: &str,
-        preparation: &awaken_session_execution_contract::__macro_support::SourceReleasePreparationEffect,
-        generation: &awaken_session_execution_contract::__macro_support::SandboxGeneration,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::SourceReleasePreparedReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
             .await
@@ -221,11 +216,9 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCreateRu
     async fn dispose_prepared_checkpoint_source(
         &self,
         thread: &str,
-        disposal: &awaken_session_execution_contract::__macro_support::SourceReleaseDisposal,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::SourceDisposedReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_prepared_checkpoint_source(thread, disposal)
             .await
@@ -233,11 +226,8 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCreateRu
 
     async fn restore_checkpointed_session_environment(
         &self,
-        request: awaken_session_execution_contract::__macro_support::SandboxRestoreRequest,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::RestoreReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .restore_checkpointed_session_environment(request)
             .await
@@ -246,8 +236,8 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCreateRu
     async fn delete_session_checkpoint(
         &self,
         thread: &str,
-        checkpoint: &awaken_session_execution_contract::__macro_support::SandboxCheckpointRef,
-    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
             .await
@@ -256,8 +246,8 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCreateRu
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        transition: &awaken_session_execution_contract::__macro_support::SessionResourceTransition,
-    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .apply_session_inputs(thread, transition)
             .await
@@ -265,11 +255,11 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCreateRu
 
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_execution_contract::__macro_support::SessionRealizationLease,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
-        awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationEffect,
-        awaken_session_execution_contract::__macro_support::RunError,
+        awaken_session_contract::SessionRepositoryPublicationEffect,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .execute_terminal_repository_publication_for_lease(command, lease)
@@ -278,10 +268,10 @@ impl awaken_session_execution_contract::RealizationEffects for RecordingCreateRu
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_execution_contract::__macro_support::SessionTerminalCleanupDisposalEffect,
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<
-        awaken_session_execution_contract::__macro_support::SessionCleanupDisposalReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
+        awaken_session_contract::SessionCleanupDisposalReceipt,
+        awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_terminal_cleanup_for_effect(effect)

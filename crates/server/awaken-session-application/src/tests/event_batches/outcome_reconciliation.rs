@@ -96,7 +96,7 @@ async fn queued_input_before_awaiting_boundary(with_system: bool, legacy: bool) 
                     source_commit_cursor: 1,
                 },
                 &run,
-                awaken_session_execution_contract::SessionAgentRunBoundary::Completed,
+                awaken_session_contract::SessionAgentRunBoundary::Completed,
             )
             .await
             .expect("AQ2 old conservative settlement");

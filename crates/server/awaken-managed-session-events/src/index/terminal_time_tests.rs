@@ -40,9 +40,7 @@ fn terminal_after_idle_interrupt_preserves_the_admitted_prefix() {
                         "idle-interrupt",
                         vec![SessionEventInput::Interrupt(SessionEventInterrupt {
                             requested_target: None,
-                            targets: vec![
-                                awaken_session_execution_contract::SessionThreadTarget::Primary,
-                            ],
+                            targets: vec![awaken_session_contract::SessionThreadTarget::Primary],
                         })],
                     )
                     .unwrap();

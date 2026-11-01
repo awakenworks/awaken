@@ -211,7 +211,7 @@ pub(crate) fn user(text: &str) -> Vec<Message> {
 pub(crate) struct RemoteTerminalCleanupControl {
     pub(crate) assignments: Mutex<
         std::collections::VecDeque<
-            awaken_session_realization_contract::SessionTerminalCleanupAssignment,
+            awaken_session_execution_contract::SessionTerminalCleanupAssignment,
         >,
     >,
     pub(crate) session: Mutex<Option<awaken_session_contract::PersistedSession>>,
@@ -236,9 +236,9 @@ pub(crate) struct RemoteTerminalCleanupControl {
     pub(crate) max_terminal_work_active: AtomicUsize,
     pub(crate) claim_failure_on_call: Mutex<Option<usize>>,
     pub(crate) renewal_failure:
-        Mutex<Option<awaken_session_realization_contract::SessionRealizationControlFailure>>,
+        Mutex<Option<awaken_session_execution_contract::SessionRealizationControlFailure>>,
     pub(crate) claim_targets:
-        Mutex<Vec<awaken_session_realization_contract::SessionRealizationTarget>>,
+        Mutex<Vec<awaken_session_execution_contract::SessionRealizationTarget>>,
     pub(crate) claim_after: Mutex<Vec<Option<awaken_session_types::SessionId>>>,
     pub(crate) renewal_sessions: Mutex<Vec<String>>,
     pub(crate) renewal_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
@@ -250,7 +250,7 @@ pub(crate) struct RemoteTerminalCleanupControl {
     pub(crate) renewals: Mutex<BTreeMap<String, crate::session_resource::SessionRealizationLease>>,
     pub(crate) authority: Mutex<
         Option<(
-            awaken_session_realization_contract::FrozenSessionProjection,
+            awaken_session_execution_contract::FrozenSessionProjection,
             crate::session_resource::SessionRealizationLease,
         )>,
     >,
@@ -265,28 +265,26 @@ impl Drop for ActiveControlCallGuard<'_> {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionRealizationControl
-    for RemoteTerminalCleanupControl
-{
+impl awaken_session_execution_contract::SessionRealizationControl for RemoteTerminalCleanupControl {
     async fn begin_session_realization(
         &self,
-        command: awaken_session_realization_contract::BeginSessionRealization,
+        command: awaken_session_execution_contract::BeginSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         let _ = command;
         Err(self.renewal_failure.lock().unwrap().clone().unwrap_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+            awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
         ))
     }
 
     async fn renew_session_realization(
         &self,
-        command: awaken_session_realization_contract::RenewSessionRealization,
+        command: awaken_session_execution_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         use std::sync::atomic::Ordering;
 
@@ -319,10 +317,10 @@ impl awaken_session_realization_contract::SessionRealizationControl
         let response = {
             let mut renewals = self.renewals.lock().unwrap();
             renewals.get_mut(command.session_id.as_str()).map(|current| {
-                if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+                if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                     current, &command.asserted_lease,
                 ) || command.requested_expires_at_unix_ms < current.expires_at_unix_ms {
-                    Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
+                    Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership)
                 } else {
                     current.expires_at_unix_ms = command.requested_expires_at_unix_ms;
                     Ok(awaken_session_realization::test_support::test_lease_receipt(current.clone()))
@@ -340,15 +338,18 @@ impl awaken_session_realization_contract::SessionRealizationControl
             return response;
         }
 
-        let (projection, current) = self.authority.lock().unwrap().clone().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
-        if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+        let (projection, current) =
+            self.authority.lock().unwrap().clone().ok_or(
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            )?;
+        if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
             &current,
             &command.asserted_lease,
         ) || command.requested_expires_at_unix_ms < current.expires_at_unix_ms
         {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+            );
         }
         let mut renewed = current;
         renewed.expires_at_unix_ms = command.requested_expires_at_unix_ms;
@@ -356,16 +357,14 @@ impl awaken_session_realization_contract::SessionRealizationControl
         let session = session
             .as_mut()
             .filter(|session| session.session_id == command.session_id)
-            .ok_or(
-                awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-            )?;
+            .ok_or(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)?;
         if !session.realization.as_ref().is_some_and(|lease| {
-            awaken_session_realization_contract::realization_lease_generation_authorizes(
+            awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 lease,
                 &command.asserted_lease,
             )
         }) {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership);
         }
         session.realization = Some(renewed.clone());
         *self.authority.lock().unwrap() = Some((projection, renewed.clone()));
@@ -374,43 +373,43 @@ impl awaken_session_realization_contract::SessionRealizationControl
 
     async fn activate_session_realization(
         &self,
-        _command: awaken_session_realization_contract::ActivateSessionRealization,
+        _command: awaken_session_execution_contract::ActivateSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
-        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
     }
 
     async fn acknowledge_session_realization(
         &self,
-        _command: awaken_session_realization_contract::AcknowledgeSessionRealization,
+        _command: awaken_session_execution_contract::AcknowledgeSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
-        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
     }
 
     async fn fail_session_realization(
         &self,
-        _command: awaken_session_realization_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
-        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+        _command: awaken_session_execution_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalCleanupQueue
+impl awaken_session_execution_contract::SessionTerminalCleanupQueue
     for RemoteTerminalCleanupControl
 {
     async fn claim_next_terminal_cleanup(
         &self,
-        target: awaken_session_realization_contract::SessionRealizationTarget,
+        target: awaken_session_execution_contract::SessionRealizationTarget,
         after_session_id: Option<&awaken_session_types::SessionId>,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        Option<awaken_session_execution_contract::SessionTerminalCleanupAssignment>,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         let call = {
             let mut targets = self.claim_targets.lock().unwrap();
@@ -423,7 +422,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
         };
         if *self.claim_failure_on_call.lock().unwrap() == Some(call) {
             return Err(
-                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
                     "injected terminal claim failure".into(),
                 ),
             );
@@ -443,8 +442,8 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
         session_id: &SessionId,
         lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionTerminalCleanupWork>,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        Option<awaken_session_execution_contract::SessionTerminalCleanupWork>,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.events.lock().unwrap().push("cleanup:poll".into());
         let _active = {
@@ -471,14 +470,14 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
         }
         if self.terminal_work_fail_for.lock().unwrap().as_deref() == Some(session_id.as_str()) {
             return Err(
-                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
                     "injected terminal work failure".into(),
                 ),
             );
         }
         if self.terminal_work_not_found.load(Ordering::SeqCst) {
             return Err(
-                awaken_session_realization_contract::SessionRealizationControlFailure::NotFound,
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotFound,
             );
         }
         if self
@@ -492,19 +491,20 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
         let Some(session) = self.session.lock().unwrap().clone() else {
             return Ok(None);
         };
-        let (projection, current) = self.authority.lock().unwrap().clone().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
+        let (projection, current) =
+            self.authority.lock().unwrap().clone().ok_or(
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            )?;
         if session.session_id != session_id
             || session.realization.as_ref() != Some(&current)
-            || !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            || !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 &current, lease,
             )
         {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership);
         }
         let action = session.terminal_cleanup_work_action().map_err(|error| {
-            awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+            awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(
                 error.to_string(),
             )
         })?;
@@ -512,8 +512,8 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
             return Ok(None);
         };
         Ok(Some(
-            awaken_session_realization_contract::SessionTerminalCleanupWork {
-                assignment: awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            awaken_session_execution_contract::SessionTerminalCleanupWork {
+                assignment: awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                     environment_creation_not_attempted: false,
                     session_id: session_id.clone(),
                     projection,
@@ -528,43 +528,46 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalPreparationControl
+impl awaken_session_execution_contract::SessionTerminalPreparationControl
     for RemoteTerminalCleanupControl
 {
     async fn authorize_terminal_cleanup_effect(
         &self,
         effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
-        let authority = self.authority.lock().unwrap().clone().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
-        if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+        let authority =
+            self.authority.lock().unwrap().clone().ok_or(
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            )?;
+        if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
             &authority.1,
             &effect.lease,
         ) {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+            );
         }
         let inherited_provider_disposal = self
             .session
             .lock()
             .unwrap()
             .as_ref()
-            .ok_or(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)?
+            .ok_or(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)?
             .authorize_terminal_cleanup_effect(effect)
             .map_err(|error| {
-                awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(
                     error.to_string(),
                 )
             })?;
         let authorization =
-            awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+            awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
                 effect.clone(),
                 authority.0.workspace_id,
                 inherited_provider_disposal,
-            )?.with_source_dispatch(awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {});
+            )?.with_source_dispatch(awaken_session_execution_contract::SessionTerminalSourceDispatch::Settled {});
         let barrier = self.authorization_barrier.lock().unwrap().clone();
         if let Some((started, proceed)) = barrier {
             started.notify_one();
@@ -577,20 +580,23 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
         &self,
         lease: &crate::session_resource::SessionRealizationLease,
         preparation: awaken_session_contract::SessionCleanupPreparation,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
-        let (projection, current) = self.authority.lock().unwrap().clone().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
-        if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
+        let (projection, current) =
+            self.authority.lock().unwrap().clone().ok_or(
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            )?;
+        if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
             &current, lease,
         ) {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+            );
         }
         let thread_id = preparation.effect.command.thread_id.clone();
         let mut session = self.session.lock().unwrap();
-        let session = session.as_mut().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
+        let session = session
+            .as_mut()
+            .ok_or(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)?;
         let mut candidate = session.clone();
         let admitted = match candidate.record_terminal_cleanup_preparation(
             &projection.workspace_id,
@@ -609,7 +615,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
                         &session.resources,
                     )
                     .map_err(|error| {
-                        awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+                        awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(
                             error.to_string(),
                         )
                     })?;
@@ -626,7 +632,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
             Err(error) => Err(error),
         }
         .map_err(|error| {
-            awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(error.to_string())
+            awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(error.to_string())
         })?;
         *session = admitted;
         self.events
@@ -639,16 +645,17 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalDisposalControl
+impl awaken_session_execution_contract::SessionTerminalDisposalControl
     for RemoteTerminalCleanupControl
 {
     async fn authorize_terminal_cleanup_disposal(
         &self,
         effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
-        let authority = self.authority.lock().unwrap().clone().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
+    ) -> Result<String, awaken_session_execution_contract::SessionRealizationControlFailure> {
+        let authority =
+            self.authority.lock().unwrap().clone().ok_or(
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            )?;
         let exact = self
             .session
             .lock()
@@ -659,12 +666,14 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
                     .authorize_terminal_cleanup_disposal_effect(&authority.0.workspace_id, effect)
                     .is_ok()
             });
-        if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+        if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
             &authority.1,
             &effect.lease,
         ) || !exact
         {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+            );
         }
         Ok(authority.0.workspace_id)
     }
@@ -673,20 +682,20 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
         &self,
         lease: &crate::session_resource::SessionRealizationLease,
         receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
         let current = self
             .authority
             .lock()
             .unwrap()
             .as_ref()
             .map(|(_, lease)| lease.clone())
-            .ok_or(
-                awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-            )?;
-        if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            .ok_or(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)?;
+        if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
             &current, lease,
         ) {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+            );
         }
         let workspace_id = self
             .authority
@@ -694,14 +703,12 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
             .unwrap()
             .as_ref()
             .map(|(projection, _)| projection.workspace_id.clone())
-            .ok_or(
-                awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-            )?;
+            .ok_or(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)?;
         self.session
             .lock()
             .unwrap()
             .as_mut()
-            .ok_or(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)?
+            .ok_or(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)?
             .record_terminal_cleanup_disposal(
                 &workspace_id,
                 lease,
@@ -709,7 +716,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
                 "remote-terminal-test",
             )
             .map_err(|error| {
-                awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(
                     error.to_string(),
                 )
             })?;
@@ -723,7 +730,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
             // The next canonical poll returns Completed (`None`); no Worker-local
             // receipt cache is involved.
             return Err(
-                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
                     "injected disposal response loss".into(),
                 ),
             );
@@ -733,7 +740,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl
+impl awaken_session_execution_contract::SessionTerminalRepositoryPublicationControl
     for RemoteTerminalCleanupControl
 {
     async fn terminal_repository_publication_command(
@@ -741,30 +748,32 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         session_id: &SessionId,
         lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        Option<awaken_session_execution_contract::SessionRepositoryPublicationProjection>,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.events.lock().unwrap().push("publication:poll".into());
-        let (projection, current) = self.authority.lock().unwrap().clone().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
-        let session = self.session.lock().unwrap().clone().ok_or(
-            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-        )?;
+        let (projection, current) =
+            self.authority.lock().unwrap().clone().ok_or(
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            )?;
+        let session =
+            self.session.lock().unwrap().clone().ok_or(
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
+            )?;
         if session.session_id != session_id
             || session.realization.as_ref() != Some(&current)
-            || !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            || !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 &current, lease,
             )
         {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership);
         }
         session
             .terminal_cleanup
             .publication_command(session_id)
             .map(|command| {
                 command.map(|command| {
-                    awaken_session_realization_contract::SessionRepositoryPublicationProjection {
+                    awaken_session_execution_contract::SessionRepositoryPublicationProjection {
                         workspace_id: projection.workspace_id,
                         command,
                         current_lease: current,
@@ -772,7 +781,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
                 })
             })
             .map_err(|error| {
-                awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(
                     error.to_string(),
                 )
             })
@@ -783,30 +792,30 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         session_id: &SessionId,
         lease: &crate::session_resource::SessionRealizationLease,
         receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
         let current = self
             .session
             .lock()
             .unwrap()
             .as_ref()
             .and_then(|session| session.realization.clone())
-            .ok_or(
-                awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-            )?;
-        if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            .ok_or(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)?;
+        if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
             &current, lease,
         ) {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+            );
         }
         self.session
             .lock()
             .unwrap()
             .as_mut()
-            .ok_or(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)?
+            .ok_or(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)?
             .terminal_cleanup
             .record_repository_publication_receipt(session_id, receipt.clone())
             .map_err(|error| {
-                awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(
                     error.to_string(),
                 )
             })?;
@@ -823,35 +832,35 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         session_id: &SessionId,
         lease: &crate::session_resource::SessionRealizationLease,
         rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
         let current = self
             .session
             .lock()
             .unwrap()
             .as_ref()
             .and_then(|session| session.realization.clone())
-            .ok_or(
-                awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
-            )?;
-        if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            .ok_or(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)?;
+        if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
             &current, lease,
         ) {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+            );
         }
         {
             let mut root = self.session.lock().unwrap();
             let session = root.as_mut().ok_or(
-                awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
             )?;
             if session.session_id != *session_id {
                 return Err(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::NotFound,
+                    awaken_session_execution_contract::SessionRealizationControlFailure::NotFound,
                 );
             }
             session
                 .record_repository_publication_rejection(rejection.clone())
                 .map_err(|error| {
-                    awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+                    awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(
                         error.to_string(),
                     )
                 })?;
@@ -866,7 +875,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::ClaimedSessionRealizationControl
+impl awaken_session_execution_contract::ClaimedSessionRealizationControl
     for RemoteTerminalCleanupControl
 {
     async fn resume_frozen(
@@ -878,8 +887,8 @@ impl awaken_session_realization_contract::ClaimedSessionRealizationControl
         >,
         _continuation: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionRealizationDirective>,
-        awaken_session_realization_contract::ClaimedSessionControlError,
+        Option<awaken_session_execution_contract::SessionRealizationDirective>,
+        awaken_session_execution_contract::ClaimedSessionControlError,
     > {
         Ok(None)
     }

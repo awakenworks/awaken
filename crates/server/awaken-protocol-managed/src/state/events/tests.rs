@@ -36,6 +36,7 @@ mod warm_cold_equivalence;
 use super::*;
 use crate::state::test_support::{RehydrateFake, ephemeral_session_repo};
 use async_trait::async_trait;
+use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -46,7 +47,7 @@ use awaken_managed_session_events::{
 };
 use awaken_session_application_contract::Pending;
 use awaken_session_execution_contract::OutcomeIteration;
-use awaken_session_execution_contract::{SessionRuns, ToolPermissionDecision};
+use awaken_session_execution_contract::SessionRuns;
 use awaken_session_types::RunError;
 use awaken_tool_contract::tool_batch::ToolBatch;
 use axum::body::Body;
@@ -3134,7 +3135,7 @@ async fn qualified_event_id_routes_every_child_tool_reply_variant() {
             );
             match (&replies[0].reply, label) {
                 (
-                    SessionThreadToolReply::Confirm(ToolPermissionDecision::Allow { note: None }),
+                    SessionThreadToolReply::Confirm(PermissionDecision::Allow { note: None }),
                     "confirmation",
                 )
                 | (
@@ -12580,7 +12581,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                 let reply = state.application.event_batches().append_owned_session_event_batch( &awaken_session_application::SessionRootReads::authorize(     &*state.application.queries(),     &state.resolve_owner(&session.id).await.unwrap().unwrap(),     &SessionId::from(&session.id), ) .await .unwrap(),
                     vec![SessionEventInput::ToolReply(awaken_session_contract::SessionEventToolReply {
                         tool_request_event_id: first_issued.iter().find(|event| event.type_str() == "agent.tool_use").unwrap().id.clone(),
-                        target: awaken_session_execution_contract::SessionThreadTarget::Primary,
+                        target: awaken_session_contract::SessionThreadTarget::Primary,
                         expected_run_id: run.clone(), expected_correlation_id: "ticket:test-call".into(),
                         expected_thread_version: Some(2), answered_pending_commit_cursor: Some(2),
                         runtime_tool_use_id: "test-call".into(),

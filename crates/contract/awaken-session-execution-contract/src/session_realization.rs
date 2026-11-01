@@ -67,7 +67,8 @@ pub use terminal_cleanup_authorization::{
     terminal_cleanup_worker_requirements, validate_terminal_no_create_witness,
 };
 
-pub use awaken_session_configuration_contract::resource::{
+#[cfg(test)]
+use awaken_session_configuration_contract::resource::{
     realization_lease_authorizes, realization_lease_generation_authorizes,
     realization_lease_is_live_at,
 };

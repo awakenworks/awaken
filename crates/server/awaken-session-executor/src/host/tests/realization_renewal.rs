@@ -263,7 +263,7 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
 /// due threshold, so every row enters Control without a rounding-boundary race.
 #[tokio::test]
 async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
-    use awaken_session_realization_contract::SessionRealizationControlFailure as Failure;
+    use awaken_session_execution_contract::SessionRealizationControlFailure as Failure;
     for failure in [
         None,
         Some(Failure::Unavailable("offline".into())),
@@ -397,7 +397,7 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
     for replaced in [false, true] {
         let control = Arc::new(RemoteTerminalCleanupControl::default());
         *control.renewal_failure.lock().unwrap() = Some(
-            awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership,
+            awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
         );
         let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
             .await
@@ -570,7 +570,7 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
      */
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     *control.renewal_failure.lock().unwrap() =
-        Some(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+        Some(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership);
     let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_session_realization_control(control.clone())
@@ -934,7 +934,7 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
     // The barrier exercises the production renewal completion and revocation
     // paths, not a duplicate lease reducer. Preserving B does not authorize a
     // model request: the exact dispatch/Work checks remain mandatory there.
-    use awaken_session_realization_contract::SessionRealizationControlFailure as Failure;
+    use awaken_session_execution_contract::SessionRealizationControlFailure as Failure;
     let mut violations = Vec::new();
     for (rule, failure, replacement, expired) in [
         ("P1", None, "generation", false),

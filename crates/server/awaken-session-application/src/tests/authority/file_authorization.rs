@@ -4,7 +4,7 @@ use crate::tests::{
     persisted,
 };
 use awaken_session_contract::{LifecycleOutbox as _, SessionRepositoryReads as _};
-use awaken_session_realization_contract::SessionFileReadAuthorization as _;
+use awaken_session_execution_contract::SessionFileReadAuthorization as _;
 use awaken_session_types::SessionId;
 use std::sync::Arc;
 

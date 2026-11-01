@@ -21,7 +21,7 @@ fn change(app: &SessionApplication, other: Arc<dyn DispatchOperationalFeed>) {
 ```compile_fail,E0599
 use std::sync::Arc;
 use awaken_session_application::SessionApplication;
-use awaken_session_realization_contract::SessionPreparationPlacement;
+use awaken_session_execution_contract::SessionPreparationPlacement;
 fn change(app: &SessionApplication, other: Arc<dyn SessionPreparationPlacement>) {
     app.set_session_preparation_placement(other);
 }

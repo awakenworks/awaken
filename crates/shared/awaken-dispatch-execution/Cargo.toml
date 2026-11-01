@@ -13,7 +13,6 @@ authority = "dispatch-execution"
 
 [dependencies]
 awaken-sync.workspace = true
-awaken-session-realization-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-authority-clock.workspace = true

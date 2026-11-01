@@ -6,7 +6,7 @@
 use crate::realization_error::RealizationError;
 use awaken_provisioning_contract as pc;
 use awaken_resource_contract::ArtifactPublicationError;
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 use std::sync::Arc;
 
 /// A denied installed-Session read leaves the Artifact authority unknown; the

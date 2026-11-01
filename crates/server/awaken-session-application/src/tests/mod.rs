@@ -51,8 +51,8 @@ async fn install_complete_test_projection<
 >(
     runtime: &R,
     thread: &str,
-    projection: awaken_session_realization_contract::FrozenSessionProjection,
-    mode: awaken_session_realization_contract::SessionProjectionInstallMode,
+    projection: awaken_session_execution_contract::FrozenSessionProjection,
+    mode: awaken_session_execution_contract::SessionProjectionInstallMode,
 ) -> Result<(), RunError> {
     if thread.is_empty()
         || projection.workspace_id.is_empty()
@@ -67,7 +67,7 @@ async fn install_complete_test_projection<
     // exactly that canonical transition through the production two-argument
     // port, with no test-only reconstruction or legacy compatibility path.
     let transition = projection.resource_transition(
-        awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+        awaken_session_execution_contract::FrozenResourceTransitionUse::ApplyEffects,
     )?;
     runtime.apply_session_inputs(thread, &transition).await?;
     if mode.adopts_resident_environment()
@@ -151,10 +151,10 @@ enum ReplyRuntimeOutcome {
 }
 
 struct RecordingReplyRuntime {
-    activity: awaken_session_execution_contract::SessionThreadToolReplyActivity,
+    activity: awaken_session_contract::SessionThreadToolReplyActivity,
     outcome: ReplyRuntimeOutcome,
     observed_sinks: AtomicUsize,
-    deliveries: Mutex<Vec<awaken_session_execution_contract::SessionThreadToolReplyDelivery>>,
+    deliveries: Mutex<Vec<awaken_session_contract::SessionThreadToolReplyDelivery>>,
     boundaries: RecordingBoundaries,
 }
 
@@ -206,7 +206,7 @@ struct RecordingAgentAdmissionRuntime {
     generic_recovery_available: AtomicBool,
     lifecycle_visible: AtomicBool,
     source_valid: AtomicBool,
-    installed_projections: Mutex<Vec<awaken_session_realization_contract::FrozenSessionProjection>>,
+    installed_projections: Mutex<Vec<awaken_session_execution_contract::FrozenSessionProjection>>,
     projection_failure: AtomicBool,
 }
 
@@ -579,7 +579,7 @@ impl RecordingBoundaryBudgetRuntime {
 impl RecordingReplyRuntime {
     fn new(outcome: ReplyRuntimeOutcome) -> Self {
         Self {
-            activity: awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
+            activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
                 prior_epoch: Some(1),
             },
             outcome,
@@ -610,7 +610,7 @@ struct RecordingCleanupRuntime {
     close_publication_source: AtomicBool,
     terminal_effect_order: Mutex<Vec<String>>,
     terminal_assignments:
-        Mutex<Vec<awaken_session_realization_contract::SessionTerminalCleanupAssignment>>,
+        Mutex<Vec<awaken_session_execution_contract::SessionTerminalCleanupAssignment>>,
     acknowledged_effects: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupEffect>>,
     acknowledged_completed: Mutex<Vec<(String, crate::session_resource::SessionRealizationLease)>>,
     ordinary_resource_apply_calls: AtomicUsize,
@@ -796,7 +796,7 @@ impl SessionRuns for NoopRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_session_execution_contract::ToolPermissionDecision,
+        _decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
         Err(RunError::internal("unused test runtime"))
     }
@@ -843,7 +843,7 @@ impl awaken_session_execution_contract::RealizationRuntime for NoopRuntime {
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -856,9 +856,9 @@ impl awaken_session_execution_contract::RealizationRuntime for NoopRuntime {
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         install_complete_test_projection(self, thread, projection, mode)
             .await
             .map_err(Into::into)
@@ -872,7 +872,7 @@ impl awaken_session_execution_contract::RealizationRuntime for NoopRuntime {
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -917,11 +917,8 @@ impl awaken_session_execution_contract::RealizationEffects for NoopRuntime {
     async fn checkpoint_session_environment(
         &self,
         thread: &str,
-        request: awaken_session_execution_contract::__macro_support::SandboxCheckpointRequest,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::CheckpointReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .checkpoint_session_environment(thread, request)
             .await
@@ -930,13 +927,11 @@ impl awaken_session_execution_contract::RealizationEffects for NoopRuntime {
     async fn prepare_checkpoint_source_disposal(
         &self,
         thread: &str,
-        preparation: &awaken_session_execution_contract::__macro_support::SourceReleasePreparationEffect,
-        generation: &awaken_session_execution_contract::__macro_support::SandboxGeneration,
+        preparation: &awaken_session_contract::SourceReleasePreparationEffect,
+        generation: &awaken_session_contract::SandboxGeneration,
         source_binding: &str,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::SourceReleasePreparedReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+    ) -> Result<awaken_session_contract::SourceReleasePreparedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
             .await
@@ -945,11 +940,9 @@ impl awaken_session_execution_contract::RealizationEffects for NoopRuntime {
     async fn dispose_prepared_checkpoint_source(
         &self,
         thread: &str,
-        disposal: &awaken_session_execution_contract::__macro_support::SourceReleaseDisposal,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::SourceDisposedReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        disposal: &awaken_session_contract::SourceReleaseDisposal,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_prepared_checkpoint_source(thread, disposal)
             .await
@@ -957,11 +950,8 @@ impl awaken_session_execution_contract::RealizationEffects for NoopRuntime {
 
     async fn restore_checkpointed_session_environment(
         &self,
-        request: awaken_session_execution_contract::__macro_support::SandboxRestoreRequest,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::RestoreReceipt,
-        awaken_session_execution_contract::__macro_support::RunError,
-    > {
+        request: awaken_provisioning_contract::SandboxRestoreRequest,
+    ) -> Result<awaken_session_contract::RestoreReceipt, awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .restore_checkpointed_session_environment(request)
             .await
@@ -970,8 +960,8 @@ impl awaken_session_execution_contract::RealizationEffects for NoopRuntime {
     async fn delete_session_checkpoint(
         &self,
         thread: &str,
-        checkpoint: &awaken_session_execution_contract::__macro_support::SandboxCheckpointRef,
-    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .delete_session_checkpoint(thread, checkpoint)
             .await
@@ -980,8 +970,8 @@ impl awaken_session_execution_contract::RealizationEffects for NoopRuntime {
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        transition: &awaken_session_execution_contract::__macro_support::SessionResourceTransition,
-    ) -> Result<(), awaken_session_execution_contract::__macro_support::RunError> {
+        transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,
+    ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .apply_session_inputs(thread, transition)
             .await
@@ -1080,7 +1070,7 @@ impl awaken_session_execution_contract::TerminalCleanup for NoopRuntime {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
-        authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        authorization: awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         authorization
             .verify_for(&effect)
@@ -1142,8 +1132,8 @@ impl awaken_session_execution_contract::TerminalCleanup for NoopRuntime {
 
     async fn install_terminal_cleanup_assignment(
         &self,
-        _assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
-        _proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        _assignment: &awaken_session_execution_contract::SessionTerminalCleanupAssignment,
+        _proof: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         Ok(())
     }
@@ -1214,7 +1204,7 @@ impl SessionRuns for RecordingReplyRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_session_execution_contract::ToolPermissionDecision,
+        _decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
         Err(RunError::internal("unused reply test runtime"))
     }
@@ -1261,7 +1251,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingReplyRun
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -1274,9 +1264,9 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingReplyRun
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         install_complete_test_projection(self, thread, projection, mode)
             .await
             .map_err(Into::into)
@@ -1290,7 +1280,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingReplyRun
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -1462,7 +1452,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for RecordingReplyR
 
     async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), RunError> {
         self.deliveries.lock().unwrap().push(delivery);
         match self.outcome {
@@ -1474,7 +1464,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for RecordingReplyR
 
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
         if stream_sink.is_some() {
@@ -1600,8 +1590,8 @@ impl awaken_session_execution_contract::SessionCoordinationReads for RecordingRe
 
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, RunError> {
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, RunError> {
         if command.tool_use_id != "reply-tool"
             || command.expected_run_id.0 != "reply-run"
             || command.expected_correlation_id != "reply-correlation"
@@ -1610,12 +1600,10 @@ impl awaken_session_execution_contract::SessionCoordinationReads for RecordingRe
                 "reply does not match the committed Awaiting ticket",
             ));
         }
-        Ok(
-            awaken_session_execution_contract::SessionThreadToolReplyFence {
-                activity: self.activity.clone(),
-                already_applied: false,
-            },
-        )
+        Ok(awaken_session_contract::SessionThreadToolReplyFence {
+            activity: self.activity.clone(),
+            already_applied: false,
+        })
     }
 
     /// Validate one model-facing Agent command against the source Run's exact
@@ -1852,7 +1840,7 @@ impl SessionRuns for RecordingAgentAdmissionRuntime {
         &self,
         thread: &str,
         tool_use_id: &str,
-        decision: awaken_session_execution_contract::ToolPermissionDecision,
+        decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
         NoopRuntime.resume(thread, tool_use_id, decision).await
     }
@@ -1896,7 +1884,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdm
 
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -1909,9 +1897,9 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdm
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         self.installed_projections
             .lock()
             .unwrap()
@@ -1927,7 +1915,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdm
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -2114,7 +2102,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for RecordingAgentA
     /// through the Session-affine claim-fenced resume/commit boundary.
     async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .reply_session_thread_tool(delivery)
@@ -2129,7 +2117,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for RecordingAgentA
     /// truth. No inline executor is authorized by this observation policy.
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
     {
@@ -2282,11 +2270,9 @@ impl awaken_session_execution_contract::SessionCoordinationReads
     /// applying the reply so a concurrent resume or later Run fails closed.
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<
-        awaken_session_execution_contract::SessionThreadToolReplyFence,
-        awaken_session_types::RunError,
-    > {
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .session_thread_tool_reply_fence(command)
             .await
@@ -2473,7 +2459,7 @@ impl SessionRuns for RecordingBoundaryBudgetRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_session_execution_contract::ToolPermissionDecision,
+        _decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
         Err(RunError::internal("unused boundary budget test runtime"))
     }
@@ -2518,7 +2504,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingBoundary
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -2531,9 +2517,9 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingBoundary
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         install_complete_test_projection(self, thread, projection, mode)
             .await
             .map_err(Into::into)
@@ -2547,7 +2533,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingBoundary
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -2720,7 +2706,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for RecordingBounda
     /// through the Session-affine claim-fenced resume/commit boundary.
     async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .reply_session_thread_tool(delivery)
@@ -2735,7 +2721,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for RecordingBounda
     /// truth. No inline executor is authorized by this observation policy.
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
     {
@@ -2883,11 +2869,9 @@ impl awaken_session_execution_contract::SessionCoordinationReads
     /// applying the reply so a concurrent resume or later Run fails closed.
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<
-        awaken_session_execution_contract::SessionThreadToolReplyFence,
-        awaken_session_types::RunError,
-    > {
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .session_thread_tool_reply_fence(command)
             .await
@@ -3139,7 +3123,7 @@ impl SessionRuns for RecordingCleanupRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_session_execution_contract::ToolPermissionDecision,
+        _decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
         Err(RunError::internal("unused test runtime"))
     }
@@ -3184,7 +3168,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCleanupR
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -3197,9 +3181,9 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCleanupR
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         install_complete_test_projection(self, thread, projection, mode)
             .await
             .map_err(Into::into)
@@ -3213,7 +3197,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCleanupR
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -3403,7 +3387,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for RecordingCleanu
     /// through the Session-affine claim-fenced resume/commit boundary.
     async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .reply_session_thread_tool(delivery)
@@ -3418,7 +3402,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for RecordingCleanu
     /// truth. No inline executor is authorized by this observation policy.
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
     {
@@ -3526,11 +3510,9 @@ impl awaken_session_execution_contract::SessionCoordinationReads for RecordingCl
     /// applying the reply so a concurrent resume or later Run fails closed.
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<
-        awaken_session_execution_contract::SessionThreadToolReplyFence,
-        awaken_session_types::RunError,
-    > {
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .session_thread_tool_reply_fence(command)
             .await
@@ -4696,7 +4678,7 @@ impl awaken_worker_contract::WorkerIncarnationSource for RecordingWorkerObservat
 }
 
 fn terminal_cleanup_worker(
-    target: &awaken_session_realization_contract::SessionRealizationTarget,
+    target: &awaken_session_execution_contract::SessionRealizationTarget,
     manifest: awaken_worker_contract::WorkerManifest,
 ) -> awaken_worker_contract::RegisteredWorker {
     let identity = awaken_worker_contract::WorkerIdentity::from_lease_owner(

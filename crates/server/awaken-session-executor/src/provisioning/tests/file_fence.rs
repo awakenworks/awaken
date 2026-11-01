@@ -60,7 +60,7 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
     // source read. No second File-specific fence may be constructed downstream.
     use crate::ResourceOperationFence as Fence;
     use awaken_dispatch_contract::RunClaim;
-    use awaken_session_realization_contract::SessionResourceMaterializationIntent as Intent;
+    use awaken_session_execution_contract::SessionResourceMaterializationIntent as Intent;
 
     let input = session_resource::ResolvedInput {
         created_at_unix_ms: None,

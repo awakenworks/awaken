@@ -416,8 +416,9 @@ impl SessionPersistence {
 /// Z2d: ticket results remain on the original Runtime role.
 ///
 /// ```
-/// use awaken_session_execution_contract::{SessionRuns, ToolPermissionDecision};
-/// async fn existing_role(runs: &dyn SessionRuns, decision: ToolPermissionDecision) {
+/// use awaken_agent_contract::agent::awaiting::PermissionDecision;
+/// use awaken_session_execution_contract::SessionRuns;
+/// async fn existing_role(runs: &dyn SessionRuns, decision: PermissionDecision) {
 ///     let _ = runs.resume("thread", "call", decision).await;
 ///     let _ = runs.resume_custom("thread", "call", Vec::new(), false).await;
 /// }

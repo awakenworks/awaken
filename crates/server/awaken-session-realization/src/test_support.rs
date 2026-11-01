@@ -10,8 +10,8 @@
 use crate::realization_error::RealizationError;
 pub fn test_lease_receipt(
     lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-) -> awaken_session_realization_contract::SessionRealizationLeaseReceipt {
-    awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+) -> awaken_session_execution_contract::SessionRealizationLeaseReceipt {
+    awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
         lease,
         wall_clock_now_ms(),
     )
@@ -20,7 +20,7 @@ pub fn test_lease_receipt(
 
 pub fn test_observed_lease(
     lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-) -> awaken_session_realization_contract::ObservedSessionRealizationLease {
+) -> awaken_session_execution_contract::ObservedSessionRealizationLease {
     let started = awaken_authority_clock::authority_proof_started().unwrap();
     test_lease_receipt(lease).observed(started)
 }
@@ -30,9 +30,9 @@ pub fn test_observed_lease(
 /// returning it. This is never the fallback for a failed live fixture.
 pub fn test_expired_observed_lease(
     lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
-) -> awaken_session_realization_contract::ObservedSessionRealizationLease {
+) -> awaken_session_execution_contract::ObservedSessionRealizationLease {
     let started = awaken_authority_clock::authority_proof_started().unwrap();
-    let proof = awaken_session_realization_contract::SessionRealizationLeaseReceipt {
+    let proof = awaken_session_execution_contract::SessionRealizationLeaseReceipt {
         lease,
         remaining_ms: std::num::NonZeroU64::new(1).unwrap(),
     }
@@ -208,13 +208,13 @@ impl crate::session_realizations::SessionRealizationSource for InMemorySessionRe
     ) -> futures_util::future::BoxFuture<
         'a,
         Result<
-            awaken_session_realization_contract::SessionRealizationPermit,
+            awaken_session_execution_contract::SessionRealizationPermit,
             crate::realization_error::RealizationLock,
         >,
     > {
         Box::pin(async move {
             Ok(
-                awaken_session_realization_contract::SessionRealizationPermit::acquire(
+                awaken_session_execution_contract::SessionRealizationPermit::acquire(
                     &awaken_session_types::SessionId::from(session),
                     || {
                         let mut registry =

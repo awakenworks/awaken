@@ -108,14 +108,9 @@ impl SessionSourceDispatchObservation {
     /// promoting it to complete execution or business-effect closure.
     pub fn terminal_source_dispatch(
         self,
-    ) -> Result<
-        awaken_session_realization_contract::SessionTerminalSourceDispatch,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
-    > {
+    ) -> Result<crate::SessionTerminalSourceDispatch, crate::SessionRealizationControlFailure> {
         use crate::SessionExecutionRecoveryGap as Gap;
-        use awaken_session_realization_contract::{
-            SessionRealizationControlFailure, SessionTerminalSourceDispatch as Source,
-        };
+        use crate::{SessionRealizationControlFailure, SessionTerminalSourceDispatch as Source};
         match self {
             Self::Settled => Ok(Source::Settled {}),
             Self::Pending => Ok(Source::Pending {}),
@@ -249,9 +244,7 @@ mod recovery_observation_tests {
         use crate::{
             SessionExecutionRecoveryGap as Gap, SessionSourceDispatchObservation as Observation,
         };
-        use awaken_session_realization_contract::{
-            SessionRealizationControlFailure, SessionTerminalSourceDispatch as Source,
-        };
+        use crate::{SessionRealizationControlFailure, SessionTerminalSourceDispatch as Source};
         let closed = Observation::Settled;
         assert_eq!(
             closed.terminal_source_dispatch().unwrap(),

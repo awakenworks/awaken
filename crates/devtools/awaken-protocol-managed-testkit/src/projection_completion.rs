@@ -24,8 +24,8 @@ pub fn observe_realization_request()
 /// recreating a partial projection or silently accepting empty coordinates.
 pub fn complete_session_projection_init(
     thread: &str,
-    projection: &awaken_session_realization_contract::FrozenSessionProjection,
-    mode: &awaken_session_realization_contract::SessionProjectionInstallMode,
+    projection: &awaken_session_execution_contract::FrozenSessionProjection,
+    mode: &awaken_session_execution_contract::SessionProjectionInstallMode,
 ) -> Result<
     Option<awaken_session_configuration_contract::SessionInit>,
     awaken_session_types::RunError,
@@ -47,7 +47,7 @@ pub fn complete_session_projection_init(
 /// one-stage cleanup path or silently ignoring the effect echoed by Control.
 pub fn complete_terminal_cleanup_preparation(
     effect: &awaken_session_contract::SessionTerminalCleanupEffect,
-    authorization: &awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+    authorization: &awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
 ) -> Result<awaken_session_contract::SessionCleanupPreparation, awaken_session_types::RunError> {
     authorization
         .verify_for(effect)

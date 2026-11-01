@@ -28,7 +28,7 @@ impl StagingAdmission {
         match self {
             Self::Assigned => root == Some(true),
             Self::Direct => root.unwrap_or_else(|| {
-                awaken_session_realization_contract::realization_lease_is_live_at(
+                awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                     generation.lease_expires_at_unix_ms(),
                     now,
                 )

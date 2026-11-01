@@ -11,15 +11,14 @@ use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
 use awaken_managed_session_events::SEND_MESSAGE_TOOL_ID as SEND_MESSAGE;
 use awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE;
 use awaken_session_application_contract::Pending;
+use awaken_session_contract::SessionThreadTarget;
+#[cfg(test)]
+use awaken_session_contract::SessionThreadToolReply;
 use awaken_session_contract::{
     SessionEventCommand, SessionEventInput, SessionEventInterrupt, SessionEventToolReply,
     SessionEventToolReplyKind, SessionOutcomeRubric,
 };
-#[cfg(test)]
-use awaken_session_execution_contract::SessionThreadToolReply;
-use awaken_session_execution_contract::{
-    CoordinatedThreadLink, CoordinatedThreadTarget, SessionThreadTarget,
-};
+use awaken_session_execution_contract::{CoordinatedThreadLink, CoordinatedThreadTarget};
 
 const MANAGED_MULTIAGENT_EVENT_ID_PREFIX: &str = "magent_v1_";
 

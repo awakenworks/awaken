@@ -145,7 +145,7 @@ fn retention_roles(host: &crate::ExecutorComponents) -> crate::WorkerRoles {
 struct SourceRetentionFixture {
     host: Arc<crate::ExecutorComponents>,
     roles: crate::WorkerRoles,
-    projection: awaken_session_realization_contract::FrozenSessionProjection,
+    projection: awaken_session_execution_contract::FrozenSessionProjection,
     owner: BoundSessionEnvironment,
     events: Arc<Mutex<Vec<&'static str>>>,
 }

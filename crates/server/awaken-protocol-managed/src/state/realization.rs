@@ -5,7 +5,7 @@
 
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
-use awaken_session_realization_contract::SessionRealizationControlFailure;
+use awaken_session_execution_contract::SessionRealizationControlFailure;
 #[cfg(test)]
 use awaken_session_types::RunError;
 
@@ -21,10 +21,10 @@ impl ManagedState {
     }
 
     pub(super) fn map_realization_application_error(
-        error: awaken_session_realization_contract::SessionRealizationDriveError,
+        error: awaken_session_execution_contract::SessionRealizationDriveError,
     ) -> StateError {
         match error {
-            awaken_session_realization_contract::SessionRealizationDriveError::Control(error) => {
+            awaken_session_execution_contract::SessionRealizationDriveError::Control(error) => {
                 Self::map_realization_failure(error)
             }
             error => StateError::Run(error.into()),
@@ -35,6 +35,7 @@ impl ManagedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::awaiting::PermissionDecision;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_credential_contract::{
         CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
@@ -45,8 +46,8 @@ mod tests {
         SessionNetworkPolicy,
     };
     use awaken_session_contract::{IdempotencyRecord, SessionResourceState};
-    use awaken_session_execution_contract::{SessionRuns, ToolPermissionDecision};
-    use awaken_session_realization_contract::{
+    use awaken_session_execution_contract::SessionRuns;
+    use awaken_session_execution_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
         SessionRealizationControl,
@@ -76,7 +77,7 @@ mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: ToolPermissionDecision,
+            _decision: PermissionDecision,
         ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
@@ -132,7 +133,7 @@ mod tests {
         /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
         async fn renew_session_realization_projections(
             &self,
-            control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+            control: &dyn awaken_session_execution_contract::SessionRealizationControl,
             owner: &str,
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -145,9 +146,9 @@ mod tests {
         async fn install_session_projection(
             &self,
             thread: &str,
-            projection: awaken_session_realization_contract::FrozenSessionProjection,
-            mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-        ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>
+            projection: awaken_session_execution_contract::FrozenSessionProjection,
+            mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+        ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure>
         {
             awaken_protocol_managed_testkit::complete_session_projection_init(
                 thread,
@@ -160,7 +161,7 @@ mod tests {
         async fn renew_session_realization_lease(
             &self,
             _thread: &str,
-            _lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+            _lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
         ) -> Result<(), RunError> {
             Ok(())
         }
@@ -467,7 +468,7 @@ mod tests {
         // | Q14 | activate pending | exact | exact prepared revision | - | commit that Resource generation (covered by Q6) |
         // | Q15 | renew with stale asserted epoch | stale | - | - | fenced/no mutation (covered by the application contract table) |
         let (state, repo) = harness("session-phase").await;
-        let target = awaken_session_realization_contract::SessionRealizationTarget {
+        let target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX - 2,
@@ -527,7 +528,7 @@ mod tests {
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-phase".into(),
-                target: awaken_session_realization_contract::SessionRealizationTarget {
+                target: awaken_session_execution_contract::SessionRealizationTarget {
                     owner: "worker-b".into(),
                     ..target
                 },
@@ -904,7 +905,7 @@ mod tests {
         // | O2 | live | same | new | claim epoch N+1 |
         // | O3 | live | other | any | StaleOwnership |
         let (state, repo) = harness("session-owner-restart").await;
-        let target = awaken_session_realization_contract::SessionRealizationTarget {
+        let target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX,
@@ -938,7 +939,7 @@ mod tests {
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-owner-restart".into(),
-                target: awaken_session_realization_contract::SessionRealizationTarget {
+                target: awaken_session_execution_contract::SessionRealizationTarget {
                     runtime_incarnation: "worker-a/incarnation-2".into(),
                     ..target.clone()
                 },
@@ -976,7 +977,7 @@ mod tests {
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-owner-restart".into(),
-                target: awaken_session_realization_contract::SessionRealizationTarget {
+                target: awaken_session_execution_contract::SessionRealizationTarget {
                     owner: "worker-b".into(),
                     runtime_incarnation: "worker-b/incarnation-1".into(),
                     ..target
@@ -1008,7 +1009,7 @@ mod tests {
         baseline_only.resources = Default::default();
         baseline_only.mcp = SessionMcpAttachmentSet::default();
         let (baseline_state, _) = harness_for(baseline_only).await;
-        let target = awaken_session_realization_contract::SessionRealizationTarget {
+        let target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX,
@@ -1159,7 +1160,7 @@ mod tests {
                 .begin_session_realization(BeginSessionRealization {
                     expected_resources: None,
                     session_id: "session-failed".into(),
-                    target: awaken_session_realization_contract::SessionRealizationTarget {
+                    target: awaken_session_execution_contract::SessionRealizationTarget {
                         owner: "worker-a".into(),
                         runtime_incarnation: "worker-a/incarnation-2".into(),
                         lease_expires_at_unix_ms: u64::MAX,

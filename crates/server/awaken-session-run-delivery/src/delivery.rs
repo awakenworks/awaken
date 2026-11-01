@@ -38,11 +38,11 @@ use awaken_session_configuration_contract::resource::binding_checks::verify_mani
 use awaken_session_configuration_contract::skill_delivery::{
     load_pinned_skills, skill_store_run_error,
 };
+use awaken_session_execution_contract::ResourceOperationFence;
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
     SessionRunReservation,
 };
-use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_types::RunError;
 
 use crate::session_run_activation::{activate_session_run_reservation, read_settled_phase};

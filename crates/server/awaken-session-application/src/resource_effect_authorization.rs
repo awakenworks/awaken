@@ -14,7 +14,7 @@ use awaken_session_contract::{
     SessionEnvironmentReceiptError, SessionMemoryReconciliationError, SessionTerminalMemoryIntent,
     SessionTerminalMemoryTarget,
 };
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     SessionCheckpointArtifactControl, SessionRealizationControlFailure,
     SessionResourceMaterializationControl, SessionResourceMaterializationIntent,
     SessionResourceMaterializationTarget, SessionTerminalMemoryControl,
@@ -35,7 +35,7 @@ pub(crate) fn require_live_root_lease(
     now_ms: u64,
 ) -> Result<(), SessionRealizationControlFailure> {
     if session.realization.as_ref().is_some_and(|current| {
-        awaken_session_realization_contract::realization_lease_is_live_at(
+        awaken_session_configuration_contract::resource::realization_lease_is_live_at(
             current.expires_at_unix_ms,
             now_ms,
         )
@@ -54,7 +54,7 @@ pub(crate) fn require_live_root_lease(
 /// ```
 /// use std::sync::Arc;
 /// use awaken_session_application::{SessionApplication, SessionResourceEffectAuthorization};
-/// use awaken_session_realization_contract::{
+/// use awaken_session_execution_contract::{
 ///     SessionCheckpointArtifactControl, SessionResourceMaterializationControl,
 ///     SessionTerminalMemoryControl,
 /// };
@@ -69,21 +69,21 @@ pub(crate) fn require_live_root_lease(
 ///
 /// ```compile_fail,E0277
 /// use awaken_session_application::SessionApplication;
-/// use awaken_session_realization_contract::SessionResourceMaterializationControl;
+/// use awaken_session_execution_contract::SessionResourceMaterializationControl;
 /// fn role<T: SessionResourceMaterializationControl>() {}
 /// role::<SessionApplication>();
 /// ```
 ///
 /// ```compile_fail,E0277
 /// use awaken_session_application::SessionApplication;
-/// use awaken_session_realization_contract::SessionCheckpointArtifactControl;
+/// use awaken_session_execution_contract::SessionCheckpointArtifactControl;
 /// fn role<T: SessionCheckpointArtifactControl>() {}
 /// role::<SessionApplication>();
 /// ```
 ///
 /// ```compile_fail,E0277
 /// use awaken_session_application::SessionApplication;
-/// use awaken_session_realization_contract::SessionTerminalMemoryControl;
+/// use awaken_session_execution_contract::SessionTerminalMemoryControl;
 /// fn role<T: SessionTerminalMemoryControl>() {}
 /// role::<SessionApplication>();
 /// ```
@@ -130,7 +130,7 @@ impl SessionResourceMaterializationControl for SessionResourceEffectAuthorizatio
         // and must not invalidate an in-flight immutable Resource read. Exact
         // equality here incorrectly turned every heartbeat into ownership loss.
         if !session.realization.as_ref().is_some_and(|current| {
-            awaken_session_realization_contract::realization_lease_authorizes(
+            awaken_session_configuration_contract::resource::realization_lease_authorizes(
                 current,
                 intent.lease(),
                 self.clock.now_ms(),

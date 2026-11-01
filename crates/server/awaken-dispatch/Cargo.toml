@@ -22,6 +22,7 @@ awaken-dispatch-contract = { workspace = true }
 # The Registry's process-end vocabulary a Worker exit receipt records.
 awaken-worker-contract.workspace = true
 awaken-dispatch-execution.workspace = true
+awaken-session-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-runtime = { workspace = true }

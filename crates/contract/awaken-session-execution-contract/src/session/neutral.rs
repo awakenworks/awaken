@@ -20,7 +20,7 @@ use super::*;
 #[macro_export]
 macro_rules! neutral_role {
     (RealizationRuntime for $ty:ty) => {
-        #[$crate::__macro_support::async_trait::async_trait]
+        #[::async_trait::async_trait]
         impl $crate::RealizationRuntime for $ty {
             /// Sample the execution host's elapsed clock before a Control request.
             /// A Runtime without this port cannot claim local timed execution proof.
@@ -28,9 +28,9 @@ macro_rules! neutral_role {
                 &self,
             ) -> Result<
                 awaken_lease_contract::authority::AuthorityProofStarted,
-                $crate::__macro_support::RunError,
+                ::awaken_session_types::RunError,
             > {
-                Err($crate::__macro_support::RunError::unavailable(
+                Err(::awaken_session_types::RunError::unavailable(
                     "runtime does not provide an execution authority clock",
                 ))
             }
@@ -40,12 +40,12 @@ macro_rules! neutral_role {
             /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
             async fn renew_session_realization_projections(
                 &self,
-                _control: &dyn $crate::__macro_support::SessionRealizationControl,
+                _control: &dyn $crate::SessionRealizationControl,
                 _owner: &str,
                 _runtime_incarnation: &str,
                 _timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-            ) -> Result<usize, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<usize, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "runtime does not reconcile realization time proofs",
                 ))
             }
@@ -57,10 +57,10 @@ macro_rules! neutral_role {
             async fn install_session_projection(
                 &self,
                 _thread: &str,
-                _projection: $crate::__macro_support::FrozenSessionProjection,
-                _mode: $crate::__macro_support::SessionProjectionInstallMode,
-            ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
-                Err(($crate::__macro_support::RunError::unavailable(
+                _projection: $crate::FrozenSessionProjection,
+                _mode: $crate::SessionProjectionInstallMode,
+            ) -> Result<(), $crate::SessionRealizationEffectFailure> {
+                Err((::awaken_session_types::RunError::unavailable(
                     "runtime does not implement complete Session projection installation",
                 )).into())
             }
@@ -71,9 +71,9 @@ macro_rules! neutral_role {
             async fn renew_session_realization_lease(
                 &self,
                 _thread: &str,
-                _lease: $crate::__macro_support::ObservedSessionRealizationLease,
-            ) -> Result<(), $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+                _lease: $crate::ObservedSessionRealizationLease,
+            ) -> Result<(), ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "runtime does not implement Session realization lease renewal",
                 ))
             }
@@ -85,8 +85,8 @@ macro_rules! neutral_role {
             async fn invalidate_session_realization_lease(
                 &self,
                 _thread: &str,
-                _lease: &$crate::__macro_support::SessionRealizationLease,
-            ) -> Result<(), $crate::__macro_support::RunError> {
+                _lease: &::awaken_session_configuration_contract::resource::SessionRealizationLease,
+            ) -> Result<(), ::awaken_session_types::RunError> {
                 Ok(())
             }
 
@@ -94,7 +94,7 @@ macro_rules! neutral_role {
         }
     };
     (RealizationEffects for $ty:ty) => {
-        #[$crate::__macro_support::async_trait::async_trait]
+        #[::async_trait::async_trait]
         impl $crate::RealizationEffects for $ty {
             /// Validate the exact provider-effective Sandbox layout without publishing
             /// process-local state or performing provider, cache, Skill, File, Vault,
@@ -104,15 +104,15 @@ macro_rules! neutral_role {
             fn validate_session_sandbox_layout(
                 &self,
                 _thread: &str,
-                layout: &$crate::__macro_support::SessionSandboxLayout,
-            ) -> Result<(), $crate::__macro_support::RunError> {
+                layout: &::awaken_session_configuration_contract::SessionSandboxLayout,
+            ) -> Result<(), ::awaken_session_types::RunError> {
                 if layout.resources.iter().any(|binding| {
                     matches!(
                         binding.target,
                         awaken_resource_contract::InputResourceId::Repository(_)
                     )
                 }) {
-                    return Err($crate::__macro_support::RunError::unavailable(
+                    return Err(::awaken_session_types::RunError::unavailable(
                         "runtime does not implement Repository Sandbox-layout validation",
                     ));
                 }
@@ -124,9 +124,9 @@ macro_rules! neutral_role {
             async fn checkpoint_session_environment(
                 &self,
                 _thread: &str,
-                _request: $crate::__macro_support::SandboxCheckpointRequest,
-            ) -> Result<$crate::__macro_support::CheckpointReceipt, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
+                _request: ::awaken_session_contract::SandboxCheckpointRequest,
+            ) -> Result<::awaken_session_contract::CheckpointReceipt, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",
                     "Runtime does not implement Session environment checkpointing",
                 ))
@@ -138,11 +138,11 @@ macro_rules! neutral_role {
             async fn prepare_checkpoint_source_disposal(
                 &self,
                 _thread: &str,
-                _preparation: &$crate::__macro_support::SourceReleasePreparationEffect,
-                _generation: &$crate::__macro_support::SandboxGeneration,
+                _preparation: &::awaken_session_contract::SourceReleasePreparationEffect,
+                _generation: &::awaken_session_contract::SandboxGeneration,
                 _source_binding: &str,
-            ) -> Result<$crate::__macro_support::SourceReleasePreparedReceipt, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
+            ) -> Result<::awaken_session_contract::SourceReleasePreparedReceipt, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",
                     "Runtime does not implement checkpoint source release preparation",
                 ))
@@ -153,9 +153,9 @@ macro_rules! neutral_role {
             async fn dispose_prepared_checkpoint_source(
                 &self,
                 _thread: &str,
-                _disposal: &$crate::__macro_support::SourceReleaseDisposal,
-            ) -> Result<$crate::__macro_support::SourceDisposedReceipt, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
+                _disposal: &::awaken_session_contract::SourceReleaseDisposal,
+            ) -> Result<::awaken_session_contract::SourceDisposedReceipt, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",
                     "Runtime does not implement prepared checkpoint source disposal",
                 ))
@@ -164,9 +164,9 @@ macro_rules! neutral_role {
             /// Restore a distinct environment from the exact durable checkpoint.
             async fn restore_checkpointed_session_environment(
                 &self,
-                _request: $crate::__macro_support::SandboxRestoreRequest,
-            ) -> Result<$crate::__macro_support::RestoreReceipt, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
+                _request: ::awaken_provisioning_contract::SandboxRestoreRequest,
+            ) -> Result<::awaken_session_contract::RestoreReceipt, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",
                     "Runtime does not implement Session environment restore",
                 ))
@@ -177,9 +177,9 @@ macro_rules! neutral_role {
             async fn delete_session_checkpoint(
                 &self,
                 _thread: &str,
-                _checkpoint: &$crate::__macro_support::SandboxCheckpointRef,
-            ) -> Result<(), $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
+                _checkpoint: &::awaken_provisioning_contract::SandboxCheckpointRef,
+            ) -> Result<(), ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",
                     "Runtime does not implement Session environment checkpoint deletion",
                 ))
@@ -192,8 +192,8 @@ macro_rules! neutral_role {
             async fn apply_session_inputs(
                 &self,
                 _thread: &str,
-                _transition: &$crate::__macro_support::SessionResourceTransition,
-            ) -> Result<(), $crate::__macro_support::RunError> {
+                _transition: &::awaken_session_configuration_contract::resource::SessionResourceTransition,
+            ) -> Result<(), ::awaken_session_types::RunError> {
                 Ok(())
             }
 
@@ -206,10 +206,10 @@ macro_rules! neutral_role {
             /// back would erase the terminal ownership proof.
             async fn execute_terminal_repository_publication_for_lease(
                 &self,
-                _command: $crate::__macro_support::SessionRepositoryPublicationCommand,
-                _lease: &$crate::__macro_support::SessionRealizationLease,
-            ) -> Result<$crate::__macro_support::SessionRepositoryPublicationEffect, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
+                _command: ::awaken_session_contract::SessionRepositoryPublicationCommand,
+                _lease: &::awaken_session_configuration_contract::resource::SessionRealizationLease,
+            ) -> Result<::awaken_session_contract::SessionRepositoryPublicationEffect, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable_classified(
                     "session_repository_publication_effect_runtime_unsupported",
                     "runtime does not implement realization-fenced terminal Repository publication",
                 ))
@@ -220,9 +220,9 @@ macro_rules! neutral_role {
             /// predecessor plus the current live successor lease.
             async fn dispose_terminal_cleanup_for_effect(
                 &self,
-                _effect: $crate::__macro_support::SessionTerminalCleanupDisposalEffect,
-            ) -> Result<$crate::__macro_support::SessionCleanupDisposalReceipt, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
+                _effect: ::awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+            ) -> Result<::awaken_session_contract::SessionCleanupDisposalReceipt, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable_classified(
                     "session_terminal_cleanup_disposal_runtime_unsupported",
                     "runtime does not implement realization-fenced Session cleanup disposal",
                 ))
@@ -230,7 +230,7 @@ macro_rules! neutral_role {
         }
     };
     (ChildRunCoordination for $ty:ty) => {
-        #[$crate::__macro_support::async_trait::async_trait]
+        #[::async_trait::async_trait]
         impl $crate::ChildRunCoordination for $ty {
             /// Persist one complete self-affine Session Run as an unclaimable reservation.
             /// Implementations must use their existing durable Run dispatch authority;
@@ -238,8 +238,8 @@ macro_rules! neutral_role {
             async fn reserve_session_run(
                 &self,
                 _command: $crate::AdmitSessionRun,
-            ) -> Result<$crate::SessionRunReservation, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<$crate::SessionRunReservation, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "runtime does not implement durable Session Run reservations",
                 ))
             }
@@ -248,8 +248,8 @@ macro_rules! neutral_role {
                 &self,
                 _command: $crate::AdmitPreparedSessionRun,
                 _activity: &dyn $crate::SessionRunActivityAdmitter,
-            ) -> Result<$crate::__macro_support::awaken_agent_contract::agent::run::RunState, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<::awaken_agent_contract::agent::run::RunState, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "runtime does not implement prepared Session Run admission",
                 ))
             }
@@ -259,8 +259,8 @@ macro_rules! neutral_role {
             async fn activate_session_run(
                 &self,
                 _delivery: $crate::SessionRunDelivery,
-            ) -> Result<$crate::SessionRunActivation, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<$crate::SessionRunActivation, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "runtime does not implement durable Session Run activation",
                 ))
             }
@@ -278,8 +278,8 @@ macro_rules! neutral_role {
                 _admission: $crate::AdmittedSessionRun,
                 _input_message_ids: Vec<String>,
                 _sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-            ) -> Result<$crate::__macro_support::StepOutcome, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<::awaken_session_application_contract::StepOutcome, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "runtime does not implement durable Session Run observation",
                 ))
             }
@@ -295,8 +295,8 @@ macro_rules! neutral_role {
             async fn admit_coordinated_run(
                 &self,
                 _command: $crate::CoordinatedRunCommand,
-            ) -> Result<$crate::SessionAgentMessageReceipt, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<$crate::SessionAgentMessageReceipt, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "asynchronous Agent coordination is unsupported",
                 ))
             }
@@ -310,9 +310,9 @@ macro_rules! neutral_role {
             /// the Runtime's existing live hub, not another fan-out or replay owner.
             async fn subscribe_session_thread_live(
                 &self,
-                _session_id: &$crate::__macro_support::SessionId,
+                _session_id: &::awaken_session_types::SessionId,
                 _thread_id: &str,
-            ) -> Result<Option<Box<dyn $crate::SessionThreadLiveSubscription>>, $crate::__macro_support::RunError>
+            ) -> Result<Option<Box<dyn $crate::SessionThreadLiveSubscription>>, ::awaken_session_types::RunError>
             {
                 Ok(None)
             }
@@ -323,8 +323,8 @@ macro_rules! neutral_role {
             async fn continue_session_agent_report(
                 &self,
                 _command: $crate::SessionAgentReportContinuation,
-            ) -> Result<(), $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<(), ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "asynchronous Agent report continuation is unsupported",
                 ))
             }
@@ -333,10 +333,10 @@ macro_rules! neutral_role {
             /// and dispatch partition. Implementations must not open child-named storage.
             async fn interrupt_session_thread(
                 &self,
-                _session_id: &$crate::__macro_support::SessionId,
+                _session_id: &::awaken_session_types::SessionId,
                 _child_thread_id: &awaken_agent_contract::agent::thread::Id,
-            ) -> Result<(), $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<(), ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "coordinated Session Thread interruption is unsupported",
                 ))
             }
@@ -347,9 +347,9 @@ macro_rules! neutral_role {
             /// through the Session-affine claim-fenced resume/commit boundary.
             async fn reply_session_thread_tool(
                 &self,
-                _delivery: $crate::SessionThreadToolReplyDelivery,
-            ) -> Result<(), $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+                _delivery: ::awaken_session_contract::SessionThreadToolReplyDelivery,
+            ) -> Result<(), ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "Session Thread tool replies are unsupported",
                 ))
             }
@@ -360,10 +360,10 @@ macro_rules! neutral_role {
             /// truth. No inline executor is authorized by this observation policy.
             async fn reply_and_observe_session_thread_tool(
                 &self,
-                _delivery: $crate::SessionThreadToolReplyDelivery,
+                _delivery: ::awaken_session_contract::SessionThreadToolReplyDelivery,
         _stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-            ) -> Result<$crate::__macro_support::StepOutcome, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<::awaken_session_application_contract::StepOutcome, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "Session Thread tool reply observation is unsupported",
                 ))
             }
@@ -373,10 +373,10 @@ macro_rules! neutral_role {
             /// protocol cache or open child-named storage.
             async fn archive_session_thread(
                 &self,
-                _session_id: &$crate::__macro_support::SessionId,
+                _session_id: &::awaken_session_types::SessionId,
                 _thread_id: &str,
-            ) -> Result<(), $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<(), ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "durable coordinated Thread archive is unsupported",
                 ))
             }
@@ -386,9 +386,9 @@ macro_rules! neutral_role {
             async fn quiesce_terminal_delegations(
                 &self,
                 thread: &str,
-            ) -> Result<$crate::__macro_support::DelegatedRunSnapshot, $crate::__macro_support::RunError> {
+            ) -> Result<::awaken_session_application_contract::DelegatedRunSnapshot, ::awaken_session_types::RunError> {
                 $crate::StreamingRuns::interrupt(self, thread).await?;
-                Ok($crate::__macro_support::DelegatedRunSnapshot {
+                Ok(::awaken_session_application_contract::DelegatedRunSnapshot {
                     delegated_runs: $crate::SessionCoordinationReads::delegated_runs(self, thread)
                         .await?,
                     coordinated_thread_ids: Vec::new(),
@@ -396,7 +396,7 @@ macro_rules! neutral_role {
                     runtime_commit_cursor:
                         $crate::ThreadReads::session_thread_recovery_snapshot(
                             self,
-                            &$crate::__macro_support::SessionId::from(thread),
+                            &::awaken_session_types::SessionId::from(thread),
                             thread,
                         )
                         .await?
@@ -410,7 +410,7 @@ macro_rules! neutral_role {
 
     };
     (SessionCoordinationReads for $ty:ty) => {
-        #[$crate::__macro_support::async_trait::async_trait]
+        #[::async_trait::async_trait]
 impl $crate::SessionCoordinationReads for $ty {
             async fn source_dispatch_observation(
                 &self,
@@ -422,8 +422,8 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn coordinated_admission_receipt(
                 &self,
                 _command: $crate::CoordinatedAdmissionRef<'_>,
-            ) -> Result<Option<$crate::SessionAgentMessageReceipt>, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<Option<$crate::SessionAgentMessageReceipt>, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "original coordinated admission recovery is unsupported",
                 ))
             }
@@ -433,10 +433,10 @@ impl $crate::SessionCoordinationReads for $ty {
             /// registry or protocol event cache.
             async fn session_run_state(
                 &self,
-                _session_id: &$crate::__macro_support::SessionId,
+                _session_id: &::awaken_session_types::SessionId,
                 _run_id: &awaken_agent_contract::agent::run::Id,
-            ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "runtime does not implement Session Run recovery",
                 ))
             }
@@ -447,7 +447,7 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn delegated_runs(
                 &self,
                 _thread: &str,
-            ) -> Result<Vec<$crate::__macro_support::DelegatedRun>, $crate::__macro_support::RunError> {
+            ) -> Result<Vec<::awaken_session_application_contract::DelegatedRun>, ::awaken_session_types::RunError> {
                 Ok(Vec::new())
             }
 
@@ -460,14 +460,14 @@ impl $crate::SessionCoordinationReads for $ty {
             /// reads the current prefix; command admission and final validation use it.
             async fn coordinated_threads(
                 &self,
-                session_id: &$crate::__macro_support::SessionId,
+                session_id: &::awaken_session_types::SessionId,
                 observed_root: Option<
                     &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
                 >,
-            ) -> Result<Vec<$crate::CoordinatedThreadLink>, $crate::__macro_support::RunError> {
+            ) -> Result<Vec<$crate::CoordinatedThreadLink>, ::awaken_session_types::RunError> {
                 if observed_root.is_some_and(|snapshot| snapshot.thread_id.0 != session_id.as_str())
                 {
-                    return Err($crate::__macro_support::RunError::internal(
+                    return Err(::awaken_session_types::RunError::internal(
                         "coordination query received a snapshot for a different Session root",
                     ));
                 }
@@ -481,9 +481,9 @@ impl $crate::SessionCoordinationReads for $ty {
             /// applying the reply so a concurrent resume or later Run fails closed.
             async fn session_thread_tool_reply_fence(
                 &self,
-                _command: &$crate::SessionThreadToolReplyCommand,
-            ) -> Result<$crate::SessionThreadToolReplyFence, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+                _command: &::awaken_session_contract::SessionThreadToolReplyCommand,
+            ) -> Result<::awaken_session_contract::SessionThreadToolReplyFence, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "Session Thread tool reply fencing is unsupported",
                 ))
             }
@@ -500,24 +500,24 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn validate_session_agent_message_source(
                 &self,
                 _command: &$crate::SessionAgentMessageCommand,
-            ) -> Result<$crate::SessionAgentMessageCommand, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<$crate::SessionAgentMessageCommand, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "durable Agent message source validation is unsupported",
                 ))
             }
 }
     };
     (BudgetAccounting for $ty:ty) => {
-        #[$crate::__macro_support::async_trait::async_trait]
+        #[::async_trait::async_trait]
         impl $crate::BudgetAccounting for $ty {
             /// Resume an exact `BudgetReached` ticket without injecting transcript
             /// content. Implementations reuse the foreground Run driver or the existing
             /// durable dispatch row; they must not enqueue a replacement Run.
             async fn resume_budget_reached(
                 &self,
-                _delivery: $crate::__macro_support::SessionBudgetResumeDelivery,
-            ) -> Result<$crate::__macro_support::SessionBudgetResumeDisposition, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+                _delivery: ::awaken_session_application_contract::SessionBudgetResumeDelivery,
+            ) -> Result<::awaken_session_application_contract::SessionBudgetResumeDisposition, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "budget-paused Run resumption is unsupported",
                 ))
             }
@@ -527,9 +527,9 @@ impl $crate::SessionCoordinationReads for $ty {
             /// those authorities, never a pause registry.
             async fn session_budget_resume_tickets(
                 &self,
-                _session_id: &$crate::__macro_support::SessionId,
-            ) -> Result<Vec<$crate::__macro_support::SessionBudgetResumeTicket>, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+                _session_id: &::awaken_session_types::SessionId,
+            ) -> Result<Vec<::awaken_session_application_contract::SessionBudgetResumeTicket>, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "budget-paused Run discovery is unsupported",
                 ))
             }
@@ -540,8 +540,8 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn session_usage(
                 &self,
                 _thread: &str,
-            ) -> Result<$crate::__macro_support::SessionUsage, $crate::__macro_support::RunError> {
-                Ok($crate::__macro_support::SessionUsage::default())
+            ) -> Result<::awaken_session_contract::SessionUsage, ::awaken_session_types::RunError> {
+                Ok(::awaken_session_contract::SessionUsage::default())
             }
 
             /// Read usage for one logical Thread from its parent Session partition.
@@ -549,15 +549,15 @@ impl $crate::SessionCoordinationReads for $ty {
             /// must retain `session_id` as the physical read owner.
             async fn session_thread_usage(
                 &self,
-                _session_id: &$crate::__macro_support::SessionId,
+                _session_id: &::awaken_session_types::SessionId,
                 thread_id: &str,
-            ) -> Result<$crate::__macro_support::SessionUsage, $crate::__macro_support::RunError> {
+            ) -> Result<::awaken_session_contract::SessionUsage, ::awaken_session_types::RunError> {
                 $crate::BudgetAccounting::session_usage(self, thread_id).await
             }
         }
     };
     (StreamingRuns for $ty:ty) => {
-        #[$crate::__macro_support::async_trait::async_trait]
+        #[::async_trait::async_trait]
         impl $crate::StreamingRuns for $ty {
             /// Run one request with its protocol-projected, backend-neutral content
             /// owner. Adapters that do not support attributed capture may use the
@@ -568,16 +568,16 @@ impl $crate::SessionCoordinationReads for $ty {
                 agent: &str,
                 thread: &str,
                 content: Vec<
-                    $crate::__macro_support::awaken_agent_contract::agent::content::ContentBlock,
+                    ::awaken_agent_contract::agent::content::ContentBlock,
                 >,
                 _data_subject_id: Option<String>,
-            ) -> Result<$crate::__macro_support::StepOutcome, $crate::__macro_support::RunError> {
+            ) -> Result<::awaken_session_application_contract::StepOutcome, ::awaken_session_types::RunError> {
                 $crate::SessionRuns::run(self, agent, thread, content).await
             }
 
             /// Run one user request, installing `sink` as the Run's best-effort live-progress
             /// channel so the adapter can project in-flight `stream::Kind` into
-            /// `event_start`/`event_delta` previews. The committed [`$crate::__macro_support::StepOutcome`] is
+            /// `event_start`/`event_delta` previews. The committed [`::awaken_session_application_contract::StepOutcome`] is
             /// identical to [`run`](Self::run) — the sink only mirrors in-flight events. The
             /// default ignores the sink and delegates to `run`, so a host without a
             /// streaming path (or a test double) is unaffected.
@@ -586,10 +586,10 @@ impl $crate::SessionCoordinationReads for $ty {
                 agent: &str,
                 thread: &str,
                 content: Vec<
-                    $crate::__macro_support::awaken_agent_contract::agent::content::ContentBlock,
+                    ::awaken_agent_contract::agent::content::ContentBlock,
                 >,
                 _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-            ) -> Result<$crate::__macro_support::StepOutcome, $crate::__macro_support::RunError> {
+            ) -> Result<::awaken_session_application_contract::StepOutcome, ::awaken_session_types::RunError> {
                 $crate::SessionRuns::run(self, agent, thread, content).await
             }
 
@@ -599,17 +599,17 @@ impl $crate::SessionCoordinationReads for $ty {
                 agent: &str,
                 thread: &str,
                 content: Vec<
-                    $crate::__macro_support::awaken_agent_contract::agent::content::ContentBlock,
+                    ::awaken_agent_contract::agent::content::ContentBlock,
                 >,
                 _data_subject_id: Option<String>,
                 sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-            ) -> Result<$crate::__macro_support::StepOutcome, $crate::__macro_support::RunError> {
+            ) -> Result<::awaken_session_application_contract::StepOutcome, ::awaken_session_types::RunError> {
                 $crate::StreamingRuns::run_streaming(self, agent, thread, content, sink).await
             }
 
             /// Interrupt the run in flight on `thread` (a `user.interrupt`): cancel it so
             /// an in-progress outcome ends `interrupted`. A no-op when nothing is running.
-            async fn interrupt(&self, _thread: &str) -> Result<(), $crate::__macro_support::RunError> {
+            async fn interrupt(&self, _thread: &str) -> Result<(), ::awaken_session_types::RunError> {
                 Ok(())
             }
 
@@ -621,7 +621,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _thread: &str,
                 _model: &str,
-            ) -> Result<(), $crate::__macro_support::RunError> {
+            ) -> Result<(), ::awaken_session_types::RunError> {
                 Ok(())
             }
 
@@ -631,7 +631,7 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn supports_mid_conversation_system(
                 &self,
                 _thread: &str,
-            ) -> Result<bool, $crate::__macro_support::RunError> {
+            ) -> Result<bool, ::awaken_session_types::RunError> {
                 Ok(true)
             }
 
@@ -641,13 +641,13 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn pending_tool(
                 &self,
                 _thread: &str,
-            ) -> Result<Option<$crate::__macro_support::Pending>, $crate::__macro_support::RunError> {
+            ) -> Result<Option<::awaken_session_application_contract::Pending>, ::awaken_session_types::RunError> {
                 Ok(None)
             }
         }
     };
     (EnvironmentRuntime for $ty:ty) => {
-        #[$crate::__macro_support::async_trait::async_trait]
+        #[::async_trait::async_trait]
         impl $crate::EnvironmentRuntime for $ty {
             /// Replace the complete Session-local tool configuration after an
             /// idle-session update.
@@ -656,9 +656,9 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn replace_session_tools(
                 &self,
                 _thread: &str,
-                _tools: $crate::__macro_support::SessionToolConfiguration,
-            ) -> Result<(), $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::internal(
+                _tools: ::awaken_session_configuration_contract::SessionToolConfiguration,
+            ) -> Result<(), ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::internal(
                     "session tool runtime is unsupported",
                 ))
             }
@@ -671,7 +671,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 _agent: &str,
                 _thread: &str,
                 _binding: &str,
-            ) -> Result<(), $crate::__macro_support::RunError> {
+            ) -> Result<(), ::awaken_session_types::RunError> {
                 Ok(())
             }
 
@@ -681,13 +681,13 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn quiesce_session_environment(
                 &self,
                 _thread: &str,
-                _operation: &$crate::__macro_support::SessionEnvironmentOperation,
+                _operation: &::awaken_session_contract::SessionEnvironmentOperation,
                 _source_effect_id: &str,
                 _source_binding: &str,
-                _generation: &$crate::__macro_support::SandboxGeneration,
-                _expected_mcp_generations: &[$crate::__macro_support::McpGenerationRef],
-            ) -> Result<$crate::__macro_support::QuiescenceReceipt, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
+                _generation: &::awaken_session_contract::SandboxGeneration,
+                _expected_mcp_generations: &[::awaken_session_configuration_contract::mcp::McpGenerationRef],
+            ) -> Result<::awaken_session_contract::QuiescenceReceipt, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",
                     "Runtime does not implement Session environment quiescence",
                 ))
@@ -700,21 +700,21 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _workspace_id: &str,
                 _skills: &[awaken_agent_contract::AgentSkillBinding],
-            ) -> Result<Vec<$crate::__macro_support::ResolvedSkillBinding>, $crate::__macro_support::RunError> {
+            ) -> Result<Vec<::awaken_session_configuration_contract::resource::ResolvedSkillBinding>, ::awaken_session_types::RunError> {
                 Ok(Vec::new())
             }
 
         }
     };
     (ThreadReads for $ty:ty) => {
-        #[$crate::__macro_support::async_trait::async_trait]
+        #[::async_trait::async_trait]
         impl $crate::ThreadReads for $ty {
             /// True when durable truth already exists for `thread`. Session-id minting
             /// consults this to skip ids a previous process persisted; implementations
             /// MUST answer without materializing any per-thread state (no context
             /// build, no cache entry) — probing must be free of side effects. The
             /// default reports nothing, so an ephemeral host mints densely from 0.
-            async fn owns_thread(&self, _thread: &str) -> Result<bool, $crate::__macro_support::RunError> {
+            async fn owns_thread(&self, _thread: &str) -> Result<bool, ::awaken_session_types::RunError> {
                 Ok(false)
             }
 
@@ -726,8 +726,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _thread: &str,
             ) -> Result<
-                Vec<$crate::__macro_support::awaken_agent_contract::agent::message::Message>,
-                $crate::__macro_support::RunError,
+                Vec<::awaken_agent_contract::agent::message::Message>,
+                ::awaken_session_types::RunError,
             > {
                 Ok(Vec::new())
             }
@@ -741,13 +741,13 @@ impl $crate::SessionCoordinationReads for $ty {
             /// `None` means the logical Thread has no committed Run.
             async fn session_thread_recovery_snapshot(
                 &self,
-                _session_id: &$crate::__macro_support::SessionId,
+                _session_id: &::awaken_session_types::SessionId,
                 _thread_id: &str,
             ) -> Result<
                 Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-                $crate::__macro_support::RunError,
+                ::awaken_session_types::RunError,
             > {
-                Err($crate::__macro_support::RunError::unavailable(
+                Err(::awaken_session_types::RunError::unavailable(
                     "consistent coordinated Thread recovery is unsupported",
                 ))
             }
@@ -763,12 +763,12 @@ impl $crate::SessionCoordinationReads for $ty {
             /// directly by `run_id`.
             async fn session_thread_run_recovery_snapshot(
                 &self,
-                session_id: &$crate::__macro_support::SessionId,
+                session_id: &::awaken_session_types::SessionId,
                 thread_id: &str,
-                run_id: &$crate::__macro_support::awaken_agent_contract::agent::run::Id,
+                run_id: &::awaken_agent_contract::agent::run::Id,
             ) -> Result<
                 Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-                $crate::__macro_support::RunError,
+                ::awaken_session_types::RunError,
             > {
                 let snapshot =
                     $crate::ThreadReads::session_thread_recovery_snapshot(
@@ -783,36 +783,36 @@ impl $crate::SessionCoordinationReads for $ty {
             /// state cell remain Active.
             async fn session_thread_disposition(
                 &self,
-                _session_id: &$crate::__macro_support::SessionId,
+                _session_id: &::awaken_session_types::SessionId,
                 _thread_id: &str,
-            ) -> Result<awaken_agent_contract::ThreadDisposition, $crate::__macro_support::RunError> {
+            ) -> Result<awaken_agent_contract::ThreadDisposition, ::awaken_session_types::RunError> {
                 Ok(awaken_agent_contract::ThreadDisposition::Active)
             }
 
             /// Read one exact terminal Outcome projection from committed Thread truth.
             /// `None` means the id is absent or still active. Implementations must not
             /// resume the Outcome or reconstruct a terminal from an in-process
-            /// [`$crate::__macro_support::StepOutcome`].
+            /// [`::awaken_session_application_contract::StepOutcome`].
             async fn committed_outcome_projection(
                 &self,
                 _thread: &str,
                 _outcome_id: &str,
-            ) -> Result<Option<$crate::CommittedOutcomeProjection>, $crate::__macro_support::RunError> {
+            ) -> Result<Option<$crate::CommittedOutcomeProjection>, ::awaken_session_types::RunError> {
                 Ok(None)
             }
         }
     };
     (TerminalCleanup for $ty:ty) => {
-        #[$crate::__macro_support::async_trait::async_trait]
+        #[::async_trait::async_trait]
         impl $crate::TerminalCleanup for $ty {
             /// Make every source-dependent effect durable under the exact aggregate
             /// preparation fence without deleting the physical realization.
             async fn prepare_terminal_cleanup_for_effect(
                 &self,
-                _effect: $crate::__macro_support::SessionTerminalCleanupEffect,
-                _authorization: $crate::__macro_support::SessionTerminalCleanupPreparationAuthorization,
-            ) -> Result<$crate::__macro_support::SessionCleanupPreparation, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
+                _effect: ::awaken_session_contract::SessionTerminalCleanupEffect,
+                _authorization: $crate::SessionTerminalCleanupPreparationAuthorization,
+            ) -> Result<::awaken_session_contract::SessionCleanupPreparation, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable_classified(
                     "session_terminal_cleanup_preparation_runtime_unsupported",
                     "runtime does not implement realization-fenced Session cleanup preparation",
                 ))
@@ -823,7 +823,7 @@ impl $crate::SessionCoordinationReads for $ty {
             /// aggregate-wide physical disposal is complete.
             async fn acknowledge_terminal_cleanup_preparation(
                 &self,
-                _effect: &$crate::__macro_support::SessionTerminalCleanupEffect,
+                _effect: &::awaken_session_contract::SessionTerminalCleanupEffect,
             ) {
             }
 
@@ -832,7 +832,7 @@ impl $crate::SessionCoordinationReads for $ty {
             /// effect is permitted at this edge.
             async fn acknowledge_terminal_cleanup_disposal(
                 &self,
-                _effect: &$crate::__macro_support::SessionTerminalCleanupDisposalEffect,
+                _effect: &::awaken_session_contract::SessionTerminalCleanupDisposalEffect,
             ) {
             }
 
@@ -842,8 +842,8 @@ impl $crate::SessionCoordinationReads for $ty {
             /// completion registry.
             async fn acknowledge_completed_terminal_cleanup(
                 &self,
-                _session_id: &$crate::__macro_support::SessionId,
-                _lease: &$crate::__macro_support::SessionRealizationLease,
+                _session_id: &::awaken_session_types::SessionId,
+                _lease: &::awaken_session_configuration_contract::resource::SessionRealizationLease,
             ) {
             }
 
@@ -853,10 +853,10 @@ impl $crate::SessionCoordinationReads for $ty {
             /// and lease passed to the preparation/disposal ports above.
             async fn install_terminal_cleanup_assignment(
                 &self,
-                _assignment: &$crate::__macro_support::SessionTerminalCleanupAssignment,
-                _proof: $crate::__macro_support::ObservedSessionRealizationLease,
-            ) -> Result<(), $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable_classified(
+                _assignment: &$crate::SessionTerminalCleanupAssignment,
+                _proof: $crate::ObservedSessionRealizationLease,
+            ) -> Result<(), ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable_classified(
                     "session_terminal_projection_runtime_unsupported",
                     "runtime does not implement frozen terminal Session projection installation",
                 ))
@@ -864,7 +864,7 @@ impl $crate::SessionCoordinationReads for $ty {
         }
     };
     (Outcomes for $ty:ty) => {
-        #[$crate::__macro_support::async_trait::async_trait]
+        #[::async_trait::async_trait]
         impl $crate::Outcomes for $ty {
             /// Persist one Outcome aggregate without executing a Worker or Grader Run.
             /// The opaque id is supplied by the application command so crash replay and
@@ -876,8 +876,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 _description: &str,
                 _rubric: &str,
                 _max_iterations: u32,
-            ) -> Result<u64, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
+            ) -> Result<u64, ::awaken_session_types::RunError> {
+                Err(::awaken_session_types::RunError::unavailable(
                     "runtime does not implement durable Outcome preparation",
                 ))
             }
@@ -890,8 +890,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 rubric: &str,
                 max_iterations: u32,
                 admission: &dyn $crate::PreparedSessionRunAdmission,
-            ) -> Result<$crate::OutcomeDrive, $crate::__macro_support::RunError> {
-                let outcome_id = $crate::__macro_support::session_outcome_convenience_id(
+            ) -> Result<$crate::OutcomeDrive, ::awaken_session_types::RunError> {
+                let outcome_id = ::awaken_session_contract::session_outcome_convenience_id(
                     thread,
                     description,
                     rubric,
@@ -908,7 +908,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 .await?;
                 $crate::Outcomes::continue_outcome(self, thread, admission)
                     .await?
-                    .ok_or_else(|| $crate::__macro_support::RunError::internal("prepared Outcome is not active"))
+                    .ok_or_else(|| ::awaken_session_types::RunError::internal("prepared Outcome is not active"))
             }
 
             /// Continue the active Outcome after the ordinary Run resume has committed.
@@ -918,13 +918,13 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _thread: &str,
                 _admission: &dyn $crate::PreparedSessionRunAdmission,
-            ) -> Result<Option<$crate::OutcomeDrive>, $crate::__macro_support::RunError> {
+            ) -> Result<Option<$crate::OutcomeDrive>, ::awaken_session_types::RunError> {
                 Ok(None)
             }
         }
     };
     (LiveInboxAccess for $ty:ty) => {
-        #[$crate::__macro_support::async_trait::async_trait]
+        #[::async_trait::async_trait]
         impl $crate::LiveInboxAccess for $ty {
             /// The live-inbox queue on `thread`'s in-flight Run. The default reports
             /// an inactive queue, so a host without live-inbox wiring is unaffected.
@@ -942,7 +942,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _thread: &str,
                 _content: Vec<
-                    $crate::__macro_support::awaken_agent_contract::agent::content::ContentBlock,
+                    ::awaken_agent_contract::agent::content::ContentBlock,
                 >,
             ) -> Result<u64, ::awaken_session_application_contract::LiveInboxError> {
                 Err(::awaken_session_application_contract::LiveInboxError::Inactive)
@@ -963,7 +963,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 _thread: &str,
                 _id: u64,
                 _content: Vec<
-                    $crate::__macro_support::awaken_agent_contract::agent::content::ContentBlock,
+                    ::awaken_agent_contract::agent::content::ContentBlock,
                 >,
             ) -> Result<(), ::awaken_session_application_contract::LiveInboxError> {
                 Err(::awaken_session_application_contract::LiveInboxError::Inactive)
@@ -980,16 +980,16 @@ impl $crate::SessionCoordinationReads for $ty {
         }
     };
     (CapabilityRuntime for $ty:ty) => {
-        #[$crate::__macro_support::async_trait::async_trait]
+        #[::async_trait::async_trait]
         impl $crate::CapabilityRuntime for $ty {
             /// The advertised capability surface echoed in the session's agent object. The
             /// default reports nothing; a real host overrides it with its built-in tools,
             /// custom tools, skills, and delegate roster so the session enumerates what it does.
             fn capabilities(
                 &self,
-            ) -> Result<$crate::__macro_support::AgentCapabilities, $crate::__macro_support::RunError>
+            ) -> Result<::awaken_session_configuration_contract::AgentCapabilities, ::awaken_session_types::RunError>
             {
-                Ok($crate::__macro_support::AgentCapabilities::default())
+                Ok(::awaken_session_configuration_contract::AgentCapabilities::default())
             }
 
             /// The capability surface visible to one prepared session. Runtimes whose
@@ -999,8 +999,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _thread: &str,
             ) -> Result<
-                $crate::__macro_support::AgentCapabilities,
-                $crate::__macro_support::RunError,
+                ::awaken_session_configuration_contract::AgentCapabilities,
+                ::awaken_session_types::RunError,
             > {
                 $crate::CapabilityRuntime::capabilities(self)
             }
@@ -1033,7 +1033,7 @@ impl SessionRuns for NeutralRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: ToolPermissionDecision,
+        _decision: PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::unavailable("the neutral runtime resumes nothing"))
     }

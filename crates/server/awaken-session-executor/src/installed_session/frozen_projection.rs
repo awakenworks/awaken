@@ -10,13 +10,13 @@ use std::sync::Arc;
 
 use awaken_dispatch_contract::RunClaim;
 use awaken_session_configuration_contract::environment_projection;
-use awaken_session_mcp::McpSessions;
-use awaken_session_realization::peers::EnvironmentPeer as _;
-use awaken_session_realization::realization_error::{AuthorityLoss, RealizationError};
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     CanonicalSessionProjection, FrozenProjectionReceipt, FrozenSessionProjection,
     ObservedSessionRealizationLease,
 };
+use awaken_session_mcp::McpSessions;
+use awaken_session_realization::peers::EnvironmentPeer as _;
+use awaken_session_realization::realization_error::{AuthorityLoss, RealizationError};
 use awaken_session_types::SessionRuntimePlacement;
 
 use crate::realization_executor::RealizationExecutor;
@@ -35,11 +35,11 @@ impl InstalledSessions {
         self: &Arc<Self>,
         physical: (&RealizationExecutor, &McpSessions),
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
         claim: Option<&RunClaim>,
         synchronize_resources: bool,
         realization_lease: Option<
-            awaken_session_realization_contract::ObservedSessionRealizationLease,
+            awaken_session_execution_contract::ObservedSessionRealizationLease,
         >,
     ) -> Result<(), crate::SessionExecutionError> {
         self.install_frozen_session_projection_with_resource_authority(
@@ -65,7 +65,7 @@ impl InstalledSessions {
         self: &Arc<Self>,
         physical: (&RealizationExecutor, &McpSessions),
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
     ) -> Result<(), crate::SessionExecutionError> {
         self.install_frozen_session_projection_with_resource_authority(
             physical,
@@ -420,7 +420,7 @@ impl InstalledSessions {
     pub(crate) async fn install_test_terminal_cleanup_projection(
         self: &Arc<Self>,
         physical: (&RealizationExecutor, &McpSessions),
-        assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
+        assignment: &awaken_session_execution_contract::SessionTerminalCleanupAssignment,
     ) -> Result<(), crate::SessionExecutionError> {
         let started = awaken_authority_clock::authority_proof_started().unwrap();
         self.install_terminal_cleanup_projection(
@@ -437,8 +437,8 @@ impl InstalledSessions {
     pub(crate) async fn install_terminal_cleanup_projection(
         self: &Arc<Self>,
         physical: (&RealizationExecutor, &McpSessions),
-        assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
-        proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        assignment: &awaken_session_execution_contract::SessionTerminalCleanupAssignment,
+        proof: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), crate::SessionExecutionError> {
         let realizations = self.realizations();
         if proof.lease != assignment.authority.lease {

@@ -32,10 +32,10 @@ use awaken_session_execution_contract::{SessionAgentBoundaryCommand, SessionAgen
 pub(crate) type ClaimedCoordination = dyn ClaimedSessionCoordinationControl<RunClaim>;
 
 fn model_admission_error(
-    disposition: awaken_session_realization_contract::SessionRealizationControlDisposition,
+    disposition: awaken_session_execution_contract::SessionRealizationControlDisposition,
     message: String,
 ) -> LlmError {
-    use awaken_session_realization_contract::SessionRealizationControlDisposition as D;
+    use awaken_session_execution_contract::SessionRealizationControlDisposition as D;
     match disposition {
         D::Terminal => LlmError::Binding(message),
         D::Retryable => LlmError::Provider(message),
@@ -172,7 +172,7 @@ impl CoordinationEndpoint {
                 .await
                 .map_err(|error| {
                     model_admission_error(
-                        awaken_session_realization_contract::effect_failure_disposition(&error),
+                        awaken_session_execution_contract::effect_failure_disposition(&error),
                         error.to_string(),
                     )
                 }),
@@ -680,7 +680,7 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
 
     async fn reply_session_thread_tool(
         &self,
-        _command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+        _command: awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), awaken_session_types::RunError> {
         Ok(())
     }
@@ -1207,7 +1207,7 @@ mod lifetime_tests;
 
 #[cfg(test)]
 pub(crate) fn test_claimed_control() -> Arc<
-    impl awaken_session_realization_contract::ClaimedSessionRealizationControl
+    impl awaken_session_execution_contract::ClaimedSessionRealizationControl
     + awaken_session_execution_contract::ClaimedSessionCoordinationControl<RunClaim>,
 > {
     Arc::new(test_support::RemoteControl::default())

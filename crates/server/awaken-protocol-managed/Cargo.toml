@@ -44,7 +44,6 @@ awaken-executable-environment-contract.workspace = true
 # shim so consumers stay unchanged until flipped to the contract directly.
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-session-dream-contract.workspace = true

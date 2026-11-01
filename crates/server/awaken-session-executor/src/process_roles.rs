@@ -197,7 +197,7 @@ impl WorkerRoles {
     pub async fn observe_source_retention(
         &self,
         session_id: &awaken_session_types::SessionId,
-        projection: &awaken_session_realization_contract::FrozenSessionProjection,
+        projection: &awaken_session_execution_contract::FrozenSessionProjection,
         source_prepared: bool,
     ) -> Result<bool, awaken_session_types::RunError> {
         // Provider retention is not quiescence of this Actor. Observe the same

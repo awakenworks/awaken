@@ -23,14 +23,14 @@ use std::sync::Arc;
 pub enum SessionRealizationAuthority {
     #[default]
     Uninstalled,
-    Live(awaken_session_realization_contract::ObservedSessionRealizationLease),
+    Live(awaken_session_execution_contract::ObservedSessionRealizationLease),
     Closed(Option<session_resource::SessionRealizationLease>),
 }
 
 impl SessionRealizationAuthority {
     pub fn proof(
         &self,
-    ) -> Option<&awaken_session_realization_contract::ObservedSessionRealizationLease> {
+    ) -> Option<&awaken_session_execution_contract::ObservedSessionRealizationLease> {
         match self {
             Self::Live(proof) => Some(proof),
             Self::Uninstalled | Self::Closed(_) => None,
@@ -49,7 +49,7 @@ impl SessionRealizationAuthority {
         &self,
         asserted: &session_resource::SessionRealizationLease,
     ) -> Option<std::time::Duration> {
-        awaken_session_realization_contract::realization_lease_generation_authorizes(
+        awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
             self.lease()?,
             asserted,
         )
@@ -269,7 +269,7 @@ impl SessionRealization {
         self.staging.preparation = None;
         if introduced.is_some_and(|asserted| {
             self.execution.authority.lease().is_some_and(|current| {
-                awaken_session_realization_contract::realization_lease_generation_authorizes(
+                awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                     current, asserted,
                 )
             })
@@ -305,7 +305,7 @@ impl SessionRealization {
 
     pub fn install_lease(
         &mut self,
-        proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        proof: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> bool {
         let Ok(now) = awaken_authority_clock::authority_proof_started() else {
             return false;
@@ -315,9 +315,9 @@ impl SessionRealization {
         }
         let lease = &proof.lease;
         if let SessionRealizationAuthority::Closed(Some(closed)) = &self.execution.authority
-            && (awaken_session_realization_contract::realization_lease_generation_authorizes(
+            && (awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 closed, lease,
-            ) || awaken_session_realization_contract::realization_lease_generation_authorizes(
+            ) || awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 lease, closed,
             ))
         {
@@ -325,9 +325,9 @@ impl SessionRealization {
             return false;
         }
         if let Some(current) = self.execution.authority.lease()
-            && (awaken_session_realization_contract::realization_lease_generation_authorizes(
+            && (awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 current, lease,
-            ) || awaken_session_realization_contract::realization_lease_generation_authorizes(
+            ) || awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 lease, current,
             ))
             && self.execution.authority.remaining().is_none()
@@ -335,7 +335,7 @@ impl SessionRealization {
             return false;
         }
         if self.execution.authority.lease().is_some_and(|current| {
-            awaken_session_realization_contract::realization_lease_generation_authorizes(
+            awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 current, lease,
             )
         }) {
@@ -343,7 +343,7 @@ impl SessionRealization {
             return true;
         }
         if self.execution.authority.lease().is_some_and(|current| {
-            !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 lease, current,
             )
         }) && let Some(preparation) = &self.staging.preparation
@@ -360,10 +360,10 @@ impl SessionRealization {
     pub fn renew_lease(
         &mut self,
         asserted: &session_resource::SessionRealizationLease,
-        renewed: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        renewed: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> bool {
         if self.execution.authority.lease() != Some(asserted)
-            || !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            || !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 &renewed.lease,
                 asserted,
             )
@@ -402,7 +402,7 @@ impl SessionRealization {
         owner: SessionEnvironmentOwner,
         state: &awaken_session_contract::SessionEnvironmentState,
         holds_context: bool,
-        receipt: awaken_session_realization_contract::FrozenProjectionReceipt,
+        receipt: awaken_session_execution_contract::FrozenProjectionReceipt,
         has_mcp_attachment: bool,
         transition: awaken_session_configuration_contract::resource::SessionResourceTransition,
     ) {
@@ -461,7 +461,7 @@ impl SessionRealization {
     /// Install one Control-issued terminal cleanup assignment.
     pub fn assign_terminal_cleanup(
         &mut self,
-        assignment: awaken_session_realization_contract::SessionTerminalCleanupAssignment,
+        assignment: awaken_session_execution_contract::SessionTerminalCleanupAssignment,
     ) {
         self.effects.assignment = Some(assignment);
     }
@@ -684,7 +684,7 @@ impl ResourceStagingState {
 pub struct TerminalEffectsState {
     /// One complete Control-issued terminal assignment. Its Environment state
     /// and no-Create witness are observed together; authority remains in `authority`.
-    pub assignment: Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
+    pub assignment: Option<awaken_session_execution_contract::SessionTerminalCleanupAssignment>,
     /// Process-local parent of a terminal cleanup target. This is routing
     /// metadata only: the aggregate's frozen command set remains the sole work
     /// and receipt authority. It lets an accepted root receipt (or a later
@@ -702,7 +702,7 @@ pub struct ExecutionAuthorityState {
     /// from `lifecycle`, which is re-entered by Environment materialization.
     pub phase: Arc<tokio::sync::Mutex<()>>,
     /// Last accepted aggregate version and equality digest; rebuildable, never authority.
-    pub frozen_receipt: Option<awaken_session_realization_contract::FrozenProjectionReceipt>,
+    pub frozen_receipt: Option<awaken_session_execution_contract::FrozenProjectionReceipt>,
     /// Current Control-issued projection authority. It is a live cache used to
     /// request renewal; durable ownership remains in the Session aggregate.
     pub authority: SessionRealizationAuthority,

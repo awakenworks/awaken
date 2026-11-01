@@ -291,9 +291,9 @@ async fn resumed_user_run_dispatch_settles_each_activity_without_republishing_in
         let mut prior_source = 0;
         for cursor in [2, 3] {
             let boundary = if cursor == 2 {
-                awaken_session_execution_contract::SessionAgentRunBoundary::Awaiting
+                awaken_session_contract::SessionAgentRunBoundary::Awaiting
             } else {
-                awaken_session_execution_contract::SessionAgentRunBoundary::Completed
+                awaken_session_contract::SessionAgentRunBoundary::Completed
             };
             // Recreate the stateless application to exercise persisted receipts.
             let cold = application_with_runtime(

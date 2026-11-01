@@ -896,9 +896,7 @@ mod ticket_projection_tests {
                 session_thread_reply_result(
                     &permission_ticket,
                     "reply-call",
-                    &awaken_session_execution_contract::SessionThreadToolReply::Confirm(
-                        decision.clone()
-                    ),
+                    &awaken_session_contract::SessionThreadToolReply::Confirm(decision.clone()),
                 ),
                 ResumeResult::Permission(decision),
                 "{rule}/E1"
@@ -916,7 +914,7 @@ mod ticket_projection_tests {
         for (rule, reply, expected_error, expected_text) in [
             (
                 "R4a",
-                awaken_session_execution_contract::SessionThreadToolReply::Custom {
+                awaken_session_contract::SessionThreadToolReply::Custom {
                     content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
                         "custom ok",
                     )],
@@ -927,7 +925,7 @@ mod ticket_projection_tests {
             ),
             (
                 "R4b",
-                awaken_session_execution_contract::SessionThreadToolReply::Custom {
+                awaken_session_contract::SessionThreadToolReply::Custom {
                     content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
                         "custom failed",
                     )],
@@ -938,7 +936,7 @@ mod ticket_projection_tests {
             ),
             (
                 "R5a",
-                awaken_session_execution_contract::SessionThreadToolReply::Result {
+                awaken_session_contract::SessionThreadToolReply::Result {
                     content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
                         "generic ok",
                     )],
@@ -949,7 +947,7 @@ mod ticket_projection_tests {
             ),
             (
                 "R5b",
-                awaken_session_execution_contract::SessionThreadToolReply::Result {
+                awaken_session_contract::SessionThreadToolReply::Result {
                     content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
                         "generic failed",
                     )],
@@ -969,9 +967,10 @@ mod ticket_projection_tests {
             }
         }
 
-        let permission = awaken_session_execution_contract::SessionThreadToolReply::Confirm(
-            PermissionDecision::Allow { note: None },
-        );
+        let permission =
+            awaken_session_contract::SessionThreadToolReply::Confirm(PermissionDecision::Allow {
+                note: None,
+            });
         let client_mismatch = ResumeCommand::from_ticket(
             &result_ticket,
             session_thread_reply_result(&result_ticket, "reply-call", &permission),
@@ -1003,7 +1002,7 @@ mod ticket_projection_tests {
             Err(awaken_runtime_contract::resume::ResumeError::ResultKindMismatch),
             "R6/E3 remote target"
         );
-        let supplied = awaken_session_execution_contract::SessionThreadToolReply::Result {
+        let supplied = awaken_session_contract::SessionThreadToolReply::Result {
             content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
                 "forged",
             )],

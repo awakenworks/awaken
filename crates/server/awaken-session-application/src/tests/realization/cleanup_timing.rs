@@ -178,7 +178,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
         app.execution_admission()
             .set_worker_observation_source(workers.clone())
             .unwrap();
-        let target = awaken_session_realization_contract::SessionRealizationTarget {
+        let target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: registered.snapshot.identity.worker_id.clone(),
             runtime_incarnation: registered.snapshot.identity.lease_owner(),
             lease_expires_at_unix_ms: now + claim,
@@ -235,7 +235,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             let renewed = app
                 .realizations
                 .renew_session_realization(
-                    awaken_session_realization_contract::RenewSessionRealization {
+                    awaken_session_execution_contract::RenewSessionRealization {
                         session_id: id.clone(),
                         asserted_lease: original.clone(),
                         requested_expires_at_unix_ms: original.expires_at_unix_ms + 100,
@@ -259,7 +259,7 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             let replay = app
                 .realizations
                 .renew_session_realization(
-                    awaken_session_realization_contract::RenewSessionRealization {
+                    awaken_session_execution_contract::RenewSessionRealization {
                         session_id: id.clone(),
                         asserted_lease: original,
                         requested_expires_at_unix_ms: renewed.lease.expires_at_unix_ms,
@@ -283,11 +283,11 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             );
             clock.set(renewed.lease.expires_at_unix_ms);
             assert!(matches!(app.realizations.renew_session_realization(
-                awaken_session_realization_contract::RenewSessionRealization {
+                awaken_session_execution_contract::RenewSessionRealization {
                     session_id: id.clone(), asserted_lease: renewed.lease.clone(),
                     requested_expires_at_unix_ms: renewed.lease.expires_at_unix_ms + 100,
                 },
-            ).await, Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)), "R8/{rule}");
+            ).await, Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership)), "R8/{rule}");
             assert_eq!(
                 repo.get(&id).await.unwrap(),
                 after,

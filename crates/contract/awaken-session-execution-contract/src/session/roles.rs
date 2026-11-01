@@ -37,7 +37,7 @@ pub trait RealizationRuntime: Send + Sync {
         thread: &str,
         projection: crate::FrozenSessionProjection,
         mode: crate::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>;
+    ) -> Result<(), crate::SessionRealizationEffectFailure>;
 
     /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
     /// an already-installed realization fence. This is the only lease-only
@@ -251,7 +251,7 @@ pub trait ChildRunCoordination: Send + Sync {
     /// through the Session-affine claim-fenced resume/commit boundary.
     async fn reply_session_thread_tool(
         &self,
-        delivery: crate::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), RunError>;
 
     /// Foreground form of [`Self::reply_session_thread_tool`]. The durable
@@ -260,7 +260,7 @@ pub trait ChildRunCoordination: Send + Sync {
     /// truth. No inline executor is authorized by this observation policy.
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: crate::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError>;
 
@@ -353,8 +353,8 @@ pub trait SessionCoordinationReads: Send + Sync {
     /// applying the reply so a concurrent resume or later Run fails closed.
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &crate::SessionThreadToolReplyCommand,
-    ) -> Result<crate::SessionThreadToolReplyFence, RunError>;
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, RunError>;
 
     /// Validate one model-facing Agent command against the source Run's exact
     /// committed `ActiveToolBatch`. Implementations must use the same atomic

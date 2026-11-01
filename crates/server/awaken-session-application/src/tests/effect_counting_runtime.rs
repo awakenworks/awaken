@@ -92,7 +92,7 @@ impl awaken_session_execution_contract::SessionRuns for EffectCountingRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_session_execution_contract::ToolPermissionDecision,
+        _decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         self.tool_calls.fetch_add(1, Ordering::SeqCst);
         self.events.lock().unwrap().push("tool");
@@ -183,7 +183,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EffectCountingRun
 
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -196,9 +196,9 @@ impl awaken_session_execution_contract::RealizationRuntime for EffectCountingRun
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         self.events.lock().unwrap().push("projection");
         install_complete_test_projection(self, thread, projection, mode)
             .await
@@ -208,7 +208,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EffectCountingRun
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -324,7 +324,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EffectCountingR
 
     async fn reply_session_thread_tool(
         &self,
-        _delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        _delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), RunError> {
         self.tool_calls.fetch_add(1, Ordering::SeqCst);
         self.events.lock().unwrap().push("tool");
@@ -333,7 +333,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EffectCountingR
 
     async fn reply_and_observe_session_thread_tool(
         &self,
-        _delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        _delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         _stream_sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
         self.tool_calls.fetch_add(1, Ordering::SeqCst);
@@ -468,12 +468,9 @@ impl awaken_session_execution_contract::RealizationEffects for EffectCountingRun
 
     async fn execute_terminal_repository_publication_for_lease(
         &self,
-        command: awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_execution_contract::__macro_support::SessionRealizationLease,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::SessionRepositoryPublicationEffect,
-        RunError,
-    > {
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationEffect, RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .execute_terminal_repository_publication_for_lease(command, lease)
             .await
@@ -481,11 +478,8 @@ impl awaken_session_execution_contract::RealizationEffects for EffectCountingRun
 
     async fn dispose_terminal_cleanup_for_effect(
         &self,
-        effect: awaken_session_execution_contract::__macro_support::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<
-        awaken_session_execution_contract::__macro_support::SessionCleanupDisposalReceipt,
-        RunError,
-    > {
+        effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_session_contract::SessionCleanupDisposalReceipt, RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .dispose_terminal_cleanup_for_effect(effect)
             .await

@@ -22,7 +22,7 @@ use awaken_resource_worker_http::{
     memory_materialization_reference, terminal_memory_materialization_reference,
 };
 use awaken_session_contract::{SessionTerminalMemoryIntent, SessionTerminalMemoryTarget};
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     SessionRealizationControlFailure, SessionResourceMaterializationIntent,
 };
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
@@ -239,7 +239,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
                 "renewed-file",
                 &FileReadPurpose::SessionResource,
                 Some(
-                    &awaken_session_realization_contract::ResourceOperationFence::SessionMaterialization(
+                    &awaken_session_execution_contract::ResourceOperationFence::SessionMaterialization(
                         file_intent.clone(),
                     ),
                 ),
@@ -250,7 +250,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
                 "workspace-memory",
                 &binding,
                 Some(
-                    &awaken_session_realization_contract::ResourceOperationFence::SessionMaterialization(
+                    &awaken_session_execution_contract::ResourceOperationFence::SessionMaterialization(
                         skill_intent.clone(),
                     ),
                 ),
@@ -273,7 +273,7 @@ struct ExactResourceControl {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionResourceMaterializationControl
+impl awaken_session_execution_contract::SessionResourceMaterializationControl
     for ExactResourceControl
 {
     async fn authorize_resource_materialization_intent(
@@ -283,7 +283,7 @@ impl awaken_session_realization_contract::SessionResourceMaterializationControl
         if intent.session_id() != self.intent.session_id()
             || intent.resource_revision() != self.intent.resource_revision()
             || intent.target() != self.intent.target()
-            || !awaken_session_realization_contract::realization_lease_authorizes(
+            || !awaken_session_configuration_contract::resource::realization_lease_authorizes(
                 &self.current_lease,
                 intent.lease(),
                 support::unix_now_ms(),
@@ -296,7 +296,7 @@ impl awaken_session_realization_contract::SessionResourceMaterializationControl
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalMemoryControl
+impl awaken_session_execution_contract::SessionTerminalMemoryControl
     for ExactTerminalMemoryControl
 {
     async fn authorize_terminal_memory_intent(
@@ -305,11 +305,11 @@ impl awaken_session_realization_contract::SessionTerminalMemoryControl
     ) -> Result<SessionTerminalMemoryTarget, SessionRealizationControlFailure> {
         if intent != &self.intent
             || self.current_effect.command != intent.effect().command
-            || !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            || !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 &self.current_effect.lease,
                 &intent.effect().lease,
             )
-            || !awaken_session_realization_contract::realization_lease_is_live_at(
+            || !awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                 self.current_effect.lease.expires_at_unix_ms,
                 support::unix_now_ms(),
             )

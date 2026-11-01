@@ -92,7 +92,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
         create(repo.as_ref(), session).await;
     }
     let application = application(repo, Arc::new(RecordingEnvironmentSource::default()));
-    let exact = awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
+    let exact = awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new(
         "resource-memory-current",
         1,
         input.clone(),
@@ -109,7 +109,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
         "R1/E1"
     );
     let exact_active =
-        awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
+        awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new(
             "resource-memory-active",
             1,
             input.clone(),
@@ -126,7 +126,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
         "R5/E1"
     );
     let exact_file =
-        awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
+        awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new(
             "resource-memory-current",
             1,
             file,
@@ -134,7 +134,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
         )
         .expect("exact pending File intent");
     let exact_skill =
-        awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new_skill(
+        awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new_skill(
             "resource-memory-current",
             1,
             skill.clone(),
@@ -186,7 +186,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
                     .resource_effect_authorization()
                     .authorize_resource_materialization_intent(&denied)
                     .await,
-                Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
+                Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership)
             ),
             "R7 rejects forged {field}"
         );
@@ -202,13 +202,13 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
                     .resource_effect_authorization()
                     .authorize_resource_materialization_intent(&denied)
                     .await,
-                Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
+                Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership)
             ),
             "R7 root must still have a live owner: {session_id}"
         );
     }
 
-    let stale = awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
+    let stale = awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new(
         "resource-memory-current",
         1,
         input.clone(),
@@ -224,13 +224,15 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
                 .resource_effect_authorization()
                 .authorize_resource_materialization_intent(&stale)
                 .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
+            Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership
+            )
         ),
         "R2/E2"
     );
 
     let wrong_revision =
-        awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
+        awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new(
             "resource-memory-current",
             2,
             input.clone(),
@@ -240,7 +242,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
     let mut wrong_input = input.clone();
     wrong_input.mount_path = "/memory/foreign".into();
     let wrong_input =
-        awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
+        awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new(
             "resource-memory-current",
             1,
             wrong_input,
@@ -250,7 +252,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
     let mut foreign_skill = skill;
     foreign_skill.version += 1;
     let wrong_skill =
-        awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new_skill(
+        awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new_skill(
             "resource-memory-current",
             1,
             foreign_skill,
@@ -265,9 +267,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
                     .authorize_resource_materialization_intent(intent)
                     .await,
                 Err(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
-                        _
-                    )
+                    awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(_)
                 )
             ),
             "R3/E3"
@@ -275,7 +275,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
     }
 
     let terminal =
-        awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
+        awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new(
             "resource-memory-terminal",
             1,
             input,
@@ -288,7 +288,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
                 .resource_effect_authorization()
                 .authorize_resource_materialization_intent(&terminal)
                 .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::Terminal)
+            Err(awaken_session_execution_contract::SessionRealizationControlFailure::Terminal)
         ),
         "R4/E4"
     );
@@ -427,7 +427,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
 
     let effect_for =
         |session_id: &str,
-         work: awaken_session_realization_contract::SessionTerminalCleanupWork,
+         work: awaken_session_execution_contract::SessionTerminalCleanupWork,
          lease: crate::session_resource::SessionRealizationLease| {
             awaken_session_contract::SessionTerminalCleanupEffect::new(
                 terminal_prepare_commands(work)
@@ -508,7 +508,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
             .terminal_cleanups
             .terminal_cleanup_work(&SessionId::from("terminal-authority-expired"), &asserted)
             .await,
-        Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership)
     ));
     let expired_action = repo
         .get(&SessionId::from("terminal-authority-expired"))
@@ -529,9 +529,12 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     assert!(
         matches!(
             application
-                .terminal_cleanups.authorize_terminal_cleanup_effect(&expired_effect)
+                .terminal_cleanups
+                .authorize_terminal_cleanup_effect(&expired_effect)
                 .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
+            Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership
+            )
         ),
         "A2/E2"
     );
@@ -547,7 +550,9 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
                 .resource_effect_authorization()
                 .authorize_terminal_memory_intent(&expired_memory)
                 .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
+            Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership
+            )
         ),
         "A2/E2 terminal Memory"
     );
@@ -569,7 +574,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
             .terminal_cleanups
             .terminal_cleanup_work(&SessionId::from("terminal-authority-expired"), &asserted)
             .await,
-        Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership)
     ));
     let expired_disposal = match repo
         .get(&SessionId::from("terminal-authority-expired"))
@@ -590,9 +595,12 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     assert!(
         matches!(
             application
-                .terminal_cleanups.authorize_terminal_cleanup_disposal(&expired_disposal)
+                .terminal_cleanups
+                .authorize_terminal_cleanup_disposal(&expired_disposal)
                 .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
+            Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership
+            )
         ),
         "A2/E2 terminal disposal returns no Workspace/provider authority"
     );
@@ -607,9 +615,12 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     assert!(
         matches!(
             application
-                .terminal_cleanups.authorize_terminal_cleanup_effect(&foreign_effect)
+                .terminal_cleanups
+                .authorize_terminal_cleanup_effect(&foreign_effect)
                 .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
+            Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership
+            )
         ),
         "A3/E3"
     );
@@ -625,7 +636,9 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
                 .resource_effect_authorization()
                 .authorize_terminal_memory_intent(&foreign_memory)
                 .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
+            Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership
+            )
         ),
         "A3/E3 terminal Memory"
     );
@@ -636,9 +649,12 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     assert!(
         matches!(
             application
-                .terminal_cleanups.authorize_terminal_cleanup_disposal(&foreign_disposal)
+                .terminal_cleanups
+                .authorize_terminal_cleanup_disposal(&foreign_disposal)
                 .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership)
+            Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership
+            )
         ),
         "A3/E3 terminal disposal"
     );

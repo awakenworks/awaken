@@ -5,7 +5,7 @@
 //! Required execution observations frozen before the Session application is shared.
 
 use awaken_dispatch_contract::DispatchOperationalFeed;
-use awaken_session_realization_contract::SessionPreparationPlacement;
+use awaken_session_execution_contract::SessionPreparationPlacement;
 use awaken_worker_contract::WorkerIncarnationSource;
 use std::sync::{Arc, OnceLock};
 
@@ -29,7 +29,7 @@ use std::sync::{Arc, OnceLock};
 /// use awaken_session_application::SessionExecutionAdmission;
 /// use awaken_dispatch_contract::DispatchOperationalFeed;
 /// use awaken_worker_contract::WorkerObservationSource;
-/// use awaken_session_realization_contract::SessionPreparationPlacement;
+/// use awaken_session_execution_contract::SessionPreparationPlacement;
 /// fn roster_only(
 ///     dispatch: Arc<dyn DispatchOperationalFeed>, workers: Arc<dyn WorkerObservationSource>,
 ///     placement: Arc<dyn SessionPreparationPlacement>,
@@ -43,7 +43,7 @@ use std::sync::{Arc, OnceLock};
 /// use awaken_session_application::SessionExecutionAdmission;
 /// use awaken_dispatch_contract::DispatchOperationalFeed;
 /// use awaken_worker_contract::WorkerIncarnationSource;
-/// use awaken_session_realization_contract::SessionPreparationPlacement;
+/// use awaken_session_execution_contract::SessionPreparationPlacement;
 /// fn complete(
 ///     dispatch: Arc<dyn DispatchOperationalFeed>, workers: Arc<dyn WorkerIncarnationSource>,
 ///     placement: Arc<dyn SessionPreparationPlacement>,
@@ -184,8 +184,8 @@ impl SessionExecutionAdmission {
         session: &awaken_session_contract::PersistedSession,
         activate_pending_resources: bool,
     ) -> Result<
-        awaken_session_realization_contract::FrozenSessionProjection,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::FrozenSessionProjection,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         let mut projection = queries
             .frozen_runtime_projection(owner_scope, session, true, activate_pending_resources)
@@ -193,12 +193,9 @@ impl SessionExecutionAdmission {
             .map_err(crate::realization::unavailable)?;
         if let Some(workers) = self.workers.get() {
             projection.bound_source_end =
-                awaken_session_realization_contract::BoundSourceEnd::read(
-                    session,
-                    workers.as_ref(),
-                )
-                .await
-                .map_err(crate::realization::unavailable)?;
+                awaken_session_execution_contract::BoundSourceEnd::read(session, workers.as_ref())
+                    .await
+                    .map_err(crate::realization::unavailable)?;
         }
         Ok(projection)
     }

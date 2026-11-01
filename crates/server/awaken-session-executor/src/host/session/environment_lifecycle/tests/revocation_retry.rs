@@ -524,7 +524,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
             &*first_managed.run_assembly,
             thread,
             projection.clone(),
-            awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
+            awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                 lease: awaken_session_realization::test_support::test_observed_lease(lease.clone()),
                 prepare_session: true,
             },
@@ -591,7 +591,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
             &*managed.run_assembly,
             thread,
             projection,
-            awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
+            awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                 lease: awaken_session_realization::test_support::test_observed_lease(lease),
                 prepare_session: true,
             },

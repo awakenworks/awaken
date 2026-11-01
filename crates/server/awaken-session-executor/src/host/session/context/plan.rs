@@ -197,7 +197,7 @@ pub(super) async fn prepare(
         ));
     }
     let a2a_only = installed.as_ref().is_some_and(|snapshot| {
-        !awaken_session_realization_contract::requires_local_environment(&snapshot.resolved_spec)
+        !awaken_session_execution_contract::requires_local_environment(&snapshot.resolved_spec)
     });
     if a2a_only && host.session_has_local_environment_inputs(thread, installed.as_ref())? {
         return Err(SessionExecutionError::bad_request(

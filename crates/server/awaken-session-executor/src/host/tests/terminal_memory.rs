@@ -33,13 +33,13 @@ fn terminal_memory_resources() -> crate::session_resource::ResolvedSessionResour
 }
 
 pub(super) fn terminal_memory_projection()
--> awaken_session_realization_contract::FrozenSessionProjection {
+-> awaken_session_execution_contract::FrozenSessionProjection {
     terminal_memory_projection_with_idle_retention(Default::default())
 }
 
 fn terminal_memory_projection_with_idle_retention(
     idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
-) -> awaken_session_realization_contract::FrozenSessionProjection {
+) -> awaken_session_execution_contract::FrozenSessionProjection {
     let resources = terminal_memory_resources();
     let mut projection = remote_terminal_cleanup_projection_with_idle_retention(idle_retention);
     projection.resource_revision = 1;
@@ -93,7 +93,7 @@ impl
 
 impl
     awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-        awaken_session_realization_contract::SessionResourceMaterializationIntent,
+        awaken_session_execution_contract::SessionResourceMaterializationIntent,
     > for RecordingTerminalMemoryReferenceEncoder
 {
     fn encode(
@@ -102,11 +102,11 @@ impl
         memory_store_id: &str,
         config_version: awaken_resource_contract::ConfigVersion,
         access: awaken_resource_contract::ResourceAccess,
-        fence: &awaken_session_realization_contract::SessionResourceMaterializationIntent,
+        fence: &awaken_session_execution_contract::SessionResourceMaterializationIntent,
     ) -> Result<String, awaken_resource_contract::MemoryMaterializationReferenceError> {
         self.realization_attempts
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let awaken_session_realization_contract::SessionResourceMaterializationTarget::Input(input) =
+        let awaken_session_execution_contract::SessionResourceMaterializationTarget::Input(input) =
             fence.target()
         else {
             return Err(
@@ -884,7 +884,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         &*managed.run_assembly,
         thread,
         projection,
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("HS1 install frozen source projection");
@@ -1204,7 +1204,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     );
 
     let skewed_proof =
-        awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
             expired_lease.clone(),
             expired_lease.expires_at_unix_ms - 30_000,
         )
@@ -1477,7 +1477,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
                 &host.run_assembly.realization_executor,
                 &host.run_assembly.mcp,
             ),
-            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: thread.into(),
                 projection: projection.clone(),
@@ -1893,7 +1893,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         &*managed.run_assembly,
         thread,
         projection.clone(),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("A1 install frozen writable Memory input");
@@ -1913,7 +1913,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
                 &host.run_assembly.realization_executor,
                 &host.run_assembly.mcp,
             ),
-            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: thread.into(),
                 projection: projection.clone(),
@@ -2026,7 +2026,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             &*managed.run_assembly,
             thread,
             projection.clone(),
-            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+            awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
         )
         .await
         .expect("M0 install frozen writable Memory input");
@@ -2091,7 +2091,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                     &host.run_assembly.realization_executor,
                     &host.run_assembly.mcp,
                 ),
-                &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                     environment_creation_not_attempted: false,
                     session_id: thread.into(),
                     projection: projection.clone(),
@@ -2196,7 +2196,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
         &*managed.run_assembly,
         thread,
         projection.clone(),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("HM0b install frozen writable Memory input");
@@ -2208,7 +2208,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
                 &host.run_assembly.realization_executor,
                 &host.run_assembly.mcp,
             ),
-            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: thread.into(),
                 projection: projection.clone(),
@@ -2448,7 +2448,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                     &host.run_assembly.realization_executor,
                     &host.run_assembly.mcp,
                 ),
-                &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                     environment_creation_not_attempted: false,
                     session_id: SessionId::from(&thread),
                     projection: projection.clone(),

@@ -271,15 +271,13 @@ impl awaken_worker_contract::WorkerIncarnationSource for ExecutionObservationPro
     }
 }
 
-impl awaken_session_realization_contract::SessionPreparationPlacement
-    for ExecutionObservationProbe
-{
+impl awaken_session_execution_contract::SessionPreparationPlacement for ExecutionObservationProbe {
     fn requirements(
         &self,
         _session: &PersistedSession,
     ) -> Result<
         awaken_worker_contract::PlacementRequirements,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(awaken_worker_contract::PlacementRequirements::remote_required())
@@ -301,14 +299,14 @@ async fn builder_freezes_execution_services_and_mount_checks_reject_foreign_inst
         let foreign = Arc::new(ExecutionObservationProbe::default());
         let dispatch: Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed> = probe.clone();
         let workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> = probe.clone();
-        let placement: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+        let placement: Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement> =
             probe.clone();
         let foreign_dispatch: Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed> =
             foreign.clone();
         let foreign_workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> =
             foreign.clone();
         let foreign_placement: Arc<
-            dyn awaken_session_realization_contract::SessionPreparationPlacement,
+            dyn awaken_session_execution_contract::SessionPreparationPlacement,
         > = foreign.clone();
         let store = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -370,12 +368,11 @@ fn fixture_execution_completion_validates_existing_bindings_before_filling_missi
     let probe = Arc::new(ExecutionObservationProbe::default());
     let foreign = Arc::new(ExecutionObservationProbe::default());
     let workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> = probe.clone();
-    let placement: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+    let placement: Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement> =
         probe.clone();
     let foreign_workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> = foreign.clone();
-    let foreign_placement: Arc<
-        dyn awaken_session_realization_contract::SessionPreparationPlacement,
-    > = foreign.clone();
+    let foreign_placement: Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement> =
+        foreign.clone();
     for (has_workers, has_placement) in [(true, false), (false, true), (true, true)] {
         let services = SessionExecutionAdmission::fixture();
         if has_workers {

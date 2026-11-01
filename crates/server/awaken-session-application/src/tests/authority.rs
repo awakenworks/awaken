@@ -3681,7 +3681,7 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
     let delivery = accepted_runtime.deliveries.lock().unwrap()[0].clone();
     assert_eq!(
         delivery.command.target,
-        awaken_session_execution_contract::SessionThreadTarget::Primary,
+        awaken_session_contract::SessionThreadTarget::Primary,
         "F3/E2"
     );
     assert_eq!(delivery.command.expected_run_id.0, "reply-run", "F3/E2");
@@ -3765,29 +3765,26 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     ] {
         create(repo.as_ref(), persisted(session_id, false, "idle")).await;
     }
-    let command =
-        |session_id: &str| awaken_session_execution_contract::SessionThreadToolReplyCommand {
-            session_id: SessionId::from(session_id),
-            tool_request_event_id: None,
-            expected_thread_version: None,
-            target: awaken_session_execution_contract::SessionThreadTarget::Child(ThreadId(
-                "reply-child".into(),
-            )),
-            expected_run_id: RunId("reply-run".into()),
-            expected_correlation_id: "reply-correlation".into(),
-            tool_use_id: "reply-tool".into(),
-            reply: awaken_session_execution_contract::SessionThreadToolReply::Confirm(
-                awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
-            ),
-            accompanying_system: None,
-        };
+    let command = |session_id: &str| awaken_session_contract::SessionThreadToolReplyCommand {
+        session_id: SessionId::from(session_id),
+        tool_request_event_id: None,
+        expected_thread_version: None,
+        target: awaken_session_contract::SessionThreadTarget::Child(ThreadId("reply-child".into())),
+        expected_run_id: RunId("reply-run".into()),
+        expected_correlation_id: "reply-correlation".into(),
+        tool_use_id: "reply-tool".into(),
+        reply: awaken_session_contract::SessionThreadToolReply::Confirm(
+            awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
+        ),
+        accompanying_system: None,
+    };
 
     // P7: extension-owned primary reply -> delivered without opening any root activity.
     // Exact replay has the same effect; the Outcome's ordinary Run remains its sole owner.
     create(repo.as_ref(), persisted("reply-extension", false, "idle")).await;
     let mut extension_runtime = RecordingReplyRuntime::new(ReplyRuntimeOutcome::Accepted);
     extension_runtime.activity =
-        awaken_session_execution_contract::SessionThreadToolReplyActivity::ThreadExtension;
+        awaken_session_contract::SessionThreadToolReplyActivity::ThreadExtension;
     let extension_runtime = Arc::new(extension_runtime);
     let extension = application_with_runtime(
         extension_runtime.clone(),
@@ -3795,7 +3792,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let mut extension_command = command("reply-extension");
-    extension_command.target = awaken_session_execution_contract::SessionThreadTarget::Primary;
+    extension_command.target = awaken_session_contract::SessionThreadTarget::Primary;
     for _ in 0..2 {
         awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
             extension.coordination.as_ref(),
@@ -3871,7 +3868,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     );
 
     let mut primary_command = command("reply-primary");
-    primary_command.target = awaken_session_execution_contract::SessionThreadTarget::Primary;
+    primary_command.target = awaken_session_contract::SessionThreadTarget::Primary;
     awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
         accepted.coordination.as_ref(),
         primary_command,
@@ -3887,7 +3884,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         .expect("P6 delivery");
     assert_eq!(
         primary_delivery.command.target,
-        awaken_session_execution_contract::SessionThreadTarget::Primary,
+        awaken_session_contract::SessionThreadTarget::Primary,
         "P6/E6"
     );
     assert_eq!(
@@ -4065,17 +4062,17 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
     );
     awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
         app.coordination.as_ref(),
-        awaken_session_execution_contract::SessionThreadToolReplyCommand {
+        awaken_session_contract::SessionThreadToolReplyCommand {
             session_id: "reached-valid-reply".into(),
             tool_request_event_id: None,
             expected_thread_version: None,
-            target: awaken_session_execution_contract::SessionThreadTarget::Child(ThreadId(
+            target: awaken_session_contract::SessionThreadTarget::Child(ThreadId(
                 "reply-child".into(),
             )),
             expected_run_id: RunId("reply-run".into()),
             expected_correlation_id: "reply-correlation".into(),
             tool_use_id: "reply-tool".into(),
-            reply: awaken_session_execution_contract::SessionThreadToolReply::Confirm(
+            reply: awaken_session_contract::SessionThreadToolReply::Confirm(
                 awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
             ),
             accompanying_system: None,
@@ -4097,17 +4094,17 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
     let error =
         awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
             app.coordination.as_ref(),
-            awaken_session_execution_contract::SessionThreadToolReplyCommand {
+            awaken_session_contract::SessionThreadToolReplyCommand {
                 session_id: "reached-invalid-reply".into(),
                 tool_request_event_id: None,
                 expected_thread_version: None,
-                target: awaken_session_execution_contract::SessionThreadTarget::Child(ThreadId(
+                target: awaken_session_contract::SessionThreadTarget::Child(ThreadId(
                     "reply-child".into(),
                 )),
                 expected_run_id: RunId("reply-run".into()),
                 expected_correlation_id: "reply-correlation".into(),
                 tool_use_id: "forged-tool".into(),
-                reply: awaken_session_execution_contract::SessionThreadToolReply::Confirm(
+                reply: awaken_session_contract::SessionThreadToolReply::Confirm(
                     awaken_agent_contract::agent::awaiting::PermissionDecision::Allow {
                         note: None,
                     },
@@ -6616,14 +6613,14 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             .get(&SessionId::from("in-flight-renewal"))
             .await
             .unwrap();
-        let command = awaken_session_realization_contract::ActivateSessionRealization {
+        let command = awaken_session_execution_contract::ActivateSessionRealization {
             session_id: "in-flight-renewal".into(),
             lease: asserted_lease.clone(),
             prepared_resource_revision,
             mcp_receipts: vec![admitted_receipt],
         };
         let result =
-            awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
+            awaken_session_execution_contract::SessionRealizationControl::activate_session_realization(
                 app.realizations.as_ref(),
                 command.clone(),
             )
@@ -6634,7 +6631,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             assert!(
                 matches!(
                     result,
-                    Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))
+                    Err(awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(_))
                 ),
                 "F5/E6 reject mismatched preparation before catch-up"
             );
@@ -6671,7 +6668,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         // F1/F2 replay preserves phase, projection and durable lease, while
         // each response independently samples its remaining authority horizon.
         assert!(
-            awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
+            awaken_session_execution_contract::SessionRealizationControl::activate_session_realization(
                 app.realizations.as_ref(), command
             )
             .await
@@ -6687,10 +6684,8 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             revision,
             "F1/F2 no duplicate activation write"
         );
-        let awaken_session_realization_contract::SessionRealizationAction::Publish {
-            publish,
-            drain,
-        } = directive.action
+        let awaken_session_execution_contract::SessionRealizationAction::Publish { publish, drain } =
+            directive.action
         else {
             panic!("F1/E3 and F2/E3 publish only an exact staged generation")
         };
@@ -6751,7 +6746,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
         McpRealizationReceipt, SessionMcpAttachmentSet,
     };
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
-    use awaken_session_realization_contract::{
+    use awaken_session_execution_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         RenewSessionRealization, SessionRealizationAction, SessionRealizationControl,
         SessionRealizationControlFailure, SessionRealizationTarget,

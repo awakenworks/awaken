@@ -391,7 +391,7 @@ Lines are at `1b56f9aea0`, except the rows this batch added (`durable_control.rs
 | `contract/awaken-session-configuration-contract/src/skill_delivery.rs:93` | (iii) | exempt | feature off: no Skill source means no custom Skills; row P3 refuses with `AuthorityUnavailable`, built-in Skills still resolve |
 | `contract/awaken-session-configuration-contract/src/skill_delivery.rs:135` | (iii) | exempt | same as `:93` (absent catalog) |
 | `contract/awaken-session-environment-contract/src/tool_export.rs:27` | (iii) | exempt | capability query: attached channels are a property of the exporter, not a role a deployment selects |
-| `contract/awaken-session-realization-contract/src/session_realization/canonical_publication.rs:82` | (iii) | exempt | Worker holds no publication catalog: it runs only the publications frozen into each claimed dispatch; absence reads as no publication (rows S2/S4, `SnapshotNotFound`) |
+| `contract/awaken-session-execution-contract/src/session_realization/canonical_publication.rs:82` | (iii) | exempt | Worker holds no publication catalog: it runs only the publications frozen into each claimed dispatch; absence reads as no publication (rows S2/S4, `SnapshotNotFound`) |
 | `contract/awaken-tool-contract/src/tool.rs:914` | (iv) | kept (L) | trait default: DurableTaskTool capability query |
 | `contract/awaken-tool-contract/src/tool.rs:1219` | (iv) | kept (L) | trait default: DurableTaskExecutor capability query |
 | `contract/awaken-tool-contract/src/tool.rs:1372` | (iv) | kept (L) | SDK impl of the query above |

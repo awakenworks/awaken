@@ -5,6 +5,8 @@
 
 use super::*;
 use crate::mutation::ROOT_CAS_ATTEMPTS;
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
+use awaken_session_configuration_contract::resource::realization_lease_is_live_at;
 use std::sync::Arc;
 use tracing::Instrument as _;
 
@@ -147,7 +149,7 @@ impl SessionRealizations {
         point: &'static str,
         id: &awaken_session_types::SessionId,
     ) {
-        use awaken_session_realization_contract::realization_observation as observation;
+        use awaken_session_execution_contract::realization_observation as observation;
         if observation::enabled() {
             let root = match self.mutations.repository().get(id).await {
                 Ok(root) => root,
@@ -264,7 +266,7 @@ impl SessionRealizations {
             || command.asserted_lease.owner.trim().is_empty()
             || command.asserted_lease.runtime_incarnation.trim().is_empty()
             || command.requested_expires_at_unix_ms < command.asserted_lease.expires_at_unix_ms
-            || !awaken_session_realization_contract::realization_lease_is_live_at(
+            || !realization_lease_is_live_at(
                 command.requested_expires_at_unix_ms,
                 self.clock.now_ms(),
             )
@@ -361,12 +363,10 @@ impl SessionRealizations {
                 }
             };
             let now = self.clock.now_ms();
-            let existing_live = session.realization.as_ref().is_some_and(|lease| {
-                awaken_session_realization_contract::realization_lease_is_live_at(
-                    lease.expires_at_unix_ms,
-                    now,
-                )
-            });
+            let existing_live = session
+                .realization
+                .as_ref()
+                .is_some_and(|lease| realization_lease_is_live_at(lease.expires_at_unix_ms, now));
             let same_owner = session
                 .realization
                 .as_ref()
@@ -374,7 +374,7 @@ impl SessionRealizations {
             let same_incarnation = session.realization.as_ref().is_some_and(|lease| {
                 lease.runtime_incarnation == command.target.runtime_incarnation
             });
-            let assignment = awaken_session_realization_contract::session_realization_assignment(
+            let assignment = awaken_session_execution_contract::session_realization_assignment(
                 session.realization.as_ref().map(|lease| lease.epoch),
                 existing_live,
                 same_owner,
@@ -382,12 +382,12 @@ impl SessionRealizations {
                 command.target.reassign_existing_lease,
             );
             if assignment
-                == awaken_session_realization_contract::SessionRealizationAssignment::StaleOwnership
+                == awaken_session_execution_contract::SessionRealizationAssignment::StaleOwnership
             {
                 return Err(SessionRealizationControlFailure::StaleOwnership);
             }
             if assignment
-                == awaken_session_realization_contract::SessionRealizationAssignment::EpochExhausted
+                == awaken_session_execution_contract::SessionRealizationAssignment::EpochExhausted
             {
                 return Err(SessionRealizationControlFailure::Invalid(
                     "Session realization lease epoch is exhausted".into(),
@@ -407,7 +407,7 @@ impl SessionRealizations {
             // Control to reassign this otherwise independent Session lease.
             let needs_assignment = matches!(
                 assignment,
-                awaken_session_realization_contract::SessionRealizationAssignment::Assign { .. }
+                awaken_session_execution_contract::SessionRealizationAssignment::Assign { .. }
             );
             if !needs_assignment && requested.is_empty() {
                 return self
@@ -416,7 +416,7 @@ impl SessionRealizations {
             }
 
             let lease =
-                if let awaken_session_realization_contract::SessionRealizationAssignment::Assign {
+                if let awaken_session_execution_contract::SessionRealizationAssignment::Assign {
                     epoch,
                 } = assignment
                 {
@@ -580,7 +580,7 @@ impl SessionRealizations {
             let request = expected
                 .iter()
                 .find(|request| {
-                    awaken_session_realization_contract::realization_generation_authorizes(
+                    awaken_session_execution_contract::realization_generation_authorizes(
                         &request.generation,
                         &receipt.generation,
                     )
@@ -678,7 +678,7 @@ impl SessionRealizations {
                     && attachment.publication_acknowledged
                     && projection::mcp_generation_ref(&session.session_id, attachment).is_ok_and(
                         |current| {
-                            awaken_session_realization_contract::realization_generation_authorizes(
+                            awaken_session_execution_contract::realization_generation_authorizes(
                                 &current, generation,
                             )
                         },
@@ -823,7 +823,7 @@ impl SessionRealizations {
             match command
                 .initial_realization_failure_plan(&session, self.realization_retry_budget)?
             {
-                awaken_session_realization_contract::RealizationFailureOutcome::Retry {
+                awaken_session_execution_contract::RealizationFailureOutcome::Retry {
                     refund_attempt,
                 } => {
                     if refund_attempt {
@@ -834,7 +834,7 @@ impl SessionRealizations {
                     }
                     true
                 }
-                awaken_session_realization_contract::RealizationFailureOutcome::Absorb => false,
+                awaken_session_execution_contract::RealizationFailureOutcome::Absorb => false,
             }
         };
         if retry_initial || !initial_realization {
@@ -927,7 +927,7 @@ impl SessionRealizations {
     /// transport snapshot cannot mint a durable Session lease.
     pub(crate) async fn worker_for_target(
         &self,
-        target: &awaken_session_realization_contract::SessionRealizationTarget,
+        target: &awaken_session_execution_contract::SessionRealizationTarget,
     ) -> Result<Option<awaken_worker_contract::WorkerSnapshot>, SessionRealizationControlFailure>
     {
         let observations = self.execution_admission.workers.get().ok_or_else(|| {
@@ -985,7 +985,7 @@ impl SessionRealizationControl for RefreshedSessionRealizationControl<'_> {
         &self,
         command: RenewSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
         SessionRealizationControlFailure,
     > {
         // Lease-only renewal performs no executable refresh. Reuse its public
@@ -1015,10 +1015,10 @@ impl SessionRealizationControl for SessionRealizations {
         &self,
         command: RenewSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
         SessionRealizationControlFailure,
     > {
-        awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
             self.renew_session_realization_after_load(command).await?,
             self.clock.now_ms(),
         )
@@ -1061,12 +1061,12 @@ impl SessionRealizationControl for SessionRealizations {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionPreparationControl for SessionRealizations {
+impl awaken_session_execution_contract::SessionPreparationControl for SessionRealizations {
     async fn claim_next_session_preparation(
         &self,
-        target: awaken_session_realization_contract::SessionRealizationTarget,
+        target: awaken_session_execution_contract::SessionRealizationTarget,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionPreparationAssignment>,
+        Option<awaken_session_execution_contract::SessionPreparationAssignment>,
         SessionRealizationControlFailure,
     > {
         validate_realization_target(&target, self.clock.now_ms())?;
@@ -1193,7 +1193,7 @@ impl awaken_session_realization_contract::SessionPreparationControl for SessionR
                         return Ok(None);
                     }
                     return Ok(Some(
-                        awaken_session_realization_contract::SessionPreparationAssignment {
+                        awaken_session_execution_contract::SessionPreparationAssignment {
                             session_id,
                             directive,
                         },
