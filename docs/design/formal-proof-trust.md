@@ -54,6 +54,45 @@ is neither a complete batch PASS nor evidence of a 1,800-second failure.
 The source-derived nanos batch and final-source full formal qualification
 retain their separate receipts; the obligation rerun markers are unchanged.
 
+## Current fixed-target checkpoint formulation
+
+The retained scalar formulation is the planner table plus its full-width
+successor replay and the independent stale-fence harness. The table draws
+`deadline`, `target` and `now` independently from `{0, 1, 2, 3}`.
+A single per-triple map fixes zero and maps its at most three positive
+classes to their ranks `1, 2, 3`; this covers all 26 realizable
+joint zero/weak-order classes, not merely separate pairwise comparisons.
+The production plan copies the target, so input and output use that same
+injective map and its inverse. Revision, phase, attempt presence and the
+original matching-tenure epoch bound are unchanged; replay keeps its
+full-width inputs and both live/expired covers, and stale-fence keeps its
+foreign-coordinate/full-epoch domain and four covers.
+
+The only time-image dependency is the existing
+`unix_nanos_of_epoch_ms_is_strictly_monotone` at its lease-contract owner,
+now also linked to the BackgroundTask obligation by its original anchor.
+The independent Expiry `Ord` lemma is not a precondition for this checkpoint
+correspondence. No proof or formula is duplicated and no domain or solver
+change is made to the retained replay or stale harness.
+
+The table retains real allocation, String trim/comparison and policy Drop
+with the existing per-harness `#[kani::unwind(16)]`; unwinding assertions
+stay enabled. Its fixed holder/task are 14/4 bytes and Parallel constructs
+no resource vector. The original complete default eight-harness run on
+staged source `8c0cffae65b90763e1bed19795475433c454bf9c` / model
+`bb1a6a8aa1437645b4b5448f7a069da5267de808` completed in 22.91109016s,
+raw0 with original vacuity0 and table6/replay2/stale4 covers. Its short300s
+ceiling is inside the original 1,800s limit. This establishes the retirement
+precondition, not a full-formal PASS or a diagnosis of one particular loop.
+The earlier MAX-basis run was deliberately cancelled at 789.2708s/raw143
+with 4/8 completed and vacuity0; it did not reach the1,800s budget and must
+not be labeled its timeout. Earlier short diagnostics likewise do not
+establish a 1,800s failure. The historical raw packets remain unchanged.
+The existing `run_evidence = "needs_rerun"` marker is not promoted here;
+the new source-derived nanos singleton must be revalidated after its added link.
+The earlier combined CaDiCaL/Z3 resource-bound runs and the historical
+inventory below remain history, not counterexamples or current passes.
+
 ## Phase 2: what changed
 
 | Change | Harnesses | Argument |

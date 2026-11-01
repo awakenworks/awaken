@@ -251,6 +251,7 @@ mod verification {
     /// narrowed to `u16` without a stated reason.
     /// @obligation run_ingress.a_deadline_passes_once_it_is_reached
     /// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+    /// @obligation background_task.stale_fence_never_finishes_or_heartbeats
     /// @kani profile=solver-z3-v1
     #[kani::proof]
     fn unix_nanos_of_epoch_ms_is_strictly_monotone() {
