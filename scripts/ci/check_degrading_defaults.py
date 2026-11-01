@@ -187,11 +187,6 @@ FAIL_OPEN_READ = re.compile(r"\.await\s*(?://[^\n]*)?\s*\.unwrap_or_default\(\)"
 # reported, and the read is a documented best-effort enrichment whose absence
 # the caller already handles identically.
 FAIL_OPEN_READ_EXEMPTIONS: dict[str, str] = {
-    "crates/resources/awaken-resource-application/src/reclamation/tests/guard.rs": (
-        "`ZeroOnError` is the deliberately fail-open purge guard the reclamation "
-        "tests run as a negative control; the suite must observe it purging a "
-        "target the real guard would hold, so the default is the mutant itself"
-    ),
     "crates/control/awaken-control/src/admin_assistant.rs": (
         "the assistant's platform-capability projection is best-effort by "
         "design at its only call site, which already answers an unreachable "
