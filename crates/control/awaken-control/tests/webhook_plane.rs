@@ -25,7 +25,8 @@ use awaken_control::webhook_authoring::{
 };
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
 use awaken_session_application::{LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL, LifecycleOutboxRelay};
-use awaken_session_application_contract::{LifecycleFactDelivery, LifecycleFactNotifier};
+use awaken_session_application_contract::LifecycleFactNotifier;
+use awaken_session_contract::LifecycleFactDelivery;
 use awaken_session_contract::LifecycleOutbox;
 use awaken_session_contract::ManagedLifecycleFact;
 use awaken_tenancy::WorkspaceScope;

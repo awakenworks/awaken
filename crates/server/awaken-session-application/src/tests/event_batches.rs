@@ -2198,7 +2198,7 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
         assert_eq!(
             matches!(
                 first,
-                awaken_session_application_contract::SessionEventAdmission::Closed { .. }
+                awaken_session_contract::SessionEventAdmission::Closed { .. }
             ),
             !accept_first,
             "F1/F2"
@@ -2247,7 +2247,7 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
             .await;
         if accept_first {
             assert_eq!(
-                awaken_session_application_contract::SessionEventAdmission::from(&late.unwrap()),
+                awaken_session_contract::SessionEventAdmission::from(&late.unwrap()),
                 first,
                 "F1 no duplicate acceptance"
             );
@@ -2339,7 +2339,7 @@ async fn final_event_admission_close_competes_atomically_with_acceptance() {
     let resolved = resolved.unwrap();
     if matches!(
         resolved,
-        awaken_session_application_contract::SessionEventAdmission::Closed { .. }
+        awaken_session_contract::SessionEventAdmission::Closed { .. }
     ) {
         assert_eq!(
             accepted.unwrap_err().code,
@@ -2348,7 +2348,7 @@ async fn final_event_admission_close_competes_atomically_with_acceptance() {
         );
     } else {
         assert_eq!(
-            awaken_session_application_contract::SessionEventAdmission::from(&accepted.unwrap()),
+            awaken_session_contract::SessionEventAdmission::from(&accepted.unwrap()),
             resolved,
             "F5 acceptance won"
         );
@@ -2360,7 +2360,7 @@ async fn final_event_admission_close_competes_atomically_with_acceptance() {
             .unwrap()
             .event_batches
             .iter()
-            .map(awaken_session_application_contract::SessionEventAdmission::from)
+            .map(awaken_session_contract::SessionEventAdmission::from)
             .collect::<Vec<_>>(),
         vec![resolved],
         "F5 one root receipt"

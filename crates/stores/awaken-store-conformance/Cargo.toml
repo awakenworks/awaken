@@ -22,7 +22,6 @@ awaken-time.workspace = true
 awaken-lease-testkit.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-resource-contract.workspace = true
-awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-session-dream-contract.workspace = true

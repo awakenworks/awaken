@@ -30,7 +30,8 @@ use async_trait::async_trait;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_environment_contract::EnvItem;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
-use awaken_session_application_contract::{ExecutableProjectionAdmission, SessionEventAdmission};
+use awaken_session_application_contract::ExecutableProjectionAdmission;
+use awaken_session_contract::SessionEventAdmission;
 use awaken_session_contract::SessionUsage;
 use awaken_session_contract::{
     DeletedSessionEventAdmissions, IdempotencyRecord, PersistedSession, SessionRepositoryError,

@@ -2746,7 +2746,7 @@ async fn retained_admission_lookup_preserves_legacy_unknown_across_reopen() {
         .unwrap();
     assert!(legacy.admissions.is_none());
     assert_eq!(
-        awaken_session_application_contract::resolve_deleted_event_admission(&legacy, "key", "fp")
+        awaken_session_contract::resolve_deleted_event_admission(&legacy, "key", "fp")
             .unwrap_err()
             .kind,
         awaken_session_types::RunErrorKind::Unavailable
@@ -2757,9 +2757,8 @@ async fn retained_admission_lookup_preserves_legacy_unknown_across_reopen() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        awaken_session_application_contract::resolve_deleted_event_admission(&empty, "key", "fp")
-            .unwrap(),
-        awaken_session_application_contract::SessionEventAdmission::Deleted {
+        awaken_session_contract::resolve_deleted_event_admission(&empty, "key", "fp").unwrap(),
+        awaken_session_contract::SessionEventAdmission::Deleted {
             deleted_revision: SessionRevision(3)
         }
     );

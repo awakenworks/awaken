@@ -62,7 +62,7 @@ pub async fn close_event_admission(
         })?;
     use crate::awaken_extensions::{EventAdmissionProof, EventAdmissionStatus};
     let (status, proof) = match admission {
-        awaken_session_application_contract::SessionEventAdmission::Accepted {
+        awaken_session_contract::SessionEventAdmission::Accepted {
             batch_id,
             operation_ids,
         } => (
@@ -78,16 +78,14 @@ pub async fn close_event_admission(
                 }),
             },
         ),
-        awaken_session_application_contract::SessionEventAdmission::Closed { batch_id } => (
+        awaken_session_contract::SessionEventAdmission::Closed { batch_id } => (
             EventAdmissionStatus::Closed,
             EventAdmissionProof::EventBatch {
                 batch_id,
                 event_ids: Some(vec![]),
             },
         ),
-        awaken_session_application_contract::SessionEventAdmission::Deleted {
-            deleted_revision,
-        } => (
+        awaken_session_contract::SessionEventAdmission::Deleted { deleted_revision } => (
             EventAdmissionStatus::Closed,
             EventAdmissionProof::SessionDeleted {
                 deleted_revision: deleted_revision.0,

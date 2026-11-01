@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use crate::{ReqwestSender, SubscriptionSource, WebhookDispatcher, WebhookEvent, WebhookSender};
-use awaken_session_application_contract::LifecycleFactDelivery;
+use awaken_session_contract::LifecycleFactDelivery;
 use awaken_session_contract::ManagedLifecycleFact;
 
 pub struct ConfigPlaneLifecycleDelivery {

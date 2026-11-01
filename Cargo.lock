@@ -3206,7 +3206,6 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-lease-contract",
- "awaken-session-contract",
  "awaken-session-types",
  "awaken-time",
  "serde",
@@ -3721,7 +3720,6 @@ dependencies = [
  "awaken-lease-testkit",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
- "awaken-session-application-contract",
  "awaken-session-configuration-contract",
  "awaken-session-contract",
  "awaken-session-dream-contract",
@@ -3909,7 +3907,6 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-outbound-http",
- "awaken-session-application-contract",
  "awaken-session-contract",
  "awaken-time",
  "axum",

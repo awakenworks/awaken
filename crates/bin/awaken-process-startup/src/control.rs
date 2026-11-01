@@ -187,9 +187,7 @@ pub async fn prepare_control_process_with_publication_resolver_web_search_and_li
     brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
-    additional_lifecycle_delivery: Option<
-        Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
-    >,
+    additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
 ) -> Result<PreparedProcess, String> {
     prepare_control_process_with_managed_services(
         deployment,
@@ -215,9 +213,7 @@ pub async fn prepare_control_process_with_managed_services(
     brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
-    additional_lifecycle_delivery: Option<
-        Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
-    >,
+    additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
     managed_services: ManagedServiceAdapters,
 ) -> Result<PreparedProcess, String> {
     let direct_credential_execution = managed_services.provider_credential_execution.clone();
@@ -245,9 +241,7 @@ async fn prepare_control_process_with_model_supply(
         awaken_ext_builtin_tools::WebSearchProviderRegistry,
         Arc<dyn awaken_config_service::PluginPublicationResolver>,
     )>,
-    additional_lifecycle_delivery: Option<
-        Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
-    >,
+    additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
     managed_services: ManagedServiceAdapters,
 ) -> Result<PreparedProcess, String> {
     let installations = installation_binding::verify_deployment_installations(deployment).await?;
@@ -295,9 +289,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
         awaken_ext_builtin_tools::WebSearchProviderRegistry,
         Arc<dyn awaken_config_service::PluginPublicationResolver>,
     )>,
-    additional_lifecycle_delivery: Option<
-        Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
-    >,
+    additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
     mut managed_services: ManagedServiceAdapters,
     installations: installation_binding::PreparedDeploymentInstallations,
     clock: Arc<dyn awaken_time::WallClock>,

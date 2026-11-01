@@ -22,9 +22,8 @@ use awaken_protocol_managed::{ManagedLifecycleFactDelivery, ManagedState};
 use awaken_session_application::{
     LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL, LifecycleOutboxRelay, SessionApplication,
 };
-use awaken_session_application_contract::{
-    CompositeLifecycleFactDelivery, LifecycleFactDelivery, LifecycleFactNotifier,
-};
+use awaken_session_application_contract::LifecycleFactNotifier;
+use awaken_session_contract::{CompositeLifecycleFactDelivery, LifecycleFactDelivery};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManagedLifecycleCompositionError {
@@ -107,7 +106,7 @@ mod tests {
     use awaken_agent_contract::stream::sink::{Error as SinkError, Sink};
     use awaken_protocol_managed::{ManagedState, StateError, router};
     use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
-    use awaken_session_application_contract::LifecycleFactDelivery;
+    use awaken_session_contract::LifecycleFactDelivery;
     use awaken_session_contract::{ManagedLifecycleFact, SessionExecutionState};
     use awaken_session_execution_contract::{AdmitSessionRun, session_run_id};
     use axum::body::Body;

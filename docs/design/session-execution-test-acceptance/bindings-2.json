@@ -216,7 +216,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-coordinator/src/managed_lifecycle.rs",
-        "line": 231,
+        "line": 230,
         "file_sha256": "c9d79a5c5ad13be88a627c865baf259d57713425249c51bb06b92984d09ad09e"
       }
     ],

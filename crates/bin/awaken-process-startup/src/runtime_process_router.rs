@@ -786,7 +786,7 @@ fn lifecycle_webhook_delivery(
         Arc<dyn awaken_config_resolver::WebhookStore>,
         Arc<dyn awaken_credential_vault::SecretStore>,
     )>,
-) -> Arc<dyn awaken_session_application_contract::LifecycleFactDelivery> {
+) -> Arc<dyn awaken_session_contract::LifecycleFactDelivery> {
     match local_stores {
         Some((webhook_store, secrets)) => {
             awaken_webhook::lifecycle::config_plane_lifecycle_delivery(

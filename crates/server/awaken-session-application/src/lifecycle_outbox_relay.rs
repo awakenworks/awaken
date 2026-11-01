@@ -14,7 +14,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use awaken_runtime_contract::CancellationToken;
-use awaken_session_application_contract::{LifecycleFactDelivery, LifecycleFactNotifier};
+use awaken_session_application_contract::LifecycleFactNotifier;
+use awaken_session_contract::LifecycleFactDelivery;
 use awaken_session_contract::LifecycleOutbox;
 
 /// How often the replay loop retries pending facts without a notification.

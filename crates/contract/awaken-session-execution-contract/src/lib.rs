@@ -12,8 +12,6 @@ mod session;
 #[cfg(test)]
 pub(crate) use awaken_agent_contract::McpTarget;
 pub(crate) use awaken_agent_contract::stable_fingerprint;
-#[cfg(test)]
-pub(crate) use awaken_session_application_contract::session_usage_from_thread_usage;
 pub(crate) use awaken_session_application_contract::{
     DelegatedRun, DelegatedRunSnapshot, Pending, SessionBudgetResumeDelivery,
     SessionBudgetResumeDisposition, SessionBudgetResumeTicket, StepOutcome,
