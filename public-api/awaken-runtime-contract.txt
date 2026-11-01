@@ -140,7 +140,7 @@ pub awaken_runtime_contract::boundary::BoundaryOutcome::Continue::fold: alloc::v
 pub awaken_runtime_contract::boundary::BoundaryOutcome::Idle
 pub fn awaken_runtime_contract::boundary::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
 pub mod awaken_runtime_contract::cancellation
-pub enum awaken_runtime_contract::cancellation::CancellationCause
+#[non_exhaustive] pub enum awaken_runtime_contract::cancellation::CancellationCause
 pub awaken_runtime_contract::cancellation::CancellationCause::ClaimLost
 pub awaken_runtime_contract::cancellation::CancellationCause::HostDrain
 pub awaken_runtime_contract::cancellation::CancellationCause::ProofExpired
@@ -153,15 +153,12 @@ pub fn awaken_runtime_contract::cancellation::CancellationCause::fmt(&self, &mut
 pub struct awaken_runtime_contract::cancellation::AbandonedAttempt
 impl awaken_runtime_contract::cancellation::AbandonedAttempt
 pub const fn awaken_runtime_contract::cancellation::AbandonedAttempt::cause(&self) -> awaken_runtime_contract::cancellation::CancellationCause
-impl core::error::Error for awaken_runtime_contract::cancellation::AbandonedAttempt
-impl core::fmt::Display for awaken_runtime_contract::cancellation::AbandonedAttempt
-pub fn awaken_runtime_contract::cancellation::AbandonedAttempt::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_runtime_contract::cancellation::AttemptCancellation
 pub awaken_runtime_contract::cancellation::AttemptCancellation::cause: awaken_runtime_contract::cancellation::CancellationCauseCell
 pub awaken_runtime_contract::cancellation::AttemptCancellation::token: tokio_util::sync::cancellation_token::CancellationToken
 impl awaken_runtime_contract::cancellation::AttemptCancellation
 pub fn awaken_runtime_contract::cancellation::AttemptCancellation::cancel(&self, awaken_runtime_contract::cancellation::CancellationCause)
-pub struct awaken_runtime_contract::cancellation::CancellationCauseCell
+pub struct awaken_runtime_contract::cancellation::CancellationCauseCell(_)
 impl awaken_runtime_contract::cancellation::CancellationCauseCell
 pub fn awaken_runtime_contract::cancellation::CancellationCauseCell::cancel(&self, &tokio_util::sync::cancellation_token::CancellationToken, awaken_runtime_contract::cancellation::CancellationCause)
 pub fn awaken_runtime_contract::cancellation::CancellationCauseCell::new() -> Self
