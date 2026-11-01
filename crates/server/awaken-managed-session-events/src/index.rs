@@ -124,7 +124,7 @@ impl ParentTerminalEvidence {
             failed_at_unix_ms: persisted.realization_progress().failed_at_unix_ms(),
             archived_at_unix_ms: persisted
                 .archived_at()
-                .and_then(awaken_session_application_contract::rfc3339_to_epoch_millis),
+                .and_then(awaken_time::utc::rfc3339_to_epoch_millis),
         }
     }
 }

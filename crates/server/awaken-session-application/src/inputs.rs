@@ -1,6 +1,6 @@
 // @formal surface exclude=application_adapter
 // @formal owner crates/contract/awaken-session-contract/src/repository/repository_port.rs
-// @formal owner crates/contract/awaken-session-execution-contract/src/session/live_inbox.rs
+// @formal owner crates/contract/awaken-session-application-contract/src/live_inbox.rs
 // @formal owner crates/server/awaken-session-application/src/session_input.rs
 // @formal reason: The existing application owner check precedes every operation on the selected Inbox.
 // @formal reason: The existing compiler and its private validated value live with the selected Inputs.
@@ -8,7 +8,7 @@
 //! Selected Session input planning and workspace-fenced live steering.
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_session_execution_contract::{
+use awaken_session_application_contract::{
     LiveInboxApplication, LiveInboxApplicationError, LiveInboxSnapshot,
 };
 
@@ -32,7 +32,7 @@ mod lowering;
 /// ```
 /// use std::sync::Arc;
 /// use awaken_session_application::SessionInputs;
-/// use awaken_session_execution_contract::LiveInboxApplication;
+/// use awaken_session_application_contract::LiveInboxApplication;
 /// fn selected(inputs: Arc<SessionInputs>) -> Arc<dyn LiveInboxApplication> {
 ///     inputs
 /// }
@@ -44,7 +44,7 @@ mod lowering;
 /// ```compile_fail,E0277
 /// use std::sync::Arc;
 /// use awaken_session_application::SessionApplication;
-/// use awaken_session_execution_contract::LiveInboxApplication;
+/// use awaken_session_application_contract::LiveInboxApplication;
 /// fn old_forwarder(app: Arc<SessionApplication>) -> Arc<dyn LiveInboxApplication> {
 ///     app
 /// }

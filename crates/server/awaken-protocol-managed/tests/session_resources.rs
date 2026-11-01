@@ -6001,7 +6001,7 @@ async fn profiled_release_projects_one_durable_repository_publication() {
     assert!(
         archived
             .as_deref()
-            .and_then(awaken_session_application_contract::rfc3339_to_epoch_millis)
+            .and_then(awaken_time::utc::rfc3339_to_epoch_millis)
             .is_some_and(|millis| millis > 1_767_225_600_000),
         "P7 actual archive observation"
     );

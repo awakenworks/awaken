@@ -17,7 +17,8 @@ use awaken_protocol_managed_testkit::ManagedStateFixture as _;
 use awaken_session_application::{
     LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL, LifecycleOutboxRelay, SessionRootReads,
 };
-use awaken_session_application_contract::{LifecycleFactDelivery, LifecycleFactNotifier};
+use awaken_session_application_contract::LifecycleFactNotifier;
+use awaken_session_contract::LifecycleFactDelivery;
 use awaken_session_contract::ManagedLifecycleFact;
 use awaken_session_execution_contract::{AdmitSessionRun, session_run_id};
 use axum::body::Body;

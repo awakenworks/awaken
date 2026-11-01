@@ -451,7 +451,7 @@ fn upcoming_occurrences(schedule: &DeploymentSchedule, after_ms: u64) -> Vec<Str
     (0..5)
         .filter_map(|_| {
             cursor = cron.next_after_in(cursor, timezone)?;
-            Some(awaken_session_application_contract::epoch_millis_to_rfc3339(cursor))
+            Some(awaken_time::utc::epoch_millis_to_rfc3339(cursor))
         })
         .collect()
 }

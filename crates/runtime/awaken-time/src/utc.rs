@@ -158,6 +158,25 @@ pub fn rfc3339_to_epoch_millis(value: &str) -> Option<u64> {
         .and_then(|nanos| u64::try_from(nanos / 1_000_000).ok())
 }
 
+#[cfg(kani)]
+/// @obligation session_time.utc_projection_domain_is_total_exact_and_idempotent
+#[kani::proof]
+fn public_millisecond_projection_is_exact_bounded_and_nonwrapping() {
+    // P1 every u128 at/below the UTC maximum is preserved; P2 every larger
+    // value saturates to that maximum before narrowing. No input assumptions.
+    // This numeric range lemma complements the Memory caller's exact
+    // quantization proof; formatter/parser correspondence has executable
+    // round-trip and independent calendar-boundary tests below.
+    let millis: u128 = kani::any();
+    let projected = project_epoch_millis(millis);
+    assert!(projected <= 253_402_300_799_999);
+    if millis <= 253_402_300_799_999 {
+        assert_eq!(u128::from(projected), millis);
+    } else {
+        assert_eq!(projected, 253_402_300_799_999);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

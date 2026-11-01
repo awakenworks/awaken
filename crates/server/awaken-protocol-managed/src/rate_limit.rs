@@ -83,9 +83,9 @@ fn apply_headers(headers: &mut HeaderMap, decision: OrgAdmissionDecision) {
         "anthropic-ratelimit-requests-remaining",
         u64::from(decision.remaining),
     );
-    if let Ok(value) = HeaderValue::from_str(
-        &awaken_session_application_contract::epoch_millis_to_rfc3339(decision.reset_at_unix_ms),
-    ) {
+    if let Ok(value) = HeaderValue::from_str(&awaken_time::utc::epoch_millis_to_rfc3339(
+        decision.reset_at_unix_ms,
+    )) {
         headers.insert("anthropic-ratelimit-requests-reset", value);
     }
     if let Some(retry_after) = decision.retry_after {

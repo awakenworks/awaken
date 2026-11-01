@@ -19,9 +19,8 @@ use awaken_agent_contract::agent::run::EndCause;
 use awaken_protocol_awaken::live_inbox_router;
 use awaken_protocol_managed::{ManagedState, router};
 use awaken_session_application_contract::StepOutcome;
-use awaken_session_execution_contract::{
-    LiveInboxEntry, LiveInboxError, LiveInboxSnapshot, OutcomeDrive, SessionRuns,
-};
+use awaken_session_application_contract::{LiveInboxEntry, LiveInboxError, LiveInboxSnapshot};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuns};
 use awaken_session_types::RunError;
 use awaken_tenancy::WorkspaceScope;
 use axum::Router;

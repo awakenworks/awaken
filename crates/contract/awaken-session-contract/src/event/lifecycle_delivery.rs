@@ -1,6 +1,6 @@
-//! Lifecycle delivery ports over the durable Session outbox.
+//! The delivery port for one durable lifecycle fact of the Session outbox.
 
-use awaken_session_contract::ManagedLifecycleFact;
+use super::ManagedLifecycleFact;
 
 /// Cross-context delivery port for one durable lifecycle fact. Coordinator owns
 /// the outbox and calls this port; Control implements it over authored webhook
@@ -39,13 +39,6 @@ impl LifecycleFactDelivery for CompositeLifecycleFactDelivery {
             Err(failures.join("; "))
         }
     }
-}
-
-/// Best-effort low-latency hint that Coordinator's durable lifecycle outbox may
-/// have advanced. Implementations must read facts from the repository; losing a
-/// notification is safe because startup and periodic replay remain authoritative.
-pub trait LifecycleFactNotifier: Send + Sync {
-    fn notify(&self);
 }
 
 #[cfg(test)]

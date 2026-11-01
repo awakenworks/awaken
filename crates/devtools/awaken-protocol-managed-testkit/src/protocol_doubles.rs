@@ -1212,11 +1212,9 @@ impl awaken_session_execution_contract::BudgetAccounting for CoordinatedRuntimeF
         &self,
         thread: &str,
     ) -> Result<awaken_session_contract::SessionUsage, awaken_session_types::RunError> {
-        Ok(
-            awaken_session_application_contract::session_usage_from_thread_usage(
-                Self::committed_usage(thread),
-            ),
-        )
+        Ok(awaken_session_contract::SessionUsage::from_thread_usage(
+            Self::committed_usage(thread),
+        ))
     }
 
     async fn session_thread_usage(
@@ -1224,11 +1222,9 @@ impl awaken_session_execution_contract::BudgetAccounting for CoordinatedRuntimeF
         _session_id: &awaken_session_types::SessionId,
         thread_id: &str,
     ) -> Result<awaken_session_contract::SessionUsage, awaken_session_types::RunError> {
-        Ok(
-            awaken_session_application_contract::session_usage_from_thread_usage(
-                Self::committed_usage(thread_id),
-            ),
-        )
+        Ok(awaken_session_contract::SessionUsage::from_thread_usage(
+            Self::committed_usage(thread_id),
+        ))
     }
 }
 

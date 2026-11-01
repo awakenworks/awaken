@@ -317,8 +317,8 @@ impl awaken_session_execution_contract::LiveInboxAccess for UnreachedInbox {
         &self,
         _: &str,
     ) -> Result<
-        awaken_session_execution_contract::LiveInboxSnapshot,
-        awaken_session_execution_contract::LiveInboxError,
+        awaken_session_application_contract::LiveInboxSnapshot,
+        awaken_session_application_contract::LiveInboxError,
     > {
         panic!("failed authority must not read the attempt queue")
     }
@@ -326,14 +326,14 @@ impl awaken_session_execution_contract::LiveInboxAccess for UnreachedInbox {
         &self,
         _: &str,
         _: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-    ) -> Result<u64, awaken_session_execution_contract::LiveInboxError> {
+    ) -> Result<u64, awaken_session_application_contract::LiveInboxError> {
         panic!("failed authority must not queue content")
     }
     async fn live_inbox_remove(
         &self,
         _: &str,
         _: u64,
-    ) -> Result<(), awaken_session_execution_contract::LiveInboxError> {
+    ) -> Result<(), awaken_session_application_contract::LiveInboxError> {
         panic!("failed authority must not remove content")
     }
     async fn live_inbox_replace(
@@ -341,21 +341,23 @@ impl awaken_session_execution_contract::LiveInboxAccess for UnreachedInbox {
         _: &str,
         _: u64,
         _: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-    ) -> Result<(), awaken_session_execution_contract::LiveInboxError> {
+    ) -> Result<(), awaken_session_application_contract::LiveInboxError> {
         panic!("failed authority must not replace content")
     }
     async fn live_inbox_reorder(
         &self,
         _: &str,
         _: Vec<u64>,
-    ) -> Result<(), awaken_session_execution_contract::LiveInboxError> {
+    ) -> Result<(), awaken_session_application_contract::LiveInboxError> {
         panic!("failed authority must not reorder content")
     }
 }
 
 #[tokio::test]
 async fn every_live_inbox_operation_preserves_authority_failure_before_runtime_effects() {
-    use awaken_session_execution_contract::{LiveInboxApplication, LiveInboxApplicationError as E};
+    use awaken_session_application_contract::{
+        LiveInboxApplication, LiveInboxApplicationError as E,
+    };
     // C1 absent => NotFound; C2 outage => retryable authority error;
     // C3/C4 damaged durable state => permanent Internal. All five public
     // operations must fail before a read or write on the attempt-local inbox.

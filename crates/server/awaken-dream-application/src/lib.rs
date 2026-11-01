@@ -312,7 +312,7 @@ fn process_from_record(record: DreamProcessRecord) -> DreamProcess {
 }
 
 fn timestamp(value: u64) -> String {
-    awaken_session_application_contract::epoch_millis_to_rfc3339(value)
+    awaken_time::utc::epoch_millis_to_rfc3339(value)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -626,15 +626,11 @@ impl DreamApplication {
                     object_type: "dream_policy",
                     memory_store_id: policy.memory_store_id,
                     config: policy.config,
-                    next_due_at: Some(
-                        awaken_session_application_contract::epoch_millis_to_rfc3339(
-                            policy.next_due_ms,
-                        ),
-                    ),
+                    next_due_at: Some(awaken_time::utc::epoch_millis_to_rfc3339(
+                        policy.next_due_ms,
+                    )),
                     last_completed_cutoff_at: (policy.last_completed_cutoff_ms > 0).then(|| {
-                        awaken_session_application_contract::epoch_millis_to_rfc3339(
-                            policy.last_completed_cutoff_ms,
-                        )
+                        awaken_time::utc::epoch_millis_to_rfc3339(policy.last_completed_cutoff_ms)
                     }),
                 },
                 None => DreamPolicy {

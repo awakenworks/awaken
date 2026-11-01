@@ -162,7 +162,7 @@ PROFILES: dict[str, Profile] = {
     # Real two-ID output reversal swaps three 8-byte chunks of each String.
     # The bound and solver are owned by this profile, as the ledger states.
     "retained-accepted-two-replay-v1": Profile(
-        "awaken-session-application-contract",
+        "awaken-session-contract",
         (
             ("memcmp.0", 2),
             # core/ptr/mod.rs:1452: 24-byte String swaps three 8-byte chunks;

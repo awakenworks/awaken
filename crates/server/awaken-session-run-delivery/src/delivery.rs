@@ -1140,7 +1140,7 @@ mod tests {
         );
         assert!(matches!(
             delivery.live_inbox_queue("session", Vec::new()).await,
-            Err(awaken_session_execution_contract::LiveInboxError::Inactive)
+            Err(awaken_session_application_contract::LiveInboxError::Inactive)
         ));
     }
 

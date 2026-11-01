@@ -214,7 +214,7 @@ pub async fn issue_application_access(
     }
     let now_ms = awaken_time::WallClockExt::now_ms(store.clock().as_ref());
     let expires_ms = now_ms.saturating_add(request.expires_in_seconds.saturating_mul(1000));
-    let expires_at = awaken_session_application_contract::epoch_millis_to_rfc3339(expires_ms);
+    let expires_at = awaken_time::utc::epoch_millis_to_rfc3339(expires_ms);
     let grant = ApplicationGrant {
         protocols: request.protocols.iter().cloned().collect::<HashSet<_>>(),
         operations: request.operations.iter().cloned().collect::<HashSet<_>>(),
