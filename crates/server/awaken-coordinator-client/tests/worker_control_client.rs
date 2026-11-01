@@ -491,3 +491,83 @@ async fn blocked_session_control_request_does_not_serialize_worker_heartbeat() {
         "H1/E2"
     );
 }
+
+/// The Coordinator's partition check, scripted: one child Thread committed in
+/// one Session partition and one root Thread; the request body decides.
+async fn partitioned_tenure(Json(request): Json<Value>) -> (axum::http::StatusCode, Json<Value>) {
+    let read = &request["read"];
+    let committed_in = match read["thread"].as_str() {
+        Some("root-thread") => json!({ "kind": "thread" }),
+        Some("child-thread") => json!({ "kind": "session", "session_thread": "session-thread" }),
+        _ => Value::Null,
+    };
+    if read["partition"] == committed_in {
+        (
+            axum::http::StatusCode::OK,
+            Json(json!({ "tenure": { "version": 1, "slot": { "id": read["task"] } } })),
+        )
+    } else {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "the Task's origin Run is not committed in the addressed Session partition"
+            })),
+        )
+    }
+}
+
+#[tokio::test]
+async fn a_task_tenure_read_carries_the_partition_its_task_was_committed_in() {
+    // Cause/effect decision table (the Worker client's view of rows P1-P4):
+    // | Rule | Task Thread | partition sent | result |
+    // | P1 | root Thread | `thread` | the record |
+    // | P2 | child Thread | `session` of its Session | the record |
+    // | P4 | child Thread | `thread`, or another Session | `BadRequest`, never an empty read |
+    use awaken_session_application_contract::{TaskReadPartition, TaskTenureRead};
+    use awaken_session_types::RunErrorKind;
+    let app = Router::new().route(
+        awaken_session_application_contract::WORKER_TASK_TENURE_PATH,
+        post(partitioned_tenure),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind tenure fixture");
+    let address = listener.local_addr().expect("fixture address");
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("serve fixture") });
+    let client = WorkerControlClient::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_id("worker-a"),
+    );
+    let identity = WorkerIdentity::new("worker-a", "incarnation-a", 1);
+    let read = |thread: &str, partition: TaskReadPartition| TaskTenureRead {
+        thread: thread.into(),
+        partition,
+        run: "origin-run".into(),
+        task: "task-1".into(),
+        holder: "holder".into(),
+        epoch: awaken_lease_contract::fence::Epoch::from_persisted(3).expect("nonzero Task epoch"),
+    };
+    let session = |session: &str| TaskReadPartition::Session {
+        session_thread: session.into(),
+    };
+    for (rule, thread, partition) in [
+        ("P1", "root-thread", TaskReadPartition::Thread {}),
+        ("P2", "child-thread", session("session-thread")),
+    ] {
+        let record = client
+            .read_task_tenure(&identity, &read(thread, partition))
+            .await
+            .expect(rule)
+            .expect(rule);
+        assert_eq!(record.slot(), &json!({ "id": "task-1" }), "{rule}");
+    }
+    for (rule, partition) in [
+        ("P4 as a root Thread", TaskReadPartition::Thread {}),
+        ("P4 another Session", session("other-session")),
+    ] {
+        let error = client
+            .read_task_tenure(&identity, &read("child-thread", partition))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, RunErrorKind::BadRequest, "{rule}");
+    }
+}

@@ -59,7 +59,7 @@ mod session_coordination;
 mod session_realization;
 mod session_requests;
 mod task_attention;
-pub use task_attention::worker_task_attention_router;
+pub use task_attention::worker_task_control_router;
 mod terminal_repository_publication;
 
 /// Private Worker transport DTO. The retry hint is deliberately absent from
@@ -135,7 +135,7 @@ pub fn worker_environment_warmup_router(
                 false,
             )
             .await
-            .map_err(ApplicationError::invalid)?;
+            .map_err(worker_identity_failure)?;
             let warmups = state
                 .source
                 .current_environment_warmups()
@@ -194,7 +194,7 @@ pub fn worker_source_retention_router(
                 false,
             )
             .await
-            .map_err(ApplicationError::invalid)?;
+            .map_err(worker_identity_failure)?;
             let subjects = state
                 .source
                 .source_retention_subjects(&request.identity)
@@ -475,6 +475,19 @@ impl WorkerDispatchService {
     }
 }
 
+/// HTTP projection of the security owner's already-classified failure. The
+/// verifier alone decides identity/currentness; no transport repeats its read.
+pub(crate) fn worker_identity_failure(
+    error: awaken_worker_transport_security::WorkerAuthError,
+) -> ApplicationError {
+    use awaken_worker_transport_security::WorkerAuthError;
+    match error {
+        WorkerAuthError::Unavailable(detail) => ApplicationError::unavailable(detail),
+        WorkerAuthError::Invalid(detail) => ApplicationError::invalid(detail),
+        WorkerAuthError::Missing => ApplicationError::invalid("worker authentication is missing"),
+    }
+}
+
 struct ClaimAuthority {
     owner: String,
     lease_ms: u64,
@@ -504,7 +517,7 @@ async fn claim_authority(
     let snapshot =
         verify_current_worker_identity(directory.as_ref(), worker, identity, now_ms, require_ready)
             .await
-            .map_err(ApplicationError::invalid)?;
+            .map_err(worker_identity_failure)?;
     if !snapshot.manifest.supports_current_runtime_protocol() {
         return Err(ApplicationError::invalid(
             "Worker manifest does not explicitly support the current runtime protocol",

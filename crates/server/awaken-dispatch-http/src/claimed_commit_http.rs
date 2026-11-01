@@ -62,7 +62,7 @@ async fn commit_claimed(
     Json(request): Json<ClaimedCommitRequest>,
 ) -> (StatusCode, Json<Value>) {
     let identity = &request.identity;
-    if verify_current_worker_identity(
+    if let Err(error) = verify_current_worker_identity(
         service.directory.as_ref(),
         &worker,
         identity,
@@ -70,9 +70,19 @@ async fn commit_claimed(
         false,
     )
     .await
-    .is_err()
-        || request.claim.owner != identity.lease_owner()
     {
+        if let awaken_worker_transport_security::WorkerAuthError::Unavailable(detail) = error {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": detail })),
+            );
+        }
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "worker incarnation does not own the claim" })),
+        );
+    }
+    if request.claim.owner != identity.lease_owner() {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "worker incarnation does not own the claim" })),

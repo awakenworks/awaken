@@ -1,5 +1,74 @@
 pub mod awaken_tool_contract
 pub mod awaken_tool_contract::tool
+pub mod awaken_tool_contract::tool::background_task
+pub enum awaken_tool_contract::tool::background_task::BackgroundTaskEnd
+pub awaken_tool_contract::tool::background_task::BackgroundTaskEnd::Cancelled
+pub awaken_tool_contract::tool::background_task::BackgroundTaskEnd::Completed
+pub awaken_tool_contract::tool::background_task::BackgroundTaskEnd::Completed::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_tool_contract::tool::background_task::BackgroundTaskEnd::Completed::is_error: bool
+pub awaken_tool_contract::tool::background_task::BackgroundTaskEnd::Failed
+pub awaken_tool_contract::tool::background_task::BackgroundTaskEnd::Failed::message: alloc::string::String
+pub awaken_tool_contract::tool::background_task::BackgroundTaskEnd::Indeterminate
+pub awaken_tool_contract::tool::background_task::BackgroundTaskEnd::Indeterminate::message: alloc::string::String
+pub enum awaken_tool_contract::tool::background_task::BackgroundTaskError
+pub awaken_tool_contract::tool::background_task::BackgroundTaskError::Busy
+pub awaken_tool_contract::tool::background_task::BackgroundTaskError::ClockOverflow
+pub awaken_tool_contract::tool::background_task::BackgroundTaskError::EpochOverflow
+pub awaken_tool_contract::tool::background_task::BackgroundTaskError::InvalidClaim
+pub awaken_tool_contract::tool::background_task::BackgroundTaskError::InvalidContinuation
+pub awaken_tool_contract::tool::background_task::BackgroundTaskError::InvalidIdentity
+pub awaken_tool_contract::tool::background_task::BackgroundTaskError::InvalidPersistedState
+pub awaken_tool_contract::tool::background_task::BackgroundTaskError::InvalidTransition
+pub awaken_tool_contract::tool::background_task::BackgroundTaskError::NonMonotonicLease
+pub awaken_tool_contract::tool::background_task::BackgroundTaskError::RevisionOverflow
+pub awaken_tool_contract::tool::background_task::BackgroundTaskError::StaleFence
+pub awaken_tool_contract::tool::background_task::BackgroundTaskError::Terminal
+pub enum awaken_tool_contract::tool::background_task::BackgroundWait
+pub awaken_tool_contract::tool::background_task::BackgroundWait::ExternalInput
+pub awaken_tool_contract::tool::background_task::BackgroundWait::Remote(awaken_tool_contract::tool::ToolTaskHandle)
+pub awaken_tool_contract::tool::background_task::BackgroundWait::Resource
+pub enum awaken_tool_contract::tool::background_task::TaskObservation
+pub awaken_tool_contract::tool::background_task::TaskObservation::Ended
+pub awaken_tool_contract::tool::background_task::TaskObservation::Ended::end: awaken_tool_contract::tool::background_task::BackgroundTaskEnd
+pub awaken_tool_contract::tool::background_task::TaskObservation::Waiting
+pub awaken_tool_contract::tool::background_task::TaskObservation::Waiting::renew_lease: bool
+pub awaken_tool_contract::tool::background_task::TaskObservation::Waiting::wait: awaken_tool_contract::tool::background_task::BackgroundWait
+pub enum awaken_tool_contract::tool::background_task::TaskObservationCodecError
+pub awaken_tool_contract::tool::background_task::TaskObservationCodecError::Decode(alloc::string::String)
+pub awaken_tool_contract::tool::background_task::TaskObservationCodecError::EmptyHolder
+pub awaken_tool_contract::tool::background_task::TaskObservationCodecError::Version(u64)
+pub struct awaken_tool_contract::tool::background_task::BackgroundTaskCompletion
+pub awaken_tool_contract::tool::background_task::BackgroundTaskCompletion::end: awaken_tool_contract::tool::background_task::BackgroundTaskEnd
+pub awaken_tool_contract::tool::background_task::BackgroundTaskCompletion::fence: awaken_tool_contract::tool::background_task::TaskTenure
+pub struct awaken_tool_contract::tool::background_task::BackgroundTaskId(_)
+impl awaken_tool_contract::tool::background_task::BackgroundTaskId
+pub fn awaken_tool_contract::tool::background_task::BackgroundTaskId::as_str(&self) -> &str
+pub fn awaken_tool_contract::tool::background_task::BackgroundTaskId::new(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_tool_contract::tool::background_task::BackgroundTaskError>
+impl core::convert::From<awaken_tool_contract::tool::background_task::BackgroundTaskId> for alloc::string::String
+pub fn alloc::string::String::from(awaken_tool_contract::tool::background_task::BackgroundTaskId) -> Self
+impl core::convert::TryFrom<alloc::string::String> for awaken_tool_contract::tool::background_task::BackgroundTaskId
+pub type awaken_tool_contract::tool::background_task::BackgroundTaskId::Error = awaken_tool_contract::tool::background_task::BackgroundTaskError
+pub fn awaken_tool_contract::tool::background_task::BackgroundTaskId::try_from(alloc::string::String) -> core::result::Result<Self, Self::Error>
+pub struct awaken_tool_contract::tool::background_task::BackgroundTaskScope
+impl awaken_lease_contract::fence::tenure::TenureScope for awaken_tool_contract::tool::background_task::BackgroundTaskScope
+pub type awaken_tool_contract::tool::background_task::BackgroundTaskScope::Holder = alloc::string::String
+pub type awaken_tool_contract::tool::background_task::BackgroundTaskScope::Subject = awaken_tool_contract::tool::background_task::BackgroundTaskId
+pub struct awaken_tool_contract::tool::background_task::BackgroundTaskWaitCandidate
+pub awaken_tool_contract::tool::background_task::BackgroundTaskWaitCandidate::fence: awaken_tool_contract::tool::background_task::TaskTenure
+pub awaken_tool_contract::tool::background_task::BackgroundTaskWaitCandidate::renew_lease: bool
+pub awaken_tool_contract::tool::background_task::BackgroundTaskWaitCandidate::wait: awaken_tool_contract::tool::background_task::BackgroundWait
+pub struct awaken_tool_contract::tool::background_task::TaskObservationRecord
+impl awaken_tool_contract::tool::background_task::TaskObservationRecord
+pub fn awaken_tool_contract::tool::background_task::TaskObservationRecord::decode(&serde_json::value::Value) -> core::result::Result<Self, awaken_tool_contract::tool::background_task::TaskObservationCodecError>
+pub fn awaken_tool_contract::tool::background_task::TaskObservationRecord::decode_bound_batch(&[serde_json::value::Value], &awaken_tool_contract::tool::background_task::TaskTenure) -> core::result::Result<alloc::vec::Vec<Self>, awaken_tool_contract::tool::background_task::TaskObservationCodecError>
+pub fn awaken_tool_contract::tool::background_task::TaskObservationRecord::encode(&self) -> serde_json::value::Value
+pub fn awaken_tool_contract::tool::background_task::TaskObservationRecord::ended(&awaken_tool_contract::tool::background_task::BackgroundTaskCompletion) -> Self
+pub fn awaken_tool_contract::tool::background_task::TaskObservationRecord::observation(&self) -> &awaken_tool_contract::tool::background_task::TaskObservation
+pub fn awaken_tool_contract::tool::background_task::TaskObservationRecord::task_id(&self) -> &awaken_tool_contract::tool::background_task::BackgroundTaskId
+pub fn awaken_tool_contract::tool::background_task::TaskObservationRecord::tenure(&self) -> awaken_tool_contract::tool::background_task::TaskTenure
+pub fn awaken_tool_contract::tool::background_task::TaskObservationRecord::waiting(&awaken_tool_contract::tool::background_task::BackgroundTaskWaitCandidate) -> Self
+pub const awaken_tool_contract::tool::background_task::TASK_OBSERVATION_VERSION: u32
+pub type awaken_tool_contract::tool::background_task::TaskTenure = awaken_lease_contract::fence::tenure::Tenure<awaken_tool_contract::tool::background_task::BackgroundTaskScope>
 pub enum awaken_tool_contract::tool::ToolConcurrency
 pub awaken_tool_contract::tool::ToolConcurrency::Parallel
 pub awaken_tool_contract::tool::ToolConcurrency::Resources(alloc::vec::Vec<awaken_tool_contract::tool::ToolResourceAccess>)

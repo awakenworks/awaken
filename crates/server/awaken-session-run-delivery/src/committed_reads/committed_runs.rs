@@ -47,15 +47,7 @@ pub(crate) fn delegation_registries_from_commands(
     commands: &[awaken_agent_contract::agent::state::Command],
     selected_run: Option<&RunId>,
 ) -> Result<Vec<awaken_agent_contract::agent::delegation::DelegationRegistry>, RunError> {
-    let mut stores: HashMap<RunId, Store> = HashMap::new();
-    for command in commands {
-        let Some(run_id) = command.run_id.as_ref().filter(|run_id| {
-            command.scope == Scope::Run && selected_run.is_none_or(|selected| selected == *run_id)
-        }) else {
-            continue;
-        };
-        stores.entry(run_id.clone()).or_default().apply(command);
-    }
+    let stores = fold_delegation_stores(commands, selected_run, |_, _| Ok(()))?;
     let mut registries = Vec::new();
     for store in stores.values() {
         if let Some(registry) =
@@ -65,6 +57,52 @@ pub(crate) fn delegation_registries_from_commands(
         }
     }
     Ok(registries)
+}
+
+/// Retained identity evidence survives a later logical clear or parent end.
+/// The same per-Run Store fold and original typed registry decoder serve this
+/// callback query and the current-state projection above; no wire is reparsed.
+pub(super) fn recorded_delegation_registries_from_commands(
+    commands: &[awaken_agent_contract::agent::state::Command],
+) -> Result<Vec<awaken_agent_contract::agent::delegation::DelegationRegistry>, RunError> {
+    let mut registries = Vec::new();
+    fold_delegation_stores(commands, None, |run_id, store| {
+        if let Some(registry) =
+            RunDelegations::load(store).map_err(|error| RunError::internal(error.to_string()))?
+        {
+            if registry.parent_run_id() != run_id {
+                return Err(RunError::internal(
+                    "delegation registry differs from its committed Run scope",
+                ));
+            }
+            registries.push(registry);
+        }
+        Ok(())
+    })?;
+    Ok(registries)
+}
+
+fn fold_delegation_stores(
+    commands: &[awaken_agent_contract::agent::state::Command],
+    selected_run: Option<&RunId>,
+    mut observe: impl FnMut(&RunId, &Store) -> Result<(), RunError>,
+) -> Result<HashMap<RunId, Store>, RunError> {
+    let mut stores: HashMap<RunId, Store> = HashMap::new();
+    for command in commands {
+        let Some(run_id) = command.run_id.as_ref().filter(|run_id| {
+            command.scope == Scope::Run && selected_run.is_none_or(|selected| selected == *run_id)
+        }) else {
+            continue;
+        };
+        let store = stores.entry(run_id.clone()).or_default();
+        store.apply(command);
+        // Observe only the original registry cell. Other Run state cannot turn
+        // one unchanged registry into a parallel sequence of callback facts.
+        if command.key.0 == RunDelegations::KEY {
+            observe(run_id, store)?;
+        }
+    }
+    Ok(stores)
 }
 
 /// The one answerable ticket of `run_id` under the neutral selector: two rows

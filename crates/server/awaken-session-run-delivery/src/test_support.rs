@@ -70,3 +70,47 @@ pub(crate) fn projection(
         request_context: Vec::new(),
     }
 }
+
+/// Candidate facts for queue claim/receipt tests, not a running Worker's
+/// physical capability proof. The callback is RemoteOnly and carries Task
+/// input; a local claim must remain ineligible. The ordinary placement kernel
+/// must admit this explicit Native/prepared/journal/Task/inherited-toolsets
+/// declaration before the existing compatible-claim operation is used. Managed
+/// root lowering retains the canonical inherited boundary marker, even for an
+/// empty chain; this fixture offers that existing format rather than dropping
+/// the marker or copying all requested capabilities.
+pub(crate) fn task_callback_worker(worker_id: &str) -> awaken_worker_contract::WorkerSnapshot {
+    let mut manifest = awaken_worker_contract::WorkerManifest {
+        runtime_protocol: awaken_worker_contract::VersionRange {
+            min: 1,
+            max: awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+        },
+        ..Default::default()
+    };
+    manifest.capabilities.extend([
+        awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY.to_owned(),
+        awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY.to_owned(),
+        awaken_worker_contract::HOST_EXECUTOR_CAPABILITY.to_owned(),
+        awaken_worker_contract::SESSION_RESOURCES_CAPABILITY.to_owned(),
+        awaken_worker_contract::PREPARED_SESSION_DISPATCH_CAPABILITY.to_owned(),
+        awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY.to_owned(),
+        awaken_worker_contract::BACKGROUND_TASK_CONTROL_CAPABILITY.to_owned(),
+    ]);
+    awaken_worker_contract::WorkerSnapshot {
+        identity: awaken_worker_contract::WorkerIdentity::new(
+            worker_id,
+            "callback-receipt-boot",
+            1,
+        ),
+        state: awaken_worker_contract::WorkerState::Ready,
+        capability_fingerprint: manifest
+            .fingerprint()
+            .expect("fixed callback Worker manifest"),
+        manifest,
+        in_flight: 0,
+        warm_environment_shapes: Default::default(),
+        credential_observations: Default::default(),
+        acp_capability_observations: Default::default(),
+        expires_at_ms: u64::MAX,
+    }
+}

@@ -20,6 +20,7 @@ pub struct ChildRunLauncher {
     clock: Arc<dyn awaken_time::WallClock>,
     execution: crate::ExecutionTopology,
     realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
+    background: Arc<awaken_session_run_delivery::BackgroundRuns>,
 }
 
 impl ChildRunLauncher {
@@ -29,6 +30,7 @@ impl ChildRunLauncher {
         clock: Arc<dyn awaken_time::WallClock>,
         execution: crate::ExecutionTopology,
         realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
+        background: Arc<awaken_session_run_delivery::BackgroundRuns>,
     ) -> Self {
         Self {
             capabilities,
@@ -36,6 +38,7 @@ impl ChildRunLauncher {
             clock,
             execution,
             realization_executor,
+            background,
         }
     }
 
@@ -71,7 +74,7 @@ impl ChildRunLauncher {
                     SessionExecutionError::internal("child scheduling requires a dispatch binding")
                 })?,
                 commit: commit.clone(),
-                reader: commit,
+                reader: commit.clone(),
                 owner: self.execution.lease_owner.as_str().to_owned(),
                 session_resources: self
                     .realization_executor
@@ -87,9 +90,13 @@ impl ChildRunLauncher {
         } else {
             None
         };
-        let adapters = self
-            .capabilities
-            .child_execution_adapters(thread, sandbox.clone())?;
+        let mut adapters = self.capabilities.child_execution_adapters(
+            thread,
+            sandbox.clone(),
+            self.background.clone(),
+            self.authority.hosts_session_application(),
+        )?;
+        adapters.background_commit = Some(commit.for_independent_child());
         let service = crate::delegate::HostRunDelegationService::new(
             self.capabilities.agent.llm.clone(),
             sandbox,

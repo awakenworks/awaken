@@ -1030,7 +1030,7 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_coordination(
 
     let reserved = host
         .run_assembly
-        .ctx_for_session_coordination("binding-corrupt", None)
+        .ctx_for_session_coordination("binding-corrupt", None, None)
         .await
         .expect("B2/B3 Coordinator-only projection does not adopt Worker substrate");
     assert!(reserved.env.is_none(), "B2/B3");

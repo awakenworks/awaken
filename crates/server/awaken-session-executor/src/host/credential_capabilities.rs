@@ -77,11 +77,14 @@ impl crate::RunCapabilities {
         &self,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
+        background: Arc<awaken_session_run_delivery::BackgroundRuns>,
+        hosts_application: bool,
     ) -> Result<
         crate::agent_runner::ChildExecutionAdapters,
         crate::realization_error::RealizationError,
     > {
         Ok(crate::agent_runner::ChildExecutionAdapters {
+            session_thread_id: Some(awaken_agent_contract::ThreadId(thread.to_owned())),
             acp: match &self.exec.acp {
                 crate::host::capability::AcpBackend::Installed(acp) => Some(acp.clone()),
                 crate::host::capability::AcpBackend::Absent
@@ -106,7 +109,27 @@ impl crate::RunCapabilities {
             web_search: Some(self.web_search_plugin(thread, None)?),
             web_fetch: Some(self.web_fetch_plugin(thread, None)?),
             clock: Some(self.clock.clone()),
+            admin_tools: self.tools.admin_tools.clone(),
             background_supervisor: Some(self.background_supervisor.clone()),
+            background_runs: Some(background),
+            background_commit: None,
+            background_attention: crate::background_task::TaskAttentionRoute::select(
+                hosts_application,
+                &self.session_application,
+                self.worker.task_control.as_ref(),
+            ),
+            task_control: self.worker.task_control.clone(),
+            background_generation: self
+                .installed_sessions
+                .realizations()
+                .read_realization(thread, |realization| {
+                    realization
+                        .environment()
+                        .owner
+                        .resident_activity_identity(&environment)
+                })?
+                .flatten()
+                .map(|(generation, _)| generation),
         })
     }
 
@@ -317,7 +340,12 @@ mod tests {
                     let adapters = host
                         .run_assembly
                         .capabilities
-                        .child_execution_adapters("profiles", environment.clone())
+                        .child_execution_adapters(
+                            "profiles",
+                            environment.clone(),
+                            host.resources.memory.background(),
+                            host.run_assembly.authority.hosts_session_application(),
+                        )
                         .expect("installed Sessions");
                     assert_eq!(
                         adapters.credential_capabilities,

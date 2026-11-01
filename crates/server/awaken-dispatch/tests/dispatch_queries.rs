@@ -210,7 +210,10 @@ async fn assert_bounded_query_conformance(
             .observe_session_run_admission(&id("query-c"))
             .await
             .unwrap(),
-        SessionRunAdmissionObservation::Completed(completion.clone()),
+        SessionRunAdmissionObservation::Completed {
+            completion: completion.clone(),
+            retained_request: Ok(None)
+        },
         "O3"
     );
     store.enqueue(claimed.request.clone()).await.unwrap();
@@ -219,7 +222,10 @@ async fn assert_bounded_query_conformance(
             .observe_session_run_admission(&id("query-c"))
             .await
             .unwrap(),
-        SessionRunAdmissionObservation::Completed(completion),
+        SessionRunAdmissionObservation::Completed {
+            completion,
+            retained_request: Ok(None)
+        },
         "O7 original receipt"
     );
     assert_eq!(
@@ -478,7 +484,11 @@ async fn sqlite_corrupt_summary_does_not_poison_identity_pages() {
         .observe_session_run_admission(&id("legacy-none"))
         .await
         .unwrap();
-    let SessionRunAdmissionObservation::Completed(legacy_none) = observed else {
+    let SessionRunAdmissionObservation::Completed {
+        completion: legacy_none,
+        ..
+    } = observed
+    else {
         panic!("O3 legacy completion is not Missing or full input");
     };
     assert_eq!(legacy_none.request_fingerprint, None, "O3 original None");
@@ -582,7 +592,11 @@ async fn postgres_corrupt_summary_does_not_poison_identity_pages() {
         .observe_session_run_admission(&id("legacy-none"))
         .await
         .unwrap();
-    let SessionRunAdmissionObservation::Completed(legacy_none) = observed else {
+    let SessionRunAdmissionObservation::Completed {
+        completion: legacy_none,
+        ..
+    } = observed
+    else {
         panic!("O3 legacy completion is not Missing or full input");
     };
     assert_eq!(legacy_none.request_fingerprint, None, "O3 original None");
@@ -645,5 +659,229 @@ async fn postgres_exact_physical_execution_observations_use_the_original_store_c
             .unwrap(),
     ));
     harness::execution_observation::assert_observations(&store, &clock).await;
+    pool.close().await;
+}
+
+fn retained_task_request(run: &str) -> RunDispatch {
+    let mut activation = harness::activation(run);
+    activation
+        .snapshot
+        .resolved_spec
+        .plugin_ids
+        .push("background_task".into());
+    activation.snapshot.recompute_fingerprint().unwrap();
+    // C0 final Task inputs publish the intrinsic codec demand once, before
+    // S1/S4 use the same request for completion storage and real enqueue replay.
+    RunDispatch::new(activation).with_worker_codec_requirements()
+}
+
+#[tokio::test]
+async fn sqlite_completed_task_source_reopens_and_corruption_never_erases_the_receipt() {
+    // S1 original full Task request in the existing completion row => exact
+    // original source after real close/reopen. S2 NULL => valid receipt + no
+    // source; S3 malformed/foreign source => valid receipt + Unavailable source.
+    // S4 caller replay cannot repair/replace the stored source or resurrect
+    // work. The public completion feed never includes the private retained data.
+    // App/Coordinator ACK cases separately prove ignoring the source result;
+    // this real-storage test does not manufacture an App ACK from a DTO alone.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("retained-task-source.sqlite");
+    let store = SqliteDispatchStore::open(path.to_str().unwrap(), awaken_time::system_clock())
+        .await
+        .unwrap();
+    let request = retained_task_request("retained-source");
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
+        .open()
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO runtime_dispatch_completion (run_id, request_fingerprint, thread_id, session_thread_id, retained_request) VALUES (?1, ?2, ?3, ?4, ?5)")
+        .bind(&request.run_id().0).bind(request.admission_fingerprint()).bind(&request.thread_id().0)
+        .bind(request.session_thread_id.as_ref().map(|thread| &thread.0))
+        .bind(serde_json::to_string(&request).unwrap()).execute(&connection).await.unwrap();
+    let initial = store
+        .observe_session_run_admission(request.run_id())
+        .await
+        .unwrap();
+    let SessionRunAdmissionObservation::Completed {
+        completion,
+        retained_request,
+    } = initial
+    else {
+        panic!("S1 completion");
+    };
+    assert_eq!(
+        retained_request.unwrap().as_deref(),
+        Some(&request),
+        "S1 exact original value"
+    );
+    let feed = store.completion_events_after(0, 100).await.unwrap();
+    drop(store);
+    let store = SqliteDispatchStore::open(path.to_str().unwrap(), awaken_time::system_clock())
+        .await
+        .unwrap();
+    let reopened = store
+        .observe_session_run_admission(request.run_id())
+        .await
+        .unwrap();
+    assert!(
+        matches!(reopened, SessionRunAdmissionObservation::Completed { retained_request:Ok(Some(ref original)), .. } if original.as_ref() == &request),
+        "S1 durable reopen"
+    );
+    let mut foreign = request.clone();
+    foreign.activation.thread_id.0.push_str("-foreign");
+    for payload in [
+        None,
+        Some("not-json".into()),
+        Some(serde_json::to_string(&foreign).unwrap()),
+    ] {
+        sqlx::query("UPDATE runtime_dispatch_completion SET retained_request=?1 WHERE run_id=?2")
+            .bind(payload.as_deref())
+            .bind(&request.run_id().0)
+            .execute(&connection)
+            .await
+            .unwrap();
+        let observed = store
+            .observe_session_run_admission(request.run_id())
+            .await
+            .unwrap();
+        let SessionRunAdmissionObservation::Completed {
+            completion: original_receipt,
+            retained_request,
+        } = &observed
+        else {
+            panic!("S2/S3 receipt still observable");
+        };
+        assert_eq!(
+            original_receipt, &completion,
+            "S2/S3 receipt independent of source"
+        );
+        if payload.is_none() {
+            assert_eq!(retained_request, &Ok(None), "S2 legacy NULL not guessed");
+        } else {
+            assert!(
+                matches!(retained_request, Err(DispatchError::Unavailable(_))),
+                "S3 Unknown, not Missing/409"
+            );
+        }
+        store.enqueue(request.clone()).await.unwrap();
+        assert_eq!(
+            store
+                .observe_session_run_admission(request.run_id())
+                .await
+                .unwrap(),
+            observed,
+            "S4 no caller-source backfill"
+        );
+        assert_eq!(
+            store.completion_events_after(0, 100).await.unwrap(),
+            feed,
+            "S4 public feed bytes/identity unchanged"
+        );
+        assert!(
+            store
+                .dispatch_summary(request.run_id())
+                .await
+                .unwrap()
+                .is_none(),
+            "S4 unclaimable completion"
+        );
+    }
+}
+
+#[tokio::test]
+async fn postgres_completed_task_source_reopens_and_corruption_never_erases_the_receipt() {
+    // S1-S4 use the same causes/effects as the SQLite case above, on the real
+    // owned PostgreSQL schema and original migration/open/observation APIs.
+    let Some(pool) = harness::schema_pool("t_task_source_completion").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let request = retained_task_request("retained-source");
+    sqlx::query("INSERT INTO runtime_dispatch_completion (run_id, request_fingerprint, thread_id, session_thread_id, retained_request) VALUES ($1, $2, $3, $4, $5::TEXT::jsonb)")
+        .bind(&request.run_id().0).bind(request.admission_fingerprint()).bind(&request.thread_id().0)
+        .bind(request.session_thread_id.as_ref().map(|thread| &thread.0))
+        .bind(serde_json::to_string(&request).unwrap()).execute(&pool).await.unwrap();
+    let initial = store
+        .observe_session_run_admission(request.run_id())
+        .await
+        .unwrap();
+    let SessionRunAdmissionObservation::Completed {
+        completion,
+        retained_request,
+    } = initial
+    else {
+        panic!("S1 completion");
+    };
+    assert_eq!(
+        retained_request.unwrap().as_deref(),
+        Some(&request),
+        "S1 exact original value"
+    );
+    let feed = store.completion_events_after(0, 100).await.unwrap();
+    drop(store);
+    let store = PostgresDispatchStore::with_existing_pool(pool.clone())
+        .await
+        .unwrap();
+    let reopened = store
+        .observe_session_run_admission(request.run_id())
+        .await
+        .unwrap();
+    assert!(
+        matches!(reopened, SessionRunAdmissionObservation::Completed { retained_request:Ok(Some(ref original)), .. } if original.as_ref() == &request),
+        "S1 reopened same source"
+    );
+    let mut foreign = request.clone();
+    foreign.activation.thread_id.0.push_str("-foreign");
+    for payload in [
+        None,
+        Some("{}".into()),
+        Some(serde_json::to_string(&foreign).unwrap()),
+    ] {
+        sqlx::query("UPDATE runtime_dispatch_completion SET retained_request=$1::TEXT::jsonb WHERE run_id=$2").bind(payload.as_deref()).bind(&request.run_id().0).execute(&pool).await.unwrap();
+        let observed = store
+            .observe_session_run_admission(request.run_id())
+            .await
+            .unwrap();
+        let SessionRunAdmissionObservation::Completed {
+            completion: original_receipt,
+            retained_request,
+        } = &observed
+        else {
+            panic!("S2/S3 receipt still observable");
+        };
+        assert_eq!(original_receipt, &completion, "S2/S3 same receipt");
+        if payload.is_none() {
+            assert_eq!(retained_request, &Ok(None), "S2 NULL");
+        } else {
+            assert!(
+                matches!(retained_request, Err(DispatchError::Unavailable(_))),
+                "S3 Unknown"
+            );
+        }
+        store.enqueue(request.clone()).await.unwrap();
+        assert_eq!(
+            store
+                .observe_session_run_admission(request.run_id())
+                .await
+                .unwrap(),
+            observed,
+            "S4 no silent repair/new work"
+        );
+        assert_eq!(
+            store.completion_events_after(0, 100).await.unwrap(),
+            feed,
+            "S4 original public feed"
+        );
+        assert!(
+            store
+                .dispatch_summary(request.run_id())
+                .await
+                .unwrap()
+                .is_none(),
+            "S4 unclaimable"
+        );
+    }
     pool.close().await;
 }

@@ -718,6 +718,7 @@ async fn claimed_child_commit_uses_guarded_parent_partition_and_logical_child_th
         ThreadId(parent_thread.into()),
         Some(manifest),
         Some(&publication_source),
+        None,
     )
     .expect("production child dispatch decoration");
     assert_eq!(
@@ -1049,6 +1050,7 @@ async fn retained_memory_settlement_observes_frozen_child_after_executor_release
             ThreadId(parent.clone()),
             manifest,
             Some(&publications),
+            None,
         )
         .expect("production child dispatch decoration");
         let (host, managed, versions) = cold_claimed_memory_host().await;

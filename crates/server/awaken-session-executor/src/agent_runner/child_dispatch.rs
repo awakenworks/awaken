@@ -92,6 +92,7 @@ mod tests {
             ThreadId("parent-thread".to_string()),
             Some(manifest.clone()),
             None,
+            None,
         )
         .expect("build child dispatch");
 
@@ -193,6 +194,7 @@ mod tests {
             ThreadId("parent-thread".into()),
             None,
             Some(&complete),
+            None,
         )
         .expect_err("P3 Workspace must not be inferred from publications");
         assert!(error.to_string().contains("Workspace"), "P3: {error}");
@@ -201,6 +203,7 @@ mod tests {
             ThreadId("parent-thread".into()),
             Some(owner.clone()),
             Some(&complete),
+            None,
         )
         .expect("P1 child admission");
         assert_eq!(
@@ -229,6 +232,7 @@ mod tests {
                 // an incomplete publication source.
                 Some(owner),
                 Some(&incomplete),
+                None,
             )
             .is_err(),
             "P2/E2"
@@ -268,6 +272,7 @@ mod tests {
         let request = child_dispatch_request(
             activation,
             ThreadId("parent-thread".to_string()),
+            None,
             None,
             None,
         )

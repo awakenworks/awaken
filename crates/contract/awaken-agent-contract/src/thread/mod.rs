@@ -2,6 +2,7 @@
 //! (its messages, runs, state, awaiting ticket, audit log), split by direction —
 //! [`read`] reads committed truth back, [`commit`] makes new truth durable.
 
+pub mod background_task;
 pub mod commit;
 pub(crate) mod disposition;
 pub mod read;

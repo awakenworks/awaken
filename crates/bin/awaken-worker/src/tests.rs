@@ -741,6 +741,13 @@ fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
             .capabilities
             .contains(awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY),
     );
+    // C1: the standard composition installs the registered Task control, so
+    // its manifest advertises the Task control codec.
+    assert!(
+        manifest
+            .capabilities
+            .contains(awaken_worker_contract::BACKGROUND_TASK_CONTROL_CAPABILITY),
+    );
     assert_eq!(
         manifest.sandbox_tool_recovery,
         deployment

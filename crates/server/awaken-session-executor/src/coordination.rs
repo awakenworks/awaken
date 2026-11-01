@@ -546,7 +546,7 @@ impl DispatchSettlementObserver for HostDispatchSettlementObserver {
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct RecordingSessionAgentCoordination {
-    boundaries: std::sync::Mutex<Vec<SessionAgentBoundaryCommand>>,
+    pub(crate) boundaries: std::sync::Mutex<Vec<SessionAgentBoundaryCommand>>,
     message_gate: Option<Arc<AdmissionGate>>,
     model_error: std::sync::Mutex<Option<awaken_session_types::RunError>>,
 }

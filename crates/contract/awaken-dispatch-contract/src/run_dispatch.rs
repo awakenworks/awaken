@@ -391,6 +391,32 @@ impl RunDispatch {
         Some(legacy)
     }
 
+    /// The only non-root use of SessionCommand identity: a Task attention
+    /// admitted under its existing parent Session activity. Every subject axis
+    /// is carried in private input and bound by the original command FPR.
+    /// Ordinary children never acquire this law from an incoming marker.
+    #[must_use]
+    pub fn is_task_child_command(&self) -> bool {
+        let Some(tenure) = self
+            .private_task_input
+            .as_ref()
+            .and_then(|input| input.tenure())
+        else {
+            return false;
+        };
+        matches!(&tenure.partition,
+            awaken_session_application_contract::TaskReadPartition::Session { session_thread }
+                if session_thread != &tenure.thread
+                    && self.session_thread_id.as_ref().is_some_and(|id| &id.0 == session_thread))
+            && tenure.validate().is_ok()
+            && self.thread_id().0 == tenure.thread
+            && self.session_activity_epoch.is_some_and(|epoch| epoch > 0)
+            && self
+                .session_command_fingerprint
+                .as_ref()
+                .is_some_and(|fp| fp.is_current())
+    }
+
     /// Compare only the immutable Session command identity. This method is for
     /// the dedicated root-reservation port; ordinary and child Run admissions
     /// continue to use [`Self::same_canonical_dispatch`].
@@ -469,6 +495,13 @@ impl RunDispatch {
     /// identity from an incoming Session-shaped value.
     #[must_use]
     pub fn same_admission_dispatch(&self, other: &Self) -> bool {
+        if self.identity_scope == DispatchIdentityScope::SessionCommand
+            && self.is_task_child_command()
+        {
+            return other.identity_scope == DispatchIdentityScope::SessionCommand
+                && other.is_task_child_command()
+                && self.same_session_reservation(other);
+        }
         match self.identity_scope {
             DispatchIdentityScope::SessionCommand
             | DispatchIdentityScope::PreparedSessionCommand
@@ -546,6 +579,14 @@ impl RunDispatch {
             .any(|id| id == BACKGROUND_TASK_PLUGIN_ID)
     }
 
+    /// The one Task-control demand used by wire eligibility and durable source
+    /// retention. This observes frozen inputs, never a Worker capability grant.
+    #[must_use]
+    pub fn needs_background_task_control(&self) -> bool {
+        self.private_task_input.is_some()
+            || Self::requires_background_task_control(&self.activation.snapshot.resolved_spec)
+    }
+
     fn required_worker_codecs(
         &self,
         include_runtime_journal: bool,
@@ -555,9 +596,9 @@ impl RunDispatch {
         let journal = (include_runtime_journal
             && Self::requires_tool_result_journal(&self.activation.snapshot.resolved_spec))
         .then_some(awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY);
-        let task_control = (self.private_task_input.is_some()
-            || Self::requires_background_task_control(&self.activation.snapshot.resolved_spec))
-        .then_some(awaken_worker_contract::BACKGROUND_TASK_CONTROL_CAPABILITY);
+        let task_control = self
+            .needs_background_task_control()
+            .then_some(awaken_worker_contract::BACKGROUND_TASK_CONTROL_CAPABILITY);
         [prepared, journal, task_control].into_iter().flatten()
     }
 

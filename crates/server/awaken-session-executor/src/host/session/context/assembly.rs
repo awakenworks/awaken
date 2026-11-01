@@ -46,12 +46,8 @@ pub(super) async fn assemble(
         tool_source,
         authorization,
         Some(host.capabilities.background_supervisor.clone()),
+        &host.capabilities.tools.admin_tools,
     );
-    // Register the management tool executables globally (ADR-0052 D3): the
-    // registry stays global, the compile-time scope fence is what restricts them.
-    for tool in &host.capabilities.tools.admin_tools {
-        runtime = runtime.with_tool(tool.clone());
-    }
     // Delegation is a runtime concern: inject the executor so the kernel runs
     // `agent_run` as a sub-agent (native or remote), not the tool registry.
     if has_published_multiagent
@@ -264,7 +260,7 @@ pub(super) async fn assemble(
         background_tasks_enabled,
         background_attention,
         a2a_only,
-        claimed_runtime_identity,
+        frozen_runtime_identity,
         unclaimed_runtime_publications,
         ..
     } = plan;
@@ -440,12 +436,15 @@ pub(super) async fn assemble(
         )),
         None => run_context,
     };
+    let claimed_terminal_reads = awaken_dispatch_execution::ClaimedTerminalReads::default();
     if background_tasks_enabled {
-        let background_commit = commit.committed_authority().ok_or_else(|| {
-            SessionExecutionError::internal(
-                "BackgroundTask terminal observation requires committed local authority",
-            )
-        })?;
+        let background_commit = crate::background_task::TaskCommittedReads::of(
+            &commit,
+            &claimed_terminal_reads,
+            host.capabilities.worker.task_control.as_ref(),
+            thread,
+        )
+        .map_err(SessionExecutionError::internal)?;
         terminal_observers.push(Arc::new(
             crate::background_task::BackgroundTaskTerminalObserver::new(
                 runtime.clone(),
@@ -477,12 +476,13 @@ pub(super) async fn assemble(
             commit.clone(),
             stream_checkpoint.clone(),
             run_context.clone(),
+            claimed_terminal_reads,
         )
         .await?;
     // No per-session dispatch daemon: the process-level `DispatchPool` (spawned
     // once by `mount`) is the sole claimer of the shared queue and drives this
     // session's runs by routing claimed work back to its worker (O2).
-    let runtime_publication_identity = claimed_runtime_identity.as_ref().cloned().or_else(|| {
+    let runtime_publication_identity = frozen_runtime_identity.as_ref().cloned().or_else(|| {
         unclaimed_runtime_publications
             .as_deref()
             .map(|publications| {

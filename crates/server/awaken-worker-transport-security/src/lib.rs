@@ -101,20 +101,23 @@ pub fn verify_worker_identity(
 /// Resolve and verify the one live Coordinator-owned registration record.
 /// Dispatch, claimed commit, and per-kind Resource handlers reuse this check so
 /// registry state and signed/mTLS incarnation semantics cannot drift.
+/// Identity/state rejections keep `Invalid`; a failed current Registry read is
+/// `Unavailable`, never evidence that the authenticated incarnation is foreign.
 pub async fn verify_current_worker_identity(
     directory: &dyn WorkerDirectory,
     worker: &VerifiedWorkerContext,
     identity: &WorkerIdentity,
     now_ms: u64,
     require_ready: bool,
-) -> Result<WorkerSnapshot, String> {
-    verify_worker_identity(worker, identity)?;
+) -> Result<WorkerSnapshot, WorkerAuthError> {
+    verify_worker_identity(worker, identity).map_err(WorkerAuthError::Invalid)?;
     let record = directory
         .current(&identity.worker_id)
         .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "worker is not registered".to_string())?;
-    verify_registered_worker_identity(&record.snapshot, identity, now_ms, require_ready)?;
+        .map_err(|error| WorkerAuthError::Unavailable(error.to_string()))?
+        .ok_or_else(|| WorkerAuthError::Invalid("worker is not registered".into()))?;
+    verify_registered_worker_identity(&record.snapshot, identity, now_ms, require_ready)
+        .map_err(WorkerAuthError::Invalid)?;
     Ok(record.snapshot)
 }
 
@@ -150,12 +153,17 @@ pub async fn verify_claim_owner(
     identity: Option<&WorkerIdentity>,
     claim: &RunClaim,
     now_ms: u64,
-) -> Result<(), String> {
-    let identity = identity.ok_or_else(|| "registered Worker identity is required".to_string())?;
+) -> Result<(), WorkerAuthError> {
+    let identity = identity
+        .ok_or_else(|| WorkerAuthError::Invalid("registered Worker identity is required".into()))?;
     verify_current_worker_identity(directory, worker, identity, now_ms, false).await?;
     (claim.owner == identity.lease_owner())
         .then_some(())
-        .ok_or_else(|| "dispatch claim owner does not match Worker incarnation".to_string())
+        .ok_or_else(|| {
+            WorkerAuthError::Invalid(
+                "dispatch claim owner does not match Worker incarnation".into(),
+            )
+        })
 }
 
 type HmacSha256 = Hmac<Sha256>;

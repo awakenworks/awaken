@@ -53,6 +53,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-lease-contract"
+version = "1.1.0"
+dependencies = [
+ "awaken-time",
+ "serde",
+]
+
+[[package]]
 name = "awaken-mcp-wire"
 version = "0.2.0"
 dependencies = [
@@ -79,6 +87,7 @@ version = "2.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-lease-contract",
  "schemars",
  "serde",
  "serde_json",

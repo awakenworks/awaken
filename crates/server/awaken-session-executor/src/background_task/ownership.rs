@@ -6,33 +6,28 @@
 
 use std::sync::Arc;
 
-use awaken_ext_background_task::{BackgroundTask, BackgroundTaskSupervisor, task_state_cell};
+use awaken_ext_background_task::{BackgroundTask, BackgroundTaskSupervisor};
 use awaken_runtime_contract::{AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext};
 use awaken_time::WallClockExt;
 
-use super::BackgroundTaskTerminalObserver;
-use awaken_session_run_delivery::CommittedAuthority;
+use super::{BackgroundTaskTerminalObserver, TaskCommittedReads};
 #[cfg(test)]
 use awaken_session_run_delivery::SessionCommit;
 
 struct BackgroundTaskOwnership {
     expected: BackgroundTask,
-    commit: CommittedAuthority<Arc<dyn crate::LocalCommit>>,
+    commit: TaskCommittedReads,
     supervisor: Arc<BackgroundTaskSupervisor>,
 }
 
 #[async_trait::async_trait]
 impl AttemptOwnershipVerifier for BackgroundTaskOwnership {
     async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
-        let commands = self
+        let current = self
             .commit
-            .committed_state(&self.expected.origin.thread_id)
+            .committed_task(&self.expected)
             .await
-            .map_err(AttemptOwnershipError::Unavailable)?;
-        let state = awaken_agent_contract::agent::state::Store::rebuild(&commands);
-        let current = task_state_cell(&self.expected.id)
-            .load(&state)
-            .map_err(|error| AttemptOwnershipError::Unavailable(error.to_string()))?
+            .map_err(AttemptOwnershipError::Unavailable)?
             .ok_or(AttemptOwnershipError::Lost)?;
         let expected = self.expected.attempt().ok_or(AttemptOwnershipError::Lost)?;
         if current.admits_execution_of(&self.expected, self.supervisor.clock().now_ms())
@@ -69,7 +64,7 @@ impl BackgroundTaskTerminalObserver {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::{collections::BTreeSet, sync::atomic::Ordering, time::Duration};
 
@@ -79,12 +74,14 @@ mod tests {
         staged::{RunDisposition, ThreadCommit},
     };
     use awaken_ext_background_task::{
-        BackgroundInvocation, BackgroundTaskConfig, BackgroundTaskEnd, BackgroundTaskId,
-        BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundTaskPlugin, BackgroundWait,
-        TaskExecutionPolicy,
+        BackgroundInvocation, BackgroundTaskConfig, BackgroundTaskLifecycle, BackgroundTaskOrigin,
+        BackgroundTaskPlugin, TaskExecutionPolicy, task_state_cell,
     };
     use awaken_lease_testkit::ManualClock;
     use awaken_runtime::{PreparedToolExecutor, Runtime};
+    use awaken_tool_contract::tool::background_task::{
+        BackgroundTaskEnd, BackgroundTaskId, BackgroundWait,
+    };
     use awaken_tool_contract::tool::{ToolCall, ToolError, ToolRecoveryPolicy};
     use awaken_tool_contract::{ToolConcurrency, ToolExecutionAdmission, ToolExecutionPermit};
 
@@ -107,7 +104,8 @@ mod tests {
             foreground,
             local_commit()
                 .committed_authority()
-                .expect("local test commit is authoritative"),
+                .expect("local test commit is authoritative")
+                .into(),
             Arc::new(BackgroundRuns::new()),
             Arc::new(BackgroundTaskSupervisor::new(
                 "worker",
@@ -164,7 +162,8 @@ mod tests {
                 RuntimeRunContext::new(),
                 commit
                     .committed_authority()
-                    .expect("local test commit is authoritative"),
+                    .expect("local test commit is authoritative")
+                    .into(),
                 background.clone(),
                 supervisor.clone(),
                 "session".into(),
@@ -172,11 +171,16 @@ mod tests {
                 None,
             );
             let task = task(boundary, &supervisor);
-            persist(&commit, &task, "initial").await;
+            // The observed terminal is the SAME Ended Run written by persist;
+            // the Task keeps its distinct original creator Run ("origin").
+            // launch_remote here polls a remote tool under LOCAL committed
+            // authority, not a fabricated registered-Worker delivering claim.
+            let observed = RunId("initial".into());
+            persist(&commit, &task, &observed.0).await;
             if boundary == 0 {
-                observer.launch(task.clone()).await;
+                observer.launch(task.clone(), &observed).await;
             } else {
-                observer.launch_remote(task.clone()).await;
+                observer.launch_remote(task.clone(), &observed).await;
             }
             assert!(background.drain(Duration::from_secs(2)).await);
             let completion = supervisor.completion(&task.id).expect("terminal candidate");
@@ -190,9 +194,9 @@ mod tests {
                 "U1..U4 no wait"
             );
             if boundary == 0 {
-                observer.launch(task.clone()).await;
+                observer.launch(task.clone(), &observed).await;
             } else {
-                observer.launch_remote(task.clone()).await;
+                observer.launch_remote(task.clone(), &observed).await;
             }
             assert!(background.drain(Duration::from_secs(2)).await);
             assert_eq!(
@@ -247,7 +251,7 @@ mod tests {
         task
     }
 
-    async fn persist(commit: &SessionCommit, task: &BackgroundTask, run: &str) {
+    pub(crate) async fn persist(commit: &SessionCommit, task: &BackgroundTask, run: &str) {
         commit
             .commit(ThreadCommit::assemble(
                 task.origin.thread_id.clone(),
@@ -379,7 +383,8 @@ mod tests {
                     context,
                     commit
                         .committed_authority()
-                        .expect("local test commit is authoritative"),
+                        .expect("local test commit is authoritative")
+                        .into(),
                     background,
                     supervisor.clone(),
                     "session".into(),
@@ -458,7 +463,9 @@ mod tests {
                         task.reclaim("replacement", expiry, BackgroundTaskSupervisor::lease_ms())
                             .unwrap();
                     }
-                    2 => task.finish(&fence, BackgroundTaskEnd::Cancelled).unwrap(),
+                    2 => task
+                        .finish(&fence, BackgroundTaskEnd::Cancelled {})
+                        .unwrap(),
                     3 => match &mut task.lifecycle {
                         BackgroundTaskLifecycle::Running { attempt }
                         | BackgroundTaskLifecycle::Waiting { attempt, .. }
@@ -542,7 +549,8 @@ mod tests {
                     RuntimeRunContext::new(),
                     commit
                         .committed_authority()
-                        .expect("local test commit is authoritative"),
+                        .expect("local test commit is authoritative")
+                        .into(),
                     Arc::new(BackgroundRuns::new()),
                     supervisor.clone(),
                     "session".into(),
@@ -602,7 +610,7 @@ mod tests {
                     .unwrap();
                 if terminal {
                     current
-                        .finish(&fence, BackgroundTaskEnd::Cancelled)
+                        .finish(&fence, BackgroundTaskEnd::Cancelled {})
                         .unwrap();
                 } else {
                     current
@@ -619,7 +627,7 @@ mod tests {
                 let before_fold = current.clone();
                 assert!(
                     current
-                        .finish(&fence, BackgroundTaskEnd::Cancelled)
+                        .finish(&fence, BackgroundTaskEnd::Cancelled {})
                         .is_err(),
                     "B3"
                 );
@@ -662,7 +670,8 @@ mod tests {
             expected: expected.clone(),
             commit: commit
                 .committed_authority()
-                .expect("local test commit is authoritative"),
+                .expect("local test commit is authoritative")
+                .into(),
             supervisor: supervisor.clone(),
         };
         clock.set(expiry - 1);
@@ -705,7 +714,8 @@ mod tests {
             expected: expected.clone(),
             commit: commit
                 .committed_authority()
-                .expect("local test commit is authoritative"),
+                .expect("local test commit is authoritative")
+                .into(),
             supervisor: supervisor.clone(),
         };
         assert!(matches!(
@@ -733,7 +743,8 @@ mod tests {
             expected,
             commit: unavailable_commit
                 .committed_authority()
-                .expect("R4 local test commit is authoritative"),
+                .expect("R4 local test commit is authoritative")
+                .into(),
             supervisor,
         };
         assert_eq!(

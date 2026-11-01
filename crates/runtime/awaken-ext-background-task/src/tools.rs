@@ -21,9 +21,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::BackgroundTaskSupervisor;
 use crate::{
-    BACKGROUND_TASK_STATE_PREFIX, BackgroundInvocation, BackgroundTask, BackgroundTaskId,
-    BackgroundTaskLifecycle, BackgroundTaskOrigin, task_state_cell,
+    BackgroundInvocation, BackgroundTask, BackgroundTaskLifecycle, BackgroundTaskOrigin,
+    task_state_cell,
 };
+use awaken_agent_contract::thread::background_task::BACKGROUND_TASK_STATE_PREFIX;
+use awaken_tool_contract::tool::background_task::BackgroundTaskId;
 
 pub(crate) struct RunInBackground {
     allowed: Arc<BTreeSet<String>>,
@@ -182,17 +184,17 @@ impl<'a> From<&'a BackgroundTask> for TaskView<'a> {
                 BackgroundTaskLifecycle::Waiting { .. } => TaskLifecycleView::Waiting,
                 BackgroundTaskLifecycle::Cancelling { .. } => TaskLifecycleView::Cancelling,
                 BackgroundTaskLifecycle::Ended { end } => match end {
-                    crate::BackgroundTaskEnd::Completed { content, is_error } => {
+                    awaken_tool_contract::tool::background_task::BackgroundTaskEnd::Completed { content, is_error } => {
                         TaskLifecycleView::Completed {
                             content,
                             is_error: *is_error,
                         }
                     }
-                    crate::BackgroundTaskEnd::Failed { message } => {
+                    awaken_tool_contract::tool::background_task::BackgroundTaskEnd::Failed { message } => {
                         TaskLifecycleView::Failed { message }
                     }
-                    crate::BackgroundTaskEnd::Cancelled => TaskLifecycleView::Cancelled,
-                    crate::BackgroundTaskEnd::Indeterminate { message } => {
+                    awaken_tool_contract::tool::background_task::BackgroundTaskEnd::Cancelled {} => TaskLifecycleView::Cancelled,
+                    awaken_tool_contract::tool::background_task::BackgroundTaskEnd::Indeterminate { message } => {
                         TaskLifecycleView::Indeterminate { message }
                     }
                 },
@@ -406,9 +408,10 @@ impl RawTool for CancelBackgroundTask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BackgroundTaskOrigin, BackgroundWait, TaskExecutionPolicy};
+    use crate::{BackgroundTaskOrigin, TaskExecutionPolicy};
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_tool_contract::tool::background_task::BackgroundWait;
     use awaken_tool_contract::tool::{ToolConcurrency, ToolRecoveryPolicy, ToolTaskHandle};
 
     fn remote_task() -> BackgroundTask {

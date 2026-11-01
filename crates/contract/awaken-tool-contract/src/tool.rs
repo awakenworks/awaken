@@ -15,6 +15,8 @@
 //! implementation detail of whoever implements `ToolExecutor` — owned by the
 //! orchestration layer above — and stays out of the neutral runtime contract.
 
+pub mod background_task;
+
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::run::Id as RunId;

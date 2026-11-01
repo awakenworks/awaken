@@ -576,6 +576,273 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
         assert!(empty.events.is_empty(), "Q3-Q4");
         assert_eq!(empty.next_cursor, after, "Q3-Q4");
     }
+    heap_rule(|| exact_compatible_claims_preserve_worker_eligibility(store, namespace, clock))
+        .await;
+    heap_rule(|| exact_compatible_recovery_preserves_assignment_policy(store, namespace, clock))
+        .await;
+}
+
+// C/E table for the exact registered claim, using the same real stores and
+// canonical can_assign as broad placement. X1..X5 vary one cause from a valid
+// current-codec Worker: not Ready, expired, full, forged fingerprint, wrong zone.
+// Each must return None with byte-equivalent rows and no new feed/lease fact;
+// codec evidence is deliberately still valid, so it cannot mask this boundary.
+// X6 a compatible Worker claims epoch1, proving refusals did not consume it.
+// X7 the None/local entry still refuses a RemoteRequired row.
+// Ordinary None stays with caller_owned_run_identity_is_exact/local claims;
+// terminal exemption stays with committed_terminal_recovery's T3; codec-hard
+// cancellation stays with legacy_pending_session_run_adoption's C1-C3.
+async fn exact_compatible_claims_preserve_worker_eligibility<S>(
+    store: &S,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) where
+    S: ConformanceDispatch + DispatchOperationalFeed + ?Sized,
+{
+    let mut worker = ready_dispatch_worker(ns, "exact-eligibility");
+    worker.manifest.zone = Some("exact-eligibility-zone".into());
+    worker.capability_fingerprint = worker.manifest.fingerprint().unwrap();
+    let mut placement = PlacementRequirements::remote_required();
+    placement.required_zone = worker.manifest.zone.clone();
+    let request = current_placed(
+        dispatch(ns, "exact-eligibility", "exact-eligibility"),
+        placement,
+    );
+    clock.set(0);
+    store.enqueue(request.clone()).await.unwrap();
+    let before = store.list_dispatches().await.unwrap();
+    let cursor = store
+        .events_after(DispatchCursor(0), usize::MAX, None)
+        .await
+        .unwrap()
+        .next_cursor;
+    assert!(
+        store
+            .claim_run(
+                request.run_id(),
+                "exact-local",
+                LEASE_MS,
+                &Default::default()
+            )
+            .await
+            .unwrap()
+            .is_none(),
+        "X7 remote-only is not local"
+    );
+    for axis in 0..5 {
+        let mut refused = worker.clone();
+        match axis {
+            0 => refused.state = WorkerState::Draining,
+            1 => refused.expires_at_ms = 0,
+            2 => refused.in_flight = refused.manifest.capacity.max_concurrent,
+            3 => refused.capability_fingerprint.push_str("-foreign"),
+            _ => {
+                refused.manifest.zone = Some("foreign-zone".into());
+                refused.capability_fingerprint = refused.manifest.fingerprint().unwrap();
+            }
+        }
+        assert!(
+            request
+                .worker_codec_admission(Some(&refused.manifest))
+                .is_ok(),
+            "X{} codec is not the refusal",
+            axis + 1
+        );
+        assert_eq!(
+            awaken_worker_contract::can_assign(&refused, &request.placement, None, false, 0),
+            Err(awaken_worker_contract::AssignmentRejection::Ineligible),
+            "X{} actual shared placement cause",
+            axis + 1
+        );
+        assert!(
+            store
+                .claim_run_compatible(request.run_id(), &refused, LEASE_MS)
+                .await
+                .unwrap()
+                .is_none(),
+            "X{} exact incompatible Worker must not obtain a lease",
+            axis + 1
+        );
+        assert_eq!(
+            store.list_dispatches().await.unwrap(),
+            before,
+            "X{} state/lease/assignment stutter",
+            axis + 1
+        );
+        let unchanged = store.events_after(cursor, usize::MAX, None).await.unwrap();
+        assert!(
+            unchanged.events.is_empty(),
+            "X{} no operational fact",
+            axis + 1
+        );
+        assert_eq!(
+            unchanged.next_cursor,
+            cursor,
+            "X{} feed cursor stutter",
+            axis + 1
+        );
+    }
+    let accepted = store
+        .claim_run_compatible(request.run_id(), &worker, LEASE_MS)
+        .await
+        .unwrap()
+        .expect("X6 compatible exact Worker");
+    assert_eq!(accepted.request, request, "X6 frozen request");
+    assert_eq!(accepted.lease.epoch(), 1, "X6 refusals consumed no epoch");
+    assert_eq!(
+        accepted.assignment,
+        Some(awaken_worker_contract::WorkerAssignment::from(&worker)),
+        "X6 original assignment is persisted"
+    );
+    assert_eq!(
+        store
+            .settle(
+                request.run_id(),
+                accepted.lease.epoch(),
+                DispatchOutcome::Done,
+                &[]
+            )
+            .await
+            .unwrap(),
+        SettleOutcome::Applied
+    );
+}
+
+// R1 NeverReplace and R2 continuity-without-binding reject another incarnation;
+// R3 continuity-with-binding and R4 rebuild allow it. All rows first obtain a
+// real compatible lease/assignment, then cross that store's expiry boundary.
+// Rejection preserves rows/feed; the original incarnation still recovers R1/R2.
+// Positive recovery advances one epoch and returns the same opaque binding.
+async fn exact_compatible_recovery_preserves_assignment_policy<S>(
+    store: &S,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) where
+    S: ConformanceDispatch + DispatchOperationalFeed + ?Sized,
+{
+    use awaken_worker_contract::WorkerRecoveryMode;
+    for (tag, recovery, bound, allowed) in [
+        ("never", WorkerRecoveryMode::NeverReplace, false, false),
+        (
+            "unbound",
+            WorkerRecoveryMode::RequireSandboxContinuity,
+            false,
+            false,
+        ),
+        (
+            "bound",
+            WorkerRecoveryMode::RequireSandboxContinuity,
+            true,
+            true,
+        ),
+        (
+            "rebuild",
+            WorkerRecoveryMode::RebuildFromCommittedTruth,
+            false,
+            true,
+        ),
+    ] {
+        let name = format!("exact-recovery-{tag}");
+        let mut placement = PlacementRequirements::remote_required();
+        placement.recovery = recovery;
+        let request = current_placed(dispatch(ns, &name, &name), placement);
+        let original = ready_dispatch_worker(ns, &format!("{name}-original"));
+        let replacement = ready_dispatch_worker(ns, &format!("{name}-replacement"));
+        clock.set(300_000);
+        store.enqueue(request.clone()).await.unwrap();
+        let first = store
+            .claim_run_compatible(request.run_id(), &original, LEASE_MS)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first.assignment,
+            Some(awaken_worker_contract::WorkerAssignment::from(&original)),
+            "R/{tag} original assignment"
+        );
+        if bound {
+            assert_eq!(
+                store
+                    .bind_sandbox(&RunClaim::from(&first.lease), "exact-compatible-sandbox")
+                    .await
+                    .unwrap(),
+                SettleOutcome::Applied,
+                "R/{tag} actual binding"
+            );
+        }
+        clock.advance_past(first.lease.expires_ms()).await;
+        clock.set(first.lease.expires_ms().saturating_add(1));
+        let before = store.list_dispatches().await.unwrap();
+        let cursor = store
+            .events_after(DispatchCursor(0), usize::MAX, None)
+            .await
+            .unwrap()
+            .next_cursor;
+        assert_eq!(
+            awaken_worker_contract::can_assign(
+                &replacement,
+                &request.placement,
+                first.assignment.as_ref(),
+                bound,
+                first.lease.expires_ms().saturating_add(1)
+            )
+            .is_ok(),
+            allowed,
+            "R/{tag} shared replacement law"
+        );
+        let replacement_claim = store
+            .claim_run_compatible(request.run_id(), &replacement, LEASE_MS)
+            .await
+            .unwrap();
+        let recovered = if allowed {
+            replacement_claim.expect("R3/R4 replacement allowed")
+        } else {
+            assert!(
+                replacement_claim.is_none(),
+                "R1/R2 exact claim cannot replace"
+            );
+            assert_eq!(
+                store.list_dispatches().await.unwrap(),
+                before,
+                "R/{tag} original expired lease retained"
+            );
+            let unchanged = store.events_after(cursor, usize::MAX, None).await.unwrap();
+            assert!(
+                unchanged.events.is_empty(),
+                "R/{tag} no claim/feed mutation"
+            );
+            assert_eq!(unchanged.next_cursor, cursor, "R/{tag} cursor retained");
+            store
+                .claim_run_compatible(request.run_id(), &original, LEASE_MS)
+                .await
+                .unwrap()
+                .expect("R1/R2 same incarnation is not replacement")
+        };
+        assert!(recovered.recovered, "R/{tag} actual expired recovery");
+        assert_eq!(
+            recovered.lease.epoch(),
+            first.lease.epoch() + 1,
+            "R/{tag} one successor epoch"
+        );
+        assert_eq!(recovered.request, request, "R/{tag} frozen request");
+        assert_eq!(
+            recovered.sandbox.as_deref(),
+            bound.then_some("exact-compatible-sandbox"),
+            "R/{tag} exact binding survives"
+        );
+        assert_eq!(
+            store
+                .settle(
+                    request.run_id(),
+                    recovered.lease.epoch(),
+                    DispatchOutcome::Done,
+                    &[]
+                )
+                .await
+                .unwrap(),
+            SettleOutcome::Applied
+        );
+    }
 }
 
 async fn local_claims_skip_remote_only_work(

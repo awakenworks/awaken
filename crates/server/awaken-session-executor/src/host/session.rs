@@ -25,13 +25,13 @@ pub(super) use awaken_session_run_delivery::{
 };
 pub(crate) use content_delivery::SkillDeliveryEvidence;
 
-/// One named value for the optional authority inputs that distinguish
+/// One named value for the optional frozen data inputs that distinguish
 /// reservation, fresh-snapshot, claimed, and legacy-recovery Session opens.
 /// Keeping these fields together prevents positional `Option`/boolean arguments
 /// from silently selecting a different physical-attempt lifecycle path.
 struct SessionOpenRequest {
     published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-    claimed_attempt: Option<ClaimedRuntimeInput>,
+    frozen_runtime_input: Option<FrozenRuntimeInput>,
     force_defer_environment: bool,
     recover_revoked_legacy: bool,
 }
@@ -56,13 +56,44 @@ impl crate::RunAssembly {
         &self,
         thread: &str,
         agent: Option<&str>,
+        origin: Option<&(
+            awaken_runtime_contract::RunActivation,
+            Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
+        )>,
     ) -> Result<Arc<SessionCtx>, SessionExecutionError> {
+        let (published_snapshot, frozen_runtime_input) =
+            if let Some((activation, publications)) = origin {
+                if activation.thread_id.0 != thread
+                    || agent.is_some_and(|agent| agent != activation.snapshot.root_agent_id.0)
+                {
+                    return Err(SessionExecutionError::unavailable(
+                        "Task origin does not match its Session context",
+                    ));
+                }
+                let workspace = self.capabilities.thread_workspace(thread)?;
+                let source = awaken_session_run_delivery::RUN_PUBLICATIONS
+                    .exact_source(&activation.snapshot, publications, &workspace)
+                    .map_err(SessionExecutionError::unavailable)?;
+                let effective_model_ref = activation.effective_model_ref().to_owned();
+                let input = FrozenRuntimeInput {
+                    identity: RuntimePublicationIdentity::from_publications(
+                        &activation.snapshot,
+                        publications,
+                        &effective_model_ref,
+                    ),
+                    publications: source,
+                    effective_model_ref,
+                };
+                (Some(activation.snapshot.clone()), Some(input))
+            } else {
+                (None, None)
+            };
         self.ctx_for_snapshot_with_attempt(
             thread,
             agent,
             SessionOpenRequest {
-                published_snapshot: None,
-                claimed_attempt: None,
+                published_snapshot,
+                frozen_runtime_input,
                 force_defer_environment: true,
                 recover_revoked_legacy: false,
             },
@@ -84,7 +115,7 @@ impl crate::RunAssembly {
             agent,
             SessionOpenRequest {
                 published_snapshot,
-                claimed_attempt: None,
+                frozen_runtime_input: None,
                 force_defer_environment: false,
                 recover_revoked_legacy: false,
             },
@@ -108,7 +139,7 @@ impl crate::RunAssembly {
             Some(agent),
             SessionOpenRequest {
                 published_snapshot: Some(published_snapshot),
-                claimed_attempt: None,
+                frozen_runtime_input: None,
                 force_defer_environment: true,
                 recover_revoked_legacy: false,
             },
@@ -121,14 +152,14 @@ impl crate::RunAssembly {
         thread: &str,
         agent: Option<&str>,
         published_snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
-        attempt: ClaimedRuntimeInput,
+        attempt: FrozenRuntimeInput,
     ) -> Result<Arc<SessionCtx>, SessionExecutionError> {
         self.ctx_for_snapshot_with_attempt(
             thread,
             agent,
             SessionOpenRequest {
                 published_snapshot: Some(published_snapshot),
-                claimed_attempt: Some(attempt),
+                frozen_runtime_input: Some(attempt),
                 force_defer_environment: false,
                 // Claimed projection synchronization owns typed legacy
                 // reconstruction before context construction. Re-entering it
@@ -148,7 +179,7 @@ impl crate::RunAssembly {
             None,
             SessionOpenRequest {
                 published_snapshot: None,
-                claimed_attempt: None,
+                frozen_runtime_input: None,
                 force_defer_environment: false,
                 recover_revoked_legacy: true,
             },
@@ -179,7 +210,7 @@ impl crate::RunAssembly {
         Box::pin(async move {
             let SessionOpenRequest {
                 published_snapshot,
-                claimed_attempt,
+                frozen_runtime_input,
                 force_defer_environment,
                 recover_revoked_legacy,
             } = request;
@@ -208,7 +239,7 @@ impl crate::RunAssembly {
                 .read_run(thread, |run| run.context.clone())?
                 .flatten()
             {
-                let cache_matches_attempt = claimed_attempt.as_ref().is_none_or(|attempt| {
+                let cache_matches_attempt = frozen_runtime_input.as_ref().is_none_or(|attempt| {
                     ctx.runtime_publication_identity.as_ref() == Some(&attempt.identity)
                 });
                 if !runtime_context_cache_reuse_admitted(
@@ -245,7 +276,7 @@ impl crate::RunAssembly {
                 agent,
                 SessionOpenRequest {
                     published_snapshot,
-                    claimed_attempt,
+                    frozen_runtime_input,
                     force_defer_environment,
                     recover_revoked_legacy,
                 },

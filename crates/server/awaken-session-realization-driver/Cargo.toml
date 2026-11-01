@@ -33,6 +33,7 @@ tracing = "0.1"
 test-support = ["awaken-session-execution-contract/test-support"]
 
 [dev-dependencies]
+awaken-runtime-contract.workspace = true
 awaken-reliability-testkit.workspace = true
 awaken-credential-contract.workspace = true
 awaken-environment-contract.workspace = true

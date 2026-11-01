@@ -112,6 +112,17 @@ impl SessionRunBackgroundApplication for Port {
     ) -> Result<awaken_session_application_contract::TaskAttentionAck, RunApplicationError> {
         panic!("unused Task attention role was invoked")
     }
+
+    // This binding fixture owns lifetimes only; no receipt authority is installed.
+    async fn task_attention_receipt(
+        &self,
+        _: awaken_session_application_contract::TaskAttention,
+    ) -> Result<
+        Option<awaken_session_application_contract::TaskAttentionAck>,
+        awaken_session_application_contract::RunApplicationError,
+    > {
+        panic!("unused Task attention receipt role was invoked")
+    }
 }
 
 fn address<T: ?Sized>(value: &Arc<T>) -> *const () {
@@ -120,6 +131,10 @@ fn address<T: ?Sized>(value: &Arc<T>) -> *const () {
 
 #[test]
 fn binding_refuses_unbound_use_and_a_second_bind_and_keeps_mode_after_drop() {
+    // The background role also requires an explicit receipt reader. The external
+    // compiler control omits only Port's reader: the former trait default fills
+    // that omission; the required contract rejects it with E0046. This unused
+    // fixture never gains receipt authority from its submit or lifetime records.
     // Decision table, one row per binding state and cause:
     // | Row | state                         | cause            | effect                                   |
     // |-----|-------------------------------|------------------|------------------------------------------|

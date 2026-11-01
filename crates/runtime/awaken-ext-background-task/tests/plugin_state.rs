@@ -9,9 +9,8 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_background_task::{
-    BackgroundInvocation, BackgroundTask, BackgroundTaskCompletion, BackgroundTaskConfig,
-    BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskLifecycle, BackgroundTaskOrigin,
-    BackgroundTaskPlugin, BackgroundTaskSupervisor, BackgroundWait, TaskExecutionPolicy,
+    BackgroundInvocation, BackgroundTask, BackgroundTaskConfig, BackgroundTaskLifecycle,
+    BackgroundTaskOrigin, BackgroundTaskPlugin, BackgroundTaskSupervisor, TaskExecutionPolicy,
     task_state_cell, tasks_from_state,
 };
 use awaken_lease_testkit::ManualClock;
@@ -19,6 +18,9 @@ use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, PhaseKind, Plugin, ResolvedExecutionEnv,
 };
 use awaken_time::WallClockExt;
+use awaken_tool_contract::tool::background_task::{
+    BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId, BackgroundWait,
+};
 use awaken_tool_contract::tool::{
     RawTool, ToolCall, ToolConcurrency, ToolError, ToolExecutionFacts, ToolExecutionFactsResolver,
     ToolOperationContext, ToolRecoveryPolicy, with_tool_execution_facts,
@@ -160,7 +162,9 @@ async fn expired_cancellation_reconciliation_never_fabricates_remote_termination
             if remote {
                 task.wait(
                     &fence,
-                    awaken_ext_background_task::BackgroundWait::Remote(handle.clone()),
+                    awaken_tool_contract::tool::background_task::BackgroundWait::Remote(
+                        handle.clone(),
+                    ),
                 )
                 .unwrap();
             }
@@ -178,7 +182,7 @@ async fn expired_cancellation_reconciliation_never_fabricates_remote_termination
             if remote {
                 assert!(
                     matches!(&next.lifecycle, BackgroundTaskLifecycle::Cancelling {
-                    attempt, wait: Some(awaken_ext_background_task::BackgroundWait::Remote(actual))
+                    attempt, wait: Some(awaken_tool_contract::tool::background_task::BackgroundWait::Remote(actual))
                 } if attempt.worker_id == "replacement" && attempt.epoch.get() == 2 && actual == &handle),
                     "R1"
                 );
@@ -378,7 +382,7 @@ async fn submission_uses_the_supervisors_injected_clock_and_replay_keeps_the_lea
         let tenure = existing.tenure().unwrap();
         match phase {
             0 => {}
-            1 => existing.wait(&tenure, BackgroundWait::Resource).unwrap(),
+            1 => existing.wait(&tenure, BackgroundWait::Resource {}).unwrap(),
             2 => existing.request_cancel().unwrap(),
             3 => {
                 existing.request_cancel().unwrap();
@@ -394,7 +398,7 @@ async fn submission_uses_the_supervisors_injected_clock_and_replay_keeps_the_lea
                 assert!(matches!(
                     &existing.lifecycle,
                     BackgroundTaskLifecycle::Ended {
-                        end: BackgroundTaskEnd::Cancelled
+                        end: BackgroundTaskEnd::Cancelled {}
                     }
                 ));
             }

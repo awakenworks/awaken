@@ -108,6 +108,17 @@ impl SessionRunBackgroundApplication for UnusedApplications {
     ) -> Result<awaken_session_application_contract::TaskAttentionAck, RunApplicationError> {
         panic!("unused Task attention role was invoked")
     }
+
+    // This binding fixture owns lifetimes only; no receipt authority is installed.
+    async fn task_attention_receipt(
+        &self,
+        _: awaken_session_application_contract::TaskAttention,
+    ) -> Result<
+        Option<awaken_session_application_contract::TaskAttentionAck>,
+        awaken_session_application_contract::RunApplicationError,
+    > {
+        panic!("unused Task attention receipt role was invoked")
+    }
 }
 fn unused() -> Arc<UnusedApplications> {
     static PORTS: OnceLock<Arc<UnusedApplications>> = OnceLock::new();
@@ -184,6 +195,13 @@ pub(crate) fn background_binding(
     let binding = SessionApplicationBinding::default();
     bind_local(&binding, coordination(), application).expect("a fresh binding binds once");
     binding
+}
+
+/// The co-located Task attention route over a freshly bound application.
+pub(crate) fn background_route(
+    application: Arc<dyn SessionRunBackgroundApplication>,
+) -> crate::background_task::TaskAttentionRoute {
+    crate::background_task::TaskAttentionRoute::CoLocated(background_binding(application))
 }
 
 /// Existing lower-level fixtures may reuse their already-selected complete

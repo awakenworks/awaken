@@ -1584,7 +1584,15 @@ impl WorkerNode {
         .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
         .with_skill_bundle_source(remote_skills)
         .with_web_search_provider_registry(application.web_providers)
-        .with_admin_tools(self.admin_tools);
+        .with_admin_tools(self.admin_tools)
+        // This incarnation tenures its BackgroundTasks to itself and delivers
+        // their attention over the same authenticated transport.
+        .with_registered_task_control(Arc::new(
+            awaken_coordinator_client::WorkerTaskControlClient::new(
+                control.clone(),
+                registration.snapshot.identity.clone(),
+            ),
+        ));
         if let Some(remote_attempt) = self.remote_attempt {
             deps = deps.with_remote_attempt_executor(remote_attempt);
         }

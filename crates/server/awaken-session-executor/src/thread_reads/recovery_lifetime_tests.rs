@@ -21,7 +21,7 @@ async fn retained_worker_recovery_releases_original_installed_sessions_and_idle_
     let session = "retained-recovery-owner";
     let context = host
         .run_assembly
-        .ctx_for_session_coordination(session, None)
+        .ctx_for_session_coordination(session, None, None)
         .await
         .expect("real cached idle Context");
     assert!(context.env.is_none() && !context.has_active_run());
@@ -90,7 +90,7 @@ async fn retained_recovery_waits_on_original_lifecycle_and_selects_exact_cached_
     let session = "retained-recovery-lock";
     let context = host
         .run_assembly
-        .ctx_for_session_coordination(session, None)
+        .ctx_for_session_coordination(session, None, None)
         .await
         .unwrap();
     let original = context.commit.clone();

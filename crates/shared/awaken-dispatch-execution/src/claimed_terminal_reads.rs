@@ -17,8 +17,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_dispatch_contract::{Claimed, ClaimedCheckpointTransport, RunClaim};
+use awaken_dispatch_contract::{Claimed, ClaimedCheckpointTransport};
 use awaken_sync::LeafLock;
+use awaken_worker_contract::RunClaim;
 
 /// One claimed terminal delivery in progress on this Worker.
 struct Delivering {

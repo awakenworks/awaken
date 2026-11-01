@@ -18,6 +18,7 @@ mod committed_links;
 mod committed_runs;
 mod role;
 mod session_threads;
+mod task_callback;
 
 pub use committed_links::{
     CommittedCoordinationProjection, CoordinationReadPurpose, project_committed_coordination,

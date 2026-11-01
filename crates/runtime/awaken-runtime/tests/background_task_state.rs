@@ -14,14 +14,15 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Scope, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::background_task::BACKGROUND_TASK_STATE_PREFIX;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_ext_background_task::{
-    BACKGROUND_TASK_PLUGIN_ID, BACKGROUND_TASK_STATE_PREFIX, BackgroundInvocation, BackgroundTask,
-    BackgroundTaskConfig, BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskLifecycle,
-    BackgroundTaskOrigin, BackgroundTaskPlugin, TaskClaim, TaskExecutionPolicy, task_state_cell,
+    BACKGROUND_TASK_PLUGIN_ID, BackgroundInvocation, BackgroundTask, BackgroundTaskConfig,
+    BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundTaskPlugin, TaskClaim,
+    TaskExecutionPolicy, task_state_cell,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
@@ -37,6 +38,7 @@ use awaken_runtime_contract::snapshot::{
 use awaken_store_inmem::MemoryCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_tool_contract::tool::ToolCall;
+use awaken_tool_contract::tool::background_task::{BackgroundTaskEnd, BackgroundTaskId};
 use awaken_tool_contract::tool::{
     RawTool, ToolConcurrency, ToolOutput, ToolRecoveryCapability, ToolRecoveryMode,
     ToolRecoveryPolicy, ToolResource, ToolResourceAccess,
@@ -141,7 +143,7 @@ async fn terminal_notification_reaches_inference_and_commits_without_result_look
     assert!(supervisor.register(&task.id, &fence).is_some());
     supervisor.complete(
         task.id.clone(),
-        awaken_ext_background_task::BackgroundTaskCompletion {
+        awaken_tool_contract::tool::background_task::BackgroundTaskCompletion {
             fence,
             end: BackgroundTaskEnd::Completed {
                 content: vec![ContentBlock::text("connected-phone-fixture")],

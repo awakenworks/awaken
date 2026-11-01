@@ -309,7 +309,14 @@ async fn exited_worker_closes_its_original_create_ledger_before_releasing_eviden
             .enqueue(
                 // A Worker-bound Native Run publishes the journal codec it
                 // requires; an unmarked request is never Worker-claimable.
-                awaken_dispatch::RunDispatch::new(activation).with_worker_codec_requirements(),
+                // CW0 the real Ready Registry Worker also needs current protocol
+                // requirements: codec tokens alone do not upgrade legacy v0.
+                // Keep the original RemotePreferred/rebuild scheduling policy.
+                awaken_dispatch::RunDispatch::new(activation)
+                    .with_placement(
+                        awaken_worker_contract::PlacementRequirements::remote_preferred(),
+                    )
+                    .with_worker_codec_requirements(),
             )
             .await
             .unwrap();

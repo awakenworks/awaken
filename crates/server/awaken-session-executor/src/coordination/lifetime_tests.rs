@@ -137,7 +137,7 @@ async fn remote_cached_consumers_release_original_installed_sessions() {
         .install_run("session", |run| run.session_dispatch = true);
     let context = host
         .run_assembly
-        .ctx_for_session_coordination("session", None)
+        .ctx_for_session_coordination("session", None, None)
         .await
         .expect("real coordination assembly");
     assert!(context.is_coordination_envelope() && !context.has_active_run());

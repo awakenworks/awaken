@@ -787,7 +787,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
 
     let reservation_error = match host
         .run_assembly
-        .ctx_for_session_coordination("t-query-after-provisioning-denial", Some("assistant"))
+        .ctx_for_session_coordination("t-query-after-provisioning-denial", Some("assistant"), None)
         .await
     {
         Ok(_) => panic!("Q1 reservation must reject unsupported read-only mounts"),

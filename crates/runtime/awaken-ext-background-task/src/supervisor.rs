@@ -14,24 +14,13 @@ use loom_lock::LeafLock;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::{BackgroundTaskEnd, BackgroundTaskId, BackgroundWait, TaskTenure};
+use awaken_tool_contract::tool::background_task::{
+    BackgroundTaskCompletion, BackgroundTaskId, BackgroundTaskWaitCandidate, TaskTenure,
+};
+#[cfg(any(test, kani))]
+use awaken_tool_contract::tool::background_task::{BackgroundTaskEnd, BackgroundWait};
 
 pub(crate) const BACKGROUND_TASK_LEASE: Duration = Duration::from_secs(300);
-
-#[derive(Debug, Clone)]
-pub struct BackgroundTaskCompletion {
-    pub fence: TaskTenure,
-    pub end: BackgroundTaskEnd,
-}
-
-#[derive(Debug, Clone)]
-pub struct BackgroundTaskWaitCandidate {
-    pub fence: TaskTenure,
-    pub wait: BackgroundWait,
-    /// True only for a poll watchdog checkpoint that must extend the same
-    /// durable attempt lease before resuming observation.
-    pub renew_lease: bool,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompletionFoldPlan {
@@ -223,22 +212,26 @@ impl BackgroundTaskSupervisor {
     /// | D5 | same tenure, Waiting | Waiting | unchanged |
     /// | D6 | same tenure, Completed | any | unchanged |
     /// | D7 | newer epoch, or same epoch and another holder | any | unchanged |
-    pub fn accept_delivered(&self, record: &crate::TaskObservationRecord) -> bool {
+    pub fn accept_delivered(
+        &self,
+        record: &awaken_tool_contract::tool::background_task::TaskObservationRecord,
+    ) -> bool {
         let fence = record.tenure();
         let delivered = match record.observation() {
-            crate::TaskObservation::Ended { end } => {
+            awaken_tool_contract::tool::background_task::TaskObservation::Ended { end } => {
                 SupervisorEntry::Completed(BackgroundTaskCompletion {
                     fence: fence.clone(),
                     end: end.clone(),
                 })
             }
-            crate::TaskObservation::Waiting { wait, renew_lease } => {
-                SupervisorEntry::Waiting(BackgroundTaskWaitCandidate {
-                    fence: fence.clone(),
-                    wait: wait.clone(),
-                    renew_lease: *renew_lease,
-                })
-            }
+            awaken_tool_contract::tool::background_task::TaskObservation::Waiting {
+                wait,
+                renew_lease,
+            } => SupervisorEntry::Waiting(BackgroundTaskWaitCandidate {
+                fence: fence.clone(),
+                wait: wait.clone(),
+                renew_lease: *renew_lease,
+            }),
         };
         let mut entries = self.entries.lock();
         let replace = match entries.get(record.task_id()) {
@@ -364,7 +357,7 @@ mod fixtures {
     pub(super) fn completion(epoch: u64) -> BackgroundTaskCompletion {
         BackgroundTaskCompletion {
             fence: fixtures::tenure("worker", epoch),
-            end: BackgroundTaskEnd::Cancelled,
+            end: BackgroundTaskEnd::Cancelled {},
         }
     }
 
@@ -489,7 +482,7 @@ mod tests {
                                 id.clone(),
                                 BackgroundTaskWaitCandidate {
                                     fence: fence.clone(),
-                                    wait: BackgroundWait::ExternalInput,
+                                    wait: BackgroundWait::ExternalInput {},
                                     renew_lease: true,
                                 },
                             ),
@@ -528,7 +521,7 @@ mod tests {
                                     assert_eq!(
                                         candidate.wait,
                                         if accepted {
-                                            BackgroundWait::ExternalInput
+                                            BackgroundWait::ExternalInput {}
                                         } else {
                                             wait_candidate(2).wait
                                         }
@@ -543,7 +536,7 @@ mod tests {
                                                 message: "candidate".into(),
                                             }
                                         } else {
-                                            BackgroundTaskEnd::Cancelled
+                                            BackgroundTaskEnd::Cancelled {}
                                         }
                                     );
                                     2
@@ -714,9 +707,13 @@ mod tests {
                 message: "delivered".into(),
             };
             if ended {
-                crate::TaskObservationRecord::ended(&completion)
+                awaken_tool_contract::tool::background_task::TaskObservationRecord::ended(
+                    &completion,
+                )
             } else {
-                crate::TaskObservationRecord::waiting(&wait_candidate(epoch))
+                awaken_tool_contract::tool::background_task::TaskObservationRecord::waiting(
+                    &wait_candidate(epoch),
+                )
             }
         };
         for phase in 0..4 {
@@ -781,9 +778,11 @@ mod tests {
             (None, false, true),
         ] {
             let supervisor = BackgroundTaskSupervisor::new("local", awaken_time::system_clock());
-            assert!(
-                supervisor.accept_delivered(&crate::TaskObservationRecord::ended(&completion(2)))
-            );
+            assert!(supervisor.accept_delivered(
+                &awaken_tool_contract::tool::background_task::TaskObservationRecord::ended(
+                    &completion(2)
+                )
+            ));
             let committed = committed.map(|epoch| fixtures::tenure("worker", epoch));
             assert_eq!(
                 supervisor

@@ -269,7 +269,7 @@ async fn run_configured_agent_inner(
     );
     // Auxiliary Runs do not install the Session-owned BackgroundTask plugin:
     // they have no committed Session terminal observer to execute its effects.
-    let mut runtime = build_runtime_with_authorization(llm, clock, env, &authorization, None);
+    let mut runtime = build_runtime_with_authorization(llm, clock, env, &authorization, None, &[]);
     if let Some(memory_tools) = memory_tools {
         for tool in memory_tools.executors {
             runtime = runtime.with_tool(tool);
@@ -427,9 +427,10 @@ pub(crate) async fn run_agent_until_boundary(
                 .with_reader(commit)
         }),
         execution.run_delegation,
-        request.parent_thread_id,
+        request.parent_thread_id.clone(),
         execution.scheduler,
         ChildExecutionAdapters {
+            session_thread_id: Some(request.parent_thread_id),
             clock: Some(clock),
             ..Default::default()
         },

@@ -7,6 +7,7 @@ use awaken_ext_background_task::*;
 use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, PhaseKind, Plugin, ResolvedExecutionEnv,
 };
+use awaken_tool_contract::tool::background_task::{BackgroundTaskEnd, BackgroundTaskId};
 use awaken_tool_contract::tool::{ToolCall, ToolConcurrency, ToolRecoveryPolicy};
 use serde_json::{Value, json};
 
@@ -293,7 +294,7 @@ async fn terminal_rules_preserve_execution_outcome_and_tool_error_semantics() {
             },
             "failed",
         ),
-        (BackgroundTaskEnd::Cancelled, "cancelled"),
+        (BackgroundTaskEnd::Cancelled {}, "cancelled"),
         (
             BackgroundTaskEnd::Indeterminate {
                 message: "delivery unknown".into(),

@@ -523,7 +523,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         );
         let coordinator = baseline_host
             .run_assembly
-            .ctx_for_session_coordination("coordinator-before-baseline", None)
+            .ctx_for_session_coordination("coordinator-before-baseline", None, None)
             .await
             .expect("B6 metadata-only reservation context");
         assert!(
@@ -566,7 +566,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         );
         let dispatch_coordinator = baseline_host
             .run_assembly
-            .ctx_for_session_coordination("dispatch-before-baseline", None)
+            .ctx_for_session_coordination("dispatch-before-baseline", None, None)
             .await
             .expect("B6 Coordinator opened a reservation before Resource amendment");
         assert!(dispatch_coordinator.is_coordination_envelope(), "B6/E4");
@@ -1819,7 +1819,7 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
 
     let reserved = host
         .run_assembly
-        .ctx_for_session_coordination("acp-reservation-race", Some("assistant"))
+        .ctx_for_session_coordination("acp-reservation-race", Some("assistant"), None)
         .await
         .expect("reservation preflight");
     assert!(reserved.env.is_none(), "C1+C2: reservation is effect-free");
@@ -1913,7 +1913,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
 
     let reserved = host
         .run_assembly
-        .ctx_for_session_coordination(thread, Some("assistant"))
+        .ctx_for_session_coordination(thread, Some("assistant"), None)
         .await
         .expect("R1 reservation does not require local adoption");
     assert!(reserved.env.is_none(), "R1/E1 no physical Environment");
@@ -2051,7 +2051,7 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
 
     let coordination = host
         .run_assembly
-        .ctx_for_session_coordination(thread, None)
+        .ctx_for_session_coordination(thread, None, None)
         .await
         .expect("R1 rebuild coordination context");
     assert!(coordination.is_coordination_envelope(), "R1/E1 purpose");
@@ -2107,7 +2107,7 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
     let publication = awaken_session_run_delivery::RUN_PUBLICATIONS
         .exact_source(&snapshot, &[], "workspace-inference")
         .unwrap();
-    let attempt = crate::host::session_ctx::ClaimedRuntimeInput {
+    let attempt = crate::host::session_ctx::FrozenRuntimeInput {
         identity: crate::host::session_ctx::RuntimePublicationIdentity::from_publications(
             &snapshot,
             &[],

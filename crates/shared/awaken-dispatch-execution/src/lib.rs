@@ -50,7 +50,9 @@ pub use commit_fence::{
     ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, validate_commit_dispatch_binding,
 };
 pub use control_dispatch::{ControlDispatch, LocalWorkerDispatch, TerminalRecoveryDispatch};
-pub use coordination_activation::{coordinated_activation_matches, coordinated_run_activation};
+pub use coordination_activation::{
+    coordinated_activation_matches, coordinated_run_activation, coordinated_run_origin,
+};
 pub use error::{Error, NotReady};
 pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};

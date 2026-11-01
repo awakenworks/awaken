@@ -368,12 +368,15 @@ async fn verify_request(
         require_ready,
     )
     .await
-    .map_err(|_| {
-        ApplicationError::invalid(if require_ready {
+    .map_err(|error| match error {
+        awaken_worker_transport_security::WorkerAuthError::Unavailable(detail) => {
+            ApplicationError::unavailable(detail)
+        }
+        _ => ApplicationError::invalid(if require_ready {
             "Worker Create identity is not current and Ready"
         } else {
             "Worker Seal identity is not current and live"
-        })
+        }),
     })?;
     Ok(())
 }

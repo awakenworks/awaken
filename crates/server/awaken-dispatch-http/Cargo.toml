@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["axum"]
 
 [dependencies]
+awaken-tool-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-time.workspace = true
 awaken-agent-contract.workspace = true

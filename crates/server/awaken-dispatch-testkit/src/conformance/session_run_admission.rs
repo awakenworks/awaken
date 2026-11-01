@@ -1991,7 +1991,10 @@ async fn legacy_pending_session_run_adoption(
             .is_none(),
         "C1/C2 cancellation cannot bypass prepared codec admission"
     );
-    let supported = ready_dispatch_worker(ns, "new-prepared-codec");
+    // C3 supported codec + Draining still claims cancellation: only execution
+    // placement is bypassed; C1/C2 above keep the codec boundary independently hard.
+    let mut supported = ready_dispatch_worker(ns, "new-prepared-codec");
+    supported.state = WorkerState::Draining;
     let cancellation = store
         .claim_run_compatible(cancelled.run_id(), &supported, LEASE_MS)
         .await

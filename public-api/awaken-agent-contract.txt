@@ -228,6 +228,7 @@ pub struct awaken_agent_contract::agent::delegation::DelegationRegistry
 impl awaken_agent_contract::agent::delegation::DelegationRegistry
 pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::active_count(&self) -> usize
 pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::admit_child_invocation(&self, &awaken_agent_contract::agent::delegation::RequestDelegation) -> core::result::Result<(), awaken_agent_contract::agent::delegation::DelegationError>
+pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::child_origin(&self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::result::Result<awaken_agent_contract::agent::delegation::DelegationOrigin, awaken_agent_contract::agent::delegation::DelegationError>
 pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::complete(&mut self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::result::Result<awaken_agent_contract::agent::delegation::TransitionResult, awaken_agent_contract::agent::delegation::DelegationError>
 pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::delegations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &awaken_agent_contract::agent::delegation::Delegation>
 pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::end_parent(&mut self) -> alloc::vec::Vec<awaken_agent_contract::agent::delegation::ChildRunCancellation>
@@ -1100,6 +1101,11 @@ pub trait awaken_agent_contract::stream::Sink: core::marker::Send + core::marker
 pub fn awaken_agent_contract::stream::Sink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_agent_contract::stream::Sink::send_observation<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Observation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub mod awaken_agent_contract::thread
+pub mod awaken_agent_contract::thread::background_task
+pub const awaken_agent_contract::thread::background_task::BACKGROUND_TASK_STATE_PREFIX: &str
+pub fn awaken_agent_contract::thread::background_task::background_task_state_key(&str) -> alloc::string::String
+pub fn awaken_agent_contract::thread::background_task::committed_task_attempt(&str, &str, &str, &serde_json::value::Value) -> core::result::Result<core::option::Option<(alloc::string::String, core::num::nonzero::NonZeroU64)>, alloc::string::String>
+pub fn awaken_agent_contract::thread::background_task::committed_task_slot(&[awaken_agent_contract::agent::state::Command], &str) -> core::option::Option<serde_json::value::Value>
 pub mod awaken_agent_contract::thread::commit
 pub mod awaken_agent_contract::thread::commit::coordinator
 pub enum awaken_agent_contract::thread::commit::coordinator::Error

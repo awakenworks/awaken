@@ -12,7 +12,7 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_ext_builtin_tools::{AgentMessageReceipt, SendMessageArgs};
 use awaken_session_execution_contract::{CoordinatedThreadLink, CoordinatedThreadTarget};
 use awaken_session_types::RunError;
-use awaken_tool_contract::tool_batch::ToolBatch;
+use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatch};
 
 #[derive(Clone)]
 struct PendingCoordinationCall {
@@ -80,7 +80,25 @@ pub fn project_committed_coordination(
     committed: &RunRecoverySnapshot,
     purpose: CoordinationReadPurpose,
 ) -> Result<CommittedCoordinationProjection, RunError> {
+    project_coordination(session_id, advisor_model, committed, purpose, true)
+        .map(|(projection, _)| projection)
+}
+
+fn project_coordination(
+    session_id: &awaken_session_types::SessionId,
+    advisor_model: Option<&str>,
+    committed: &RunRecoverySnapshot,
+    purpose: CoordinationReadPurpose,
+    require_existing_target: bool,
+) -> Result<
+    (
+        CommittedCoordinationProjection,
+        Vec<PendingCoordinationCall>,
+    ),
+    RunError,
+> {
     let mut active = Vec::<PendingCoordinationCall>::new();
+    let mut creation_calls = Vec::new();
     let mut links = Vec::<CoordinatedThreadLink>::new();
     let mut cleanup = std::collections::BTreeSet::new();
     for message in &committed.messages {
@@ -119,6 +137,7 @@ pub fn project_committed_coordination(
                 if name == awaken_ext_builtin_tools::SEND_MESSAGE {
                     let call = coordination_call(run_id, operation, id, input)?;
                     include_spawn_cleanup_target(session_id, &call, &mut cleanup);
+                    creation_calls.push(call.clone());
                     active.push(call);
                 } else {
                     apply_advisor_call(
@@ -152,7 +171,14 @@ pub fn project_committed_coordination(
                 continue;
             };
             let call = active.remove(position);
-            apply_coordination_result(session_id, &call, content, *is_error, &mut links)?;
+            apply_coordination_result(
+                session_id,
+                &call,
+                content,
+                *is_error,
+                &mut links,
+                require_existing_target,
+            )?;
         }
     }
 
@@ -168,6 +194,7 @@ pub fn project_committed_coordination(
         &active,
         active_batch.as_ref(),
         &mut links,
+        require_existing_target,
     )?;
     // The original journal precedes dispatch, including a source whose model
     // message or result has not reached the transcript yet. Retain every
@@ -210,10 +237,110 @@ pub fn project_committed_coordination(
         }
     }
     cleanup.extend(links.iter().map(|link| link.thread_id.0.clone()));
-    Ok(CommittedCoordinationProjection {
-        links,
-        cleanup_thread_ids: cleanup.into_iter().map(ThreadId).collect(),
-    })
+    Ok((
+        CommittedCoordinationProjection {
+            links,
+            cleanup_thread_ids: cleanup.into_iter().map(ThreadId).collect(),
+        },
+        creation_calls,
+    ))
+}
+
+/// Callback membership must survive transcript compaction. The retained original
+/// batch results carry the same accepted Spawn receipt; reuse its existing
+/// argument/result decoder rather than inventing a second relationship format.
+/// ExistingThread messages add no membership and do not select an Agent.
+pub(super) fn task_callback_coordination_links(
+    session_id: &awaken_session_types::SessionId,
+    committed: &RunRecoverySnapshot,
+    root_agent: &str,
+) -> Result<
+    Vec<(
+        CoordinatedThreadLink,
+        awaken_agent_contract::agent::delegation::DelegationOrigin,
+    )>,
+    RunError,
+> {
+    // ExistingThread never creates membership. Its referenced Thread can be
+    // a sibling outside this one prefix; the callback walk proves the complete
+    // target path independently. Ordinary public projections retain their
+    // original local-membership requirement (the public wrapper passes true).
+    let (projection, mut creation_calls) = project_coordination(
+        session_id,
+        None,
+        committed,
+        CoordinationReadPurpose::Relationships,
+        false,
+    )?;
+    let mut links = projection.links;
+    for run in &committed.runs {
+        committed
+            .run_record(&run.id)
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        for recorded in ActiveToolBatch::recorded_batches(&committed.state, &run.id) {
+            let (_, batch) = recorded.map_err(|error| RunError::internal(error.to_string()))?;
+            let Some(batch) = batch else {
+                continue;
+            };
+            let mut spawns = Vec::new();
+            for entry in batch
+                .calls()
+                .iter()
+                .filter(|entry| entry.call.tool_id == awaken_ext_builtin_tools::SEND_MESSAGE)
+            {
+                let call = coordination_call(
+                    &run.id,
+                    batch.operation_id(&entry.call.call_id),
+                    &entry.call.call_id,
+                    &entry.call.arguments,
+                )?;
+                if matches!(
+                    call.args.normalized_target(),
+                    Ok(awaken_ext_builtin_tools::AgentMessageTarget::Spawn { .. })
+                ) {
+                    spawns.push(call);
+                }
+            }
+            creation_calls.extend(spawns.iter().cloned());
+            apply_active_batch_coordination_results(
+                session_id,
+                &spawns,
+                Some(&batch),
+                &mut links,
+                false,
+            )?;
+        }
+    }
+    links
+        .into_iter()
+        .filter(|link| link.target.agent_id().is_some())
+        .map(|link| {
+            let mut source = None;
+            for call in creation_calls
+                .iter()
+                .filter(|call| call.operation_id == link.created_by_operation_id)
+            {
+                let origin = awaken_dispatch_execution::coordinated_run_origin(
+                    session_id.as_str(),
+                    &call.operation_id,
+                    call.run_id.clone(),
+                    call.call_id.clone(),
+                    root_agent.to_owned(),
+                );
+                if source.as_ref().is_some_and(|existing| existing != &origin) {
+                    return Err(RunError::unavailable(
+                        "Task callback has ambiguous coordinated creation identity",
+                    ));
+                }
+                source = Some(origin);
+            }
+            source.map(|origin| (link, origin)).ok_or_else(|| {
+                RunError::unavailable(
+                    "Task callback lacks its original coordinated creation source",
+                )
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn apply_lifecycle_latest_runs(
@@ -273,6 +400,7 @@ fn apply_coordination_result(
     content: &[ContentBlock],
     is_error: bool,
     links: &mut Vec<CoordinatedThreadLink>,
+    require_existing_target: bool,
 ) -> Result<(), RunError> {
     if is_error {
         return Ok(());
@@ -321,7 +449,10 @@ fn apply_coordination_result(
         Ok(awaken_ext_builtin_tools::AgentMessageTarget::ExistingThread {
             session_thread_id: target,
         }) => {
-            if thread_id.0 != target || !links.iter().any(|link| link.thread_id == thread_id) {
+            if thread_id.0 != target
+                || (require_existing_target
+                    && !links.iter().any(|link| link.thread_id == thread_id))
+            {
                 return Err(RunError::internal(
                     "committed follow-up receipt names an unknown coordinated Thread",
                 ));
@@ -341,6 +472,7 @@ fn apply_active_batch_coordination_results(
     active: &[PendingCoordinationCall],
     batch: Option<&ToolBatch>,
     links: &mut Vec<CoordinatedThreadLink>,
+    require_existing_target: bool,
 ) -> Result<(), RunError> {
     let Some(batch) = batch else {
         return Ok(());
@@ -373,7 +505,14 @@ fn apply_active_batch_coordination_results(
                 } = block
                     && tool_use_id == &call.call_id
                 {
-                    apply_coordination_result(session_id, call, content, *is_error, links)?;
+                    apply_coordination_result(
+                        session_id,
+                        call,
+                        content,
+                        *is_error,
+                        links,
+                        require_existing_target,
+                    )?;
                 }
             }
         }

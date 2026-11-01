@@ -19,7 +19,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{BackgroundTask, BackgroundTaskEnd, BackgroundTaskLifecycle};
+use crate::{BackgroundTask, BackgroundTaskLifecycle};
+use awaken_tool_contract::tool::background_task::BackgroundTaskEnd;
 
 pub(crate) const RECEIPT_PREFIX: &str = "background_task_notification/";
 
@@ -164,7 +165,7 @@ impl TaskNotifications {
         let event = match end {
             BackgroundTaskEnd::Completed { .. } => TaskNotificationEvent::Completed,
             BackgroundTaskEnd::Failed { .. } => TaskNotificationEvent::Failed,
-            BackgroundTaskEnd::Cancelled => TaskNotificationEvent::Cancelled,
+            BackgroundTaskEnd::Cancelled {} => TaskNotificationEvent::Cancelled,
             BackgroundTaskEnd::Indeterminate { .. } => TaskNotificationEvent::Indeterminate,
         };
         // Length framing prevents caller-independent task ids containing ':'

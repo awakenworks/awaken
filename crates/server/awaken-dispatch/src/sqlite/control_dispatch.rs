@@ -204,9 +204,20 @@ impl awaken_dispatch_contract::SessionRunAdmissionReads for SqliteDispatchStore 
             return Ok(SessionRunAdmissionObservation::Live(Box::new(request)));
         }
         if decode_completed_identity(&row)?.is_some() {
-            return Ok(SessionRunAdmissionObservation::Completed(
-                decode_dispatch_completion(&row)?,
-            ));
+            let completion = decode_dispatch_completion(&row)?;
+            let retained_request = row
+                .try_get::<Option<String>, _>("retained_request_json")
+                .map_err(store_error)
+                .and_then(|json| {
+                    crate::dispatch::decode_retained_completion_request(
+                        &completion,
+                        json.as_deref(),
+                    )
+                });
+            return Ok(SessionRunAdmissionObservation::Completed {
+                completion,
+                retained_request,
+            });
         }
         Ok(SessionRunAdmissionObservation::Missing)
     }

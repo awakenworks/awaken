@@ -484,12 +484,19 @@ pub struct DispatchSummary {
 /// One coherent, data-only observation of the original admission storage.
 /// Missing grants no reservation or execution authority. Live carries the
 /// original request even when its row is reserved, awaiting or quarantined;
-/// Completed retains delivery evidence only, never a reconstructed input.
+/// Completed retains delivery evidence and, for Task-control requests, the
+/// original input. Retained-source uncertainty never invalidates a valid receipt.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionRunAdmissionObservation {
     Missing,
     Live(Box<RunDispatch>),
-    Completed(DispatchCompletion),
+    Completed {
+        completion: DispatchCompletion,
+        /// Original Task-control request retained by the SAME Done transaction.
+        /// A corrupt or missing source does not invalidate the lighter receipt:
+        /// exact ACK recovery uses `completion`, fresh origin reads use this result.
+        retained_request: Result<Option<Box<RunDispatch>>, DispatchError>,
+    },
 }
 
 /// Claim-fenced resolution of one expired Session Run reservation. This mutates
