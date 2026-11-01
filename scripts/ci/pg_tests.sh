@@ -536,6 +536,28 @@ self_test() {
   [ "$deadline_status" -eq 23 ] || return 1
   ! pg_run_with_deadline fixture 0 bash -c 'exit 0' || return 1
   [ "$deadline_calls" -eq 2 ] || return 1
+  # P19 source scripts need no executable bit (the S3 owner is Git100644).
+  # Cause: a non-executable script receives a phase and a spaced argument.
+  # Effect: the same native shell adapter used by the live S3 phases forwards
+  # both arguments and exit23 through the existing deadline, without chmod or
+  # a second shell-selection policy. The adapter's own argv/Windows tests own
+  # nested shebang and quoting behavior.
+  local object_script_fixture object_script_status=0
+  object_script_fixture=$(mktemp -d) || return 1
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '[ "$1" = --verify ] && [ "$2" = "spaced argument" ] || exit 17' \
+    'printf routed > "$3"' 'exit 23' > "$object_script_fixture/phase.sh"
+  chmod 0644 "$object_script_fixture/phase.sh" || return 1
+  pg_run_with_deadline object-script-fixture 1 python3 scripts/ci/_native_shell.py \
+    "$object_script_fixture/phase.sh" --verify 'spaced argument' \
+    "$object_script_fixture/observed" || object_script_status=$?
+  if [ "$object_script_status" -ne 23 ] || \
+    [ "$(cat "$object_script_fixture/observed" 2>/dev/null)" != routed ]; then
+    rm -rf -- "$object_script_fixture"
+    echo "Postgres object stages lost native script arguments or status" >&2
+    return 1
+  fi
+  rm -rf -- "$object_script_fixture"
   # F2/F3 ordinary failures retain the first outcome. F5 a later resource
   # refusal exits 75 before dependent work; the same EXIT hook still executes.
   (
@@ -838,6 +860,16 @@ self_test() {
     echo "Durable backend gate omits the production object-store adapter" >&2
     return 1
   }
+  # P20 all four live object phases use that same interpreter under the
+  # original per-stage deadline; one stale direct exec would still fail on
+  # Linux while native Windows happened to pass. No phase may go unselected.
+  local object_phase
+  for object_phase in admission conformance seed verify; do
+    grep -Fq "pg_run_with_deadline object-$object_phase \"\$PG_TEST_TIMEOUT_SECONDS\" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --$object_phase" "$0" || {
+      echo "Postgres object phase $object_phase bypasses the native shell owner" >&2
+      return 1
+    }
+  done
   grep -Fq "scripts/ci/object_store_tests.sh --verify" "$0" || {
     echo "Durable backend gate omits object-store credential rotation" >&2
     return 1
@@ -1160,9 +1192,9 @@ checked_backend_parity || record_failure "$?"
 # Credential-lifecycle state machine: seed -> revoke old credential -> issue
 # replacement -> read the same durable object. Both transitions are mandatory.
 export AWAKEN_TEST_S3_ROTATION_ID="rotation-$$"
-pg_run_with_deadline object-admission "$PG_TEST_TIMEOUT_SECONDS" scripts/ci/object_store_tests.sh --admission || record_failure "$?"
-pg_run_with_deadline object-conformance "$PG_TEST_TIMEOUT_SECONDS" scripts/ci/object_store_tests.sh --conformance || record_failure "$?"
-pg_run_with_deadline object-seed "$PG_TEST_TIMEOUT_SECONDS" scripts/ci/object_store_tests.sh --seed || record_failure "$?"
+pg_run_with_deadline object-admission "$PG_TEST_TIMEOUT_SECONDS" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --admission || record_failure "$?"
+pg_run_with_deadline object-conformance "$PG_TEST_TIMEOUT_SECONDS" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --conformance || record_failure "$?"
+pg_run_with_deadline object-seed "$PG_TEST_TIMEOUT_SECONDS" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --seed || record_failure "$?"
 FILE_STORE_ROTATED_SECRET_KEY="awaken-file-store-rotated" # awaken-allow(secret): (throwaway fixture)
 export FILE_STORE_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY" # awaken-allow(secret):
 # awaken-allow(secret): (replacement passed into the same disposable container)
@@ -1183,7 +1215,7 @@ if [ "$rotation_status" -ne 0 ]; then
 fi
 export AWAKEN_TEST_S3_OLD_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow(secret):
 export AWAKEN_TEST_S3_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY"
-pg_run_with_deadline object-verify "$PG_TEST_TIMEOUT_SECONDS" scripts/ci/object_store_tests.sh --verify || record_failure "$?"
+pg_run_with_deadline object-verify "$PG_TEST_TIMEOUT_SECONDS" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --verify || record_failure "$?"
 # Run the existing Managed HITL frontier decision table with two independent
 # PostgreSQL Session connections; a no-URL workspace test cannot claim this.
 # Both entry points require these physical outcomes. Private restart children
