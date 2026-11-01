@@ -23,10 +23,9 @@ pub(super) struct ContextPlan {
     pub(super) deferred_skill_bindings: Option<Vec<crate::session_resource::ResolvedSkillBinding>>,
     pub(super) execution_backend: awaken_runtime_contract::resolved::Backend,
     pub(super) background_tasks_enabled: bool,
-    /// The application binding this Run publishes BackgroundTask attention
-    /// through; `None` when the plan admitted no live background submission.
-    pub(super) background_attention:
-        Option<awaken_session_execution_contract::SessionApplicationBinding>,
+    /// The route this Run publishes BackgroundTask attention through; `None`
+    /// when the plan admitted no live background submission.
+    pub(super) background_attention: Option<crate::background_task::TaskAttentionRoute>,
     pub(super) a2a_only: bool,
     pub(super) claimed_runtime_identity: Option<RuntimePublicationIdentity>,
 }
@@ -179,18 +178,13 @@ pub(super) async fn prepare(
             "background_task requires the Native backend so the canonical tool executor remains process-addressable",
         ));
     }
-    if background_tasks_enabled && !host.authority.hosts_session_application() {
-        return Err(SessionExecutionError::bad_request(
-            "background_task requires a co-located Session application until completion attention has a claim-fenced Worker transport",
-        ));
-    }
-    let background_attention = (background_tasks_enabled
-        && host
-            .capabilities
-            .session_application
-            .background_runs()
-            .is_ok())
-    .then(|| host.capabilities.session_application.clone());
+    let background_attention = crate::background_task::TaskAttentionRoute::plan(
+        background_tasks_enabled,
+        host.authority.hosts_session_application(),
+        &host.capabilities.session_application,
+        host.capabilities.worker.task_attention.as_ref(),
+    )
+    .map_err(SessionExecutionError::bad_request)?;
     if background_tasks_enabled && session_dispatch && background_attention.is_none() {
         return Err(SessionExecutionError::internal(
             "Managed BackgroundTask Session has no background Run application authority",

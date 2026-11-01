@@ -640,6 +640,18 @@ impl SessionExecutorBuilder {
         self
     }
 
+    /// Select this registered incarnation's Task attention delivery. Its
+    /// holder becomes the process's BackgroundTask holder, so the Tasks this
+    /// Worker tenures are exactly the ones it may deliver attention for.
+    #[must_use]
+    pub fn with_task_attention_delivery(
+        mut self,
+        delivery: Arc<dyn awaken_session_application_contract::TaskAttentionDelivery>,
+    ) -> Self {
+        self.worker.task_attention = Some(delivery);
+        self
+    }
+
     /// Select the Worker process's one opaque local-credential adapter.
     #[must_use]
     pub fn with_worker_credential_resolver(

@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::Store;
 use awaken_agent_contract::stable_fingerprint;
 use awaken_ext_background_task::{
@@ -27,17 +28,18 @@ use awaken_runtime_contract::terminal::{
     CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
 };
 use awaken_session_application_contract::{PrivateTaskInput, TaskAttention};
-use awaken_session_execution_contract::SessionApplicationBinding;
 use awaken_session_types::RunErrorKind;
 use awaken_time::WallClockExt;
 use awaken_tool_contract::tool::{ToolOutput, ToolTaskHandle, ToolTaskPoll, ToolTaskStart};
 
-use awaken_session_run_delivery::CommittedAuthority;
 #[cfg(test)]
 use awaken_session_run_delivery::SessionCommit;
 use awaken_session_run_delivery::{BackgroundRuns, BackgroundWorkClass};
 
 mod ownership;
+mod placement;
+
+pub(crate) use placement::{TaskAttentionRoute, TaskCommittedReads};
 
 const OBSERVER_ID: &str = "awaken.background-task.executor.v1";
 const ATTENTION_RETRY_DELAYS: [Duration; 3] = [
@@ -174,14 +176,14 @@ pub(crate) fn accept_claimed_task_input(
 }
 
 async fn publish_attention(
-    application: Option<SessionApplicationBinding>,
+    route: Option<TaskAttentionRoute>,
     supervisor: &BackgroundTaskSupervisor,
     thread_id: &awaken_agent_contract::agent::thread::Id,
     task_id: &BackgroundTaskId,
     fence: &TaskTenure,
     kind: BackgroundAttention,
 ) {
-    let Some(Ok(application)) = application.map(|binding| binding.background_runs()) else {
+    let Some(target) = route.as_ref().and_then(TaskAttentionRoute::target) else {
         return;
     };
     let (operation_id, message) = attention_message(thread_id, task_id, fence, &kind);
@@ -198,7 +200,7 @@ async fn publish_attention(
         .map(Some)
         .chain(std::iter::once(None));
     for (attempt, retry_delay) in attempts.enumerate() {
-        match application.submit_task_attention(attention.clone()).await {
+        match target.deliver(attention.clone()).await {
             Ok(_) => return,
             Err(error) if error.kind == RunErrorKind::BadRequest => {
                 tracing::warn!(
@@ -236,12 +238,12 @@ pub(crate) struct BackgroundTaskTerminalObserver {
     runtime: Arc<Runtime>,
     snapshot: ExecutableAgentSnapshot,
     context: RuntimeRunContext,
-    commit: CommittedAuthority<Arc<dyn crate::LocalCommit>>,
+    commit: TaskCommittedReads,
     background: Arc<BackgroundRuns>,
     supervisor: Arc<BackgroundTaskSupervisor>,
     session_id: String,
     environment_generation: String,
-    attention: Option<SessionApplicationBinding>,
+    attention: Option<TaskAttentionRoute>,
 }
 
 impl BackgroundTaskTerminalObserver {
@@ -250,12 +252,12 @@ impl BackgroundTaskTerminalObserver {
         runtime: Arc<Runtime>,
         snapshot: ExecutableAgentSnapshot,
         context: RuntimeRunContext,
-        commit: CommittedAuthority<Arc<dyn crate::LocalCommit>>,
+        commit: TaskCommittedReads,
         background: Arc<BackgroundRuns>,
         supervisor: Arc<BackgroundTaskSupervisor>,
         session_id: String,
         environment_generation: String,
-        attention: Option<SessionApplicationBinding>,
+        attention: Option<TaskAttentionRoute>,
     ) -> Self {
         Self {
             runtime,
@@ -317,7 +319,7 @@ impl BackgroundTaskTerminalObserver {
         Ok(BackgroundWait::Remote(handle.clone()))
     }
 
-    async fn launch(&self, task: BackgroundTask) {
+    async fn launch(&self, task: BackgroundTask, observed: &RunId) {
         let attempt = task.attempt().expect("committed Running attempt");
         let fence = attempt.tenure(&task.id);
         let expected = attempt.policy.clone();
@@ -383,7 +385,7 @@ impl BackgroundTaskTerminalObserver {
             return;
         }
         let tool_kind = resolved.kind;
-        let state = match self.commit.committed_state(&thread_id).await {
+        let state = match self.commit.committed_state(&thread_id, observed).await {
             Ok(state) => Store::rebuild(&state),
             Err(error) => {
                 self.supervisor.complete(
@@ -510,7 +512,7 @@ impl BackgroundTaskTerminalObserver {
             .await;
     }
 
-    async fn launch_remote(&self, task: BackgroundTask) {
+    async fn launch_remote(&self, task: BackgroundTask, observed: &RunId) {
         let (attempt, continuation, cancelling) = match &task.lifecycle {
             BackgroundTaskLifecycle::Waiting {
                 attempt,
@@ -623,7 +625,7 @@ impl BackgroundTaskTerminalObserver {
             .await;
             return;
         }
-        let state = match self.commit.committed_state(&thread_id).await {
+        let state = match self.commit.committed_state(&thread_id, observed).await {
             Ok(state) => Store::rebuild(&state),
             Err(error) => {
                 self.supervisor.complete(
@@ -867,13 +869,18 @@ impl BackgroundTaskTerminalObserver {
     }
 
     async fn reconcile(&self, terminal: &CommittedTerminalRun) -> Result<(), String> {
-        let state = Store::rebuild(&self.commit.committed_state(&terminal.thread_id).await?);
+        let state = Store::rebuild(
+            &self
+                .commit
+                .committed_state(&terminal.thread_id, &terminal.run_id)
+                .await?,
+        );
         for task in tasks_from_state(&state).map_err(|error| error.to_string())? {
             match &task.lifecycle {
                 BackgroundTaskLifecycle::Running { attempt }
                     if attempt.worker_id == self.supervisor.worker_id() =>
                 {
-                    self.launch(task).await;
+                    self.launch(task, &terminal.run_id).await;
                 }
                 BackgroundTaskLifecycle::Waiting {
                     attempt,
@@ -883,7 +890,7 @@ impl BackgroundTaskTerminalObserver {
                     attempt,
                     wait: Some(BackgroundWait::Remote(_)),
                 } if attempt.worker_id == self.supervisor.worker_id() => {
-                    self.launch_remote(task).await;
+                    self.launch_remote(task, &terminal.run_id).await;
                 }
                 BackgroundTaskLifecycle::Cancelling { attempt, .. }
                     if attempt.worker_id == self.supervisor.worker_id() =>
@@ -1329,7 +1336,7 @@ mod tests {
         let accepting = Arc::new(RecordingAttentionApplication::accepting(2));
         let accepting_port: Arc<dyn SessionRunBackgroundApplication> = accepting.clone();
         publish_attention(
-            Some(crate::test_application_bindings::background_binding(
+            Some(crate::test_application_bindings::background_route(
                 accepting_port.clone(),
             )),
             &supervisor,
@@ -1358,7 +1365,7 @@ mod tests {
         let rejecting = Arc::new(RecordingAttentionApplication::rejecting());
         let rejecting_port: Arc<dyn SessionRunBackgroundApplication> = rejecting.clone();
         publish_attention(
-            Some(crate::test_application_bindings::background_binding(
+            Some(crate::test_application_bindings::background_route(
                 rejecting_port.clone(),
             )),
             &supervisor,
@@ -1381,7 +1388,7 @@ mod tests {
         let exhausted = Arc::new(RecordingAttentionApplication::accepting(usize::MAX));
         let exhausted_port: Arc<dyn SessionRunBackgroundApplication> = exhausted.clone();
         publish_attention(
-            Some(crate::test_application_bindings::background_binding(
+            Some(crate::test_application_bindings::background_route(
                 exhausted_port.clone(),
             )),
             &supervisor,
@@ -1400,6 +1407,112 @@ mod tests {
             ATTENTION_RETRY_DELAYS.len() + 1,
             "R5 bounded retries cannot retain Session Environment forever"
         );
+    }
+
+    struct RecordingDelivery {
+        transient_failures: AtomicUsize,
+        definitive_rejection: bool,
+        attentions: Mutex<Vec<TaskAttention>>,
+    }
+
+    impl RecordingDelivery {
+        fn new(transient_failures: usize, definitive_rejection: bool) -> Self {
+            Self {
+                transient_failures: AtomicUsize::new(transient_failures),
+                definitive_rejection,
+                attentions: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn sent(&self) -> Vec<TaskAttention> {
+            self.attentions
+                .lock()
+                .expect("delivered attentions mutex poisoned")
+                .clone()
+        }
+    }
+
+    #[async_trait]
+    impl awaken_session_application_contract::TaskAttentionDelivery for RecordingDelivery {
+        fn holder(&self) -> &str {
+            "registered-holder"
+        }
+
+        async fn deliver(
+            &self,
+            attention: TaskAttention,
+        ) -> Result<
+            awaken_session_application_contract::TaskAttentionAck,
+            awaken_session_types::RunError,
+        > {
+            self.attentions
+                .lock()
+                .expect("delivered attentions mutex poisoned")
+                .push(attention.clone());
+            if self.definitive_rejection {
+                return Err(awaken_session_types::RunError::bad_request(
+                    "the Task attention names a Task this Worker incarnation does not hold",
+                ));
+            }
+            if self
+                .transient_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(awaken_session_types::RunError::unavailable(
+                    "Coordinator unavailable",
+                ));
+            }
+            Ok(awaken_session_application_contract::TaskAttentionAck {
+                run_id: RunId(format!("attention-run-{}", attention.operation_id)),
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_registered_worker_publishes_attention_through_its_delivery_with_one_identity() {
+        // W3 with K1/K2/K4/K5 at the publisher: a retryable failure resends the
+        // identical attention (same operation id, holder and record); the
+        // acknowledgement stops; a definitive refusal stops at once.
+        let thread = ThreadId("registered-thread".into());
+        let task = BackgroundTaskId::new("registered-task").expect("task id");
+        let fence = awaken_lease_contract::fence::Tenure::granted(
+            BackgroundTaskId::new("registered-task").expect("task id"),
+            "registered-holder".into(),
+            awaken_lease_contract::fence::Epoch::from_persisted(1).unwrap(),
+        );
+        let supervisor =
+            BackgroundTaskSupervisor::new("registered-holder", awaken_time::system_clock());
+
+        let accepting = Arc::new(RecordingDelivery::new(2, false));
+        publish_attention(
+            Some(TaskAttentionRoute::Registered(accepting.clone())),
+            &supervisor,
+            &thread,
+            &task,
+            &fence,
+            BackgroundAttention::Terminal,
+        )
+        .await;
+        let sent = accepting.sent();
+        assert_eq!(sent.len(), 3, "K5 two retries, then K1");
+        assert!(sent.windows(2).all(|pair| pair[0] == pair[1]), "K2");
+        assert_eq!(sent[0].holder, "registered-holder", "W3 holder");
+        assert_eq!(sent[0].thread, thread.0, "W3 Thread");
+
+        let rejecting = Arc::new(RecordingDelivery::new(0, true));
+        publish_attention(
+            Some(TaskAttentionRoute::Registered(rejecting.clone())),
+            &supervisor,
+            &thread,
+            &task,
+            &fence,
+            BackgroundAttention::Terminal,
+        )
+        .await;
+        assert_eq!(rejecting.sent().len(), 1, "K4 a refusal is not retried");
     }
 
     #[tokio::test]
@@ -1736,12 +1849,13 @@ mod tests {
             RuntimeRunContext::new().with_tool_output_spiller(Arc::new(SpillProbe(spills.clone()))),
             commit
                 .committed_authority()
-                .expect("local test commit is authoritative"),
+                .expect("local test commit is authoritative")
+                .into(),
             background.clone(),
             supervisor.clone(),
             "session".into(),
             "generation".into(),
-            Some(crate::test_application_bindings::background_binding(
+            Some(crate::test_application_bindings::background_route(
                 attention_port.clone(),
             )),
         );
@@ -2001,12 +2115,13 @@ mod tests {
             RuntimeRunContext::new(),
             commit
                 .committed_authority()
-                .expect("local test commit is authoritative"),
+                .expect("local test commit is authoritative")
+                .into(),
             background.clone(),
             supervisor.clone(),
             "session".into(),
             "generation".into(),
-            Some(crate::test_application_bindings::background_binding(
+            Some(crate::test_application_bindings::background_route(
                 attention_port.clone(),
             )),
         );

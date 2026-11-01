@@ -276,6 +276,24 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
     assert_eq!(ctx.config, published);
 }
 
+/// A registered incarnation's delivery; the plan never reaches it here.
+struct UnusedTaskAttention;
+
+#[async_trait::async_trait]
+impl awaken_session_application_contract::TaskAttentionDelivery for UnusedTaskAttention {
+    fn holder(&self) -> &str {
+        "registered-task-holder"
+    }
+
+    async fn deliver(
+        &self,
+        _attention: awaken_session_application_contract::TaskAttention,
+    ) -> Result<awaken_session_application_contract::TaskAttentionAck, awaken_session_types::RunError>
+    {
+        panic!("a refused plan publishes no Task attention")
+    }
+}
+
 #[tokio::test]
 async fn background_task_fails_closed_on_a_database_less_worker() {
     // Cause/effect decision table:
@@ -322,7 +340,7 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         .ctx_for_snapshot(
             "background-worker",
             Some("background-agent"),
-            Some(snapshot),
+            Some(snapshot.clone()),
         )
         .await
     {
@@ -348,6 +366,44 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
             .is_none(),
         "R2 no Environment side effect"
     );
+
+    // R3 (W3): a registered Worker with its Task attention delivery tenures
+    // Tasks to that incarnation's holder; the plan keeps refusing until the
+    // Worker can read its Task tenure from the Coordinator (H2-H5).
+    let delivery: Arc<dyn awaken_session_application_contract::TaskAttentionDelivery> =
+        Arc::new(UnusedTaskAttention);
+    let registered = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_authority(crate::UpstreamAuthority::default())
+        .with_task_attention_delivery(delivery.clone()))
+    .build()
+    .expect("validated Host dependencies");
+    assert_eq!(
+        registered.capabilities.background_supervisor.worker_id(),
+        delivery.holder(),
+        "W3 the delivery's holder tenures this process's Tasks"
+    );
+    let error = match registered
+        .run_assembly
+        .ctx_for_snapshot(
+            "background-registered",
+            Some("background-agent"),
+            Some(snapshot),
+        )
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("R3 the plan guard holds until Task tenure reads exist"),
+    };
+    assert_eq!(error.kind, SessionExecutionErrorKind::BadRequest, "R3");
+    assert!(error.message.contains("Task tenure"), "R3: {error}");
+
+    // W5: a co-located Host holds its Tasks itself.
+    let co_located = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_task_attention_delivery(delivery))
+    .build();
+    assert!(co_located.is_err(), "W5 one holder per process");
 }
 
 #[tokio::test]

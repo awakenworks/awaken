@@ -35,6 +35,7 @@ impl crate::RunAssembly {
         commit: Arc<SessionCommit>,
         stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
         run_context: awaken_runtime_contract::RuntimeRunContext,
+        claimed_terminal_reads: awaken_dispatch_execution::ClaimedTerminalReads,
     ) -> Result<
         (
             ForegroundRunDriver,
@@ -76,7 +77,9 @@ impl crate::RunAssembly {
         if let Some(materializer) = inference_materializer {
             worker = worker.with_inference_materializer(materializer);
         }
-        worker = worker.with_context(run_context);
+        worker = worker
+            .with_context(run_context)
+            .with_claimed_terminal_reads(claimed_terminal_reads);
         if let Some(factory) = claimed_model_gate {
             worker = worker.with_claimed_model_request_gate_factory(factory);
         }

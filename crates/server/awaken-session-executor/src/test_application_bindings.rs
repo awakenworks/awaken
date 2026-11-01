@@ -186,6 +186,13 @@ pub(crate) fn background_binding(
     binding
 }
 
+/// The co-located Task attention route over a freshly bound application.
+pub(crate) fn background_route(
+    application: Arc<dyn SessionRunBackgroundApplication>,
+) -> crate::background_task::TaskAttentionRoute {
+    crate::background_task::TaskAttentionRoute::CoLocated(background_binding(application))
+}
+
 /// Existing lower-level fixtures may reuse their already-selected complete
 /// applications. New production readiness tests never use this helper.
 pub(crate) fn lifecycle(

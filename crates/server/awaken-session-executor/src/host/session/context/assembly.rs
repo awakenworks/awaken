@@ -440,12 +440,10 @@ pub(super) async fn assemble(
         )),
         None => run_context,
     };
+    let claimed_terminal_reads = awaken_dispatch_execution::ClaimedTerminalReads::default();
     if background_tasks_enabled {
-        let background_commit = commit.committed_authority().ok_or_else(|| {
-            SessionExecutionError::internal(
-                "BackgroundTask terminal observation requires committed local authority",
-            )
-        })?;
+        let background_commit =
+            crate::background_task::TaskCommittedReads::of(&commit, &claimed_terminal_reads);
         terminal_observers.push(Arc::new(
             crate::background_task::BackgroundTaskTerminalObserver::new(
                 runtime.clone(),
@@ -477,6 +475,7 @@ pub(super) async fn assemble(
             commit.clone(),
             stream_checkpoint.clone(),
             run_context.clone(),
+            claimed_terminal_reads,
         )
         .await?;
     // No per-session dispatch daemon: the process-level `DispatchPool` (spawned

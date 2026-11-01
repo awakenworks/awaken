@@ -10,14 +10,13 @@ use awaken_ext_background_task::{BackgroundTask, BackgroundTaskSupervisor, task_
 use awaken_runtime_contract::{AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext};
 use awaken_time::WallClockExt;
 
-use super::BackgroundTaskTerminalObserver;
-use awaken_session_run_delivery::CommittedAuthority;
+use super::{BackgroundTaskTerminalObserver, TaskCommittedReads};
 #[cfg(test)]
 use awaken_session_run_delivery::SessionCommit;
 
 struct BackgroundTaskOwnership {
     expected: BackgroundTask,
-    commit: CommittedAuthority<Arc<dyn crate::LocalCommit>>,
+    commit: TaskCommittedReads,
     supervisor: Arc<BackgroundTaskSupervisor>,
 }
 
@@ -26,7 +25,7 @@ impl AttemptOwnershipVerifier for BackgroundTaskOwnership {
     async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
         let commands = self
             .commit
-            .committed_state(&self.expected.origin.thread_id)
+            .tenure_state(&self.expected.origin.thread_id)
             .await
             .map_err(AttemptOwnershipError::Unavailable)?;
         let state = awaken_agent_contract::agent::state::Store::rebuild(&commands);
@@ -107,7 +106,8 @@ mod tests {
             foreground,
             local_commit()
                 .committed_authority()
-                .expect("local test commit is authoritative"),
+                .expect("local test commit is authoritative")
+                .into(),
             Arc::new(BackgroundRuns::new()),
             Arc::new(BackgroundTaskSupervisor::new(
                 "worker",
@@ -164,7 +164,8 @@ mod tests {
                 RuntimeRunContext::new(),
                 commit
                     .committed_authority()
-                    .expect("local test commit is authoritative"),
+                    .expect("local test commit is authoritative")
+                    .into(),
                 background.clone(),
                 supervisor.clone(),
                 "session".into(),
@@ -379,7 +380,8 @@ mod tests {
                     context,
                     commit
                         .committed_authority()
-                        .expect("local test commit is authoritative"),
+                        .expect("local test commit is authoritative")
+                        .into(),
                     background,
                     supervisor.clone(),
                     "session".into(),
@@ -542,7 +544,8 @@ mod tests {
                     RuntimeRunContext::new(),
                     commit
                         .committed_authority()
-                        .expect("local test commit is authoritative"),
+                        .expect("local test commit is authoritative")
+                        .into(),
                     Arc::new(BackgroundRuns::new()),
                     supervisor.clone(),
                     "session".into(),
@@ -662,7 +665,8 @@ mod tests {
             expected: expected.clone(),
             commit: commit
                 .committed_authority()
-                .expect("local test commit is authoritative"),
+                .expect("local test commit is authoritative")
+                .into(),
             supervisor: supervisor.clone(),
         };
         clock.set(expiry - 1);
@@ -705,7 +709,8 @@ mod tests {
             expected: expected.clone(),
             commit: commit
                 .committed_authority()
-                .expect("local test commit is authoritative"),
+                .expect("local test commit is authoritative")
+                .into(),
             supervisor: supervisor.clone(),
         };
         assert!(matches!(
@@ -733,7 +738,8 @@ mod tests {
             expected,
             commit: unavailable_commit
                 .committed_authority()
-                .expect("R4 local test commit is authoritative"),
+                .expect("R4 local test commit is authoritative")
+                .into(),
             supervisor,
         };
         assert_eq!(
