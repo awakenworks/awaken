@@ -7,8 +7,12 @@ Task attention admission with its acknowledgement
 (`SessionRunApplication::submit_task_attention`), attention that carries the
 observation and claimed input offered before execution
 (`awaken-session-executor`), and the Coordinator's Task attention route
-(`awaken-dispatch-http`). Remaining: the Worker side and the queue-only
-application ([Remaining](#remaining)).
+(`awaken-dispatch-http`). Worker side implemented: claim-bound committed reads
+(`ClaimedTerminalReads`, R1–R6), holder and attention route selection
+(`TaskAttentionRoute`, W1–W5) and the authenticated attention client
+(`WorkerTaskAttentionClient`, K1–K6). Remaining: holder-bound Task tenure reads
+(H2–H5), and with them the plan guard; the queue-only application
+([Remaining](#remaining)).
 Principles: P2 (one owner per state machine), P5 (construction-time
 injection), P6 (errors are values) of the architecture plan.
 
@@ -199,8 +203,10 @@ keeps refusing `background_task` on a registered Worker.
 
 The delivery carries its holder, so the holder that tenures a Task and the
 identity that delivers its attention cannot come from different incarnations.
-A Worker advertises `background-task-control/v1` exactly when its composition
-installs the delivery (C1).
+The standard Worker composition installs the delivery. It advertises
+`background-task-control/v1` only when the plan admits W3, so until H2–H5
+exist the codec demand (C1) keeps BackgroundTask Runs off registered Workers
+and W3 is refused at plan.
 
 ### Worker ACK and retry
 
@@ -218,12 +224,20 @@ The client maps the Coordinator's single refusal classification
 ## Remaining
 
 1. Task tenure reads (H2–H5). A Coordinator route, holder-authenticated like
-   the attention route, whose handler asks the Coordinator's executor (the
-   Task codec owner) for the committed slot of one Task held by the
-   authenticated incarnation, with a versioned response; the Worker's
-   ownership verifier selects it in place of `CommittedAuthority`.
-2. Lift the guard in `context/plan.rs` once 1 holds and R1–R6, W1–W5 and
-   K1–K6 are implemented and tested.
+   the attention route, that returns the committed slot of one Task held by
+   the authenticated incarnation in a versioned record; the Worker's
+   ownership verifier (`TaskCommittedReads::tenure_state`) reads it in place
+   of refusing. **Needs a decision:** the Coordinator closure
+   (`awaken-coordinator`, `awaken-dispatch-http`, `awaken-session-application`,
+   `awaken-process-startup`) has no Task codec, and the registered-execution
+   Coordinator has no executor to ask. Either the Task slot model and its
+   state key move into a contract crate the Coordinator may depend on, or the
+   process root supplies a Task tenure port (which the registered-execution
+   root cannot build without that codec either).
+2. Lift the guard once 1 holds: drop the W3 refusal in
+   `TaskAttentionRoute::plan`, and advertise `background-task-control/v1` in
+   the standard Worker manifest. R1–R6, W1–W5 and K1–K6 are implemented and
+   tested.
 3. Queue-only application (Q3). Retire the `LocalWorker` placement: the
    co-located executor runs as an in-process registered Worker over the same
    Dispatch store, with in-process implementations of the claimed transport
