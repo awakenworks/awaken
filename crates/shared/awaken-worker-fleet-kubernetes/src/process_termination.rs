@@ -164,7 +164,7 @@ pub enum PodProcessTermination {
     /// every one: the same Pod UID started a newer instance of each bound
     /// container name whose exit was lost. Proves the bound processes are not
     /// running; carries no exit code and nothing about external effects.
-    Superseded(SupersededPodProcess),
+    Superseded(Box<SupersededPodProcess>),
 }
 
 /// Subject-bound evidence minted only by authenticated observation. Private
@@ -866,12 +866,12 @@ fn observe_restartable(binding: &PodProcessBinding, pod: &Pod) -> PodProcessTerm
                 exits,
             }))
         } else {
-            PodProcessTermination::Superseded(SupersededPodProcess {
+            PodProcessTermination::Superseded(Box::new(SupersededPodProcess {
                 binding: binding.clone(),
                 resource_version,
                 exits,
                 superseded,
-            })
+            }))
         })
     })();
     ended.unwrap_or(PodProcessTermination::Unknown)

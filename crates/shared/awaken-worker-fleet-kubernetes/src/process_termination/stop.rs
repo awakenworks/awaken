@@ -273,7 +273,7 @@ impl PodProcessStopper {
         if !binding_retention_is_present(binding, pod) {
             return Err(backend("Worker process evidence retention was lost"));
         }
-        if fates.iter().any(|fate| *fate == ContainerFate::Running) {
+        if fates.contains(&ContainerFate::Running) {
             if pod.metadata.deletion_timestamp.is_none() {
                 self.request_exact_delete(&binding.name, &binding.uid, pod)
                     .await?;

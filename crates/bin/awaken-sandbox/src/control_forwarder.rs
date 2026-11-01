@@ -233,7 +233,7 @@ pub(crate) fn check_ready(args: &[String]) -> Result<(), ControlForwarderError> 
 }
 
 #[cfg(target_os = "linux")]
-pub async fn run(args: &[String]) -> Result<(), ControlForwarderError> {
+pub(crate) async fn run(args: &[String]) -> Result<(), ControlForwarderError> {
     let (unix_path, listen, ready_path) = parse_args(args)?;
     remove_stale_marker(&ready_path)?;
     prepare_socket(&unix_path)?;

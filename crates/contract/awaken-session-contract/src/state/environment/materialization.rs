@@ -173,10 +173,10 @@ impl SessionEnvironmentMaterialization {
             // origin it became (the exact replay). The receipt carries the
             // operation identity, not the admission evidence.
             SessionEnvironmentEffectKind::Rebuild { .. } => {
-                if !self
+                if self
                     .pending()
                     .or_else(|| self.origin())
-                    .is_some_and(|admitted| admitted.effect_id() == intent.effect_id())
+                    .is_none_or(|admitted| admitted.effect_id() != intent.effect_id())
                 {
                     return Err(SessionEnvironmentReceiptError::Rejected(
                         SessionEnvironmentRejection::InvalidTransition,
