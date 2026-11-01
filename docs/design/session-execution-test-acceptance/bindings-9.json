@@ -248,22 +248,22 @@
     "source_locations": [
       {
         "path": "crates/worker/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1155,
+        "line": 1178,
         "file_sha256": "ccfe5a0af3a898f8a08a25d1edbc7f26b31071c77deb7a20ea74ee71304faae6"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/worker/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1162
+        "line": 1185
       },
       {
         "path": "crates/worker/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1163
+        "line": 1186
       },
       {
         "path": "crates/worker/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1168
+        "line": 1191
       }
     ],
     "execution_witnesses": [
@@ -298,18 +298,18 @@
     "source_locations": [
       {
         "path": "crates/worker/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1199,
+        "line": 1222,
         "file_sha256": "ccfe5a0af3a898f8a08a25d1edbc7f26b31071c77deb7a20ea74ee71304faae6"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/worker/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1204
+        "line": 1227
       },
       {
         "path": "crates/worker/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1208
+        "line": 1231
       }
     ],
     "execution_witnesses": [

@@ -11,8 +11,8 @@
 //! |---|---|---|
 //! | R1 | live Host write-back (harvest + reconcile) interrupted before any durable effect | no acknowledgement, so disposal is refused; root, copy and store unchanged; retry writes update/delete/create back once, then acknowledgement and disposal remove the root |
 //! | R2 | in-process guard lost (Host crash), new Host adopts | disposal before reconciliation is refused and keeps files; surviving files reconcile; repeat is a no-op; then disposal |
-//! | R2r | the same reconciliation replayed (crash before acknowledgement) | no spurious conflict (ignored reproducer: product gap) |
-//! | NC | the copy directory is cleared before write-back | the harvest read fails; nothing is written back (ignored reproducer: product gap) |
+//! | R2r | the same reconciliation replayed (crash before acknowledgement) | no spurious conflict |
+//! | NC | the copy directory is cleared before write-back | the harvest read fails; nothing is written back |
 use awaken_lease_contract::fence::Epoch;
 use awaken_memory_store::{MemoryWriter as _, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
@@ -392,7 +392,6 @@ async fn adopted_copy_survives_until_reconciled_and_repeat_reconciliation_is_ide
 }
 
 #[tokio::test]
-#[ignore = "product gap: replaying a completed Copy reconciliation with its original evidence preserves a spurious conflict for an updated path whose durable head already equals the candidate (existing memoryd tests pin stale-proposal retention, so the fix needs a design decision)"]
 async fn repeated_reconciliation_preserves_no_spurious_conflict() {
     // R2/O2 reproducer: a Host crash after write-back but before the
     // acknowledgement makes the successor replay the same reconciliation.
@@ -422,7 +421,6 @@ async fn repeated_reconciliation_preserves_no_spurious_conflict() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: LocalSandbox::list_files reads a missing materialized Copy directory as empty, so reconciliation would delete every durable head it was materialized from"]
 async fn a_cleared_copy_directory_cannot_be_written_back() {
     // NC: the destroy-then-write-back order. The Copy directory is cleared
     // while the Sandbox root survives; the harvest-and-reconcile chain must
