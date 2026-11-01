@@ -251,6 +251,12 @@ pub trait SessionEventBatches: Send + Sync {
 /// Consumer: the profiled Session create and Run edges.
 #[async_trait]
 pub trait ProfiledSessionCommands: Send + Sync {
+    /// Request the existing root-owned preparation without creating a Run.
+    async fn request_run_free_initial_preparation(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<PersistedSession, awaken_session_execution_contract::SessionRealizationControlFailure>;
+
     /// See [`crate::SessionCreationCommands::accept_profiled_session`].
     async fn accept_profiled_session(
         &self,

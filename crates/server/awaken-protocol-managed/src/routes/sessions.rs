@@ -1194,6 +1194,25 @@ fn historical_profiled_repository_binding_id(
     ))
 }
 
+async fn profiled_initial_preparation(
+    state: &ManagedState,
+    id: &awaken_session_types::SessionId,
+    requested: bool,
+) -> Result<Option<awaken_session_contract::SessionPreparationObservation>, WireErr> {
+    if !requested {
+        return Ok(None);
+    }
+    let root = state
+        .roles
+        .profiled
+        .request_run_free_initial_preparation(id)
+        .await
+        .map_err(|error| error_response(StateError::Run(error.into())))?;
+    Ok(Some(
+        awaken_session_contract::SessionPreparationObservation::from_session(&root),
+    ))
+}
+
 /// Lower Awaken's strongly typed extension request into the sole profiled
 /// Session composer. The handler owns no Session state or realization path.
 pub async fn create_profiled_session(
@@ -1215,6 +1234,7 @@ pub async fn create_profiled_session(
             "profiled Session identity or revision is invalid",
         ))));
     }
+    let request_initial_preparation = body.request_initial_preparation;
     let request_fingerprint = awaken_agent_contract::stable_fingerprint(&body);
     let idempotency = awaken_session_application::SessionCreateReceipt::Profiled
         .record(&body.session_id, request_fingerprint);
@@ -1223,11 +1243,15 @@ pub async fn create_profiled_session(
         .await
         .map_err(error_response)?
     {
+        let initial_preparation =
+            profiled_initial_preparation(&state, &existing.session_id, request_initial_preparation)
+                .await?;
         return Ok((
             StatusCode::ACCEPTED,
             Json(crate::awaken_extensions::ProfiledSessionCreated {
                 id: existing.session_id.into_string(),
                 metadata: existing.metadata,
+                initial_preparation,
             }),
         ));
     }
@@ -1305,11 +1329,15 @@ pub async fn create_profiled_session(
         })
         .await
         .map_err(|error| error_response(ManagedState::map_creation_error(error)))?;
+    let initial_preparation =
+        profiled_initial_preparation(&state, &session.session_id, request_initial_preparation)
+            .await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(crate::awaken_extensions::ProfiledSessionCreated {
             id: session.session_id.into_string(),
             metadata: session.metadata,
+            initial_preparation,
         }),
     ))
 }

@@ -145,3 +145,22 @@ timing and retains the exact Session mutex and response-application checks.
 Queue residence and transport I/O consume one absolute monotonic deadline; an
 expired queued request must not enter Control. Completion reacquires the same
 semaphore. The adapter owns no durable lease, phase, receipt or retry queue.
+
+### 2026-11-01 — profiled creation can request the existing initial preparation
+
+Pack validation in a hosted consumer cannot call an embedded Session control
+object. The existing private profiled-create transport therefore accepts an
+explicit, default-off initial-preparation request. After the exact scoped
+creation/replay receipt is admitted, it invokes the existing monotonic
+`request_run_free_initial_preparation` command. The same Session root and Worker
+executor remain authoritative; no model Run, alternate provider or job store is
+created. Omitted/false requests retain the original wire representation.
+
+The response may carry a secret-free preparation observation projected from
+that same root: configured/realized MCP names and pending/ready/failed status.
+This read model stores nothing and grants no execution permission. Embedded and
+HTTP consumers use this one projection rather than independently reconstructing
+readiness. Scope, immutable publication, replay and pre-effect refusal checks
+precede the request; pending is never success. Existing mutation/CAS laws remain
+unchanged, while contract tests cover opt-in, exact replay, refusal, no Run and
+the readiness decision table.

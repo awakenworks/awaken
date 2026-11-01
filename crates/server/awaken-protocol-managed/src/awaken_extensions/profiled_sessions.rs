@@ -77,6 +77,9 @@ impl ProfiledSessionMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfiledSessionCreate {
+    /// Explicit demand on the existing Session root; no model Run is created.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub request_initial_preparation: bool,
     pub session_id: String,
     pub mode: ProfiledSessionMode,
     /// Non-bearer evidence interpreted only by its application/hosting owner.
@@ -117,6 +120,12 @@ pub struct ProfiledSessionCreate {
 pub struct ProfiledSessionCreated {
     pub id: String,
     pub metadata: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_preparation: Option<awaken_session_contract::SessionPreparationObservation>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Complete immutable input for one Run of an existing product-authored
@@ -234,6 +243,7 @@ mod tests {
         // treating it as the historical omission.
         // The protocol never accepts plaintext credential material.
         let request = ProfiledSessionCreate {
+            request_initial_preparation: false,
             session_id: "session-a".into(),
             mode: ProfiledSessionMode::WorkUnit,
             application_origin: None,
@@ -276,10 +286,64 @@ mod tests {
             tools: None,
         };
         let encoded = serde_json::to_value(&request).unwrap();
+        // Preparation decision table P0: omitted/false preserves the exact
+        // legacy create fingerprint; P1: explicit true round-trips as opt-in.
+        // This flag requests the existing root intent, never a model Run.
+        assert!(encoded.get("request_initial_preparation").is_none(), "P0");
+        let mut opted_in = encoded.clone();
+        opted_in["request_initial_preparation"] = serde_json::json!(true);
+        let opted_in: ProfiledSessionCreate = serde_json::from_value(opted_in).unwrap();
+        assert!(opted_in.request_initial_preparation, "P1");
+        assert_eq!(
+            serde_json::to_value(&opted_in).unwrap()["request_initial_preparation"],
+            true
+        );
         // R8 historical origin omission preserves the existing request bytes;
         // R9 explicit valid origin round-trips through its single owner codec;
         // R10 malformed origin rejects before invoking the Session composer.
         assert!(encoded.get("application_origin").is_none(), "R8");
+        let historical_reply = serde_json::json!({"id":"session-a","metadata":{}});
+        let reply: ProfiledSessionCreated =
+            serde_json::from_value(historical_reply.clone()).unwrap();
+        assert!(reply.initial_preparation.is_none(), "P0 legacy reply");
+        assert_eq!(
+            serde_json::to_value(reply).unwrap(),
+            historical_reply,
+            "P0 unchanged reply bytes"
+        );
+        // P2 explicit preparation replies carry original, secret-free facts;
+        // malformed opt-in values are rejected before any handler/effect.
+        let observed = ProfiledSessionCreated {
+            id: "session-a".into(),
+            metadata: BTreeMap::new(),
+            initial_preparation: Some(
+                serde_json::from_value(serde_json::json!({
+                    "session_id":"session-a", "configured_mcp_servers":["github"],
+                    "realized_mcp_servers":[], "status":"pending"
+                }))
+                .unwrap(),
+            ),
+        };
+        assert_eq!(
+            serde_json::from_value::<ProfiledSessionCreated>(
+                serde_json::to_value(&observed).unwrap()
+            )
+            .unwrap(),
+            observed,
+            "P2"
+        );
+        for invalid in [
+            serde_json::json!("true"),
+            serde_json::json!(1),
+            serde_json::Value::Null,
+        ] {
+            let mut malformed = encoded.clone();
+            malformed["request_initial_preparation"] = invalid;
+            assert!(
+                serde_json::from_value::<ProfiledSessionCreate>(malformed).is_err(),
+                "P2 malformed opt-in"
+            );
+        }
         let mut with_origin = request.clone();
         with_origin.application_origin = Some(
             awaken_session_configuration_contract::ApplicationOriginBinding::new(

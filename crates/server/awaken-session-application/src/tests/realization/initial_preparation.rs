@@ -697,12 +697,18 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
         "R1/E1"
     );
     assert!(first.revision.0 > before.revision.0, "R1 one root CAS");
-    let replay = application
-        .realizations
+    // R2 crosses the same narrowed role held by the HTTP adapter. It must
+    // reach the original root/CAS, not a second preparation implementation.
+    let protocol_role: Arc<dyn crate::ProfiledSessionCommands> = application.run_admissions();
+    let replay = protocol_role
         .request_run_free_initial_preparation(&id)
         .await
         .expect("R2/E2");
     assert_eq!(replay.revision, first.revision, "R2/E2 no second CAS");
+    assert!(
+        replay.active_activity_epochs.is_empty(),
+        "no model Run activity"
+    );
     for invalid in ["local-request", "self-hosted-request"] {
         let invalid = SessionId::from(invalid);
         assert!(
