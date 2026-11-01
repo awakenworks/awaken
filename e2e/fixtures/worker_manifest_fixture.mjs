@@ -7,6 +7,9 @@ export const WORKER_PROVIDER_CREDENTIAL_CAPABILITY =
 
 export const WORKER_INHERITED_TOOLSETS_CAPABILITY = 'inherited-toolsets/v1';
 
+// Explicit installed-peer support, not an inferred capability for arbitrary manifests.
+export const WORKER_TOOL_RESULT_JOURNAL_CAPABILITY = 'tool-result-journal/v1';
+
 // One raw registration manifest for external E2E drivers that emulate a
 // database-less workdir Worker. Callers own the capability evidence and build
 // identity; this fixture owns only the repeated wire shape and applies no
@@ -38,4 +41,11 @@ export function workdirWorkerManifestFixture({ buildDigest, capabilities }) {
     checkpoint_formats: ['stream-v1'],
     capacity: { max_concurrent: 1, resources: {} },
   };
+}
+
+// These variants replace a seed HostExecutor with an explicit Provider model.
+// The caller names its selected model demands; every independent frozen codec,
+// resource and future capability remains required. No support is inferred.
+export function replaceHostModelCapabilitiesFixture(requiredCapabilities, selectedModelCapabilities) {
+  return [...new Set([...requiredCapabilities.filter((capability) => capability !== 'host-executor/v1'), ...selectedModelCapabilities])];
 }

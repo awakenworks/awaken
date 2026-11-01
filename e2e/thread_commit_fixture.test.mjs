@@ -61,3 +61,33 @@ test('the shared ThreadCommit fixture preserves the contract-owned hash decision
   assert.deepEqual(claimed, originalClaimed, 'F4/E4 claim');
   assert.deepEqual(commit, originalCommit, 'F4/E4 commit');
 });
+
+test('the terminal ThreadCommit fixture includes its exact committed lifecycle boundary', () => {
+  const input = { runId: 'terminal-run', threadId: 'terminal-thread', messageId: 'm', text: 'ended' };
+  const commit = terminalThreadCommitFixture(input);
+  assert.deepEqual(commit.run_fact, { run_id: input.runId, phase: { Ended: 'NaturalEnd' } });
+  assert.deepEqual(commit.events, [{ kind: 'RunStateChanged', payload: { state: commit.run_fact.phase } }]);
+  assert.notEqual(commit.events[0].payload.state, commit.run_fact.phase);
+  assert.equal(commit.resume_ticket, null);
+  const claimed = { lease: { run_id: input.runId, owner: 'worker', epoch: 2 } };
+  const operation = { claimed, ordinal: 0, expectedThreadVersion: 0 };
+  const missing = { ...commit, events: [] };
+  assert.notEqual(
+    claimedCommitRequestFixture({ ...operation, commit }).operation.payload_hash,
+    claimedCommitRequestFixture({ ...operation, commit: missing }).operation.payload_hash,
+    'the canonical hash retains the lifecycle draft alongside the terminal fact',
+  );
+});
+
+test('the claimed commit encoder preserves caller-owned lifecycle evidence', () => {
+  const commit = terminalThreadCommitFixture({ runId: 'r', threadId: 't', messageId: 'm', text: 'caller' });
+  commit.events = [];
+  const before = structuredClone(commit);
+  const request = claimedCommitRequestFixture({
+    claimed: { lease: { run_id: 'r', owner: 'w', epoch: 1 } },
+    commit, ordinal: 0, expectedThreadVersion: 0,
+  });
+  assert.deepEqual(request.operation.commit, before);
+  assert.deepEqual(commit, before);
+  assert.deepEqual(request.operation.commit.events, [], 'the generic encoder never invents missing facts');
+});

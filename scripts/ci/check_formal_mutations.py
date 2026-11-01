@@ -526,7 +526,9 @@ def main() -> None:
         if (jar := getattr(arguments, name.replace("-", "_"))) is not None:
             check(jar)
             return
+    from test_formal_gate_mutations import NativeFormalFixtureTests
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(MutationOracleTests)
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(NativeFormalFixtureTests))
     if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
         raise SystemExit(1)
     run_gate_mutations()

@@ -798,9 +798,12 @@ print(json.dumps({{"context": build_context(Path.cwd(), {arguments!r}),
 
     @unittest.skipUnless(os.name == "nt", "native Windows Job and Cargo boundary")
     def test_windows_cold_build_execution_budget_and_owned_tree_cleanup(self) -> None:
-        # Windows process startup and receipt finalization need headroom under
-        # parallel CI load. Keep build > execution so a shared budget fails;
-        # timed-out rows still require 124 and both owned processes terminated.
+        # Four distinct laws: cold preparation does not spend execution time;
+        # an early deadline may leave no preparation receipt; a deadline inside
+        # an admitted build retains no built result; execution timeout retains
+        # its actual124. Both admitted timeout rows must enter a real owned
+        # process tree and kill parent/child. No outer watchdog may impersonate
+        # either inner deadline. Production and execution budgets are unchanged.
         import ctypes
         from ctypes import wintypes
         from _native_shell import bash_executable
@@ -814,7 +817,9 @@ print(json.dumps({{"context": build_context(Path.cwd(), {arguments!r}),
         preparation_seconds = execution_seconds + 2
         build_seconds = preparation_seconds + 30
         outer_seconds = build_seconds + execution_seconds + 45
-        for row, expected in (("fast", 0), ("build-timeout", 124), ("execution-timeout", 124)):
+        rows = (("fast", 0), ("early-preparation-timeout", 124),
+                ("build-timeout", 124), ("execution-timeout", 124))
+        for row, expected in rows:
             with self.subTest(row=row), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary); self.runner_fixture(fixture)
                 tree = fixture/"owned-tree.py"
@@ -822,12 +827,26 @@ print(json.dumps({{"context": build_context(Path.cwd(), {arguments!r}),
                                 "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)'])\n"
                                 "path=Path(sys.argv[1]);pending=path.with_suffix('.pending');pending.write_text(json.dumps([os.getpid(),child.pid]));pending.replace(path)\n"
                                 "print('ready',flush=True)\ntime.sleep(120)\n")
-                body = "case \"$*\" in *--list*) echo 'critical: test'; exit 0 ;; esac\n"
+                launch_tree = ("exec " + shlex.quote(Path(sys.executable).as_posix()) + " "
+                               + shlex.quote(tree.as_posix()) + ' "$CARGO_TARGET_DIR/ready"\n')
+                body = "printf '%s\\n' \"$*\" >> \"$CARGO_TARGET_DIR/execution-calls\"\n"
+                body += "case \"$*\" in *--list*) echo 'critical: test'; exit 0 ;; esac\n"
                 if row == "execution-timeout":
-                    body += "exec " + shlex.quote(Path(sys.executable).as_posix()) + " " + shlex.quote(tree.as_posix()) + ' "$CARGO_TARGET_DIR/ready"\n'
-                else: body += "echo 'test critical ... ok'\necho 'test result: ok. 1 passed; 0 failed; 0 ignored;'\n"
+                    body += launch_tree
+                else:
+                    body += "echo 'test critical ... ok'\necho 'test result: ok. 1 passed; 0 failed; 0 ignored;'\n"
                 values = self.cargo_fixture(fixture, body)
-                values.update(PREPARATION_DELAY=str(preparation_seconds), AWAKEN_REQUIRED_TEST_BUILD_TIMEOUT_SECONDS="3" if row == "build-timeout" else str(build_seconds),
+                if row == "build-timeout":
+                    # Enter the actual no-run command before waiting for its
+                    # build deadline. The marker proves preparation admission;
+                    # a slow source probe cannot substitute for this condition.
+                    cargo = fixture/"bin/cargo"
+                    source = cargo.read_text(encoding="utf-8")
+                    delay = '  sleep "${PREPARATION_DELAY:-0}"\n'
+                    self.assertEqual(source.count(delay), 1)
+                    cargo.write_text(source.replace(delay, "  " + launch_tree, 1), encoding="utf-8")
+                values.update(PREPARATION_DELAY=str(preparation_seconds),
+                              AWAKEN_REQUIRED_TEST_BUILD_TIMEOUT_SECONDS="3" if row == "early-preparation-timeout" else str(build_seconds),
                               AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS=str(execution_seconds), AWAKEN_NATIVE_BASH=bash_executable())
                 entry = fixture/"invoke.sh"
                 entry.write_text("source scripts/ci/_rust_test_execution.sh\nrun_required_rust_tests -p critical --lib critical --require-case=critical\n", newline="\n")
@@ -836,29 +855,49 @@ print(json.dumps({{"context": build_context(Path.cwd(), {arguments!r}),
                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 handles = []
                 try:
-                    if row == "execution-timeout":
+                    if row in ("build-timeout", "execution-timeout"):
                         ready = fixture/"target/ready"; until = time.monotonic()+build_seconds+execution_seconds
-                        # awaken-allow(wait): retain actual child process handles before the execution deadline kills the owned Job.
+                        # awaken-allow(wait): retain both actual owned process handles before the corresponding admitted deadline kills the Job.
                         while not ready.exists() and process.poll() is None and time.monotonic() < until: time.sleep(.01)
-                        self.assertTrue(ready.exists(), "owned execution did not start")
-                        for pid in json.loads(ready.read_text()):
+                        self.assertTrue(ready.exists(), f"owned {row} did not start")
+                        pids = json.loads(ready.read_text())
+                        self.assertEqual(len(pids), 2); self.assertEqual(len(set(pids)), 2)
+                        for pid in pids:
                             handle = kernel.OpenProcess(0x00100001, False, pid)
                             self.assertTrue(handle, "cannot retain owned process handle"); handles.append(handle)
                     output = process.communicate(timeout=outer_seconds+5)
                     self.assertEqual(process.returncode, expected, output)
                     directory = next((fixture/"target/test-timings").glob("rust-execution.*"))
-                    if row == "build-timeout":
+                    stdout = output[0].decode("utf-8", errors="replace").splitlines()
+                    preparation_timeout = row in ("early-preparation-timeout", "build-timeout")
+                    marker = "build evidence: " if preparation_timeout else "execution evidence: "
+                    # The outer117-second watchdog cannot produce this inner
+                    # terminal marker: the admitted shell must return itself.
+                    self.assertEqual(sum(line.startswith(marker) for line in stdout), 1, output)
+                    if preparation_timeout:
                         self.assertFalse((directory/"results.json").exists())
-                        self.assertNotEqual(json.loads((directory/"build.json").read_text())["status"], "built")
+                        self.assertFalse((directory/"list.log").exists())
+                        self.assertFalse((fixture/"target/execution-calls").exists())
+                        build = directory/"build.json"
+                        if row == "build-timeout":
+                            self.assertTrue(build.exists(), "admitted build must have its original running receipt")
+                            calls = (fixture/"target/preparation-calls").read_text().splitlines()
+                            self.assertEqual(len(calls), 1); self.assertIn("--no-run", calls[0])
+                        if build.exists():
+                            self.assertIn(json.loads(build.read_text())["status"], ("running", "failed"))
                     else:
                         self.assertEqual(json.loads((directory/"build.json").read_text())["status"], "built")
                         result = json.loads((directory/"results.json").read_text())
                         self.assertEqual(result["exit_code"], expected)
+                        self.assertEqual(result["command_exit_code"], expected)
+                        self.assertEqual(len((fixture/"target/execution-calls").read_text().splitlines()), 2)
                         if row == "fast":
                             self.assertEqual(result["status"], "passed")
                             self.assertEqual(result["selected_cases"], ["critical"])
                             self.assertEqual(result["executed_cases"], [["critical", "ok"]])
                             self.assertEqual(result["errors"], [])
+                        else:
+                            self.assertEqual(result["status"], "failed")
                     for handle in handles: self.assertEqual(kernel.WaitForSingleObject(handle, 5000), 0)
                 finally:
                     if process.poll() is None: process.kill(); process.communicate(timeout=10)

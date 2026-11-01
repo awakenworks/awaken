@@ -17,6 +17,7 @@ import {
 import {
   workdirWorkerManifestFixture,
   WORKER_INHERITED_TOOLSETS_CAPABILITY,
+  WORKER_TOOL_RESULT_JOURNAL_CAPABILITY,
 } from './fixtures/worker_manifest_fixture.mjs';
 
 const DATABASE_URL = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
@@ -79,6 +80,8 @@ async function registerReadyWorker(worker: string): Promise<void> {
         capabilities: [
           'host-executor/v1', 'native-runtime', 'session-resources/v1',
           WORKER_INHERITED_TOOLSETS_CAPABILITY,
+          // The frozen Native root carries this exact journal codec.
+          WORKER_TOOL_RESULT_JOURNAL_CAPABILITY,
         ],
       }),
     },
@@ -253,6 +256,12 @@ async function main(): Promise<void> {
 
     const committed = await committing;
     assert.equal(committed.status, 200, `current claimed commit succeeds: ${committed.text}`);
+    assert.equal(
+      Number(sql(`SELECT count(*) FROM runtime_event WHERE run_id='${quoted(runId)}'
+        AND kind::text='"RunStateChanged"' AND payload->'state'='{"Ended":"NaturalEnd"}'::jsonb`)),
+      1,
+      'the terminal commit retains one exact lifecycle boundary before recovery',
+    );
     sql('DROP TRIGGER IF EXISTS e2e_delay_claimed_commit_trigger ON runtime_commit');
     sql('DROP FUNCTION IF EXISTS e2e_delay_claimed_commit()');
 
