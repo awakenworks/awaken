@@ -216,8 +216,8 @@ def unreachable_lines(manifest: str | None) -> tuple[dict[str, set[int]], list[d
         raise ValueError(f"{manifest}: expected version = 1")
     by_path: dict[str, set[int]] = collections.defaultdict(set)
     entries = document.get("waiver", [])
-    if not isinstance(entries, list) or not entries:
-        raise ValueError(f"{manifest}: expected at least one [[waiver]]")
+    if not isinstance(entries, list):
+        raise ValueError(f"{manifest}: expected a [[waiver]] array")
     normalized: list[dict[str, object]] = []
     for index, entry in enumerate(entries, 1):
         if not isinstance(entry, dict):
