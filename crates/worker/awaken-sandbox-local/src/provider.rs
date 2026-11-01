@@ -1469,6 +1469,22 @@ impl LocalSandbox {
         // the exact incarnation after the descriptor-captured snapshot.
         if !self.memory_materializations.is_empty() {
             self.require_root_identity()?;
+            // The same rule for the materialized Copy directory itself: the
+            // scanner reads a missing subtree as empty, and an empty Copy would
+            // authorize deleting every durable head it was materialized from.
+            let logical = subdir.trim_matches('/');
+            let materialized = self
+                .memory_materializations
+                .iter()
+                .any(|materialization| materialization.mount_path.trim_matches('/') == logical);
+            if materialized
+                && !std::fs::symlink_metadata(self.root.root().join(logical))
+                    .is_ok_and(|metadata| metadata.is_dir())
+            {
+                return Err(pc::SandboxError::gone(
+                    "copy-backed Memory lost its materialized directory before reconciliation",
+                ));
+            }
         }
         Ok(files)
     }

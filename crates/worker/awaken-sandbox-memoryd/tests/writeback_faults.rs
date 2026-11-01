@@ -204,9 +204,10 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             let retry_result = tokio::time::timeout(std::time::Duration::from_secs(5), retry)
                 .await
                 .unwrap();
-            assert_eq!(retry_result.is_err(), operation == "UPDATE");
+            // The committed bytes equal the candidate, so the retry adopts them (ADR-0104).
+            assert!(retry_result.is_ok(), "operation={operation}");
             if operation != "CONFLICT" {
-                assert_eq!(mount.teardown().await.is_err(), operation == "UPDATE");
+                assert!(mount.teardown().await.is_ok(), "operation={operation}");
             }
             let heads = repository.snapshot_heads("s").await.unwrap();
             let history = repository.list_versions("s").await.unwrap();
@@ -250,8 +251,8 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             let reopened_retained = reopened.list_copy_conflicts("s").await.unwrap();
             assert_eq!(
                 reopened_retained.len(),
-                usize::from(matches!(operation, "CONFLICT" | "UPDATE")),
-                "recovered old generation retains an UPDATE proposal"
+                usize::from(operation == "CONFLICT"),
+                "recovered old generation adopts committed UPDATE bytes; only a different winner is retained"
             );
         }
     }
@@ -647,9 +648,10 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
     for operation in ["create", "update", "delete"] {
         // F5 queued mutation outlives caller cancellation; F6 a newer writer
         // wins before that queued mutation runs => stale CAS must not overwrite
-        // it. Live same-guard retry remains a conflict; terminal recovered-copy
-        // retry may finish only after preserving the loser in the Memory
-        // aggregate, with unchanged winner/history and idempotent conflict data.
+        // it. A retry whose committed bytes already equal the candidate adopts
+        // them (ADR-0104); only a different winner remains a conflict, and the
+        // terminal recovered-copy retry finishes only after preserving that
+        // loser, with unchanged winner/history and idempotent conflict data.
         for (after, detached, competitor) in [
             (false, false, false),
             (true, false, false),
@@ -799,10 +801,9 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                         );
                     }
                     for _ in 0..2 {
-                        let stale_update = operation == "update" && (after || detached);
                         assert_eq!(
                             mount.teardown().await.is_err(),
-                            competitor || stale_update,
+                            competitor,
                             "F4/F6 retry operation={operation} after={after} detached={detached} prefix={prefix}"
                         );
                     }
@@ -846,13 +847,14 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                     let conflicts = repository.list_copy_conflicts("s").await.unwrap();
                     assert_eq!(
                         conflicts.len(),
-                        usize::from(prefix) + usize::from(competitor || operation == "update"),
+                        usize::from(competitor),
                         "F6 exact conflict retention"
                     );
-                    if prefix {
-                        assert!(conflicts.iter().any(|conflict| conflict.path == "/a.md"));
-                    }
-                    if competitor || operation == "update" {
+                    assert!(
+                        conflicts.iter().all(|conflict| conflict.path != "/a.md"),
+                        "F4 the committed prefix is adopted, not retained"
+                    );
+                    if competitor {
                         let conflict = conflicts
                             .iter()
                             .find(|conflict| conflict.path == "/z.md")
