@@ -1635,6 +1635,10 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
             ..Default::default()
         },
         None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
     );
 
     let pending_force = application
@@ -1851,6 +1855,10 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
             ..Default::default()
         },
         None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
     );
     application
         .terminal_cleanups
@@ -2057,6 +2065,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     let retained_cold = repo.get(&cold_id).await.unwrap();
     let retained_rejected = repo.get(&rejected_id).await.unwrap();
     let observation_runtime = Arc::new(RecordingCleanupRuntime::default());
+    let workers = Arc::new(RecordingWorkerObservations::default());
     let application = configured_application(
         observation_runtime.clone(),
         crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
@@ -2066,6 +2075,10 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
             ..Default::default()
         },
         None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), workers.clone(), probe)
+        },
     );
     assert!(
         matches!(
@@ -2154,12 +2167,9 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     manifest
         .capabilities
         .insert(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY.to_string());
-    let workers = Arc::new(RecordingWorkerObservations::default());
+
     workers.replace(vec![terminal_cleanup_worker(&target, manifest.clone())]);
-    application
-        .execution_admission()
-        .set_worker_observation_source(workers.clone())
-        .expect("install publication Worker observations");
+
     assert!(
         application
             .terminal_cleanups
@@ -2593,23 +2603,26 @@ async fn cold_terminal_cleanup_claim_pages_past_a_saturated_invalid_batch() {
     let repository: Arc<dyn crate::SessionStore> = repo.clone();
     let faulting = Arc::new(FaultingSessionRepository::new(repository));
     faulting.commit_then_conflict_once("claim-terminal-cleanup-recovery");
-    let application = application_with_configuration(
-        faulting,
+    let workers = Arc::new(RecordingWorkerObservations::default());
+    let application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(faulting, system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), workers.clone(), probe)
+        },
     );
-    let workers = Arc::new(RecordingWorkerObservations::default());
+
     workers.replace(vec![terminal_cleanup_worker(
         &target,
         terminal_cleanup_manifest(),
     )]);
-    application
-        .execution_admission()
-        .set_worker_observation_source(workers.clone())
-        .expect("install the one Worker observation authority");
 
     let assignment = application
         .terminal_cleanups
@@ -2768,23 +2781,27 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     )
     .await;
 
-    let application = application_with_configuration(
-        repo.clone(),
+    let workers = Arc::new(RecordingWorkerObservations::default());
+    let application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(repo.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), workers.clone(), probe)
+        },
     );
-    let workers = Arc::new(RecordingWorkerObservations::default());
+
     workers.replace(vec![terminal_cleanup_worker(
         &target,
         terminal_cleanup_manifest(),
     )]);
-    application
-        .execution_admission()
-        .set_worker_observation_source(workers.clone())
-        .expect("install the one Worker observation authority");
+
     let mut after = None;
     for (rule, expected_id, expected_epoch) in [
         ("C4-equal", "claim-a-current", 4),
@@ -2876,23 +2893,27 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     create(inner.as_ref(), requested("claim-conflict", None)).await;
     let faulting = Arc::new(FaultingSessionRepository::new(inner.clone()));
     faulting.commit_then_conflict_once("claim-terminal-cleanup-recovery");
-    let application = application_with_configuration(
-        faulting,
+    let workers = Arc::new(RecordingWorkerObservations::default());
+    let application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(faulting, system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), workers.clone(), probe)
+        },
     );
-    let workers = Arc::new(RecordingWorkerObservations::default());
+
     workers.replace(vec![terminal_cleanup_worker(
         &target,
         terminal_cleanup_manifest(),
     )]);
-    application
-        .execution_admission()
-        .set_worker_observation_source(workers.clone())
-        .expect("install the one Worker observation authority");
+
     let replayed = application
         .terminal_cleanups
         .claim_next_terminal_cleanup(target, None)
@@ -2977,20 +2998,24 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     )
     .await;
     let r1_revision = r1_repo.get(&r1_id).await.unwrap().revision;
-    let r1_application = application_with_configuration(
-        r1_repo.clone(),
+    let r1_workers = Arc::new(RecordingWorkerObservations::default());
+    let r1_application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(r1_repo.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         configuration.clone(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), r1_workers.clone(), probe)
+        },
     );
-    let r1_workers = Arc::new(RecordingWorkerObservations::default());
+
     r1_workers.script([
         WorkerObservationStep::Workers(vec![registered()]),
         WorkerObservationStep::Workers(Vec::new()),
     ]);
-    r1_application
-        .execution_admission()
-        .set_worker_observation_source(r1_workers.clone())
-        .expect("R1 Worker observation authority");
+
     assert!(
         r1_application
             .terminal_cleanups
@@ -3013,20 +3038,24 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     )
     .await;
     let r2_revision = r2_repo.get(&r2_id).await.unwrap().revision;
-    let r2_application = application_with_configuration(
-        r2_repo.clone(),
+    let r2_workers = Arc::new(RecordingWorkerObservations::default());
+    let r2_application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(r2_repo.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         configuration.clone(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), r2_workers.clone(), probe)
+        },
     );
-    let r2_workers = Arc::new(RecordingWorkerObservations::default());
+
     r2_workers.script([
         WorkerObservationStep::Workers(vec![registered()]),
         WorkerObservationStep::Fail,
     ]);
-    r2_application
-        .execution_admission()
-        .set_worker_observation_source(r2_workers.clone())
-        .expect("R2 Worker observation authority");
+
     assert!(
         matches!(
             r2_application
@@ -3058,17 +3087,21 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     )
     .await;
     let r0_before = r0_repo.get(&r0_id).await.unwrap();
-    let r0_application = application_with_configuration(
-        r0_repo.clone(),
+    let r0_workers = Arc::new(RecordingWorkerObservations::default());
+    let r0_application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(r0_repo.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         configuration.clone(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), r0_workers.clone(), probe)
+        },
     );
-    let r0_workers = Arc::new(RecordingWorkerObservations::default());
+
     r0_workers.replace(vec![registered()]);
-    r0_application
-        .execution_admission()
-        .set_worker_observation_source(r0_workers.clone())
-        .expect("R0 Worker observation authority");
+
     assert!(
         r0_application
             .terminal_cleanups
@@ -3097,21 +3130,25 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     )
     .await;
     let r3_repo = Arc::new(FaultingSessionRepository::new(r3_inner.clone()));
-    let r3_application = application_with_configuration(
-        r3_repo,
+    let r3_workers = Arc::new(RecordingWorkerObservations::default());
+    let r3_application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(r3_repo, system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         configuration.clone(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), r3_workers.clone(), probe)
+        },
     );
-    let r3_workers = Arc::new(RecordingWorkerObservations::default());
+
     r3_workers.script([
         WorkerObservationStep::Workers(vec![registered()]),
         WorkerObservationStep::Workers(vec![registered()]),
         WorkerObservationStep::Workers(Vec::new()),
     ]);
-    r3_application
-        .execution_admission()
-        .set_worker_observation_source(r3_workers.clone())
-        .expect("R3 Worker observation authority");
+
     assert!(
         r3_application
             .terminal_cleanups
@@ -3150,21 +3187,25 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         "revoke-terminal-cleanup-recovery",
         r3b_successor.clone(),
     );
-    let r3b_application = application_with_configuration(
-        r3b_repo,
+    let r3b_workers = Arc::new(RecordingWorkerObservations::default());
+    let r3b_application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(r3b_repo, system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         configuration.clone(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), r3b_workers.clone(), probe)
+        },
     );
-    let r3b_workers = Arc::new(RecordingWorkerObservations::default());
+
     r3b_workers.script([
         WorkerObservationStep::Workers(vec![registered()]),
         WorkerObservationStep::Workers(vec![registered()]),
         WorkerObservationStep::Workers(Vec::new()),
     ]);
-    r3b_application
-        .execution_admission()
-        .set_worker_observation_source(r3b_workers)
-        .expect("R3b Worker observation authority");
+    drop(r3b_workers);
     assert!(
         r3b_application
             .terminal_cleanups
@@ -3193,21 +3234,25 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     .await;
     let r3c_repo = Arc::new(FaultingSessionRepository::new(r3c_inner.clone()));
     r3c_repo.commit_then_conflict_once("claim-terminal-cleanup-recovery");
-    let r3c_application = application_with_configuration(
-        r3c_repo,
+    let r3c_workers = Arc::new(RecordingWorkerObservations::default());
+    let r3c_application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(r3c_repo, system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         configuration.clone(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), r3c_workers.clone(), probe)
+        },
     );
-    let r3c_workers = Arc::new(RecordingWorkerObservations::default());
+
     r3c_workers.script([
         WorkerObservationStep::Workers(vec![registered()]),
         WorkerObservationStep::Workers(vec![registered()]),
         WorkerObservationStep::Workers(Vec::new()),
     ]);
-    r3c_application
-        .execution_admission()
-        .set_worker_observation_source(r3c_workers)
-        .expect("R3c Worker observation authority");
+    drop(r3c_workers);
     assert!(
         r3c_application
             .terminal_cleanups

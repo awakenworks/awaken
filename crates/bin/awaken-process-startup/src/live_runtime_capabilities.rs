@@ -158,7 +158,7 @@ fn live_acp_local(
         else {
             continue;
         };
-        let credential = awaken_worker_contract::WorkerCredentialRevision {
+        let credential = awaken_agent_contract::credential::CredentialRef {
             id: source.id.0.clone(),
             revision,
         };
@@ -276,7 +276,7 @@ mod tests {
             .map(|id| {
                 [
                     awaken_worker_contract::WorkerCredentialObservation::available(
-                        awaken_worker_contract::WorkerCredentialRevision {
+                        awaken_agent_contract::credential::CredentialRef {
                             id: id.into(),
                             revision: 1,
                         },

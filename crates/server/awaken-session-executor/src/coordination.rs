@@ -803,7 +803,8 @@ mod tests {
                 crate::SessionExecutorBuilder::ephemeral(Arc::new(EndpointModel), "stub")
                     .await
                     .with_ephemeral_dispatch(queue.clone());
-            dependencies.execution.ingress = crate::RunIngress::Durable;
+            dependencies.execution.foreground_delivery =
+                awaken_deployment_config::ForegroundRunDelivery::Durable;
             dependencies.execution.local = crate::LocalExecution::RemoteWorkersOnly;
             let host = dependencies.build().expect("Coordinator components");
             let assembly = Arc::downgrade(&host.run_assembly);

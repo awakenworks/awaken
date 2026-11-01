@@ -312,6 +312,78 @@ pub enum SessionBaselineState {
 }
 
 impl SessionBaselineState {
+    /// Normalize only a baseline from the recognized pre-envelope Session format.
+    /// Current snapshots still require every frozen fact during Deserialize;
+    /// callers select the historical format before invoking this whole-shape law.
+    /// No fingerprint, source revision or current catalog is reconstructed here.
+    pub fn normalize_legacy_baseline(
+        baseline: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), serde_json::Error> {
+        use serde::de::Error as _;
+
+        let state = baseline
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| serde_json::Error::custom("managed Session baseline has no state"))?;
+        if state != "frozen" {
+            return Err(serde_json::Error::custom(format!(
+                "unsupported legacy managed Session baseline state `{state}`"
+            )));
+        }
+        // Application contributions were fully consumed into these frozen fields;
+        // the nullable receipt was retired and must not become a second authority.
+        baseline.remove("application");
+        let environment = baseline
+            .get_mut("environment")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| {
+                serde_json::Error::custom("managed Session baseline has no environment snapshot")
+            })?;
+        environment
+            .entry("self_hosted")
+            .or_insert_with(|| serde_json::json!(false));
+        let runtime_placement = if environment
+            .get("self_hosted")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                serde_json::Error::custom("Session self_hosted placement is not boolean")
+            })? {
+            "worker"
+        } else {
+            "local"
+        };
+        environment.entry("idle_retention").or_insert_with(|| {
+            serde_json::to_value(SandboxIdleRetentionPolicy::default())
+                .expect("default idle-retention policy serializes")
+        });
+        // Missing/null is the supported legacy omission; a present value of
+        // another JSON kind is corruption, never an absent placement.
+        let existing_placement = match baseline.get("runtime_placement") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(placement)) => Some(placement.as_str()),
+            Some(_) => {
+                return Err(serde_json::Error::custom(
+                    "unknown Session runtime placement",
+                ));
+            }
+        };
+        match existing_placement {
+            None | Some("legacy_unspecified") => {
+                baseline.insert(
+                    "runtime_placement".into(),
+                    serde_json::json!(runtime_placement),
+                );
+            }
+            Some("local" | "worker") => {}
+            Some(_) => {
+                return Err(serde_json::Error::custom(
+                    "unknown Session runtime placement",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// The named input-mutation decision frozen with the Session; a Session
     /// still preparing its baseline admits the default policy.
     #[must_use]
@@ -618,6 +690,105 @@ mod tests {
             serde_json::from_value::<EnvironmentSnapshot>(encoded).is_err(),
             "P4"
         );
+
+        // Legacy decision table L1-L6: idle missing/explicit nondefault crossed
+        // with self_hosted missing/false/true. Only the named historical law
+        // fills missing retention and derives local/worker placement; explicit
+        // policy and the original fingerprint survive. P2/P3/P4 above remain
+        // strict current-input controls, not compatibility defaults.
+        let baseline = SessionBaselineState::Frozen(SessionBaseline::compile(baseline_inputs(
+            environment(1, SessionNetworkPolicy::Unrestricted),
+        )));
+        let original = serde_json::to_value(&baseline).unwrap();
+        let resident = original["environment"]["idle_retention"].clone();
+        let mut explicit = resident.clone();
+        explicit["retention_secs"] = serde_json::json!(73);
+        for policy_present in [false, true] {
+            for hosted in [None, Some(false), Some(true)] {
+                let mut legacy = original.clone();
+                let snapshot = legacy["environment"].as_object_mut().unwrap();
+                if policy_present {
+                    snapshot.insert("idle_retention".into(), explicit.clone());
+                } else {
+                    snapshot.remove("idle_retention");
+                }
+                if let Some(hosted) = hosted {
+                    snapshot.insert("self_hosted".into(), serde_json::json!(hosted));
+                } else {
+                    snapshot.remove("self_hosted");
+                }
+                legacy.as_object_mut().unwrap().remove("runtime_placement");
+                legacy["application"] = serde_json::Value::Null;
+                SessionBaselineState::normalize_legacy_baseline(legacy.as_object_mut().unwrap())
+                    .unwrap();
+                assert_eq!(
+                    legacy["environment"]["idle_retention"],
+                    if policy_present {
+                        explicit.clone()
+                    } else {
+                        resident.clone()
+                    }
+                );
+                assert_eq!(
+                    legacy["environment"]["self_hosted"],
+                    hosted.unwrap_or(false)
+                );
+                assert_eq!(
+                    legacy["runtime_placement"],
+                    if hosted == Some(true) {
+                        "worker"
+                    } else {
+                        "local"
+                    }
+                );
+                assert_eq!(legacy["fingerprint"], original["fingerprint"]);
+                assert!(legacy.get("application").is_none());
+                assert!(serde_json::from_value::<SessionBaselineState>(legacy).is_ok());
+            }
+        }
+        // L7-L9 reject unsupported state, nonboolean placement and unknown
+        // runtime placement before typed decoding; the original diagnostics stay.
+        for (pointer, value, diagnostic) in [
+            (
+                "/state",
+                serde_json::json!("preparing"),
+                "unsupported legacy managed Session baseline state `preparing`",
+            ),
+            (
+                "/environment/self_hosted",
+                serde_json::json!("false"),
+                "Session self_hosted placement is not boolean",
+            ),
+            (
+                "/runtime_placement",
+                serde_json::json!("unknown"),
+                "unknown Session runtime placement",
+            ),
+        ] {
+            let mut malformed = original.clone();
+            *malformed.pointer_mut(pointer).unwrap() = value;
+            let failure =
+                SessionBaselineState::normalize_legacy_baseline(malformed.as_object_mut().unwrap())
+                    .unwrap_err();
+            assert_eq!(failure.to_string(), diagnostic);
+        }
+        // L10-L13: an existing non-string/non-null placement is malformed,
+        // distinct from the supported missing/null legacy value. It must not
+        // be collapsed into absence and replaced from self_hosted.
+        for placement in [
+            serde_json::json!(37),
+            serde_json::json!(true),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let mut malformed = original.clone();
+            malformed["runtime_placement"] = placement;
+            assert!(
+                SessionBaselineState::normalize_legacy_baseline(malformed.as_object_mut().unwrap())
+                    .is_err(),
+                "L10-L13 malformed placement"
+            );
+        }
     }
 
     fn baseline_inputs(environment: EnvironmentSnapshot) -> SessionBaselineInputs {

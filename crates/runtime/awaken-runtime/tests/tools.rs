@@ -816,6 +816,10 @@ impl ToolExecutor for RecordingExecutor {
 // registered Sandbox tool + executor -> executor only;
 // registered Sandbox tool without executor -> model-visible fail-closed result,
 // never local fallback; unknown id -> model-visible unknown-tool result.
+// Internal mode selection: Brain consults only its registered tool even if a
+// Sandbox executor is wired; Sandbox consults only that executor; MissingSandbox
+// keeps the existing intrinsic default and the same invocation refusal, never
+// a fake local executor. The ordered plugin constraints still follow the claim.
 #[tokio::test]
 async fn sandbox_tool_uses_the_wired_executor() {
     // The echo tool is registered and visible, but a run that wires a
@@ -861,6 +865,8 @@ async fn sandbox_tool_uses_the_wired_executor() {
 
 #[tokio::test]
 async fn brain_tool_bypasses_the_wired_sandbox_executor() {
+    // This bare SDK call also selects StagedOnly terminal state: no context
+    // reader/commit is installed, and no substitute reader or state is created.
     let brain_ran = Arc::new(AtomicUsize::new(0));
     let sandbox_ran = Arc::new(AtomicUsize::new(0));
     let runtime = Runtime::new()

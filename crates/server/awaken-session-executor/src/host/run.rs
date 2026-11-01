@@ -345,7 +345,7 @@ impl crate::SessionRuns {
     /// store. The queue remains delivery truth; this guard only selects whether
     /// the deployment exposes that authority.
     pub(super) fn require_durable_delivery(&self) -> Result<(), SessionExecutionError> {
-        if self.execution.ingress.is_durable() {
+        if self.execution.foreground_delivery.is_durable() {
             Ok(())
         } else {
             Err(SessionExecutionError::bad_request(

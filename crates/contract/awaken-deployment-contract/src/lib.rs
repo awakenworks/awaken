@@ -7,6 +7,17 @@
 //! The Managed protocol adapter owns wire projection. This inward contract keeps
 //! storage independent of that wire vocabulary while making restart recovery and
 //! multi-replica schedule claims explicit.
+//!
+//! # Boundary
+//!
+//! Context: `deployment`.
+//!
+//! Implemented by: `awaken-control`, `awaken-deployment-application`, `awaken-process-startup`,
+//! `awaken-session-store`.
+//!
+//! Called by: `awaken-control`, `awaken-coordinator`, `awaken-deployment-application`,
+//! `awaken-process-startup`, `awaken-protocol-managed`, `awaken-session-store`,
+//! `awaken-store-conformance`.
 
 use async_trait::async_trait;
 mod model;

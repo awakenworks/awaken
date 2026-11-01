@@ -48,14 +48,6 @@
     "Command": 2,
     "Error": 2
   },
-  "contract-reexport": {
-    "awaken-executable-agent-contract": 1,
-    "awaken-provisioning-contract": 1,
-    "awaken-worker-contract": 2
-  },
-  "renamed-reexport": {
-    "awaken-worker-contract": 2
-  },
   "aggregate-pub-field": {
     "BudgetReachTransition": 5,
     "CheckpointReceipt": 3,

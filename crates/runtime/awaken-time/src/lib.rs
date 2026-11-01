@@ -26,6 +26,13 @@
 //! This crate belongs to the Runtime SDK and is a depth-0 contract leaf: it
 //! depends on no awaken crate. The Platform's ownership-fence kernel,
 //! `awaken-lease-contract`, depends on it for `Expiry` and `UtcTime`.
+//!
+//! # Boundary
+//!
+//! Context: `agent-runtime`.
+//!
+//! Published SDK contract (ADR-0086): every context may read it, so its readers are not listed
+//! here; `cargo tree -e normal -i awaken-time` prints them.
 
 mod clock;
 mod expiry;

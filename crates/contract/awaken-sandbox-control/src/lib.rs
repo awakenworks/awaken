@@ -14,6 +14,17 @@
 //! no Session, claim, credential, repository, policy, cache, or persistence
 //! state. A [`SandboxControlService`] must resolve every request against its
 //! owning application's current authority.
+//!
+//! # Boundary
+//!
+//! Context: `environment`.
+//!
+//! Implemented by: `awaken-sandbox-container`, `awaken-sandbox-local`,
+//! `awaken-session-environment`.
+//!
+//! Called by: `awaken-provisioning-contract`, `awaken-sandbox`, `awaken-sandbox-container`,
+//! `awaken-sandbox-control-transport`, `awaken-sandbox-kubernetes`, `awaken-sandbox-local`,
+//! `awaken-session-environment`, `awaken-session-environment-contract`.
 
 use std::sync::Arc;
 

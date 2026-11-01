@@ -3,8 +3,6 @@
 //! realization lease to run its cleanup, for the co-located driver and for an
 //! external Worker scanning Worker-owned Sessions.
 
-use std::sync::Arc;
-
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_contract::{PersistedSession, SessionRepositoryError};
 use awaken_session_execution_contract::{
@@ -79,7 +77,7 @@ impl<'a> TerminalCleanupClaimScope<'a> {
 /// The existing claim CAS still owns replacement, Registry fencing and replay.
 pub(crate) async fn terminal_cleanup_worker_affinity_rejection(
     repository: &dyn awaken_session_contract::SessionRepository,
-    workers: Option<&dyn awaken_worker_contract::WorkerIncarnationSource>,
+    workers: &dyn awaken_worker_contract::WorkerIncarnationSource,
     scope: TerminalCleanupClaimScope<'_>,
     owner_scope: &str,
     session: &PersistedSession,
@@ -115,13 +113,6 @@ pub(crate) async fn terminal_cleanup_worker_affinity_rejection(
                 &lease.runtime_incarnation,
             ) else {
                 return Some(TerminalCleanupRootClaim::Skip);
-            };
-            let Some(workers) = workers else {
-                return Some(TerminalCleanupRootClaim::Failed(
-                    SessionRealizationControlFailure::Unavailable(
-                        "exact predecessor Registry reader is not installed".into(),
-                    ),
-                ));
             };
             match awaken_worker_contract::read_closed_incarnation_exit(workers, &identity).await {
                 Ok(Some(_)) => None,
@@ -375,7 +366,7 @@ impl SessionTerminalCleanups {
         }
         if let Some(rejection) = terminal_cleanup_worker_affinity_rejection(
             self.mutations.repository().as_ref(),
-            self.execution_admission.workers.get().map(Arc::as_ref),
+            self.execution_admission.workers.as_ref(),
             scope,
             owner_scope,
             &session,

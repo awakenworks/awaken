@@ -27,6 +27,7 @@ awaken-runtime-contract.workspace = true
 # The deployment-owned container exposure of the Worker MCP relay normalizes
 # allowlist hosts and validates its advertised origin.
 awaken-container-contract.workspace = true
+awaken-sandbox-control.workspace = true
 url.workspace = true
 async-trait.workspace = true
 tokio.workspace = true

@@ -658,7 +658,11 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         .build()
         .expect("validated Host dependencies");
     assert!(
-        !ephemeral.dispatch.topology().ingress.is_durable(),
+        !ephemeral
+            .dispatch
+            .topology()
+            .foreground_delivery
+            .is_durable(),
         "T1 precondition"
     );
     crate::test_application_bindings::lifecycle(

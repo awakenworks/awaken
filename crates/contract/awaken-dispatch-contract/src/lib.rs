@@ -23,6 +23,20 @@
 //! ```compile_fail
 //! use awaken_dispatch_contract::ExecutionLocation;
 //! ```
+//!
+//! # Boundary
+//!
+//! Context: `dispatch`.
+//!
+//! Implemented by: `awaken-coordinator-client`, `awaken-dispatch`, `awaken-dispatch-erasure`,
+//! `awaken-dispatch-execution`, `awaken-session-application`, `awaken-session-executor`,
+//! `awaken-session-run-delivery`.
+//!
+//! Called by: `awaken-coordinator`, `awaken-coordinator-client`, `awaken-dispatch`,
+//! `awaken-dispatch-erasure`, `awaken-dispatch-execution`, `awaken-dispatch-http`,
+//! `awaken-dispatch-testkit`, `awaken-protocol-managed`, `awaken-resource-worker-http`,
+//! `awaken-session-application`, `awaken-session-executor`, `awaken-session-realization`,
+//! `awaken-session-run-delivery`.
 
 mod claimed_commit;
 mod claimed_stream;

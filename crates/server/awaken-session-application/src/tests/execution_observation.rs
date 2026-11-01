@@ -248,21 +248,28 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
         calls: 0.into(),
         unavailable: false.into(),
     });
-    let application = application_with_runtime(
+    let application = configured_application(
         runtime,
-        repository.clone(),
+        SessionPersistence::new(repository.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        Default::default(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(feed.clone(), probe.clone(), probe)
+        },
     );
-    application
-        .execution_admission()
-        .set_dispatch_observation_source(feed.clone())
-        .unwrap();
+
+    // The removed second-write operation is no longer a legal cause. The
+    // complete constructor owns selection; its existing exact/foreign-instance
+    // table rejects a different handle without calling either dependency.
+    let selected: Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed> = feed.clone();
     assert!(
         application
             .execution_admission()
-            .set_dispatch_observation_source(feed.clone())
-            .is_err(),
-        "one source, no replacement"
+            .verify_dispatch(&selected)
+            .is_ok(),
+        "the original feed was frozen at construction"
     );
     let id = SessionId::from("native-observed");
     let before = repository.get(&id).await.unwrap();
@@ -341,9 +348,9 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
 }
 
 #[tokio::test]
-async fn native_run_observation_refuses_foreign_scope_missing_source_and_invalid_page() {
+async fn native_run_observation_refuses_foreign_scope_source_outage_and_invalid_page() {
     // R1 foreign owner => NotFound before feed/read effects; R2 Managed policy
-    // => NotFound before feed; R3 profiled owner + missing feed => Unavailable;
+    // => NotFound before feed; R3 missing-feed construction is excluded;
     // R4 limit>1024 => Rejected before feed; R5 exact source outage => Unavailable;
     // R6 unknown Run => NotFound, never reuse the latest Run. These cover scope,
     // mode, dependency, input and membership causes; all leave root unchanged.
@@ -359,10 +366,21 @@ async fn native_run_observation_refuses_foreign_scope_missing_source_and_invalid
     )
     .await;
     create(repository.as_ref(), observed_session("managed-refusals")).await;
-    let application = application_with_runtime(
+    let feed = Arc::new(ObservedDispatchFeed {
+        events: Vec::new(),
+        calls: 0.into(),
+        unavailable: true.into(),
+    });
+    let application = configured_application(
         Arc::new(RecordingAgentAdmissionRuntime::new([])),
-        repository,
+        SessionPersistence::new(repository, system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        Default::default(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(feed.clone(), probe.clone(), probe)
+        },
     );
     let id = SessionId::from("native-refusals");
     let run = RunId("missing".into());
@@ -397,13 +415,15 @@ async fn native_run_observation_refuses_foreign_scope_missing_source_and_invalid
         ),
         "R2"
     );
-    assert!(
-        matches!(
-            read("workspace", id.clone(), 1).await,
-            Err(crate::SessionProjectionRecoveryError::Unavailable(_))
-        ),
-        "R3"
+    assert_eq!(
+        feed.calls.load(Ordering::SeqCst),
+        0,
+        "R1/R2 scope before feed"
     );
+    // R3 used a fixture with no feed, then installed one after publication.
+    // Complete construction now excludes that object (the constructor's
+    // existing E0061 negative); R5 below still owns a real source outage.
+
     assert!(
         matches!(
             read("workspace", id.clone(), 1_025).await,
@@ -411,15 +431,13 @@ async fn native_run_observation_refuses_foreign_scope_missing_source_and_invalid
         ),
         "R4"
     );
-    let feed = Arc::new(ObservedDispatchFeed {
-        events: Vec::new(),
-        calls: 0.into(),
-        unavailable: true.into(),
-    });
-    application
-        .execution_admission()
-        .set_dispatch_observation_source(feed.clone())
-        .unwrap();
+
+    assert_eq!(
+        feed.calls.load(Ordering::SeqCst),
+        0,
+        "R4 invalid page before feed"
+    );
+
     assert!(
         matches!(
             read("workspace", id.clone(), 1).await,
@@ -583,12 +601,6 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
         profiled_observed_session("native-precommit"),
     )
     .await;
-    let app = application_with_runtime(
-        Arc::new(RecordingAgentAdmissionRuntime::new([])),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    let id = SessionId::from("native-precommit");
     let run = RunId("native-claimed".into());
     let feed = Arc::new(ObservedDispatchFeed {
         events: vec![DispatchOperationalEvent {
@@ -605,9 +617,20 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
         calls: 0.into(),
         unavailable: false.into(),
     });
-    app.execution_admission()
-        .set_dispatch_observation_source(feed)
-        .unwrap();
+    let app = configured_application(
+        Arc::new(RecordingAgentAdmissionRuntime::new([])),
+        SessionPersistence::new(repository.clone(), system_clock()),
+        Arc::new(RecordingEnvironmentSource::default()),
+        Default::default(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(feed.clone(), probe.clone(), probe)
+        },
+    );
+    let id = SessionId::from("native-precommit");
+
+    drop(feed);
     assert!(
         matches!(
             app.run_admissions

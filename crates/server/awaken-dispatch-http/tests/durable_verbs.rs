@@ -108,6 +108,18 @@ async fn durable_router(
         awaken_protocol_managed_testkit::ephemeral_session_repository().await,
         awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
         clock.clone(),
+        {
+            let probe = std::sync::Arc::new(
+                awaken_session_application::ExecutionObservationProbe::default(),
+            );
+            awaken_session_application::SessionExecutionAdmission::new(
+                host.coordination()
+                    .dispatch_observation_source()
+                    .expect("original Host dispatch observation"),
+                probe.clone(),
+                host.dispatch().preparation_placement(),
+            )
+        },
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     );
     let (workspace, projected_agent) = host.capabilities().session_run_projection_callbacks();

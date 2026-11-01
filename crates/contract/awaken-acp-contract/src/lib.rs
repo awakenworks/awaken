@@ -3,6 +3,19 @@
 //!
 //! Worker applications depend on this leaf; protocol adapters implement it.
 //! The contract owns no process, repository, discovery or JSON-RPC behavior.
+//!
+//! # Boundary
+//!
+//! Context: `environment`.
+//!
+//! Implemented by: `awaken-cli`, `awaken-protocol-acp`, `awaken-run-executor-acp`,
+//! `awaken-session-executor`, `awaken-worker`.
+//!
+//! Called by: `awaken-acp-application`, `awaken-cli`, `awaken-control`,
+//! `awaken-credential-materializer`, `awaken-deployment-config`, `awaken-execution-composition`,
+//! `awaken-process-startup`, `awaken-protocol-acp`, `awaken-run-executor-acp`,
+//! `awaken-session-environment-contract`, `awaken-session-executor`, `awaken-session-mcp`,
+//! `awaken-worker`, `awaken-worker-contract`.
 
 use std::path::Path;
 

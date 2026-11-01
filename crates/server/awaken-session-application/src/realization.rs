@@ -269,12 +269,6 @@ impl SessionRealizations {
         &self.runtime_incarnation
     }
 
-    fn session_preparation_placement(
-        &self,
-    ) -> Option<&dyn awaken_session_execution_contract::SessionPreparationPlacement> {
-        self.execution_admission.placement.get().map(Arc::as_ref)
-    }
-
     /// Reproject one already-committed local Resident Environment through the
     /// same complete-projection port used by the canonical realization driver.
     /// Resident durable truth is deliberately the retry fact: Runtime owns no

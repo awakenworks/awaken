@@ -4,9 +4,28 @@
 //! The values in this crate are transport commands configured from existing
 //! publication and Session projection values. They are not a second Agent model,
 //! catalog implementation, persistence API, or RPC framework.
+//!
+//! The executable Agent snapshot is named from its owner, `awaken-runtime-contract`:
+//!
+//! ```compile_fail
+//! use awaken_executable_agent_contract::ExecutableAgentSnapshot;
+//! ```
+//!
+//! # Boundary
+//!
+//! Context: `config`.
+//!
+//! Implemented by: `awaken-config-service`, `awaken-control`, `awaken-coordinator`,
+//! `awaken-executable-agent-catalog`, `awaken-process-startup`, `awaken-protocol-managed`,
+//! `awaken-scenario-host`, `awaken-session-application`.
+//!
+//! Called by: `awaken-config-service`, `awaken-control`, `awaken-coordinator`,
+//! `awaken-deployment-application`, `awaken-executable-agent-catalog`, `awaken-plugin-composition`,
+//! `awaken-process-startup`, `awaken-protocol-managed`, `awaken-scenario-host`,
+//! `awaken-session-application`.
 
 use async_trait::async_trait;
-pub use awaken_runtime_contract::ExecutableAgentSnapshot;
+use awaken_runtime_contract::ExecutableAgentSnapshot;
 use serde::{Deserialize, Serialize};
 
 pub mod capability;

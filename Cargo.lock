@@ -2351,6 +2351,7 @@ dependencies = [
  "awaken-data-subject-store",
  "awaken-deployment-application",
  "awaken-deployment-contract",
+ "awaken-dispatch",
  "awaken-dispatch-contract",
  "awaken-dream-application",
  "awaken-env-store",
@@ -2424,6 +2425,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-data-governance-contract",
+ "awaken-dispatch",
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-contract",
@@ -3302,6 +3304,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
+ "awaken-sandbox-control",
  "awaken-tool-contract",
  "schemars 1.2.1",
  "tokio",
@@ -4017,6 +4020,8 @@ name = "awaken-worker-registry"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-sql-storage",

@@ -22,6 +22,10 @@ async fn local_projection_failure_keeps_its_provider_hint_and_failure_budget_cla
             Arc::new(NoopMcpRealizer),
             crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
+            {
+                let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+            },
             Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .configuration(SessionApplicationConfiguration {

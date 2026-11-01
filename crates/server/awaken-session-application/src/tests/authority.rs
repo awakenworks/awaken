@@ -6216,6 +6216,10 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         Arc::new(NoopMcpRealizer),
         persistence,
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .build()

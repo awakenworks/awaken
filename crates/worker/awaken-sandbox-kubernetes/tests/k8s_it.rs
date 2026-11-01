@@ -973,7 +973,7 @@ async fn terminal_control_pod_is_cleaned_without_reopening_live_control() {
     );
     desired
         .control_services
-        .insert(pc::SandboxControlServiceKind::RepositoryGitCredential);
+        .insert(awaken_sandbox_control::SandboxControlServiceKind::RepositoryGitCredential);
     let create = effect_fence(&scope, "create", "control-owner", 1);
     let original = SandboxProvider::claim_for_effect(
         &provider,

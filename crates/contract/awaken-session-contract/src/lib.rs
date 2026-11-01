@@ -38,6 +38,23 @@
 //! use awaken_session_repository_contract::SessionRepository;
 //! ```
 //!
+//!
+//! # Boundary
+//!
+//! Between the Session application and its store (aggregate, Event admission, budgets, persistence
+//! roles).
+//!
+//! Implemented by: `awaken-coordinator`, `awaken-protocol-managed`, `awaken-scenario-host`,
+//! `awaken-session-application`, `awaken-session-store`, `awaken-webhook`.
+//!
+//! Called by: `awaken-coordinator`, `awaken-coordinator-client`, `awaken-dispatch`,
+//! `awaken-dispatch-execution`, `awaken-dispatch-http`, `awaken-managed-session-events`,
+//! `awaken-process-startup`, `awaken-protocol-managed`, `awaken-protocol-managed-testkit`,
+//! `awaken-resource-worker-http`, `awaken-scenario-host`, `awaken-session-application`,
+//! `awaken-session-execution-contract`, `awaken-session-executor`, `awaken-session-mcp`,
+//! `awaken-session-realization`, `awaken-session-realization-driver`,
+//! `awaken-session-run-delivery`, `awaken-session-store`, `awaken-store-conformance`,
+//! `awaken-webhook`.
 
 #![warn(unreachable_pub)]
 

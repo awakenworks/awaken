@@ -1,4 +1,11 @@
 //! Runtime-facing contract: activation data, snapshot execution, and narrow ports.
+//!
+//! # Boundary
+//!
+//! Context: `agent-runtime`.
+//!
+//! Published SDK contract (ADR-0086): every context may read it, so its readers are not listed
+//! here; `cargo tree -e normal -i awaken-runtime-contract` prints them.
 
 pub mod activation;
 pub mod agent_bindings;

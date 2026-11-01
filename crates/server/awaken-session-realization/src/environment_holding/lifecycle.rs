@@ -359,12 +359,12 @@ impl crate::environment_holding::EnvironmentHolding {
                     crate::rebuild_source::BoundIncarnationEnd::Supervised
                 } else if domain == crate::rebuild_source::RebuildSourceDomain::WorkerProcess {
                     match self.sessions.recorded_source_end(thread, handle)? {
-                        Some(
-                            awaken_session_execution_contract::RecordedProcessEnd::ExactExit,
-                        ) => crate::rebuild_source::BoundIncarnationEnd::ExactExit,
-                        Some(
-                            awaken_session_execution_contract::RecordedProcessEnd::Superseded,
-                        ) => crate::rebuild_source::BoundIncarnationEnd::Superseded,
+                        Some(awaken_session_execution_contract::RecordedProcessEnd::ExactExit) => {
+                            crate::rebuild_source::BoundIncarnationEnd::ExactExit
+                        }
+                        Some(awaken_session_execution_contract::RecordedProcessEnd::Superseded) => {
+                            crate::rebuild_source::BoundIncarnationEnd::Superseded
+                        }
                         None => crate::rebuild_source::BoundIncarnationEnd::Unrecorded,
                     }
                 } else {

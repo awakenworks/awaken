@@ -61,6 +61,9 @@ async fn reopened(pair: &Pair) -> Handle {
 }
 
 /// Run B1/B2 with every probe instant shifted by `probe_skew_ms`.
+/// All clients and the reopened handle read the same injected store clock.
+/// Advancing that clock preserves the exact/overshoot cause table; no caller
+/// timestamp or sleep participates in claim or bearer authentication.
 async fn observe_boundary(pair: &Pair, probe_skew_ms: u64) -> BoundaryObservation {
     let env = "boundary-env";
     let work = pair
@@ -68,39 +71,23 @@ async fn observe_boundary(pair: &Pair, probe_skew_ms: u64) -> BoundaryObservatio
         .enqueue_session(env, &SessionId::from("boundary-session"))
         .await
         .unwrap();
+    pair.clock.set(5);
     assert!(
-        claim_as(&pair.a, env, "owner-first", 5, session_access_digest(21)).await,
+        claim_as(&pair.a, env, "owner-first", session_access_digest(21)).await,
         "{} C1 first claim",
         pair.label
     );
-    let first = access(&pair.a, &session_access_digest(21), 5)
+    let first = access(&pair.a, &session_access_digest(21))
         .await
         .expect("C1 first bearer");
     let expiry = first.expires_at_unix_ms;
     assert_eq!(expiry, 5 + LEASE_TTL_MS, "{} contract expiry", pair.label);
-    let early = claim_as(
-        &pair.b,
-        env,
-        "owner-early",
-        expiry - 1 + probe_skew_ms,
-        session_access_digest(22),
-    )
-    .await;
+    pair.clock.set(expiry - 1 + probe_skew_ms);
+    let early = claim_as(&pair.b, env, "owner-early", session_access_digest(22)).await;
     let reopened = reopened(pair).await;
-    let at_expiry = claim_as(
-        &reopened,
-        env,
-        "owner-boundary",
-        expiry + probe_skew_ms,
-        session_access_digest(23),
-    )
-    .await;
-    let winner = access(
-        &reopened,
-        &session_access_digest(23),
-        expiry + probe_skew_ms,
-    )
-    .await;
+    pair.clock.set(expiry + probe_skew_ms);
+    let at_expiry = claim_as(&reopened, env, "owner-boundary", session_access_digest(23)).await;
+    let winner = access(&reopened, &session_access_digest(23)).await;
     BoundaryObservation {
         held_until_the_last_millisecond: !early,
         reclaimed_at_expiry: at_expiry,
@@ -108,9 +95,7 @@ async fn observe_boundary(pair: &Pair, probe_skew_ms: u64) -> BoundaryObservatio
         epoch_advanced: winner
             .as_ref()
             .is_some_and(|w| w.lease_epoch > first.lease_epoch),
-        first_bearer_revoked: access(&pair.b, &session_access_digest(21), expiry)
-            .await
-            .is_none(),
+        first_bearer_revoked: access(&pair.b, &session_access_digest(21)).await.is_none(),
     }
 }
 

@@ -67,6 +67,10 @@ async fn external_mcp_update_preserves_the_worker_lease_and_queues_the_same_root
         local_effects.clone(),
         crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .build()
@@ -175,6 +179,10 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
         realizer.clone(),
         crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .build()
@@ -481,6 +489,10 @@ async fn assert_unkeyed_credential_renewal(legacy: bool) {
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .build()

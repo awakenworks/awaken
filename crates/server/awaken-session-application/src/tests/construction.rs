@@ -1,5 +1,28 @@
 use super::*;
 
+// The SAME recording impl belongs to App unit construction tests only. Shared
+// test-support consumers select a real Dispatch owner's feed; they cannot acquire
+// Coordinator feed authority from this observation/placement probe. Direct
+// cfg(test) matches its real compilation scope (the parent alone is insufficient
+// for the structural source guard). Counter and return body are unchanged.
+#[cfg(test)]
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchOperationalFeed for ExecutionObservationProbe {
+    async fn events_after(
+        &self,
+        cursor: awaken_dispatch_contract::DispatchCursor,
+        _limit: usize,
+        _run: Option<&awaken_agent_contract::agent::run::Id>,
+    ) -> Result<awaken_dispatch_contract::DispatchPage, awaken_dispatch_contract::DispatchError>
+    {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(awaken_dispatch_contract::DispatchPage {
+            events: Vec::new(),
+            next_cursor: cursor,
+        })
+    }
+}
+
 #[derive(Default)]
 struct ConstructionClock(AtomicUsize);
 
@@ -83,6 +106,10 @@ async fn builder_freezes_normalized_owner_and_preserves_exact_creation_replay() 
         Arc::new(NoopMcpRealizer),
         persistence,
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(SessionApplicationConfiguration {
@@ -187,6 +214,10 @@ async fn builder_enabled_retention_propagates_authority_failure_instead_of_silen
             Arc::new(NoopMcpRealizer),
             SessionPersistence::new(store.clone(), system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
+            {
+                let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+            },
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .resources(capability)
@@ -223,64 +254,6 @@ async fn builder_enabled_retention_propagates_authority_failure_instead_of_silen
                 .await
                 .unwrap();
         }
-    }
-}
-
-#[derive(Default)]
-struct ExecutionObservationProbe(AtomicUsize);
-
-#[async_trait::async_trait]
-impl awaken_dispatch_contract::DispatchOperationalFeed for ExecutionObservationProbe {
-    async fn events_after(
-        &self,
-        cursor: awaken_dispatch_contract::DispatchCursor,
-        _limit: usize,
-        _run: Option<&awaken_agent_contract::agent::run::Id>,
-    ) -> Result<awaken_dispatch_contract::DispatchPage, awaken_dispatch_contract::DispatchError>
-    {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(awaken_dispatch_contract::DispatchPage {
-            events: Vec::new(),
-            next_cursor: cursor,
-        })
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_worker_contract::WorkerObservationSource for ExecutionObservationProbe {
-    async fn list(
-        &self,
-    ) -> Result<Vec<awaken_worker_contract::RegisteredWorker>, awaken_worker_contract::RegistryError>
-    {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(Vec::new())
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_worker_contract::WorkerIncarnationSource for ExecutionObservationProbe {
-    async fn incarnation(
-        &self,
-        _identity: &awaken_worker_contract::WorkerIdentity,
-    ) -> Result<
-        Option<awaken_worker_contract::RegisteredWorker>,
-        awaken_worker_contract::RegistryError,
-    > {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(None)
-    }
-}
-
-impl awaken_session_execution_contract::SessionPreparationPlacement for ExecutionObservationProbe {
-    fn requirements(
-        &self,
-        _session: &PersistedSession,
-    ) -> Result<
-        awaken_worker_contract::PlacementRequirements,
-        awaken_session_execution_contract::SessionRealizationControlFailure,
-    > {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(awaken_worker_contract::PlacementRequirements::remote_required())
     }
 }
 
@@ -357,66 +330,17 @@ async fn builder_freezes_execution_services_and_mount_checks_reject_foreign_inst
         assert_eq!(probe.0.load(Ordering::SeqCst), 0);
         assert_eq!(foreign.0.load(Ordering::SeqCst), 0);
         assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0);
+        // P4 positive observability control AFTER the original zero-read table:
+        // the selected unit feed must increment the SAME counter and retain its
+        // cursor. A detached/no-op implementation cannot make the earlier
+        // no-effect assertions pass vacuously; the foreign instance stays unused.
+        let cursor = awaken_dispatch_contract::DispatchCursor(7);
+        let page = dispatch.events_after(cursor, 1, None).await.unwrap();
+        assert!(page.events.is_empty());
+        assert_eq!(page.next_cursor, cursor);
+        assert_eq!(probe.0.load(Ordering::SeqCst), 1);
+        assert_eq!(foreign.0.load(Ordering::SeqCst), 0);
     }
-}
-
-#[test]
-fn fixture_execution_completion_validates_existing_bindings_before_filling_missing_slots() {
-    // R1 either retained role or both retained roles mismatch -> refusal leaves
-    // every missing slot empty. R2 exact retained roles -> completion. R3 either
-    // foreign role after completion -> refusal preserves both canonical handles.
-    let probe = Arc::new(ExecutionObservationProbe::default());
-    let foreign = Arc::new(ExecutionObservationProbe::default());
-    let workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> = probe.clone();
-    let placement: Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement> =
-        probe.clone();
-    let foreign_workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource> = foreign.clone();
-    let foreign_placement: Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement> =
-        foreign.clone();
-    for (has_workers, has_placement) in [(true, false), (false, true), (true, true)] {
-        let services = SessionExecutionAdmission::fixture();
-        if has_workers {
-            assert!(services.workers.set(workers.clone()).is_ok());
-        }
-        if has_placement {
-            assert!(services.placement.set(placement.clone()).is_ok());
-        }
-        assert!(
-            services
-                .complete_fixture_worker_admission(
-                    foreign_workers.clone(),
-                    foreign_placement.clone()
-                )
-                .is_err()
-        );
-        assert_eq!(services.workers.get().is_some(), has_workers, "R1");
-        assert_eq!(services.placement.get().is_some(), has_placement, "R1");
-        assert!(
-            services
-                .complete_fixture_worker_admission(workers.clone(), placement.clone())
-                .is_ok(),
-            "R2"
-        );
-        for (roster, compiler) in [
-            (foreign_workers.clone(), placement.clone()),
-            (workers.clone(), foreign_placement.clone()),
-        ] {
-            assert!(
-                services
-                    .complete_fixture_worker_admission(roster, compiler)
-                    .is_err(),
-                "R3"
-            );
-            assert!(
-                services
-                    .verify_worker_admission(&workers, &placement)
-                    .is_ok(),
-                "R3"
-            );
-        }
-    }
-    assert_eq!(probe.0.load(Ordering::SeqCst), 0);
-    assert_eq!(foreign.0.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

@@ -38,7 +38,8 @@ async fn missing_terminal_work_preserves_successor(delayed: bool) {
     let mut dependencies = crate::SessionExecutorBuilder::ephemeral(model, "scripted")
         .await
         .with_ephemeral_dispatch(dispatch);
-    dependencies.execution.ingress = crate::RunIngress::Direct;
+    dependencies.execution.foreground_delivery =
+        awaken_deployment_config::ForegroundRunDelivery::Direct;
     let host = dependencies.build().expect("complete Host composition");
     let _managed = host.clone();
     let thread = if delayed {
@@ -199,7 +200,8 @@ async fn missing_current_terminal_work_retires_original(renew: bool) {
     let mut dependencies = crate::SessionExecutorBuilder::ephemeral(model, "scripted")
         .await
         .with_ephemeral_dispatch(dispatch);
-    dependencies.execution.ingress = crate::RunIngress::Direct;
+    dependencies.execution.foreground_delivery =
+        awaken_deployment_config::ForegroundRunDelivery::Direct;
     let host = dependencies.build().expect("complete Host composition");
     let _managed = host.clone();
     let thread = if renew {
@@ -334,7 +336,8 @@ async fn completed_terminal_projection_not_found_cancels_its_original_real_run()
     let mut dependencies = crate::SessionExecutorBuilder::ephemeral(model, "scripted")
         .await
         .with_ephemeral_dispatch(dispatch);
-    dependencies.execution.ingress = crate::RunIngress::Direct;
+    dependencies.execution.foreground_delivery =
+        awaken_deployment_config::ForegroundRunDelivery::Direct;
     let host = dependencies.build().expect("complete Host composition");
     let _managed = host.clone();
     let thread = "terminal-completed-projection";

@@ -200,6 +200,10 @@ async fn input_mount_normalization_is_shared_by_creation_and_manifest_roles() {
         Arc::new(RecordingEnvironmentSource::default()),
         Default::default(),
         Some(crate::SessionResources::catalog(registry.clone())),
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
     );
     let mut first = derived("mem-a");
     first.instructions = Some("retain exact instructions".into());

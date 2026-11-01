@@ -156,9 +156,21 @@ async fn idle_mcp_preparation_reuses_the_bound_worker_and_refuses_a_foreign_owne
         )
         .await;
         let before = repo.get(&id).await.unwrap();
-        let application = application(
-            repo.clone(),
+        let observations = Arc::new(RecordingWorkerObservations::default());
+        let application = configured_application(
+            Arc::new(NoopRuntime),
+            SessionPersistence::new(repo.clone(), system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
+            Default::default(),
+            None,
+            {
+                let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(
+                    probe.clone(),
+                    observations.clone(),
+                    Arc::new(FixtureSessionPlacement),
+                )
+            },
         );
         let target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: "worker".into(),
@@ -171,15 +183,7 @@ async fn idle_mcp_preparation_reuses_the_bound_worker_and_refuses_a_foreign_owne
             runtime_incarnation: "foreign:1:boot".into(),
             ..target.clone()
         };
-        let observations = Arc::new(RecordingWorkerObservations::default());
-        application
-            .execution_admission()
-            .set_worker_observation_source(observations.clone())
-            .unwrap();
-        application
-            .execution_admission()
-            .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
-            .unwrap();
+
         observations.replace(vec![terminal_cleanup_worker(
             &foreign,
             terminal_cleanup_manifest(),
@@ -331,26 +335,35 @@ async fn preparation_candidate_index_skips_a_saturated_live_owner_front() {
         "R1 generic live-owner front is excluded"
     );
     assert!(page.next_cursor.is_none(), "R1 no hidden candidate page");
-    let application = application(repo, Arc::new(RecordingEnvironmentSource::default()));
+    let observations = Arc::new(RecordingWorkerObservations::default());
+    let application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(repo, system_clock()),
+        Arc::new(RecordingEnvironmentSource::default()),
+        Default::default(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(
+                probe.clone(),
+                observations.clone(),
+                Arc::new(FixtureSessionPlacement),
+            )
+        },
+    );
     let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker".into(),
         runtime_incarnation: "worker:1:boot".into(),
         lease_expires_at_unix_ms: u64::MAX,
         reassign_existing_lease: false,
     };
-    let observations = Arc::new(RecordingWorkerObservations::default());
+
     observations.replace(vec![terminal_cleanup_worker(
         &target,
         terminal_cleanup_manifest(),
     )]);
-    application
-        .execution_admission()
-        .set_worker_observation_source(observations)
-        .unwrap();
-    application
-        .execution_admission()
-        .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
-        .unwrap();
+    drop(observations);
+
     let assignment = application
         .realizations
         .claim_next_session_preparation(target)
@@ -416,9 +429,21 @@ async fn preparation_claim_advances_one_candidate_page_per_poll() {
         externally_placed("z-compatible", "preparing", true),
     )
     .await;
-    let application = application(
-        repo.clone(),
+    let observations = Arc::new(RecordingWorkerObservations::default());
+    let application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(repo.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        Default::default(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(
+                probe.clone(),
+                observations.clone(),
+                Arc::new(SelectiveSessionPlacement),
+            )
+        },
     );
     let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker".into(),
@@ -426,19 +451,12 @@ async fn preparation_claim_advances_one_candidate_page_per_poll() {
         lease_expires_at_unix_ms: u64::MAX,
         reassign_existing_lease: false,
     };
-    let observations = Arc::new(RecordingWorkerObservations::default());
+
     observations.replace(vec![terminal_cleanup_worker(
         &target,
         terminal_cleanup_manifest(),
     )]);
-    application
-        .execution_admission()
-        .set_worker_observation_source(observations.clone())
-        .unwrap();
-    application
-        .execution_admission()
-        .set_session_preparation_placement(Arc::new(SelectiveSessionPlacement))
-        .unwrap();
+
     assert!(
         application
             .realizations
@@ -526,9 +544,21 @@ async fn preparation_claim_does_not_starve_unvisited_candidates_after_a_retryabl
             count > 2,
             "R1/R2 page precondition"
         );
-        let application = application(
-            repo.clone(),
+        let observations = Arc::new(RecordingWorkerObservations::default());
+        let application = configured_application(
+            Arc::new(NoopRuntime),
+            SessionPersistence::new(repo.clone(), system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
+            Default::default(),
+            None,
+            {
+                let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(
+                    probe.clone(),
+                    observations.clone(),
+                    Arc::new(FixtureSessionPlacement),
+                )
+            },
         );
         let target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: "worker".into(),
@@ -536,19 +566,13 @@ async fn preparation_claim_does_not_starve_unvisited_candidates_after_a_retryabl
             lease_expires_at_unix_ms: u64::MAX,
             reassign_existing_lease: false,
         };
-        let observations = Arc::new(RecordingWorkerObservations::default());
+
         observations.replace(vec![terminal_cleanup_worker(
             &target,
             terminal_cleanup_manifest(),
         )]);
-        application
-            .execution_admission()
-            .set_worker_observation_source(observations)
-            .unwrap();
-        application
-            .execution_admission()
-            .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
-            .unwrap();
+        drop(observations);
+
         if concurrent {
             let (left, right) = tokio::join!(
                 application
@@ -756,7 +780,7 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
     // | R4 | yes | yes | no | yes | yes | yes | yes | E2 |
     // | R5 | yes | yes | yes | no | yes | yes | yes | E2 |
     // | R6 | yes | yes | yes | yes | no | yes | yes | E2 |
-    // | R7 | yes | yes | yes | yes | yes | no | yes | unavailable |
+    // | R7 | yes | yes | yes | yes | yes | no | yes | constructor rejection |
     // | R9 | yes | yes | yes | yes | yes | yes | no | E2 |
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -789,9 +813,21 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
     // R2/R3/R5: malformed local or self-hosted run-free flags and an ordinary
     // Preparing root do not create Worker capacity demand; only R1 does.
     assert_eq!(repo.worker_demand().await.unwrap(), 1);
-    let application = application(
-        repo.clone(),
+    let observations = Arc::new(RecordingWorkerObservations::default());
+    let application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(repo.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        Default::default(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(
+                probe.clone(),
+                observations.clone(),
+                Arc::new(FixtureSessionPlacement),
+            )
+        },
     );
     let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker".into(),
@@ -799,29 +835,14 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
         lease_expires_at_unix_ms: u64::MAX,
         reassign_existing_lease: false,
     };
-    let observations = Arc::new(RecordingWorkerObservations::default());
+
     let eligible = terminal_cleanup_worker(&target, terminal_cleanup_manifest());
     observations.replace(vec![eligible.clone()]);
-    application
-        .execution_admission()
-        .set_worker_observation_source(observations.clone())
-        .unwrap();
-    assert!(
-        matches!(
-            application
-                .realizations
-                .claim_next_session_preparation(target.clone())
-                .await,
-            Err(
-                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(_)
-            )
-        ),
-        "R7 missing canonical compiler fails closed"
-    );
-    application
-        .execution_admission()
-        .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
-        .unwrap();
+
+    // R7's former partially installed App is no longer constructible. The
+    // existing missing-role E0061 control on SessionExecutionAdmission::new
+    // owns this cause; all following rows use the same Repo/Clock with the
+    // complete source selection fixed before the App is shared.
 
     let mut incapable = eligible.clone();
     incapable.snapshot.manifest.capacity.max_concurrent = 0;
@@ -927,9 +948,21 @@ async fn preparation_rechecks_worker_capability_after_root_assignment() {
             .unwrap(),
     );
     create(repo.as_ref(), externally_placed("race", "preparing", true)).await;
-    let application = application(
-        repo.clone(),
+    let observations = Arc::new(RecordingWorkerObservations::default());
+    let application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(repo.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        Default::default(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(
+                probe.clone(),
+                observations.clone(),
+                Arc::new(FixtureSessionPlacement),
+            )
+        },
     );
     let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker".into(),
@@ -941,19 +974,13 @@ async fn preparation_rechecks_worker_capability_after_root_assignment() {
     let mut withdrawn = eligible.clone();
     withdrawn.snapshot.manifest.capacity.max_concurrent = 0;
     withdrawn.snapshot.capability_fingerprint = withdrawn.snapshot.manifest.fingerprint().unwrap();
-    let observations = Arc::new(RecordingWorkerObservations::default());
+
     observations.script([
         WorkerObservationStep::Workers(vec![eligible]),
         WorkerObservationStep::Workers(vec![withdrawn]),
     ]);
-    application
-        .execution_admission()
-        .set_worker_observation_source(observations)
-        .unwrap();
-    application
-        .execution_admission()
-        .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
-        .unwrap();
+    drop(observations);
+
     assert!(
         application
             .realizations
@@ -1003,12 +1030,23 @@ async fn idle_unpublished_mcp_failures_end_by_class_and_budget() {
         root.mcp.attachments[0].state = crate::session_mcp::McpAttachmentState::Active;
         root.mcp.attachments[0].publication_acknowledged = false;
         create(repo.as_ref(), root).await;
-        let application = application_with_configuration(
-            repo.clone(),
+        let observations = Arc::new(RecordingWorkerObservations::default());
+        let application = configured_application(
+            Arc::new(NoopRuntime),
+            SessionPersistence::new(repo.clone(), system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
             SessionApplicationConfiguration {
                 realization_retry_budget: 2,
                 ..Default::default()
+            },
+            None,
+            {
+                let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(
+                    probe.clone(),
+                    observations.clone(),
+                    Arc::new(FixtureSessionPlacement),
+                )
             },
         );
         let target = awaken_session_execution_contract::SessionRealizationTarget {
@@ -1017,19 +1055,13 @@ async fn idle_unpublished_mcp_failures_end_by_class_and_budget() {
             lease_expires_at_unix_ms: u64::MAX,
             reassign_existing_lease: false,
         };
-        let observations = Arc::new(RecordingWorkerObservations::default());
+
         observations.replace(vec![terminal_cleanup_worker(
             &target,
             terminal_cleanup_manifest(),
         )]);
-        application
-            .execution_admission()
-            .set_worker_observation_source(observations)
-            .unwrap();
-        application
-            .execution_admission()
-            .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
-            .unwrap();
+        drop(observations);
+
         // The per-incarnation cursor advances past an examined root and wraps
         // on a later poll, so one claim may take up to two polls.
         let claim = |target: awaken_session_execution_contract::SessionRealizationTarget| {
@@ -1138,9 +1170,21 @@ async fn preparation_closes_its_unissued_lease_when_the_worker_starts_draining()
         externally_placed("drain-race", "preparing", true),
     )
     .await;
-    let application = application(
-        repo.clone(),
+    let observations = Arc::new(RecordingWorkerObservations::default());
+    let application = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(repo.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        Default::default(),
+        None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(
+                probe.clone(),
+                observations.clone(),
+                Arc::new(FixtureSessionPlacement),
+            )
+        },
     );
     let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker".into(),
@@ -1151,19 +1195,13 @@ async fn preparation_closes_its_unissued_lease_when_the_worker_starts_draining()
     let eligible = terminal_cleanup_worker(&target, terminal_cleanup_manifest());
     let mut draining = eligible.clone();
     draining.snapshot.state = awaken_worker_contract::WorkerState::Draining;
-    let observations = Arc::new(RecordingWorkerObservations::default());
+
     observations.script([
         WorkerObservationStep::Workers(vec![eligible]),
         WorkerObservationStep::Workers(vec![draining]),
     ]);
-    application
-        .execution_admission()
-        .set_worker_observation_source(observations)
-        .unwrap();
-    application
-        .execution_admission()
-        .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
-        .unwrap();
+    drop(observations);
+
     assert!(
         application
             .realizations

@@ -450,14 +450,26 @@ mod tests {
         let restored_runtimes = runtime.restored_runtimes.clone();
         let restored_inputs = runtime.restored.clone();
         let runtime = Arc::new(runtime);
+        let admission_clock = awaken_time::system_clock();
         let environments =
-            awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock())
-                .execution;
+            awaken_protocol_managed_testkit::environment_fixture(admission_clock.clone()).execution;
         let application = awaken_session_application::SessionApplicationBuilder::fixture(
             runtime.clone(),
             runtime,
-            awaken_session_application::SessionPersistence::new(repo, awaken_time::system_clock()),
+            awaken_session_application::SessionPersistence::new(repo, admission_clock.clone()),
             environments.clone(),
+            {
+                let probe = std::sync::Arc::new(
+                    awaken_session_application::ExecutionObservationProbe::default(),
+                );
+                awaken_session_application::SessionExecutionAdmission::new(
+                    std::sync::Arc::new(awaken_dispatch::MemoryDispatchStore::new(
+                        admission_clock.clone(),
+                    )),
+                    probe.clone(),
+                    probe,
+                )
+            },
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
         .configuration(

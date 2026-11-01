@@ -785,15 +785,15 @@ fn session_agent_boundary_requires_a_visible_committed_target() {
     );
 }
 
-use awaken_session_contract::{
-    SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyActivity,
-    SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery, SessionThreadToolReplyFence,
-};
+use awaken_session_contract::{SessionThreadTarget, SessionThreadToolReplyCommand};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::Id as MessageId;
+    use awaken_session_contract::{
+        SessionThreadToolReply, SessionThreadToolReplyActivity, SessionThreadToolReplyFence,
+    };
 
     #[test]
     fn reply_activity_preserves_dispatch_ownership() {

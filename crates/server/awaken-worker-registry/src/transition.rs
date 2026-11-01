@@ -425,7 +425,7 @@ mod tests {
     fn heartbeat_replaces_the_live_credential_observation_set() {
         let (first, _) = register(None, FRESH, registration("boot-1"), 10, 100).unwrap();
         let identity = first.snapshot.identity.clone();
-        let credential = awaken_worker_contract::WorkerCredentialRevision {
+        let credential = awaken_agent_contract::credential::CredentialRef {
             id: "cred:worker".into(),
             revision: 3,
         };
@@ -484,7 +484,7 @@ mod tests {
         current.observation_sequence = 9;
         let identity = current.snapshot.identity.clone();
         let observation = awaken_worker_contract::WorkerCredentialObservation::available(
-            awaken_worker_contract::WorkerCredentialRevision {
+            awaken_agent_contract::credential::CredentialRef {
                 id: "cred:worker".into(),
                 revision: 1,
             },

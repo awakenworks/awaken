@@ -123,6 +123,10 @@ async fn worker_retirement_requires_each_exact_source_to_prove_retention_itself(
                 ..Default::default()
             },
             None,
+            {
+                let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+            },
         );
         let mut report = BTreeSet::new();
         let (result, subjects) = qualify_retirement(&app, &identity, |subjects| {

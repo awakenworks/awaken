@@ -111,9 +111,16 @@ async fn composition_rejects_started_dispatch_before_binding_applications() {
                     clock.clone(),
                 ),
                 awaken_protocol_managed_testkit::environment_fixture(clock).execution,
-                awaken_session_application::SessionExecutionAdmission::fixture_with_dispatch(
-                    host.coordination().dispatch_observation_source().unwrap(),
-                ),
+                {
+                    let probe = std::sync::Arc::new(
+                        awaken_session_application::ExecutionObservationProbe::default(),
+                    );
+                    awaken_session_application::SessionExecutionAdmission::new(
+                        host.coordination().dispatch_observation_source().unwrap(),
+                        probe.clone(),
+                        probe,
+                    )
+                },
                 Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             )
             .build()

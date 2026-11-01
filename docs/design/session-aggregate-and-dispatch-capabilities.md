@@ -445,6 +445,6 @@ The eight execution roles carry responsibility names: `SessionRuns`,
 `StreamingRuns`, `ChildRunCoordination`, `ThreadReads`, `Outcomes`,
 `BudgetAccounting`, `TerminalCleanup` and `LiveInboxAccess`
 ([`awaken-session-execution-contract`](../../crates/contract/awaken-session-execution-contract/src/session/roles.rs));
-the rename awaits the batched verification. The deployment `RunIngress` enum has
-no approved replacement name yet. Responsibility boundaries are reviewed as
+the rename awaits the batched verification. The deployment enum that chooses
+durable foreground delivery is `ForegroundRunDelivery` (formerly `RunIngress`). Responsibility boundaries are reviewed as
 callers settle; function length alone requires no split.

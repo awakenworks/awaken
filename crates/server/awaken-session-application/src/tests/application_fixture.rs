@@ -19,6 +19,10 @@ pub(super) fn application_with_runtime(
         environments,
         Default::default(),
         None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
     )
 }
 
@@ -28,12 +32,14 @@ pub(super) fn configured_application(
     environments: impl Into<SessionEnvironments>,
     configuration: SessionApplicationConfiguration,
     resources: Option<SessionResources>,
+    execution: SessionExecutionAdmission,
 ) -> SessionApplication {
     let builder = SessionApplicationBuilder::fixture(
         runtime,
         Arc::new(NoopMcpRealizer),
         persistence,
         environments,
+        execution,
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(configuration);
@@ -56,6 +62,10 @@ pub(super) fn application_with_configuration(
         environments,
         configuration,
         None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
     )
 }
 
@@ -69,6 +79,10 @@ pub(super) fn application_with_persistence(
         Arc::new(RecordingEnvironmentSource::default()),
         Default::default(),
         None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
     )
 }
 

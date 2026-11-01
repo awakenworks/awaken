@@ -2,16 +2,7 @@
 
 from __future__ import annotations
 
-from typing import NamedTuple
-
-
-class CrateSpec(NamedTuple):
-    name: str
-    normal_deps: frozenset[str]
-    context: str
-    layer: str
-    authority: str
-    public_first_party_reexports: frozenset[str]
+from _crate_dependency_fitness import CrateSpec
 
 
 CONTRACT_FORBIDDEN_DEPS = frozenset(
@@ -66,10 +57,14 @@ def check_all(specs: list[CrateSpec]) -> list[str]:
 def selftest() -> None:
     """Cause/effect table: contract backends are rejected; non-contract and owned
     exports are accepted; runtime-host and interface first-party facades fail."""
-    c = lambda n, l, d=frozenset(), r=frozenset(): CrateSpec(n, d, "runtime", l, n, r)
+    c = lambda n, l, d=frozenset(), r=frozenset(): CrateSpec(n, "runtime", l, n, d, public_first_party_reexports=r)
     assert contract_purity_violations(c("contract", "contract", frozenset({"sqlx"}))), "R1"
     assert contract_purity_violations(c("application", "application", frozenset({"tokio"}))) == [], "R2"
-    assert runtime_host_facade_violations(CrateSpec("awaken-session-executor", frozenset(), "runtime", "application", "runtime", frozenset({"awaken-runtime"}))), "R5"
+    assert runtime_host_facade_violations(CrateSpec("awaken-session-executor", "runtime", "application", "runtime", frozenset(), public_first_party_reexports=frozenset({"awaken-runtime"}))), "R5"
     assert interface_facade_violations(
-        CrateSpec("wire", frozenset(), "coordinator", "interface", "wire", frozenset({"owner"}))
+        CrateSpec("wire", "coordinator", "interface", "wire", frozenset(), public_first_party_reexports=frozenset({"owner"}))
     ), "R6"
+    # DTO1: Arch and dependency rules receive the same canonical DTO. A
+    # parallel class fails even when its five common values happen to match.
+    from _crate_dependency_fitness import CrateSpec as CanonicalCrateSpec
+    assert CrateSpec is CanonicalCrateSpec, "DTO1 one canonical crate model"

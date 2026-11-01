@@ -56,12 +56,26 @@ def _reviewed_ranges(syntax: str) -> list[tuple[int, int]]:
     """Body spans of the fn items annotated with the reviewed std-lock expect."""
     ranges: list[tuple[int, int]] = []
     for attribute in REVIEWED_STD_LOCK.finditer(syntax):
-        item = FN_ITEM.search(syntax, attribute.end())
-        if item is None:
+        cursor = _crate_boundary_workspace._outer_attribute_end(syntax, attribute.start())
+        if cursor is None:
             continue
-        brace = syntax.find("{", item.end())
-        end = _crate_boundary_workspace._balanced_end(syntax, brace, "{", "}") if brace >= 0 else None
-        if end is not None:
+        # Attributes belong to the immediately following item. Keep stacked
+        # attributes, but never search past a const or bodyless declaration.
+        while cursor < len(syntax):
+            if syntax[cursor].isspace():
+                cursor += 1
+            elif syntax[cursor] == "#":
+                following = _crate_boundary_workspace._outer_attribute_end(syntax, cursor)
+                if following is None:
+                    break
+                cursor = following
+            else:
+                break
+        end = _crate_boundary_workspace._rust_item_end(syntax, cursor)
+        if end is None or syntax[end - 1] != "}":
+            continue
+        item = FN_ITEM.search(syntax, cursor, end)
+        if item is not None and _crate_boundary_workspace._rust_item_end(syntax, item.start()) == end:
             ranges.append((attribute.start(), end))
     return ranges
 
@@ -158,6 +172,28 @@ def selftest() -> None:
     )
     assert poisoned_lock_violations({path: reviewed}) == [], "P11"
     assert len(poisoned_lock_violations({path: reviewed + forbidden})) == 2, "P12"
+
+    # P13-P17 item-ownership causes/effects: a reviewed bodyless trait fn (P13)
+    # or an attribute on a const (P14) cannot lend its exemption to the next fn.
+    # P15 real function header const-expression braces are not its body end;
+    # P16 stacked attributes/modifiers keep the SAME reviewed function, while
+    # P17 unclosed/bodyless items never authorize a following lock unwrap.
+    # Reuse the original L1/L2 oracle and reviewed attribute, not a second lexer
+    # or a spelling-only assertion. Each unreviewed body below has one L1 site.
+    attribute = reviewed[:reviewed.index("fn state")]
+    adjacent = "fn next(lock: &awaken_sync::InvariantLock<()>) { let _guard = lock.lock().unwrap(); }"
+    for rule, source in (
+        ("P13 trait declaration", "trait T { " + attribute + "fn state(&self); " + adjacent + " }"),
+        ("P14 const owns no following fn", attribute + "const MARKER: usize = 1; " + adjacent),
+        ("P17 bodyless const header", "trait T { " + attribute + "fn state(&self, _: [u8; { 1 }]); " + adjacent + " }"),
+    ):
+        assert len(poisoned_lock_violations({path: source})) == 1, rule
+    for rule, source in (
+        ("P15 const header body", attribute + "fn state<const N: usize>(&self, _: [u8; { 1 }]) -> G { self.state.lock().expect(\"state lock poisoned\") }"),
+        ("P16 stacked attributes", attribute + "#[inline] pub(crate) async unsafe fn state(&self) -> G { self.state.lock().expect(\"state lock poisoned\") }"),
+    ):
+        assert poisoned_lock_violations({path: source}) == [], rule
+        assert len(poisoned_lock_violations({path: source + adjacent})) == 1, rule + " exact item only"
 
     # P3/P9: discovery follows Cargo manifests; only the sync crate is outside.
     import tempfile

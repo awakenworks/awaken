@@ -28,6 +28,8 @@ use {
 pub use awaken_session_execution_contract::SessionExecutor;
 
 mod execution_admission;
+#[cfg(any(test, feature = "test-support"))]
+pub use execution_admission::ExecutionObservationProbe;
 pub use execution_admission::SessionExecutionAdmission;
 mod agent_configuration;
 pub use agent_configuration::{SessionRecoveryPurpose, agent_configuration_from_profile};

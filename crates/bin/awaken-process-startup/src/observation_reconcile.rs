@@ -112,9 +112,10 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    use awaken_agent_contract::credential::CredentialRef;
     use awaken_worker_contract::{
-        RegistryMutation, WorkerCredentialObservation, WorkerCredentialRevision, WorkerHeartbeat,
-        WorkerManifest, WorkerRegistration,
+        RegistryMutation, WorkerCredentialObservation, WorkerHeartbeat, WorkerManifest,
+        WorkerRegistration,
     };
 
     struct FlakySource(AtomicBool);
@@ -254,7 +255,7 @@ mod tests {
         let identity = registered.snapshot.identity;
         let evidence = |revision| {
             [WorkerCredentialObservation::available(
-                WorkerCredentialRevision {
+                CredentialRef {
                     id: "credential-a".into(),
                     revision,
                 },

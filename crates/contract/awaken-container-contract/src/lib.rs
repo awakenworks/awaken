@@ -17,6 +17,20 @@
 //! result.validate().unwrap();
 //! let _ = CreateReplyProfile::WholeJoin.encode_body(&RequestJoin::Unknown).unwrap();
 //! ```
+//!
+//! # Boundary
+//!
+//! Context: `environment`.
+//!
+//! Implemented by: `awaken-package-image`, `awaken-sandbox-container`,
+//! `awaken-worker-fleet-kubernetes`.
+//!
+//! Called by: `awaken-coordinator`, `awaken-deployment-config`,
+//! `awaken-environment-package-image-builder`, `awaken-execution-composition`,
+//! `awaken-package-image`, `awaken-process-startup`, `awaken-sandbox-container`,
+//! `awaken-sandbox-kubernetes`, `awaken-session-environment`,
+//! `awaken-session-environment-contract`, `awaken-session-mcp`, `awaken-worker`,
+//! `awaken-worker-fleet-kubernetes`.
 
 mod create;
 mod create_broker;

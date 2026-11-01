@@ -1,8 +1,8 @@
 use super::*;
 use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
 use awaken_deployment_config::{
-    DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,
-    RunIngress,
+    DispatchPoolSizing, ExecutionTopology, ForegroundRunDelivery, LeaseOwnerId, LocalExecution,
+    QueueDepthSource,
 };
 use awaken_dispatch_contract::DispatchEnqueue as _;
 use awaken_dispatch_execution::{DispatchHint, DispatchWorker, ProcessDispatchLifecycle as _};
@@ -112,7 +112,7 @@ fn fixture(
     let owner = Arc::new(AnyCoordinatorDispatch::from_durable_dispatch(store.clone()));
     let dispatch = Arc::new(ProcessDispatch::new(
         ExecutionTopology {
-            ingress: RunIngress::Durable,
+            foreground_delivery: ForegroundRunDelivery::Durable,
             local: if local {
                 LocalExecution::InProcessPool(DispatchPoolSizing::LocalParallelism(
                     std::num::NonZeroUsize::new(1).unwrap(),

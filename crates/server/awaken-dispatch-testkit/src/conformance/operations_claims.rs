@@ -583,7 +583,7 @@ async fn local_claims_skip_remote_only_work(
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
-    let required_credential = WorkerCredentialRevision {
+    let required_credential = CredentialRef {
         id: format!("{ns}-worker-credential"),
         revision: 7,
     };

@@ -24,6 +24,13 @@
 //!
 //! This crate belongs to the Runtime SDK and is a depth-0 contract leaf: it
 //! depends on no crate.
+//!
+//! # Boundary
+//!
+//! Context: `agent-runtime`.
+//!
+//! Published SDK contract (ADR-0086): every context may read it, so its readers are not listed
+//! here; `cargo tree -e normal -i awaken-sync` prints them.
 
 #![warn(unreachable_pub)]
 #![expect(

@@ -161,6 +161,14 @@ many ADRs, and some of them pull the code apart. Measured on main `14ef08382e`:
    Source-location and assertion anchors still have to identify the exact code
    they describe; those evidence checks are independent of file-size metrics.
 
+   **Dependency counts are diagnostic (2026-11-01 user decision).** A registered
+   crate dependency count growing or shrinking emits a warning with the old and
+   new counts; equality is silent. The number does not block code admission.
+   Required review reasons and registered crate presence remain hard, as do
+   dependency direction, cycles, purity and actual production-use checks.
+   Default/check stays read-only; tighten only lowers records; explicitly raising
+   a recorded count still requires the four-field review record below.
+
    **Crate line ceilings are approved allowances (2026-10-31).** Every crate holds
    an approved line ceiling in `scripts/ci/modularity_baseline.json`
    `crate-line-ceiling`: its functional lines (comments, blank lines and

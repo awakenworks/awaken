@@ -250,6 +250,10 @@ async fn selected_profile_port_reads_the_live_handle_and_custom_delegate_without
         Arc::new(NoopMcpRealizer),
         SessionPersistence::new(repository.clone(), system_clock()),
         environment.clone(),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .agent_profiles(source.clone())

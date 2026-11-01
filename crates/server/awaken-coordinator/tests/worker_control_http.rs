@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::credential::CredentialRef;
 use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_coordinator_client::HttpDispatchQueue;
@@ -24,8 +25,8 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_store_inmem::MemoryStreamCheckpointStore;
 use awaken_worker_registry::{
-    MemoryWorkerDirectory, RegistryMutation, WorkerCredentialObservation, WorkerCredentialRevision,
-    WorkerHeartbeat, WorkerManifest, WorkerState,
+    MemoryWorkerDirectory, RegistryMutation, WorkerCredentialObservation, WorkerHeartbeat,
+    WorkerManifest, WorkerState,
 };
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, WorkerUpstream,
@@ -211,7 +212,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
     let identity = registered.worker.snapshot.identity;
 
     clock.set(110);
-    let observed = WorkerCredentialRevision {
+    let observed = CredentialRef {
         id: "cred:worker".into(),
         revision: 9,
     };
@@ -525,7 +526,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     // its own clock, so this test drives both authorities to the same reading.
     let dispatch_clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(100));
     let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
-    let required = WorkerCredentialRevision {
+    let required = CredentialRef {
         id: "credential-source-worker-private".to_string(),
         revision: 12,
     };
@@ -558,7 +559,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     async fn ready_worker(
         address: std::net::SocketAddr,
         worker_id: &str,
-        credential: WorkerCredentialRevision,
+        credential: CredentialRef,
     ) -> awaken_worker_registry::WorkerIdentity {
         let control = WorkerControlClient::new(
             WorkerUpstream::new(format!("http://{address}")).with_worker_id(worker_id),
@@ -596,7 +597,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     let wrong = ready_worker(
         address,
         "worker-wrong-revision",
-        WorkerCredentialRevision {
+        CredentialRef {
             id: required.id.clone(),
             revision: required.revision - 1,
         },
@@ -641,7 +642,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                     in_flight: 0,
                     warm_environment_shapes: Default::default(),
                     credential_observations: [WorkerCredentialObservation::available(
-                        WorkerCredentialRevision {
+                        CredentialRef {
                             id: "credential-source-worker-private".to_string(),
                             revision: 12,
                         },
@@ -676,7 +677,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         .await
         .unwrap();
 
-    let rotated = WorkerCredentialRevision {
+    let rotated = CredentialRef {
         id: required.id,
         revision: required.revision + 1,
     };
@@ -743,7 +744,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                     in_flight: 0,
                     warm_environment_shapes: Default::default(),
                     credential_observations: [WorkerCredentialObservation::available(
-                        WorkerCredentialRevision {
+                        CredentialRef {
                             id: "credential-source-worker-private".into(),
                             revision: 12,
                         },

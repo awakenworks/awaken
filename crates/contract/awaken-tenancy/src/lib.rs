@@ -31,6 +31,17 @@
 //! ```compile_fail
 //! use awaken_tenancy::ScopeId;
 //! ```
+//!
+//! # Boundary
+//!
+//! Context: `access`.
+//!
+//! Implemented by: `awaken-authz-enforce`.
+//!
+//! Called by: `awaken-admin-config-api`, `awaken-agent-config`, `awaken-authz-enforce`,
+//! `awaken-control`, `awaken-coordinator`, `awaken-process-startup`, `awaken-protocol-a2a`,
+//! `awaken-protocol-ag-ui`, `awaken-protocol-ai-sdk`, `awaken-protocol-awaken`,
+//! `awaken-protocol-managed`, `awaken-scenario-host`.
 
 // The coordinate itself is a Runtime SDK value (ADR-0086 §6): the engine carries
 // it as a label and never interprets it. Callers name it from

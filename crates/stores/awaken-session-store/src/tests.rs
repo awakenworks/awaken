@@ -1437,13 +1437,21 @@ async fn sqlite_original_history_converges_without_a_parallel_session_model() {
     migrate_fixture(&conn, NS, &original_published_session_bundle().unwrap()).await;
     let mut legacy = sample("legacy-lineage");
     legacy.revision = SessionRevision(1);
+    // M2 is genuinely pre-envelope and omits the historical retention fact.
+    // The canonical owner supplies its sole default during operational open;
+    // the current envelope written back and the next reopen stay byte-stable.
+    let mut published = serde_json::to_value(&legacy).unwrap();
+    published["baseline"]["environment"]
+        .as_object_mut()
+        .unwrap()
+        .remove("idle_retention");
     sqlx::query(
         "INSERT INTO managed_session \
             (session_id,agent_id,model,title,metadata_json,environment_id,mcp_json,scope_id,revision,aggregate_json) \
          VALUES (?1,'legacy-agent','legacy-model',NULL,'{}','legacy-env','[]','legacy-space',1,?2)",
     )
     .bind(legacy.session_id.as_str())
-    .bind(serde_json::to_string(&legacy).unwrap())
+    .bind(published.to_string())
     .execute(&conn)
     .await
     .unwrap();
@@ -1501,6 +1509,25 @@ async fn sqlite_original_history_converges_without_a_parallel_session_model() {
             .await
             .unwrap();
     assert_eq!(foreign_key_errors, 0, "E3");
+    let written: serde_json::Value = serde_json::from_str(&canonical).unwrap();
+    assert_eq!(
+        written["aggregate"]["baseline"]["environment"]["idle_retention"],
+        serde_json::to_value(&legacy.frozen_baseline().unwrap().environment.idle_retention)
+            .unwrap(),
+        "M2 canonical policy persisted"
+    );
+    repo.close().await;
+    let reopened = SqliteManagedSessionRepository::open(&path).await.unwrap();
+    assert_eq!(
+        reopened.get(&legacy.session_id).await.unwrap(),
+        legacy,
+        "M2 reopen"
+    );
+    assert_eq!(
+        stored_sqlite_aggregate(&reopened.pool, legacy.session_id.as_str()).await,
+        canonical,
+        "M2 normalization is written exactly once"
+    );
 }
 
 #[tokio::test]

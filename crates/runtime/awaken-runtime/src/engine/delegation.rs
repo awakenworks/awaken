@@ -469,7 +469,7 @@ pub(super) async fn resume_delegation(
         return super::finalize::finish_with_reader(
             runtime,
             context,
-            Some(reader),
+            super::finalize::TerminalStateRead::Committed(reader),
             thread_id,
             run_id.clone(),
             RunStepResult::ended_with_messages(

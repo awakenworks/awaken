@@ -81,6 +81,10 @@ async fn observe(
             ..Default::default()
         },
         None,
+        {
+            let probe = Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
     );
     // The Worker reports every subject it was given as retained.
     let (result, subjects) =

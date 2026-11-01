@@ -16,9 +16,9 @@ pub use awaken_worker_contract::{
     ExecutionLocation, FleetReadiness, LeastLoadedPolicy, PlacementContext, PlacementError,
     PlacementPolicy, PlacementRequirements, RankedWorker, RegisteredWorker, RegistryError,
     RegistryMutation, WorkerAcpCapabilityObservation, WorkerAcpCapabilityRequirement,
-    WorkerAssignment, WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState,
-    WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource,
-    WorkerRegistration, WorkerSnapshot, WorkerState, fleet_readiness, place, place_assignment,
+    WorkerAssignment, WorkerCredentialObservation, WorkerDirectory, WorkerHeartbeat,
+    WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRegistration, WorkerSnapshot,
+    WorkerState, fleet_readiness, place, place_assignment,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use memory::MemoryWorkerDirectory;

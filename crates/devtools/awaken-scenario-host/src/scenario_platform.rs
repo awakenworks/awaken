@@ -205,7 +205,6 @@ pub(super) async fn mount_with_environments_and_agent_source(
             .await
         }
     };
-    let host = managed.host.clone();
     let work_session_access = awaken_protocol_managed::ManagedWorkSessionAccess::new(
         environment_execution.session_access(),
         managed.state.managed.clone(),

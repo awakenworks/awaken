@@ -7,10 +7,12 @@
 use awaken_dispatch_contract::DispatchOperationalFeed;
 use awaken_session_execution_contract::SessionPreparationPlacement;
 use awaken_worker_contract::WorkerIncarnationSource;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 /// The dispatch feed, exact Registry reads and placement compiler used by one process.
-/// Every production construction supplies the complete value.
+/// Every construction supplies the complete value before the App is shared.
+/// Test-support callers may explicitly select the existing recording Probe;
+/// this value carries read observations and a pure compiler, not execution rights.
 ///
 /// ```compile_fail,E0061
 /// use std::sync::Arc;
@@ -53,10 +55,15 @@ use std::sync::{Arc, OnceLock};
 /// ```
 #[cfg_attr(not(feature = "test-support"), doc = include_str!("execution_admission_production.md"))]
 pub struct SessionExecutionAdmission {
-    pub(super) dispatch: OnceLock<Arc<dyn DispatchOperationalFeed>>,
-    pub(super) workers: OnceLock<Arc<dyn WorkerIncarnationSource>>,
-    pub(super) placement: OnceLock<Arc<dyn SessionPreparationPlacement>>,
+    pub(super) dispatch: Arc<dyn DispatchOperationalFeed>,
+    pub(super) workers: Arc<dyn WorkerIncarnationSource>,
+    pub(super) placement: Arc<dyn SessionPreparationPlacement>,
 }
+
+#[cfg(any(test, feature = "test-support"))]
+mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub use test_support::ExecutionObservationProbe;
 
 impl SessionExecutionAdmission {
     #[must_use]
@@ -66,58 +73,10 @@ impl SessionExecutionAdmission {
         placement: Arc<dyn SessionPreparationPlacement>,
     ) -> Self {
         Self {
-            dispatch: OnceLock::from(dispatch),
-            workers: OnceLock::from(workers),
-            placement: OnceLock::from(placement),
+            dispatch,
+            workers,
+            placement,
         }
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    /// Explicit partial admission for test/scenario composition only.
-    pub fn fixture() -> Self {
-        Self {
-            dispatch: OnceLock::new(),
-            workers: OnceLock::new(),
-            placement: OnceLock::new(),
-        }
-    }
-
-    /// Partial scenario assembly; production cannot construct missing services.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn fixture_with_dispatch(dispatch: Arc<dyn DispatchOperationalFeed>) -> Self {
-        Self {
-            dispatch: OnceLock::from(dispatch),
-            ..Self::fixture()
-        }
-    }
-
-    #[cfg(test)]
-    pub fn set_worker_observation_source(
-        &self,
-        source: Arc<dyn WorkerIncarnationSource>,
-    ) -> Result<(), &'static str> {
-        self.workers
-            .set(source)
-            .map_err(|_| "Worker observation source is already installed")
-    }
-    #[cfg(test)]
-    pub fn set_dispatch_observation_source(
-        &self,
-        source: Arc<dyn DispatchOperationalFeed>,
-    ) -> Result<(), &'static str> {
-        self.dispatch
-            .set(source)
-            .map_err(|_| "Session dispatch observation source is already installed")
-    }
-    #[cfg(test)]
-    pub fn set_session_preparation_placement(
-        &self,
-        source: Arc<dyn SessionPreparationPlacement>,
-    ) -> Result<(), &'static str> {
-        self.placement
-            .set(source)
-            .map_err(|_| "Session preparation placement is already installed")
     }
 
     pub fn verify_dispatch(
@@ -147,36 +106,12 @@ impl SessionExecutionAdmission {
             "Session preparation compiler differs from the canonical Host",
         )
     }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn complete_fixture_worker_admission(
-        &self,
-        workers: Arc<dyn WorkerIncarnationSource>,
-        placement: Arc<dyn SessionPreparationPlacement>,
-    ) -> Result<(), &'static str> {
-        // Refuse an existing mismatch before filling either missing slot.
-        if self
-            .workers
-            .get()
-            .is_some_and(|actual| !Arc::ptr_eq(actual, &workers))
-            || self
-                .placement
-                .get()
-                .is_some_and(|actual| !Arc::ptr_eq(actual, &placement))
-        {
-            return Err("fixture Worker admission differs from its existing bindings");
-        }
-        self.workers.get_or_init(|| workers.clone());
-        self.placement.get_or_init(|| placement.clone());
-        self.verify_worker_admission(&workers, &placement)
-    }
 }
 
 impl SessionExecutionAdmission {
-    /// The frozen projection a realization directive carries, with the Worker
-    /// Registry's recorded end of the incarnation holding the Resident source
-    /// (`BoundSourceEnd::read`). Only the canonical Registry reader installed
-    /// here may supply it; without one the end stays unrecorded.
+    /// Read the canonical Registry's recorded end of the incarnation holding
+    /// the Resident source. Construction has already selected the exact reader;
+    /// an unrecorded end remains an observation result, never a missing role.
     pub(crate) async fn projection_for_worker(
         &self,
         queries: &crate::SessionQueries,
@@ -191,23 +126,18 @@ impl SessionExecutionAdmission {
             .frozen_runtime_projection(owner_scope, session, true, activate_pending_resources)
             .await
             .map_err(crate::realization::unavailable)?;
-        if let Some(workers) = self.workers.get() {
-            projection.bound_source_end =
-                awaken_session_execution_contract::BoundSourceEnd::read(session, workers.as_ref())
-                    .await
-                    .map_err(crate::realization::unavailable)?;
-        }
+        projection.bound_source_end =
+            awaken_session_execution_contract::BoundSourceEnd::read(session, self.workers.as_ref())
+                .await
+                .map_err(crate::realization::unavailable)?;
         Ok(projection)
     }
 }
 
 fn require_same<T: ?Sized>(
-    slot: &OnceLock<Arc<T>>,
+    actual: &Arc<T>,
     expected: &Arc<T>,
     error: &'static str,
 ) -> Result<(), &'static str> {
-    slot.get()
-        .filter(|actual| Arc::ptr_eq(actual, expected))
-        .map(|_| ())
-        .ok_or(error)
+    Arc::ptr_eq(actual, expected).then_some(()).ok_or(error)
 }

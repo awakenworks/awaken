@@ -370,6 +370,55 @@ Windows/MSVC checks run where a Windows host exists. Source candidates, bound
 runtime results, normal commits, protected fast-forwards and full13
 qualification are separate claims.
 
+- **Linux Rust / normal source (2026-11-01).** `bash scripts/ci/check-rust.sh --full`
+  recorded 10,419 passed / 134 skipped, both Clippy passes and doctests;
+  `check_public_api.sh`, `check_sdk_semver.py` (24-package floor), generated
+  contracts and docs passed for the recorded V0 source, followed by normal
+  commit and protected FF `1f3dc486ad39`. This is neither a full13 receipt nor
+  validation of the later V4/G working source.
+- **Required PostgreSQL follow-up.** The initial MinIO 401 was resolved with the
+  same-version official binary/local repack; the subsequent full `pg_tests.sh`
+  still exited 1 on four direct-execution `object_store_tests.sh` permission
+  failures and the ignored Memory rename-author product gap, while PITR,
+  immutable-object restoration and cleanup exited 0. The shell caller repair
+  alone was normally committed and fast-forwarded as `398549b2028b`; it does
+  not relabel the failed PG run as passed.
+- **Memory rename-author repair (`1037e0bd8287`).** The original ignored
+  regression actually failed with missing author; the sole `rename_as` path
+  now forwards the caller through all three backends and the existing
+  invalidating decorator. After correcting both macro-generated callers,
+  `check-rust.sh --full` passed 10,420 tests / 133 original skips, both Clippy
+  passes and doctests; `pg_tests.sh --require-docker`, all S3 credential phases,
+  PITR, owned cleanup, API, contracts and docs passed, followed by normal
+  commit and protected FF.
+- **Cold recovery (`4f3737e7f71d`).** The original missing consumer failed its
+  real no-source counterexample; the existing recorded-end reader is now used
+  for cold Worker-process sources. The original required cases passed exact
+  Exit/Superseded Repository rebuilding and byte/replay checks, no-source and
+  foreign refusals, and poisoned-registry refusal; after rebase onto Memory,
+  the authored two-package profile passed 778 / 16 original skips with both
+  Clippy passes, doctests and docs before normal commit and protected FF.
+  These are Host/Namespace receipts, not live cluster or full13 acceptance.
+- **Complete V4 candidate (frozen tree `d6b21b3eee3f`).** After correcting
+  actual dependency/import and fixture-clock failures, the original
+  `bash scripts/ci/check-rust.sh --full` passed 10,421 tests / 133 original
+  skips, both Clippy passes and doctests. The original
+  `bash scripts/ci/pg_tests.sh --require-docker` passed, including S3, PITR
+  restoration of the exact immutable object and owned cleanup;
+  `check_public_api.sh` compared all 24 snapshots, generated contracts and
+  docs passed. The follow-up poison guard reuses the canonical item reader
+  and has separate original-oracle regression evidence; normal commit,
+  protected FF and full13 remain separate claims.
+- **G and release boundary.** G has retained-origin, inherited-permission
+  and replay source changes without a compiled result; the candidate's
+  `principle_status.py --guards` counts are reported in
+  [STATUS](../STATUS.md#architecture-execution), not as main measurements.
+  V6/L/V7/V8 and Windows remain unqualified on the final
+  source; `verified/20261101-0249` (`f03c55823bbe`) and
+  `verified/20261031-1847` (`af4d10ec22a1`) retain only their historical scope.
+
+The following records are history, not current open-failure counts.
+
 - **Session checkpoint (2026-10-30).** Accepted Session checkpoint
   `221ecbdd90ac` (accepted creation inputs and budget decisions), with Worker MCP
   updates (`d2b03a68f6`) and shared live Thread subscription admission
@@ -406,8 +455,9 @@ qualification are separate claims.
   SemVer tooling are not part of them.
 - **Fourth batched verification (`9b6505d856`).** The workspace built and fmt
   and doctests passed; 39 of 10,166 tests failed, one overflowed the stack, and
-  Clippy reported 7 errors. About 30 failures and the Clippy errors were fixed
-  afterwards; the rest are open.
+  Clippy reported 7 errors. This was V0's input; the later Linux result above
+  supersedes it as a failure count without extending that result to PG, cold
+  recovery, or the uncommitted combined source.
 - **Downstream cohort.** The earlier Cloud/Flow pin snapshot is historical. At
   the 2026-10-30 review their main refs were Cloud `31c96165dfcc` and Flow
   `b19871ca3f66`; inference-materializer imports and Flow's concrete CLI

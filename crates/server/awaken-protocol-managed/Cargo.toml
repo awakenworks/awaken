@@ -148,6 +148,7 @@ name = "tenancy_required"
 required-features = ["test-support"]
 
 [dev-dependencies]
+awaken-dispatch = { workspace = true, default-features = false, features = ["test-support"] }
 awaken-lease-contract.workspace = true
 awaken-store-conformance.workspace = true
 awaken-tool-contract.workspace = true

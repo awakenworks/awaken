@@ -6,9 +6,10 @@
 //! requirements different from those it materializes.
 
 use crate::{
-    IsolationClass, MemoryWriteConsistency, MountAccess, SandboxControlServiceKind,
-    SandboxIdleRetentionMode, SandboxIdleRetentionPolicy, SandboxRequirements, SandboxSpec,
+    IsolationClass, MemoryWriteConsistency, MountAccess, SandboxIdleRetentionMode,
+    SandboxIdleRetentionPolicy, SandboxRequirements, SandboxSpec,
 };
+use awaken_sandbox_control::SandboxControlServiceKind;
 
 /// Project every Session path cause once into the two neutral views consumed by
 /// physical realization and Worker admission. [`SandboxRequirements::from_spec`]

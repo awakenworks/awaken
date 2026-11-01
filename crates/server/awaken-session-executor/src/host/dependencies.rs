@@ -186,7 +186,8 @@ impl SessionExecutorBuilder {
         );
         // A Worker exists to drain the durable queue with exactly the capacity
         // it registered; its composition cannot select anything else.
-        selected.execution.ingress = crate::RunIngress::Durable;
+        selected.execution.foreground_delivery =
+            awaken_deployment_config::ForegroundRunDelivery::Durable;
         selected.execution.local = crate::LocalExecution::InProcessPool(
             crate::DispatchPoolSizing::Registered(capacity.into_slots()),
         );
@@ -526,7 +527,8 @@ impl SessionExecutorBuilder {
         self.authority = Arc::new(crate::LocalAuthority::new(Arc::new(
             awaken_dispatch_erasure::ReferenceAuthority::with_dispatch(self.clock.clone(), store),
         )));
-        self.execution.ingress = crate::RunIngress::Durable;
+        self.execution.foreground_delivery =
+            awaken_deployment_config::ForegroundRunDelivery::Durable;
         self.execution.local = crate::LocalExecution::in_process_pool();
         self
     }

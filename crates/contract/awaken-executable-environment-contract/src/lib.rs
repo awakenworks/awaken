@@ -7,6 +7,20 @@
 //! selects. The two stages share one lifecycle and are always consumed together,
 //! so they are one contract. Environment *definitions* stay in
 //! `awaken-environment-contract`, which does not depend on provisioning.
+//!
+//! # Boundary
+//!
+//! Context: `environment`.
+//!
+//! Implemented by: `awaken-control`, `awaken-coordinator`, `awaken-environment-application`,
+//! `awaken-environment-image-build`, `awaken-environment-package-image-builder`,
+//! `awaken-executable-environment-catalog`, `awaken-session-application`, `awaken-work-store`.
+//!
+//! Called by: `awaken-control`, `awaken-coordinator`, `awaken-environment-application`,
+//! `awaken-environment-image-build`, `awaken-environment-package-image-builder`,
+//! `awaken-executable-environment-catalog`, `awaken-process-startup`, `awaken-protocol-managed`,
+//! `awaken-protocol-managed-testkit`, `awaken-session-application`, `awaken-store-conformance`,
+//! `awaken-work-store`.
 
 mod image_realization;
 mod registration;

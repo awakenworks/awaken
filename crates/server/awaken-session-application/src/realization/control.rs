@@ -5,7 +5,6 @@
 
 use super::*;
 use crate::mutation::ROOT_CAS_ATTEMPTS;
-#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use awaken_session_configuration_contract::resource::realization_lease_is_live_at;
 use std::sync::Arc;
 use tracing::Instrument as _;
@@ -930,11 +929,7 @@ impl SessionRealizations {
         target: &awaken_session_execution_contract::SessionRealizationTarget,
     ) -> Result<Option<awaken_worker_contract::WorkerSnapshot>, SessionRealizationControlFailure>
     {
-        let observations = self.execution_admission.workers.get().ok_or_else(|| {
-            SessionRealizationControlFailure::Unavailable(
-                "Worker observation source is not installed for external terminal cleanup".into(),
-            )
-        })?;
+        let observations = &self.execution_admission.workers;
         let workers = observations.list().await.map_err(unavailable)?;
         target.worker_from_registry_observation(workers, self.clock.now_ms())
     }
@@ -1138,11 +1133,7 @@ impl awaken_session_execution_contract::SessionPreparationControl for SessionRea
                     if !current.is_run_free_preparation_candidate() {
                         continue;
                     }
-                    let compiler = self.session_preparation_placement().ok_or_else(|| {
-                        SessionRealizationControlFailure::Unavailable(
-                            "Session preparation placement compiler is not installed".into(),
-                        )
-                    })?;
+                    let compiler = self.execution_admission.placement.as_ref();
                     let requirements = compiler.requirements(&current)?;
                     if awaken_worker_contract::can_claim(&worker.manifest, &requirements).is_err() {
                         continue;

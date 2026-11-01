@@ -33,7 +33,17 @@ pub(crate) fn managed_state_from_parts(
             ),
             sessions,
             environments.clone(),
-            clock,
+            clock.clone(),
+            {
+                let probe = std::sync::Arc::new(
+                    awaken_session_application::ExecutionObservationProbe::default(),
+                );
+                awaken_session_application::SessionExecutionAdmission::new(
+                    std::sync::Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock.clone())),
+                    probe.clone(),
+                    probe,
+                )
+            },
             compiler,
         ),
         awaken_data_governance_contract::CapturePolicy::default(),

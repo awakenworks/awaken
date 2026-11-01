@@ -165,7 +165,19 @@ impl ManagedStateFixture for ManagedState {
                 roles,
                 ephemeral_session_repository().await,
                 environment_fixture(clock.clone()).execution,
-                clock,
+                clock.clone(),
+                {
+                    let probe = std::sync::Arc::new(
+                        awaken_session_application::ExecutionObservationProbe::default(),
+                    );
+                    awaken_session_application::SessionExecutionAdmission::new(
+                        std::sync::Arc::new(awaken_dispatch::MemoryDispatchStore::new(
+                            clock.clone(),
+                        )),
+                        probe.clone(),
+                        probe,
+                    )
+                },
                 std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             ),
             awaken_data_governance_contract::CapturePolicy::default(),
@@ -190,7 +202,17 @@ pub fn managed_state_from_parts(
             ),
             sessions,
             environments.clone(),
-            clock,
+            clock.clone(),
+            {
+                let probe = std::sync::Arc::new(
+                    awaken_session_application::ExecutionObservationProbe::default(),
+                );
+                awaken_session_application::SessionExecutionAdmission::new(
+                    std::sync::Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock.clone())),
+                    probe.clone(),
+                    probe,
+                )
+            },
             compiler,
         ),
         awaken_data_governance_contract::CapturePolicy::default(),
@@ -199,11 +221,14 @@ pub fn managed_state_from_parts(
 
 /// Build only the application so a protocol unit-test crate retains its own
 /// ManagedState type rather than importing the non-test copy through testkit.
+/// The caller explicitly selects its complete execution observations before
+/// publishing this App; this fixture supplies no late-install or Registry fallback.
 pub fn session_application_from_parts(
     runtime: impl Into<awaken_session_execution_contract::SessionExecutor>,
     sessions: Arc<dyn awaken_session_application::SessionStore>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     clock: Arc<dyn awaken_time::WallClock>,
+    execution: awaken_session_application::SessionExecutionAdmission,
     compiler: Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
 ) -> Arc<awaken_session_application::SessionApplication> {
     Arc::new(
@@ -211,7 +236,7 @@ pub fn session_application_from_parts(
             runtime,
             awaken_session_application::SessionPersistence::new(sessions, clock),
             environments,
-            awaken_session_application::SessionExecutionAdmission::fixture(),
+            execution,
             compiler,
         )
         .build()

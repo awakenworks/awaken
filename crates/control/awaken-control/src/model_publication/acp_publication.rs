@@ -58,7 +58,7 @@ impl CatalogModelPublicationResolver {
                     reason: error.to_string(),
                 }
             })?;
-        let required_credential = awaken_worker_contract::WorkerCredentialRevision {
+        let required_credential = awaken_agent_contract::credential::CredentialRef {
             id: source.id.0.clone(),
             revision,
         };
@@ -96,7 +96,7 @@ impl CatalogModelPublicationResolver {
     pub(super) async fn verified_acp_capability(
         &self,
         backend_ref: &str,
-        credential: Option<&awaken_worker_contract::WorkerCredentialRevision>,
+        credential: Option<&awaken_agent_contract::credential::CredentialRef>,
         now_ms: u64,
     ) -> Result<
         (

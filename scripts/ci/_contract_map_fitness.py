@@ -45,17 +45,18 @@ string literals and `cfg(test)` code are not scanned):
   contract crates, keyed by name with the number of contract crates declaring it.
   One concept has one definition (plan 9.19 item 4); a name repeated inside one
   crate is not counted.
-* `contract-reexport`: a `pub use` (exactly `pub`) in a contract crate whose path
-  starts at another first-party crate (a workspace member other than itself),
-  keyed by the contract crate with the number of items re-exported (the leaves of
-  the use tree; a glob or `self` is one item). A user depends on the owner
-  directly (plan 9.19 item 5). Re-exports of the crate's own modules
-  (`crate::`, `self::`, `super::`, a local module or enum) and of third-party or
-  standard-library crates are not counted: the rule is about one first-party type
-  reachable through several contracts.
-* `renamed-reexport`: the items of such a re-export given another name with `as`
-  (`as _` is not a name), keyed by the contract crate with their number. One type
-  has one name (plan 9.19 item 5).
+* `contract-reexport` (a hard rule, no baseline): a `pub use` (exactly `pub`)
+  in a contract crate whose path starts at another first-party crate (a
+  workspace member other than itself), keyed by the contract crate with the
+  number of items re-exported (the leaves of the use tree; a glob or `self` is
+  one item). A user depends on the owner directly (plan 9.19 item 5). Re-exports
+  of the crate's own modules (`crate::`, `self::`, `super::`, a local module or
+  enum) and of third-party or standard-library crates are not counted: the rule
+  is about one first-party type reachable through several contracts. The rule
+  was a ratchet until its count reached zero (contract convergence, plan v5 S2).
+* `renamed-reexport` (a hard rule, no baseline): the items of such a re-export
+  given another name with `as` (`as _` is not a name), keyed by the contract
+  crate with their number. One type has one name (plan 9.19 item 5).
 * `aggregate-pub-field`: a public field of a struct declared in a Session
   aggregate-state contract (`AGGREGATE_STATE_CRATES`: the state contract and the
   `awaken-session-contract` it merges into, so the rule follows the code), keyed
@@ -157,9 +158,9 @@ RULES = (
     Rule("duplicate-type", "keep one definition of the concept, or name each by its own meaning "
          "(ADR-0091 D2, plan 9.19 item 4)"),
     Rule("contract-reexport", "depend on the owning crate directly instead of re-exporting its items; SDK "
-         "convenience paths live only in the SDK facade (ADR-0091 D2, plan 9.19 item 5)"),
+         "convenience paths live only in the SDK facade (ADR-0091 D2, plan 9.19 item 5)", hard=True),
     Rule("renamed-reexport", "use the owner's name; a renamed re-export gives one type two names "
-         "(ADR-0091 D2, plan 9.19 item 5)"),
+         "(ADR-0091 D2, plan 9.19 item 5)", hard=True),
     Rule("aggregate-pub-field", "make the field private and change it through a constructor or transition "
          "method; publish a read-only projection (plan 9.19 item 2, W26)"),
 )
@@ -831,6 +832,7 @@ def selftest() -> None:
     | R3   | third-party or std crate; `pub(crate) use` / `use`; non-contract crate; comment, literal or `cfg(test)` | not counted |
     | N1   | an item of a counted re-export renamed with `as` (also the whole crate) | `renamed-reexport` per contract crate, value = renamed items |
     | N2   | `as _`; a renamed re-export of the crate's own or a third-party item    | not counted |
+    | H1   | any counted re-export (both rules are hard)                          | error; a baseline key is an error |
     | A1   | aggregate-state struct with `pub` named fields (attributes, generics, `where`, nested commas) | counted per struct, value = public fields |
     | A2   | private field; `pub(crate)` field; unit struct; enum struct variant   | not counted |
     | A3   | tuple struct `pub` field                                               | counted; `pub(crate)` tuple field not |
@@ -1012,6 +1014,12 @@ def _selftest_reexports() -> None:
                                                 "c/src/lib.rs:9"], "R1 where"
     assert counts["renamed-reexport"] == {"c": 3}, f"N1/N2 {counts['renamed-reexport']}"
     assert places["renamed-reexport"]["c"] == ["c/src/lib.rs:1", "c/src/lib.rs:3", "c/src/lib.rs:9"], "N1 where"
+    hard = {rule.name: rule.hard for rule in RULES}
+    assert hard["contract-reexport"] and hard["renamed-reexport"], "H1 both rules are deny rules"
+    errors = _architecture_ratchet.compare(
+        RULES, {"contract-reexport": {"c": 1}}, {}, {"contract-reexport": {"c": 1}}, "baseline.json")
+    assert any("a hard rule has no allowance" in error for error in errors) \
+        and any(error.startswith("contract-reexport: c 0 -> 1;") for error in errors), f"H1 {errors}"
 
 
 def _selftest_aggregate_fields() -> None:

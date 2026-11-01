@@ -102,6 +102,10 @@ async fn fixture(wording: &'static str) -> Fixture {
         Arc::new(NoopMcpRealizer),
         SessionPersistence::new(repository.clone(), system_clock()),
         environment.clone(),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         Arc::new(ScriptedCompiler { wording }),
     )
     .build()

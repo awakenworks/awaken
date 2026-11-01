@@ -39,55 +39,58 @@ consistent vocabulary. This affects the documentation layers differently:
 
 ## Architecture Execution
 
-Reviewed 2026-10-31 against main `1b56f9aea0`. This is the single progress
-record for the crate-boundary program; design decisions stay in their ADRs and
-code. The plan v4 slices below are history; plan v5 ([below](#plan-v5)) is in
-force. Every count here names the command that produces it.
+Reviewed 2026-11-01. This is the single progress record for the crate-boundary
+program; decisions remain in their ADRs and code, and executed results remain
+in the [qualification record](design/test-validation.md#integrated-source-qualification-record).
+Plan v5 is in force; the v4 slices below identify their existing owners.
 
-- **Validation.** Build and test validation runs on the local Linux host
-  (AGENTS.md, 2026-10-31); Windows/MSVC checks run where a Windows host exists.
-  Receipts and open qualification are in the
-  [qualification record](design/test-validation.md#integrated-source-qualification-record).
-- **Main.** `main` is checked out in no worktree and moves only by fast-forward
-  from the integration writer (`git config awaken.mainWriter`), enforced by the
-  `reference-transaction` guard (`scripts/ci/install_receive_hooks.py`); remote
-  push is a separate action.
-- **Size.** Every crate holds an approved line ceiling that a recorded review can
-  raise ([ADR-0091](adr/0091-architecture-rules.md), 2026-10-31); other line,
-  dependency and method counts are review diagnostics, not completion gates.
-- **Layout.** The W23 directory migration into `crates/sdk/` and
-  `crates/platform/<context>/` is deferred and is not a completion gate.
+- **Delivered base and qualification.** Before this batch, the protected writer fast-forwarded main and
+  integration to `4f3737e7f71d`. Memory `1037e0bd8287` passed full Linux Rust,
+  required PG/S3/PITR and normal hooks; cold recovery was then rebased, rechecked
+  and normally committed on that parent, with no push.
+- **Tags.** `verified/20261101-0249` peels to `f03c55823bbe` and
+  `verified/20261031-1847` to `af4d10ec22a1`; both are historical subjects.
+  No new tag qualifies the current V4/G source or closes V6, L or product acceptance.
+- **Source versus execution.** The complete V4 App/SDK/guard/clock candidate passed full Rust,
+  required PG/S3/PITR, 24 API snapshots, contracts and docs on its frozen source.
+  Normal commit and protected FF are separate steps; G remains uncompiled.
+- **Counts.** `python3 scripts/ci/principle_status.py --guards` on the combined
+  candidate source reported 1 lock-poison panic, 33 `Weak`, 55 optional borrowed
+  roles, 1 string-flattening pattern, 30 contract crates, 191 Python scripts and
+  10 baseline files / 756 entries; these are candidate diagnostics, not main counts
+  or evidence that every principle is complete.
+- **Boundaries.** Build/test receipts are source-bound; Windows/MSVC remains
+  unverified. Size and method counts are diagnostics ([ADR-0091](adr/0091-architecture-rules.md));
+  W23 directory relocation is deferred and is not a completion gate.
 
-| Slice | Done (owner) | Remaining |
+| Area | Existing owner / mechanism | Open evidence |
 |---|---|---|
-| P0 Linear main | Fast-forward only, no merge commits, one writer ([ADR-0091](adr/0091-architecture-rules.md)). | — |
-| P1–P3 Realization | Closed `RealizationError` with one disposition and private peer components with lifecycle-held access ([ADR-0089](adr/0089-session-realization-single-owner.md)). Conflict and unknown Internal retry within the dispatch attempt budget; Pending waits only until the provider's provisioning deadline. | — |
-| P4 Executor | Caller-role components replace `SharedHost`/`ManagedHost`; the Coordinator consumes `ExecutionPorts`, and guards D3 and D4 keep its component and binary closures free of Worker-side code. Owners and open items: [executor status](design/runtime-interface-boundaries.md#executor-status). | The default-stack overflow reproduced after the recreated packages landed and is fixed under V0. Worker BackgroundTask private Task control (V9) and the SDK coordination/background-submission bindings remain; remote BackgroundTask refusal guards stay until that path is qualified. |
-| P5 Session state | The aggregate decides every Environment transition; the realization driver alone orchestrates terminal recovery ([ADR-0090](adr/0090-session-state-model.md), [transition](design/session-environment-transition.md)). | Final integrated-source validation in the batched verification (V0). |
-| P6 Sandbox | One `SandboxProvider`, which the Session carries as `SandboxProviderRoles`: two provisioning and three Session role handles over one adapter ([provider boundary](design/sandbox-provider-contract.md#session-role-handles-2026-10-31)). Kubernetes is an independent adapter. | Batched verification of the role handles (V0), then container and distributed E2E on the final integrated source (V8). |
-| P7 Application and protocol | Protocol crates only translate (`_protocol_translation_fitness.py`), and `SessionApplication` is a composition product over use-case components and the `SessionMutations` CAS kernel ([application status](design/session-aggregate-and-dispatch-capabilities.md#application-status-2026-10-31)). The eight execution roles carry responsibility names (`SessionRuns` … `LiveInboxAccess`). | Name the deployment `RunIngress` enum (V4). Review responsibility boundaries as callers settle; function length alone requires no split. |
-| Contract convergence | Session state, event, budget and repository contracts are one `awaken-session-contract` ([ADR-0090 amendment](adr/0090-session-state-model.md#amendment-2026-10-30-one-session-core-contract)); Dream, provider SPI and Container transport keep distinct owners ([ADR-0091](adr/0091-architecture-rules.md)). | Converge by bounded context (V4): 29 contract crates (`ls -d crates/contract/*/ \| wc -l`), 8 of them Session (`ls -d crates/contract/awaken-session-*/ \| wc -l`). |
-| Formal | Kani profiles bind loops by Rust symbol per harness; the selected Kani, TLC and TLAPS results and their limits are in the [formal ledger](formal-verification-expansion.md#crate-boundary-program-results-2026-10-30). | Every gate proof must finish within host resources or narrow its domain with a reason (V6); earlier Kani timeouts stay inconclusive. |
-| Integrated-source qualification | The fourth batched verification (`9b6505d856`) built the workspace and passed fmt and doctests; 39 of 10,166 tests failed, one overflowed the stack and Clippy reported 7 errors, about 30 of them fixed since ([record](design/test-validation.md#integrated-source-qualification-record)). | V0 fixes the rest and tags the first `verified/<YYYYMMDD-HHMM>` revision; V8 qualifies one immutable BOM (Linux k3d/distributed, real Agent-authored Environment, coding/review/fix acceptance) on it. |
-| Downstream | At the 2026-10-30 review Cloud main was `31c96165dfcc` and Flow main `b19871ca3f66`; inference-materializer imports and Flow's CLI composition callers have migrated. | Upgrade awaken-cloud to a `verified/*` revision and qualify one exact cohort of manifests, roots, locks, images and runtime BOM (V7). Cloud product acceptance takes priority over Native-only qualification. |
+| P0 Linear main | One integration writer and protected fast-forward, no implicit push ([ADR-0091](adr/0091-architecture-rules.md)). | Preserve source identity across each normal commit and FF. |
+| P1–P3 Realization | One `RealizationError` disposition and lifecycle-held peer access ([ADR-0089](adr/0089-session-realization-single-owner.md)). | Requalify the final combined source; old results do not qualify later changes. |
+| P4 Executor | Caller-role components, Coordinator closure guards and one existing execution pipeline ([executor status](design/runtime-interface-boundaries.md#executor-status)). | G private Task control is still source work, including recursive Native callbacks; no compiled G result is claimed. |
+| P5 Session state | The aggregate decides Environment transitions; the realization driver orchestrates recovery ([ADR-0090](adr/0090-session-state-model.md)). | The complete V4 candidate passed full Rust and required PG; final-source qualification remains separate. |
+| P6 Sandbox | One provider selected as provisioning/Session role handles ([provider boundary](design/sandbox-provider-contract.md#session-role-handles-2026-10-31)). | Final Linux/container/distributed acceptance and Windows evidence remain separate. |
+| P7 Application / protocol | Use-case components share `SessionMutations` CAS; protocols translate ([application status](design/session-aggregate-and-dispatch-capabilities.md#application-status-2026-10-31)). | Complete-admission and V4 caller migrations passed the complete Rust candidate batch; downstream and product acceptance remain separate. |
+| Contract convergence | Canonical owners and imports follow [ADR-0090](adr/0090-session-state-model.md) and [ADR-0091](adr/0091-architecture-rules.md); distinct Dream/provider/transport contracts remain distinct. | The complete V4 candidate passed Rust, API and contracts checks; G and downstream callers still need their own final-source checks. |
+| Formal | The proof owner records tools, domains and resource limits ([formal trust](design/formal-proof-trust.md)). | V6 reruns, including the combined-versus-split heartbeat decision, remain pending; inconclusive is not passed. |
+| Integrated qualification | The complete V4 frozen candidate passed 10,421 tests / 133 original skips, both Clippy passes, doctests and required PG/S3/PITR ([record](design/test-validation.md#integrated-source-qualification-record)). | Normal commit/FF and whole-SHA full13 are separate; G and live k3d acceptance remain pending. |
+| Downstream | V7 import/API migration packets exist for the locked Cloud/Flow sources. | Real pin/lock/BOM upgrade and build/runtime acceptance remain pending; source migration is not acceptance. |
 
 ### Plan v5
 
-Plan v5 (confirmed 2026-10-31) makes the principles hold repository-wide and
-enforces them by the cheapest mechanism; items run in order.
-
 | Item | Scope | Status |
 |---|---|---|
-| V0 | Batch-four failures fixed, workspace Clippy, nextest and doctests green; first `verified/*` tag | In progress |
-| V1 | Guard consolidation: compiler and Clippy enforcement first, `principle_status.py` | In progress |
-| V2 | Lock poisoning handled by invariant scope repository-wide | In progress |
-| V3 | Construction-time injection (`Weak`, optional roles) and typed errors | In progress |
-| V4 | Contract crates converged by bounded context; `RunIngress` named | In progress |
-| V5 | Short STATUS, ADR index and design-doc links | In progress |
-| V6 | Every formal gate proof finishes within host resources | Not started |
-| V7 | awaken-cloud upgraded to a `verified/*` revision | Not started |
-| V8 | Final Linux, k3d and distributed acceptance on one `verified/*` revision | Not started |
-| V9 | Remote private Task control (G) and SDK SemVer (L) | Not started |
+| V0 | Source-bound Rust, PG and cold recovery qualification | Memory and cold suites are delivered on main; the complete V4 candidate passed Rust/PG, while G remains uncompiled. |
+| V0b/V0c | Container-instance identity and same-Run/Session recovery | Host cold recovery passed; the joined real k3d recovery candidate is prepared but not executed. |
+| V1 | Prefer compiler/Cargo controls; consolidate actual duplicate guards | CrateSpec/lexer consolidation has pure self-test evidence; semantic guards remain, and numerical targets are not declared complete. |
+| V2 | Preserve lock-poisoning policy and typed failures | The remaining counted panic is a reviewed Control IAM std-lock exception; final combined-source validation remains required. |
+| V3 | Complete construction roles and typed boundary errors | App/SDK migrations passed the complete V4 Rust batch; G's typed authorization/retry chain still needs actual qualification. |
+| V4 | Canonical bounded-context contracts and `RunIngress` naming | The complete candidate passed Rust/PG/API/contracts; the historical Baseline interpreter belongs to its existing type owner without a new upward edge. |
+| V5 | Keep one short status record and linked design owners | This record and the existing qualification/M5 decisions are being corrected; no second status ledger is introduced. |
+| V6 | Every formal gate proof finishes within host resources | Current-source proofs, including 65 marked for rerun, are pending; historical tags do not close them. |
+| V7 | Upgrade the real Cloud/Flow composition cohort | Source migration exists; final pins, locks and real downstream execution are pending. |
+| V8 | Linux, k3d and distributed product acceptance on one final BOM | Pending; source tests, PG recovery and image health are separate evidence. |
+| V9 | G private Task control and L SDK SemVer; retire LocalWorker after V8 | G/L are not closed; LocalWorker retirement follows V8 acceptance. |
 
 ## Document Readiness
 

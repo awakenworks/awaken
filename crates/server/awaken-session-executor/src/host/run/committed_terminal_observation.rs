@@ -68,7 +68,7 @@ impl crate::RunAssembly {
         thread: &str,
         agent: Option<&str>,
     ) -> Result<bool, SessionExecutionError> {
-        if self.execution.ingress.is_durable()
+        if self.execution.foreground_delivery.is_durable()
             || !self.authority.observes_terminal_memory_locally()
             || self
                 .installed_sessions

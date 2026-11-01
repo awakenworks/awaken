@@ -10,6 +10,10 @@ fn timed_application(repo: Arc<dyn crate::SessionStore>, now: u64) -> SessionApp
         Arc::new(NoopMcpRealizer),
         SessionPersistence::new(repo, Arc::new(ManualClock::new(now))),
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
     )
     .configuration(SessionApplicationConfiguration {

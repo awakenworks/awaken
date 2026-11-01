@@ -1059,3 +1059,35 @@ a decision change for its own slice); one `Arc<dyn …>` over every role (a fat
 interface). Provisioning-contract does not depend on any Session crate; wire
 shapes, persisted bytes, effect fencing and physical ownership are unchanged.
 awaken-cloud imports none of the renamed paths.
+
+## Amendment 2026-10-31: contracts converge by bounded context
+
+[Contract convergence](../design/contract-convergence.md) (plan v5 V4) is
+implemented. `awaken-session-realization-contract` merges into
+`awaken-session-execution-contract` (both cross the Coordinator ↔ Worker
+boundary between the same parties); Session Core content (Event admission
+outcome, lifecycle fact delivery, the thread-usage conversion as
+`SessionUsage::from_thread_usage`) moves from the application contract to
+`awaken-session-contract`; the application contract keeps only ports and
+gains the live inbox driving port; its process configuration values move to
+`awaken-session-application`. No contract re-exports another first-party
+crate's items; the re-export ratchets are deny rules. The
+deployment `RunIngress` is renamed `ForegroundRunDelivery` (field
+`ExecutionTopology::foreground_delivery`); the executor's private choice is
+`ForegroundRunDriver`. Retired paths are pinned by `compile_fail` doctests;
+no alias remains.
+
+awaken-cloud changes these imports (per-file list in the design note):
+`awaken_session_application_contract::LifecycleFactDelivery` →
+`awaken_session_contract::LifecycleFactDelivery`;
+`awaken_session_realization_contract::{SessionResourceMaterializationIntent,
+SessionResourceMaterializationTarget}` → `awaken_session_execution_contract::…`;
+the credential reference vocabulary `awaken_credential_contract::{CredentialAccess,
+CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
+CredentialPurpose, CredentialRef, CredentialTarget, CredentialUsage,
+HttpEffectPlacement, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+SealedCredentialEnvelopeRef}` → `awaken_agent_contract::credential::…`;
+`awaken_tenancy::ScopeId` and `awaken_dispatch_contract::ExecutionScopeRef` →
+`awaken_agent_contract::{ScopeId, ExecutionScopeRef}`;
+`awaken_dispatch_contract::{RunClaim, ExecutionLocation}` →
+`awaken_worker_contract::{RunClaim, ExecutionLocation}`.

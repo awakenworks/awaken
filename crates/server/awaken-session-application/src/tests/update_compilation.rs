@@ -102,6 +102,10 @@ fn application_with_compiler(
         Arc::new(NoopMcpRealizer),
         SessionPersistence::new(repository, system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
+        {
+            let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+            crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+        },
         compiler,
     )
     .build()
