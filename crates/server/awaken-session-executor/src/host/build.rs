@@ -689,8 +689,8 @@ mod startup_tests {
                 },
                 process(),
                 crate::UpstreamAuthority::default(),
-                awaken_dispatch_contract::RegisteredCapacity::of(
-                    &awaken_dispatch_contract::WorkerManifest::default()
+                awaken_worker_contract::RegisteredCapacity::of(
+                    &awaken_worker_contract::WorkerManifest::default()
                 )
                 .unwrap(),
             )
@@ -709,8 +709,8 @@ mod startup_tests {
             },
             process(),
             crate::host::test_upstream_authority(),
-            awaken_dispatch_contract::RegisteredCapacity::of(
-                &awaken_dispatch_contract::WorkerManifest::default(),
+            awaken_worker_contract::RegisteredCapacity::of(
+                &awaken_worker_contract::WorkerManifest::default(),
             )
             .unwrap(),
         )
@@ -792,8 +792,8 @@ mod startup_tests {
             },
             process(),
             crate::host::test_upstream_authority(),
-            awaken_dispatch_contract::RegisteredCapacity::of(
-                &awaken_dispatch_contract::WorkerManifest::default(),
+            awaken_worker_contract::RegisteredCapacity::of(
+                &awaken_worker_contract::WorkerManifest::default(),
             )
             .unwrap(),
         )

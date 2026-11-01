@@ -22,9 +22,7 @@ use awaken_agent_contract::credential::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
-use awaken_dispatch_contract::{
-    RunClaim, RunDispatch, SessionResourceEnvelope, SessionRuntimeEnvelope,
-};
+use awaken_dispatch_contract::{RunDispatch, SessionResourceEnvelope, SessionRuntimeEnvelope};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -37,6 +35,7 @@ use awaken_session_configuration_contract::resource::{
 use awaken_session_execution_contract::ResourceOperationFence;
 use awaken_session_execution_contract::{AdmitSessionRun, SessionRunExecutionRequirements};
 use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
+use awaken_worker_contract::RunClaim;
 
 fn command() -> AdmitSessionRun {
     AdmitSessionRun {

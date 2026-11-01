@@ -59,8 +59,8 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
     // once, rejects with the source's retryable class, and returns no mount; R5 zero revision rejects before any
     // source read. No second File-specific fence may be constructed downstream.
     use crate::ResourceOperationFence as Fence;
-    use awaken_dispatch_contract::RunClaim;
     use awaken_session_execution_contract::SessionResourceMaterializationIntent as Intent;
+    use awaken_worker_contract::RunClaim;
 
     let input = session_resource::ResolvedInput {
         created_at_unix_ms: None,

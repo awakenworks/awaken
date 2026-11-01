@@ -132,7 +132,7 @@ pub trait StagingPeer: Send + Sync {
         peers: Peers<'_>,
         thread: &str,
         transition: &session_resource::SessionResourceTransition,
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
+        claim: Option<&awaken_worker_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError>;
     async fn stage_terminal_repository_publication_input(

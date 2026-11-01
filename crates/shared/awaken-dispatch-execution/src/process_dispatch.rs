@@ -304,7 +304,7 @@ impl ProcessDispatch {
     /// maintenance loop retains Worker evidence with.
     pub fn bind_worker_evidence(
         &self,
-        directory: Arc<dyn awaken_dispatch_contract::WorkerDirectory>,
+        directory: Arc<dyn awaken_worker_contract::WorkerDirectory>,
         source: Arc<dyn crate::WorkerTerminalReconciliation>,
     ) -> Result<(), AdmissionError> {
         self.terminal_reconciliation

@@ -11,7 +11,8 @@ use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_agent_contract::stream::sink::{Error as StreamError, Sink as StreamSink};
 
-use awaken_dispatch_contract::{ClaimedStreamPublisher, RunClaim};
+use awaken_dispatch_contract::ClaimedStreamPublisher;
+use awaken_worker_contract::RunClaim;
 
 /// Reuses an existing process-local StreamSink behind the claim-bound worker
 /// port. Local execution needs no wire fence because the dispatch worker and

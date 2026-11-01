@@ -53,7 +53,7 @@ async fn realization_revocation_selection_fences_removed_and_recreated_installed
                 .begin_session_realization_revocation()
                 .expect("installed Sessions");
             host.run_assembly.installed_sessions.remove(SESSION);
-            let claim = awaken_dispatch_contract::RunClaim {
+            let claim = awaken_worker_contract::RunClaim {
                 run_id: RunId("replacement".into()),
                 owner: "worker".into(),
                 epoch: 2,
@@ -515,7 +515,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 host.run_assembly
                     .install_session_realization_lease(SESSION, extended.clone())
                     .unwrap();
-                let claim = awaken_dispatch_contract::RunClaim {
+                let claim = awaken_worker_contract::RunClaim {
                     run_id: RunId("replacement".into()),
                     owner: "worker".into(),
                     epoch: 2,

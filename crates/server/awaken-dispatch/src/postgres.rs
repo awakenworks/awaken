@@ -30,26 +30,6 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 use sqlx::{Postgres, Transaction};
 
-use crate::dispatch::{
-    AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CasOutcome,
-    ClaimEpochStorageRow, Claimed, CommitEpochGuard, ContinuationAdmission,
-    CredentialRealizationPersistenceDecision, CredentialRealizationReceipt, DispatchCompletion,
-    DispatchDepths, DispatchError, DispatchLease, DispatchOutcome, DispatchState, DispatchSummary,
-    ExactClaimMode, Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingInputSettlementPlan,
-    PendingRecord, PhysicalAttempt, RunClaim, SessionChildAdmission,
-    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, SubmitOptions, can_admit_claim_credentials, claim_credential_operation,
-    claim_with_frozen, classify_completed_session_run_reservation, classify_exact_claim_mode,
-    classify_live_session_run_reservation, classify_session_run_reservation_activation,
-    compile_claim_credential_bindings, credential_realization_persistence_decision,
-    decide_lease_renewal, ensure_session_child_capacity, installed_worker_credential_capabilities,
-    normalize_pending_millis, pending_input_settlement_plan, retry_exhaustion_evidence_is_eligible,
-    session_child_parent, session_child_thread, validate_executable_dispatch_admission,
-    validate_outbox_continuation, validate_session_resume_activity_transition,
-    validate_session_resume_evidence, validate_session_resume_target,
-    validate_session_run_replacement_candidates, validate_session_run_reservation_request,
-    validate_session_run_reservation_resolution, verify_credential_realization_receipt,
-};
 use crate::dispatch_schema::{
     BUNDLE_ID, CONVERGED_BUNDLE_ID, selected_converged_dispatch_bundle, selected_dispatch_bundle,
 };
@@ -67,10 +47,42 @@ use crate::{
     LeaseLossReason, PlacementPolicy, WorkerAssignment, WorkerSnapshot, can_assign,
     can_claim_locally, durable_i64, durable_u64, next_claim_epoch, policy_selects_requester,
 };
+use crate::{
+    dispatch::AttemptAdmission, dispatch::AttemptExecutionBinding, dispatch::CasOutcome,
+    dispatch::ClaimEpochStorageRow, dispatch::Claimed, dispatch::CommitEpochGuard,
+    dispatch::ContinuationAdmission, dispatch::DispatchCompletion, dispatch::DispatchDepths,
+    dispatch::DispatchError, dispatch::DispatchLease, dispatch::DispatchOutcome,
+    dispatch::DispatchState, dispatch::DispatchSummary, dispatch::ExactClaimMode, dispatch::Inbox,
+    dispatch::LeaseRenewalOutcome, dispatch::Outbox, dispatch::PendingInput,
+    dispatch::PendingInputSettlementPlan, dispatch::PendingRecord, dispatch::PhysicalAttempt,
+    dispatch::SessionChildAdmission, dispatch::SessionRunReservationActivation,
+    dispatch::SessionRunReservationOutcome, dispatch::SessionRunReservationResolution,
+    dispatch::SettleOutcome, dispatch::SubmitOptions, dispatch::can_admit_claim_credentials,
+    dispatch::claim_credential_operation, dispatch::claim_with_frozen,
+    dispatch::classify_completed_session_run_reservation, dispatch::classify_exact_claim_mode,
+    dispatch::classify_live_session_run_reservation,
+    dispatch::classify_session_run_reservation_activation,
+    dispatch::compile_claim_credential_bindings, dispatch::decide_lease_renewal,
+    dispatch::ensure_session_child_capacity, dispatch::installed_worker_credential_capabilities,
+    dispatch::normalize_pending_millis, dispatch::pending_input_settlement_plan,
+    dispatch::retry_exhaustion_evidence_is_eligible, dispatch::session_child_parent,
+    dispatch::session_child_thread, dispatch::validate_executable_dispatch_admission,
+    dispatch::validate_outbox_continuation, dispatch::validate_session_resume_activity_transition,
+    dispatch::validate_session_resume_evidence, dispatch::validate_session_resume_target,
+    dispatch::validate_session_run_replacement_candidates,
+    dispatch::validate_session_run_reservation_request,
+    dispatch::validate_session_run_reservation_resolution,
+};
+use awaken_credential_contract::{
+    AttemptCredentialBinding, CredentialRealizationPersistenceDecision,
+    CredentialRealizationReceipt, credential_realization_persistence_decision,
+    verify_credential_realization_receipt,
+};
 use awaken_dispatch_contract::{
     CommitEpochAdmission, PhysicalAttemptSlot, PhysicalAttemptTransition, RunDispatch,
     classify_commit_epoch_admission,
 };
+use awaken_worker_contract::RunClaim;
 
 pub use crate::postgres_checkpoint::PostgresStreamCheckpointStore;
 

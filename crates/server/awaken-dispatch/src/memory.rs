@@ -42,35 +42,47 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
-use crate::dispatch::{
-    AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CasOutcome,
-    ClaimCredentialOperation, Claimed, CommitEpochGuard, ContinuationAdmission,
-    CredentialRealizationPersistenceDecision, CredentialRealizationReceipt, DispatchCompletion,
-    DispatchDepths, DispatchError, DispatchLease, DispatchOutcome, DispatchState, DispatchSummary,
-    ExactClaimMode, Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingInputSettlementPlan,
-    PendingRecord, PhysicalAttempt, RunClaim, RunIdentityDecision, SessionChildAdmission,
-    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, StoredRunIdentity, SubmitOptions, can_admit_claim_credentials,
-    claim_credential_operation, claim_with_frozen, classify_completed_session_run_reservation,
-    classify_exact_claim_mode, classify_live_session_run_reservation,
-    classify_session_run_reservation_activation, compile_claim_credential_bindings,
-    credential_realization_persistence_decision, decide_lease_renewal, decide_run_identity,
-    ensure_session_child_capacity, installed_worker_credential_capabilities,
-    normalize_pending_millis, pending_input_settlement_plan, session_child_parent,
-    session_child_thread, validate_executable_dispatch_admission, validate_outbox_continuation,
-    validate_session_resume_activity_transition, validate_session_resume_evidence,
-    validate_session_resume_target, validate_session_run_replacement_candidates,
-    validate_session_run_reservation_request, validate_session_run_reservation_resolution,
-    verify_credential_realization_receipt,
-};
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, DispatchPage, LeaseLossReason,
+};
+use crate::{
+    dispatch::AttemptAdmission, dispatch::AttemptExecutionBinding, dispatch::CasOutcome,
+    dispatch::ClaimCredentialOperation, dispatch::Claimed, dispatch::CommitEpochGuard,
+    dispatch::ContinuationAdmission, dispatch::DispatchCompletion, dispatch::DispatchDepths,
+    dispatch::DispatchError, dispatch::DispatchLease, dispatch::DispatchOutcome,
+    dispatch::DispatchState, dispatch::DispatchSummary, dispatch::ExactClaimMode, dispatch::Inbox,
+    dispatch::LeaseRenewalOutcome, dispatch::Outbox, dispatch::PendingInput,
+    dispatch::PendingInputSettlementPlan, dispatch::PendingRecord, dispatch::PhysicalAttempt,
+    dispatch::RunIdentityDecision, dispatch::SessionChildAdmission,
+    dispatch::SessionRunReservationActivation, dispatch::SessionRunReservationOutcome,
+    dispatch::SessionRunReservationResolution, dispatch::SettleOutcome,
+    dispatch::StoredRunIdentity, dispatch::SubmitOptions, dispatch::can_admit_claim_credentials,
+    dispatch::claim_credential_operation, dispatch::claim_with_frozen,
+    dispatch::classify_completed_session_run_reservation, dispatch::classify_exact_claim_mode,
+    dispatch::classify_live_session_run_reservation,
+    dispatch::classify_session_run_reservation_activation,
+    dispatch::compile_claim_credential_bindings, dispatch::decide_lease_renewal,
+    dispatch::decide_run_identity, dispatch::ensure_session_child_capacity,
+    dispatch::installed_worker_credential_capabilities, dispatch::normalize_pending_millis,
+    dispatch::pending_input_settlement_plan, dispatch::session_child_parent,
+    dispatch::session_child_thread, dispatch::validate_executable_dispatch_admission,
+    dispatch::validate_outbox_continuation, dispatch::validate_session_resume_activity_transition,
+    dispatch::validate_session_resume_evidence, dispatch::validate_session_resume_target,
+    dispatch::validate_session_run_replacement_candidates,
+    dispatch::validate_session_run_reservation_request,
+    dispatch::validate_session_run_reservation_resolution,
+};
+use awaken_credential_contract::{
+    AttemptCredentialBinding, CredentialRealizationPersistenceDecision,
+    CredentialRealizationReceipt, credential_realization_persistence_decision,
+    verify_credential_realization_receipt,
 };
 use awaken_dispatch_contract::{
     CancelTransition, CommitEpochAdmission, DispatchTransition, DispatchTransitionError,
     GuardedTransition, PhysicalAttemptSlot, PhysicalAttemptTransition, ReleasedAttempt,
     RelinquishTransition, RunDispatch, classify_commit_epoch_admission,
 };
+use awaken_worker_contract::RunClaim;
 
 mod credential_binding;
 mod inbox;
@@ -1419,7 +1431,7 @@ impl awaken_dispatch_contract::DispatchAttemptControl for MemoryDispatchStore {
         &self,
         claim: &RunClaim,
         binding: Option<&AttemptExecutionBinding>,
-        guard: awaken_dispatch_contract::WorkerIncarnationGuard,
+        guard: awaken_worker_contract::WorkerIncarnationGuard,
         handoff: bool,
     ) -> Result<AttemptAdmission, DispatchError> {
         crate::application::admit_with_incarnation_guard(self, claim, binding, guard, handoff).await

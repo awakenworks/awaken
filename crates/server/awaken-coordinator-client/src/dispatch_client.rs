@@ -26,21 +26,23 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_agent_contract::stream::sink::Error as StreamError;
+use awaken_credential_contract::CredentialRealizationReceipt;
 use awaken_dispatch_contract::{
     AttemptAdmission, AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest,
     ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest, Claimed,
     ClaimedCredentialDeliveryTransport, CredentialDeliveryRefreshRequest,
-    CredentialRealizationReceipt, CredentialRealizationRequest, DeliverAndClaimRequest,
-    DispatchError, DispatchOutcome, EnqueueRequest, LeaseRenewalOutcome, PendingInput,
-    PendingRecord, RecoveryRequest, RenewRequest, RunClaim, RunDispatch,
-    SessionRunReservationResolution, SessionRunReservationResolutionRequest, SettleOutcome,
-    SettleRequest, StreamEventRequest, StreamObservationRequest, SubmitOptions,
+    CredentialRealizationRequest, DeliverAndClaimRequest, DispatchError, DispatchOutcome,
+    EnqueueRequest, LeaseRenewalOutcome, PendingInput, PendingRecord, RecoveryRequest,
+    RenewRequest, RunDispatch, SessionRunReservationResolution,
+    SessionRunReservationResolutionRequest, SettleOutcome, SettleRequest, StreamEventRequest,
+    StreamObservationRequest, SubmitOptions,
 };
+use awaken_worker_contract::RunClaim;
 
 use awaken_dispatch_contract::{
-    ClaimedStreamPublisher, WorkerIdentity, WorkerSnapshot,
-    worker_credential_realization_capabilities,
+    ClaimedStreamPublisher, worker_credential_realization_capabilities,
 };
+use awaken_worker_contract::{WorkerIdentity, WorkerSnapshot};
 use awaken_worker_transport_security::{WorkerRequestAuthorizer, WorkerUpstream};
 
 async fn dispatch_response_error(response: reqwest::Response) -> DispatchError {
@@ -1086,7 +1088,7 @@ mod codec_admission_tests {
                 .build(),
             Vec::new(),
         ))
-        .with_placement(awaken_dispatch_contract::PlacementRequirements::remote_preferred());
+        .with_placement(awaken_worker_contract::PlacementRequirements::remote_preferred());
         let marked = ordinary.clone().with_prepared_session_command_identity();
         let mut offered = WorkerManifest {
             runtime_protocol: VersionRange::exact(

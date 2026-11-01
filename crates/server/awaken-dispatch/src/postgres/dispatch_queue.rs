@@ -1316,7 +1316,7 @@ impl awaken_dispatch_contract::DispatchAttemptControl for PostgresDispatchStore 
         &self,
         claim: &RunClaim,
         binding: Option<&AttemptExecutionBinding>,
-        mut guard: awaken_dispatch_contract::WorkerIncarnationGuard,
+        mut guard: awaken_worker_contract::WorkerIncarnationGuard,
         handoff: bool,
     ) -> Result<AttemptAdmission, DispatchError> {
         let snapshot = guard.snapshot().clone();

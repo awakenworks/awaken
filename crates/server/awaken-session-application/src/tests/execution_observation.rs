@@ -129,8 +129,9 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
     // C6+C3 -> the canonical full report, excluding earlier steps, foreign
     // partials and a later incomplete next step, on every page and exact replay.
     use awaken_dispatch_contract::{
-        DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOutcome, RunClaim,
+        DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOutcome,
     };
+    use awaken_worker_contract::RunClaim;
     let repository = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -570,9 +571,8 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
     // unchanged lifecycle cursor and no ticket/output/usage; E2 !C2 or C4 is
     // NotFound; E3 read/replay performs no Session write. This tests the existing
     // receipt owner; native reservation/admission tests own receipt creation.
-    use awaken_dispatch_contract::{
-        DispatchCursor, DispatchOperation, DispatchOperationalEvent, RunClaim,
-    };
+    use awaken_dispatch_contract::{DispatchCursor, DispatchOperation, DispatchOperationalEvent};
+    use awaken_worker_contract::RunClaim;
     let repository = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await

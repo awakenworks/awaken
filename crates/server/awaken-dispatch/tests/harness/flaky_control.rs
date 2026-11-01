@@ -8,7 +8,7 @@ impl awaken_dispatch_contract::DispatchAttemptControl for FlakyDispatchStore {
         &self,
         claim: &awaken_dispatch::RunClaim,
         binding: Option<&awaken_dispatch::AttemptExecutionBinding>,
-        guard: awaken_dispatch_contract::WorkerIncarnationGuard,
+        guard: awaken_worker_contract::WorkerIncarnationGuard,
         handoff: bool,
     ) -> Result<awaken_dispatch::AttemptAdmission, awaken_dispatch::DispatchError> {
         self.inner

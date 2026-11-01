@@ -372,7 +372,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     host.run_assembly
         .installed_sessions
         .install_run(thread, |run| {
-            run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
+            run.dispatch_claim = Some(awaken_worker_contract::RunClaim {
                 run_id: RunId("claimed-ordinary-run".into()),
                 owner: "worker-a".into(),
                 epoch: 1,
@@ -754,9 +754,9 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         // The only constructor of a `RegisteredCapacity` is the manifest this
         // Worker registers, so the installer cannot be handed a number the
         // registry never saw.
-        let mut manifest = awaken_dispatch_contract::WorkerManifest::default();
+        let mut manifest = awaken_worker_contract::WorkerManifest::default();
         manifest.capacity.max_concurrent = capacity as u32;
-        let registered = awaken_dispatch_contract::RegisteredCapacity::of(&manifest)
+        let registered = awaken_worker_contract::RegisteredCapacity::of(&manifest)
             .expect("R2 non-zero registered capacity");
         let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new(system_clock()));
         let file: Arc<
@@ -832,7 +832,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
                 crate::host::test_upstream_authority().with_dispatch_binding(
                     worker.run_assembly.authority.dispatch_binding().unwrap()
                 ),
-                awaken_dispatch_contract::RegisteredCapacity::of(&manifest).unwrap(),
+                awaken_worker_contract::RegisteredCapacity::of(&manifest).unwrap(),
             )
             .is_err(),
             "R3 registered execution capacity cannot become a coordinator-only graph"
@@ -840,10 +840,10 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
     }
     // A manifest that registers no capacity yields no installable registration:
     // the zero can never reach the installer as a silently clamped default.
-    let mut unregisterable = awaken_dispatch_contract::WorkerManifest::default();
+    let mut unregisterable = awaken_worker_contract::WorkerManifest::default();
     unregisterable.capacity.max_concurrent = 0;
     assert!(
-        awaken_dispatch_contract::RegisteredCapacity::of(&unregisterable).is_err(),
+        awaken_worker_contract::RegisteredCapacity::of(&unregisterable).is_err(),
         "R2 zero capacity is not a registration"
     );
 }

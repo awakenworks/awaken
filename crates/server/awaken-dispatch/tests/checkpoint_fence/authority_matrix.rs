@@ -24,7 +24,7 @@ struct Authority {
 impl DispatchCommitAuthority for Authority {
     async fn worker_owns_run(
         &self,
-        _: &awaken_dispatch_contract::WorkerIdentity,
+        _: &awaken_worker_contract::WorkerIdentity,
         _: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Option<RunClaim>, DispatchError> {
         panic!("checkpoint selection requires the exact epoch guard")

@@ -27,10 +27,11 @@ use awaken_dispatch_contract::DispatchEnqueue;
 use awaken_dispatch_contract::DispatchSettlement;
 use awaken_ext_memory::MemoryExtractionStatus;
 
-use awaken_dispatch_contract::{RunClaim, RunDispatch};
+use awaken_dispatch_contract::RunDispatch;
 use awaken_runtime_contract::RunActivation;
 use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ResolvedModelCandidate};
 use awaken_session_execution_contract::ApplicationErrorKind;
+use awaken_worker_contract::RunClaim;
 
 /// The Coordinator composition's resolver, rebuilt here over the same
 /// Host method so these tests drive the real claimed-commit service.
@@ -965,7 +966,7 @@ async fn worker_claimed_commit_is_the_injected_port_only_for_a_worker() {
             awaken_dispatch_erasure::DispatchBinding::remote(
                 Arc::new(awaken_coordinator_client::HttpDispatchQueue::new(
                     "http://127.0.0.1:9",
-                    awaken_dispatch_contract::WorkerIdentity::new("fixture", "fixture-boot", 1),
+                    awaken_worker_contract::WorkerIdentity::new("fixture", "fixture-boot", 1),
                 )),
                 injected.clone(),
             ),

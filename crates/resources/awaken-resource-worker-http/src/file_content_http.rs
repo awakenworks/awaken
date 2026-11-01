@@ -538,7 +538,7 @@ mod tests {
         // and File id => lossless request; F2 any unknown field => reject before
         // claim/resource checks. Rules W1 F1+!F2=>decode; W2 F1+F2=>fail closed.
         let request = FileContentRequest {
-            authority: ResourceOperationFence::Run(awaken_dispatch_contract::RunClaim {
+            authority: ResourceOperationFence::Run(awaken_worker_contract::RunClaim {
                 run_id: awaken_agent_contract::agent::run::Id("run-file".into()),
                 owner: "worker-file".into(),
                 epoch: 4,

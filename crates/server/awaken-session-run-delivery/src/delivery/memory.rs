@@ -142,7 +142,7 @@ impl DispatchedMemory {
                 .map(|scope| scope.0.as_str())
                 == Some(intent.workspace_id.as_str())
             && request.placement.location
-                == awaken_dispatch_contract::ExecutionLocation::RemoteRequired
+                == awaken_worker_contract::ExecutionLocation::RemoteRequired
     }
 
     async fn extract_run(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {

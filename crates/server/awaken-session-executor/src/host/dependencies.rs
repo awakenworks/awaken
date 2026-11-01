@@ -16,8 +16,8 @@
 
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use crate::host::*;
-use awaken_dispatch_contract::RunClaim;
 use awaken_session_configuration_contract::SkillBundleSource;
+use awaken_worker_contract::RunClaim;
 
 mod environment;
 mod tools;
@@ -164,7 +164,7 @@ impl SessionExecutorBuilder {
         content: capability::WorkerContentAdapters,
         process: SessionExecutionProcess,
         authority: crate::UpstreamAuthority,
-        capacity: awaken_dispatch_contract::RegisteredCapacity,
+        capacity: awaken_worker_contract::RegisteredCapacity,
     ) -> Result<Self, SessionExecutionError> {
         authority.validate_worker_connections()?;
         if !process.execution.local.runs_local_pool() {

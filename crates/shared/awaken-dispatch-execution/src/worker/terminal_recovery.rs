@@ -13,7 +13,10 @@ use super::{
 };
 use crate::Error;
 use crate::control_dispatch::TerminalRecoveryDispatch;
-use crate::dispatch::{Claimed, DispatchOutcome, DispatchSummary, RunClaim, SettleOutcome};
+use crate::{
+    dispatch::Claimed, dispatch::DispatchOutcome, dispatch::DispatchSummary,
+    dispatch::SettleOutcome,
+};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_erasure::Dispatch;
@@ -21,6 +24,7 @@ use awaken_runtime_contract::terminal::{
     CommittedTerminalProjection, CommittedTerminalRun, committed_terminal_projection,
     deliver_committed_terminal,
 };
+use awaken_worker_contract::RunClaim;
 use tracing::Instrument;
 
 pub(super) enum CommittedTerminalSettlement {

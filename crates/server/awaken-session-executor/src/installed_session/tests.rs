@@ -510,7 +510,7 @@ async fn poisoned_installed_sessions_refuse_source_actions_without_callbacks_or_
         files: Vec::new(),
         created_unix_nanos: 1,
     };
-    let claim = awaken_dispatch_contract::RunClaim {
+    let claim = awaken_worker_contract::RunClaim {
         run_id: awaken_agent_contract::agent::run::Id("original-run".into()),
         owner: "original-worker".into(),
         epoch: 3,

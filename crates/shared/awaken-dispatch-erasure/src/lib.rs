@@ -35,19 +35,20 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
-use awaken_dispatch_contract::{PlacementPolicy, WorkerSnapshot};
 use awaken_runtime_contract::resume::ResumeResult;
+use awaken_worker_contract::{PlacementPolicy, WorkerSnapshot};
 
 use awaken_agent_contract::credential::CandidateFingerprint;
+use awaken_credential_contract::{AttemptCredentialBinding, CredentialRealizationReceipt};
 use awaken_dispatch_contract::RunDispatch;
 use awaken_dispatch_contract::{
-    AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
-    DispatchCompletion, DispatchDepths, DispatchError, DispatchOutcome, DispatchSummary, Inbox,
-    InboxRead, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RunClaim,
-    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
-    SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, DispatchCompletion, DispatchDepths, DispatchError,
+    DispatchOutcome, DispatchSummary, Inbox, InboxRead, LeaseRenewalOutcome, Outbox, PendingInput,
+    PendingRecord, SessionChildAdmission, SessionRunReservationActivation,
+    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 use awaken_dispatch_contract::{DispatchCursor, DispatchOperationalFeed, DispatchPage};
+use awaken_worker_contract::RunClaim;
 
 use awaken_dispatch_contract::{
     ContinuationAdmission, DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership,
@@ -405,7 +406,7 @@ impl DispatchAdministration for AnyCoordinatorDispatch {
 impl DispatchCommitAuthority for AnyCoordinatorDispatch {
     async fn worker_owns_run(
         &self,
-        identity: &awaken_dispatch_contract::WorkerIdentity,
+        identity: &awaken_worker_contract::WorkerIdentity,
         run_id: &RunId,
     ) -> Result<Option<RunClaim>, DispatchError> {
         delegate_owner!(self, worker_owns_run(identity, run_id))
@@ -533,7 +534,7 @@ impl DispatchAttemptControl for AnyCoordinatorDispatch {
         &self,
         claim: &RunClaim,
         binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
-        guard: awaken_dispatch_contract::WorkerIncarnationGuard,
+        guard: awaken_worker_contract::WorkerIncarnationGuard,
         handoff: bool,
     ) -> Result<awaken_dispatch_contract::AttemptAdmission, DispatchError> {
         delegate_owner!(self, admit_attempt_guarded(claim, binding, guard, handoff))

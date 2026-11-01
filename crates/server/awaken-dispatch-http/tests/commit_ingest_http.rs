@@ -66,7 +66,7 @@ impl WorkerDirectory for CurrentWorkerDirectory {
     async fn lock_incarnation(
         &self,
         _identity: &WorkerIdentity,
-    ) -> Result<Option<awaken_dispatch_contract::WorkerIncarnationGuard>, RegistryError> {
+    ) -> Result<Option<awaken_worker_contract::WorkerIncarnationGuard>, RegistryError> {
         Err(RegistryError::Persistence(
             "fixture forbids physical admission".into(),
         ))

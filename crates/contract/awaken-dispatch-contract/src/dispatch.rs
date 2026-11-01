@@ -27,18 +27,21 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_credential_contract::CredentialRealizationCapabilities;
-pub use awaken_credential_contract::{
-    AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,
-    CredentialRealizationPersistenceDecision, CredentialRealizationReceipt, CredentialReceiptError,
-    credential_realization_persistence_decision, verify_credential_realization_receipt,
+use awaken_credential_contract::{
+    AttemptCredentialBinding, AttemptCredentialDelivery, CredentialRealizationReceipt,
 };
 #[cfg(test)]
-use awaken_credential_contract::{CredentialAdmissionError, CredentialRealizationKind};
+use awaken_credential_contract::{
+    AttemptCredentialBindingError, CredentialAdmissionError, CredentialRealizationKind,
+    CredentialReceiptError,
+};
 
 #[cfg(test)]
 use awaken_agent_contract::credential::{CredentialUsage, PlaintextBoundary};
 use awaken_time::{Expiry, UtcTime};
-use awaken_worker_contract::{PlacementPolicy, WorkerAssignment, WorkerIdentity, WorkerSnapshot};
+use awaken_worker_contract::{
+    PlacementPolicy, RunClaim, WorkerAssignment, WorkerIdentity, WorkerSnapshot,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::run_dispatch::RunDispatch;

@@ -7,10 +7,11 @@ use std::future::Future;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::RunState;
-use awaken_dispatch_contract::{DispatchSettlementError, RunClaim, RunDispatch};
+use awaken_dispatch_contract::{DispatchSettlementError, RunDispatch};
 use awaken_runtime_contract::terminal::{
     CommittedTerminalRun, RunTerminalObserver, deliver_committed_terminal,
 };
+use awaken_worker_contract::RunClaim;
 
 use crate::{CommittedReads, SessionCommit};
 

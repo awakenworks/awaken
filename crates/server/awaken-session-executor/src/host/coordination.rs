@@ -553,7 +553,7 @@ mod tests {
                     .request
                     .placement
                     .required_capabilities
-                    .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY),
+                    .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
                 "{rule}/E4 eligible Worker capability",
             );
             assert_eq!(

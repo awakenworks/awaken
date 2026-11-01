@@ -14,8 +14,8 @@ use awaken_agent_contract::credential::PlaintextHolder;
 use awaken_provisioning_contract::SandboxCapacityShapeId;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
-pub use awaken_tenancy::ExecutionScopeRef;
-pub use awaken_worker_contract::PlacementRequirements;
+use awaken_tenancy::ExecutionScopeRef;
+use awaken_worker_contract::PlacementRequirements;
 use serde::{Deserialize, Serialize};
 
 /// Dispatch-neutral envelope for a frozen Session resource manifest.

@@ -16,9 +16,12 @@ use awaken_credential_contract::{AttemptCredentialDeliveryRequest, CredentialRea
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ClaimedCommitCommand, DispatchOutcome, PendingInput, RegisteredWorker, RegistryMutation,
-    RunClaim, RunDispatch, SessionRunReservationResolution, SubmitOptions, WorkerHeartbeat,
-    WorkerIdentity, WorkerRegistration,
+    ClaimedCommitCommand, DispatchOutcome, PendingInput, RunDispatch,
+    SessionRunReservationResolution, SubmitOptions,
+};
+use awaken_worker_contract::{
+    RegisteredWorker, RegistryMutation, RunClaim, WorkerHeartbeat, WorkerIdentity,
+    WorkerRegistration,
 };
 
 /// Finite wire budget for a claim-fenced commit, including inline browser
@@ -430,7 +433,7 @@ mod tests {
             }
             let decoded = [
                 serde_json::from_value::<crate::DispatchLease>(lease).map(|v| v.epoch()),
-                serde_json::from_value::<crate::RunClaim>(claim).map(|v| v.epoch),
+                serde_json::from_value::<awaken_worker_contract::RunClaim>(claim).map(|v| v.epoch),
                 serde_json::from_value::<RenewRequest>(renew).map(|v| v.lease_epoch),
                 serde_json::from_value::<SettleRequest>(settle).map(|v| v.epoch),
             ];

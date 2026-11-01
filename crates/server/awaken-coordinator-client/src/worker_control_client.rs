@@ -4,11 +4,11 @@
 //! Worker lifecycle client over the same authenticated upstream used for
 //! dispatch and commits. It carries no store and trusts no client-side clock.
 
-use awaken_dispatch_contract::{
-    RegistryMutation, RunClaim, WorkerHeartbeat, WorkerHeartbeatReceipt, WorkerIdentity,
-    WorkerManifest, WorkerRegistration, WorkerRegistrationReceipt,
-};
+use awaken_dispatch_contract::{WorkerHeartbeatReceipt, WorkerRegistrationReceipt};
 use awaken_session_execution_contract::ClaimedSessionControlError;
+use awaken_worker_contract::{
+    RegistryMutation, RunClaim, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRegistration,
+};
 use serde_json::{Value, json};
 
 use awaken_worker_transport_security::WorkerUpstream;

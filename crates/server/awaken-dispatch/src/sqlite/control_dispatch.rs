@@ -36,7 +36,7 @@ impl awaken_dispatch_contract::DispatchAttemptControl for SqliteDispatchStore {
         &self,
         claim: &RunClaim,
         binding: Option<&AttemptExecutionBinding>,
-        guard: awaken_dispatch_contract::WorkerIncarnationGuard,
+        guard: awaken_worker_contract::WorkerIncarnationGuard,
         handoff: bool,
     ) -> Result<AttemptAdmission, DispatchError> {
         crate::application::admit_with_incarnation_guard(self, claim, binding, guard, handoff).await

@@ -43,6 +43,7 @@ awaken-sqlite-pool = { workspace = true, optional = true }
 awaken-sql-storage = { workspace = true, optional = true, features = ["postgres"] }
 async-nats = { version = "0.50", optional = true }
 awaken-time.workspace = true
+awaken-tenancy.workspace = true
 futures-lite = { version = "2", optional = true }
 
 [features]

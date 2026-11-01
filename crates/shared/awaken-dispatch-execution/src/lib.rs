@@ -41,8 +41,9 @@ pub use attempt_termination::{
 };
 pub use awaken_dispatch_contract::{
     ClaimedStreamPublisher, DispatchError, DispatchSettlementObserver, DispatchState,
-    DispatchSummary, RunClaim, RunDispatch, SettleOutcome,
+    DispatchSummary, RunDispatch, SettleOutcome,
 };
+pub use awaken_worker_contract::RunClaim;
 pub use commit_fence::{
     ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, validate_commit_dispatch_binding,
 };

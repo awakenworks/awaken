@@ -3,13 +3,14 @@
 
 use std::sync::Arc;
 
-use awaken_dispatch_contract::{DispatchCommitAuthority, RunClaim};
+use awaken_dispatch_contract::DispatchCommitAuthority;
 use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery, FileApplicationService, MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError,
 };
 use awaken_session_contract::{SessionEnvironmentOperation, SessionTerminalCleanupEffect};
 use awaken_session_execution_contract::ResourceOperationFence;
+use awaken_worker_contract::RunClaim;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
@@ -1117,7 +1118,7 @@ mod tests {
         }
     }
 
-    use awaken_dispatch_contract::RunClaim;
+    use awaken_worker_contract::RunClaim;
     use awaken_worker_contract::WorkerIdentity;
 
     fn metadata(path: &str) -> ArtifactPublicationRequest {

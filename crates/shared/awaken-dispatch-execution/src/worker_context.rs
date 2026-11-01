@@ -20,7 +20,8 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
 
 use crate::claimed_stream::{ClaimBoundStreamSink, LocalClaimedStreamPublisher};
-use awaken_dispatch_contract::{ClaimedStreamPublisher, RunClaim};
+use awaken_dispatch_contract::ClaimedStreamPublisher;
+use awaken_worker_contract::RunClaim;
 
 /// Materializes the activation's admission-pinned inference access. A worker
 /// receives the complete activation and opaque access value; it neither selects a

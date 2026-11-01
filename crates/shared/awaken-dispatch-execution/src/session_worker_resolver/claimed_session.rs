@@ -68,7 +68,7 @@ async fn install_dispatched_resources(
     installation: &dyn crate::session_execution::ClaimedSessionInstallation,
     session: &str,
     manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest,
-    claim: &awaken_dispatch_contract::RunClaim,
+    claim: &awaken_worker_contract::RunClaim,
 ) -> Result<(), crate::Error> {
     installation
         .install_dispatched_resources(session, manifest, claim)
@@ -89,7 +89,7 @@ impl SessionWorkerResolver {
             &awaken_session_configuration_contract::resource::SessionResourceManifest,
         >,
     ) -> Result<(), crate::Error> {
-        let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
+        let claim = awaken_worker_contract::RunClaim::from(&claimed.lease);
         let installation = execution.installation.as_ref();
         // Read the prior exact claim/lease during the original atomic admission;
         // never relabel a predecessor before Control has accepted this claim.

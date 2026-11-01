@@ -16,7 +16,7 @@ mod tests {
         // In particular Work retirement must never reopen its Closed lease.
         use crate::installed_session::InstalledSession;
         use crate::realization_state::SessionRealizationAuthority as A;
-        let claim = awaken_dispatch_contract::RunClaim {
+        let claim = awaken_worker_contract::RunClaim {
             run_id: awaken_agent_contract::agent::run::Id("run".into()),
             owner: "worker:incarnation".into(),
             epoch: 2,
@@ -27,7 +27,7 @@ mod tests {
             epoch: 7,
             expires_at_unix_ms: u64::MAX,
         };
-        let previous = awaken_dispatch_contract::RunClaim {
+        let previous = awaken_worker_contract::RunClaim {
             epoch: 1,
             ..claim.clone()
         };
@@ -306,12 +306,12 @@ mod tests {
             .await)
                 .build()
                 .expect("validated Host dependencies");
-            let old = awaken_dispatch_contract::RunClaim {
+            let old = awaken_worker_contract::RunClaim {
                 run_id: awaken_agent_contract::agent::run::Id("run".into()),
                 owner: "old".into(),
                 epoch: 1,
             };
-            let new = awaken_dispatch_contract::RunClaim {
+            let new = awaken_worker_contract::RunClaim {
                 owner: "new".into(),
                 epoch: 2,
                 ..old.clone()

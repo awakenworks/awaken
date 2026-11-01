@@ -137,7 +137,7 @@ impl ChildWorkerFactory {
                 host.resources.file_content_source.clone(),
                 workspace_id,
                 claimed.request.thread_id().0.clone(),
-                Some(awaken_dispatch_contract::RunClaim::from(&claimed.lease)),
+                Some(awaken_worker_contract::RunClaim::from(&claimed.lease)),
             ),
         ));
         let has_model_request_gate = context.model_request_gate.is_some();
@@ -218,11 +218,11 @@ mod tests {
                 DispatchBinding::remote(
                     Arc::new(awaken_coordinator_client::HttpDispatchQueue::new(
                         "http://127.0.0.1:9",
-                        awaken_dispatch_contract::WorkerIdentity::new("child", "boot", 1),
+                        awaken_worker_contract::WorkerIdentity::new("child", "boot", 1),
                     )),
                     Arc::new(awaken_coordinator_client::RemoteClaimedRunCommit::new(
                         "http://127.0.0.1:9",
-                        awaken_dispatch_contract::WorkerIdentity::new("child", "boot", 1),
+                        awaken_worker_contract::WorkerIdentity::new("child", "boot", 1),
                     )),
                 ),
                 parent_reader.clone(),

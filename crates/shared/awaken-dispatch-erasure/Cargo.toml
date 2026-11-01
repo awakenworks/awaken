@@ -24,6 +24,7 @@ async-trait.workspace = true
 
 awaken-time = { workspace = true, optional = true }
 awaken-store-inmem = { workspace = true, optional = true }
+awaken-worker-contract.workspace = true
 
 [features]
 default = []

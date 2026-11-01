@@ -1,5 +1,5 @@
 use awaken_coordinator_client::{WorkerControlClient, WorkerRegistrationError};
-use awaken_dispatch_contract::{WorkerHeartbeat, WorkerIdentity, WorkerManifest};
+use awaken_worker_contract::{WorkerHeartbeat, WorkerIdentity, WorkerManifest};
 use awaken_worker_transport_security::WorkerUpstream;
 use axum::extract::State;
 use axum::routing::post;

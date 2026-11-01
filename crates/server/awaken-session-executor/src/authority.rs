@@ -378,7 +378,7 @@ impl UpstreamAuthority {
     pub fn with_memory_reference_encoder<E>(mut self, encoder: Arc<E>) -> Self
     where
         E: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                awaken_dispatch_contract::RunClaim,
+                awaken_worker_contract::RunClaim,
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
                 awaken_session_execution_contract::SessionResourceMaterializationIntent,
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<

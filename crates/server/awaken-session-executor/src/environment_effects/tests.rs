@@ -1,9 +1,11 @@
 //! Realizer effects continue with only their selected roles after the Host is gone.
 use super::*;
+use awaken_credential_contract::CredentialRealizationReceipt;
 use awaken_dispatch_contract::dispatch::AttemptExecutionBinding;
 use awaken_dispatch_contract::*;
 use awaken_session_contract::{SessionEnvironmentReceipt, SessionEnvironmentState};
 use awaken_session_execution_contract::SessionEnvironmentBindingSink;
+use awaken_worker_contract::RunClaim;
 use std::sync::{
     Mutex,
     atomic::{AtomicUsize, Ordering},

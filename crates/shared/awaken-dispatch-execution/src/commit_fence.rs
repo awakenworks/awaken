@@ -24,10 +24,11 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 
-use crate::dispatch::{ClaimedCommitCommand, DispatchCommitAuthority, RunClaim};
 use crate::{RecoveryProjection, RunDispatch};
+use crate::{dispatch::ClaimedCommitCommand, dispatch::DispatchCommitAuthority};
 pub use awaken_dispatch_contract::ClaimedRunCommit;
 use awaken_dispatch_contract::CommitEpochGuard;
+use awaken_worker_contract::RunClaim;
 
 /// Verify that committed logical Run/Thread truth belongs to the dispatch whose
 /// exact claim is currently fenced. Both embedded and remote workers cross this

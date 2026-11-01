@@ -5,7 +5,8 @@ use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
 use awaken_agent_contract::thread::commit::operation::CommitReceipt;
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 
-use crate::{ClaimedCommitCommand, RunClaim};
+use crate::ClaimedCommitCommand;
+use awaken_worker_contract::RunClaim;
 
 /// Atomically apply a [`ThreadCommit`] under one durable [`RunClaim`].
 #[async_trait::async_trait]

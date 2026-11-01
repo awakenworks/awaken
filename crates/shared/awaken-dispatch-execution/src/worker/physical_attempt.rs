@@ -18,11 +18,11 @@ use std::sync::Arc;
 
 use super::{ClaimedSnapshotAuthority, DispatchWorker};
 use crate::Error;
-use crate::dispatch::{
-    AttemptAdmission, AttemptReturnCause, Claimed, DispatchError, DispatchExecution, RunClaim,
-    SettleOutcome,
-};
 use crate::execution_capacity::ExecutionCapacity;
+use crate::{
+    dispatch::AttemptAdmission, dispatch::AttemptReturnCause, dispatch::Claimed,
+    dispatch::DispatchError, dispatch::DispatchExecution, dispatch::SettleOutcome,
+};
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::RunState;
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
@@ -30,6 +30,7 @@ use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput};
 use awaken_runtime_contract::runtime_context::{ModelCancellationObservation, RuntimeRunContext};
 use awaken_time::WallClock;
 use awaken_time::WallClockExt;
+use awaken_worker_contract::RunClaim;
 
 /// An unconfirmed predecessor is a domain outcome for a cancellation request,
 /// not a successful cancel or a fabricated physical-return acknowledgement.

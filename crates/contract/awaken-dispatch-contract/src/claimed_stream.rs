@@ -4,7 +4,7 @@ use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_agent_contract::stream::sink::Error as StreamError;
 
-use crate::RunClaim;
+use awaken_worker_contract::RunClaim;
 
 #[async_trait::async_trait]
 pub trait ClaimedStreamPublisher: Send + Sync {

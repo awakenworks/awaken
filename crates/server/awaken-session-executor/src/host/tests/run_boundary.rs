@@ -293,7 +293,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
             .installed_sessions
             .install_run("worker-stop", |run| {
                 run.context = Some(ctx.clone());
-                run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
+                run.dispatch_claim = Some(awaken_worker_contract::RunClaim {
                     run_id,
                     owner: "worker-old".into(),
                     epoch: 1,
@@ -328,7 +328,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
         .run_assembly
         .installed_sessions
         .install_run("worker-stop", |run| {
-            run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
+            run.dispatch_claim = Some(awaken_worker_contract::RunClaim {
                 run_id: unregistered.clone(),
                 owner: "worker-old".into(),
                 epoch: 1,

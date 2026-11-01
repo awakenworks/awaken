@@ -4,11 +4,11 @@ use crate::AnyCoordinatorDispatch;
 use async_trait::async_trait;
 use awaken_agent_contract::{ThreadId, agent::run::Id as RunId};
 use awaken_dispatch_contract::DispatchExecutionReads;
-#[cfg(test)]
-use awaken_dispatch_contract::RunClaim;
 use awaken_dispatch_contract::dispatch::PhysicalAttempt;
 use awaken_dispatch_contract::{DispatchClaimOwnership, DispatchControlReads, DispatchError};
 use awaken_session_application_contract::SessionRunExecutionPhase as Phase;
+#[cfg(test)]
+use awaken_worker_contract::RunClaim;
 
 #[async_trait]
 impl DispatchExecutionReads for AnyCoordinatorDispatch {

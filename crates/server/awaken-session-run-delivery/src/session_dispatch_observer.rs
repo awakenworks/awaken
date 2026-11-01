@@ -10,15 +10,14 @@ use awaken_agent_contract::agent::{
     run::{Id as RunId, RunState},
     thread::Id as ThreadId,
 };
-use awaken_dispatch_contract::{
-    DispatchSettlementError, DispatchSettlementObserver, RunClaim, RunDispatch,
-};
+use awaken_dispatch_contract::{DispatchSettlementError, DispatchSettlementObserver, RunDispatch};
 use awaken_dispatch_execution::SessionRunAdmissionObserver;
 use awaken_session_execution_contract::{
     SessionAgentBoundaryCommand, SessionAgentCoordination, SessionRunActivityAdmission,
     SessionRunActivityAdmissionMode,
 };
 use awaken_session_types::SessionId;
+use awaken_worker_contract::RunClaim;
 
 /// The Coordinator's dispatch observers over its original Session application.
 /// The root supplies one immutable application. This adapter takes no executor,

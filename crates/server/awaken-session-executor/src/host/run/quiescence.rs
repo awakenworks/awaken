@@ -124,7 +124,7 @@ mod terminal_scope_tests {
                         // This physical binding was admitted by a registered
                         // remote Worker using the current protocol, not v0.
                         .with_placement(
-                            awaken_dispatch_contract::PlacementRequirements::remote_required(),
+                            awaken_worker_contract::PlacementRequirements::remote_required(),
                         )
                         .with_worker_codec_requirements(),
                 )
@@ -138,7 +138,7 @@ mod terminal_scope_tests {
                 .await
                 .unwrap()
                 .unwrap();
-            let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
+            let claim = awaken_worker_contract::RunClaim::from(&claimed.lease);
             let binding = awaken_dispatch_contract::dispatch::AttemptExecutionBinding::new(
                 worker,
                 "fixture-provider",

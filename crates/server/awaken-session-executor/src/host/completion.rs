@@ -7,13 +7,13 @@
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 #[cfg(test)]
-use awaken_dispatch_contract::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};
-#[cfg(test)]
 use awaken_dispatch_execution::placement::remote_worker_placement;
 use awaken_session_execution_contract::{
     AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
 };
 use awaken_session_run_delivery::{activate_and_await_session_run, await_completion_state};
+#[cfg(test)]
+use awaken_worker_contract::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};
 
 impl crate::SessionRuns {
     /// Register before `publish` delivers one Session-owned resume, then

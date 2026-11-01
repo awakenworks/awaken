@@ -117,7 +117,7 @@ mod tests {
             request
                 .placement
                 .required_capabilities
-                .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY)
+                .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY)
         );
         assert_eq!(
             request.inference_plaintext_holder,
@@ -283,13 +283,13 @@ mod tests {
             !request
                 .placement
                 .required_capabilities
-                .contains(awaken_dispatch_contract::SESSION_RESOURCES_CAPABILITY)
+                .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY)
         );
         assert_eq!(request.placement.contract_version, 1, "P1/E3");
         assert_eq!(request.placement.dispatch_contract_version, 1, "P1/E3");
         assert_eq!(
             request.placement.runtime_protocol_version,
-            awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
             "P1/E3"
         );
     }
