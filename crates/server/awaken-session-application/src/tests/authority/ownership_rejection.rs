@@ -23,7 +23,7 @@
 use super::*;
 use crate::tests::effect_counting_runtime::EffectCountingRuntime;
 use crate::{SessionArchiveWithRepositoryPublicationCommand, SessionRepositoryPublicationSelector};
-use awaken_session_realization_contract::SessionFileReadAuthorization as _;
+use awaken_session_execution_contract::SessionFileReadAuthorization as _;
 
 const INTRUDER: &str = "intruder-workspace";
 const OWNED: &str = "t06-owned-session";

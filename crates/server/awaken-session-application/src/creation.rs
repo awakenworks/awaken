@@ -19,8 +19,8 @@ use awaken_session_contract::{
     IdempotencyRecord, PersistedSession, SessionAggregate, SessionExecutionState,
     SessionMutationPayload,
 };
-use awaken_session_realization_contract::SessionRealizationControlDisposition;
-use awaken_session_realization_contract::SessionRealizationDriveError;
+use awaken_session_execution_contract::SessionRealizationControlDisposition;
+use awaken_session_execution_contract::SessionRealizationDriveError;
 use awaken_session_types::RunError;
 
 use std::sync::Arc;

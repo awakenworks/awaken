@@ -7,12 +7,12 @@
 //! revocation selection compares, so a removed/recreated installed Session is automatically
 //! a replaced registration. This adapter only feeds that identity and its
 //! acquired owner to the contract-owned kernel and constructor
-//! (`awaken_session_realization_contract::SessionRealizationPermit`); it is not another
+//! (`awaken_session_execution_contract::SessionRealizationPermit`); it is not another
 //! lock, generation counter, registry, admission rule, or durable authority.
 
 use std::sync::Arc;
 
-use awaken_session_realization_contract::SessionRealizationPermit;
+use awaken_session_execution_contract::SessionRealizationPermit;
 
 use crate::realization_error::RealizationLock;
 

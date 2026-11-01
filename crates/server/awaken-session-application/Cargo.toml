@@ -25,7 +25,6 @@ awaken-dispatch-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-realization-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-types.workspace = true
@@ -43,7 +42,7 @@ tracing = "0.1"
 
 [features]
 test-support = [
-    "awaken-session-realization-contract/test-support",
+    "awaken-session-execution-contract/test-support",
     "awaken-session-realization-driver/test-support",
 ]
 

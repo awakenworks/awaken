@@ -81,7 +81,7 @@ fn input_admitted<'a>(
         // The canonical realization owner may extend the same lease without
         // reconnecting this stream: only a renewal of the bound fence (same
         // Session, generation, owner and epoch; expiry never shortened) keeps it.
-        if awaken_session_realization_contract::realization_generation_authorizes(current, bound)
+        if awaken_session_execution_contract::realization_generation_authorizes(current, bound)
             && root(current)? == Some(true)
         {
             return Ok(true);
@@ -354,7 +354,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                awaken_session_realization_contract::realization_generation_authorizes(
+                awaken_session_execution_contract::realization_generation_authorizes(
                     &current, &bound
                 ),
                 retain,

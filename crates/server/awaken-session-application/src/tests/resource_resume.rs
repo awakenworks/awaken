@@ -7,7 +7,7 @@ use awaken_session_configuration_contract::resource::{
     SessionRealizationLease, SessionResourceManifest,
 };
 use awaken_session_contract::SessionResourceState;
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     ActivateSessionRealization, BeginSessionRealization, FrozenResourceTransitionUse,
     SessionRealizationControl, SessionRealizationTarget, SessionResourceMaterializationControl,
 };
@@ -153,7 +153,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                     "exact Begin replay"
                 );
                 let intent =
-                    awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new_skill(
+                    awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new_skill(
                         id,
                         1,
                         active.skills()[0].clone(),
@@ -274,7 +274,7 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
 /// the root. Existing lease/terminal tests supply the orthogonal deny overrides.
 #[tokio::test]
 async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
-    use awaken_session_realization_contract::SessionResourceMaterializationIntent;
+    use awaken_session_execution_contract::SessionResourceMaterializationIntent;
     for lifecycle in ["pending", "rollback", "committed"] {
         let repo: Arc<dyn crate::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -358,7 +358,7 @@ async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
                                 "{lifecycle}/{revision}/{source}"
                             );
                         } else {
-                            assert!(matches!(result, Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))), "{lifecycle}/{revision}/{source}/{forged}");
+                            assert!(matches!(result, Err(awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(_))), "{lifecycle}/{revision}/{source}/{forged}");
                         }
                         assert_eq!(
                             repo.get(&SessionId::from(id)).await.unwrap(),
@@ -410,26 +410,22 @@ async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources
         let before = repo.get(&SessionId::from(id)).await.unwrap();
         let result = app
             .realizations
-            .fail_session_realization(
-                awaken_session_realization_contract::FailSessionRealization {
-                    session_id: id.into(),
-                    lease,
-                    prepared_resource_revision: Some(revision),
-                    retryable: true,
-                    not_ready: false,
-                    source_run_id: None,
-                    reason: "read unavailable".into(),
-                },
-            )
+            .fail_session_realization(awaken_session_execution_contract::FailSessionRealization {
+                session_id: id.into(),
+                lease,
+                prepared_resource_revision: Some(revision),
+                retryable: true,
+                not_ready: false,
+                source_run_id: None,
+                reason: "read unavailable".into(),
+            })
             .await;
         let after = repo.get(&SessionId::from(id)).await.unwrap();
         if revision == 99 {
             assert!(matches!(
                 result,
                 Err(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
-                        _
-                    )
+                    awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(_)
                 )
             ));
             assert_eq!(after, before);

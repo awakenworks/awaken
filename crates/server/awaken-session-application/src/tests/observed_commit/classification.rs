@@ -234,7 +234,7 @@ fn permanent_mutation_failures_do_not_become_retryable_domain_errors() {
         if kind == RunErrorKind::Internal {
             assert!(matches!(
                 control,
-                awaken_session_realization_contract::SessionRealizationControlFailure::Internal(_)
+                awaken_session_execution_contract::SessionRealizationControlFailure::Internal(_)
             ));
             assert!(
                 !error.is_unclassified_internal(),
@@ -248,7 +248,7 @@ fn permanent_mutation_failures_do_not_become_retryable_domain_errors() {
             );
             assert_eq!(
                 disposition,
-                awaken_session_realization_contract::SessionRealizationControlDisposition::Terminal
+                awaken_session_execution_contract::SessionRealizationControlDisposition::Terminal
             );
             let error: awaken_session_types::RunError =
                 crate::SessionAccessError::Internal("same detail".into()).into();
@@ -266,7 +266,7 @@ fn permanent_mutation_failures_do_not_become_retryable_domain_errors() {
                 archive,
                 crate::SessionArchiveWithRepositoryPublicationError::Unavailable(_)
             ));
-            assert_eq!(disposition, awaken_session_realization_contract::SessionRealizationControlDisposition::Retryable);
+            assert_eq!(disposition, awaken_session_execution_contract::SessionRealizationControlDisposition::Retryable);
         }
     }
 }
@@ -415,7 +415,7 @@ async fn every_live_inbox_operation_preserves_authority_failure_before_runtime_e
 
 #[test]
 fn mutation_control_conversion_preserves_each_authority_failure_class() {
-    use awaken_session_realization_contract::SessionRealizationControlFailure as Control;
+    use awaken_session_execution_contract::SessionRealizationControlFailure as Control;
     use serde_json::json;
     // Closed table of every mutation cause at the existing control interface:
     // missing/conflict preserve identity; outage preserves its detail; invalid

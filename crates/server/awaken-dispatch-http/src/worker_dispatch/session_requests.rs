@@ -28,7 +28,7 @@ pub(super) struct SessionCleanupPollReq {
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionCleanupClaimNextReq {
     pub(super) identity: WorkerIdentity,
-    pub(super) target: awaken_session_realization_contract::SessionRealizationTarget,
+    pub(super) target: awaken_session_execution_contract::SessionRealizationTarget,
     pub(super) sweep_cursor_version: u8,
     #[serde(default)]
     pub(super) after_session_id: Option<awaken_session_types::SessionId>,
@@ -38,7 +38,7 @@ pub(super) struct SessionCleanupClaimNextReq {
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionPreparationClaimNextReq {
     pub(super) identity: WorkerIdentity,
-    pub(super) target: awaken_session_realization_contract::SessionRealizationTarget,
+    pub(super) target: awaken_session_execution_contract::SessionRealizationTarget,
 }
 
 #[derive(Deserialize)]

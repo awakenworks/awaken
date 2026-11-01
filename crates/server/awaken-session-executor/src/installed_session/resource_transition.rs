@@ -29,11 +29,11 @@ impl FrozenResourceProjectionMode {
 
     pub(super) const fn transition_use(
         self,
-    ) -> awaken_session_realization_contract::FrozenResourceTransitionUse {
+    ) -> awaken_session_execution_contract::FrozenResourceTransitionUse {
         if self.synchronizes() {
-            awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects
+            awaken_session_execution_contract::FrozenResourceTransitionUse::ApplyEffects
         } else {
-            awaken_session_realization_contract::FrozenResourceTransitionUse::ValidateInstalled
+            awaken_session_execution_contract::FrozenResourceTransitionUse::ValidateInstalled
         }
     }
 

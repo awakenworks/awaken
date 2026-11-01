@@ -27,7 +27,7 @@ use awaken_session_configuration_contract::SessionRuntimeProjection;
 use awaken_session_configuration_contract::resource::{
     SessionRealizationLease, SessionResourceManifest,
 };
-use awaken_session_realization_contract::SessionRealizationPermit;
+use awaken_session_execution_contract::SessionRealizationPermit;
 
 use crate::{AdmissionError, DispatchWorker, Error};
 
@@ -138,9 +138,9 @@ pub trait ClaimedRunPreparation: Send + Sync {
     /// Drive the canonical realization of a Control-resumed projection.
     async fn drive_claimed_projection(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         session: &awaken_session_types::SessionId,
-        directive: awaken_session_realization_contract::SessionRealizationDirective,
+        directive: awaken_session_execution_contract::SessionRealizationDirective,
         claimed: &Claimed,
         started: awaken_lease_contract::authority::AuthorityProofStarted,
         permit: &SessionRealizationPermit,

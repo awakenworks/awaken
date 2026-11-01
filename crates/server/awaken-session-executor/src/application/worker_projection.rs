@@ -12,13 +12,13 @@ use awaken_session_realization::worker_projection::{
 
 pub(crate) async fn realize_session(
     host: &crate::RunAssembly,
-    control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+    control: &dyn awaken_session_execution_contract::SessionRealizationControl,
     session_id: &awaken_session_types::SessionId,
-    directive: awaken_session_realization_contract::SessionRealizationDirective,
+    directive: awaken_session_execution_contract::SessionRealizationDirective,
     claim: Option<&awaken_dispatch_contract::RunClaim>,
     published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     rebuild_unavailable_environment: bool,
-) -> Result<(), awaken_session_realization_contract::SessionRealizationDriveError> {
+) -> Result<(), awaken_session_execution_contract::SessionRealizationDriveError> {
     let realization = host
         .sessions()
         .acquire_realization(session_id.as_str())
@@ -37,7 +37,7 @@ pub(crate) async fn realize_session(
         directive,
         synchronizer,
         awaken_authority_clock::authority_proof_started().map_err(|error| {
-            awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+            awaken_session_execution_contract::SessionRealizationDriveError::Effect(
                 awaken_session_types::RunError::unavailable(error.to_string()).into(),
             )
         })?,
@@ -50,13 +50,13 @@ pub(crate) async fn realize_session(
 /// lock so no caller can create a parallel phase driver.
 pub(crate) async fn drive_session_realization(
     host: &crate::RunAssembly,
-    control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+    control: &dyn awaken_session_execution_contract::SessionRealizationControl,
     session_id: &awaken_session_types::SessionId,
-    directive: awaken_session_realization_contract::SessionRealizationDirective,
+    directive: awaken_session_execution_contract::SessionRealizationDirective,
     claimed: Option<&awaken_dispatch_contract::Claimed>,
     request_started: awaken_lease_contract::authority::AuthorityProofStarted,
-    realization: &awaken_session_realization_contract::SessionRealizationPermit,
-) -> Result<(), awaken_session_realization_contract::SessionRealizationDriveError> {
+    realization: &awaken_session_execution_contract::SessionRealizationPermit,
+) -> Result<(), awaken_session_execution_contract::SessionRealizationDriveError> {
     let claim = claimed.map(|claimed| awaken_dispatch_contract::RunClaim::from(&claimed.lease));
     let synchronizer = WorkerProjectionSynchronizer::for_claimed(
         host,
@@ -78,12 +78,12 @@ pub(crate) async fn drive_session_realization(
 /// Sole Runtime-to-contract effect path. The production entry and the
 /// test-only projection seam differ only in how they construct this adapter.
 pub(crate) async fn drive_session_realization_with_synchronizer(
-    control: &dyn awaken_session_realization_contract::SessionRealizationControl,
-    directive: awaken_session_realization_contract::SessionRealizationDirective,
+    control: &dyn awaken_session_execution_contract::SessionRealizationControl,
+    directive: awaken_session_execution_contract::SessionRealizationDirective,
     synchronizer: WorkerProjectionSynchronizer<'_, crate::RunAssembly>,
     request_started: awaken_lease_contract::authority::AuthorityProofStarted,
-    realization: &awaken_session_realization_contract::SessionRealizationPermit,
-) -> Result<(), awaken_session_realization_contract::SessionRealizationDriveError> {
+    realization: &awaken_session_execution_contract::SessionRealizationPermit,
+) -> Result<(), awaken_session_execution_contract::SessionRealizationDriveError> {
     let host = synchronizer.execution;
     awaken_session_realization_driver::drive_session_realization(
         realization,

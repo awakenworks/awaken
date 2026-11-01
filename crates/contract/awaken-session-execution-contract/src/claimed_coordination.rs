@@ -11,7 +11,7 @@
 //! transport validates it before calling the claim-free Session application,
 //! and the Session contract takes no dependency on the dispatch vocabulary.
 
-use awaken_session_realization_contract::ClaimedSessionControlError;
+use crate::ClaimedSessionControlError;
 
 use crate::{
     SessionAgentBoundaryCommand, SessionAgentMessageCommand, SessionAgentMessageReceipt,

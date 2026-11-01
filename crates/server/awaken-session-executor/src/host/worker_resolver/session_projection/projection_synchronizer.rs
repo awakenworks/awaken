@@ -261,7 +261,7 @@ mod tests {
         initial: InitialEnvironment,
         successor_cancellations: &[bool],
     ) {
-        use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
+        use awaken_session_execution_contract::SessionProjectionSynchronizer as _;
         let committed_candidate = initial != InitialEnvironment::Resident;
         let acknowledged = matches!(
             initial,
@@ -387,7 +387,7 @@ mod tests {
             &*managed.run_assembly,
             thread,
             projection,
-            awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
+            awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                 lease: awaken_session_realization::test_support::test_observed_lease(
                     initial_lease.clone(),
                 ),
@@ -736,10 +736,10 @@ mod tests {
             expires_at_unix_ms: awaken_session_realization::test_support::wall_clock_now_ms()
                 + 60_000,
         };
-        let directive = awaken_session_realization_contract::SessionRealizationDirective {
+        let directive = awaken_session_execution_contract::SessionRealizationDirective {
             projection: projection.clone(),
             authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
-            action: awaken_session_realization_contract::SessionRealizationAction::Complete,
+            action: awaken_session_execution_contract::SessionRealizationAction::Complete,
         };
         if scoped && !revoke {
             // SR5/SC2: a newer root with a foreign binding OR generation is not retirement
@@ -901,12 +901,12 @@ mod tests {
                 runtime_incarnation: format!("worker-a/boot-{}", 2 + round),
                 ..lease.clone()
             };
-            let directive = awaken_session_realization_contract::SessionRealizationDirective {
+            let directive = awaken_session_execution_contract::SessionRealizationDirective {
                 projection: projection.clone(),
                 authority: awaken_session_realization::test_support::test_lease_receipt(
                     lease.clone(),
                 ),
-                action: awaken_session_realization_contract::SessionRealizationAction::Complete,
+                action: awaken_session_execution_contract::SessionRealizationAction::Complete,
             };
             let cancelled_sink = successor_cancellations.get(round).map(|commit| {
                 Arc::new(
@@ -1319,7 +1319,7 @@ mod tests {
     /// Ordinary successful V1 recreation is OR1 below; it must not borrow C2.
     #[tokio::test]
     async fn claimed_rebuild_disposes_legacy_v1_before_projection_install() {
-        use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
+        use awaken_session_execution_contract::SessionProjectionSynchronizer as _;
 
         let thread = "claimed-ready-v1-preinstall-rebuild";
         let storage = tempfile::tempdir().expect("legacy rebuild storage");
@@ -1613,7 +1613,7 @@ mod tests {
     /// | RA3 | yes | local-capable | Retiring LegacyDirect | Rebuild | CR1 |
     #[tokio::test]
     async fn claimed_remote_a2a_rejects_a_retiring_local_owner_before_any_effect() {
-        use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
+        use awaken_session_execution_contract::SessionProjectionSynchronizer as _;
 
         let thread = "claimed-remote-a2a-retiring-local";
         let storage = tempfile::tempdir().expect("remote A2A guard storage");
@@ -1702,10 +1702,10 @@ mod tests {
             epoch: claim.epoch,
             expires_at_unix_ms: u64::MAX,
         };
-        let directive = awaken_session_realization_contract::SessionRealizationDirective {
+        let directive = awaken_session_execution_contract::SessionRealizationDirective {
             projection: remote_projection.clone(),
             authority: awaken_session_realization::test_support::test_lease_receipt(lease.clone()),
-            action: awaken_session_realization_contract::SessionRealizationAction::Complete,
+            action: awaken_session_execution_contract::SessionRealizationAction::Complete,
         };
         let error = WorkerProjectionSynchronizer::for_directive(
             host.run_assembly.as_ref(),

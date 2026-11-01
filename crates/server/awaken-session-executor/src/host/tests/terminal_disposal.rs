@@ -66,7 +66,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         &*managed.run_assembly,
         "t-end",
         terminal_projection.clone(),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("install the complete terminal-test projection before realization");
@@ -234,7 +234,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
                     &host.run_assembly.realization_executor,
                     &host.run_assembly.mcp,
                 ),
-                &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                     environment_creation_not_attempted: false,
                     session_id: "t-end".into(),
                     projection: terminal_projection.clone(),
@@ -276,7 +276,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
                 &host.run_assembly.realization_executor,
                 &host.run_assembly.mcp,
             ),
-            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: "t-end".into(),
                 projection: terminal_projection.clone(),
@@ -485,7 +485,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         },
     );
     let missing_authorization =
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+        awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
             missing_effect.clone(),
             "terminal-workspace".into(),
             None,
@@ -839,7 +839,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
                 &host.run_assembly.realization_executor,
                 &host.run_assembly.mcp,
             ),
-            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: session_id.into(),
                 projection: remote_terminal_cleanup_projection(),
@@ -1478,7 +1478,7 @@ async fn checkpoint_source_disposal_separates_preparation_and_current_authority(
         RetiringSessionEnvironment, SessionEnvironmentOwner, SessionEnvironmentRetirementCause,
     };
     use crate::realization_state::SessionRealizationAuthority as Authority;
-    use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
+    use awaken_session_execution_contract::SessionRealizationLeaseReceipt;
 
     // D1 durable preparation A has expired, but aggregate-current successor B
     // (higher epoch and different Worker/incarnation) may finish the same source.

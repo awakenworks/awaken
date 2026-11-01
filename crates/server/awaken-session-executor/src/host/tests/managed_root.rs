@@ -61,7 +61,7 @@ impl ManagedSessionRootFixture {
         thread: &str,
         init: awaken_session_configuration_contract::SessionInit,
     ) -> Result<
-        awaken_session_realization_contract::FrozenSessionProjection,
+        awaken_session_execution_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
         self.install_projection(
@@ -80,9 +80,9 @@ impl ManagedSessionRootFixture {
         &self,
         managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
     ) -> Result<
-        awaken_session_realization_contract::FrozenSessionProjection,
+        awaken_session_execution_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
         use awaken_session_contract::SessionRepository as _;
@@ -155,7 +155,7 @@ impl ManagedSessionRootFixture {
         managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
     ) -> Result<
-        awaken_session_realization_contract::FrozenSessionProjection,
+        awaken_session_execution_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
         let id = awaken_session_types::SessionId::from(thread);
@@ -180,7 +180,7 @@ impl ManagedSessionRootFixture {
             .realizations()
             .frozen(thread)
             .expect("installed Sessions");
-        let projection = awaken_session_realization_contract::FrozenSessionProjection {
+        let projection = awaken_session_execution_contract::FrozenSessionProjection {
             bound_source_end: None,
             workspace_id: owner,
             revision: root.revision,
@@ -215,10 +215,10 @@ impl ManagedSessionRootFixture {
         source: &Arc<crate::ExecutorComponents>,
         target: &Arc<crate::ExecutorComponents>,
         thread: &str,
-        template: awaken_session_realization_contract::FrozenSessionProjection,
+        template: awaken_session_execution_contract::FrozenSessionProjection,
         target_actor: (&str, &str),
     ) -> Result<
-        awaken_session_realization_contract::FrozenSessionProjection,
+        awaken_session_execution_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
         let id = awaken_session_types::SessionId::from(thread);
@@ -340,10 +340,10 @@ impl ManagedSessionRootFixture {
         &self,
         managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
         desired: crate::session_resource::ResolvedSessionResources,
     ) -> Result<
-        awaken_session_realization_contract::FrozenSessionProjection,
+        awaken_session_execution_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
         let projection = self
@@ -376,7 +376,7 @@ impl ManagedSessionRootFixture {
             awaken_session_types::RunError::unavailable("fixture assignment is absent")
         })?;
         let transition = installed.resource_transition(
-            awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+            awaken_session_execution_contract::FrozenResourceTransitionUse::ApplyEffects,
         )?;
         managed
             .realization_executor
@@ -394,12 +394,12 @@ impl ManagedSessionRootFixture {
         &self,
         managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
     ) -> Result<
-        awaken_session_realization_contract::FrozenSessionProjection,
+        awaken_session_execution_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
-        use awaken_session_realization_contract::SessionRealizationControl as _;
+        use awaken_session_execution_contract::SessionRealizationControl as _;
         let id = awaken_session_types::SessionId::from(thread);
         let root = self
             .repository
@@ -435,7 +435,7 @@ impl ManagedSessionRootFixture {
         self.application(managed)
             .realizations()
             .activate_session_realization(
-                awaken_session_realization_contract::ActivateSessionRealization {
+                awaken_session_execution_contract::ActivateSessionRealization {
                     session_id: id,
                     lease: lease.clone(),
                     prepared_resource_revision: Some(revision),
@@ -491,10 +491,10 @@ impl ManagedSessionRootFixture {
         &self,
         managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
         root: awaken_session_contract::PersistedSession,
     ) -> Result<
-        awaken_session_realization_contract::FrozenSessionProjection,
+        awaken_session_execution_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
         let lease = root
@@ -513,9 +513,9 @@ impl ManagedSessionRootFixture {
     pub(crate) async fn read_projection(
         &self,
         thread: &str,
-        template: &awaken_session_realization_contract::FrozenSessionProjection,
+        template: &awaken_session_execution_contract::FrozenSessionProjection,
     ) -> Result<
-        awaken_session_realization_contract::FrozenSessionProjection,
+        awaken_session_execution_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
         let id = awaken_session_types::SessionId::from(thread);
@@ -538,10 +538,10 @@ impl ManagedSessionRootFixture {
     }
 
     fn project_root(
-        mut projection: awaken_session_realization_contract::FrozenSessionProjection,
+        mut projection: awaken_session_execution_contract::FrozenSessionProjection,
         root: &awaken_session_contract::PersistedSession,
     ) -> Result<
-        awaken_session_realization_contract::FrozenSessionProjection,
+        awaken_session_execution_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
         projection.baseline = root.frozen_baseline().cloned().ok_or_else(|| {
@@ -571,11 +571,11 @@ impl ManagedSessionRootFixture {
         &self,
         managed: &Arc<crate::ExecutorComponents>,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
         root: awaken_session_contract::PersistedSession,
         expected: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
-        awaken_session_realization_contract::FrozenSessionProjection,
+        awaken_session_execution_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
     > {
         if root.realization.as_ref() != Some(expected) {
@@ -592,16 +592,16 @@ impl ManagedSessionRootFixture {
             &*managed.run_assembly,
             thread,
             projection.clone(),
-            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+            awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
         )
         .await?;
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &*managed.run_assembly,
             thread,
             projection.clone(),
-            awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
+            awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                 lease:
-                    awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                    awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                         expected.clone(),
                         self.clock.now_ms(),
                     )
@@ -648,7 +648,7 @@ mod retry_hint_tests {
         // Worker-domain physical/Work/Registry gates remain separately required;
         // the existing Coordinator decision table covers each refusal.
         use awaken_session_contract::SessionRepository as _;
-        use awaken_session_realization_contract::WorkerSourceRetentionSubjects as _;
+        use awaken_session_execution_contract::WorkerSourceRetentionSubjects as _;
         let roots = ManagedSessionRootFixture::new().await;
         let host = roots
             .configure(
@@ -839,7 +839,7 @@ mod retry_hint_tests {
                 .realize_session(&SessionId::from(thread.clone()))
                 .await
                 .unwrap_err();
-            let awaken_session_realization_contract::SessionRealizationDriveError::Effect(effect) =
+            let awaken_session_execution_contract::SessionRealizationDriveError::Effect(effect) =
                 error
             else {
                 panic!("{rule} expected original provider effect: {error}");
@@ -861,7 +861,7 @@ mod retry_hint_tests {
                 );
                 assert_eq!(
                     effect.run_error().code,
-                    awaken_session_realization_contract::ENVIRONMENT_PROVISIONING_CODE,
+                    awaken_session_execution_contract::ENVIRONMENT_PROVISIONING_CODE,
                     "{rule} original NotReady classification"
                 );
             }
@@ -874,7 +874,7 @@ mod retry_hint_tests {
             }
             let driver_hint = effect.retry_after();
             let claim = awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect(effect),
+                awaken_session_execution_contract::SessionRealizationDriveError::Effect(effect),
             );
             match (deferred, claim) {
                 (true, awaken_dispatch_execution::Error::ResolutionNotReady(wait)) => assert_eq!(
@@ -963,7 +963,7 @@ mod retry_hint_tests {
         host: &Arc<crate::ExecutorComponents>,
         root: &awaken_session_contract::PersistedSession,
     ) {
-        use awaken_session_realization_contract::SessionPreparationPlacement;
+        use awaken_session_execution_contract::SessionPreparationPlacement;
         let selected: Arc<dyn SessionPreparationPlacement> =
             host.dispatch().preparation_placement();
         let canonical =

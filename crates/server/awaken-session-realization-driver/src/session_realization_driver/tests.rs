@@ -1,5 +1,5 @@
 use super::*;
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     RenewSessionRealization, SessionRealizationControlFailure as ControlError,
     SessionRealizationLeaseReceipt,
 };
@@ -18,7 +18,7 @@ struct ReportingControl {
 impl SessionRealizationControl for ReportingControl {
     async fn begin_session_realization(
         &self,
-        _: awaken_session_realization_contract::BeginSessionRealization,
+        _: awaken_session_execution_contract::BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, ControlError> {
         unreachable!("reporting never begins")
     }
@@ -77,8 +77,8 @@ impl SessionProjectionSynchronizer for InvalidatingProjection {
     async fn synchronize_session_projection(
         &self,
         _: &SessionId,
-        _: &awaken_session_realization_contract::FrozenSessionProjection,
-        _: &awaken_session_realization_contract::ObservedSessionRealizationLease,
+        _: &awaken_session_execution_contract::FrozenSessionProjection,
+        _: &awaken_session_execution_contract::ObservedSessionRealizationLease,
         _: bool,
     ) -> Result<(), SessionRealizationEffectFailure> {
         unreachable!("reporting starts no new effect")
@@ -138,7 +138,7 @@ async fn original_failure_survives_reporting_and_only_its_hint_pays_the_wait() {
                 let session = SessionId::from("session");
                 let source = awaken_agent_contract::agent::run::Id("run".into());
                 let original = RunError::unavailable_classified(
-                    awaken_session_realization_contract::ENVIRONMENT_PROVISIONING_CODE,
+                    awaken_session_execution_contract::ENVIRONMENT_PROVISIONING_CODE,
                     "original effect",
                 );
                 let reporting = awaken_time::mono::Stopwatch::start();
@@ -167,7 +167,7 @@ async fn original_failure_survives_reporting_and_only_its_hint_pays_the_wait() {
                 );
                 assert_eq!(
                     effect.run_error().code,
-                    awaken_session_realization_contract::ENVIRONMENT_PROVISIONING_CODE,
+                    awaken_session_execution_contract::ENVIRONMENT_PROVISIONING_CODE,
                     "D4 original code"
                 );
                 let reports = control.reports.lock().unwrap();

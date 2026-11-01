@@ -121,9 +121,9 @@ impl crate::environment_holding::EnvironmentHolding {
             .create_effective_for_effect(&spec, effect, source_handle, intent)
             .await
             .map_err(|error| {
-                RealizationError::Run(
-                    awaken_session_realization_contract::environment_effect_error(&error),
-                )
+                RealizationError::Run(awaken_session_execution_contract::environment_effect_error(
+                    &error,
+                ))
             })
     }
 
@@ -264,7 +264,7 @@ impl crate::environment_holding::EnvironmentHolding {
         let opaque_process = self
             .sessions
             .modify_session(&spec.scope, |installed| {
-                awaken_session_realization_contract::frozen_session_requires_opaque_process(
+                awaken_session_execution_contract::frozen_session_requires_opaque_process(
                     installed.inputs.published_snapshot.as_ref(),
                     installed.inputs.baseline.as_ref(),
                 )

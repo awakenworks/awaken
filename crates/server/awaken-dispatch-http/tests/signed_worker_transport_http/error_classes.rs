@@ -1,6 +1,6 @@
 //! Real signed TCP transport: typed faults survive server status and client decode.
 use super::*;
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     RenewSessionRealization, SessionRealizationControlDisposition as D,
     SessionRealizationControlFailure as C,
 };

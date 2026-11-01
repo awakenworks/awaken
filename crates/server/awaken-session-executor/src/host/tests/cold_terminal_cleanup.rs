@@ -281,7 +281,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         &*managed.run_assembly,
         "remote-terminal-worker",
         projection.clone(),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("R1 complete projection precedes the live Environment");
@@ -356,7 +356,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
             },
         )
         .expect("R1 publish the exact Worker-local Environment owner");
-    let assignment = awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+    let assignment = awaken_session_execution_contract::SessionTerminalCleanupAssignment {
         environment_creation_not_attempted: false,
         session_id: "remote-terminal-worker".into(),
         projection: projection.clone(),
@@ -382,7 +382,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         )
         .expect("R1 canonical command");
     *control.session.lock().unwrap() = Some(terminal_session);
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: lease.owner.clone(),
         runtime_incarnation: lease.runtime_incarnation.clone(),
         lease_expires_at_unix_ms: lease.expires_at_unix_ms,
@@ -494,7 +494,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         &*managed.run_assembly,
         ordinary_id,
         ordinary_projection.clone(),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("R1/C2 install ordinary frozen projection");
@@ -523,7 +523,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     };
     fresh_terminal_fixture_before_create(terminal_id, &mut terminal_projection, &terminal_lease);
     control.assignments.lock().unwrap().push_back(
-        awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+        awaken_session_execution_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,
             session_id: terminal_id.into(),
             projection: terminal_projection.clone(),
@@ -539,7 +539,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         std::iter::empty(),
         None,
     ));
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: terminal_lease.owner.clone(),
         runtime_incarnation: terminal_lease.runtime_incarnation.clone(),
         lease_expires_at_unix_ms: terminal_lease.expires_at_unix_ms,
@@ -647,7 +647,7 @@ fn enqueue_completed_terminal_assignments(
         // preserve their intended ascending order across 9 -> 10.
         let session_id = format!("{prefix}-{index:03}");
         control.assignments.lock().unwrap().push_back(
-            awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: session_id.clone().into(),
                 projection: remote_terminal_cleanup_projection(),
@@ -675,8 +675,8 @@ fn completed_terminal_test_lease() -> crate::session_resource::SessionRealizatio
 
 fn terminal_target_for(
     lease: &crate::session_resource::SessionRealizationLease,
-) -> awaken_session_realization_contract::SessionRealizationTarget {
-    awaken_session_realization_contract::SessionRealizationTarget {
+) -> awaken_session_execution_contract::SessionRealizationTarget {
+    awaken_session_execution_contract::SessionRealizationTarget {
         owner: lease.owner.clone(),
         runtime_incarnation: lease.runtime_incarnation.clone(),
         lease_expires_at_unix_ms: lease.expires_at_unix_ms,
@@ -1041,7 +1041,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     );
     fresh_terminal_fixture_before_create(session_id, &mut projection, &lease);
     control.assignments.lock().unwrap().push_back(
-        awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+        awaken_session_execution_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection: projection.clone(),
@@ -1063,7 +1063,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         )
         .expect("C3 canonical root command");
     *control.session.lock().unwrap() = Some(terminal_session);
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: lease.owner.clone(),
         runtime_incarnation: lease.runtime_incarnation.clone(),
         lease_expires_at_unix_ms: lease.expires_at_unix_ms,

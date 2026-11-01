@@ -37,7 +37,7 @@ pub trait RealizationRuntime: Send + Sync {
         thread: &str,
         projection: crate::FrozenSessionProjection,
         mode: crate::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure>;
+    ) -> Result<(), crate::SessionRealizationEffectFailure>;
 
     /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
     /// an already-installed realization fence. This is the only lease-only

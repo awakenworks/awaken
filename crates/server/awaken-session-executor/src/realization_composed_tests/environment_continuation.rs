@@ -8,7 +8,7 @@ mod tests {
     async fn continuation_fence_keeps_control_coordinates_but_requires_current_local_proof() {
         use crate::realization_state::SessionRealizationAuthority as Authority;
         use awaken_session_configuration_contract::resource::SessionRealizationLease;
-        use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
+        use awaken_session_execution_contract::SessionRealizationLeaseReceipt;
         // F1 exact live receipt with Control expiry older than local wall time
         // -> return the unchanged Control fence. F2 missing root, F3 expired
         // observation, F4 closed root, F5 replaced incarnation -> reject before
@@ -113,7 +113,7 @@ mod tests {
                 .installed_sessions
                 .install_realization(thread, |r| {
                     r.execution_mut().authority = Authority::Live(
-                    awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                    awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                         lease, 0,
                     )
                     .unwrap()

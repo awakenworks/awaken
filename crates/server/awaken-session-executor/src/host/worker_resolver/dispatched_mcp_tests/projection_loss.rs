@@ -36,7 +36,7 @@ impl SessionRealizationSource for RemoveAfterReadyRead {
     ) -> futures_util::future::BoxFuture<
         'a,
         Result<
-            awaken_session_realization_contract::SessionRealizationPermit,
+            awaken_session_execution_contract::SessionRealizationPermit,
             crate::realization_error::RealizationLock,
         >,
     > {

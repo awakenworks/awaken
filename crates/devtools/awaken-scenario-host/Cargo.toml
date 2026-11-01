@@ -110,7 +110,7 @@ tower = { version = "0.5", features = ["util"] }
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-resource-application.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-realization-contract = { workspace = true, features = ["test-support"] }
+awaken-session-execution-contract = { workspace = true, features = ["test-support"] }
 awaken-session-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-dream-application.workspace = true

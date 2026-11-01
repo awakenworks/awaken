@@ -11,7 +11,7 @@ use crate::peers::EnvironmentPeer as _;
 use crate::session_environment::SessionEnvironmentAdoptionDisposition;
 use awaken_session_configuration_contract::mcp as session_mcp;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_realization_contract::{CanonicalSessionProjection, requires_local_environment};
+use awaken_session_execution_contract::{CanonicalSessionProjection, requires_local_environment};
 
 pub struct WorkerProjectionSynchronizer<'a, T> {
     /// The projection execution role the synchronizer drives.
@@ -32,7 +32,7 @@ where
     pub fn for_claimed(
         execution: &'a T,
         session_id: &str,
-        directive: &awaken_session_realization_contract::SessionRealizationDirective,
+        directive: &awaken_session_execution_contract::SessionRealizationDirective,
         claimed: Option<&'a awaken_dispatch_contract::Claimed>,
         claim: Option<&'a awaken_dispatch_contract::RunClaim>,
     ) -> Self {
@@ -60,7 +60,7 @@ where
     /// of MCP stage intent; this adapter derives only the physical ordering bit.
     pub fn for_directive(
         execution: &'a T,
-        directive: &awaken_session_realization_contract::SessionRealizationDirective,
+        directive: &awaken_session_execution_contract::SessionRealizationDirective,
         claim: Option<&'a awaken_dispatch_contract::RunClaim>,
         published_snapshot: Option<&'a awaken_runtime_contract::ExecutableAgentSnapshot>,
         rebuild_unavailable_environment: bool,
@@ -68,7 +68,7 @@ where
     ) -> Self {
         let requires_runtime_before_effects = matches!(
             &directive.action,
-            awaken_session_realization_contract::SessionRealizationAction::Stage { mcp_stages, .. }
+            awaken_session_execution_contract::SessionRealizationAction::Stage { mcp_stages, .. }
                 if mcp_stages
                     .iter()
                     .any(|stage| stage.target.sandbox_stdio_target().is_some())
@@ -85,7 +85,7 @@ where
 }
 
 #[async_trait::async_trait]
-impl<T> awaken_session_realization_contract::SessionProjectionSynchronizer
+impl<T> awaken_session_execution_contract::SessionProjectionSynchronizer
     for WorkerProjectionSynchronizer<'_, T>
 where
     T: SessionProjectionExecution,
@@ -94,7 +94,7 @@ where
         &self,
     ) -> Result<
         awaken_lease_contract::authority::AuthorityProofStarted,
-        awaken_session_realization_contract::SessionRealizationEffectFailure,
+        awaken_session_execution_contract::SessionRealizationEffectFailure,
     > {
         awaken_authority_clock::authority_proof_started().map_err(|error| {
             awaken_session_types::RunError::unavailable(format!("authority clock: {error}")).into()
@@ -120,10 +120,10 @@ where
     async fn synchronize_session_projection(
         &self,
         session_id: &awaken_session_types::SessionId,
-        projection: &awaken_session_realization_contract::FrozenSessionProjection,
-        lease: &awaken_session_realization_contract::ObservedSessionRealizationLease,
+        projection: &awaken_session_execution_contract::FrozenSessionProjection,
+        lease: &awaken_session_execution_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         let realizations = self.execution.sessions();
         let exec = self.execution.realization_executor();
         let retained_publication = realizations.published_snapshot(session_id.as_str())?;
@@ -133,20 +133,21 @@ where
             .as_ref()
             .or(self.published_snapshot);
         let published_snapshot = delivered_publication.or(retained_publication.as_ref());
-        match awaken_session_realization_contract::frozen_agent_publication_decision(
+        match awaken_session_execution_contract::frozen_agent_publication_decision(
             &projection.baseline,
             published_snapshot,
         ) {
-            awaken_session_realization_contract::FrozenAgentPublicationDecision::Unpinned
-            | awaken_session_realization_contract::FrozenAgentPublicationDecision::OptionalMissing
-            | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact => {}
-            awaken_session_realization_contract::FrozenAgentPublicationDecision::MissingRequired => {
+            awaken_session_execution_contract::FrozenAgentPublicationDecision::Unpinned
+            | awaken_session_execution_contract::FrozenAgentPublicationDecision::OptionalMissing
+            | awaken_session_execution_contract::FrozenAgentPublicationDecision::Exact => {}
+            awaken_session_execution_contract::FrozenAgentPublicationDecision::MissingRequired => {
                 return Err((awaken_session_types::RunError::classified(
                     "session_runtime_publication_missing",
                     "Worker Session realization requires its exact frozen Agent publication",
-                )).into());
+                ))
+                .into());
             }
-            awaken_session_realization_contract::FrozenAgentPublicationDecision::Mismatch => {
+            awaken_session_execution_contract::FrozenAgentPublicationDecision::Mismatch => {
                 return Err((awaken_session_types::RunError::classified(
                     "session_runtime_publication_conflict",
                     "Worker Agent publication does not match the frozen Session identity, revision, or runtime",
@@ -321,7 +322,7 @@ where
                 .apply_session_inputs_with_context(
                     session_id.as_str(),
                     &projection.resource_transition(
-                        awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+                        awaken_session_execution_contract::FrozenResourceTransitionUse::ApplyEffects,
                     )?,
                     self.claim,
                     Some(&lease.lease),
@@ -335,7 +336,7 @@ where
         &self,
         session_id: &awaken_session_types::SessionId,
         lease: &session_resource::SessionRealizationLease,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         self.execution
             .invalidate_realization_lease(session_id.as_str(), lease)
             .map_err(Into::into)
@@ -376,17 +377,17 @@ impl<T: SessionProjectionExecution> awaken_session_execution_contract::McpAttach
 /// The frozen-claim publication preflight, before any installation or effects.
 /// Uses the existing contract decision; it selects no new publication policy.
 fn validate_claimed_publication(
-    projection: &awaken_session_realization_contract::FrozenSessionProjection,
+    projection: &awaken_session_execution_contract::FrozenSessionProjection,
     claimed: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
 ) -> Result<(), awaken_session_types::RunError> {
     if let Some(claimed) = claimed
         && !matches!(
-            awaken_session_realization_contract::frozen_agent_publication_decision(
+            awaken_session_execution_contract::frozen_agent_publication_decision(
                 &projection.baseline,
                 Some(claimed),
             ),
-            awaken_session_realization_contract::FrozenAgentPublicationDecision::Unpinned
-                | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact
+            awaken_session_execution_contract::FrozenAgentPublicationDecision::Unpinned
+                | awaken_session_execution_contract::FrozenAgentPublicationDecision::Exact
         )
     {
         return Err(awaken_session_types::RunError::classified(

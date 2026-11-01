@@ -41,7 +41,7 @@ mod tests {
                 awaken_dispatch_execution::session_worker_resolver::map_admission_error(error);
             assert_eq!(actual.is_terminal_resolution(), terminal);
             let driver = awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect(run_error.into()),
+                awaken_session_execution_contract::SessionRealizationDriveError::Effect(run_error.into()),
             );
             assert_eq!(driver.is_terminal_resolution(), terminal, "driver agrees");
             if !terminal {
@@ -292,7 +292,7 @@ mod tests {
             // P2: the resolver sees the Host error directly.
             let host_error = || {
                 crate::session_execution_error::from_run_error(
-                    awaken_session_realization_contract::environment_effect_error(&sandbox),
+                    awaken_session_execution_contract::environment_effect_error(&sandbox),
                 )
             };
             let resolver = awaken_dispatch_execution::session_worker_resolver::map_admission_error(
@@ -301,7 +301,7 @@ mod tests {
             // P1: the driver sees the same Host error after the synchronizer's
             // Run projection, reports it to Control, then returns it.
             let run_error = crate::session_execution_error::to_run_error(host_error());
-            let command = awaken_session_realization_contract::FailSessionRealization::for_effect(
+            let command = awaken_session_execution_contract::FailSessionRealization::for_effect(
                 "s".into(),
                 awaken_session_configuration_contract::resource::SessionRealizationLease {
                     owner: "w".into(),
@@ -315,7 +315,7 @@ mod tests {
             );
             let reported = (command.retryable, command.not_ready);
             let driver = awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect(run_error.into()),
+                awaken_session_execution_contract::SessionRealizationDriveError::Effect(run_error.into()),
             );
             assert_eq!(claim_outcome(&resolver), claim, "{rule} P2 {sandbox}");
             assert_eq!(claim_outcome(&driver), claim, "{rule} P1 {sandbox}");
@@ -338,16 +338,16 @@ mod tests {
         );
         assert_eq!(
             claim_outcome(&awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect((
+                awaken_session_execution_contract::SessionRealizationDriveError::Effect((
                     awaken_session_types::RunError::internal("unclassified")).into()),
             )),
             "relinquish"
         );
         assert_eq!(
             claim_outcome(&awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect((
+                awaken_session_execution_contract::SessionRealizationDriveError::Effect((
                     awaken_session_types::RunError::classified(
-                        awaken_session_realization_contract::ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
+                        awaken_session_execution_contract::ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
                         "mislabelled",
                     )).into()),
             )),
@@ -371,7 +371,7 @@ mod tests {
         // | R4 | permanent effect/invalid Control | TerminalResolution |
         let retryable_effect =
             awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                awaken_session_execution_contract::SessionRealizationDriveError::Effect(
                     awaken_session_types::RunError::unavailable_classified(
                         "mcp_material_source_unavailable",
                         "materializer unavailable",
@@ -385,8 +385,8 @@ mod tests {
         ));
 
         let retryable_control = awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
-            awaken_session_realization_contract::SessionRealizationDriveError::Control(
-                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+            awaken_session_execution_contract::SessionRealizationDriveError::Control(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
                     "repository unavailable".into(),
                 ),
             ),
@@ -398,8 +398,8 @@ mod tests {
 
         let not_ready =
             awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Control(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+                awaken_session_execution_contract::SessionRealizationDriveError::Control(
+                    awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
                 ),
             );
         assert!(matches!(
@@ -408,15 +408,15 @@ mod tests {
         ));
 
         for permanent in [
-            awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+            awaken_session_execution_contract::SessionRealizationDriveError::Effect(
                 awaken_session_types::RunError::classified(
                     "mcp_credential_revision_mismatch",
                     "invalid revision",
                 )
                 .into(),
             ),
-            awaken_session_realization_contract::SessionRealizationDriveError::Control(
-                awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+            awaken_session_execution_contract::SessionRealizationDriveError::Control(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(
                     "invalid phase".into(),
                 ),
             ),
@@ -622,8 +622,8 @@ mod tests {
                 map_admission_error(crate::host::dispatch_execution::admission_error(failure()));
             let synchronizer = awaken_session_types::RunError::from(failure());
             let driver = map_session_realization_drive_error(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
-                    awaken_session_realization_contract::SessionRealizationEffectFailure::from(
+                awaken_session_execution_contract::SessionRealizationDriveError::Effect(
+                    awaken_session_execution_contract::SessionRealizationEffectFailure::from(
                         failure(),
                     ),
                 ),
@@ -631,7 +631,7 @@ mod tests {
             assert_eq!(outcome(&claim), expected, "{rule} P1 claim");
             assert_eq!(
                 session_realization_worker_effect(
-                    awaken_session_realization_contract::effect_failure_disposition(&synchronizer)
+                    awaken_session_execution_contract::effect_failure_disposition(&synchronizer)
                 ),
                 session_realization_worker_effect(failure().disposition().contract_class()),
                 "{rule} P2 synchronizer"
@@ -653,8 +653,10 @@ mod tests {
         // cause = the realization failure; effect = the claim class of the
         // AdmissionError the executor's one mapping produces. The class is
         // the realization disposition's contract class.
-        use awaken_session_realization_contract::SessionRealizationControlDisposition::{
-            NotReady, Retryable, Terminal,
+        use awaken_session_execution_contract::{
+            SessionRealizationControlDisposition::NotReady,
+            SessionRealizationControlDisposition::Retryable,
+            SessionRealizationControlDisposition::Terminal,
         };
         let rows = [
             (

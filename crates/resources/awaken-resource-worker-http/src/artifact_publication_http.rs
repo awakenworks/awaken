@@ -9,7 +9,7 @@ use awaken_resource_contract::{
     ArtifactRecovery, FileApplicationService, MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError,
 };
 use awaken_session_contract::{SessionEnvironmentOperation, SessionTerminalCleanupEffect};
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
@@ -407,9 +407,9 @@ pub struct WorkerArtifactPublicationService {
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Arc<dyn WorkerDirectory>,
     terminal_preparation_control:
-        Option<Arc<dyn awaken_session_realization_contract::SessionTerminalPreparationControl>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionTerminalPreparationControl>>,
     checkpoint_artifact_control:
-        Option<Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionCheckpointArtifactControl>>,
     /// The Coordinator's wall clock: the instant claims and leases are judged at.
     clock: Arc<dyn awaken_time::WallClock>,
 }
@@ -437,7 +437,7 @@ impl WorkerArtifactPublicationService {
     #[must_use]
     pub fn with_terminal_preparation_control(
         mut self,
-        control: Arc<dyn awaken_session_realization_contract::SessionTerminalPreparationControl>,
+        control: Arc<dyn awaken_session_execution_contract::SessionTerminalPreparationControl>,
     ) -> Self {
         self.terminal_preparation_control = Some(control);
         self
@@ -446,7 +446,7 @@ impl WorkerArtifactPublicationService {
     #[must_use]
     pub fn with_checkpoint_artifact_control(
         mut self,
-        control: Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>,
+        control: Arc<dyn awaken_session_execution_contract::SessionCheckpointArtifactControl>,
     ) -> Self {
         self.checkpoint_artifact_control = Some(control);
         self
@@ -458,8 +458,8 @@ impl WorkerArtifactPublicationService {
     #[must_use]
     pub fn with_session_control<T>(mut self, control: Arc<T>) -> Self
     where
-        T: awaken_session_realization_contract::SessionTerminalPreparationControl
-            + awaken_session_realization_contract::SessionCheckpointArtifactControl
+        T: awaken_session_execution_contract::SessionTerminalPreparationControl
+            + awaken_session_execution_contract::SessionCheckpointArtifactControl
             + 'static,
     {
         self.terminal_preparation_control = Some(control.clone());
@@ -523,16 +523,16 @@ async fn authorize_session_worker_lease(
 }
 
 fn authorize_workspace_result(
-    result: Result<String, awaken_session_realization_contract::SessionRealizationControlFailure>,
+    result: Result<String, awaken_session_execution_contract::SessionRealizationControlFailure>,
     expected_workspace: &str,
 ) -> Result<(), StatusCode> {
     match result {
         Ok(authorized_workspace) if authorized_workspace == expected_workspace => Ok(()),
         Ok(_) => Err(StatusCode::FORBIDDEN),
-        Err(
-            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_),
-        )
-        | Err(awaken_session_realization_contract::SessionRealizationControlFailure::Conflict) => {
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
+            _,
+        ))
+        | Err(awaken_session_execution_contract::SessionRealizationControlFailure::Conflict) => {
             Err(StatusCode::SERVICE_UNAVAILABLE)
         }
         Err(_) => Err(StatusCode::CONFLICT),

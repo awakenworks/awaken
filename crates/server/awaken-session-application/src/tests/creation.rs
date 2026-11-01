@@ -87,7 +87,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -100,14 +100,14 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
     async fn install_session_projection(
         &self,
         _thread: &str,
-        _projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        _projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         self.baseline_installs.fetch_add(1, Ordering::SeqCst);
         if matches!(
             mode,
-            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch
-                | awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
+            awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch
+                | awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                     prepare_session: true,
                     ..
                 }
@@ -130,9 +130,9 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
             3 => return Err((RunError::internal("injected unknown projection failure")).into()),
             4 => {
                 return Err(
-                    awaken_session_realization_contract::SessionRealizationEffectFailure::new(
+                    awaken_session_execution_contract::SessionRealizationEffectFailure::new(
                         RunError::unavailable_classified(
-                            awaken_session_realization_contract::ENVIRONMENT_PROVISIONING_CODE,
+                            awaken_session_execution_contract::ENVIRONMENT_PROVISIONING_CODE,
                             "provider still provisioning",
                         ),
                         Some(std::time::Duration::from_secs(6)),
@@ -152,7 +152,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)

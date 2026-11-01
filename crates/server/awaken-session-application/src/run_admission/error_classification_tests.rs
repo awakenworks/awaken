@@ -25,7 +25,7 @@ fn admission_keeps_durable_failures_permanent_through_each_adapter() {
     ] {
         let control = crate::realization::repository_control(cause.clone());
         let errors = [
-            awaken_session_realization_contract::SessionRealizationDriveError::Control(control)
+            awaken_session_execution_contract::SessionRealizationDriveError::Control(control)
                 .into(),
             creation_error(SessionCreationError::repository(cause.clone())),
             mutation_error(cause.clone().into()),

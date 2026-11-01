@@ -21,14 +21,14 @@
 //! The Worker-side driver feeds its Session runtime slot allocation to the
 //! contract-owned permit; the co-located driver has no slot, so this registry
 //! *is* its exclusion identity. Both mint through
-//! `awaken_session_realization_contract::SessionRealizationPermit::acquire`, so this is the
+//! `awaken_session_execution_contract::SessionRealizationPermit::acquire`, so this is the
 //! same rule and the same admission kernel, not another authority: it grants no
 //! lease, decides no phase, and survives no restart.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use awaken_session_realization_contract::SessionRealizationPermit;
+use awaken_session_execution_contract::SessionRealizationPermit;
 use awaken_sync::LeafLock;
 
 #[derive(Default)]

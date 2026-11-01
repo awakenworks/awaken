@@ -10,7 +10,7 @@
 use std::borrow::Cow;
 
 use awaken_dispatch_contract::DispatchError;
-use awaken_session_realization_contract::SessionRealizationControlDisposition;
+use awaken_session_execution_contract::SessionRealizationControlDisposition;
 use awaken_session_types::RunError;
 
 #[derive(Debug, thiserror::Error)]
@@ -66,7 +66,7 @@ impl AdmissionError {
                 SessionRealizationControlDisposition::Retryable
             }
             Self::Run(error) => {
-                awaken_session_realization_contract::effect_failure_disposition(error)
+                awaken_session_execution_contract::effect_failure_disposition(error)
             }
         }
     }
@@ -188,7 +188,7 @@ mod tests {
             (
                 "A8 Run capacity unavailable",
                 AdmissionError::from(RunError::unavailable_classified(
-                    awaken_session_realization_contract::ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
+                    awaken_session_execution_contract::ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
                     "quota",
                 )),
                 NotReady,

@@ -11,7 +11,7 @@ impl McpRelay {
     pub async fn start() -> std::io::Result<Self> {
         Self::start_with_authority_and_exposure(
             Arc::new(|generation, now| {
-                awaken_session_realization_contract::realization_lease_is_live_at(
+                awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                     generation.lease_expires_at_unix_ms(),
                     now,
                 )

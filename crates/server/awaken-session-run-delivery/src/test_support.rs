@@ -3,7 +3,7 @@
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_session_configuration_contract::SessionBaseline;
-use awaken_session_realization_contract::FrozenSessionProjection;
+use awaken_session_execution_contract::FrozenSessionProjection;
 use awaken_session_types::{SessionRevision, SessionRuntimePlacement};
 
 pub(crate) fn environment() -> awaken_session_configuration_contract::EnvironmentSnapshot {

@@ -284,7 +284,7 @@ struct ConcurrentControlState {
 #[tokio::test]
 async fn session_renewal_receipt_wire_requires_positive_horizon_and_preserves_failures() {
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
-    use awaken_session_realization_contract::{
+    use awaken_session_execution_contract::{
         RenewSessionRealization, SessionRealizationControlFailure as Failure,
     };
     use axum::http::StatusCode;

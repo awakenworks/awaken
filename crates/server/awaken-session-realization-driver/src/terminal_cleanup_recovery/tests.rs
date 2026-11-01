@@ -7,7 +7,7 @@ use super::*;
 use crate::terminal_cleanup_driver::tests::{lease, work};
 use awaken_session_contract::SessionTerminalCleanupAction;
 use awaken_session_execution_contract::NeutralRuntime;
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     SessionTerminalCleanupAssignment, SessionTerminalCleanupWork,
 };
 use std::collections::VecDeque;
@@ -35,7 +35,7 @@ impl ScriptedControl {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalCleanupQueue for ScriptedControl {
+impl awaken_session_execution_contract::SessionTerminalCleanupQueue for ScriptedControl {
     async fn claim_next_terminal_cleanup(
         &self,
         _target: SessionRealizationTarget,
@@ -69,12 +69,12 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Script
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalPreparationControl for ScriptedControl {
+impl awaken_session_execution_contract::SessionTerminalPreparationControl for ScriptedControl {
     async fn authorize_terminal_cleanup_effect(
         &self,
         _effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
         SessionRealizationControlFailure,
     > {
         unreachable!("recovery rows never prepare")
@@ -90,7 +90,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl for 
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalDisposalControl for ScriptedControl {
+impl awaken_session_execution_contract::SessionTerminalDisposalControl for ScriptedControl {
     async fn authorize_terminal_cleanup_disposal(
         &self,
         _effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
@@ -108,7 +108,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl for Scr
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl
+impl awaken_session_execution_contract::SessionTerminalRepositoryPublicationControl
     for ScriptedControl
 {
     async fn terminal_repository_publication_command(
@@ -116,7 +116,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         _session_id: &SessionId,
         _lease: &SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
+        Option<awaken_session_execution_contract::SessionRepositoryPublicationProjection>,
         SessionRealizationControlFailure,
     > {
         self.events
@@ -164,7 +164,7 @@ impl RealizationRuntime for ClockedRealization {
 
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -177,9 +177,9 @@ impl RealizationRuntime for ClockedRealization {
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         NeutralRuntime
             .install_session_projection(thread, projection, mode)
             .await
@@ -188,7 +188,7 @@ impl RealizationRuntime for ClockedRealization {
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         NeutralRuntime
             .renew_session_realization_lease(thread, lease)
@@ -215,7 +215,7 @@ impl TerminalCleanup for InstallingCleanup {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         _effect: awaken_session_contract::SessionTerminalCleanupEffect,
-        _authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        _authorization: awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         unreachable!("recovery rows never prepare")
     }
@@ -242,7 +242,7 @@ impl TerminalCleanup for InstallingCleanup {
     async fn install_terminal_cleanup_assignment(
         &self,
         _assignment: &SessionTerminalCleanupAssignment,
-        _proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        _proof: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         Ok(())
     }

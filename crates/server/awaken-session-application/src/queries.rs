@@ -57,7 +57,7 @@ mod projection_evidence;
 /// use awaken_session_execution_contract::ThreadReads;
 /// use awaken_session_types::RunError;
 /// async fn frozen(q: &SessionQueries, s: &PersistedSession)
-///     -> Result<awaken_session_realization_contract::FrozenSessionProjection, RunError> {
+///     -> Result<awaken_session_execution_contract::FrozenSessionProjection, RunError> {
 ///     q.frozen_session_projection("w".into(), s, true).await
 /// }
 /// async fn scoped(q: &SessionQueries) -> Result<Vec<awaken_agent_contract::Message>, RunError> {

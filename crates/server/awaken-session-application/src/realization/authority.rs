@@ -14,7 +14,9 @@ pub(super) fn verify_lease(
     now_ms: u64,
 ) -> Result<(), SessionRealizationControlFailure> {
     if !session.realization.as_ref().is_some_and(|current| {
-        awaken_session_realization_contract::realization_lease_authorizes(current, asserted, now_ms)
+        awaken_session_configuration_contract::resource::realization_lease_authorizes(
+            current, asserted, now_ms,
+        )
     }) {
         return Err(SessionRealizationControlFailure::StaleOwnership);
     }
@@ -37,7 +39,7 @@ pub(super) fn generation_set_authorizes(
             asserted
                 .iter()
                 .position(|actual| {
-                    awaken_session_realization_contract::realization_generation_authorizes(
+                    awaken_session_execution_contract::realization_generation_authorizes(
                         expected, actual,
                     )
                 })

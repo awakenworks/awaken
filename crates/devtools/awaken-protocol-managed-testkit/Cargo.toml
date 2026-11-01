@@ -41,7 +41,6 @@ awaken-credential-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-session-application.workspace = true
-awaken-session-realization-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-tool-contract.workspace = true
 async-trait.workspace = true

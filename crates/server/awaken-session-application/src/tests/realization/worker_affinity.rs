@@ -56,7 +56,7 @@ async fn cold_cleanup_does_not_transfer_an_unsettled_source_to_a_new_worker() {
         ("skip-blocked", false, "prepare", Source::Pending, true),
     ] {
         let target = registry_race_target();
-        let old_target = awaken_session_realization_contract::SessionRealizationTarget {
+        let old_target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: "cleanup-predecessor".into(),
             runtime_incarnation: "cleanup-predecessor:1:old-boot".into(),
             lease_expires_at_unix_ms: 1,
@@ -412,7 +412,7 @@ async fn independently_exited_predecessor_allows_terminal_assignment_without_cle
     let replacement =
         awaken_worker_contract::WorkerIdentity::new("replacement-worker", "new-boot", 1);
     let previous = awaken_worker_contract::WorkerIdentity::new("previous-worker", "old-boot", 1);
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: replacement.worker_id.clone(),
         runtime_incarnation: replacement.lease_owner(),
         lease_expires_at_unix_ms: now.saturating_add(60_000),
@@ -471,7 +471,7 @@ async fn independently_exited_predecessor_allows_terminal_assignment_without_cle
             active.snapshot.capability_fingerprint =
                 active.snapshot.manifest.fingerprint().unwrap();
         }
-        let old_target = awaken_session_realization_contract::SessionRealizationTarget {
+        let old_target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: previous.worker_id.clone(),
             runtime_incarnation: previous.lease_owner(),
             lease_expires_at_unix_ms: 1,
@@ -521,10 +521,10 @@ async fn independently_exited_predecessor_allows_terminal_assignment_without_cle
         app.execution_admission()
             .set_worker_observation_source(workers)
             .unwrap();
-        let observed = awaken_session_realization_contract::SessionTerminalCleanupQueue::claim_next_terminal_cleanup(app.terminal_cleanups.as_ref(), target.clone(), None).await;
+        let observed = awaken_session_execution_contract::SessionTerminalCleanupQueue::claim_next_terminal_cleanup(app.terminal_cleanups.as_ref(), target.clone(), None).await;
         if !allowed {
             if rule == "read-error" {
-                assert!(matches!(observed, Err(awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_))), "{rule}");
+                assert!(matches!(observed, Err(awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(_))), "{rule}");
             } else {
                 assert!(observed.unwrap().is_none(), "{rule}");
             }
@@ -806,7 +806,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     // | W9 | exact | current, checkpoint format exact | none | Hibernated/exact Runtime | E1 |
     // | W10 | exact | current | exact capability | Resident/no owner | E2+E4 |
     let repo = sqlite_session_repository("Worker-compatible cleanup Session repository").await;
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker-compatible".into(),
         runtime_incarnation: "worker-compatible:3:boot".into(),
         lease_expires_at_unix_ms: u64::MAX,
@@ -837,9 +837,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
                 .claim_next_terminal_cleanup(target.clone(), None)
                 .await,
             Err(
-                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
-                    _
-                )
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(_)
             )
         ),
         "W1/E2"
@@ -870,9 +868,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
                 .claim_next_terminal_cleanup(target.clone(), None)
                 .await,
             Err(
-                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
-                    _
-                )
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(_)
             )
         ),
         "W1b/E2"
@@ -1175,7 +1171,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
                 .terminal_cleanups
                 .claim_next_terminal_cleanup(target, Some(&checkpoint_assignment.session_id))
                 .await,
-            Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))
+            Err(awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(_))
         ),
         "W10/E2+E4"
     );

@@ -90,11 +90,11 @@ impl RunAssembly {
     pub(crate) async fn install_projection_facts(
         &self,
         thread: &str,
-        projection: &awaken_session_realization_contract::FrozenSessionProjection,
-        mode: &awaken_session_realization_contract::SessionProjectionInstallMode,
+        projection: &awaken_session_execution_contract::FrozenSessionProjection,
+        mode: &awaken_session_execution_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
         match mode {
-            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch => {
+            awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch => {
                 self.installed_sessions
                     .install_dispatch_frozen_session_projection(
                         (&self.realization_executor, &self.mcp),
@@ -103,7 +103,7 @@ impl RunAssembly {
                     )
                     .await
             }
-            awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
+            awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                 prepare_session,
                 lease,
             } => {

@@ -1,5 +1,5 @@
 // @formal surface exclude=test_support_observation_port
-// @formal owner crates/contract/awaken-session-realization-contract/src/session_realization.rs
+// @formal owner crates/contract/awaken-session-execution-contract/src/session_realization.rs
 // @formal owner crates/devtools/awaken-scenario-host/src/realization_observation.rs
 // @formal owner e2e/managed_mcp_recovery_e2e.ts
 // @formal reason: The parent module exports this port only under the test-support feature. It forwards

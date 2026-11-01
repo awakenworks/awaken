@@ -33,7 +33,6 @@ awaken-runtime-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-environment-contract.workspace = true
 awaken-session-types.workspace = true
-awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-time.workspace = true

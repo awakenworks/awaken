@@ -17,7 +17,7 @@ use awaken_dispatch_contract::{DispatchEnqueue as _, Inbox as _};
 use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::{DataSubjectId, RunActivation};
 use awaken_session_application_contract::{RunResume, StepOutcome};
-use awaken_session_realization_contract::CanonicalSessionProjection;
+use awaken_session_execution_contract::CanonicalSessionProjection;
 use awaken_session_types::RunError;
 
 use super::{SETTLED_RECONCILIATION_INTERVAL, WorkerPlacedSessions};
@@ -76,7 +76,7 @@ impl WorkerPlacedSessions {
         }
         let agent = agent.unwrap_or(DEFAULT_AGENT);
         let (publication, _) =
-            awaken_session_realization_contract::resolve_canonical_session_projection(
+            awaken_session_execution_contract::resolve_canonical_session_projection(
                 projections.publications(),
                 projections.local_workspace(),
                 CanonicalSessionProjection::LegacyAgent(agent),

@@ -8,7 +8,7 @@ use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery,
 };
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 
 use awaken_time::WallClockExt as _;
 
@@ -19,9 +19,9 @@ pub struct ClaimFencedArtifactPublisher {
     inner: Arc<dyn ArtifactPublisher<ResourceOperationFence>>,
     dispatch: Arc<dyn DispatchCommitAuthority>,
     terminal_preparation_control:
-        OnceLock<Arc<dyn awaken_session_realization_contract::SessionTerminalPreparationControl>>,
+        OnceLock<Arc<dyn awaken_session_execution_contract::SessionTerminalPreparationControl>>,
     checkpoint_artifact_control:
-        OnceLock<Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>>,
+        OnceLock<Arc<dyn awaken_session_execution_contract::SessionCheckpointArtifactControl>>,
     /// The Coordinator's wall clock: claim and Session lease liveness are
     /// judged on it.
     clock: Arc<dyn awaken_time::WallClock>,
@@ -48,8 +48,8 @@ impl ClaimFencedArtifactPublisher {
     /// write-once; neither stores a second cleanup state or receipt cache.
     pub fn install_session_control(
         &self,
-        terminal: Arc<dyn awaken_session_realization_contract::SessionTerminalPreparationControl>,
-        checkpoint: Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>,
+        terminal: Arc<dyn awaken_session_execution_contract::SessionTerminalPreparationControl>,
+        checkpoint: Arc<dyn awaken_session_execution_contract::SessionCheckpointArtifactControl>,
     ) -> Result<(), &'static str> {
         self.terminal_preparation_control
             .set(terminal)
@@ -132,7 +132,7 @@ impl ClaimFencedArtifactPublisher {
         &self,
         effect_kind: &str,
     ) -> Result<
-        &Arc<dyn awaken_session_realization_contract::SessionTerminalPreparationControl>,
+        &Arc<dyn awaken_session_execution_contract::SessionTerminalPreparationControl>,
         ArtifactPublicationError,
     > {
         self.terminal_preparation_control.get().ok_or_else(|| {
@@ -147,11 +147,11 @@ impl ClaimFencedArtifactPublisher {
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         effect_kind: &str,
     ) -> Result<
-        &Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>,
+        &Arc<dyn awaken_session_execution_contract::SessionCheckpointArtifactControl>,
         ArtifactPublicationError,
     > {
         let now_unix_ms = self.clock.now_ms();
-        if !awaken_session_realization_contract::realization_lease_is_live_at(
+        if !awaken_session_configuration_contract::resource::realization_lease_is_live_at(
             lease.expires_at_unix_ms,
             now_unix_ms,
         ) {
@@ -300,9 +300,9 @@ impl ArtifactPublisher<ResourceOperationFence> for ClaimFencedArtifactPublisher 
 }
 
 fn control_publication_error(
-    error: awaken_session_realization_contract::SessionRealizationControlFailure,
+    error: awaken_session_execution_contract::SessionRealizationControlFailure,
 ) -> ArtifactPublicationError {
-    use awaken_session_realization_contract::SessionRealizationControlFailure as Failure;
+    use awaken_session_execution_contract::SessionRealizationControlFailure as Failure;
     let detail = error.to_string();
     match error {
         Failure::Unavailable(_) => ArtifactPublicationError::AuthorityUnavailable { detail },
@@ -322,7 +322,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use awaken_dispatch::MemoryDispatchStore;
-    use awaken_session_realization_contract::SessionRealizationControlFailure;
+    use awaken_session_execution_contract::SessionRealizationControlFailure;
 
     use super::*;
 
@@ -385,9 +385,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_realization_contract::SessionCheckpointArtifactControl
-        for ExactResourceControl
-    {
+    impl awaken_session_execution_contract::SessionCheckpointArtifactControl for ExactResourceControl {
         async fn authorize_checkpoint_release_artifact_effect(
             &self,
             session: &awaken_session_types::SessionId,
@@ -403,14 +401,12 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_realization_contract::SessionTerminalPreparationControl
-        for ExactResourceControl
-    {
+    impl awaken_session_execution_contract::SessionTerminalPreparationControl for ExactResourceControl {
         async fn authorize_terminal_cleanup_effect(
             &self,
             effect: &awaken_session_contract::SessionTerminalCleanupEffect,
         ) -> Result<
-            awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+            awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
             SessionRealizationControlFailure,
         > {
             let now_unix_ms = std::time::SystemTime::now()
@@ -418,18 +414,18 @@ mod tests {
                 .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
                 .unwrap_or_default();
             if effect != &self.asserted_effect
-                || !awaken_session_realization_contract::realization_lease_generation_authorizes(
+                || !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                     &self.current_lease,
                     &effect.lease,
                 )
-                || !awaken_session_realization_contract::realization_lease_is_live_at(
+                || !awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                     self.current_lease.expires_at_unix_ms,
                     now_unix_ms,
                 )
             {
                 return Err(SessionRealizationControlFailure::StaleOwnership);
             }
-            awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+            awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
                 effect.clone(),
                 self.workspace_id.clone(),
                 None,
@@ -1023,16 +1019,16 @@ mod tests {
                 awaken_time::system_clock(),
             );
             let terminal: Arc<
-                dyn awaken_session_realization_contract::SessionTerminalPreparationControl,
+                dyn awaken_session_execution_contract::SessionTerminalPreparationControl,
             > = make_control();
             let checkpoint: Arc<
-                dyn awaken_session_realization_contract::SessionCheckpointArtifactControl,
+                dyn awaken_session_execution_contract::SessionCheckpointArtifactControl,
             > = make_control();
             let prior_terminal: Arc<
-                dyn awaken_session_realization_contract::SessionTerminalPreparationControl,
+                dyn awaken_session_execution_contract::SessionTerminalPreparationControl,
             > = make_control();
             let prior_checkpoint: Arc<
-                dyn awaken_session_realization_contract::SessionCheckpointArtifactControl,
+                dyn awaken_session_execution_contract::SessionCheckpointArtifactControl,
             > = make_control();
             if terminal_bound {
                 assert!(

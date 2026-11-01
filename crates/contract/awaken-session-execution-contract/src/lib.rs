@@ -1,6 +1,14 @@
 //! The Session ↔ execution boundary: the Session roles execution calls, coordination
-//! and Run admission, and the one late binding from execution back to the Session
-//! application.
+//! and Run admission, the Session realization phase protocol and its Control ports,
+//! and the one late binding from execution back to the Session application.
+//!
+//! Realization and execution cross the same Coordinator ↔ Worker boundary between
+//! the same parties, so they are one contract. The retired realization package is
+//! unavailable:
+//!
+//! ```compile_fail
+//! use awaken_session_realization_contract::SessionRealizationControl;
+//! ```
 //!
 //! Protocol adapters drive the live inbox through the application contract,
 //! not through execution:
@@ -10,40 +18,56 @@
 //! ```
 
 mod application_binding;
+mod bound_source_end;
+mod claimed_control;
 mod claimed_coordination;
 mod coordination;
 mod durable_run_operations;
+#[cfg(feature = "test-support")]
+pub mod realization_observation;
+mod resource_operation_fence;
 mod run_admission;
 mod session;
+mod session_realization;
+mod source_retention;
 
 #[cfg(test)]
 pub(crate) use awaken_agent_contract::McpTarget;
 pub(crate) use awaken_agent_contract::stable_fingerprint;
+#[cfg(test)]
+pub(crate) use awaken_environment_contract::EnvironmentRevision;
 pub(crate) use awaken_session_application_contract::{
     DelegatedRun, DelegatedRunSnapshot, Pending, SessionBudgetResumeDelivery,
     SessionBudgetResumeDisposition, SessionBudgetResumeTicket, StepOutcome,
 };
+#[cfg(feature = "test-support")]
+pub(crate) use awaken_session_configuration_contract::mcp::McpGeneration;
 pub(crate) use awaken_session_configuration_contract::mcp::{
     McpGenerationRef, McpProjectionEffectKind, McpProjectionReceipt, McpRealizationReceipt,
-    StageMcpAttachment,
+    SessionMcpAttachment, StageMcpAttachment,
 };
 pub(crate) use awaken_session_configuration_contract::resource::{
-    ResolvedSkillBinding, SessionRealizationLease, SessionResourceTransition,
+    ResolvedInput, ResolvedSessionResources, ResolvedSkillBinding, SessionRealizationLease,
+    SessionResourceManifest, SessionResourceTransition,
 };
 pub(crate) use awaken_session_configuration_contract::{
-    AgentCapabilities, SessionSandboxLayout, SessionToolConfiguration,
+    AgentCapabilities, SessionBaseline, SessionInit, SessionModelOverride, SessionSandboxLayout,
+    SessionSystemPromptSelection, SessionToolConfiguration,
 };
 #[cfg(test)]
-pub(crate) use awaken_session_contract::SessionUserRunSystemInput;
-pub(crate) use awaken_session_realization_contract::{
-    FrozenSessionProjection, ObservedSessionRealizationLease, SessionProjectionInstallMode,
-    SessionRealizationControl, SessionTerminalCleanupAssignment,
-    SessionTerminalCleanupPreparationAuthorization,
+pub(crate) use awaken_session_configuration_contract::{
+    EnvironmentFingerprint, EnvironmentSnapshot, SessionBaselineInputs, SessionNetworkPolicy,
+};
+#[cfg(test)]
+pub(crate) use awaken_session_contract::{SessionCleanupCommand, SessionUserRunSystemInput};
+pub(crate) use awaken_session_contract::{
+    SessionRepositoryPublicationReceipt, SessionRepositoryPublicationRejection,
+    SessionTerminalCleanupAction, SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
 };
 pub(crate) use awaken_session_types::RunError;
 #[cfg(test)]
 pub(crate) use awaken_session_types::RunErrorKind;
-pub(crate) use awaken_session_types::SessionId;
+pub(crate) use awaken_session_types::{SessionId, SessionRevision, SessionRuntimePlacement};
 pub(crate) use {
     awaken_provisioning_contract::SandboxCheckpointRef,
     awaken_provisioning_contract::SandboxRestoreRequest,
@@ -70,6 +94,8 @@ pub use application_binding::{
     SessionApplicationBinding, SessionApplicationBindingError, SessionApplicationLifetime,
     SessionApplicationMode, SessionApplications,
 };
+pub use bound_source_end::{BoundSourceEnd, RecordedProcessEnd};
+pub use claimed_control::{ClaimedSessionControlError, ClaimedSessionRealizationControl};
 pub use claimed_coordination::ClaimedSessionCoordinationControl;
 pub use coordination::{
     CoordinatedAdmissionRef, CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind,
@@ -90,6 +116,7 @@ pub use coordination::{
 pub use durable_run_operations::{
     ApplicationError, ApplicationErrorKind, DurableDispatchStatus, DurableRunOperations,
 };
+pub use resource_operation_fence::ResourceOperationFence;
 pub use run_admission::{
     AdmitPreparedSessionRun, AdmitSessionRun, AdmittedSessionRun, PreparedSessionRunAdmission,
     SessionRunActivation, SessionRunActivityAdmitter, SessionRunActivityReceiptPlan,
@@ -115,8 +142,49 @@ pub use session::{
     outcome_terminal_commit_cursor, publish_mcp_generation_receipt, select_recovery_snapshot_run,
 };
 
+pub use session_realization::{
+    AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
+    CanonicalPublicationError, CanonicalSessionProjection, CanonicalSessionPublication,
+    ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, ENVIRONMENT_PROVISIONING_CODE,
+    ENVIRONMENT_REJECTED_CODE, ENVIRONMENT_UNAVAILABLE_CODE, FailSessionRealization,
+    FrozenAgentPublicationDecision, FrozenProjectionReceipt, FrozenResourceTransitionUse,
+    FrozenSessionProjection, ObservedSessionRealizationLease, ProjectionReceiptRefusal,
+    RealizationFailureOutcome, RenewSessionRealization, SESSION_REALIZATION_NOT_READY_CODE,
+    STALE_PROJECTION_CODE, SessionCheckpointArtifactControl, SessionFileReadAuthorization,
+    SessionPreparationAssignment, SessionPreparationControl, SessionPreparationPlacement,
+    SessionProjectionInstallMode, SessionProjectionSynchronizer, SessionRealizationAction,
+    SessionRealizationAssignment, SessionRealizationControl, SessionRealizationControlDisposition,
+    SessionRealizationControlFailure, SessionRealizationDirective, SessionRealizationDriveError,
+    SessionRealizationEffectFailure, SessionRealizationExclusionDecision,
+    SessionRealizationLeaseReceipt, SessionRealizationPermit, SessionRealizationTarget,
+    SessionRepositoryPublicationProjection, SessionResourceMaterializationControl,
+    SessionResourceMaterializationIntent, SessionResourceMaterializationTarget,
+    SessionTerminalCleanupAssignment, SessionTerminalCleanupControl,
+    SessionTerminalCleanupPreparationAuthorization, SessionTerminalCleanupQueue,
+    SessionTerminalCleanupWork, SessionTerminalDisposalControl, SessionTerminalMemoryControl,
+    SessionTerminalPreparationControl, SessionTerminalRepositoryPublicationControl,
+    SessionTerminalSourceDispatch, TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION,
+    WorkerSessionRealizationControl, effect_failure_disposition, environment_effect_error,
+    frozen_agent_publication_decision, frozen_sandbox_layout_publication_decision,
+    frozen_session_requires_opaque_process, is_environment_effect_code, is_not_ready_code,
+    legacy_agent_publication_decision, model_candidates_require_opaque_process,
+    project_effective_agent_publication, provisioning_disposition,
+    realization_generation_authorizes, requires_local_environment,
+    resolve_canonical_session_projection, session_realization_assignment,
+    session_realization_exclusion_admits, synchronize_or_supersede,
+    terminal_cleanup_worker_requirements, validate_terminal_no_create_witness,
+};
+pub use source_retention::{
+    SourceRetentionSubject, WORKER_SOURCE_RETENTION_SUBJECTS_PATH, WorkerSourceRetentionSubjects,
+};
+
 #[doc(hidden)]
 pub mod __macro_support {
+    pub use crate::session_realization::{
+        FrozenSessionProjection, ObservedSessionRealizationLease, SessionProjectionInstallMode,
+        SessionRealizationControl, SessionTerminalCleanupAssignment,
+        SessionTerminalCleanupPreparationAuthorization,
+    };
     pub use async_trait;
     pub use awaken_agent_contract;
     pub use awaken_session_application_contract::{
@@ -132,11 +200,6 @@ pub mod __macro_support {
     };
     pub use awaken_session_contract::SessionUsage;
     pub use awaken_session_contract::session_outcome_convenience_id;
-    pub use awaken_session_realization_contract::{
-        FrozenSessionProjection, ObservedSessionRealizationLease, SessionProjectionInstallMode,
-        SessionRealizationControl, SessionTerminalCleanupAssignment,
-        SessionTerminalCleanupPreparationAuthorization,
-    };
     pub use awaken_session_types::RunError;
     pub use awaken_session_types::SessionId;
     pub use {

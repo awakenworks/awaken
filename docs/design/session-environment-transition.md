@@ -288,7 +288,7 @@ invocations already depend on that owner. No wire or durable schema changes.
 - `awaken-session-realization` `terminal_effects::tests` HT0 (exhaustive mode
   table) and HT1.
 - `awaken-session-application` `tests::recovery_sweep` H2 (continuation hint).
-- `awaken-session-realization-contract`
+- `awaken-session-execution-contract`
   `environment_rejections_project_onto_one_control_failure` (R1–R4).
 - `awaken-session-application` `tests::continuation` (existing saga tables and
   O1–O3 for the adopted fail-closed rows).
@@ -304,7 +304,7 @@ invocations already depend on that owner. No wire or durable schema changes.
 - `awaken-session-application` `tests::recovery_sweep` D1–D12 (changed
   refusal, successful absence, failed later page, retry EOF, aggregate cause).
 
-- `awaken-session-realization-contract` E1–E4 exercise the exact neutral
+- `awaken-session-execution-contract` E1–E4 exercise the exact neutral
   payload and hint partitions; the pure Kani `driver_wait_never_extends_or_discards_the_original_retry_hint`
   checks the complete Duration domain, without a clock/transport liveness claim.
 - `awaken-session-realization` H1–H4 keep the provider's original hint through

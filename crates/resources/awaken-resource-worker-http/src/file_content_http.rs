@@ -10,7 +10,7 @@ use awaken_dispatch_contract::DispatchCommitAuthority;
 use awaken_resource_contract::{
     FileContentSource, FileContentSourceError, FileReadPurpose, ResolvedFileContent, content_id,
 };
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
@@ -57,10 +57,10 @@ pub struct WorkerFileContentService {
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Arc<dyn WorkerDirectory>,
     session_file_authorization:
-        Option<Arc<dyn awaken_session_realization_contract::SessionFileReadAuthorization>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionFileReadAuthorization>>,
     recovery: Option<Arc<dyn RunRecoverySource>>,
     materialization_control:
-        Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionResourceMaterializationControl>>,
     /// The Coordinator's wall clock: the instant claims and leases are judged at.
     clock: Arc<dyn awaken_time::WallClock>,
 }
@@ -96,7 +96,7 @@ impl WorkerFileContentService {
     /// ```
     /// use std::sync::Arc;
     /// use awaken_resource_worker_http::WorkerFileContentService;
-    /// use awaken_session_realization_contract::SessionFileReadAuthorization;
+    /// use awaken_session_execution_contract::SessionFileReadAuthorization;
     /// fn configure(service: WorkerFileContentService, authorization: Arc<dyn SessionFileReadAuthorization>)
     ///     -> WorkerFileContentService {
     ///     service.with_session_file_authorization(authorization)
@@ -106,7 +106,7 @@ impl WorkerFileContentService {
     /// ```compile_fail,E0599
     /// use std::sync::Arc;
     /// use awaken_resource_worker_http::WorkerFileContentService;
-    /// use awaken_session_realization_contract::SessionFileReadAuthorization;
+    /// use awaken_session_execution_contract::SessionFileReadAuthorization;
     /// fn old(service: WorkerFileContentService, authorization: Arc<dyn SessionFileReadAuthorization>) {
     ///     service.with_session_repository(authorization);
     /// }
@@ -114,7 +114,7 @@ impl WorkerFileContentService {
     #[must_use]
     pub fn with_session_file_authorization(
         mut self,
-        authorization: Arc<dyn awaken_session_realization_contract::SessionFileReadAuthorization>,
+        authorization: Arc<dyn awaken_session_execution_contract::SessionFileReadAuthorization>,
     ) -> Self {
         self.session_file_authorization = Some(authorization);
         self
@@ -129,9 +129,7 @@ impl WorkerFileContentService {
     #[must_use]
     pub fn with_session_control(
         mut self,
-        control: Arc<
-            dyn awaken_session_realization_contract::SessionResourceMaterializationControl,
-        >,
+        control: Arc<dyn awaken_session_execution_contract::SessionResourceMaterializationControl>,
     ) -> Self {
         self.materialization_control = Some(control);
         self
@@ -349,18 +347,18 @@ async fn read_file_content(
                 .await
             {
                 Ok(workspace) => workspace,
-                Err(awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_))
-                | Err(awaken_session_realization_contract::SessionRealizationControlFailure::Conflict) => {
+                Err(awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(_))
+                | Err(awaken_session_execution_contract::SessionRealizationControlFailure::Conflict) => {
                     return StatusCode::SERVICE_UNAVAILABLE.into_response();
                 }
-                Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership) => {
+                Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership) => {
                     return StatusCode::CONFLICT.into_response();
                 }
                 Err(_) => return StatusCode::FORBIDDEN.into_response(),
             };
             let exact_file = matches!(
                 intent.target(),
-                awaken_session_realization_contract::SessionResourceMaterializationTarget::Input(input)
+                awaken_session_execution_contract::SessionResourceMaterializationTarget::Input(input)
                     if matches!(
                         &input.source,
                         awaken_session_configuration_contract::resource::ResolvedInputSource::File { file_id }

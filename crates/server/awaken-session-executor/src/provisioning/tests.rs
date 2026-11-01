@@ -155,7 +155,7 @@ fn terminal_cleanup_test_lease() -> session_resource::SessionRealizationLease {
 fn terminal_cleanup_projection(
     workspace_id: &str,
     environment: awaken_session_contract::SessionEnvironmentState,
-) -> awaken_session_realization_contract::FrozenSessionProjection {
+) -> awaken_session_execution_contract::FrozenSessionProjection {
     frozen_projection_with_model_override(workspace_id, environment, None)
 }
 
@@ -163,7 +163,7 @@ fn frozen_projection_with_model_override(
     workspace_id: &str,
     environment: awaken_session_contract::SessionEnvironmentState,
     model_override: Option<awaken_session_configuration_contract::SessionModelOverride>,
-) -> awaken_session_realization_contract::FrozenSessionProjection {
+) -> awaken_session_execution_contract::FrozenSessionProjection {
     let holder = awaken_agent_contract::credential::PlaintextHolder::new(
         awaken_agent_contract::credential::PlaintextBoundary::Worker,
         "terminal.provisioning.test",
@@ -204,7 +204,7 @@ fn frozen_projection_with_model_override(
             transcript_prefix: None,
         },
     );
-    awaken_session_realization_contract::FrozenSessionProjection {
+    awaken_session_execution_contract::FrozenSessionProjection {
         bound_source_end: None,
         workspace_id: workspace_id.into(),
         revision: awaken_session_types::SessionRevision(1),
@@ -366,7 +366,7 @@ async fn root_terminal_cleanup_effect(
                 &host.run_assembly.realization_executor,
                 &host.run_assembly.mcp,
             ),
-            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: session_id.into(),
                 projection,
@@ -385,18 +385,18 @@ fn root_terminal_preparation_authorization(
     session: &awaken_session_contract::PersistedSession,
     effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     workspace_id: &str,
-) -> awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization {
+) -> awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization {
     let inherited_provider_disposal = session
         .authorize_terminal_cleanup_effect(effect)
         .expect("derive the root preparation authorization from the aggregate");
-    awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+    awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
         effect.clone(),
         workspace_id.into(),
         inherited_provider_disposal,
     )
     .expect("close the exact root terminal preparation authorization")
     .with_source_dispatch(
-        awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {},
+        awaken_session_execution_contract::SessionTerminalSourceDispatch::Settled {},
     )
 }
 

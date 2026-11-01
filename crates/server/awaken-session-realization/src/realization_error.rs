@@ -19,7 +19,7 @@ use awaken_session_configuration_contract::resource::binding_checks::{
     repository_binding_code, repository_binding_run_error,
 };
 use awaken_session_contract::SessionEnvironmentReceiptRecoveryAction;
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, ENVIRONMENT_PROVISIONING_CODE,
     SessionRealizationControlDisposition, effect_failure_disposition, environment_effect_error,
     provisioning_disposition,
@@ -663,9 +663,7 @@ impl From<RealizationError> for RunError {
 
 /// Keep the Provider's scheduling hint before projecting through the one
 /// neutral Run conversion. No caller repeats the realization classification.
-impl From<RealizationError>
-    for awaken_session_realization_contract::SessionRealizationEffectFailure
-{
+impl From<RealizationError> for awaken_session_execution_contract::SessionRealizationEffectFailure {
     fn from(error: RealizationError) -> Self {
         let retry_after = error.retry_after();
         Self::new(RunError::from(error), retry_after)

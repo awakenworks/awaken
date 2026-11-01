@@ -6616,14 +6616,14 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             .get(&SessionId::from("in-flight-renewal"))
             .await
             .unwrap();
-        let command = awaken_session_realization_contract::ActivateSessionRealization {
+        let command = awaken_session_execution_contract::ActivateSessionRealization {
             session_id: "in-flight-renewal".into(),
             lease: asserted_lease.clone(),
             prepared_resource_revision,
             mcp_receipts: vec![admitted_receipt],
         };
         let result =
-            awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
+            awaken_session_execution_contract::SessionRealizationControl::activate_session_realization(
                 app.realizations.as_ref(),
                 command.clone(),
             )
@@ -6634,7 +6634,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             assert!(
                 matches!(
                     result,
-                    Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))
+                    Err(awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(_))
                 ),
                 "F5/E6 reject mismatched preparation before catch-up"
             );
@@ -6671,7 +6671,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         // F1/F2 replay preserves phase, projection and durable lease, while
         // each response independently samples its remaining authority horizon.
         assert!(
-            awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
+            awaken_session_execution_contract::SessionRealizationControl::activate_session_realization(
                 app.realizations.as_ref(), command
             )
             .await
@@ -6687,10 +6687,8 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             revision,
             "F1/F2 no duplicate activation write"
         );
-        let awaken_session_realization_contract::SessionRealizationAction::Publish {
-            publish,
-            drain,
-        } = directive.action
+        let awaken_session_execution_contract::SessionRealizationAction::Publish { publish, drain } =
+            directive.action
         else {
             panic!("F1/E3 and F2/E3 publish only an exact staged generation")
         };
@@ -6751,7 +6749,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
         McpRealizationReceipt, SessionMcpAttachmentSet,
     };
     use awaken_session_configuration_contract::resource::SessionRealizationLease;
-    use awaken_session_realization_contract::{
+    use awaken_session_execution_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         RenewSessionRealization, SessionRealizationAction, SessionRealizationControl,
         SessionRealizationControlFailure, SessionRealizationTarget,

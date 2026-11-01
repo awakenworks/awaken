@@ -10,7 +10,7 @@
 use crate::peers::EnvironmentPeer as _;
 use crate::sandbox_projection::provisioning_checkpoint_request;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 
 use awaken_session_types::RunError;
 

@@ -3,14 +3,17 @@
 //! Lease-only scheduling and response application for the canonical installed Session.
 
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
-use awaken_session_realization_contract::ObservedSessionRealizationLease;
-use awaken_session_realization_contract::SessionRealizationControl as _;
+use awaken_session_execution_contract::ObservedSessionRealizationLease;
+use awaken_session_execution_contract::SessionRealizationControl as _;
+use awaken_session_execution_contract::SessionRealizationControlFailure;
 use awaken_session_realization_driver::DeadlineSessionRealizationControl;
 #[cfg(any(target_os = "linux", test))]
 use awaken_session_realization_driver::MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS;
 #[cfg(target_os = "linux")]
 use futures_util::stream::{self, StreamExt};
 use std::sync::Arc;
+
+use crate::SessionExecutionError;
 
 /// Independent Session lease renewals are fast root CAS operations. Bound them
 /// per Worker so cloud replica count scales total capacity without removing
@@ -27,7 +30,7 @@ impl crate::RunAssembly {
         session_id: String,
         lease: crate::session_resource::SessionRealizationLease,
         requested_expiry_unix_ms: u64,
-    ) -> Result<bool, crate::SessionExecutionError> {
+    ) -> Result<bool, SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         // Cause/effect decision table: C1 this lease was selected by the due-only
         // scheduler; C2 Control extends its exact generation; C3 Control
@@ -62,23 +65,17 @@ impl crate::RunAssembly {
         else {
             return Ok(false);
         };
-        let renewal: Result<ObservedSessionRealizationLease, (crate::SessionExecutionError, bool)> =
+        let renewal: Result<ObservedSessionRealizationLease, (SessionExecutionError, bool)> =
             async {
-                let control_failure =
-                |error: awaken_session_realization_contract::SessionRealizationControlFailure| {
+                let control_failure = |error: SessionRealizationControlFailure| {
                     let revoke = error.proves_current_realization_cannot_continue();
-                    (crate::SessionExecutionError::internal(error.to_string()), revoke)
+                    (SessionExecutionError::internal(error.to_string()), revoke)
                 };
-                let request_started =
-                    awaken_authority_clock::authority_proof_started().map_err(|error| {
-                        (
-                            crate::SessionExecutionError::internal(error.to_string()),
-                            true,
-                        )
-                    })?;
+                let request_started = awaken_authority_clock::authority_proof_started()
+                    .map_err(|error| (SessionExecutionError::internal(error.to_string()), true))?;
                 control
                     .renew_session_realization(
-                        awaken_session_realization_contract::RenewSessionRealization {
+                        awaken_session_execution_contract::RenewSessionRealization {
                             session_id: awaken_session_types::SessionId::from(&session_id),
                             asserted_lease: lease.clone(),
                             requested_expires_at_unix_ms: requested_expiry_unix_ms,
@@ -96,8 +93,8 @@ impl crate::RunAssembly {
         let _completion_permit = control
             .acquire_completion_permit()
             .await
-            .map_err(|error| crate::SessionExecutionError::internal(error.to_string()))?;
-        let renewal: Result<bool, (crate::SessionExecutionError, bool)> = match renewal {
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
+        let renewal: Result<bool, (SessionExecutionError, bool)> = match renewal {
             Ok(renewed_lease) => {
                 // The response belongs to the snapshot sent before I/O. Compare
                 // and install atomically: another driver may already have extended,
@@ -105,7 +102,7 @@ impl crate::RunAssembly {
                 // to recreate an installed Session or overwrite a later installed lease.
                 self.realization_executor
                     .authority()
-                    .authorize_worker_effect::<_, crate::SessionExecutionError>(|| {
+                    .authorize_worker_effect::<_, SessionExecutionError>(|| {
                         Ok(realizations
                             .modify_realization(&session_id, |state| {
                                 Arc::ptr_eq(&state.execution().phase, &realization)
@@ -178,11 +175,11 @@ impl crate::RunAssembly {
     pub async fn renew_due_session_realizations(
         &self,
         timing: AuthorityLeaseTiming,
-    ) -> Result<usize, crate::SessionExecutionError> {
+    ) -> Result<usize, SessionExecutionError> {
         let worker = &self.capabilities.worker;
         self.renew_session_realization_projections(
             worker.session_control.as_deref().map(|control| {
-                control as &dyn awaken_session_realization_contract::SessionRealizationControl
+                control as &dyn awaken_session_execution_contract::SessionRealizationControl
             }),
             None,
             timing,
@@ -192,10 +189,10 @@ impl crate::RunAssembly {
 
     pub(crate) async fn renew_session_realization_projections(
         &self,
-        control: Option<&dyn awaken_session_realization_contract::SessionRealizationControl>,
+        control: Option<&dyn awaken_session_execution_contract::SessionRealizationControl>,
         owner: Option<(&str, &str)>,
         timing: AuthorityLeaseTiming,
-    ) -> Result<usize, crate::SessionExecutionError> {
+    ) -> Result<usize, SessionExecutionError> {
         #[cfg(target_os = "linux")]
         {
             // One existing sweep drives BOTH authority renewal and physical
@@ -215,7 +212,7 @@ impl crate::RunAssembly {
     }
 
     #[cfg(target_os = "linux")]
-    async fn refresh_session_execution(&self) -> Result<(), crate::SessionExecutionError> {
+    async fn refresh_session_execution(&self) -> Result<(), SessionExecutionError> {
         let outcomes = stream::iter(self.installed_sessions.execution_environments()?)
             .map(|environment| async move {
                 let Some(scoped) = environment.scoped_execution() else {
@@ -224,7 +221,7 @@ impl crate::RunAssembly {
                 scoped
                     .refresh_scoped_execution()
                     .await
-                    .map_err(|error| crate::SessionExecutionError::internal(error.to_string()))
+                    .map_err(|error| SessionExecutionError::internal(error.to_string()))
             })
             .buffer_unordered(MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS)
             .collect::<Vec<_>>()
@@ -234,12 +231,12 @@ impl crate::RunAssembly {
 
     async fn renew_due_session_projection_leases(
         &self,
-        control: Option<&dyn awaken_session_realization_contract::SessionRealizationControl>,
+        control: Option<&dyn awaken_session_execution_contract::SessionRealizationControl>,
         owner: Option<(&str, &str)>,
         timing: AuthorityLeaseTiming,
-    ) -> Result<usize, crate::SessionExecutionError> {
+    ) -> Result<usize, SessionExecutionError> {
         let now = awaken_authority_clock::authority_proof_started()
-            .map_err(|error| crate::SessionExecutionError::internal(error.to_string()))?;
+            .map_err(|error| SessionExecutionError::internal(error.to_string()))?;
         let mut due = self
             .installed_sessions
             .realization_leases()?
@@ -259,9 +256,7 @@ impl crate::RunAssembly {
             return Ok(0);
         }
         let control = control.ok_or_else(|| {
-            crate::SessionExecutionError::internal(
-                "due Session projection has no Control renewal client",
-            )
+            SessionExecutionError::internal("due Session projection has no Control renewal client")
         })?;
         let control = DeadlineSessionRealizationControl::new(control, timing.request_timeout());
         // This cadence owns only due lease writes. The independent lifecycle

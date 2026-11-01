@@ -286,7 +286,7 @@ impl FailSessionRealization {
     /// with the aggregate's existing checked assignment operation and root CAS.
     ///
     /// ```
-    /// use awaken_session_realization_contract::{
+    /// use awaken_session_execution_contract::{
     ///     FailSessionRealization, RealizationFailureOutcome, SessionRealizationControlFailure,
     /// };
     /// use awaken_session_contract::PersistedSession;
@@ -303,7 +303,7 @@ impl FailSessionRealization {
     /// this bounded removal; field encapsulation is checked separately.
     ///
     /// ```compile_fail,E0599
-    /// use awaken_session_realization_contract::FailSessionRealization;
+    /// use awaken_session_execution_contract::FailSessionRealization;
     /// use awaken_session_contract::PersistedSession;
     /// fn bypass(command: &FailSessionRealization, session: &mut PersistedSession) {
     ///     let _ = command.retries_initial_realization(session, 3);

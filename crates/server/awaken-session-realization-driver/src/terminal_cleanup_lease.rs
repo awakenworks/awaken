@@ -5,7 +5,7 @@
 //! Keep a cleanup drive under its exact, renewed lease without owning durable state.
 
 use crate::SessionTerminalCleanupDriveOutcome;
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     RenewSessionRealization, SessionRealizationControlFailure, SessionRealizationDriveError,
     SessionTerminalCleanupAssignment,
 };
@@ -33,7 +33,7 @@ where
     Renew: FnMut(RenewSessionRealization) -> RenewFuture,
     RenewFuture: Future<
         Output = Result<
-            awaken_session_realization_contract::SessionRealizationLeaseReceipt,
+            awaken_session_execution_contract::SessionRealizationLeaseReceipt,
             SessionRealizationControlFailure,
         >,
     >,
@@ -90,7 +90,7 @@ where
                     return Err(SessionRealizationDriveError::Control(SessionRealizationControlFailure::StaleOwnership));
                 }
                 let renewed_lease = observed.lease.clone();
-                if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+                if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                         &renewed_lease,
                         &asserted_lease,
                     )

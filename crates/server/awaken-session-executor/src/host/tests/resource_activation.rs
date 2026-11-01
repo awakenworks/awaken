@@ -976,7 +976,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             transcript_prefix: None,
         },
     );
-    let ordinary_projection = awaken_session_realization_contract::FrozenSessionProjection {
+    let ordinary_projection = awaken_session_execution_contract::FrozenSessionProjection {
         bound_source_end: None,
         workspace_id: workspace_id.clone(),
         revision: awaken_session_types::SessionRevision(1),
@@ -1006,7 +1006,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         &*managed.run_assembly,
         session_id,
         ordinary_projection.clone(),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("P1/P3 install complete ordinary projection before realization");
@@ -1178,7 +1178,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     );
     awaken_session_execution_contract::TerminalCleanup::install_terminal_cleanup_assignment(
         &*managed.run_assembly,
-        &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+        &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection: terminal_projection.clone(),
@@ -1463,7 +1463,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         "P4 fresh aggregate keeps publication behind child preparation",
     );
     control.assignments.lock().unwrap().push_back(
-        awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+        awaken_session_execution_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection: terminal_projection,
@@ -1471,7 +1471,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         },
     );
     *control.session.lock().unwrap() = Some(control_session);
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: lease.owner.clone(),
         runtime_incarnation: lease.runtime_incarnation.clone(),
         lease_expires_at_unix_ms: lease.expires_at_unix_ms,

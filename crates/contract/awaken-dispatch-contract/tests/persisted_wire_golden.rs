@@ -34,8 +34,8 @@ use awaken_session_configuration_contract::SessionRuntimeProjection;
 use awaken_session_configuration_contract::resource::{
     SessionRealizationLease, SessionResourceManifest,
 };
+use awaken_session_execution_contract::ResourceOperationFence;
 use awaken_session_execution_contract::{AdmitSessionRun, SessionRunExecutionRequirements};
-use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 
 fn command() -> AdmitSessionRun {
@@ -248,7 +248,7 @@ fn fences() -> Vec<(&'static str, ResourceOperationFence)> {
         (
             "session_materialization",
             ResourceOperationFence::SessionMaterialization(
-                awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
+                awaken_session_execution_contract::SessionResourceMaterializationIntent::try_new(
                     "session-golden",
                     5,
                     serde_json::from_value(repository_input()).expect("valid resolved input"),

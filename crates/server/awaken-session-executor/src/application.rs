@@ -31,7 +31,7 @@ pub struct SessionRealizationRevocation {
 
 #[cfg(test)]
 mod realization_renewal_tests {
-    use awaken_session_realization_contract::SessionRealizationControlFailure;
+    use awaken_session_execution_contract::SessionRealizationControlFailure;
 
     #[test]
     fn terminal_session_replies_retire_only_the_stale_local_projection() {
@@ -109,7 +109,7 @@ mod realization_renewal_tests {
             ),
         ] {
             assert_eq!(
-                awaken_session_realization_contract::realization_lease_generation_authorizes(
+                awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                     &current, &failed
                 ),
                 expected,
@@ -164,7 +164,7 @@ impl crate::RunAssembly {
         realizations
             .modify_realization(session_id, |r| {
                 if r.execution().authority.lease().is_some_and(|current| {
-                    awaken_session_realization_contract::realization_lease_generation_authorizes(
+                    awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                         current, failed,
                     )
                 }) {
@@ -189,7 +189,7 @@ impl crate::RunAssembly {
             // before installing a complete local Session projection. A relay
             // capability, by contrast, always requires the current root.
             .unwrap_or_else(|| {
-                awaken_session_realization_contract::realization_lease_is_live_at(
+                awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                     generation.lease_expires_at_unix_ms(),
                     now_unix_ms,
                 )
@@ -210,7 +210,7 @@ impl crate::RunAssembly {
     /// used by claimed Runs, but without opening a Run or model operation.
     pub async fn prepare_session_without_run(
         &self,
-        assignment: &awaken_session_realization_contract::SessionPreparationAssignment,
+        assignment: &awaken_session_execution_contract::SessionPreparationAssignment,
     ) -> Result<(), crate::SessionExecutionError> {
         let control = self
             .capabilities
@@ -248,7 +248,7 @@ impl crate::RunAssembly {
     /// executor serves only the process-local projections it installs.
     pub async fn recover_terminal_cleanup_assignments(
         &self,
-        target: awaken_session_realization_contract::SessionRealizationTarget,
+        target: awaken_session_execution_contract::SessionRealizationTarget,
     ) -> Result<usize, crate::SessionExecutionError> {
         let control = self.authority.terminal_cleanup_control().ok_or_else(|| {
             crate::SessionExecutionError::internal(
@@ -445,7 +445,7 @@ mod terminal_cleanup_drive_error_tests {
         let effect = sweep_error(TerminalRecoverySweepError {
             session_id: Some("session-a".into()),
             error: TerminalRecoveryError::Drive(
-                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                awaken_session_execution_contract::SessionRealizationDriveError::Effect(
                     awaken_session_types::RunError::unavailable_classified(
                         "terminal_provider_retry",
                         "provider is temporarily unavailable",
@@ -460,8 +460,8 @@ mod terminal_cleanup_drive_error_tests {
         let control = sweep_error(TerminalRecoverySweepError {
             session_id: Some("session-a".into()),
             error: TerminalRecoveryError::Drive(
-                awaken_session_realization_contract::SessionRealizationDriveError::Control(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::Conflict,
+                awaken_session_execution_contract::SessionRealizationDriveError::Control(
+                    awaken_session_execution_contract::SessionRealizationControlFailure::Conflict,
                 ),
             ),
         });
@@ -561,7 +561,7 @@ impl crate::RunAssembly {
     /// realization executor's effects.
     pub(crate) fn terminal_recovery_participants<'a>(
         &'a self,
-        control: &'a dyn awaken_session_realization_contract::SessionTerminalCleanupControl,
+        control: &'a dyn awaken_session_execution_contract::SessionTerminalCleanupControl,
     ) -> awaken_session_realization_driver::TerminalRecoveryParticipants<'a, Self> {
         awaken_session_realization_driver::TerminalRecoveryParticipants {
             control,
@@ -654,7 +654,7 @@ fn terminal_recovery_error(
 ) -> crate::SessionExecutionError {
     let error = match error {
         awaken_session_realization_driver::TerminalRecoveryError::Drive(
-            awaken_session_realization_contract::SessionRealizationDriveError::Effect(error),
+            awaken_session_execution_contract::SessionRealizationDriveError::Effect(error),
         ) => awaken_session_types::RunError::from(error),
         awaken_session_realization_driver::TerminalRecoveryError::Projection(error) => error,
         error => return crate::SessionExecutionError::internal(error.to_string()),
@@ -686,7 +686,7 @@ fn terminal_recovery_sweep_error(
 #[cfg(test)]
 pub(crate) async fn reconcile_terminal_cleanup_for_test(
     assembly: &crate::RunAssembly,
-    control: &dyn awaken_session_realization_contract::SessionTerminalCleanupControl,
+    control: &dyn awaken_session_execution_contract::SessionTerminalCleanupControl,
     session_id: &awaken_session_types::SessionId,
     lease: &crate::session_resource::SessionRealizationLease,
 ) -> Result<awaken_session_realization_driver::TerminalReconciliation, crate::SessionExecutionError>

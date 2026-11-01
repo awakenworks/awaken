@@ -7,7 +7,7 @@
 
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 
 /// A thread's staged neutral mount requirements plus the prompt fragments derived
 /// from the same effective Session inputs.

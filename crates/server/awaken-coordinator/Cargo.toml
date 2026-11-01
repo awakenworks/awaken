@@ -80,7 +80,6 @@ awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-realization-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-dream-contract.workspace = true

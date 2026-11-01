@@ -298,7 +298,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/construction.rs",
-        "line": 290,
+        "line": 288,
         "file_sha256": "df6776d28167f3170a54caced2a62b543535d2602320ff8512ce89b997af232d"
       }
     ],

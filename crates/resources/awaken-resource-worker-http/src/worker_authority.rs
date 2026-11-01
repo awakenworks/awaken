@@ -87,7 +87,7 @@ pub(crate) async fn verify_session_worker_effect(
         worker_is_current,
         lease.owner == identity.worker_id,
         lease.runtime_incarnation == identity.lease_owner(),
-        awaken_session_realization_contract::realization_lease_is_live_at(
+        awaken_session_configuration_contract::resource::realization_lease_is_live_at(
             lease.expires_at_unix_ms,
             now_unix_ms,
         ),

@@ -9,7 +9,7 @@ use super::{
 use crate::session_reconciliation::TerminalReconciliationState;
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_runtime_contract::auxiliary_agents::RunPublicationClosure;
-use awaken_session_realization_contract::ClaimedSessionRealizationControl;
+use awaken_session_execution_contract::ClaimedSessionRealizationControl;
 
 /// Where a claimed Session's frozen projection comes from on this Worker.
 pub enum ProjectionAuthority {

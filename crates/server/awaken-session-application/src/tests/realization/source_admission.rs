@@ -81,7 +81,7 @@ fn terminal_source_protocol_capability_is_required_only_for_preparation() {
                 &disposal,
             ] {
                 let requirements =
-                    awaken_session_realization_contract::terminal_cleanup_worker_requirements(
+                    awaken_session_execution_contract::terminal_cleanup_worker_requirements(
                         "workspace",
                         &session,
                         action,

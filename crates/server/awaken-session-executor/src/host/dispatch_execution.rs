@@ -15,12 +15,10 @@ use awaken_dispatch_execution::session_worker_resolver::{
 };
 use awaken_dispatch_execution::{AdmissionError, DispatchWorker, Error};
 use awaken_runtime_contract::{ExecutableAgentSnapshot, StaticPublishedAgentSnapshots};
+use awaken_session_execution_contract::{FrozenSessionProjection, ObservedSessionRealizationLease};
 use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_session_realization::realization_error::RealizationError;
 use awaken_session_realization::worker_projection::SessionProjectionExecution;
-use awaken_session_realization_contract::{
-    FrozenSessionProjection, ObservedSessionRealizationLease,
-};
 
 /// The one construction of this Host's claimed-run resolver. The topology
 /// selects the construction: a process running the local pool resolves claimed
@@ -184,7 +182,7 @@ impl ClaimedSessionInstallation for ClaimedRunAssembly {
         claim: &RunClaim,
     ) -> Result<
         (
-            awaken_session_realization_contract::SessionRealizationPermit,
+            awaken_session_execution_contract::SessionRealizationPermit,
             Option<crate::session_resource::SessionRealizationLease>,
         ),
         AdmissionError,
@@ -310,12 +308,12 @@ impl ClaimedRunPreparation for ClaimedRunAssembly {
 
     async fn drive_claimed_projection(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         session: &awaken_session_types::SessionId,
-        directive: awaken_session_realization_contract::SessionRealizationDirective,
+        directive: awaken_session_execution_contract::SessionRealizationDirective,
         claimed: &Claimed,
         started: awaken_lease_contract::authority::AuthorityProofStarted,
-        permit: &awaken_session_realization_contract::SessionRealizationPermit,
+        permit: &awaken_session_execution_contract::SessionRealizationPermit,
     ) -> Result<(), Error> {
         crate::application::worker_projection::drive_session_realization(
             self.assembly.as_ref(),

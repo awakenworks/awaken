@@ -285,7 +285,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
         .expect("D1 install complete cold Runtime projection");
     let transition = projection
         .resource_transition(
-            awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+            awaken_session_execution_contract::FrozenResourceTransitionUse::ApplyEffects,
         )
         .expect("D1 exact Store-read initial Resource transition");
 
@@ -444,7 +444,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .expect("K1 warm unclaimed context");
     let transition = projection
         .resource_transition(
-            awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+            awaken_session_execution_contract::FrozenResourceTransitionUse::ApplyEffects,
         )
         .expect("K1 exact Store-read initial Resource transition");
     let request = ingress::RunDispatch::new(activation)

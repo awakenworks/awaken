@@ -658,16 +658,16 @@ fn preparation_role_retains_one_pure_compiler_without_process_services() {
         coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly).dispatch,
     );
     let weak = Arc::downgrade(&process);
-    let application: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+    let application: Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement> =
         process.preparation_placement();
-    let transport: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+    let transport: Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement> =
         process.preparation_placement();
     assert!(
         Arc::ptr_eq(&application, &transport),
         "R1 one original pure compiler"
     );
     let other = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
-    let foreign: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+    let foreign: Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement> =
         other.dispatch.preparation_placement();
     assert!(
         !Arc::ptr_eq(&application, &foreign),

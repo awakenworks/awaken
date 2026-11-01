@@ -59,7 +59,7 @@ macro_rules! neutral_role {
                 _thread: &str,
                 _projection: $crate::__macro_support::FrozenSessionProjection,
                 _mode: $crate::__macro_support::SessionProjectionInstallMode,
-            ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+            ) -> Result<(), $crate::SessionRealizationEffectFailure> {
                 Err(($crate::__macro_support::RunError::unavailable(
                     "runtime does not implement complete Session projection installation",
                 )).into())

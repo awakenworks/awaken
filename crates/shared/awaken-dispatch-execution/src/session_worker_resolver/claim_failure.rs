@@ -15,16 +15,16 @@ pub enum SessionRealizationWorkerEffect {
 }
 
 pub const fn session_realization_worker_effect(
-    disposition: awaken_session_realization_contract::SessionRealizationControlDisposition,
+    disposition: awaken_session_execution_contract::SessionRealizationControlDisposition,
 ) -> SessionRealizationWorkerEffect {
     match disposition {
-        awaken_session_realization_contract::SessionRealizationControlDisposition::NotReady => {
+        awaken_session_execution_contract::SessionRealizationControlDisposition::NotReady => {
             SessionRealizationWorkerEffect::Defer
         }
-        awaken_session_realization_contract::SessionRealizationControlDisposition::Retryable => {
+        awaken_session_execution_contract::SessionRealizationControlDisposition::Retryable => {
             SessionRealizationWorkerEffect::Relinquish
         }
-        awaken_session_realization_contract::SessionRealizationControlDisposition::Terminal => {
+        awaken_session_execution_contract::SessionRealizationControlDisposition::Terminal => {
             SessionRealizationWorkerEffect::Absorb
         }
     }
@@ -37,15 +37,15 @@ fn session_realization_control_disposition_projects_exact_worker_effect() {
     let selector = kani::any::<u8>() % 3;
     let (disposition, expected) = match selector {
         0 => (
-            awaken_session_realization_contract::SessionRealizationControlDisposition::NotReady,
+            awaken_session_execution_contract::SessionRealizationControlDisposition::NotReady,
             SessionRealizationWorkerEffect::Defer,
         ),
         1 => (
-            awaken_session_realization_contract::SessionRealizationControlDisposition::Retryable,
+            awaken_session_execution_contract::SessionRealizationControlDisposition::Retryable,
             SessionRealizationWorkerEffect::Relinquish,
         ),
         _ => (
-            awaken_session_realization_contract::SessionRealizationControlDisposition::Terminal,
+            awaken_session_execution_contract::SessionRealizationControlDisposition::Terminal,
             SessionRealizationWorkerEffect::Absorb,
         ),
     };
@@ -85,7 +85,7 @@ fn classified_run_error(
 /// deferral keeps `retry_after`, the waited-on owner's bound on when to look
 /// again; a failed or absorbed attempt has no use for it.
 pub fn claim_outcome(
-    disposition: awaken_session_realization_contract::SessionRealizationControlDisposition,
+    disposition: awaken_session_execution_contract::SessionRealizationControlDisposition,
     message: String,
     retry_after: Option<std::time::Duration>,
 ) -> crate::Error {
@@ -97,7 +97,7 @@ pub fn claim_outcome(
 }
 
 fn claim_runtime_outcome(
-    disposition: awaken_session_realization_contract::SessionRealizationControlDisposition,
+    disposition: awaken_session_execution_contract::SessionRealizationControlDisposition,
     error: awaken_runtime_contract::execution::Error,
     retry_after: Option<std::time::Duration>,
 ) -> crate::Error {
@@ -111,15 +111,15 @@ fn claim_runtime_outcome(
 }
 
 pub fn map_session_realization_drive_error(
-    error: awaken_session_realization_contract::SessionRealizationDriveError,
+    error: awaken_session_execution_contract::SessionRealizationDriveError,
 ) -> crate::Error {
-    use awaken_session_realization_contract::SessionRealizationDriveError as Drive;
+    use awaken_session_execution_contract::SessionRealizationDriveError as Drive;
     // An effect and a Control failure share one Worker projection; a
     // capacity refusal is NotReady, the request-local deferral (ADR-0092).
     match error {
         Drive::Effect(error) => {
             let disposition =
-                awaken_session_realization_contract::effect_failure_disposition(error.run_error());
+                awaken_session_execution_contract::effect_failure_disposition(error.run_error());
             let retry_after = error.retry_after();
             claim_runtime_outcome(disposition, classified_run_error(error.into()), retry_after)
         }
@@ -158,7 +158,7 @@ fn a_deferral_is_due_no_later_than_its_owners_hint_or_the_backoff() {
 #[cfg(test)]
 mod retry_hint_tests {
     use super::*;
-    use awaken_session_realization_contract::{
+    use awaken_session_execution_contract::{
         ENVIRONMENT_PROVISIONING_CODE, SessionRealizationDriveError,
         SessionRealizationEffectFailure,
     };

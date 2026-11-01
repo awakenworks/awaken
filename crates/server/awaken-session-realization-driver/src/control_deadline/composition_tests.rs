@@ -96,7 +96,7 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
             // zero transport entry. D2 below: admitted request stalls -> request
             // diagnostic. Both share one absolute timer and release capacity.
             let Poll::Ready(Err(
-                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
                     detail,
                 ),
             )) = futures_util::poll!(&mut request)
@@ -147,7 +147,7 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
                     tokio::time::advance(std::time::Duration::from_millis(11)).await;
                 } else {
                     send.send(if outcome == "error" {
-                        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+                        Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
                     } else {
                         Ok(())
                     })
@@ -157,7 +157,7 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
                     panic!("S4 response/deadline must settle the actual call");
                 };
                 if outcome == "deadline" {
-                    let Err(awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(detail)) = &result else { panic!("D2 deadline"); };
+                    let Err(awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(detail)) = &result else { panic!("D2 deadline"); };
                     assert!(
                         detail.contains("phase=request"),
                         "D2 admitted transport timeout: {detail}"
@@ -167,14 +167,14 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
                     "deadline" => assert!(matches!(
                         result,
                         Err(
-                            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                            awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
                                 _
                             )
                         )
                     )),
                     "error" => assert!(matches!(
                         result,
-                        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+                        Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
                     )),
                     _ => assert!(result.is_ok()),
                 }
@@ -259,47 +259,47 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
 // forwarding method is a test error, not an alternative Control implementation.
 struct UnusedControl;
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionRealizationControl for UnusedControl {
+impl awaken_session_execution_contract::SessionRealizationControl for UnusedControl {
     async fn begin_session_realization(
         &self,
-        _: awaken_session_realization_contract::BeginSessionRealization,
+        _: awaken_session_execution_contract::BeginSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         unreachable!()
     }
     async fn renew_session_realization(
         &self,
-        _: awaken_session_realization_contract::RenewSessionRealization,
+        _: awaken_session_execution_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         unreachable!()
     }
     async fn activate_session_realization(
         &self,
-        _: awaken_session_realization_contract::ActivateSessionRealization,
+        _: awaken_session_execution_contract::ActivateSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         unreachable!()
     }
     async fn acknowledge_session_realization(
         &self,
-        _: awaken_session_realization_contract::AcknowledgeSessionRealization,
+        _: awaken_session_execution_contract::AcknowledgeSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         unreachable!()
     }
     async fn fail_session_realization(
         &self,
-        _: awaken_session_realization_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
+        _: awaken_session_execution_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
         unreachable!()
     }
 }

@@ -11,7 +11,7 @@ use awaken_session_contract::{
     PersistedSession, SessionMutation, SessionMutationPayload, SessionMutationResult,
     SessionTombstone,
 };
-use awaken_session_realization_contract::SessionRealizationControlFailure;
+use awaken_session_execution_contract::SessionRealizationControlFailure;
 use awaken_session_types::SessionRevision;
 use awaken_time::WallClockExt as _;
 
@@ -29,7 +29,7 @@ fn terminal_cleanup_lease_matches(
     asserted: &SessionRealizationLease,
 ) -> bool {
     session.realization.as_ref().is_some_and(|current| {
-        awaken_session_realization_contract::realization_lease_generation_authorizes(
+        awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
             current, asserted,
         )
     })
@@ -51,7 +51,7 @@ impl SessionTerminalCleanups {
         session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionTerminalCleanupWork>,
+        Option<awaken_session_execution_contract::SessionTerminalCleanupWork>,
         SessionRealizationControlFailure,
     > {
         let mutations = &self.mutations;
@@ -106,7 +106,7 @@ impl SessionTerminalCleanups {
             .terminal_cleanup_assignment_from_snapshot(&owner_scope, &session)
             .await?;
         Ok(Some(
-            awaken_session_realization_contract::SessionTerminalCleanupWork { assignment, action },
+            awaken_session_execution_contract::SessionTerminalCleanupWork { assignment, action },
         ))
     }
 
@@ -155,7 +155,7 @@ impl SessionTerminalCleanups {
         session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
+        Option<awaken_session_execution_contract::SessionRepositoryPublicationProjection>,
         SessionRealizationControlFailure,
     > {
         let mutations = &self.mutations;
@@ -201,7 +201,7 @@ impl SessionTerminalCleanups {
                 "terminal Repository publication has no current realization".into(),
             )
         })?;
-        awaken_session_realization_contract::SessionRepositoryPublicationProjection::try_new(
+        awaken_session_execution_contract::SessionRepositoryPublicationProjection::try_new(
             workspace_id,
             command,
             current_lease,

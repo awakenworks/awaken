@@ -36,8 +36,7 @@ async fn local_projection_failure_keeps_its_provider_hint_and_failure_budget_cla
             .realize_session(&SessionId::from(session_id.clone()))
             .await
             .unwrap_err();
-        let awaken_session_realization_contract::SessionRealizationDriveError::Effect(effect) =
-            error
+        let awaken_session_execution_contract::SessionRealizationDriveError::Effect(effect) = error
         else {
             panic!("{rule} original effect expected: {error}");
         };
@@ -53,7 +52,7 @@ async fn local_projection_failure_keeps_its_provider_hint_and_failure_budget_cla
             );
             assert_eq!(
                 effect.run_error().code,
-                awaken_session_realization_contract::ENVIRONMENT_PROVISIONING_CODE,
+                awaken_session_execution_contract::ENVIRONMENT_PROVISIONING_CODE,
                 "{rule} original code"
             );
         }
@@ -80,7 +79,7 @@ fn realization_presentation_retains_messages_with_one_contract_error() {
     // P1-P3: one contract failure algebra enters the old application report
     // and update-error presentation. Only presentation keeps its contextual
     // prefix; fault/code/message and failure variants have no mirrored owner.
-    use awaken_session_realization_contract::{
+    use awaken_session_execution_contract::{
         SessionRealizationControlFailure as C, SessionRealizationDriveError as E,
     };
     for (rule, error, expected) in [

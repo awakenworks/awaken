@@ -4,7 +4,7 @@
 
 use super::*;
 use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
-use awaken_session_realization_contract::ClaimedSessionControlError;
+use awaken_session_execution_contract::ClaimedSessionControlError;
 use std::sync::Mutex;
 
 #[derive(Default)]
@@ -96,57 +96,57 @@ impl ClaimedSessionCoordinationControl<RunClaim> for RemoteControl {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionRealizationControl for RemoteControl {
+impl awaken_session_execution_contract::SessionRealizationControl for RemoteControl {
     async fn begin_session_realization(
         &self,
-        _command: awaken_session_realization_contract::BeginSessionRealization,
+        _command: awaken_session_execution_contract::BeginSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
-        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
     }
 
     async fn activate_session_realization(
         &self,
-        _command: awaken_session_realization_contract::ActivateSessionRealization,
+        _command: awaken_session_execution_contract::ActivateSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
-        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
     }
 
     async fn acknowledge_session_realization(
         &self,
-        _command: awaken_session_realization_contract::AcknowledgeSessionRealization,
+        _command: awaken_session_execution_contract::AcknowledgeSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationDirective,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
-        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
     }
 
     async fn fail_session_realization(
         &self,
-        _command: awaken_session_realization_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
-        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+        _command: awaken_session_execution_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
     }
 
     async fn renew_session_realization(
         &self,
-        _command: awaken_session_realization_contract::RenewSessionRealization,
+        _command: awaken_session_execution_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
-        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::ClaimedSessionRealizationControl for RemoteControl {
+impl awaken_session_execution_contract::ClaimedSessionRealizationControl for RemoteControl {
     async fn resume_frozen(
         &self,
         _claim: &RunClaim,
@@ -158,8 +158,8 @@ impl awaken_session_realization_contract::ClaimedSessionRealizationControl for R
             &awaken_session_configuration_contract::resource::SessionRealizationLease,
         >,
     ) -> Result<
-        Option<awaken_session_realization_contract::SessionRealizationDirective>,
-        awaken_session_realization_contract::ClaimedSessionControlError,
+        Option<awaken_session_execution_contract::SessionRealizationDirective>,
+        awaken_session_execution_contract::ClaimedSessionControlError,
     > {
         Ok(None)
     }

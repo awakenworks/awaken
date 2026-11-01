@@ -71,7 +71,7 @@ STATE_ENUMS = {
     "SessionEnvironmentState": frozenset(),
 }
 ENVIRONMENT_STATE = "SessionEnvironmentState"
-REALIZATION_OWNERS = frozenset({REALIZATION_CRATE, "awaken-session-realization-contract", "awaken-provisioning-contract"})
+REALIZATION_OWNERS = frozenset({REALIZATION_CRATE, "awaken-session-execution-contract", "awaken-provisioning-contract"})
 PROVIDER_CONTEXT = "sandbox"
 REALIZATION_MODULES = frozenset({
     "provisioning", "environment_lifecycle", "environment_continuation", "terminal_reconciliation",
@@ -431,7 +431,7 @@ def selftest() -> None:
         "S6 word"
     assert is_realization_module(Path("worker_resolver/session_realization.rs")), "S6 word in segment"
     assert not is_realization_module(Path("lib.rs")) and not is_realization_module(Path("unrealizedx.rs")), "S7"
-    assert realization_owner("awaken-session-realization-contract", {}), "S8 contract"
+    assert realization_owner("awaken-session-execution-contract", {}), "S8 contract"
     assert realization_owner("awaken-sandbox-local", {"bounded_context": "sandbox"}), "S8 provider"
     assert not realization_owner("awaken-session-executor", {"bounded_context": "session"}), "S8 other"
 

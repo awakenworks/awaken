@@ -46,7 +46,7 @@ pub struct FrozenSessionInputs {
     /// The Coordinator's projection of the Registry-recorded process end of
     /// the Worker incarnation holding the Resident source. Read only through
     /// [`crate::session_realizations::SessionRealizations::recorded_source_end`].
-    pub bound_source_end: Option<awaken_session_realization_contract::BoundSourceEnd>,
+    pub bound_source_end: Option<awaken_session_execution_contract::BoundSourceEnd>,
 }
 
 impl FrozenSessionInputs {

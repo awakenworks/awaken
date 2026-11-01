@@ -12,10 +12,10 @@ use awaken_session_configuration_contract::{
     SessionSandboxLayout, SessionToolConfiguration, environment_projection,
     managed_layout::binding_layout_projection,
 };
-use awaken_session_execution_contract::{NO_COLOCATED_WORKER, SessionInputAdmission};
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     CanonicalSessionProjection, FrozenSessionProjection, SessionRealizationEffectFailure,
 };
+use awaken_session_execution_contract::{NO_COLOCATED_WORKER, SessionInputAdmission};
 use awaken_session_types::{RunError, SessionRuntimePlacement};
 
 use super::WorkerPlacedSessions;
@@ -52,7 +52,7 @@ impl SessionInputAdmission for WorkerPlacedSessions {
         thread: &str,
         layout: &SessionSandboxLayout,
     ) -> Result<(), RunError> {
-        awaken_session_realization_contract::resolve_canonical_session_projection(
+        awaken_session_execution_contract::resolve_canonical_session_projection(
             self.ports.projections.publications(),
             &layout.workspace_id,
             CanonicalSessionProjection::Layout(layout),

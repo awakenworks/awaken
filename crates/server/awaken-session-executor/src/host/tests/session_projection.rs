@@ -147,7 +147,7 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
     // O3 equal-id inference-only override -> Agent roster stays authoritative;
     // O4 malformed frozen roster -> fail before executor materialization.
     let inherit = awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit;
-    let projected = awaken_session_realization_contract::project_effective_agent_publication(
+    let projected = awaken_session_execution_contract::project_effective_agent_publication(
         Some(&frozen),
         &inherit,
         None,
@@ -164,7 +164,7 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
             .is_none(),
         "O1 superseded Agent route must not leak"
     );
-    let replayed = awaken_session_realization_contract::project_effective_agent_publication(
+    let replayed = awaken_session_execution_contract::project_effective_agent_publication(
         Some(&frozen),
         &inherit,
         None,
@@ -178,7 +178,7 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
         publication: None,
         inference: Default::default(),
     };
-    let reused = awaken_session_realization_contract::project_effective_agent_publication(
+    let reused = awaken_session_execution_contract::project_effective_agent_publication(
         Some(&inference_only),
         &inherit,
         None,
@@ -200,7 +200,7 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
         inference: Default::default(),
     };
     assert!(
-        awaken_session_realization_contract::project_effective_agent_publication(
+        awaken_session_execution_contract::project_effective_agent_publication(
             Some(&malformed),
             &inherit,
             None,
@@ -801,7 +801,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     // M5a: the same published Agent with an explicit empty Resource manifest
     // selects no Skill. This must admit a Skill-free Managed Session while M5
     // still rejects a published Skill whose frozen bytes are missing.
-    let cleared = awaken_session_realization_contract::project_effective_agent_publication(
+    let cleared = awaken_session_execution_contract::project_effective_agent_publication(
         None,
         &awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
         Some(&[]),
@@ -1305,7 +1305,7 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
                 &host.run_assembly.mcp,
             ),
             "frozen-revision",
-            awaken_session_realization_contract::FrozenSessionProjection {
+            awaken_session_execution_contract::FrozenSessionProjection {
                 bound_source_end: None,
                 workspace_id: host.run_assembly.local_workspace().to_string(),
                 revision: awaken_session_types::SessionRevision(1),

@@ -36,7 +36,6 @@ if [ "${1:-}" = "--session-observations" ]; then
   cargo test --locked --features awaken-store-sqlite/test-support \
     -p awaken-session-contract -p awaken-session-configuration-contract \
     -p awaken-session-application-contract -p awaken-session-execution-contract \
-    -p awaken-session-realization-contract  \
      \
     -p awaken-session-configuration-contract -p awaken-worker-contract \
     -p awaken-session-application \
@@ -70,7 +69,7 @@ cleanup_mutation_artifacts() {
   cargo clean -p awaken-tool-contract -p awaken-agent-contract -p awaken-lease-contract -p awaken-time \
     -p awaken-session-types >/dev/null 2>&1 || true
   cargo clean -p awaken-session-application-contract -p awaken-session-configuration-contract \
-    -p awaken-session-contract -p awaken-session-realization-contract \
+    -p awaken-session-contract \
      -p awaken-session-execution-contract \
      >/dev/null 2>&1 || true
   cargo clean -p awaken-session-executor >/dev/null 2>&1 || true
@@ -178,9 +177,9 @@ cargo mutants --package awaken-session-contract \
   --re 'mark_processed_observation' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-event-observations/mutants.out"
-cargo mutants --package awaken-session-realization-contract \
+cargo mutants --package awaken-session-execution-contract \
   --output "$mutation_evidence/session-realization-observations" \
-  --file crates/contract/awaken-session-realization-contract/src/session_realization/generation_authority.rs \
+  --file crates/contract/awaken-session-execution-contract/src/session_realization/generation_authority.rs \
   --re 'realization_generation_authorizes' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-realization-observations/mutants.out"

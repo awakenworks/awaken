@@ -6,7 +6,7 @@ impl awaken_session_execution_contract::TerminalCleanup for RecordingCleanupRunt
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
-        authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        authorization: awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         authorization
             .verify_for(&effect)
@@ -89,8 +89,8 @@ impl awaken_session_execution_contract::TerminalCleanup for RecordingCleanupRunt
 
     async fn install_terminal_cleanup_assignment(
         &self,
-        assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
-        _proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        assignment: &awaken_session_execution_contract::SessionTerminalCleanupAssignment,
+        _proof: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         self.terminal_assignments
             .lock()

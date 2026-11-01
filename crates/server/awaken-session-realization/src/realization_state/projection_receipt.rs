@@ -5,7 +5,7 @@
 //! boundary, through the contract's one ordering law.
 use super::SessionRealization;
 use crate::realization_error::{AuthorityLoss, RealizationError};
-use awaken_session_realization_contract::{FrozenProjectionReceipt, ProjectionReceiptRefusal};
+use awaken_session_execution_contract::{FrozenProjectionReceipt, ProjectionReceiptRefusal};
 
 impl SessionRealization {
     pub fn validate_projection_receipt(
@@ -34,7 +34,7 @@ impl SessionRealization {
         revision: awaken_session_types::SessionRevision,
     ) -> bool {
         self.execution.authority.lease().is_some_and(|current| {
-            awaken_session_realization_contract::realization_lease_generation_authorizes(
+            awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 current, lease,
             )
         }) && self

@@ -196,7 +196,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     fn projection(
         prompt: &str,
         with_environment_inputs: bool,
-    ) -> awaken_session_realization_contract::FrozenSessionProjection {
+    ) -> awaken_session_execution_contract::FrozenSessionProjection {
         let mount = MountRequirement {
             mount_id: "flow-workspace".into(),
             source: MountSource::Inline {
@@ -265,7 +265,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 transcript_prefix: None,
             },
         );
-        awaken_session_realization_contract::FrozenSessionProjection {
+        awaken_session_execution_contract::FrozenSessionProjection {
             bound_source_end: None,
             workspace_id: "workspace".into(),
             revision: awaken_session_types::SessionRevision(2),
@@ -727,7 +727,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             &*amendment_managed.run_assembly,
             "authority-amendment",
             initial_dispatch.clone(),
-            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+            awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
         )
         .await
         .expect("A1 initial dispatch projection");
@@ -806,7 +806,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             &*amendment_managed.run_assembly,
             "authority-amendment",
             amended_dispatch.clone(),
-            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+            awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
         )
         .await
         .expect("A2 authority amendment");

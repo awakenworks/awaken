@@ -4,7 +4,7 @@
 use super::SessionQueries;
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionFileReadAuthorization for SessionQueries {
+impl awaken_session_execution_contract::SessionFileReadAuthorization for SessionQueries {
     async fn session_file_is_frozen_for_worker(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -25,7 +25,7 @@ impl awaken_session_realization_contract::SessionFileReadAuthorization for Sessi
         let lease_matches = session.realization.as_ref().is_some_and(|lease| {
             lease.owner == identity.worker_id
                 && lease.runtime_incarnation == identity.lease_owner()
-                && awaken_session_realization_contract::realization_lease_is_live_at(
+                && awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                     lease.expires_at_unix_ms,
                     observed_at_unix_ms,
                 )

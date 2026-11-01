@@ -618,7 +618,7 @@ impl SessionExecutorBuilder {
     #[must_use]
     pub fn with_session_realization_control(
         mut self,
-        control: Arc<dyn awaken_session_realization_contract::ClaimedSessionRealizationControl>,
+        control: Arc<dyn awaken_session_execution_contract::ClaimedSessionRealizationControl>,
     ) -> Self {
         self.worker.session_control = Some(control);
         self
@@ -629,7 +629,7 @@ impl SessionExecutorBuilder {
     #[must_use]
     pub fn with_session_control<T>(mut self, control: Arc<T>) -> Self
     where
-        T: awaken_session_realization_contract::ClaimedSessionRealizationControl
+        T: awaken_session_execution_contract::ClaimedSessionRealizationControl
             + awaken_session_execution_contract::ClaimedSessionCoordinationControl<RunClaim>
             + 'static,
     {

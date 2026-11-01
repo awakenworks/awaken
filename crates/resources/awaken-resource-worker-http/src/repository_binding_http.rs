@@ -8,7 +8,7 @@ use awaken_resource_contract::{
     ConfigVersion, LiveResourceBindingVerifier, RepositoryBindingVerifier,
     RepositoryBindingVerifierError, RepositoryTransport,
 };
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
@@ -44,9 +44,9 @@ pub struct WorkerRepositoryBindingService {
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Arc<dyn WorkerDirectory>,
     materialization_control:
-        Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionResourceMaterializationControl>>,
     publication_control: Option<
-        Arc<dyn awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl>,
+        Arc<dyn awaken_session_execution_contract::SessionTerminalRepositoryPublicationControl>,
     >,
     transport_authorizer: Option<Arc<dyn RepositoryTransportAuthorizer>>,
     /// The Coordinator's wall clock: the instant claims and leases are judged at.
@@ -75,7 +75,7 @@ pub enum RepositoryTransportAuthority {
         claim_expires_ms: u64,
     },
     SessionMaterialization {
-        intent: Box<awaken_session_realization_contract::SessionResourceMaterializationIntent>,
+        intent: Box<awaken_session_execution_contract::SessionResourceMaterializationIntent>,
     },
     TerminalPublication {
         command: Box<awaken_session_contract::SessionRepositoryPublicationCommand>,
@@ -333,9 +333,7 @@ impl WorkerRepositoryBindingService {
     #[must_use]
     pub fn with_materialization_control(
         mut self,
-        control: Arc<
-            dyn awaken_session_realization_contract::SessionResourceMaterializationControl,
-        >,
+        control: Arc<dyn awaken_session_execution_contract::SessionResourceMaterializationControl>,
     ) -> Self {
         self.materialization_control = Some(control);
         self
@@ -345,7 +343,7 @@ impl WorkerRepositoryBindingService {
     pub fn with_publication_control(
         mut self,
         control: Arc<
-            dyn awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl,
+            dyn awaken_session_execution_contract::SessionTerminalRepositoryPublicationControl,
         >,
     ) -> Self {
         self.publication_control = Some(control);
@@ -357,8 +355,8 @@ impl WorkerRepositoryBindingService {
     #[must_use]
     pub fn with_session_control<T>(mut self, control: Arc<T>) -> Self
     where
-        T: awaken_session_realization_contract::SessionResourceMaterializationControl
-            + awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl
+        T: awaken_session_execution_contract::SessionResourceMaterializationControl
+            + awaken_session_execution_contract::SessionTerminalRepositoryPublicationControl
             + 'static,
     {
         self.materialization_control = Some(control.clone());
@@ -533,7 +531,7 @@ async fn verify_session_repository_binding(
     service: Arc<WorkerRepositoryBindingService>,
     worker: &VerifiedWorkerContext,
     request: RepositoryBindingRequest,
-    intent: awaken_session_realization_contract::SessionResourceMaterializationIntent,
+    intent: awaken_session_execution_contract::SessionResourceMaterializationIntent,
 ) -> Response {
     let Some(identity) = request.identity.as_ref() else {
         return StatusCode::FORBIDDEN.into_response();
@@ -556,7 +554,7 @@ async fn verify_session_repository_binding(
     {
         return status.into_response();
     }
-    let awaken_session_realization_contract::SessionResourceMaterializationTarget::Input(input) =
+    let awaken_session_execution_contract::SessionResourceMaterializationTarget::Input(input) =
         intent.target()
     else {
         return StatusCode::FORBIDDEN.into_response();
@@ -574,9 +572,9 @@ async fn verify_session_repository_binding(
         .await
     {
         Ok(workspace_id) => workspace_id,
-        Err(
-            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_),
-        ) => {
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
+            _,
+        )) => {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
         Err(_) => return StatusCode::CONFLICT.into_response(),
@@ -685,14 +683,14 @@ async fn verify_terminal_repository_binding(
     {
         Ok(Some(projection)) if projection.command == command => projection,
         Ok(_) => return StatusCode::CONFLICT.into_response(),
-        Err(
-            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_),
-        ) => {
+        Err(awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
+            _,
+        )) => {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
         Err(_) => return StatusCode::CONFLICT.into_response(),
     };
-    if !awaken_session_realization_contract::realization_lease_authorizes(
+    if !awaken_session_configuration_contract::resource::realization_lease_authorizes(
         &projection.current_lease,
         &lease,
         now_ms,
@@ -761,11 +759,11 @@ async fn verify_terminal_repository_binding(
     let latest_now_ms = clock_ms(service.clock.as_ref());
     if latest.workspace_id != projection.workspace_id
         || latest.command != projection.command
-        || !awaken_session_realization_contract::realization_lease_generation_authorizes(
+        || !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
             &latest.current_lease,
             &projection.current_lease,
         )
-        || !awaken_session_realization_contract::realization_lease_authorizes(
+        || !awaken_session_configuration_contract::resource::realization_lease_authorizes(
             &latest.current_lease,
             &lease,
             latest_now_ms,

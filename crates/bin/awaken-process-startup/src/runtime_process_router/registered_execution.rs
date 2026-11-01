@@ -37,7 +37,7 @@ pub(super) struct RegisteredExecution {
     clock: Arc<dyn awaken_time::WallClock>,
     files: Arc<
         dyn awaken_resource_contract::FileContentSource<
-                awaken_session_realization_contract::ResourceOperationFence,
+                awaken_session_execution_contract::ResourceOperationFence,
             >,
     >,
     storage_dir: Option<std::path::PathBuf>,

@@ -106,8 +106,9 @@ TARGET_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "awaken-session-dream-contract": ("Session", ()),
     "awaken-session-configuration-contract": ("Session", ()),
     "awaken-session-application-contract": ("Session", ()),
+    # Realization merged in (docs/design/contract-convergence.md): both cross the
+    # same Coordinator <-> Worker boundary between the same parties.
     "awaken-session-execution-contract": ("Session", ()),
-    "awaken-session-realization-contract": ("Session", ()),
     "awaken-deployment-contract": ("Deployment", ()),
     "awaken-dispatch-contract": ("Dispatch", ()),
     "awaken-executable-agent-contract": ("Dispatch", ()),
@@ -895,7 +896,8 @@ def _selftest_target_map() -> None:
     assert TARGET_MAP["awaken-runtime-contract"] == ("SDK release", ()), "T4 neutral Runtime"
     assert TARGET_MAP["awaken-session-dream-contract"] == ("Session", ()), "T4 Dream aggregate"
     assert TARGET_MAP["awaken-session-environment-contract"] == ("Environment and Worker", ()), "T4 Environment SPI"
-    assert TARGET_MAP["awaken-session-realization-contract"] == ("Session", ()), "T4 realization decisions"
+    assert TARGET_MAP["awaken-session-execution-contract"] == ("Session", ()), "T4 realization decisions"
+    assert "awaken-session-realization-contract" not in TARGET_MAP, "T4 realization merged into execution"
     # Sharing the Environment context does not make backend wire a neutral SPI.
     # Keep both existing targets: removing either must report a missing boundary,
     # rather than treating that disappearance as a completed pending merge.

@@ -4,6 +4,7 @@
 //! Canonical durable Session realization phase commands.
 
 use crate::SessionAggregate;
+use awaken_session_configuration_contract::resource::realization_lease_is_live_at;
 
 use awaken_time::WallClockExt as _;
 use std::collections::BTreeSet;
@@ -18,7 +19,7 @@ use awaken_session_contract::{
     SessionEnvironmentState, SessionExecutionState, SessionRepositoryError, transition_environment,
 };
 use awaken_session_execution_contract::RealizationRuntime;
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
     SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
@@ -71,15 +72,12 @@ pub(crate) fn mutation_control(error: SessionMutationError) -> SessionRealizatio
 }
 
 pub(crate) fn validate_realization_target(
-    target: &awaken_session_realization_contract::SessionRealizationTarget,
+    target: &awaken_session_execution_contract::SessionRealizationTarget,
     now_ms: u64,
 ) -> Result<(), SessionRealizationControlFailure> {
     if target.owner.trim().is_empty()
         || target.runtime_incarnation.trim().is_empty()
-        || !awaken_session_realization_contract::realization_lease_is_live_at(
-            target.lease_expires_at_unix_ms,
-            now_ms,
-        )
+        || !realization_lease_is_live_at(target.lease_expires_at_unix_ms, now_ms)
     {
         return Err(SessionRealizationControlFailure::Invalid(
             "Runtime owner/incarnation and a future lease expiry are required".into(),
@@ -103,9 +101,9 @@ fn validate_target(
 /// Preserve the application-facing diagnostic prefix at its presentation
 /// edge; the contract's driver error is the one failure algebra.
 pub(super) fn realization_failure_message(
-    error: &awaken_session_realization_contract::SessionRealizationDriveError,
+    error: &awaken_session_execution_contract::SessionRealizationDriveError,
 ) -> String {
-    use awaken_session_realization_contract::SessionRealizationDriveError as Error;
+    use awaken_session_execution_contract::SessionRealizationDriveError as Error;
     match error {
         Error::Control(error) => format!("Session realization control failed: {error}"),
         Error::Effect(error) => format!("Session realization effect failed: {error}"),
@@ -134,14 +132,14 @@ struct LocalProjectionSynchronizer<'a> {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionProjectionSynchronizer
+impl awaken_session_execution_contract::SessionProjectionSynchronizer
     for LocalProjectionSynchronizer<'_>
 {
     fn observe_realization_request(
         &self,
     ) -> Result<
         awaken_lease_contract::authority::AuthorityProofStarted,
-        awaken_session_realization_contract::SessionRealizationEffectFailure,
+        awaken_session_execution_contract::SessionRealizationEffectFailure,
     > {
         self.runtime
             .observe_realization_request()
@@ -151,15 +149,15 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
     async fn synchronize_session_projection(
         &self,
         session_id: &awaken_session_types::SessionId,
-        projection: &awaken_session_realization_contract::FrozenSessionProjection,
-        lease: &awaken_session_realization_contract::ObservedSessionRealizationLease,
+        projection: &awaken_session_execution_contract::FrozenSessionProjection,
+        lease: &awaken_session_execution_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         self.runtime
             .install_session_projection(
                 session_id.as_str(),
                 projection.clone(),
-                awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
+                awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                     lease: lease.clone(),
                     prepare_session,
                 },
@@ -171,7 +169,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         &self,
         session_id: &awaken_session_types::SessionId,
         lease: &SessionRealizationLease,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         self.runtime
             .invalidate_session_realization_lease(session_id.as_str(), lease)
             .await
@@ -273,7 +271,7 @@ impl SessionRealizations {
 
     fn session_preparation_placement(
         &self,
-    ) -> Option<&dyn awaken_session_realization_contract::SessionPreparationPlacement> {
+    ) -> Option<&dyn awaken_session_execution_contract::SessionPreparationPlacement> {
         self.execution_admission.placement.get().map(Arc::as_ref)
     }
 
@@ -312,13 +310,13 @@ impl SessionRealizations {
             .queries
             .frozen_session_projection(owner_scope.to_string(), session, true)
             .await?;
-        awaken_session_realization_contract::SessionProjectionSynchronizer::synchronize_session_projection(
+        awaken_session_execution_contract::SessionProjectionSynchronizer::synchronize_session_projection(
             &LocalProjectionSynchronizer {
                 runtime: realization_runtime,
             },
             &session.session_id,
             &projection,
-            &awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+            &awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                 lease.clone(),
                 self.clock.now_ms(),
             )
@@ -401,7 +399,7 @@ impl SessionRealizations {
             .begin_session_realization_after_refresh(BeginSessionRealization {
                 expected_resources: None,
                 session_id: session_id.clone(),
-                target: awaken_session_realization_contract::SessionRealizationTarget {
+                target: awaken_session_execution_contract::SessionRealizationTarget {
                     owner: self.local_realization_owner().to_string(),
                     runtime_incarnation: self.runtime_incarnation().to_string(),
                     lease_expires_at_unix_ms,
@@ -422,7 +420,7 @@ impl SessionRealizations {
 
     async fn drive_local_realization(
         &self,
-        permit: &awaken_session_realization_contract::SessionRealizationPermit,
+        permit: &awaken_session_execution_contract::SessionRealizationPermit,
         directive: SessionRealizationDirective,
         request_started: awaken_lease_contract::authority::AuthorityProofStarted,
         realization: &dyn RealizationRuntime,
@@ -546,10 +544,7 @@ impl SessionRealizations {
             let projection_is_current = session.realization.as_ref().is_some_and(|lease| {
                 lease.owner == self.local_realization_owner()
                     && lease.runtime_incarnation == self.runtime_incarnation()
-                    && awaken_session_realization_contract::realization_lease_is_live_at(
-                        lease.expires_at_unix_ms,
-                        now,
-                    )
+                    && realization_lease_is_live_at(lease.expires_at_unix_ms, now)
             });
             if session.is_terminal() {
                 continue;
@@ -644,7 +639,7 @@ impl SessionRealizations {
         Ok(SessionRealizationDirective {
             projection,
             authority:
-                awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
                     session
                         .realization
                         .clone()

@@ -35,12 +35,12 @@ SESSION_DELETE_DISPOSITION = (
     "crates/contract/awaken-session-contract/src/state/session_repo/disposition.rs"
 )
 SESSION_ROW_CODEC = "crates/stores/awaken-session-store/src/row_codec.rs"
-SESSION_REALIZATION = "crates/contract/awaken-session-realization-contract/src/session_realization.rs"
+SESSION_REALIZATION = "crates/contract/awaken-session-execution-contract/src/session_realization.rs"
 SESSION_REALIZATION_DRIVER = (
     "crates/server/awaken-session-realization-driver/src/session_realization_driver.rs"
 )
 SESSION_TERMINAL_AUTHORIZATION = (
-    "crates/contract/awaken-session-realization-contract/src/"
+    "crates/contract/awaken-session-execution-contract/src/"
     "session_realization/terminal_cleanup_authorization.rs"
 )
 PROVISIONING_REPOSITORY_PUBLICATION = (

@@ -134,7 +134,7 @@ pub(crate) fn eager_environment() -> awaken_session_configuration_contract::Envi
 pub(super) fn empty_frozen_projection(
     workspace_id: &str,
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
-) -> awaken_session_realization_contract::FrozenSessionProjection {
+) -> awaken_session_execution_contract::FrozenSessionProjection {
     empty_frozen_projection_with_model(
         workspace_id,
         environment,
@@ -150,7 +150,7 @@ pub(crate) fn empty_frozen_projection_for_snapshot(
     workspace_id: &str,
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
-) -> awaken_session_realization_contract::FrozenSessionProjection {
+) -> awaken_session_execution_contract::FrozenSessionProjection {
     empty_frozen_projection_for_snapshot_at_placement(
         workspace_id,
         environment,
@@ -164,7 +164,7 @@ pub(crate) fn empty_frozen_projection_for_snapshot_at_placement(
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
     placement: awaken_session_types::SessionRuntimePlacement,
-) -> awaken_session_realization_contract::FrozenSessionProjection {
+) -> awaken_session_execution_contract::FrozenSessionProjection {
     let primary = snapshot.resolved_spec.model_binding.clone();
     let runtime = primary.binding().identity().2.to_owned();
     let model = primary.binding().identity().1.to_owned();
@@ -201,7 +201,7 @@ pub(crate) async fn install_complete_projection_for_snapshot(
         &*managed.run_assembly,
         thread,
         projection,
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("install complete frozen Session projection");
@@ -210,7 +210,7 @@ pub(crate) async fn install_complete_projection_for_snapshot(
 pub(super) fn frozen_projection_for_manifest(
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
     manifest: &crate::session_resource::SessionResourceManifest,
-) -> awaken_session_realization_contract::FrozenSessionProjection {
+) -> awaken_session_execution_contract::FrozenSessionProjection {
     let mut projection = empty_frozen_projection(&manifest.workspace_id, environment);
     projection.resource_revision = manifest.revision;
     projection.resources = manifest.resources.clone();
@@ -232,7 +232,7 @@ fn empty_frozen_projection_with_model(
     runtime: Option<String>,
     model_override: Option<awaken_session_configuration_contract::SessionModelOverride>,
     placement: awaken_session_types::SessionRuntimePlacement,
-) -> awaken_session_realization_contract::FrozenSessionProjection {
+) -> awaken_session_execution_contract::FrozenSessionProjection {
     let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
         awaken_session_configuration_contract::SessionBaselineInputs {
             environment,
@@ -251,7 +251,7 @@ fn empty_frozen_projection_with_model(
             transcript_prefix: None,
         },
     );
-    awaken_session_realization_contract::FrozenSessionProjection {
+    awaken_session_execution_contract::FrozenSessionProjection {
         bound_source_end: None,
         workspace_id: workspace_id.into(),
         revision: awaken_session_types::SessionRevision(1),
@@ -302,7 +302,7 @@ pub(super) fn complete_managed_test_host(
 pub(crate) async fn available_local_environment_binding(
     host: &crate::host::ExecutorComponents,
     thread: &str,
-    projection: &awaken_session_realization_contract::FrozenSessionProjection,
+    projection: &awaken_session_execution_contract::FrozenSessionProjection,
 ) -> String {
     let intent = host
         .realization_executor
@@ -401,7 +401,7 @@ pub(crate) async fn available_local_environment_binding(
 pub(super) async fn unavailable_local_environment_binding(
     host: &crate::host::ExecutorComponents,
     thread: &str,
-    projection: &awaken_session_realization_contract::FrozenSessionProjection,
+    projection: &awaken_session_execution_contract::FrozenSessionProjection,
 ) -> String {
     let binding = available_local_environment_binding(host, thread, projection).await;
     remove_local_environment_root(host, thread);
@@ -449,7 +449,7 @@ pub(super) async fn prepare_deferred_session(
         &*managed.run_assembly,
         thread,
         empty_frozen_projection(host.run_assembly.local_workspace(), deferred_environment()),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("prepare complete deferred Session projection");

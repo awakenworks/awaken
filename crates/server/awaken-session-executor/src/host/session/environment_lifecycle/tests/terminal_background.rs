@@ -372,7 +372,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                     &host.run_assembly.realization_executor,
                     &host.run_assembly.mcp,
                 ),
-                &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                     environment_creation_not_attempted: false,
                     session_id: thread.into(),
                     projection: projection.clone(),
@@ -413,13 +413,13 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .authorize_terminal_cleanup_effect(&effect)
             .expect("C3 aggregate preparation authorization");
         let authorization =
-            awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+            awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
                 effect.clone(),
                 projection.workspace_id.clone(),
                 inherited_provider_disposal,
             )
             .expect("C3 closed terminal preparation authorization")
-            .with_source_dispatch(awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {});
+            .with_source_dispatch(awaken_session_execution_contract::SessionTerminalSourceDispatch::Settled {});
         // Source-admission rules S1 Pending/S2 Unavailable + a Ready root or
         // child live-Artifact path -> refuse before background, Artifact,
         // Memory or provider data I/O. A child's absent root_environment value
@@ -440,7 +440,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
                 .unwrap(),
             lease.clone(),
         );
-        let child_authorization = awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+        let child_authorization = awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
             child_effect.clone(),
             projection.workspace_id.clone(),
             child_aggregate.authorize_terminal_cleanup_effect(&child_effect).unwrap(),
@@ -450,8 +450,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             (child_effect, child_authorization),
         ] {
             for source in [
-                awaken_session_realization_contract::SessionTerminalSourceDispatch::Pending {},
-                awaken_session_realization_contract::SessionTerminalSourceDispatch::Unavailable {
+                awaken_session_execution_contract::SessionTerminalSourceDispatch::Pending {},
+                awaken_session_execution_contract::SessionTerminalSourceDispatch::Unavailable {
                     detail: "fixture source observation outage".into(),
                 },
             ] {
@@ -709,7 +709,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
                 &host.run_assembly.realization_executor,
                 &host.run_assembly.mcp,
             ),
-            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: thread.into(),
                 projection: projection.clone(),
@@ -761,7 +761,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         lease.clone(),
     );
     let authorization =
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+        awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
             effect.clone(),
             projection.workspace_id.clone(),
             aggregate
@@ -769,7 +769,9 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
                 .unwrap(),
         )
         .unwrap()
-        .with_source_dispatch(awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {});
+        .with_source_dispatch(
+            awaken_session_execution_contract::SessionTerminalSourceDispatch::Settled {},
+        );
     let first =
         awaken_session_execution_contract::TerminalCleanup::prepare_terminal_cleanup_for_effect(
             &*(host.clone()).run_assembly,
@@ -848,7 +850,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     let mut stale = effect.clone();
     stale.lease.epoch += 1;
     let stale_authorization =
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+        awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
             stale.clone(),
             projection.workspace_id.clone(),
             None,

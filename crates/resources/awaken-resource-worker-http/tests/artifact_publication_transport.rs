@@ -23,7 +23,7 @@ use awaken_resource_worker_http::{
     ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, ArtifactPublicationRequest,
     HttpArtifactPublisher, WorkerArtifactPublicationService, worker_artifact_publication_router,
 };
-use awaken_session_realization_contract::ResourceOperationFence;
+use awaken_session_execution_contract::ResourceOperationFence;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 use base64::Engine as _;
 
@@ -255,32 +255,32 @@ impl FileApplicationService for CountingFileApplication {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionTerminalPreparationControl
-    for ExactArtifactControl
-{
+impl awaken_session_execution_contract::SessionTerminalPreparationControl for ExactArtifactControl {
     async fn authorize_terminal_cleanup_effect(
         &self,
         effect: &awaken_session_contract::SessionTerminalCleanupEffect,
     ) -> Result<
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         let Some(current) = self.terminal_effect.as_ref() else {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+            );
         };
         if current.command != effect.command
-            || !awaken_session_realization_contract::realization_lease_generation_authorizes(
+            || !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
                 &current.lease,
                 &effect.lease,
             )
-            || !awaken_session_realization_contract::realization_lease_is_live_at(
+            || !awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                 current.lease.expires_at_unix_ms,
                 support::unix_now_ms(),
             )
         {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership);
         }
-        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+        awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
             effect.clone(),
             self.workspace_id.clone(),
             None,
@@ -291,9 +291,9 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
         &self,
         _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         _preparation: awaken_session_contract::SessionCleanupPreparation,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
         Err(
-            awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+            awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(
                 "Artifact authorization fixture does not admit cleanup receipts".into(),
             ),
         )
@@ -301,14 +301,12 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
 }
 
 #[async_trait::async_trait]
-impl awaken_session_realization_contract::SessionCheckpointArtifactControl
-    for ExactArtifactControl
-{
+impl awaken_session_execution_contract::SessionCheckpointArtifactControl for ExactArtifactControl {
     async fn authorize_checkpoint_release_artifact_effect(
         &self,
         session_id: &awaken_session_types::SessionId,
         operation: &awaken_session_contract::SessionEnvironmentOperation,
-    ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
+    ) -> Result<String, awaken_session_execution_contract::SessionRealizationControlFailure> {
         if !self
             .checkpoint
             .as_ref()
@@ -316,7 +314,9 @@ impl awaken_session_realization_contract::SessionCheckpointArtifactControl
                 expected_session == session_id && expected_operation == operation
             })
         {
-            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+            );
         }
         Ok(self.workspace_id.clone())
     }

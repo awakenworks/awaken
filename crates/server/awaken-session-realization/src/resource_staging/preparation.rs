@@ -10,7 +10,7 @@ use crate::realization_error::RealizationError;
 use crate::realization_state::SessionRealization;
 use crate::session_realizations::SessionRealizations;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
-use awaken_session_realization_contract::ObservedSessionRealizationLease;
+use awaken_session_execution_contract::ObservedSessionRealizationLease;
 use std::sync::Arc;
 
 /// Scoped preparation, not another lease manager. The existing scheduler sees

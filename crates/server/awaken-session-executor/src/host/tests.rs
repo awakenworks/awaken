@@ -1193,7 +1193,7 @@ impl LlmExecutor for GatedModel {
 fn compile_complete_test_session_projection(
     managed: &Arc<crate::ExecutorComponents>,
     init: awaken_session_configuration_contract::SessionInit,
-) -> awaken_session_realization_contract::FrozenSessionProjection {
+) -> awaken_session_execution_contract::FrozenSessionProjection {
     let awaken_session_configuration_contract::SessionInit {
         workspace_id,
         agent_id,
@@ -1277,7 +1277,7 @@ fn compile_complete_test_session_projection(
         0,
         crate::session_resource::ResolvedSessionResources::default(),
     );
-    awaken_session_realization_contract::FrozenSessionProjection {
+    awaken_session_execution_contract::FrozenSessionProjection {
         bound_source_end: None,
         workspace_id,
         revision: awaken_session_types::SessionRevision(1),
@@ -1305,7 +1305,7 @@ async fn install_complete_test_session(
         &*managed.run_assembly,
         thread,
         compile_complete_test_session_projection(managed, init),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .map_err(Into::into)
@@ -2457,7 +2457,7 @@ pub(super) fn disposing_terminal_environment(
 /// This uses the real admission law; it never repairs a historical Store row.
 pub(super) fn fresh_terminal_fixture_before_create(
     session_id: &str,
-    projection: &mut awaken_session_realization_contract::FrozenSessionProjection,
+    projection: &mut awaken_session_execution_contract::FrozenSessionProjection,
     lease: &crate::session_resource::SessionRealizationLease,
 ) -> awaken_session_contract::PersistedSession {
     assert!(matches!(
@@ -2502,7 +2502,7 @@ pub(super) fn fresh_terminal_fixture_before_create(
 
 fn terminal_test_session(
     session_id: &str,
-    projection: &awaken_session_realization_contract::FrozenSessionProjection,
+    projection: &awaken_session_execution_contract::FrozenSessionProjection,
     lease: crate::session_resource::SessionRealizationLease,
     children: impl IntoIterator<Item = String>,
     publication: Option<awaken_session_contract::SessionRepositoryPublicationIntent>,
@@ -2555,8 +2555,8 @@ fn terminal_test_session(
 
 fn terminal_preparation_authorization(
     effect: &awaken_session_contract::SessionTerminalCleanupEffect,
-    projection: &awaken_session_realization_contract::FrozenSessionProjection,
-) -> awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization {
+    projection: &awaken_session_execution_contract::FrozenSessionProjection,
+) -> awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization {
     let session_id = &effect.command.session_id;
     let thread_id = &effect.command.thread_id;
     let session = terminal_test_session(
@@ -2569,21 +2569,21 @@ fn terminal_preparation_authorization(
     let inherited_provider_disposal = session
         .authorize_terminal_cleanup_effect(effect)
         .expect("derive preparation authorization from the complete Session aggregate");
-    awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+    awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
         effect.clone(),
         projection.workspace_id.clone(),
         inherited_provider_disposal,
     )
     .expect("close the aggregate-derived terminal preparation authorization")
     .with_source_dispatch(
-        awaken_session_realization_contract::SessionTerminalSourceDispatch::Settled {},
+        awaken_session_execution_contract::SessionTerminalSourceDispatch::Settled {},
     )
 }
 
 fn terminal_disposal_effect(
     preparation: awaken_session_contract::SessionCleanupPreparation,
     current_lease: crate::session_resource::SessionRealizationLease,
-    projection: &awaken_session_realization_contract::FrozenSessionProjection,
+    projection: &awaken_session_execution_contract::FrozenSessionProjection,
 ) -> awaken_session_contract::SessionTerminalCleanupDisposalEffect {
     let session_id = preparation.effect.command.session_id.clone();
     let thread_id = preparation.effect.command.thread_id.clone();
@@ -2642,13 +2642,13 @@ async fn install_terminal_recovery_projection(
     thread: &str,
     lease: crate::session_resource::SessionRealizationLease,
     environment: awaken_session_contract::SessionEnvironmentState,
-) -> awaken_session_realization_contract::FrozenSessionProjection {
+) -> awaken_session_execution_contract::FrozenSessionProjection {
     let mut projection = remote_terminal_cleanup_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         thread,
         projection.clone(),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("install frozen terminal recovery projection");
@@ -2662,7 +2662,7 @@ async fn install_terminal_recovery_projection(
                 &host.run_assembly.realization_executor,
                 &host.run_assembly.mcp,
             ),
-            &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            &awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                 environment_creation_not_attempted: false,
                 session_id: thread.into(),
                 projection: projection.clone(),
@@ -2674,14 +2674,14 @@ async fn install_terminal_recovery_projection(
     projection
 }
 
-fn remote_terminal_cleanup_projection()
--> awaken_session_realization_contract::FrozenSessionProjection {
+fn remote_terminal_cleanup_projection() -> awaken_session_execution_contract::FrozenSessionProjection
+{
     remote_terminal_cleanup_projection_with_idle_retention(Default::default())
 }
 
 fn remote_terminal_cleanup_projection_with_idle_retention(
     idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
-) -> awaken_session_realization_contract::FrozenSessionProjection {
+) -> awaken_session_execution_contract::FrozenSessionProjection {
     let mut environment = session_environment(
         awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
         serde_json::json!({}),
@@ -2705,7 +2705,7 @@ fn remote_terminal_cleanup_projection_with_idle_retention(
             transcript_prefix: None,
         },
     );
-    awaken_session_realization_contract::FrozenSessionProjection {
+    awaken_session_execution_contract::FrozenSessionProjection {
         bound_source_end: None,
         workspace_id: "terminal-workspace".into(),
         revision: awaken_session_types::SessionRevision(1),

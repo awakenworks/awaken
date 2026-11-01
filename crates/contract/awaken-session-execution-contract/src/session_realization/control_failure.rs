@@ -81,7 +81,7 @@ impl SessionRealizationControlFailure {
 /// status/envelope; callers never need to parse its presentation string.
 ///
 /// ```
-/// use awaken_session_realization_contract::{SessionRealizationControlFailure as C, effect_failure_disposition};
+/// use awaken_session_execution_contract::{SessionRealizationControlFailure as C, effect_failure_disposition};
 /// use awaken_session_types::{RunError, RunErrorClassification};
 /// let missing: RunError = C::NotFound.into();
 /// assert_eq!(missing.classification(), RunErrorClassification::NotFound);

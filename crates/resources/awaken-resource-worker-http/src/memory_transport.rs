@@ -16,8 +16,8 @@ use awaken_resource_contract::{
     ResourceAccess,
 };
 use awaken_session_contract::{SessionTerminalMemoryIntent, SessionTerminalMemoryTarget};
-use awaken_session_realization_contract::ResourceOperationFence;
-use awaken_session_realization_contract::SessionResourceMaterializationIntent;
+use awaken_session_execution_contract::ResourceOperationFence;
+use awaken_session_execution_contract::SessionResourceMaterializationIntent;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
@@ -124,7 +124,7 @@ impl MemoryMaterializationReferenceEncoder<SessionResourceMaterializationIntent>
         access: ResourceAccess,
         intent: &SessionResourceMaterializationIntent,
     ) -> Result<String, MemoryMaterializationReferenceError> {
-        let awaken_session_realization_contract::SessionResourceMaterializationTarget::Input(input) =
+        let awaken_session_execution_contract::SessionResourceMaterializationTarget::Input(input) =
             intent.target()
         else {
             return Err(MemoryMaterializationReferenceError::InvalidInput {
@@ -436,9 +436,9 @@ pub struct WorkerMemoryService {
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Arc<dyn WorkerDirectory>,
     materialization_control:
-        Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionResourceMaterializationControl>>,
     terminal_memory_control:
-        Option<Arc<dyn awaken_session_realization_contract::SessionTerminalMemoryControl>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionTerminalMemoryControl>>,
     /// The Coordinator's wall clock: the instant claims and leases are judged at.
     clock: Arc<dyn awaken_time::WallClock>,
 }
@@ -506,9 +506,7 @@ impl WorkerMemoryService {
     #[must_use]
     pub fn with_materialization_control(
         mut self,
-        control: Arc<
-            dyn awaken_session_realization_contract::SessionResourceMaterializationControl,
-        >,
+        control: Arc<dyn awaken_session_execution_contract::SessionResourceMaterializationControl>,
     ) -> Self {
         self.materialization_control = Some(control);
         self
@@ -517,7 +515,7 @@ impl WorkerMemoryService {
     #[must_use]
     pub fn with_terminal_memory_control(
         mut self,
-        control: Arc<dyn awaken_session_realization_contract::SessionTerminalMemoryControl>,
+        control: Arc<dyn awaken_session_execution_contract::SessionTerminalMemoryControl>,
     ) -> Self {
         self.terminal_memory_control = Some(control);
         self
@@ -714,8 +712,8 @@ async fn memory_operation(
             {
                 Ok(target) if target.intent() == intent.as_ref() => target,
                 Ok(_) => return StatusCode::FORBIDDEN.into_response(),
-                Err(awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_))
-                | Err(awaken_session_realization_contract::SessionRealizationControlFailure::Conflict) => {
+                Err(awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(_))
+                | Err(awaken_session_execution_contract::SessionRealizationControlFailure::Conflict) => {
                     return StatusCode::SERVICE_UNAVAILABLE.into_response();
                 }
                 Err(_) => return StatusCode::CONFLICT.into_response(),
@@ -758,16 +756,16 @@ async fn memory_operation(
                 .await
             {
                 Ok(workspace_id) => workspace_id,
-                Err(awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_))
-                | Err(awaken_session_realization_contract::SessionRealizationControlFailure::Conflict) => {
+                Err(awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(_))
+                | Err(awaken_session_execution_contract::SessionRealizationControlFailure::Conflict) => {
                     return StatusCode::SERVICE_UNAVAILABLE.into_response();
                 }
-                Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership) => {
+                Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership) => {
                     return StatusCode::CONFLICT.into_response();
                 }
                 Err(_) => return StatusCode::FORBIDDEN.into_response(),
             };
-            let awaken_session_realization_contract::SessionResourceMaterializationTarget::Input(
+            let awaken_session_execution_contract::SessionResourceMaterializationTarget::Input(
                 input,
             ) = intent.target()
             else {

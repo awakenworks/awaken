@@ -1,31 +1,29 @@
 use super::*;
-use awaken_session_realization_contract::SessionPreparationControl;
+use awaken_session_execution_contract::SessionPreparationControl;
 
 struct FixtureSessionPlacement;
 
 struct SelectiveSessionPlacement;
 
-impl awaken_session_realization_contract::SessionPreparationPlacement for FixtureSessionPlacement {
+impl awaken_session_execution_contract::SessionPreparationPlacement for FixtureSessionPlacement {
     fn requirements(
         &self,
         _session: &PersistedSession,
     ) -> Result<
         awaken_worker_contract::PlacementRequirements,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         Ok(awaken_worker_contract::PlacementRequirements::remote_required())
     }
 }
 
-impl awaken_session_realization_contract::SessionPreparationPlacement
-    for SelectiveSessionPlacement
-{
+impl awaken_session_execution_contract::SessionPreparationPlacement for SelectiveSessionPlacement {
     fn requirements(
         &self,
         session: &PersistedSession,
     ) -> Result<
         awaken_worker_contract::PlacementRequirements,
-        awaken_session_realization_contract::SessionRealizationControlFailure,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         let mut requirements = awaken_worker_contract::PlacementRequirements::remote_required();
         if session.session_id.as_str().starts_with("gpu-") {
@@ -162,13 +160,13 @@ async fn idle_mcp_preparation_reuses_the_bound_worker_and_refuses_a_foreign_owne
             repo.clone(),
             Arc::new(RecordingEnvironmentSource::default()),
         );
-        let target = awaken_session_realization_contract::SessionRealizationTarget {
+        let target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: "worker".into(),
             runtime_incarnation: "worker:1:boot".into(),
             lease_expires_at_unix_ms: u64::MAX,
             reassign_existing_lease: false,
         };
-        let foreign = awaken_session_realization_contract::SessionRealizationTarget {
+        let foreign = awaken_session_execution_contract::SessionRealizationTarget {
             owner: "foreign".into(),
             runtime_incarnation: "foreign:1:boot".into(),
             ..target.clone()
@@ -212,7 +210,7 @@ async fn idle_mcp_preparation_reuses_the_bound_worker_and_refuses_a_foreign_owne
             before.realization.as_ref(),
             "R1 same owner/epoch"
         );
-        let awaken_session_realization_contract::SessionRealizationAction::Stage {
+        let awaken_session_execution_contract::SessionRealizationAction::Stage {
             mcp_stages, ..
         } = assignment.directive.action
         else {
@@ -334,7 +332,7 @@ async fn preparation_candidate_index_skips_a_saturated_live_owner_front() {
     );
     assert!(page.next_cursor.is_none(), "R1 no hidden candidate page");
     let application = application(repo, Arc::new(RecordingEnvironmentSource::default()));
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker".into(),
         runtime_incarnation: "worker:1:boot".into(),
         lease_expires_at_unix_ms: u64::MAX,
@@ -422,7 +420,7 @@ async fn preparation_claim_advances_one_candidate_page_per_poll() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker".into(),
         runtime_incarnation: "worker:1:boot".into(),
         lease_expires_at_unix_ms: u64::MAX,
@@ -450,7 +448,7 @@ async fn preparation_claim_advances_one_candidate_page_per_poll() {
             .is_none(),
         "R1 bounded first page"
     );
-    let gpu_target = awaken_session_realization_contract::SessionRealizationTarget {
+    let gpu_target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "gpu-worker".into(),
         runtime_incarnation: "gpu-worker:1:boot".into(),
         lease_expires_at_unix_ms: u64::MAX,
@@ -532,7 +530,7 @@ async fn preparation_claim_does_not_starve_unvisited_candidates_after_a_retryabl
             repo.clone(),
             Arc::new(RecordingEnvironmentSource::default()),
         );
-        let target = awaken_session_realization_contract::SessionRealizationTarget {
+        let target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: "worker".into(),
             runtime_incarnation: "worker:1:boot".into(),
             lease_expires_at_unix_ms: u64::MAX,
@@ -690,9 +688,7 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
                     .request_run_free_initial_preparation(&invalid)
                     .await,
                 Err(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
-                        _
-                    )
+                    awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(_)
                 )
             ),
             "R3/E3"
@@ -727,9 +723,7 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
                     .realizations
                     .request_run_free_initial_preparation(&blocked)
                     .await,
-                Err(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::NotReady
-                )
+                Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
             ),
             "R5/E5"
         );
@@ -799,7 +793,7 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker".into(),
         runtime_incarnation: "worker:1:boot".into(),
         lease_expires_at_unix_ms: u64::MAX,
@@ -819,9 +813,7 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
                 .claim_next_session_preparation(target.clone())
                 .await,
             Err(
-                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
-                    _
-                )
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(_)
             )
         ),
         "R7 missing canonical compiler fails closed"
@@ -903,7 +895,7 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
         "R9/E2"
     );
 
-    let another = awaken_session_realization_contract::SessionRealizationTarget {
+    let another = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "other".into(),
         runtime_incarnation: "other:1:boot".into(),
         ..target
@@ -939,7 +931,7 @@ async fn preparation_rechecks_worker_capability_after_root_assignment() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker".into(),
         runtime_incarnation: "worker:1:boot".into(),
         lease_expires_at_unix_ms: u64::MAX,
@@ -1019,7 +1011,7 @@ async fn idle_unpublished_mcp_failures_end_by_class_and_budget() {
                 ..Default::default()
             },
         );
-        let target = awaken_session_realization_contract::SessionRealizationTarget {
+        let target = awaken_session_execution_contract::SessionRealizationTarget {
             owner: "worker".into(),
             runtime_incarnation: "worker:1:boot".into(),
             lease_expires_at_unix_ms: u64::MAX,
@@ -1040,7 +1032,7 @@ async fn idle_unpublished_mcp_failures_end_by_class_and_budget() {
             .unwrap();
         // The per-incarnation cursor advances past an examined root and wraps
         // on a later poll, so one claim may take up to two polls.
-        let claim = |target: awaken_session_realization_contract::SessionRealizationTarget| {
+        let claim = |target: awaken_session_execution_contract::SessionRealizationTarget| {
             let application = &application;
             async move {
                 for _ in 0..3 {
@@ -1063,7 +1055,7 @@ async fn idle_unpublished_mcp_failures_end_by_class_and_budget() {
             application
                 .realizations
                 .fail_session_realization(
-                    awaken_session_realization_contract::FailSessionRealization {
+                    awaken_session_execution_contract::FailSessionRealization {
                         session_id: id.clone(),
                         lease: assignment.directive.authority.lease,
                         prepared_resource_revision: None,
@@ -1150,7 +1142,7 @@ async fn preparation_closes_its_unissued_lease_when_the_worker_starts_draining()
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
         owner: "worker".into(),
         runtime_incarnation: "worker:1:boot".into(),
         lease_expires_at_unix_ms: u64::MAX,

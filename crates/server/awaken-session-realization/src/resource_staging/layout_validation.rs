@@ -207,7 +207,7 @@ impl ResourceStaging {
             .publication()
             .resolve_canonical_session_projection(
                 &layout.workspace_id,
-                awaken_session_realization_contract::CanonicalSessionProjection::Layout(layout),
+                awaken_session_execution_contract::CanonicalSessionProjection::Layout(layout),
                 None,
                 None,
             )

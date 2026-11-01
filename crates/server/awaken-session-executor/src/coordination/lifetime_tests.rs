@@ -457,7 +457,7 @@ async fn model_gate_preserves_local_and_remote_control_failure_grades() {
     // Each remote row makes exactly one claim-fenced call. This adapter cannot
     // mint inference completion evidence; the Runtime owns pre-Provider proof.
     use awaken_runtime_contract::resilience::FailureClass;
-    use awaken_session_realization_contract::{
+    use awaken_session_execution_contract::{
         ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, SessionRealizationControlFailure as F,
     };
     let rows = [

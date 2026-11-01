@@ -32,7 +32,7 @@ pub const fn local_claimed_projection_is_ready(
 
 pub fn map_claimed_session_control_error(
     run_id: &str,
-    error: awaken_session_realization_contract::ClaimedSessionControlError,
+    error: awaken_session_execution_contract::ClaimedSessionControlError,
 ) -> crate::Error {
     match session_realization_worker_effect(error.disposition()) {
         SessionRealizationWorkerEffect::Defer => crate::Error::ResolutionNotReady(
@@ -52,12 +52,12 @@ pub fn map_claimed_session_control_error(
 /// transition boundary keeps legacy validation and physical replay rules out of
 /// the Worker transport adapter.
 pub fn control_projection_matches_dispatched_manifest(
-    projection: &awaken_session_realization_contract::FrozenSessionProjection,
+    projection: &awaken_session_execution_contract::FrozenSessionProjection,
     dispatched: &awaken_session_configuration_contract::resource::SessionResourceManifest,
 ) -> Result<bool, awaken_session_types::RunError> {
     Ok(projection
         .resource_transition(
-            awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+            awaken_session_execution_contract::FrozenResourceTransitionUse::ApplyEffects,
         )?
         .desired()
         == dispatched)

@@ -18,7 +18,7 @@ use awaken_session_contract::SessionRepository;
 use awaken_session_contract::{
     SessionEnvironmentState, SessionExecutionState, SessionTerminalCleanupAction,
 };
-use awaken_session_realization_contract::{SourceRetentionSubject, WorkerSourceRetentionSubjects};
+use awaken_session_execution_contract::{SourceRetentionSubject, WorkerSourceRetentionSubjects};
 use awaken_session_types::RunError;
 use awaken_worker_contract::WorkerIdentity;
 

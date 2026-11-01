@@ -61,7 +61,7 @@ impl SessionRealizationRevocationSelection {
             SessionRealizationAuthority::Uninstalled
             | SessionRealizationAuthority::Closed(None) => return None,
         };
-        if !awaken_session_realization_contract::realization_lease_generation_authorizes(
+        if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
             current, expected,
         ) {
             return None;
@@ -186,7 +186,7 @@ pub trait SessionRealizationSource: Send + Sync {
         admit: &'a mut (dyn FnMut(SessionRealizationAccess<'_>) + Send),
     ) -> futures_util::future::BoxFuture<
         'a,
-        Result<awaken_session_realization_contract::SessionRealizationPermit, RealizationLock>,
+        Result<awaken_session_execution_contract::SessionRealizationPermit, RealizationLock>,
     >;
 
     /// The install path: install an empty Session when absent and leave an
@@ -280,8 +280,7 @@ impl SessionRealizations {
     pub async fn acquire_realization(
         &self,
         session: &str,
-    ) -> Result<awaken_session_realization_contract::SessionRealizationPermit, RealizationError>
-    {
+    ) -> Result<awaken_session_execution_contract::SessionRealizationPermit, RealizationError> {
         Ok(self.acquire_realization_with(session, |_| ()).await?.0)
     }
 
@@ -294,7 +293,7 @@ impl SessionRealizations {
         mut admit: impl FnMut(SessionRealizationAccess<'_>) -> R + Send,
     ) -> Result<
         (
-            awaken_session_realization_contract::SessionRealizationPermit,
+            awaken_session_execution_contract::SessionRealizationPermit,
             R,
         ),
         RealizationError,
@@ -557,7 +556,7 @@ impl SessionRealizations {
         &self,
         session: &str,
         handle: &awaken_provisioning_contract::SandboxHandle,
-    ) -> Result<Option<awaken_session_realization_contract::RecordedProcessEnd>, RealizationError>
+    ) -> Result<Option<awaken_session_execution_contract::RecordedProcessEnd>, RealizationError>
     {
         Ok(self
             .modify_session(session, |installed| {

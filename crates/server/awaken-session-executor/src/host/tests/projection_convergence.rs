@@ -6,7 +6,7 @@ use crate::host::worker_resolver::test_support::{
 };
 use awaken_session_contract::SessionEnvironmentState;
 use awaken_session_execution_contract::RealizationRuntime as _;
-use awaken_session_realization_contract::SessionProjectionInstallMode;
+use awaken_session_execution_contract::SessionProjectionInstallMode;
 
 fn observation(host: &ExecutorComponents) -> serde_json::Value {
     host.run_assembly.installed_sessions.realizations().read_realization("projection-convergence", |realization| {
@@ -22,13 +22,13 @@ fn observation(host: &ExecutorComponents) -> serde_json::Value {
 async fn deliver(
     host: &ExecutorComponents,
     managed: &Arc<crate::ExecutorComponents>,
-    projection: awaken_session_realization_contract::FrozenSessionProjection,
+    projection: awaken_session_execution_contract::FrozenSessionProjection,
     rule: String,
     trace: &mut Vec<serde_json::Value>,
 ) -> Result<(), awaken_session_types::RunError> {
     let before = observation(host);
     let receipt =
-        awaken_session_realization_contract::FrozenProjectionReceipt::from_projection(&projection)
+        awaken_session_execution_contract::FrozenProjectionReceipt::from_projection(&projection)
             .unwrap();
     let incoming = serde_json::json!({"revision": receipt.revision.0, "fingerprint": receipt.fingerprint, "binding": projection.environment.binding().unwrap_or("none")});
     let result = managed

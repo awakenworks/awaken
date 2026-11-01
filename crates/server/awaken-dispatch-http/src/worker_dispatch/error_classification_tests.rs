@@ -2,7 +2,7 @@
 // @formal owner crates/server/awaken-dispatch-http/src/worker_dispatch.rs
 // @formal reason: cfg(test) only; verifies typed Control wire faults, exact status and envelope.
 use super::*;
-use awaken_session_realization_contract::SessionRealizationControlFailure as C;
+use awaken_session_execution_contract::SessionRealizationControlFailure as C;
 
 #[test]
 fn realization_http_preserves_each_cause_status_and_wire_shape() {

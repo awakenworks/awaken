@@ -24,7 +24,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RunAssembly {
 
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
+        control: &dyn awaken_session_execution_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
@@ -41,9 +41,9 @@ impl awaken_session_execution_contract::RealizationRuntime for RunAssembly {
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_realization_contract::FrozenSessionProjection,
-        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+        projection: awaken_session_execution_contract::FrozenSessionProjection,
+        mode: awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         let realizations = self.installed_sessions.realizations();
         // Installing the frozen projection is the install path. Every
         // Environment-owner projection, including lease-only recovery, crosses
@@ -80,7 +80,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RunAssembly {
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         let realizations = self.installed_sessions.realizations();
         let missing = || {
@@ -187,7 +187,7 @@ impl awaken_session_execution_contract::TerminalCleanup for RunAssembly {
     async fn prepare_terminal_cleanup_for_effect(
         &self,
         effect: awaken_session_contract::SessionTerminalCleanupEffect,
-        authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        authorization: awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_contract::SessionCleanupPreparation, RunError> {
         self.realization_executor
             .effects()
@@ -264,8 +264,8 @@ impl awaken_session_execution_contract::TerminalCleanup for RunAssembly {
 
     async fn install_terminal_cleanup_assignment(
         &self,
-        assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
-        proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        assignment: &awaken_session_execution_contract::SessionTerminalCleanupAssignment,
+        proof: awaken_session_execution_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
         self.installed_sessions
             .install_terminal_cleanup_projection(
@@ -286,7 +286,7 @@ async fn adopt_environment_for_realization(
     agent: &str,
     thread: &str,
     binding: &str,
-) -> Result<(), awaken_session_realization_contract::SessionRealizationEffectFailure> {
+) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
     // Managed Session restoration is a continuity contract: the durable
     // binding must decode, belong to this Session/provider, and still name a
     // ready physical environment. Run-dispatch recovery has its own explicit

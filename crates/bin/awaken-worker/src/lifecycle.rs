@@ -907,7 +907,7 @@ async fn supervise_session_realization_reconciliation<Renewal, RenewalFuture, Co
 fn session_realization_claim_target(
     lifecycle: &WorkerSupervisor,
     lease_ttl_ms: u64,
-) -> Option<awaken_session_realization_contract::SessionRealizationTarget> {
+) -> Option<awaken_session_execution_contract::SessionRealizationTarget> {
     let now_at = lifecycle.roles.clock().now();
     let expiry = awaken_time::Expiry::child_within(
         awaken_time::Expiry::after(now_at, lifecycle.authority.remaining()),
@@ -915,7 +915,7 @@ fn session_realization_claim_target(
         std::time::Duration::from_millis(lease_ttl_ms),
     )?;
     Some(
-        awaken_session_realization_contract::SessionRealizationTarget {
+        awaken_session_execution_contract::SessionRealizationTarget {
             owner: lifecycle.identity.worker_id.clone(),
             runtime_incarnation: lifecycle.identity.lease_owner(),
             lease_expires_at_unix_ms: expiry.to_epoch_ms(),

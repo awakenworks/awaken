@@ -581,7 +581,7 @@ impl CoordinatedThreads {
         let mut snapshot = command.snapshot;
         let inherit_session_overrides = snapshot.root_agent_id.0 == baseline.agent_id;
         if inherit_session_overrides {
-            snapshot = awaken_session_realization_contract::project_effective_agent_publication(
+            snapshot = awaken_session_execution_contract::project_effective_agent_publication(
                 baseline.model_override.as_ref(),
                 &baseline.system_prompt,
                 Some(resources.resources.skills()),

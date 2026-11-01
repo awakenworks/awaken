@@ -71,7 +71,7 @@ async fn signed_draining_cleanup_keeps_its_original_renewal_authority() {
     };
     client.heartbeat(&identity, heartbeat(1)).await.unwrap();
     *work.owner.lock().unwrap() = Some(identity.lease_owner());
-    let mut command = awaken_session_realization_contract::RenewSessionRealization {
+    let mut command = awaken_session_execution_contract::RenewSessionRealization {
         session_id: "draining-session".into(),
         asserted_lease: awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: identity.worker_id.clone(),
@@ -206,13 +206,13 @@ async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
         .header("x-awaken-worker-id", "local-worker")
         .json(&serde_json::json!({
             "identity": identity,
-            "target": awaken_session_realization_contract::SessionRealizationTarget {
+            "target": awaken_session_execution_contract::SessionRealizationTarget {
                 owner: "local-worker".into(),
                 runtime_incarnation: identity.lease_owner(),
                 lease_expires_at_unix_ms: u64::MAX,
                 reassign_existing_lease: false,
             },
-            "sweep_cursor_version": awaken_session_realization_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION,
+            "sweep_cursor_version": awaken_session_execution_contract::TERMINAL_CLEANUP_SWEEP_CURSOR_VERSION,
             "after_session_id": null,
         }))
         .send()

@@ -110,7 +110,7 @@ impl SessionRealizationSource for GateAfterCanonicalFinish {
     ) -> futures_util::future::BoxFuture<
         'a,
         Result<
-            awaken_session_realization_contract::SessionRealizationPermit,
+            awaken_session_execution_contract::SessionRealizationPermit,
             crate::realization_error::RealizationLock,
         >,
     > {
@@ -211,7 +211,7 @@ impl SessionRealizationSource for GateAfterCanonicalFinish {
     }
 }
 
-fn projection() -> awaken_session_realization_contract::FrozenSessionProjection {
+fn projection() -> awaken_session_execution_contract::FrozenSessionProjection {
     let holder = awaken_agent_contract::credential::PlaintextHolder::new(
         awaken_agent_contract::credential::PlaintextBoundary::Worker,
         "test.worker",
@@ -252,7 +252,7 @@ fn projection() -> awaken_session_realization_contract::FrozenSessionProjection 
             transcript_prefix: None,
         },
     );
-    awaken_session_realization_contract::FrozenSessionProjection {
+    awaken_session_execution_contract::FrozenSessionProjection {
         bound_source_end: None,
         workspace_id: "workspace".into(),
         revision: awaken_session_types::SessionRevision(2),
@@ -676,7 +676,7 @@ async fn projection_installation_rechecks_the_original_registry_after_decorated_
                 let host = dependencies.build().unwrap();
                 let canonical = observed.get().unwrap().clone();
                 assert!(Arc::ptr_eq(&canonical, &host.run_assembly.installed_sessions), "C1 same actual registry");
-                let expected = awaken_session_realization_contract::FrozenProjectionReceipt::from_projection(&projection()).unwrap();
+                let expected = awaken_session_execution_contract::FrozenProjectionReceipt::from_projection(&projection()).unwrap();
                 let driver = host.clone();
                 let install = tokio::spawn(async move {
                     let installed = &driver.run_assembly.installed_sessions;
@@ -689,7 +689,7 @@ async fn projection_installation_rechecks_the_original_registry_after_decorated_
                     match variant {
                         "dispatch" => installed.install_dispatch_frozen_session_projection(physical, session, projection()).await,
                         "terminal" => {
-                            let assignment = awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                            let assignment = awaken_session_execution_contract::SessionTerminalCleanupAssignment {
                                 environment_creation_not_attempted: false,
                                 session_id: session.into(),
                                 projection: projection(),

@@ -28,7 +28,7 @@ use awaken_session_configuration_contract::resource::SessionResourceManifest;
 use awaken_session_configuration_contract::{
     SessionBaseline, SessionRuntimeProjection, SessionToolConfiguration, environment_projection,
 };
-use awaken_session_realization_contract::{
+use awaken_session_execution_contract::{
     CanonicalSessionProjection, FrozenProjectionReceipt, FrozenSessionProjection,
 };
 use awaken_session_types::RunError;
@@ -166,7 +166,7 @@ impl SessionProjections {
             return Ok(());
         }
         let (publication, model_candidate) =
-            awaken_session_realization_contract::resolve_canonical_session_projection(
+            awaken_session_execution_contract::resolve_canonical_session_projection(
                 self.publications.as_deref(),
                 &projection.workspace_id,
                 CanonicalSessionProjection::Baseline(&projection.baseline),

@@ -259,7 +259,7 @@ impl PreparedBoundEnvironment {
     /// excuse to repeat live source effects under terminal T.
     pub fn with_preparation_authorization(
         self,
-        authorization: &awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        authorization: &awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Self {
         self.with_source_release_predecessor(
             if authorization.inherited_provider_disposal().is_some() {
