@@ -11,6 +11,17 @@ import tomllib
 from pathlib import Path, PurePosixPath
 
 
+def unpack_source_archive(archive: Path, destination: Path) -> None:
+    """The existing qualifier's complete Git-source extraction boundary."""
+    if not hasattr(tarfile, "data_filter"):
+        raise ValueError("SDK baseline extraction requires Python's standard tar data filter")
+    try:
+        with tarfile.open(archive, "r:") as source:
+            source.extractall(destination, filter="data")
+    except tarfile.TarError as error:
+        raise ValueError("SDK baseline source archive is invalid") from error
+
+
 def capture_archives(directory: Path, destination: Path, names: list[str],
                      members: dict, revision: str, root: Path) -> list[dict]:
     """Keep the package qualifier's one archive/VCS validation path."""
