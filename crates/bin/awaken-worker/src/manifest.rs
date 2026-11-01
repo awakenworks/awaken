@@ -258,6 +258,10 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
     // Prepared Session command support is an independent capability owned by
     // its wire admission path; neither token substitutes for the other.
     capabilities.insert(awaken_worker_contract::TOOL_RESULT_JOURNAL_CAPABILITY.to_owned());
+    // The composition installs this incarnation's Task control (holder,
+    // attention and tenure), so it decodes private Task input and executes
+    // BackgroundTask (codec demand C1).
+    capabilities.insert(awaken_worker_contract::BACKGROUND_TASK_CONTROL_CAPABILITY.to_owned());
     capabilities
         .insert(awaken_worker_contract::SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY.to_owned());
     capabilities

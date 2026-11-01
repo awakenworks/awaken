@@ -442,8 +442,12 @@ pub(super) async fn assemble(
     };
     let claimed_terminal_reads = awaken_dispatch_execution::ClaimedTerminalReads::default();
     if background_tasks_enabled {
-        let background_commit =
-            crate::background_task::TaskCommittedReads::of(&commit, &claimed_terminal_reads);
+        let background_commit = crate::background_task::TaskCommittedReads::of(
+            &commit,
+            &claimed_terminal_reads,
+            host.capabilities.worker.task_control.as_ref(),
+        )
+        .map_err(SessionExecutionError::internal)?;
         terminal_observers.push(Arc::new(
             crate::background_task::BackgroundTaskTerminalObserver::new(
                 runtime.clone(),

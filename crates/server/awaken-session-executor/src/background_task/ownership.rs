@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use awaken_ext_background_task::{BackgroundTask, BackgroundTaskSupervisor, task_state_cell};
+use awaken_ext_background_task::{BackgroundTask, BackgroundTaskSupervisor};
 use awaken_runtime_contract::{AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext};
 use awaken_time::WallClockExt;
 
@@ -23,15 +23,11 @@ struct BackgroundTaskOwnership {
 #[async_trait::async_trait]
 impl AttemptOwnershipVerifier for BackgroundTaskOwnership {
     async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
-        let commands = self
+        let current = self
             .commit
-            .tenure_state(&self.expected.origin.thread_id)
+            .committed_task(&self.expected)
             .await
-            .map_err(AttemptOwnershipError::Unavailable)?;
-        let state = awaken_agent_contract::agent::state::Store::rebuild(&commands);
-        let current = task_state_cell(&self.expected.id)
-            .load(&state)
-            .map_err(|error| AttemptOwnershipError::Unavailable(error.to_string()))?
+            .map_err(AttemptOwnershipError::Unavailable)?
             .ok_or(AttemptOwnershipError::Lost)?;
         let expected = self.expected.attempt().ok_or(AttemptOwnershipError::Lost)?;
         if current.admits_execution_of(&self.expected, self.supervisor.clock().now_ms())
@@ -80,7 +76,7 @@ mod tests {
     use awaken_ext_background_task::{
         BackgroundInvocation, BackgroundTaskConfig, BackgroundTaskEnd, BackgroundTaskId,
         BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundTaskPlugin, BackgroundWait,
-        TaskExecutionPolicy,
+        TaskExecutionPolicy, task_state_cell,
     };
     use awaken_lease_testkit::ManualClock;
     use awaken_runtime::{PreparedToolExecutor, Runtime};

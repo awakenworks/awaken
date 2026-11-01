@@ -1,16 +1,18 @@
 // @formal entrypoint background_task.terminal_observer_reads_authoritative_committed_state_not_process_projection
 //! Where a BackgroundTask holder reads committed truth and sends its
 //! observations: the co-located Session application, or a registered Worker's
-//! authenticated transport (rows R1-R6 and W1-W5 of the remote Task control
-//! design).
+//! authenticated transport (rows R1-R6, H1-H5 and W1-W5 of the remote Task
+//! control design).
 
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::state::Command as StateCommand;
+use awaken_agent_contract::agent::state::{Command as StateCommand, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_ext_background_task::{BackgroundTask, task_state_cell};
 use awaken_session_application_contract::{
-    SessionRunBackgroundApplication, TaskAttention, TaskAttentionAck, TaskAttentionDelivery,
+    RegisteredTaskControl, SessionRunBackgroundApplication, TaskAttention, TaskAttentionAck,
+    TaskTenureRead,
 };
 use awaken_session_execution_contract::SessionApplicationBinding;
 use awaken_session_run_delivery::CommittedAuthority;
@@ -20,9 +22,13 @@ use awaken_session_run_delivery::CommittedAuthority;
 pub(crate) enum TaskCommittedReads {
     /// R1/H1: committed local authority.
     Local(CommittedAuthority<Arc<dyn crate::LocalCommit>>),
-    /// R2-R5: the Coordinator's committed truth under the claim that is
-    /// delivering the observed Run's terminal on this Worker.
-    Claimed(awaken_dispatch_execution::ClaimedTerminalReads),
+    /// A registered Worker: R2-R5, the Coordinator's committed truth under the
+    /// claim that is delivering the observed Run's terminal; H2-H5, a held
+    /// Task's committed slot read with this incarnation's holder.
+    Registered {
+        terminal: awaken_dispatch_execution::ClaimedTerminalReads,
+        control: Arc<dyn RegisteredTaskControl>,
+    },
 }
 
 impl From<CommittedAuthority<Arc<dyn crate::LocalCommit>>> for TaskCommittedReads {
@@ -32,17 +38,26 @@ impl From<CommittedAuthority<Arc<dyn crate::LocalCommit>>> for TaskCommittedRead
 }
 
 impl TaskCommittedReads {
-    /// The reads for one Session's commit boundary: its local authority (R1),
-    /// else the claim-bound reads it shares with the Dispatch Worker that
-    /// delivers its terminals (R2-R5). Only a database-less Worker's Dispatch
-    /// Worker records delivering claims in them.
+    /// The reads for one Session's commit boundary: its local authority (R1,
+    /// H1), else the claim-bound reads it shares with the Dispatch Worker that
+    /// delivers its terminals (R2-R5) and this incarnation's Task control
+    /// (H2-H5). Only a database-less Worker's Dispatch Worker records
+    /// delivering claims in them. A Worker without Task control has no
+    /// committed read for a Task (W4).
     pub(crate) fn of(
         commit: &awaken_session_run_delivery::SessionCommit,
         claimed: &awaken_dispatch_execution::ClaimedTerminalReads,
-    ) -> Self {
-        match commit.committed_authority() {
-            Some(authority) => Self::Local(authority),
-            None => Self::Claimed(claimed.clone()),
+        control: Option<&Arc<dyn RegisteredTaskControl>>,
+    ) -> Result<Self, &'static str> {
+        match (commit.committed_authority(), control) {
+            (Some(authority), _) => Ok(Self::Local(authority)),
+            (None, Some(control)) => Ok(Self::Registered {
+                terminal: claimed.clone(),
+                control: control.clone(),
+            }),
+            (None, None) => Err(
+                "BackgroundTask on a registered Worker requires its Task control for committed reads",
+            ),
         }
     }
 
@@ -56,27 +71,54 @@ impl TaskCommittedReads {
     ) -> Result<Vec<StateCommand>, String> {
         match self {
             Self::Local(authority) => authority.committed_state(thread_id).await,
-            Self::Claimed(reads) => reads.committed_state(thread_id, run_id).await,
+            Self::Registered { terminal, .. } => terminal.committed_state(thread_id, run_id).await,
         }
     }
 
-    /// Committed State of `thread_id` for a launched attempt's ownership check,
-    /// which runs after the observed Run's claim has settled.
+    /// The committed slot of `expected` for a launched attempt's ownership
+    /// check, which runs after the observed Run's claim has settled.
     ///
     /// | Rule | reads | effect |
     /// |---|---|---|
-    /// | H1 | local authority | its committed State |
-    /// | H2-H5 | a Worker's claim-bound reads | refused: a settled claim authorizes no read, and the holder-bound Task tenure read is not available |
-    pub(crate) async fn tenure_state(
+    /// | H1 | local authority | the slot in its committed State |
+    /// | H2 | registered Worker; the Coordinator returns the held slot | that slot, decoded by the Task codec |
+    /// | H3 | registered Worker; no committed attempt names this holder | `None`: the attempt is lost |
+    /// | H4/H5 | the read is refused or unavailable, or the slot does not decode | refused: the attempt cannot prove it is current |
+    pub(crate) async fn committed_task(
         &self,
-        thread_id: &ThreadId,
-    ) -> Result<Vec<StateCommand>, String> {
+        expected: &BackgroundTask,
+    ) -> Result<Option<BackgroundTask>, String> {
         match self {
-            Self::Local(authority) => authority.committed_state(thread_id).await,
-            Self::Claimed(_) => Err(
-                "a registered Worker has no holder-bound Task tenure read; the attempt cannot prove it is current"
-                    .to_owned(),
-            ),
+            Self::Local(authority) => {
+                let state = Store::rebuild(
+                    &authority
+                        .committed_state(&expected.origin.thread_id)
+                        .await?,
+                );
+                task_state_cell(&expected.id)
+                    .load(&state)
+                    .map_err(|error| error.to_string())
+            }
+            Self::Registered { control, .. } => {
+                let read = TaskTenureRead {
+                    thread: expected.origin.thread_id.0.clone(),
+                    run: expected.origin.run_id.0.clone(),
+                    task: expected.id.as_str().to_owned(),
+                    holder: control.holder().to_owned(),
+                };
+                let Some(record) = control
+                    .read_tenure(read)
+                    .await
+                    .map_err(|error| format!("Task tenure read: {error}"))?
+                else {
+                    return Ok(None);
+                };
+                serde_json::from_value(record.slot().clone())
+                    .map(Some)
+                    .map_err(|error| {
+                        format!("committed BackgroundTask slot does not decode: {error}")
+                    })
+            }
         }
     }
 }
@@ -87,7 +129,7 @@ pub(crate) enum TaskAttentionRoute {
     /// W1: the co-located Session application, through the one late binding.
     CoLocated(SessionApplicationBinding),
     /// W3: a registered Worker's authenticated Task attention route.
-    Registered(Arc<dyn TaskAttentionDelivery>),
+    Registered(Arc<dyn RegisteredTaskControl>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,7 +164,7 @@ const fn select_task_attention_placement(
 /// One resolved attention target for a publication and its retries.
 pub(super) enum TaskAttentionTarget {
     Application(Arc<dyn SessionRunBackgroundApplication>),
-    Registered(Arc<dyn TaskAttentionDelivery>),
+    Registered(Arc<dyn RegisteredTaskControl>),
 }
 
 impl TaskAttentionTarget {
@@ -142,7 +184,7 @@ impl TaskAttentionRoute {
     pub(crate) fn select(
         hosts_application: bool,
         application: &SessionApplicationBinding,
-        registered: Option<&Arc<dyn TaskAttentionDelivery>>,
+        registered: Option<&Arc<dyn RegisteredTaskControl>>,
     ) -> Option<Self> {
         match select_task_attention_placement(
             hosts_application,
@@ -159,26 +201,21 @@ impl TaskAttentionRoute {
     /// | Rule | placement | effect |
     /// |---|---|---|
     /// | W1/W2 | co-located | the selected route (W2: none) |
-    /// | W4 | registered Worker without a delivery | refused |
-    /// | W3 | registered Worker with a delivery | refused until the Worker can read its Task tenure (H2-H5) |
+    /// | W3 | registered Worker with its Task control | the registered route |
+    /// | W4 | registered Worker without Task control | refused |
     pub(crate) fn plan(
         enabled: bool,
         hosts_application: bool,
         application: &SessionApplicationBinding,
-        registered: Option<&Arc<dyn TaskAttentionDelivery>>,
+        registered: Option<&Arc<dyn RegisteredTaskControl>>,
     ) -> Result<Option<Self>, &'static str> {
         if !enabled {
             return Ok(None);
         }
-        if !hosts_application {
-            return Err(match registered {
-                None => {
-                    "background_task requires a co-located Session application or a registered Worker's Task attention route"
-                }
-                Some(_) => {
-                    "background_task requires a co-located Session application until a registered Worker can read its Task tenure from the Coordinator"
-                }
-            });
+        if !hosts_application && registered.is_none() {
+            return Err(
+                "background_task requires a co-located Session application or a registered Worker's Task control",
+            );
         }
         Ok(Self::select(hosts_application, application, registered))
     }
@@ -204,7 +241,7 @@ mod tests {
     struct UnusedDelivery;
 
     #[async_trait::async_trait]
-    impl TaskAttentionDelivery for UnusedDelivery {
+    impl RegisteredTaskControl for UnusedDelivery {
         fn holder(&self) -> &str {
             "registered-holder"
         }
@@ -214,6 +251,16 @@ mod tests {
             _attention: TaskAttention,
         ) -> Result<TaskAttentionAck, awaken_session_types::RunError> {
             panic!("route selection never delivers")
+        }
+
+        async fn read_tenure(
+            &self,
+            _read: TaskTenureRead,
+        ) -> Result<
+            Option<awaken_session_application_contract::TaskTenureRecord>,
+            awaken_session_types::RunError,
+        > {
+            panic!("route selection never reads tenure")
         }
     }
 
@@ -246,7 +293,7 @@ mod tests {
             crate::test_application_bindings::fresh();
         let bound = crate::test_application_bindings::background_binding(application);
         let unbound = SessionApplicationBinding::default();
-        let delivery: Arc<dyn TaskAttentionDelivery> = Arc::new(UnusedDelivery);
+        let delivery: Arc<dyn RegisteredTaskControl> = Arc::new(UnusedDelivery);
         assert!(
             matches!(
                 TaskAttentionRoute::select(true, &bound, None),
@@ -272,11 +319,12 @@ mod tests {
     }
 
     #[test]
-    fn the_plan_refuses_background_tasks_on_a_registered_worker_until_tenure_reads_exist() {
+    fn the_plan_admits_background_tasks_where_a_route_and_committed_reads_exist() {
         let application: Arc<dyn SessionRunBackgroundApplication> =
             crate::test_application_bindings::fresh();
         let bound = crate::test_application_bindings::background_binding(application);
-        let delivery: Arc<dyn TaskAttentionDelivery> = Arc::new(UnusedDelivery);
+        let unbound = SessionApplicationBinding::default();
+        let delivery: Arc<dyn RegisteredTaskControl> = Arc::new(UnusedDelivery);
         for registered in [None, Some(&delivery)] {
             assert!(
                 matches!(
@@ -293,57 +341,196 @@ mod tests {
             ),
             "W1"
         );
+        assert!(
+            matches!(
+                TaskAttentionRoute::plan(true, true, &unbound, None),
+                Ok(None)
+            ),
+            "W2"
+        );
+        assert!(
+            matches!(
+                TaskAttentionRoute::plan(true, false, &unbound, Some(&delivery)),
+                Ok(Some(TaskAttentionRoute::Registered(_)))
+            ),
+            "W3"
+        );
         let refused = TaskAttentionRoute::plan(true, false, &bound, None)
             .err()
             .expect("W4");
         assert!(refused.contains("co-located Session application"), "W4");
-        let refused = TaskAttentionRoute::plan(true, false, &bound, Some(&delivery))
-            .err()
-            .expect("W3 waits for H2-H5");
-        assert!(refused.contains("Task tenure"), "W3");
     }
 
     #[test]
     fn a_worker_commit_boundary_reads_under_claims_never_from_its_projection() {
         let claimed = awaken_dispatch_execution::ClaimedTerminalReads::default();
+        let control: Arc<dyn RegisteredTaskControl> = Arc::new(UnusedDelivery);
         let remote = awaken_session_run_delivery::SessionCommit::Remote(
             awaken_session_run_delivery::WorkerRecoveryCommit::new(),
         );
         assert!(
             matches!(
-                TaskCommittedReads::of(&remote, &claimed),
-                TaskCommittedReads::Claimed(_)
+                TaskCommittedReads::of(&remote, &claimed, Some(&control)),
+                Ok(TaskCommittedReads::Registered { .. })
             ),
-            "R2-R6"
+            "R2-R6 and H2-H5"
+        );
+        assert!(
+            TaskCommittedReads::of(&remote, &claimed, None).is_err(),
+            "W4 no committed read without Task control"
         );
         let local = awaken_session_run_delivery::SessionCommit::Local(Arc::new(
             crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
                 awaken_time::system_clock(),
             )),
         ));
-        assert!(
-            matches!(
-                TaskCommittedReads::of(&local, &claimed),
-                TaskCommittedReads::Local(_)
-            ),
-            "R1"
-        );
+        for control in [None, Some(&control)] {
+            assert!(
+                matches!(
+                    TaskCommittedReads::of(&local, &claimed, control),
+                    Ok(TaskCommittedReads::Local(_))
+                ),
+                "R1/H1"
+            );
+        }
     }
 
     #[tokio::test]
-    async fn worker_reads_refuse_outside_a_delivering_claim_and_after_settlement() {
-        let reads = TaskCommittedReads::Claimed(Default::default());
-        let thread = ThreadId("thread".into());
+    async fn worker_reads_refuse_outside_a_delivering_claim() {
+        let reads = TaskCommittedReads::Registered {
+            terminal: Default::default(),
+            control: Arc::new(UnusedDelivery),
+        };
         assert!(
             reads
-                .committed_state(&thread, &RunId("run".into()))
+                .committed_state(&ThreadId("thread".into()), &RunId("run".into()))
                 .await
                 .is_err(),
             "R3 no delivering claim"
         );
-        assert!(
-            reads.tenure_state(&thread).await.is_err(),
-            "H2-H5 not available"
+    }
+
+    /// A registered incarnation whose Coordinator answers one scripted tenure.
+    struct ScriptedTaskControl {
+        answer: Result<Option<serde_json::Value>, awaken_session_types::RunErrorKind>,
+        reads: std::sync::Mutex<Vec<TaskTenureRead>>,
+    }
+
+    #[async_trait::async_trait]
+    impl RegisteredTaskControl for ScriptedTaskControl {
+        fn holder(&self) -> &str {
+            "registered-holder"
+        }
+
+        async fn deliver(
+            &self,
+            _attention: TaskAttention,
+        ) -> Result<TaskAttentionAck, awaken_session_types::RunError> {
+            panic!("tenure reads never deliver")
+        }
+
+        async fn read_tenure(
+            &self,
+            read: TaskTenureRead,
+        ) -> Result<
+            Option<awaken_session_application_contract::TaskTenureRecord>,
+            awaken_session_types::RunError,
+        > {
+            self.reads
+                .lock()
+                .expect("tenure reads mutex poisoned")
+                .push(read);
+            match &self.answer {
+                Ok(slot) => Ok(slot
+                    .clone()
+                    .map(awaken_session_application_contract::TaskTenureRecord::new)),
+                Err(awaken_session_types::RunErrorKind::BadRequest) => Err(
+                    awaken_session_types::RunError::bad_request("not this incarnation's holder"),
+                ),
+                Err(_) => Err(awaken_session_types::RunError::unavailable(
+                    "Coordinator unavailable",
+                )),
+            }
+        }
+    }
+
+    fn held_task() -> BackgroundTask {
+        let mut task = BackgroundTask::requested(
+            awaken_ext_background_task::BackgroundTaskId::new("held-task").expect("task id"),
+            awaken_ext_background_task::BackgroundTaskOrigin {
+                thread_id: ThreadId("thread".into()),
+                run_id: RunId("origin-run".into()),
+                operation_id: "operation".into(),
+            },
+            awaken_ext_background_task::BackgroundInvocation {
+                call: awaken_tool_contract::tool::ToolCall {
+                    call_id: "call".into(),
+                    tool_id: "tool".into(),
+                    arguments: serde_json::json!({}),
+                },
+            },
         );
+        task.start(
+            "registered-holder",
+            0,
+            10,
+            awaken_ext_background_task::TaskExecutionPolicy {
+                recovery: awaken_tool_contract::tool::ToolRecoveryPolicy::replay_safe(),
+                concurrency: awaken_tool_contract::tool::ToolConcurrency::Parallel,
+            },
+        )
+        .expect("start");
+        task
+    }
+
+    #[tokio::test]
+    async fn a_registered_worker_reads_a_held_task_with_its_own_holder() {
+        let expected = held_task();
+        let slot = serde_json::to_value(&expected).expect("slot");
+        let rows = [
+            ("H2", Ok(Some(slot)), Ok(Some(expected.clone()))),
+            ("H3", Ok(None), Ok(None)),
+            (
+                "H4",
+                Err(awaken_session_types::RunErrorKind::BadRequest),
+                Err(()),
+            ),
+            (
+                "H5",
+                Err(awaken_session_types::RunErrorKind::Unavailable),
+                Err(()),
+            ),
+            (
+                "H5 undecodable",
+                Ok(Some(serde_json::json!("not a task"))),
+                Err(()),
+            ),
+        ];
+        for (rule, answer, effect) in rows {
+            let control = Arc::new(ScriptedTaskControl {
+                answer,
+                reads: Default::default(),
+            });
+            let reads = TaskCommittedReads::Registered {
+                terminal: Default::default(),
+                control: control.clone(),
+            };
+            let read = reads.committed_task(&expected).await;
+            assert_eq!(read.map_err(|_| ()), effect, "{rule}");
+            assert_eq!(
+                control
+                    .reads
+                    .lock()
+                    .expect("tenure reads mutex poisoned")
+                    .as_slice(),
+                &[TaskTenureRead {
+                    thread: "thread".into(),
+                    run: "origin-run".into(),
+                    task: "held-task".into(),
+                    holder: "registered-holder".into(),
+                }],
+                "{rule} one read with this incarnation's holder"
+            );
+        }
     }
 }

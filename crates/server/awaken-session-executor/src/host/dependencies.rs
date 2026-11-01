@@ -644,11 +644,11 @@ impl SessionExecutorBuilder {
     /// holder becomes the process's BackgroundTask holder, so the Tasks this
     /// Worker tenures are exactly the ones it may deliver attention for.
     #[must_use]
-    pub fn with_task_attention_delivery(
+    pub fn with_registered_task_control(
         mut self,
-        delivery: Arc<dyn awaken_session_application_contract::TaskAttentionDelivery>,
+        delivery: Arc<dyn awaken_session_application_contract::RegisteredTaskControl>,
     ) -> Self {
-        self.worker.task_attention = Some(delivery);
+        self.worker.task_control = Some(delivery);
         self
     }
 

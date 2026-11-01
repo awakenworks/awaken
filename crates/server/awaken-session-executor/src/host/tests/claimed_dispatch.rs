@@ -276,11 +276,12 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
     assert_eq!(ctx.config, published);
 }
 
-/// A registered incarnation's delivery; the plan never reaches it here.
+/// A registered incarnation's Task control; context construction never
+/// delivers attention or reads tenure.
 struct UnusedTaskAttention;
 
 #[async_trait::async_trait]
-impl awaken_session_application_contract::TaskAttentionDelivery for UnusedTaskAttention {
+impl awaken_session_application_contract::RegisteredTaskControl for UnusedTaskAttention {
     fn holder(&self) -> &str {
         "registered-task-holder"
     }
@@ -290,7 +291,17 @@ impl awaken_session_application_contract::TaskAttentionDelivery for UnusedTaskAt
         _attention: awaken_session_application_contract::TaskAttention,
     ) -> Result<awaken_session_application_contract::TaskAttentionAck, awaken_session_types::RunError>
     {
-        panic!("a refused plan publishes no Task attention")
+        panic!("context construction publishes no Task attention")
+    }
+
+    async fn read_tenure(
+        &self,
+        _read: awaken_session_application_contract::TaskTenureRead,
+    ) -> Result<
+        Option<awaken_session_application_contract::TaskTenureRecord>,
+        awaken_session_types::RunError,
+    > {
+        panic!("context construction reads no Task tenure")
     }
 }
 
@@ -367,15 +378,16 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         "R2 no Environment side effect"
     );
 
-    // R3 (W3): a registered Worker with its Task attention delivery tenures
-    // Tasks to that incarnation's holder; the plan keeps refusing until the
-    // Worker can read its Task tenure from the Coordinator (H2-H5).
-    let delivery: Arc<dyn awaken_session_application_contract::TaskAttentionDelivery> =
+    // R3 (W3): a registered Worker with its Task control tenures Tasks to that
+    // incarnation's holder, and the plan admits BackgroundTask: any later
+    // failure of this fixture (it has no upstream transports) is not the
+    // BackgroundTask refusal.
+    let delivery: Arc<dyn awaken_session_application_contract::RegisteredTaskControl> =
         Arc::new(UnusedTaskAttention);
     let registered = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_authority(crate::UpstreamAuthority::default())
-        .with_task_attention_delivery(delivery.clone()))
+        .with_registered_task_control(delivery.clone()))
     .build()
     .expect("validated Host dependencies");
     assert_eq!(
@@ -383,7 +395,7 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         delivery.holder(),
         "W3 the delivery's holder tenures this process's Tasks"
     );
-    let error = match registered
+    if let Err(error) = registered
         .run_assembly
         .ctx_for_snapshot(
             "background-registered",
@@ -392,16 +404,16 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         )
         .await
     {
-        Err(error) => error,
-        Ok(_) => panic!("R3 the plan guard holds until Task tenure reads exist"),
-    };
-    assert_eq!(error.kind, SessionExecutionErrorKind::BadRequest, "R3");
-    assert!(error.message.contains("Task tenure"), "R3: {error}");
+        assert!(
+            !error.message.contains("background_task") && !error.message.contains("BackgroundTask"),
+            "R3 the plan admits BackgroundTask on a registered Worker: {error}"
+        );
+    }
 
     // W5: a co-located Host holds its Tasks itself.
     let co_located = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
-        .with_task_attention_delivery(delivery))
+        .with_registered_task_control(delivery))
     .build();
     assert!(co_located.is_err(), "W5 one holder per process");
 }

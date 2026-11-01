@@ -109,12 +109,95 @@ pub struct TaskAttentionAck {
     pub run_id: RunId,
 }
 
-/// A registered Worker incarnation's delivery of the Task observations it
-/// holds to the Session application, over its authenticated transport.
+/// The registered Worker route that reads the committed slot of a Task the
+/// authenticated incarnation holds.
+pub const WORKER_TASK_TENURE_PATH: &str = "/v1/worker/task/tenure";
+
+/// The one admitted Task tenure record layout.
+pub const TASK_TENURE_RECORD_VERSION: u32 = 1;
+
+/// Which Task's committed slot a holder reads: the Task, the Thread whose
+/// State holds it, a committed Run of that Thread (the Task's origin Run)
+/// that addresses the committed read, and the holder the reader claims.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskTenureRead {
+    pub thread: String,
+    pub run: String,
+    pub task: String,
+    pub holder: String,
+}
+
+/// The committed slot of a Task whose current attempt names the requesting
+/// holder. The slot is the Task owner's committed value; its codec decodes it.
 ///
-/// The delivery carries the holder it is authenticated as, so the holder that
-/// tenures a Task and the identity that delivers its attention cannot belong
-/// to different incarnations.
+/// Decision table (causes → effect) for decoding a response record:
+/// | Rule | cause | effect |
+/// |---|---|---|
+/// | V1 | `version` is 1, a `slot` and no other field | the record |
+/// | V2 | `version` missing, not an integer, or another number | refused |
+/// | V3 | an unknown field, or no `slot` | refused |
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskTenureRecord {
+    version: TaskTenureRecordVersion,
+    slot: Value,
+}
+
+/// The record layout version: only [`TASK_TENURE_RECORD_VERSION`] decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+struct TaskTenureRecordVersion;
+
+/// Why a Task tenure record was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TaskTenureRecordError {
+    #[error("unsupported Task tenure record version {0}")]
+    Version(u32),
+}
+
+impl TryFrom<u32> for TaskTenureRecordVersion {
+    type Error = TaskTenureRecordError;
+
+    fn try_from(version: u32) -> Result<Self, Self::Error> {
+        if version == TASK_TENURE_RECORD_VERSION {
+            Ok(Self)
+        } else {
+            Err(TaskTenureRecordError::Version(version))
+        }
+    }
+}
+
+impl From<TaskTenureRecordVersion> for u32 {
+    fn from(_: TaskTenureRecordVersion) -> Self {
+        TASK_TENURE_RECORD_VERSION
+    }
+}
+
+impl TaskTenureRecord {
+    /// Carry one committed Task slot at the current record version.
+    #[must_use]
+    pub fn new(slot: Value) -> Self {
+        Self {
+            version: TaskTenureRecordVersion,
+            slot,
+        }
+    }
+
+    /// The committed slot, for the Task owner's codec.
+    #[must_use]
+    pub fn slot(&self) -> &Value {
+        &self.slot
+    }
+}
+
+/// A registered Worker incarnation's Task control over its authenticated
+/// transport: the holder it tenures Tasks to, delivery of the observations it
+/// holds, and the holder-bound read of a held Task's committed slot.
+///
+/// The port carries the holder it is authenticated as, so the holder that
+/// tenures a Task, the identity that delivers its attention and the identity
+/// that reads its tenure cannot belong to different incarnations.
 ///
 /// Decision table (delivery result → sender):
 /// | Rule | result | sender |
@@ -123,13 +206,24 @@ pub struct TaskAttentionAck {
 /// | K2 | any retry | resend the same attention: same operation id, same Run |
 /// | K4 | `BadRequest` | definitive; stop; the Task lease law takes over |
 /// | K5/K6 | any other error, including an undecodable acknowledgement | retry with the same attention |
+///
+/// Decision table (tenure read → ownership check):
+/// | Rule | result | effect |
+/// |---|---|---|
+/// | H2 | `Ok(Some(record))` | the committed slot; the caller applies its admission |
+/// | H3 | `Ok(None)` | no committed attempt names this holder: the attempt is lost |
+/// | H4/H5 | `Err` | the attempt cannot prove it is current; the effect does not run |
 #[async_trait::async_trait]
-pub trait TaskAttentionDelivery: Send + Sync {
+pub trait RegisteredTaskControl: Send + Sync {
     /// The [`registered_task_holder`] of the authenticated incarnation.
     fn holder(&self) -> &str;
 
     /// Deliver one observation this incarnation holds.
     async fn deliver(&self, attention: TaskAttention) -> Result<TaskAttentionAck, RunError>;
+
+    /// Read the committed slot of a Task this incarnation holds.
+    async fn read_tenure(&self, read: TaskTenureRead)
+    -> Result<Option<TaskTenureRecord>, RunError>;
 }
 
 const REGISTERED_HOLDER_TAG: &str = "registered-task-holder-v1";
@@ -191,6 +285,50 @@ mod tests {
             PrivateTaskInput::new(Vec::new()),
             Err(PrivateTaskInputError::Empty)
         );
+    }
+
+    #[test]
+    fn task_tenure_records_admit_only_their_current_version() {
+        // V1 round trip; V2 every other version; V3 unknown field or no slot.
+        let record = TaskTenureRecord::new(json!({"id": "task-1"}));
+        let wire = serde_json::to_value(&record).unwrap();
+        assert_eq!(wire, json!({"version": 1, "slot": {"id": "task-1"}}));
+        assert_eq!(
+            serde_json::from_value::<TaskTenureRecord>(wire.clone()).unwrap(),
+            record
+        );
+        for version in [json!(0), json!(2), json!("1"), json!(1.5), Value::Null] {
+            let mut changed = wire.clone();
+            changed["version"] = version;
+            assert!(
+                serde_json::from_value::<TaskTenureRecord>(changed).is_err(),
+                "V2"
+            );
+        }
+        let mut missing = wire.clone();
+        missing.as_object_mut().unwrap().remove("version");
+        assert!(
+            serde_json::from_value::<TaskTenureRecord>(missing).is_err(),
+            "V2"
+        );
+        let mut unknown = wire.clone();
+        unknown["holder"] = json!("holder");
+        assert!(
+            serde_json::from_value::<TaskTenureRecord>(unknown).is_err(),
+            "V3"
+        );
+        assert!(
+            serde_json::from_value::<TaskTenureRecord>(json!({"version": 1})).is_err(),
+            "V3"
+        );
+        // A bare slot (no record envelope) is not a record.
+        assert!(serde_json::from_value::<TaskTenureRecord>(json!({"id": "task-1"})).is_err());
+        // The read admits only its current fields.
+        let read = json!({"thread": "t", "run": "r", "task": "k", "holder": "h"});
+        assert!(serde_json::from_value::<TaskTenureRead>(read.clone()).is_ok());
+        let mut extra = read;
+        extra["epoch"] = json!(1);
+        assert!(serde_json::from_value::<TaskTenureRead>(extra).is_err());
     }
 
     #[test]

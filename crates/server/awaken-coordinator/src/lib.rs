@@ -1015,9 +1015,11 @@ async fn mount_with_managed_over_and_models(
         &worker_clock,
     );
     // A registered Worker delivers its Task observations to the same Session
-    // Run application every other Run admission uses.
-    let task_attention = awaken_dispatch_http::worker_task_attention_router(
+    // Run application every other Run admission uses, and reads its held
+    // Tasks' tenure from the same committed reads its claims recover from.
+    let task_attention = awaken_dispatch_http::worker_task_control_router(
         execution.session_runs.clone(),
+        execution.worker_recovery.clone(),
         worker_directory.clone(),
         worker_authenticator.clone(),
         worker_clock.clone(),

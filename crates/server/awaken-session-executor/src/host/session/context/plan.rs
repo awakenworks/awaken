@@ -182,7 +182,7 @@ pub(super) async fn prepare(
         background_tasks_enabled,
         host.authority.hosts_session_application(),
         &host.capabilities.session_application,
-        host.capabilities.worker.task_attention.as_ref(),
+        host.capabilities.worker.task_control.as_ref(),
     )
     .map_err(SessionExecutionError::bad_request)?;
     if background_tasks_enabled && session_dispatch && background_attention.is_none() {

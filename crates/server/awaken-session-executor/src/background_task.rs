@@ -1433,7 +1433,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl awaken_session_application_contract::TaskAttentionDelivery for RecordingDelivery {
+    impl awaken_session_application_contract::RegisteredTaskControl for RecordingDelivery {
         fn holder(&self) -> &str {
             "registered-holder"
         }
@@ -1468,6 +1468,16 @@ mod tests {
             Ok(awaken_session_application_contract::TaskAttentionAck {
                 run_id: RunId(format!("attention-run-{}", attention.operation_id)),
             })
+        }
+
+        async fn read_tenure(
+            &self,
+            _read: awaken_session_application_contract::TaskTenureRead,
+        ) -> Result<
+            Option<awaken_session_application_contract::TaskTenureRecord>,
+            awaken_session_types::RunError,
+        > {
+            panic!("attention publication reads no Task tenure")
         }
     }
 

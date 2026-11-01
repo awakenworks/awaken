@@ -1587,8 +1587,8 @@ impl WorkerNode {
         .with_admin_tools(self.admin_tools)
         // This incarnation tenures its BackgroundTasks to itself and delivers
         // their attention over the same authenticated transport.
-        .with_task_attention_delivery(Arc::new(
-            awaken_coordinator_client::WorkerTaskAttentionClient::new(
+        .with_registered_task_control(Arc::new(
+            awaken_coordinator_client::WorkerTaskControlClient::new(
                 control.clone(),
                 registration.snapshot.identity.clone(),
             ),

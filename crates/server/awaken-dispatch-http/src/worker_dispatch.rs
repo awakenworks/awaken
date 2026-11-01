@@ -59,7 +59,7 @@ mod session_coordination;
 mod session_realization;
 mod session_requests;
 mod task_attention;
-pub use task_attention::worker_task_attention_router;
+pub use task_attention::worker_task_control_router;
 mod terminal_repository_publication;
 
 /// Private Worker transport DTO. The retry hint is deliberately absent from

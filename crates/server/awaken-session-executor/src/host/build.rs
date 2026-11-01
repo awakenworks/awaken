@@ -102,7 +102,7 @@ impl SessionExecutorBuilder {
             ));
         }
         // W5: a co-located Host holds its Tasks itself; one process has one holder.
-        if dependencies.worker.task_attention.is_some()
+        if dependencies.worker.task_control.is_some()
             && dependencies.authority.hosts_session_application()
         {
             return Err(SessionExecutionError::bad_request(
@@ -201,7 +201,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         local_workspace: local_workspace.clone(),
         installed_sessions: installed_sessions.clone(),
         clock: clock.clone(),
-        background_supervisor: background_supervisor(&clock, worker.task_attention.as_deref()),
+        background_supervisor: background_supervisor(&clock, worker.task_control.as_deref()),
         agent: Arc::new(capability::AgentExecution::new(
             agent,
             installed_sessions.clone(),
@@ -422,7 +422,7 @@ fn session_run_delivery(
 /// identity (W1/W2).
 fn background_supervisor(
     clock: &Arc<dyn awaken_time::WallClock>,
-    registered: Option<&dyn awaken_session_application_contract::TaskAttentionDelivery>,
+    registered: Option<&dyn awaken_session_application_contract::RegisteredTaskControl>,
 ) -> Arc<awaken_ext_background_task::BackgroundTaskSupervisor> {
     let holder = match registered {
         Some(delivery) => delivery.holder().to_owned(),

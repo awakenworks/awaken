@@ -178,6 +178,33 @@ impl WorkerControlClient {
         }
     }
 
+    /// Read the committed slot of a Task this incarnation holds (rows H2-H5).
+    /// `Ok(None)`: no committed attempt names this holder. `BadRequest`: the
+    /// Coordinator refused the holder. Any other error leaves the attempt
+    /// unable to prove it is current.
+    pub async fn read_task_tenure(
+        &self,
+        identity: &WorkerIdentity,
+        read: &awaken_session_application_contract::TaskTenureRead,
+    ) -> Result<
+        Option<awaken_session_application_contract::TaskTenureRecord>,
+        awaken_session_types::RunError,
+    > {
+        match self
+            .post_response(
+                awaken_session_application_contract::WORKER_TASK_TENURE_PATH,
+                json!({ "identity": identity, "read": read }),
+            )
+            .await
+        {
+            Ok((status, body)) => task_tenure_outcome(status, &body),
+            Err(error) if error.retryable => {
+                Err(awaken_session_types::RunError::unavailable(error.message))
+            }
+            Err(error) => Err(awaken_session_types::RunError::bad_request(error.message)),
+        }
+    }
+
     pub async fn authorize_session_environment_effect(
         &self,
         identity: &WorkerIdentity,
@@ -965,6 +992,100 @@ fn task_attention_outcome(
         Err(awaken_session_types::RunError::bad_request(message))
     } else {
         Err(awaken_session_types::RunError::unavailable(message))
+    }
+}
+
+/// Classify one Task tenure response.
+///
+/// Decision table (response → result):
+/// | Rule | status | body | result |
+/// |---|---|---|---|
+/// | H2 | 2xx | `tenure` decodes as a current `TaskTenureRecord` | `Ok(Some(record))` |
+/// | H3 | 2xx | `tenure` is `null` | `Ok(None)` |
+/// | H5 | 2xx | `tenure` missing or undecodable (other version, unknown field) | `Unavailable` |
+/// | H4 | 4xx other than 429 | any | `BadRequest` |
+/// | H5 | 429, 5xx or any other status | any | `Unavailable` |
+fn task_tenure_outcome(
+    status: reqwest::StatusCode,
+    body: &Value,
+) -> Result<
+    Option<awaken_session_application_contract::TaskTenureRecord>,
+    awaken_session_types::RunError,
+> {
+    if status.is_success() {
+        let tenure = body.get("tenure").ok_or_else(|| {
+            awaken_session_types::RunError::unavailable("Task tenure response carries no tenure")
+        })?;
+        if tenure.is_null() {
+            return Ok(None);
+        }
+        return serde_json::from_value(tenure.clone())
+            .map(Some)
+            .map_err(|error| {
+                awaken_session_types::RunError::unavailable(format!(
+                    "Task tenure record does not decode: {error}"
+                ))
+            });
+    }
+    let message = body
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("Task tenure read rejected")
+        .to_owned();
+    if status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS {
+        Err(awaken_session_types::RunError::bad_request(message))
+    } else {
+        Err(awaken_session_types::RunError::unavailable(message))
+    }
+}
+
+#[cfg(test)]
+mod task_tenure_outcome_tests {
+    use super::task_tenure_outcome;
+    use awaken_session_types::RunErrorKind;
+    use reqwest::StatusCode;
+    use serde_json::json;
+
+    #[test]
+    fn a_tenure_response_reads_only_the_current_record_or_an_explicit_absence() {
+        // H2
+        let record = task_tenure_outcome(
+            StatusCode::OK,
+            &json!({ "tenure": { "version": 1, "slot": { "id": "task-1" } } }),
+        )
+        .expect("H2")
+        .expect("H2 record");
+        assert_eq!(record.slot(), &json!({ "id": "task-1" }), "H2");
+        // H3
+        assert!(
+            task_tenure_outcome(StatusCode::OK, &json!({ "tenure": null }))
+                .expect("H3")
+                .is_none(),
+            "H3"
+        );
+        // H5: missing, historical or future records are never read as a slot.
+        for body in [
+            json!({}),
+            json!({ "tenure": { "id": "task-1" } }),
+            json!({ "tenure": { "version": 2, "slot": {} } }),
+            json!({ "tenure": { "version": 1, "slot": {}, "holder": "h" } }),
+            json!({ "slot": {} }),
+        ] {
+            let error = task_tenure_outcome(StatusCode::OK, &body).unwrap_err();
+            assert_eq!(error.kind, RunErrorKind::Unavailable, "H5 {body}");
+        }
+        // H4 / H5 by status.
+        let refused = task_tenure_outcome(StatusCode::BAD_REQUEST, &json!({ "error": "not held" }))
+            .unwrap_err();
+        assert_eq!(refused.kind, RunErrorKind::BadRequest, "H4");
+        for status in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            let error = task_tenure_outcome(status, &json!({})).unwrap_err();
+            assert_eq!(error.kind, RunErrorKind::Unavailable, "H5 {status}");
+        }
     }
 }
 
