@@ -129,7 +129,7 @@ pub(crate) use run_control::{
     DurableRunCancellation, LiveAttemptControl, SelectedAttemptInterruption,
 };
 pub(crate) use session_ctx::{
-    ChildExecutionSubstrate, ClaimedRuntimeInput, RuntimePublicationIdentity, SessionCtx,
+    ChildExecutionSubstrate, FrozenRuntimeInput, RuntimePublicationIdentity, SessionCtx,
 };
 pub(crate) use types::HostOutcomeIteration;
 pub use types::{HostOutcomeDrive, HostOutcomeReport, HostResume};

@@ -252,7 +252,7 @@ impl DispatchedMemory {
                 }
                 runs.deliver(*request).await
             }
-            SessionRunAdmissionObservation::Completed(_) => {
+            SessionRunAdmissionObservation::Completed { .. } => {
                 return Self::unknown(
                     intent,
                     "dispatch completion has no authoritative extractor result",

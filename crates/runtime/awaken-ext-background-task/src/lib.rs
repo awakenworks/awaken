@@ -6,32 +6,24 @@
 
 mod model;
 mod notification;
-mod observation;
 mod plugin;
 mod supervisor;
 mod tools;
 
 pub use model::{
-    BackgroundInvocation, BackgroundTask, BackgroundTaskEnd, BackgroundTaskError, BackgroundTaskId,
-    BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundTaskScope, BackgroundWait,
+    BackgroundInvocation, BackgroundTask, BackgroundTaskLifecycle, BackgroundTaskOrigin,
     TaskAttempt, TaskClaim, TaskExecutionPolicy, TaskHeartbeatCheckpointError,
-    TaskHeartbeatCheckpointOutcome, TaskTenure,
+    TaskHeartbeatCheckpointOutcome,
 };
 pub use notification::{
     TaskNotificationEvent, TaskNotificationFormat, TaskNotificationRule, TaskNotifications,
 };
-pub use observation::{
-    TASK_OBSERVATION_VERSION, TaskObservation, TaskObservationCodecError, TaskObservationRecord,
-};
+
 pub use plugin::{
     BACKGROUND_TASK_PLUGIN_ID, BackgroundTaskConfig, BackgroundTaskPlugin,
     background_task_manifest, config_schema,
 };
-pub use supervisor::{
-    BackgroundTaskCompletion, BackgroundTaskSupervisor, BackgroundTaskWaitCandidate,
-};
-
-pub const BACKGROUND_TASK_STATE_PREFIX: &str = "background_task/";
+pub use supervisor::BackgroundTaskSupervisor;
 
 /// The extension-owned management surface. These operations act only on the
 /// current Thread; starting the selected ordinary tool still requires Runtime
@@ -48,12 +40,12 @@ pub fn management_tool_ids() -> [&'static str; 4] {
 
 #[must_use]
 pub fn task_state_cell(
-    id: &BackgroundTaskId,
+    id: &awaken_tool_contract::tool::background_task::BackgroundTaskId,
 ) -> awaken_agent_contract::agent::state::StateCell<BackgroundTask> {
     awaken_agent_contract::agent::state::StateCell::new(
         awaken_agent_contract::agent::state::Scope::Thread,
         awaken_agent_contract::agent::state::MergePolicy::Exclusive,
-        format!("{BACKGROUND_TASK_STATE_PREFIX}{}", id.as_str()),
+        awaken_agent_contract::thread::background_task::background_task_state_key(id.as_str()),
     )
 }
 

@@ -142,7 +142,7 @@ pub mod worker_http {
         manifest
     }
 
-    pub async fn ready_worker(worker_id: &str) -> (Arc<dyn WorkerDirectory>, WorkerIdentity) {
+    pub async fn ready_worker(worker_id: &str) -> (Arc<CurrentWorkerDirectory>, WorkerIdentity) {
         let manifest = current_dispatch_codec_manifest();
         let identity = WorkerIdentity::new(worker_id, format!("{worker_id}-boot"), 1);
         let registered = RegisteredWorker {
@@ -168,15 +168,40 @@ pub mod worker_http {
             create_ledger: None,
             source_retention: Default::default(),
         };
-        (Arc::new(CurrentWorkerDirectory(registered)), identity)
+        (
+            Arc::new(CurrentWorkerDirectory {
+                record: registered,
+                current_unavailable: std::sync::atomic::AtomicBool::new(false),
+                current_reads: std::sync::atomic::AtomicUsize::new(0),
+            }),
+            identity,
+        )
     }
 
-    struct CurrentWorkerDirectory(RegisteredWorker);
+    /// The original fixed ready-incarnation fixture. Only its existing read
+    /// leaf is faultable; no alternate directory or registration authority.
+    pub struct CurrentWorkerDirectory {
+        record: RegisteredWorker,
+        current_unavailable: std::sync::atomic::AtomicBool,
+        current_reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CurrentWorkerDirectory {
+        pub fn set_current_unavailable(&self, unavailable: bool) {
+            self.current_unavailable
+                .store(unavailable, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        #[must_use]
+        pub fn current_reads(&self) -> usize {
+            self.current_reads.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
 
     #[async_trait::async_trait]
     impl WorkerObservationSource for CurrentWorkerDirectory {
         async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-            Ok(vec![self.0.clone()])
+            Ok(vec![self.record.clone()])
         }
     }
 
@@ -186,7 +211,17 @@ pub mod worker_http {
             &self,
             worker_id: &str,
         ) -> Result<Option<RegisteredWorker>, RegistryError> {
-            Ok((worker_id == self.0.snapshot.identity.worker_id).then(|| self.0.clone()))
+            self.current_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self
+                .current_unavailable
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(RegistryError::Persistence(
+                    "Registry current read is unavailable".into(),
+                ));
+            }
+            Ok((worker_id == self.record.snapshot.identity.worker_id).then(|| self.record.clone()))
         }
     }
 
@@ -220,7 +255,7 @@ pub mod worker_http {
             _now_ms: u64,
             _ttl_ms: u64,
         ) -> Result<RegisteredWorker, RegistryError> {
-            Ok(self.0.clone())
+            Ok(self.record.clone())
         }
 
         async fn heartbeat(
@@ -523,6 +558,10 @@ pub async fn assert_dispatch_conformance_with_clock<S: ConformanceDispatch + Inb
     heap_rule(|| failed_attempts_spend_the_budget_and_exhaust_like_a_crash(store, namespace)).await;
     heap_rule(|| completion_retains_the_settled_cancel_request(store, namespace)).await;
     heap_rule(|| {
+        task_sources_share_the_original_done_transaction(store, namespace, capabilities, clock)
+    })
+    .await;
+    heap_rule(|| {
         attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities, clock)
     })
     .await;
@@ -555,6 +594,10 @@ pub async fn assert_dispatch_conformance_with_clock<S: ConformanceDispatch + Inb
     // This rule intentionally leaves 25 distinct unarchived child Threads as its
     // postcondition, so run it after every conformance rule that broadly claims
     // queue work.
+    heap_rule(|| {
+        task_attention_identity_survives_live_and_completed(store, namespace, capabilities, clock)
+    })
+    .await;
     heap_rule(|| session_child_admission_is_atomic_and_bounded(store, namespace, clock)).await;
 }
 
@@ -594,6 +637,8 @@ include!("conformance/operations_claims.rs");
 
 include!("conformance/reservations.rs");
 include!("conformance/session_run_admission.rs");
+include!("conformance/task_attention.rs");
+include!("conformance/task_source.rs");
 
 include!("conformance/fixtures.rs");
 

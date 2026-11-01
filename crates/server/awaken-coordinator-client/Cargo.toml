@@ -45,6 +45,7 @@ awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
 awaken-time.workspace = true
 awaken-lease-testkit.workspace = true
+awaken-lease-contract.workspace = true
 axum.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json.workspace = true

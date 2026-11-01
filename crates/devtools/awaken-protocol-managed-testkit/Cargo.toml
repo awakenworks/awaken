@@ -14,6 +14,7 @@ description = "Volatile Session, Work, Environment and sandbox-policy store fixt
 separation = "test-support"
 
 [dependencies]
+awaken-runtime-contract.workspace = true
 # Shared fixtures receive the canonical operational feed, not App authority.
 awaken-dispatch = { workspace = true, default-features = false, features = ["test-support"] }
 awaken-sync.workspace = true

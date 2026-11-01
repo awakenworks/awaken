@@ -4,48 +4,17 @@
 // @formal entrypoint background_task.remote_continuation_survives_wait_cancel_and_reclaim
 // @formal entrypoint background_task.single_fenced_attempt
 // @formal entrypoint background_task.stale_fence_never_finishes_or_heartbeats
-use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_lease_contract::fence::{Epoch, Tenure, TenureScope, fence_is_live_at};
+use awaken_lease_contract::fence::{Epoch, Tenure, fence_is_live_at};
+use awaken_tool_contract::tool::background_task::{
+    BackgroundTaskEnd, BackgroundTaskError, BackgroundTaskId, BackgroundWait, TaskTenure,
+};
 use awaken_tool_contract::tool::{
     ToolCall, ToolConcurrency, ToolRecoveryMode, ToolRecoveryPolicy, ToolTaskHandle,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct BackgroundTaskId(String);
-
-impl BackgroundTaskId {
-    pub fn new(value: impl Into<String>) -> Result<Self, BackgroundTaskError> {
-        let value = value.into();
-        if value.trim().is_empty() {
-            Err(BackgroundTaskError::InvalidIdentity)
-        } else {
-            Ok(Self(value))
-        }
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for BackgroundTaskId {
-    type Error = BackgroundTaskError;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl From<BackgroundTaskId> for String {
-    fn from(value: BackgroundTaskId) -> Self {
-        value.0
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -100,22 +69,6 @@ pub enum TaskHeartbeatCheckpointError {
     LeaseExpired,
 }
 
-/// The lease family of a background task: the task (subject) held by one
-/// worker. Consumer: [`TaskTenure`].
-#[derive(Debug)]
-pub struct BackgroundTaskScope;
-
-impl TenureScope for BackgroundTaskScope {
-    type Subject = BackgroundTaskId;
-    type Holder = String;
-}
-
-/// The exact authority a worker presents for a fenced task mutation: the
-/// task, the worker and the attempt epoch. It replaces a worker/epoch pair
-/// that named no task, so a fence minted for one task could pass for another
-/// task's attempt at the same epoch.
-pub type TaskTenure = Tenure<BackgroundTaskScope>;
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskAttempt {
@@ -132,31 +85,6 @@ impl TaskAttempt {
     pub fn tenure(&self, task: &BackgroundTaskId) -> TaskTenure {
         Tenure::granted(task.clone(), self.worker_id.clone(), self.epoch)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "reason", rename_all = "snake_case")]
-pub enum BackgroundWait {
-    Remote(ToolTaskHandle),
-    ExternalInput,
-    Resource,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
-pub enum BackgroundTaskEnd {
-    Completed {
-        content: Vec<ContentBlock>,
-        #[serde(default)]
-        is_error: bool,
-    },
-    Failed {
-        message: String,
-    },
-    Cancelled,
-    Indeterminate {
-        message: String,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -838,7 +766,7 @@ impl BackgroundTask {
     pub fn request_cancel(&mut self) -> Result<(), BackgroundTaskError> {
         let lifecycle = match cancel_decision(self.lifecycle.phase()) {
             CancelDecision::EndCancelled => Some(BackgroundTaskLifecycle::Ended {
-                end: BackgroundTaskEnd::Cancelled,
+                end: BackgroundTaskEnd::Cancelled {},
             }),
             CancelDecision::MarkCancelling => {
                 let (attempt, wait) = match &self.lifecycle {
@@ -883,7 +811,7 @@ impl BackgroundTask {
             unreachable!("finish request returns a finish plan")
         };
         let end = if cancellation_wins {
-            BackgroundTaskEnd::Cancelled
+            BackgroundTaskEnd::Cancelled {}
         } else {
             end
         };
@@ -971,8 +899,8 @@ fn same_wait_target(current: &BackgroundWait, next: &BackgroundWait) -> bool {
                 && current.binding == next.binding
                 && current.task_id == next.task_id
         }
-        (BackgroundWait::ExternalInput, BackgroundWait::ExternalInput)
-        | (BackgroundWait::Resource, BackgroundWait::Resource) => true,
+        (BackgroundWait::ExternalInput {}, BackgroundWait::ExternalInput {})
+        | (BackgroundWait::Resource {}, BackgroundWait::Resource {}) => true,
         _ => false,
     }
 }
@@ -989,36 +917,6 @@ fn validate_attempt(attempt: &TaskAttempt) -> Result<(), BackgroundTaskError> {
     } else {
         Ok(())
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum BackgroundTaskError {
-    #[error("background task id must not be empty")]
-    InvalidIdentity,
-    #[error("background task claim requires a worker and a positive lease")]
-    InvalidClaim,
-    #[error("background task is already owned")]
-    Busy,
-    #[error("background task is terminal")]
-    Terminal,
-    #[error("background task transition is invalid")]
-    InvalidTransition,
-    #[error("background task fence is stale")]
-    StaleFence,
-    #[error("background task lease must advance monotonically")]
-    NonMonotonicLease,
-    #[error(
-        "remote continuation requires an owner, binding, task id, and a positive poll interval when present"
-    )]
-    InvalidContinuation,
-    #[error("background task clock overflow")]
-    ClockOverflow,
-    #[error("background task epoch overflow")]
-    EpochOverflow,
-    #[error("background task revision overflow")]
-    RevisionOverflow,
-    #[error("background task persisted state violates its aggregate invariants")]
-    InvalidPersistedState,
 }
 
 #[cfg(kani)]

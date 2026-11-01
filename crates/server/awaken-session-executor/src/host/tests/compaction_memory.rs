@@ -258,7 +258,7 @@ async fn generated_compaction_config_survives_claimed_rebuild() {
 
     let provisional = host
         .run_assembly
-        .ctx_for_session_coordination("durable-compact-config", Some("assistant"))
+        .ctx_for_session_coordination("durable-compact-config", Some("assistant"), None)
         .await
         .expect("C7 reservation context");
     let assert_exact_config = |snapshot: &ExecutableAgentSnapshot, rule: &str| {
@@ -644,6 +644,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
             ThreadId(parent.clone()),
             Some(manifest),
             host.capabilities.agent.agent_publications.as_deref(),
+            None,
         )
         .expect("freeze child dispatch through production owner")
         .with_session_activity_epoch(7);

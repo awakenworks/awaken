@@ -37,7 +37,7 @@ async fn idle_resident_context_releases_installed_sessions_when_last_host_owner_
     let installed_sessions_before = Arc::strong_count(&host.run_assembly.installed_sessions);
     let context = host
         .run_assembly
-        .ctx_for_session_coordination(session, None)
+        .ctx_for_session_coordination(session, None, None)
         .await
         .expect("normal idle coordination Context");
     let installed_sessions_after = Arc::strong_count(&host.run_assembly.installed_sessions);
@@ -128,7 +128,7 @@ async fn retained_session_run_projection_callbacks_release_the_original_owners_a
     let session = "retained-run-projection-owner";
     let context = host
         .run_assembly
-        .ctx_for_session_coordination(session, None)
+        .ctx_for_session_coordination(session, None, None)
         .await
         .expect("real cached idle Context");
     assert!(

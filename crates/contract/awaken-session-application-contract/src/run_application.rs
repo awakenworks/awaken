@@ -233,6 +233,14 @@ pub trait SessionRunBackgroundApplication: Send + Sync {
         traceparent: Option<String>,
     ) -> Result<RunId, RunApplicationError>;
 
+    /// Recover only the exact original immutable admission, including Task
+    /// tenure coordinates. A receipt outranks the Task's later held/Ended phase;
+    /// absence alone grants no new admission. Unsupported adapters fail closed.
+    async fn task_attention_receipt(
+        &self,
+        _attention: crate::TaskAttention,
+    ) -> Result<Option<crate::TaskAttentionAck>, RunApplicationError>;
+
     /// Admit the background Run that delivers one Task observation, through
     /// the same reservation, activity and activation as
     /// [`Self::submit_session_run_background`]. The Run's dispatch row carries

@@ -540,6 +540,31 @@ impl DelegationRegistry {
         self.delegations.get(id)
     }
 
+    /// Recover the original immutable child creation origin. Callbacks on the
+    /// same logical Thread retain its lineage/depth; a later carrying Run is
+    /// not a new delegation and must not reset these coordinates.
+    pub fn child_origin(&self, id: &DelegationId) -> Result<DelegationOrigin, DelegationError> {
+        let child = self.get(id).ok_or_else(|| {
+            DelegationError::InvalidPersistedState("child relationship is absent".into())
+        })?;
+        let origin = DelegationOrigin::nested_for_agent(
+            self.parent_run_id.clone(),
+            child.parent_call_id.clone(),
+            self.parent_depth,
+            &self.lineage,
+            self.parent_agent_id.clone(),
+        )?;
+        if child.id != origin.delegation_id
+            || child.child_run_id != origin.child_run_id()
+            || child.depth != origin.depth
+        {
+            return Err(DelegationError::InvalidPersistedState(
+                "child creation origin differs from its relationship".into(),
+            ));
+        }
+        Ok(origin)
+    }
+
     pub fn delegations(&self) -> impl Iterator<Item = &Delegation> {
         self.delegations.values()
     }

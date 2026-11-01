@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
-use awaken_worker_transport_security::{VerifiedWorkerContext, verify_current_worker_identity};
+use awaken_worker_transport_security::{
+    VerifiedWorkerContext, WorkerAuthError, verify_current_worker_identity,
+};
 use axum::http::StatusCode;
 
 /// Closed result of the common registered-Worker/Session-effect admission.
@@ -34,14 +36,26 @@ pub(crate) enum SessionWorkerEffectTemporalRule {
 }
 
 impl SessionWorkerEffectAdmission {
+    /// Adapt the Run verifier's unit success to this boundary's existing Exact
+    /// stage. Five Resource routes share this conversion; it grants no Resource
+    /// access and adds no lookup or second rejection/status decision.
+    pub(crate) fn claim_rejection_status(
+        result: Result<(), WorkerAuthError>,
+    ) -> Option<StatusCode> {
+        Self::rejection_status(result.map(|()| Self::Exact))
+    }
+
     /// The one HTTP projection for Session Worker-effect rejection. Foreign
     /// identities disclose no lease state; an exact but expired effect is a
     /// recoverable generation conflict.
-    pub(crate) const fn rejection_status(self) -> Option<StatusCode> {
-        match self {
-            Self::Exact => None,
-            Self::Expired => Some(StatusCode::CONFLICT),
-            Self::Foreign => Some(StatusCode::FORBIDDEN),
+    pub(crate) fn rejection_status(result: Result<Self, WorkerAuthError>) -> Option<StatusCode> {
+        match result {
+            Ok(Self::Exact) => None,
+            Ok(Self::Expired) => Some(StatusCode::CONFLICT),
+            Ok(Self::Foreign) | Err(WorkerAuthError::Missing | WorkerAuthError::Invalid(_)) => {
+                Some(StatusCode::FORBIDDEN)
+            }
+            Err(WorkerAuthError::Unavailable(_)) => Some(StatusCode::SERVICE_UNAVAILABLE),
         }
     }
 }
@@ -78,12 +92,15 @@ pub(crate) async fn verify_session_worker_effect(
     lease: &SessionRealizationLease,
     now_unix_ms: u64,
     temporal_rule: SessionWorkerEffectTemporalRule,
-) -> SessionWorkerEffectAdmission {
+) -> Result<SessionWorkerEffectAdmission, WorkerAuthError> {
     let worker_is_current =
-        verify_current_worker_identity(directory, worker, identity, now_unix_ms, false)
-            .await
-            .is_ok();
-    session_worker_effect_admission_from_facts(
+        match verify_current_worker_identity(directory, worker, identity, now_unix_ms, false).await
+        {
+            Ok(_) => true,
+            Err(error @ WorkerAuthError::Unavailable(_)) => return Err(error),
+            Err(WorkerAuthError::Missing | WorkerAuthError::Invalid(_)) => false,
+        };
+    Ok(session_worker_effect_admission_from_facts(
         worker_is_current,
         lease.owner == identity.worker_id,
         lease.runtime_incarnation == identity.lease_owner(),
@@ -92,7 +109,7 @@ pub(crate) async fn verify_session_worker_effect(
             now_unix_ms,
         ),
         temporal_rule,
-    )
+    ))
 }
 
 fn duration_millis(duration: Duration) -> u64 {
@@ -173,7 +190,7 @@ mod tests {
                                 };
                             assert_eq!(actual, expected);
                             assert_eq!(
-                                actual.rejection_status(),
+                                SessionWorkerEffectAdmission::rejection_status(Ok(actual)),
                                 match expected {
                                     SessionWorkerEffectAdmission::Exact => None,
                                     SessionWorkerEffectAdmission::Expired => {
@@ -188,6 +205,31 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn worker_identity_uncertainty_is_not_a_foreign_or_expired_effect() {
+        // G1 successful identity admission keeps the original Exact/Foreign/
+        // Expired facts table. G2 a current Registry read is unavailable ->503,
+        // not403 or409; the owning Resource check/effect has not run. G3 a
+        // definitive identity failure retains403. These are projections of
+        // the verifier's typed result, not a second identity/read policy.
+        for (error, status) in [
+            (
+                WorkerAuthError::Unavailable("Registry unavailable".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                WorkerAuthError::Invalid("foreign Worker".into()),
+                StatusCode::FORBIDDEN,
+            ),
+            (WorkerAuthError::Missing, StatusCode::FORBIDDEN),
+        ] {
+            assert_eq!(
+                SessionWorkerEffectAdmission::rejection_status(Err(error)),
+                Some(status)
+            );
         }
     }
 

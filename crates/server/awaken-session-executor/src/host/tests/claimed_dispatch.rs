@@ -185,7 +185,7 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
             thread,
             Some("claim-judge"),
             published,
-            ClaimedRuntimeInput {
+            FrozenRuntimeInput {
                 identity: identity.clone(),
                 publications,
                 effective_model_ref: "stub".into(),
@@ -276,6 +276,35 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
     assert_eq!(ctx.config, published);
 }
 
+/// A registered incarnation's Task control; context construction never
+/// delivers attention or reads tenure.
+struct UnusedTaskAttention;
+
+#[async_trait::async_trait]
+impl awaken_session_application_contract::RegisteredTaskControl for UnusedTaskAttention {
+    fn holder(&self) -> &str {
+        "registered-task-holder"
+    }
+
+    async fn deliver(
+        &self,
+        _attention: awaken_session_application_contract::TaskAttention,
+    ) -> Result<awaken_session_application_contract::TaskAttentionAck, awaken_session_types::RunError>
+    {
+        panic!("context construction publishes no Task attention")
+    }
+
+    async fn read_tenure(
+        &self,
+        _read: awaken_session_application_contract::TaskTenureRead,
+    ) -> Result<
+        Option<awaken_session_application_contract::TaskTenureRecord>,
+        awaken_session_types::RunError,
+    > {
+        panic!("context construction reads no Task tenure")
+    }
+}
+
 #[tokio::test]
 async fn background_task_fails_closed_on_a_database_less_worker() {
     // Cause/effect decision table:
@@ -322,7 +351,7 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         .ctx_for_snapshot(
             "background-worker",
             Some("background-agent"),
-            Some(snapshot),
+            Some(snapshot.clone()),
         )
         .await
     {
@@ -348,6 +377,45 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
             .is_none(),
         "R2 no Environment side effect"
     );
+
+    // R3 (W3): a registered Worker with its Task control tenures Tasks to that
+    // incarnation's holder, and the plan admits BackgroundTask: any later
+    // failure of this fixture (it has no upstream transports) is not the
+    // BackgroundTask refusal.
+    let delivery: Arc<dyn awaken_session_application_contract::RegisteredTaskControl> =
+        Arc::new(UnusedTaskAttention);
+    let registered = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_authority(crate::UpstreamAuthority::default())
+        .with_registered_task_control(delivery.clone()))
+    .build()
+    .expect("validated Host dependencies");
+    assert_eq!(
+        registered.capabilities.background_supervisor.worker_id(),
+        delivery.holder(),
+        "W3 the delivery's holder tenures this process's Tasks"
+    );
+    if let Err(error) = registered
+        .run_assembly
+        .ctx_for_snapshot(
+            "background-registered",
+            Some("background-agent"),
+            Some(snapshot),
+        )
+        .await
+    {
+        assert!(
+            !error.message.contains("background_task") && !error.message.contains("BackgroundTask"),
+            "R3 the plan admits BackgroundTask on a registered Worker: {error}"
+        );
+    }
+
+    // W5: a co-located Host holds its Tasks itself.
+    let co_located = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_registered_task_control(delivery))
+    .build();
+    assert!(co_located.is_err(), "W5 one holder per process");
 }
 
 #[tokio::test]

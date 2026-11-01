@@ -144,7 +144,7 @@ impl crate::Outcomes {
         let ctx = if worker_placement {
             self.session_runs
                 .run_assembly
-                .ctx_for_session_coordination(thread, None)
+                .ctx_for_session_coordination(thread, None, None)
                 .await?
         } else {
             self.session_runs.run_assembly.ctx_for(thread, None).await?

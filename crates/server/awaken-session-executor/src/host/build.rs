@@ -101,6 +101,14 @@ impl SessionExecutorBuilder {
                 "registered Worker capacity requires upstream authority and a local execution pool",
             ));
         }
+        // W5: a co-located Host holds its Tasks itself; one process has one holder.
+        if dependencies.worker.task_control.is_some()
+            && dependencies.authority.hosts_session_application()
+        {
+            return Err(SessionExecutionError::bad_request(
+                "a registered Worker's Task attention delivery requires upstream authority",
+            ));
+        }
         Ok(Arc::new(assemble_components(dependencies)))
     }
 }
@@ -193,7 +201,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         local_workspace: local_workspace.clone(),
         installed_sessions: installed_sessions.clone(),
         clock: clock.clone(),
-        background_supervisor: background_supervisor(&clock),
+        background_supervisor: background_supervisor(&clock, worker.task_control.as_deref()),
         agent: Arc::new(capability::AgentExecution::new(
             agent,
             installed_sessions.clone(),
@@ -210,6 +218,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
             clock.clone(),
             execution.clone(),
             realization_executor.clone(),
+            resources.memory.background(),
         )),
         capabilities: capabilities.clone(),
         local_workspace: local_workspace.clone(),
@@ -409,18 +418,24 @@ fn session_run_delivery(
     (dispatch, runs)
 }
 
-/// The process-local BackgroundTask slot registry, under a process-unique
-/// Worker identity.
+/// The process-local BackgroundTask slot registry under this process's Task
+/// holder: a registered incarnation's holder (W3), else a process-unique
+/// identity (W1/W2).
 fn background_supervisor(
     clock: &Arc<dyn awaken_time::WallClock>,
+    registered: Option<&dyn awaken_session_application_contract::RegisteredTaskControl>,
 ) -> Arc<awaken_ext_background_task::BackgroundTaskSupervisor> {
-    Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
-        awaken_agent_contract::content_fingerprint(&(
+    let holder = match registered {
+        Some(delivery) => delivery.holder().to_owned(),
+        None => awaken_agent_contract::content_fingerprint(&(
             "background-worker-v1",
             std::process::id(),
             uuid::Uuid::new_v4().simple().to_string(),
         ))
         .expect("background worker identity serializes"),
+    };
+    Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
+        holder,
         clock.clone(),
     ))
 }

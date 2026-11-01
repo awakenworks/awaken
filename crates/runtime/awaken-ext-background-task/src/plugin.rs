@@ -11,11 +11,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use crate::BACKGROUND_TASK_STATE_PREFIX;
-use crate::{
-    BackgroundTaskError, BackgroundTaskLifecycle, BackgroundTaskSupervisor, task_state_cell,
-    tasks_from_state,
-};
+use crate::{BackgroundTaskLifecycle, BackgroundTaskSupervisor, task_state_cell, tasks_from_state};
+use awaken_agent_contract::thread::background_task::BACKGROUND_TASK_STATE_PREFIX;
+use awaken_tool_contract::tool::background_task::BackgroundTaskError;
 
 pub const BACKGROUND_TASK_PLUGIN_ID: &str = "background_task";
 

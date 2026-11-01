@@ -13,6 +13,7 @@ use awaken_session_types::SessionId;
 mod pre_activation;
 pub(super) mod response_loss_store;
 mod retry_identity;
+mod task_attention;
 
 #[tokio::test]
 async fn prepared_worker_revision_and_ack_reuse_root_receipts_and_complete_activation() {
@@ -713,6 +714,34 @@ impl awaken_session_execution_contract::SessionCoordinationReads
         Default::default()
     }
 
+    async fn session_run_command_receipt(
+        &self,
+        command: &AdmitSessionRun,
+    ) -> Result<Option<SessionRunReservation>, RunError> {
+        // This pre-existing recording runtime owns its reservation/delivery
+        // observations. No shadow fingerprint or independent receipt list.
+        let reservations = self.reservations.lock().unwrap();
+        let Some(original) = reservations
+            .iter()
+            .find(|original| original.run_id == command.run_id)
+        else {
+            return Ok(None);
+        };
+        if original.command_fingerprint() != command.command_fingerprint() {
+            return Err(RunError::conflict("Task command input differs"));
+        }
+        let deliveries = self.deliveries.lock().unwrap();
+        let Some(delivery) = deliveries
+            .iter()
+            .find(|delivery| delivery.run_id == command.run_id)
+        else {
+            return Err(RunError::unavailable("Task command is not activated"));
+        };
+        Ok(Some(SessionRunReservation::AlreadyActivated {
+            session_activity_epoch: delivery.session_activity_epoch,
+        }))
+    }
+
     async fn coordinated_admission_receipt(
         &self,
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
@@ -808,6 +837,48 @@ impl awaken_session_execution_contract::SessionCoordinationReads
         awaken_session_execution_contract::NeutralRuntime
             .validate_session_agent_message_source(command)
             .await
+    }
+
+    async fn task_callback_source(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &awaken_agent_contract::ThreadId,
+        root_agent_id: &str,
+    ) -> Result<
+        Option<(
+            String,
+            awaken_agent_contract::agent::delegation::DelegationOrigin,
+        )>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::SessionCoordinationReads::task_callback_source(
+            &awaken_session_execution_contract::NeutralRuntime,
+            session_id,
+            thread_id,
+            root_agent_id,
+        )
+        .await
+    }
+
+    async fn task_origin_execution(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &awaken_agent_contract::ThreadId,
+        origin_run_id: &awaken_agent_contract::RunId,
+    ) -> Result<
+        Box<(
+            awaken_runtime_contract::RunActivation,
+            Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
+        )>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::SessionCoordinationReads::task_origin_execution(
+            &awaken_session_execution_contract::NeutralRuntime,
+            session_id,
+            thread_id,
+            origin_run_id,
+        )
+        .await
     }
 }
 
@@ -1371,7 +1442,11 @@ async fn task_attention_carries_its_private_input_and_acknowledges_the_activated
         Arc::new(ProtocolProjectionRuntime),
         sessions.run_admissions(),
         sessions.coordination(),
-        |_| Ok("workspace".into()),
+        |_| {
+            Err(RunError::unavailable(
+                "projection owner is absent after restart",
+            ))
+        },
         |_| Ok(Some("agent".into())),
     );
     let input = awaken_session_application_contract::PrivateTaskInput::new(vec![
@@ -1380,8 +1455,14 @@ async fn task_attention_carries_its_private_input_and_acknowledges_the_activated
     .expect("input");
     let attention = awaken_session_application_contract::TaskAttention {
         operation_id: "background-task-attention-1".into(),
-        thread: "task-attention".into(),
-        holder: "holder".into(),
+        tenure: awaken_session_application_contract::TaskTenureRead {
+            thread: "task-attention".into(),
+            partition: awaken_session_application_contract::TaskReadPartition::Thread {},
+            run: "origin-run".into(),
+            task: "task".into(),
+            holder: "holder".into(),
+            epoch: awaken_lease_contract::fence::Epoch::from_persisted(1).unwrap(),
+        },
         message: awaken_agent_contract::agent::message::Message::text(
             awaken_agent_contract::agent::message::Id("attention-message".into()),
             awaken_agent_contract::agent::message::Role::System,
@@ -1402,8 +1483,8 @@ async fn task_attention_carries_its_private_input_and_acknowledges_the_activated
         assert_eq!(reservations[0].run_id, ack.run_id, "K1 exact Run");
         assert_eq!(
             reservations[0].private_task_input,
-            Some(input),
-            "K1 private input carried unchanged"
+            attention.clone().bind_input().unwrap().input,
+            "K1 observations unchanged and exact tenure included in command identity"
         );
     }
     {
@@ -1419,6 +1500,37 @@ async fn task_attention_carries_its_private_input_and_acknowledges_the_activated
         ),
         "K2 the Run id is a function of the operation id"
     );
+    // K3 the original queue phase is insufficient by itself: the real SQLite
+    // Session activity query validates its exact epoch/source before the ACK.
+    // K4 every bound subject axis is immutable even for the meta-only shape.
+    let events_before = runtime.events.lock().unwrap().clone();
+    let replay = awaken_session_application_contract::SessionRunBackgroundApplication::task_attention_receipt(&protocol, attention.clone())
+        .await.unwrap().expect("K3 original activity + dispatch receipt");
+    assert_eq!(replay, ack, "K3 original ACK without another mutation");
+    assert_eq!(
+        *runtime.events.lock().unwrap(),
+        events_before,
+        "K3 no new admission"
+    );
+    for axis in ["task", "thread", "run", "holder", "epoch", "partition"] {
+        let mut wire = serde_json::to_value(&attention).unwrap();
+        if axis == "epoch" {
+            wire["tenure"][axis] = serde_json::json!(2);
+        } else if axis == "partition" {
+            wire["tenure"][axis] =
+                serde_json::json!({"kind":"session", "session_thread":"foreign"});
+        } else {
+            wire["tenure"][axis] = serde_json::json!(format!("other-{axis}"));
+        }
+        let changed: awaken_session_application_contract::TaskAttention =
+            serde_json::from_value(wire).unwrap();
+        assert!(awaken_session_application_contract::SessionRunBackgroundApplication::task_attention_receipt(&protocol, changed).await.is_err(), "K4 {axis}");
+        assert_eq!(
+            *runtime.events.lock().unwrap(),
+            events_before,
+            "K4 no new work"
+        );
+    }
 }
 
 #[tokio::test]
@@ -2032,6 +2144,62 @@ impl awaken_session_execution_contract::SessionCoordinationReads for BlockingSes
         awaken_session_execution_contract::NeutralRuntime
             .validate_session_agent_message_source(command)
             .await
+    }
+
+    async fn session_run_command_receipt(
+        &self,
+        command: &awaken_session_execution_contract::AdmitSessionRun,
+    ) -> Result<
+        Option<awaken_session_execution_contract::SessionRunReservation>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::SessionCoordinationReads::session_run_command_receipt(
+            &awaken_session_execution_contract::NeutralRuntime,
+            command,
+        )
+        .await
+    }
+
+    async fn task_callback_source(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &awaken_agent_contract::ThreadId,
+        root_agent_id: &str,
+    ) -> Result<
+        Option<(
+            String,
+            awaken_agent_contract::agent::delegation::DelegationOrigin,
+        )>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::SessionCoordinationReads::task_callback_source(
+            &awaken_session_execution_contract::NeutralRuntime,
+            session_id,
+            thread_id,
+            root_agent_id,
+        )
+        .await
+    }
+
+    async fn task_origin_execution(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &awaken_agent_contract::ThreadId,
+        origin_run_id: &awaken_agent_contract::RunId,
+    ) -> Result<
+        Box<(
+            awaken_runtime_contract::RunActivation,
+            Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
+        )>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::SessionCoordinationReads::task_origin_execution(
+            &awaken_session_execution_contract::NeutralRuntime,
+            session_id,
+            thread_id,
+            origin_run_id,
+        )
+        .await
     }
 }
 

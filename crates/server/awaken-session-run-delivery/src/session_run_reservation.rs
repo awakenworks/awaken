@@ -40,14 +40,107 @@ pub fn validate_session_run_command(command: &AdmitSessionRun) -> Result<(), Run
     Ok(())
 }
 
-/// The Session's frozen inputs one reservation lowers.
-pub struct SessionRunInputs<'a> {
-    /// The Session's effective Agent snapshot the Run executes.
-    pub snapshot: &'a ExecutableAgentSnapshot,
-    /// The Session's frozen Skill registry, expanding a leading `/skill`.
-    pub skills: Option<&'a dyn SkillRegistry>,
-    /// The Session's frozen model selection.
-    pub model_ref_override: Option<String>,
+/// Read the original frozen execution source through the existing admission
+/// authority. This same narrow projection serves root lowering and child policy;
+/// no App port receives the complete operational request or a new source store.
+pub(crate) async fn task_origin_execution<
+    R: awaken_dispatch_contract::SessionRunAdmissionReads + ?Sized,
+>(
+    reads: &R,
+    session: &awaken_session_types::SessionId,
+    thread: &ThreadId,
+    origin_run: &awaken_agent_contract::RunId,
+) -> Result<Box<(RunActivation, Vec<ExecutableAgentSnapshot>)>, RunError> {
+    use awaken_dispatch_contract::SessionRunAdmissionObservation;
+    let request = match reads
+        .observe_session_run_admission(origin_run)
+        .await
+        .map_err(|error| RunError::unavailable(error.to_string()))?
+    {
+        SessionRunAdmissionObservation::Live(request) => request,
+        SessionRunAdmissionObservation::Completed {
+            retained_request, ..
+        } => retained_request
+            .map_err(|error| RunError::unavailable(error.to_string()))?
+            .ok_or_else(|| {
+                RunError::unavailable("original Task execution source was not retained")
+            })?,
+        SessionRunAdmissionObservation::Missing => {
+            return Err(RunError::unavailable(
+                "original Task execution source is unavailable",
+            ));
+        }
+    };
+    if request.run_id() != origin_run
+        || request.thread_id() != thread
+        || request.session_thread_id().0 != session.as_str()
+        || !request.needs_background_task_control()
+    {
+        return Err(RunError::unavailable(
+            "original Task execution source belongs to another subject",
+        ));
+    }
+    let request = *request;
+    Ok(Box::new((request.activation, request.agent_publications)))
+}
+
+/// Select the Task origin once, before an adapter constructs any Runtime
+/// projection. Normal Session inputs require no source read.
+pub async fn select_session_run_origin<
+    R: awaken_dispatch_contract::SessionRunAdmissionReads + ?Sized,
+>(
+    command: &AdmitSessionRun,
+    reads: &R,
+) -> Result<Option<Box<(RunActivation, Vec<ExecutableAgentSnapshot>)>>, RunError> {
+    let Some(input) = &command.private_task_input else {
+        return Ok(None);
+    };
+    let tenure = input
+        .tenure()
+        .ok_or_else(|| RunError::bad_request("Task callback has no complete source subject"))?;
+    let source = task_origin_execution(
+        reads,
+        &command.session_id,
+        &ThreadId(tenure.thread.clone()),
+        &awaken_agent_contract::RunId(tenure.run.clone()),
+    )
+    .await?;
+    validate_task_origin_input(command, &source.0)?;
+    Ok(Some(source))
+}
+
+fn validate_task_origin_input(
+    command: &AdmitSessionRun,
+    source: &RunActivation,
+) -> Result<(), RunError> {
+    let tenure = command
+        .private_task_input
+        .as_ref()
+        .and_then(|input| input.tenure())
+        .ok_or_else(|| RunError::bad_request("Task callback has no complete source subject"))?;
+    if tenure.thread != command.session_id.as_str()
+        || tenure.session_thread() != command.session_id.as_str()
+        || source.thread_id.0 != tenure.thread
+        || source.run_id.0 != tenure.run
+        || source.snapshot.root_agent_id.0 != command.agent_id
+    {
+        return Err(RunError::unavailable(
+            "Task callback differs from its verified original execution source",
+        ));
+    }
+    Ok(())
+}
+
+/// Closed data selection for the existing reservation compiler. Task data is
+/// selected once by the original admission reader; this value is not a role,
+/// another Run model or a permission to bypass Session activity/admission.
+pub enum SessionRunInputs<'a> {
+    Session {
+        snapshot: &'a ExecutableAgentSnapshot,
+        skills: Option<&'a dyn SkillRegistry>,
+        model_ref_override: Option<String>,
+    },
+    Task(Box<(RunActivation, Vec<ExecutableAgentSnapshot>)>),
 }
 
 /// Reserve `command`'s Run over the Session's frozen `inputs`.
@@ -77,29 +170,54 @@ where
 {
     let command_fingerprint = command.command_fingerprint();
     let session = command.session_id.as_str();
-    let input = match inputs.skills {
-        Some(registry) => {
-            awaken_ext_skills::expand_slash_commands(registry, session, command.messages)
-                .map_err(RunError::internal)?
+    let (activation, task_publications) = match inputs {
+        SessionRunInputs::Task(source) => {
+            validate_task_origin_input(&command, &source.0)?;
+            let (mut activation, publications) = *source;
+            activation.run_id = command.run_id;
+            activation.thread_id = ThreadId(session.to_owned());
+            activation.input = command.messages;
+            (activation, Some(publications))
         }
-        None => command.messages,
+        SessionRunInputs::Session {
+            snapshot,
+            skills,
+            model_ref_override,
+        } => {
+            if command.private_task_input.is_some() {
+                return Err(RunError::unavailable(
+                    "Task callback requires its verified original execution source",
+                ));
+            }
+            let input = match skills {
+                Some(registry) => {
+                    awaken_ext_skills::expand_slash_commands(registry, session, command.messages)
+                        .map_err(RunError::internal)?
+                }
+                None => command.messages,
+            };
+            let mut activation = RunActivation::new(
+                command.run_id,
+                ThreadId(session.to_owned()),
+                snapshot.clone(),
+                input,
+            );
+            activation.model_ref_override = model_ref_override;
+            activation.data_subject_id = command
+                .data_subject_id
+                .map(awaken_runtime_contract::DataSubjectId);
+            (activation, None)
+        }
     };
-    let mut activation = RunActivation::new(
-        command.run_id,
-        ThreadId(session.to_owned()),
-        inputs.snapshot.clone(),
-        input,
-    )
-    // Application requirements may only narrow the Session-owned tool
-    // authority; they cannot restore a capability the frozen Session profile
-    // removed.
-    .narrow_tools(command.execution_requirements.tool_capability_narrowing)
-    .map_err(RunError::bad_request)?;
-    activation.model_ref_override = inputs.model_ref_override;
-    activation.data_subject_id = command
-        .data_subject_id
-        .map(awaken_runtime_contract::DataSubjectId);
-    let mut request = prepare(activation)
+    let activation = activation
+        .narrow_tools(command.execution_requirements.tool_capability_narrowing)
+        .map_err(RunError::bad_request)?;
+    let preparation = prepare(activation);
+    let preparation = match task_publications {
+        Some(publications) => preparation.with_frozen_publications(publications),
+        None => preparation,
+    };
+    let mut request = preparation
         .with_traceparent(command.traceparent)
         .map_err(RunError::from)?
         .with_session_command_fingerprint(command_fingerprint)

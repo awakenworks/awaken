@@ -57,7 +57,7 @@ impl SessionLowering for InstalledSessionLowering {
     ) -> Result<ExecutableAgentSnapshot, RunError> {
         Ok(self
             .run_assembly
-            .ctx_for_session_coordination(session, None)
+            .ctx_for_session_coordination(session, None, None)
             .await
             .map_err(to_run_error)?
             .config

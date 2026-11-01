@@ -625,6 +625,7 @@ impl CancellableRunDelegationService for HostRunDelegationService {
                 scheduler.clock.clone(),
                 self.sandbox.as_ref(),
                 self.adapters.background_supervisor.clone(),
+                &self.adapters.admin_tools,
             )
             .with_run_delegation(Arc::new(self.clone())),
         );
@@ -1224,7 +1225,9 @@ mod durable_cancel_tests {
         let scheduler = RunScheduler {
             clock: clock.clone(),
             binding: awaken_dispatch_erasure::DispatchBinding::local(store.clone()),
-            commit: commit.clone(),
+            commit: Arc::new(awaken_session_run_delivery::SessionCommit::Local(Arc::new(
+                crate::LocalCommitAdapter::projected_shared(commit.clone()),
+            ))),
             reader: commit.clone(),
             owner: "advisor-child-owner".to_string(),
             session_resources: None,
@@ -1259,6 +1262,7 @@ mod durable_cancel_tests {
             sandbox.clone(),
             &plain_snapshot,
             crate::agent_runner::ChildExecutionAdapters {
+                session_thread_id: Some(ThreadId("parent-thread".into())),
                 clock: Some(clock.clone()),
                 ..Default::default()
             },
@@ -1275,6 +1279,7 @@ mod durable_cancel_tests {
             sandbox,
             &parent_snapshot,
             crate::agent_runner::ChildExecutionAdapters {
+                session_thread_id: Some(ThreadId("parent-thread".into())),
                 clock: Some(clock.clone()),
                 ..Default::default()
             },
@@ -1485,7 +1490,9 @@ mod durable_cancel_tests {
         let scheduler = RunScheduler {
             clock: clock.clone(),
             binding: awaken_dispatch_erasure::DispatchBinding::local(store.clone()),
-            commit: commit.clone(),
+            commit: Arc::new(awaken_session_run_delivery::SessionCommit::Local(Arc::new(
+                crate::LocalCommitAdapter::projected_shared(commit.clone()),
+            ))),
             reader: commit.clone(),
             owner: "child-owner".to_string(),
             session_resources: None,
@@ -1524,6 +1531,7 @@ mod durable_cancel_tests {
             sandbox,
             &parent_snapshot,
             crate::agent_runner::ChildExecutionAdapters {
+                session_thread_id: Some(ThreadId("parent-thread".into())),
                 clock: Some(clock.clone()),
                 ..Default::default()
             },

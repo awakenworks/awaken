@@ -7,11 +7,13 @@
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_background_task::{
-    BackgroundInvocation, BackgroundTask, BackgroundTaskEnd, BackgroundTaskError, BackgroundTaskId,
-    BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundWait, TaskClaim, TaskExecutionPolicy,
-    TaskHeartbeatCheckpointError, TaskHeartbeatCheckpointOutcome,
+    BackgroundInvocation, BackgroundTask, BackgroundTaskLifecycle, BackgroundTaskOrigin, TaskClaim,
+    TaskExecutionPolicy, TaskHeartbeatCheckpointError, TaskHeartbeatCheckpointOutcome,
 };
 use awaken_lease_contract::fence::{Epoch, Tenure};
+use awaken_tool_contract::tool::background_task::{
+    BackgroundTaskEnd, BackgroundTaskError, BackgroundTaskId, BackgroundWait,
+};
 use awaken_tool_contract::tool::{
     ToolCall, ToolConcurrency, ToolRecoveryMode, ToolRecoveryPolicy, ToolTaskHandle,
 };
@@ -60,13 +62,14 @@ fn execution_task(phase: usize) -> BackgroundTask {
         .unwrap();
     }
     if matches!(phase, 5 | 6) {
-        task.wait(&fence, BackgroundWait::ExternalInput).unwrap();
+        task.wait(&fence, BackgroundWait::ExternalInput {}).unwrap();
     }
     if matches!(phase, 3 | 6) {
         task.request_cancel().unwrap();
     }
     if phase == 4 {
-        task.finish(&fence, BackgroundTaskEnd::Cancelled).unwrap();
+        task.finish(&fence, BackgroundTaskEnd::Cancelled {})
+            .unwrap();
     }
     task
 }
@@ -79,7 +82,7 @@ fn heartbeat_task(phase: usize) -> BackgroundTask {
     let mut task = execution_task(1);
     let fence = task.tenure().unwrap();
     if matches!(phase, 8 | 9) {
-        task.wait(&fence, BackgroundWait::Resource).unwrap();
+        task.wait(&fence, BackgroundWait::Resource {}).unwrap();
     }
     if matches!(phase, 7 | 9) {
         task.request_cancel().unwrap();
@@ -446,7 +449,7 @@ fn cancellation_preserves_unknown_outcomes_and_rejected_finishes_are_atomic() {
             BackgroundTaskEnd::Failed {
                 message: "failed".into(),
             },
-            BackgroundTaskEnd::Cancelled,
+            BackgroundTaskEnd::Cancelled {},
             BackgroundTaskEnd::Indeterminate {
                 message: "cancel response lost".into(),
             },
@@ -491,7 +494,7 @@ fn cancellation_preserves_unknown_outcomes_and_rejected_finishes_are_atomic() {
                         let expected = if cancelling
                             && !matches!(end, BackgroundTaskEnd::Indeterminate { .. })
                         {
-                            BackgroundTaskEnd::Cancelled
+                            BackgroundTaskEnd::Cancelled {}
                         } else {
                             end.clone()
                         };
@@ -557,7 +560,7 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                                         poll_interval_ms: Some(1),
                                     })
                                 } else {
-                                    BackgroundWait::Resource
+                                    BackgroundWait::Resource {}
                                 };
                                 task.wait(&fence, wait).unwrap();
                             }
@@ -654,7 +657,9 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
 
     let mut ended = task();
     let fence = ended.start("worker", 0, 10, replay_policy()).unwrap();
-    ended.finish(&fence, BackgroundTaskEnd::Cancelled).unwrap();
+    ended
+        .finish(&fence, BackgroundTaskEnd::Cancelled {})
+        .unwrap();
     let before = ended.clone();
     assert_eq!(
         ended.reclaim("replacement", 10, 10),
@@ -729,7 +734,7 @@ fn cancellation_absorbs_a_racing_success_and_is_idempotent() {
     assert!(matches!(
         queued.lifecycle,
         BackgroundTaskLifecycle::Ended {
-            end: BackgroundTaskEnd::Cancelled
+            end: BackgroundTaskEnd::Cancelled {}
         }
     ));
     let revision = queued.revision;
@@ -757,7 +762,7 @@ fn cancellation_absorbs_a_racing_success_and_is_idempotent() {
     assert!(matches!(
         running.lifecycle,
         BackgroundTaskLifecycle::Ended {
-            end: BackgroundTaskEnd::Cancelled
+            end: BackgroundTaskEnd::Cancelled {}
         }
     ));
 }
@@ -1031,7 +1036,7 @@ fn failed_transitions_are_atomic_and_persisted_invariants_fail_closed() {
     );
     assert_eq!(active, before, "C6/R3 heartbeat");
     assert_eq!(
-        active.finish(&stale, BackgroundTaskEnd::Cancelled),
+        active.finish(&stale, BackgroundTaskEnd::Cancelled {}),
         Err(BackgroundTaskError::StaleFence),
         "C6/R1 finish"
     );
@@ -1256,7 +1261,7 @@ fn remote_cancel_and_reclaim_retain_the_single_remote_request() {
     assert!(matches!(
         remote.lifecycle,
         BackgroundTaskLifecycle::Ended {
-            end: BackgroundTaskEnd::Cancelled
+            end: BackgroundTaskEnd::Cancelled {}
         }
     ));
 }
@@ -1439,15 +1444,46 @@ fn a_fence_minted_for_another_task_never_owns_this_one() {
         "T2"
     );
     assert_eq!(
-        task.wait(&foreign, BackgroundWait::Resource),
+        task.wait(&foreign, BackgroundWait::Resource {}),
         Err(BackgroundTaskError::StaleFence),
         "T2"
     );
     assert_eq!(
-        task.finish(&foreign, BackgroundTaskEnd::Cancelled),
+        task.finish(&foreign, BackgroundTaskEnd::Cancelled {}),
         Err(BackgroundTaskError::StaleFence),
         "T2"
     );
     assert_eq!(task, before, "T2 unchanged");
     task.heartbeat(&fence, 1, 10).expect("T1");
+}
+
+#[test]
+fn the_agent_contract_reads_the_same_holder_from_every_committed_slot() {
+    // The Coordinator reads a slot's holder through the agent contract's
+    // minimal view; it must agree with this aggregate in every phase
+    // (Requested, Running, Waiting, Cancelling, Ended).
+    use awaken_agent_contract::thread::background_task::committed_task_attempt;
+    for phase in 0..=6 {
+        let task = execution_task(phase);
+        let slot = serde_json::to_value(&task).expect("a committed task serializes");
+        let expected = task.attempt().map(|attempt| attempt.worker_id.clone());
+        let observed = committed_task_attempt(
+            task.id.as_str(),
+            &task.origin.thread_id.0,
+            &task.origin.run_id.0,
+            &slot,
+        );
+        assert_eq!(
+            observed
+                .clone()
+                .map(|attempt| attempt.map(|(holder, _)| holder)),
+            Ok(expected),
+            "phase {phase}"
+        );
+        assert_eq!(
+            observed.unwrap().map(|(_, epoch)| epoch.get()),
+            task.attempt().map(|attempt| attempt.epoch.get()),
+            "phase {phase}: the same aggregate also supplies the exact epoch"
+        );
+    }
 }

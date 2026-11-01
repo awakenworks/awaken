@@ -445,7 +445,10 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         "T1: a fresh peer stays queued behind Awaiting"
     );
 
-    let pending = dispatch(ns, "terminal-pending", "terminal-pending-thread");
+    // T3 even RemoteRequired Pending work is terminal-repairable by None:
+    // this maintenance claim cannot enter an executor or require local placement.
+    let pending =
+        current_remote_required(dispatch(ns, "terminal-pending", "terminal-pending-thread"));
     let pending_id = pending.run_id().clone();
     store
         .enqueue(pending)

@@ -27,6 +27,10 @@ impl crate::RunAssembly {
     /// keeps one concrete attempt driver while retaining the Worker for pool-routed claims.
     /// Runtime, commit, executor, observers, credentials, and recovery wiring are
     /// therefore configured once regardless of delivery durability.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one Session Worker uses the selected runtime, executor, commit, checkpoint, context and model gate; its terminal observer must share the same claim-read handle"
+    )]
     pub(super) async fn build_dispatch_worker(
         &self,
         claimed_model_gate: Option<awaken_dispatch_execution::ClaimedModelRequestGateFactory>,
@@ -35,6 +39,7 @@ impl crate::RunAssembly {
         commit: Arc<SessionCommit>,
         stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
         run_context: awaken_runtime_contract::RuntimeRunContext,
+        claimed_terminal_reads: awaken_dispatch_execution::ClaimedTerminalReads,
     ) -> Result<
         (
             ForegroundRunDriver,
@@ -76,7 +81,9 @@ impl crate::RunAssembly {
         if let Some(materializer) = inference_materializer {
             worker = worker.with_inference_materializer(materializer);
         }
-        worker = worker.with_context(run_context);
+        worker = worker
+            .with_context(run_context)
+            .with_claimed_terminal_reads(claimed_terminal_reads);
         if let Some(factory) = claimed_model_gate {
             worker = worker.with_claimed_model_request_gate_factory(factory);
         }

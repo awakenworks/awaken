@@ -65,12 +65,18 @@ impl<T: DispatchAdmissionReads + ?Sized> DispatchAdmissionReads for &T {
 /// admission refuses it with actionable guidance before it is enqueued.
 pub const UNCONFIGURED_MODEL_REF: &str = "unconfigured";
 
+enum PublicationInputs<'a> {
+    Source(Option<&'a dyn awaken_runtime_contract::PublishedAgentSnapshotSource>),
+    /// Original retained request data, never a role or caller-selected catalog.
+    Frozen(Vec<awaken_runtime_contract::ExecutableAgentSnapshot>),
+}
+
 /// Values read from the existing Session slot, never another registry or authority.
 pub struct DispatchPreparation<'a> {
     activation: RunActivation,
     sessions: Box<dyn DispatchAdmissionReads + 'a>,
     local_workspace: &'a str,
-    agent_publications: Option<&'a dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+    agent_publications: PublicationInputs<'a>,
     publication_closure: awaken_runtime_contract::auxiliary_agents::RunPublicationClosure<'static>,
     local_execution: bool,
     model_configured: bool,
@@ -118,11 +124,22 @@ impl<'a> DispatchPreparation<'a> {
             activation,
             sessions,
             local_workspace,
-            agent_publications,
+            agent_publications: PublicationInputs::Source(agent_publications),
             publication_closure,
             local_execution,
             model_configured,
         }
+    }
+
+    /// Use the original admitted bundle for a Task callback. The same resolve
+    /// kernel validates it with exact_source and preserves its values verbatim.
+    #[must_use]
+    pub fn with_frozen_publications(
+        mut self,
+        publications: Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> Self {
+        self.agent_publications = PublicationInputs::Frozen(publications);
+        self
     }
 
     pub fn fresh(self) -> Result<RunDispatch, AdmissionError> {
@@ -167,18 +184,26 @@ impl<'a> DispatchPreparation<'a> {
         let workspace = self
             .sessions
             .execution_workspace(&thread, self.local_workspace)?;
-        let agent_publications = self
-            .publication_closure
-            .freeze(
-                &self.activation.snapshot,
-                self.agent_publications,
-                &workspace,
-            )
-            .map_err(|error| {
-                AdmissionError::rejected(format!(
-                    "cannot freeze Agent execution publications: {error}"
-                ))
-            })?;
+        let agent_publications = match self.agent_publications {
+            PublicationInputs::Source(source) => self
+                .publication_closure
+                .freeze(&self.activation.snapshot, source, &workspace)
+                .map_err(|error| {
+                    AdmissionError::rejected(format!(
+                        "cannot freeze Agent execution publications: {error}"
+                    ))
+                })?,
+            PublicationInputs::Frozen(publications) => {
+                self.publication_closure
+                    .exact_source(&self.activation.snapshot, &publications, &workspace)
+                    .map_err(|error| {
+                        AdmissionError::Run(awaken_session_types::RunError::unavailable(format!(
+                            "retained Agent execution publications are invalid: {error}"
+                        )))
+                    })?;
+                publications
+            }
+        };
         let InstalledDispatchInputs {
             resources,
             runtime_projection,

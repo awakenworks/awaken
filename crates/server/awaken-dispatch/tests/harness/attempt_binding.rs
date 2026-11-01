@@ -7,6 +7,7 @@ use awaken_dispatch::{
 use awaken_dispatch::{
     PlacementRequirements, RunClaim, RunDispatch, WorkerIdentity, WorkerSnapshot,
 };
+use awaken_worker_contract::WorkerCurrentSource as _;
 
 pub async fn bound_claim(
     store: &impl ConformanceDispatch,

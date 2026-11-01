@@ -11,6 +11,8 @@
 //! the Session baseline and delegates ordinary Thread/Run persistence to the
 //! existing [`awaken_session_execution_contract::SessionRuns`] port.
 
+mod task_attention;
+
 use crate::SessionRootReads as _;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;

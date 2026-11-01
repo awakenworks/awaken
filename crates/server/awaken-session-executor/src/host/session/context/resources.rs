@@ -142,7 +142,8 @@ pub(super) async fn acquire(
         Some(selected_agent.as_str()),
         installed.as_ref(),
         has_published_multiagent,
-        plan.claimed_runtime_identity.is_some(),
+        matches!(requested_purpose, RuntimeContextPurpose::Execution)
+            && plan.frozen_runtime_identity.is_some(),
     )?;
     // Reservation cannot create a physical Environment before its immutable
     // dispatch is durable. It must still reject a deterministic substrate

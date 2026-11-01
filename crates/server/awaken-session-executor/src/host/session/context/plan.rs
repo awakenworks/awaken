@@ -5,7 +5,7 @@
 //! must precede Environment deferral. This stage never creates an Environment.
 
 use crate::SessionExecutionError;
-use crate::host::{ClaimedRuntimeInput, RuntimePublicationIdentity};
+use crate::host::{FrozenRuntimeInput, RuntimePublicationIdentity};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_session_realization::peers::EnvironmentPeer as _;
 use std::sync::Arc;
@@ -23,12 +23,11 @@ pub(super) struct ContextPlan {
     pub(super) deferred_skill_bindings: Option<Vec<crate::session_resource::ResolvedSkillBinding>>,
     pub(super) execution_backend: awaken_runtime_contract::resolved::Backend,
     pub(super) background_tasks_enabled: bool,
-    /// The application binding this Run publishes BackgroundTask attention
-    /// through; `None` when the plan admitted no live background submission.
-    pub(super) background_attention:
-        Option<awaken_session_execution_contract::SessionApplicationBinding>,
+    /// The route this Run publishes BackgroundTask attention through; `None`
+    /// when the plan admitted no live background submission.
+    pub(super) background_attention: Option<crate::background_task::TaskAttentionRoute>,
     pub(super) a2a_only: bool,
-    pub(super) claimed_runtime_identity: Option<RuntimePublicationIdentity>,
+    pub(super) frozen_runtime_identity: Option<RuntimePublicationIdentity>,
 }
 
 pub(super) async fn prepare(
@@ -36,7 +35,7 @@ pub(super) async fn prepare(
     thread: &str,
     agent: Option<&str>,
     published_snapshot: Option<ExecutableAgentSnapshot>,
-    claimed_attempt: Option<&ClaimedRuntimeInput>,
+    frozen_runtime_input: Option<&FrozenRuntimeInput>,
     force_defer_environment: bool,
 ) -> Result<ContextPlan, SessionExecutionError> {
     let realizations = host.realization_executor.sessions();
@@ -47,7 +46,7 @@ pub(super) async fn prepare(
     let (workspace, selected_agent, installed, model_candidate) =
         publication.resolve_session_publication(thread, agent, published_snapshot)?;
     publication.retain_session_publication(thread, installed.as_ref())?;
-    let fallback_model_ref = claimed_attempt.as_ref().map_or_else(
+    let fallback_model_ref = frozen_runtime_input.as_ref().map_or_else(
         || {
             let frozen_model_ref = installed
                 .as_ref()
@@ -64,7 +63,7 @@ pub(super) async fn prepare(
     let (publication_source, unclaimed_runtime_publications): (
         Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
         Option<Vec<awaken_runtime_contract::ExecutableAgentSnapshot>>,
-    ) = if let Some(attempt) = &claimed_attempt {
+    ) = if let Some(attempt) = &frozen_runtime_input {
         (attempt.publications.clone(), None)
     } else {
         let frozen = installed
@@ -103,7 +102,7 @@ pub(super) async fn prepare(
     // once instead of teaching the provider a second baseline-only create
     // path. A Managed/claimed caller must already carry its aggregate-owned
     // transition and therefore remains fail-closed when that fact is absent.
-    if claimed_attempt.is_none() && !session_dispatch {
+    if frozen_runtime_input.is_none() && !session_dispatch {
         let empty = crate::session_resource::SessionResourceManifest::at_revision(
             workspace.clone(),
             0,
@@ -179,18 +178,13 @@ pub(super) async fn prepare(
             "background_task requires the Native backend so the canonical tool executor remains process-addressable",
         ));
     }
-    if background_tasks_enabled && !host.authority.hosts_session_application() {
-        return Err(SessionExecutionError::bad_request(
-            "background_task requires a co-located Session application until completion attention has a claim-fenced Worker transport",
-        ));
-    }
-    let background_attention = (background_tasks_enabled
-        && host
-            .capabilities
-            .session_application
-            .background_runs()
-            .is_ok())
-    .then(|| host.capabilities.session_application.clone());
+    let background_attention = crate::background_task::TaskAttentionRoute::plan(
+        background_tasks_enabled,
+        host.authority.hosts_session_application(),
+        &host.capabilities.session_application,
+        host.capabilities.worker.task_control.as_ref(),
+    )
+    .map_err(SessionExecutionError::bad_request)?;
     if background_tasks_enabled && session_dispatch && background_attention.is_none() {
         return Err(SessionExecutionError::internal(
             "Managed BackgroundTask Session has no background Run application authority",
@@ -204,7 +198,7 @@ pub(super) async fn prepare(
             "remote A2A execution cannot consume local Session Environment inputs",
         ));
     }
-    let claimed_runtime_identity = claimed_attempt.map(|attempt| attempt.identity.clone());
+    let frozen_runtime_identity = frozen_runtime_input.map(|attempt| attempt.identity.clone());
     Ok(ContextPlan {
         workspace,
         selected_agent,
@@ -220,6 +214,6 @@ pub(super) async fn prepare(
         background_tasks_enabled,
         background_attention,
         a2a_only,
-        claimed_runtime_identity,
+        frozen_runtime_identity,
     })
 }

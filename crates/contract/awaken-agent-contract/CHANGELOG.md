@@ -11,5 +11,6 @@ Notable changes to `awaken-agent-contract`. Versions follow the [SDK versioning 
 ### Added
 
 - `thread::usage::{ThreadUsage, ThreadUsageKey, THREAD_USAGE_STATE_KEY}`: committed Thread token usage, moved here from `awaken-runtime-contract::llm`.
+- `thread::background_task::{BACKGROUND_TASK_STATE_PREFIX, background_task_state_key, committed_task_slot, committed_task_attempt}`: the committed BackgroundTask slot's state key and the exact origin, holder and nonzero epoch of its current attempt, so platform crates read a Task's held coordinates without depending on `awaken-ext-background-task`.
 - `credential::CredentialHandlingMode` and `CredentialExecutionPolicy::{handling_mode, application_managed}`.
 - `RunRecoverySnapshot` read accessors and `message::Id` agent-input constructors.

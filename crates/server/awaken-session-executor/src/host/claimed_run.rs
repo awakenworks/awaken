@@ -34,14 +34,21 @@ pub(super) async fn construct_claimed_child(
         environment.as_ref(),
         &authorization,
         Some(host.capabilities.background_supervisor.clone()),
+        &host.capabilities.tools.admin_tools,
     );
     let commit = substrate.commit;
-    let adapters = host
+    let mut adapters = host
         .capabilities
-        .child_execution_adapters(&session_thread_id.0, environment.clone())
+        .child_execution_adapters(
+            &session_thread_id.0,
+            environment.clone(),
+            host.resources.memory.background(),
+            host.authority.hosts_session_application(),
+        )
         .map_err(|error| {
             awaken_dispatch_execution::session_execution::execution_error(error.to_string())
         })?;
+    adapters.background_commit = Some(commit.clone());
     let mut runtime = crate::agent_runner::configure_child_native_runtime(
         runtime,
         snapshot,
@@ -69,6 +76,17 @@ pub(super) async fn construct_claimed_child(
         runtime = runtime.with_run_delegation(delegation);
     }
     let runtime = Arc::new(runtime);
+    let (context, terminal_reads) = crate::agent_runner::ChildWorkerFactory::background_context(
+        runtime.clone(),
+        snapshot,
+        Some(&commit),
+        substrate.attempt_context,
+        &adapters,
+    )
+    .map_err(|error| {
+        awaken_dispatch_execution::session_execution::execution_error(error.to_string())
+    })?;
+
     let attempt = crate::agent_runner::child_attempt_executor(
         runtime,
         snapshot,
@@ -85,8 +103,9 @@ pub(super) async fn construct_claimed_child(
         session_thread_id,
         crate::agent_runner::ClaimedChildAttempt {
             executor: attempt,
-            context: substrate.attempt_context,
+            context,
             credentials: adapters.credential_capabilities,
+            terminal_reads,
         },
     )
     .await

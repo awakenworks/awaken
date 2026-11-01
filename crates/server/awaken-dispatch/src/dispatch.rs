@@ -706,6 +706,43 @@ pub(crate) enum RunIdentityDecision {
     Replay,
 }
 
+/// Validate the retained original request against its same-transaction receipt.
+/// Source corruption is uncertainty; the lightweight receipt remains independent.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn validate_retained_completion_request(
+    completion: &awaken_dispatch_contract::DispatchCompletion,
+    request: &RunDispatch,
+) -> Result<(), DispatchError> {
+    if !request.needs_background_task_control()
+        || request.run_id() != &completion.run_id
+        || completion.thread_id.as_ref() != Some(request.thread_id())
+        || completion.session_thread_id != request.session_thread_id
+        || completion.request_fingerprint.as_deref()
+            != Some(request.admission_fingerprint().as_str())
+    {
+        return Err(DispatchError::Unavailable(
+            "retained Task source differs from its completion receipt".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Both SQL adapters use this one typed decoder; no loose Task/source parser.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn decode_retained_completion_request(
+    completion: &awaken_dispatch_contract::DispatchCompletion,
+    json: Option<&str>,
+) -> Result<Option<Box<RunDispatch>>, DispatchError> {
+    json.map(|json| {
+        let request: RunDispatch = serde_json::from_str(json).map_err(|error| {
+            DispatchError::Unavailable(format!("retained Task source does not decode: {error}"))
+        })?;
+        validate_retained_completion_request(completion, &request)?;
+        Ok(Box::new(request))
+    })
+    .transpose()
+}
+
 /// An observation must not return another Run/Thread hidden under this key.
 /// This storage-integrity check grants no replay or execution authority.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
@@ -860,6 +897,7 @@ pub(crate) fn decide_run_identity(
     stored: StoredRunIdentity<'_>,
     incoming: &RunDispatch,
 ) -> Result<RunIdentityDecision, DispatchError> {
+    validate_task_child_command_identity(incoming)?;
     let replay = match stored {
         StoredRunIdentity::Absent => return Ok(RunIdentityDecision::New),
         StoredRunIdentity::Live(existing) => existing.same_admission_dispatch(incoming),
@@ -870,18 +908,25 @@ pub(crate) fn decide_run_identity(
                 .filter(|fingerprint| fingerprint.is_current())
                 .is_some_and(|fingerprint| existing == Some(fingerprint.as_str())),
             DispatchIdentityScope::SessionCommand => {
-                let legacy = incoming.legacy_session_reservation_fingerprint();
-                completed_run_identity_replays(
-                    existing,
-                    CompletedIncomingIdentity::SessionCommand {
-                        current: incoming
-                            .session_command_fingerprint
-                            .as_ref()
-                            .filter(|fingerprint| fingerprint.is_current())
-                            .map(|fingerprint| fingerprint.as_str()),
-                        legacy: legacy.as_str(),
-                    },
-                )
+                if incoming.is_task_child_command() {
+                    incoming
+                        .session_command_fingerprint
+                        .as_ref()
+                        .is_some_and(|fingerprint| existing == Some(fingerprint.as_str()))
+                } else {
+                    let legacy = incoming.legacy_session_reservation_fingerprint();
+                    completed_run_identity_replays(
+                        existing,
+                        CompletedIncomingIdentity::SessionCommand {
+                            current: incoming
+                                .session_command_fingerprint
+                                .as_ref()
+                                .filter(|fingerprint| fingerprint.is_current())
+                                .map(|fingerprint| fingerprint.as_str()),
+                            legacy: legacy.as_str(),
+                        },
+                    )
+                }
             }
             DispatchIdentityScope::FullDispatch => {
                 let canonical = incoming.canonical_fingerprint();
@@ -1070,6 +1115,31 @@ pub(crate) fn validate_session_run_replacement_candidates(
     }
 }
 
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+fn validate_task_child_command_identity(request: &RunDispatch) -> Result<(), DispatchError> {
+    let task_child_partition = request
+        .private_task_input
+        .as_ref()
+        .and_then(|input| input.tenure())
+        .is_some_and(|tenure| {
+            matches!(
+                tenure.partition,
+                awaken_session_application_contract::TaskReadPartition::Session { .. }
+            )
+        });
+    if request.identity_scope == DispatchIdentityScope::SessionCommand
+        && (request.admission_shape() == DispatchAdmissionShape::SessionChild
+            || task_child_partition)
+        && !request.is_task_child_command()
+    {
+        Err(DispatchError::Rejected(
+            "Task-child Session command identity is incomplete".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Reject the one Session-root intent shape that must cross the durable
 /// activity-receipt boundary before it is executable. Every ordinary fresh-row
 /// path calls this before persistence; child and already activity-bound legacy
@@ -1094,6 +1164,7 @@ pub(crate) fn validate_executable_dispatch_admission(
             "Prepared Session Run requires self-affinity and its current complete command fingerprint".to_string(),
         ));
     }
+    validate_task_child_command_identity(request)?;
     match request.admission_shape() {
         DispatchAdmissionShape::SessionRootAwaitingActivity => Err(DispatchError::Rejected(
             "Session root awaiting an activity receipt must use Session Run reservation"
@@ -1955,6 +2026,99 @@ mod operation_storage_tests {
                 StoredDispatchOperation::decode(bad).is_err(),
                 "W3 unknown/missing is error"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod retained_source_tests {
+    use super::*;
+
+    #[test]
+    fn retained_source_decoder_preserves_identity_scope_and_refuses_corruption() {
+        // D1 original FullDispatch/current SessionCommand scope => exact
+        // retained value; D2 NULL => no source, not reconstructed. D3 bad JSON
+        // or any run/thread/session/fingerprint mismatch =>Unavailable source.
+        // The SessionCommand row must compare admission_fingerprint, never the
+        // distinct canonical full input hash. No source result grants an ACK.
+        for compact in [false, true] {
+            let mut request = RunDispatch::new(awaken_dispatch_testkit::worker_http::activation(
+                "retained-decoder",
+            ));
+            request.private_task_input = Some(serde_json::from_value(serde_json::json!({
+                "version":1,"observations":[],"tenure": {
+                    "thread":request.thread_id().0, "partition":{"kind":"thread"},"run":"original",
+                    "task":"task", "holder":"holder", "epoch":1,
+                }
+            })).unwrap());
+            if compact {
+                let thread = request.thread_id().clone();
+                request = request
+                    .with_session_command_fingerprint(
+                        awaken_session_types::SessionRunCommandFingerprint::from_sha256_hex(
+                            &"a".repeat(64),
+                        )
+                        .unwrap(),
+                    )
+                    .with_session_command_identity()
+                    .for_session(thread)
+                    .with_session_activity_epoch(7);
+                assert_ne!(
+                    request.admission_fingerprint(),
+                    request.canonical_fingerprint(),
+                    "D1 different identity scopes"
+                );
+            }
+            let completion = awaken_dispatch_contract::DispatchCompletion {
+                sequence: 1,
+                run_id: request.run_id().clone(),
+                thread_id: Some(request.thread_id().clone()),
+                session_thread_id: request.session_thread_id.clone(),
+                request_fingerprint: Some(request.admission_fingerprint()),
+                cancellation_requested: false,
+            };
+            assert_eq!(
+                decode_retained_completion_request(
+                    &completion,
+                    Some(&serde_json::to_string(&request).unwrap())
+                )
+                .unwrap()
+                .as_deref(),
+                Some(&request),
+                "D1 exact original request"
+            );
+            assert_eq!(
+                decode_retained_completion_request(&completion, None),
+                Ok(None),
+                "D2 no backfill"
+            );
+            assert!(
+                matches!(
+                    decode_retained_completion_request(&completion, Some("broken")),
+                    Err(DispatchError::Unavailable(_))
+                ),
+                "D3 decode Unknown"
+            );
+            for axis in ["run", "thread", "session", "fingerprint"] {
+                let mut changed = completion.clone();
+                match axis {
+                    "run" => changed.run_id.0.push_str("-foreign"),
+                    "thread" => changed.thread_id.as_mut().unwrap().0.push_str("-foreign"),
+                    "session" => {
+                        changed.session_thread_id =
+                            Some(awaken_agent_contract::ThreadId("foreign-session".into()))
+                    }
+                    "fingerprint" => changed.request_fingerprint = Some("different".into()),
+                    _ => unreachable!(),
+                }
+                assert!(
+                    matches!(
+                        validate_retained_completion_request(&changed, &request),
+                        Err(DispatchError::Unavailable(_))
+                    ),
+                    "D3 {axis}"
+                );
+            }
         }
     }
 }

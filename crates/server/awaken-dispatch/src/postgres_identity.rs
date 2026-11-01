@@ -22,7 +22,7 @@ pub(crate) async fn load_run_identity_evidence(
     sqlx::query(&format!(
         "SELECT d.run_id AS live_run_id, d.thread_id AS live_thread_id, \
          d.status, d.request, c.sequence, c.run_id, c.request_fingerprint, \
-         c.thread_id, c.session_thread_id, c.cancel_requested FROM (SELECT $1::TEXT AS run_id) k \
+         c.thread_id, c.session_thread_id, c.cancel_requested, c.retained_request::TEXT AS retained_request_json FROM (SELECT $1::TEXT AS run_id) k \
          LEFT JOIN {prefix}_dispatch d ON d.run_id = k.run_id \
          LEFT JOIN {prefix}_dispatch_completion c ON c.run_id = k.run_id"
     ))

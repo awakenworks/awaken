@@ -26,7 +26,8 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::worker_authority::{
-    SessionWorkerEffectTemporalRule, clock_ms, verify_session_worker_effect,
+    SessionWorkerEffectAdmission, SessionWorkerEffectTemporalRule, clock_ms,
+    verify_session_worker_effect,
 };
 
 pub const ARTIFACT_PUBLICATION_PATH: &str = "/v1/worker/resources/files/artifacts";
@@ -507,17 +508,17 @@ async fn authorize_session_worker_lease(
     let Some(identity) = identity else {
         return Err(StatusCode::FORBIDDEN);
     };
-    if let Some(status) = verify_session_worker_effect(
-        service.directory.as_ref(),
-        worker,
-        identity,
-        lease,
-        clock_ms(service.clock.as_ref()),
-        temporal_rule,
-    )
-    .await
-    .rejection_status()
-    {
+    if let Some(status) = SessionWorkerEffectAdmission::rejection_status(
+        verify_session_worker_effect(
+            service.directory.as_ref(),
+            worker,
+            identity,
+            lease,
+            clock_ms(service.clock.as_ref()),
+            temporal_rule,
+        )
+        .await,
+    ) {
         return Err(status);
     }
     Ok(())
@@ -624,17 +625,17 @@ async fn authorize_artifact_effect(
             if idempotency_scope.is_some() {
                 return Err(StatusCode::BAD_REQUEST);
             }
-            if verify_claim_owner(
-                service.directory.as_ref(),
-                worker,
-                identity,
-                claim,
-                clock_ms(service.clock.as_ref()),
-            )
-            .await
-            .is_err()
-            {
-                return Err(StatusCode::FORBIDDEN);
+            if let Some(status) = SessionWorkerEffectAdmission::claim_rejection_status(
+                verify_claim_owner(
+                    service.directory.as_ref(),
+                    worker,
+                    identity,
+                    claim,
+                    clock_ms(service.clock.as_ref()),
+                )
+                .await,
+            ) {
+                return Err(status);
             }
             let guard = match service.dispatch.lock_commit_epoch(claim).await {
                 Ok(Some(guard)) if guard.is_live_at(clock_ms(service.clock.as_ref())) => guard,

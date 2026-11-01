@@ -503,6 +503,7 @@ pub(crate) fn build_runtime<S: RuntimeToolSource + ?Sized>(
     clock: Arc<dyn awaken_time::WallClock>,
     sandbox: &S,
     background_supervisor: Option<Arc<awaken_ext_background_task::BackgroundTaskSupervisor>>,
+    registered_tools: &[Arc<dyn RawTool>],
 ) -> Runtime {
     let mut runtime = Runtime::new()
         .with_clock(clock)
@@ -524,7 +525,14 @@ pub(crate) fn build_runtime<S: RuntimeToolSource + ?Sized>(
     }
     // The full capability surface (ADR-0035 D8): hand tools plus provisioned skill
     // tools. Placement-agnostic — the kernel sees `RawTool`s, not "skills".
-    for tool in sandbox.runtime_tools() {
+    // ADR-0052 D3: every Session/child Runtime has the same process-selected
+    // execution backing. Registration is not authorization; the frozen Task
+    // catalog and the original permission/Run-narrowing gates still decide use.
+    for tool in sandbox
+        .runtime_tools()
+        .into_iter()
+        .chain(registered_tools.iter().cloned())
+    {
         runtime = runtime.with_tool(tool);
     }
     runtime
@@ -539,8 +547,9 @@ pub(crate) fn build_runtime_with_authorization<S: RuntimeToolSource + ?Sized>(
     sandbox: &S,
     authorization: &EffectiveToolAuthorization,
     background_supervisor: Option<Arc<awaken_ext_background_task::BackgroundTaskSupervisor>>,
+    registered_tools: &[Arc<dyn RawTool>],
 ) -> Runtime {
-    let runtime = build_runtime(llm, clock, sandbox, background_supervisor);
+    let runtime = build_runtime(llm, clock, sandbox, background_supervisor, registered_tools);
     if authorization.explicit {
         runtime.with_gate(authorization.gate.clone())
     } else {
@@ -924,9 +933,10 @@ mod tests {
                     &source,
                     &authorization,
                     None,
+                    &[],
                 )
             } else {
-                build_runtime(Arc::new(OneRead), clock.clone(), &source, None)
+                build_runtime(Arc::new(OneRead), clock.clone(), &source, None, &[])
                     .with_gate(authorization.gate.clone())
             };
             let callbacks = std::sync::atomic::AtomicUsize::new(0);
@@ -1640,6 +1650,7 @@ mod tests {
             Arc::new(awaken_lease_testkit::ManualClock::new(1_000)),
             &sandbox,
             None,
+            &[],
         );
         assert!(
             runtime

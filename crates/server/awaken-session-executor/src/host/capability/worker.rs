@@ -20,4 +20,8 @@ pub(crate) struct WorkerTransports {
     /// and Session code retain only exact non-secret references.
     pub(crate) worker_credential_resolver:
         Option<Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>>,
+    /// This registered incarnation's Task attention delivery; its holder is
+    /// the one the process's BackgroundTask supervisor tenures Tasks to.
+    pub(crate) task_control:
+        Option<Arc<dyn awaken_session_application_contract::RegisteredTaskControl>>,
 }

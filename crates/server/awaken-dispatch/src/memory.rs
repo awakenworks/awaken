@@ -229,6 +229,13 @@ struct PendingRow {
     revision: u64,
 }
 
+/// One record in the original completion log; the operational receipt is
+/// unchanged while eligible Task sources stay in this same authority record.
+struct CompletionRecord {
+    receipt: DispatchCompletion,
+    retained_request: Option<Box<RunDispatch>>,
+}
+
 struct State {
     /// The store's clock, reachable under the lock so every operational event
     /// is stamped on the same timeline the store judges its rows on.
@@ -241,7 +248,7 @@ struct State {
     /// Cross-thread deliveries staged for relay, in arrival order.
     outbox: Vec<PendingInput>,
     /// Applied-Done facts, retained as permanent run-id tombstones (ADR-0060).
-    completions: Vec<DispatchCompletion>,
+    completions: Vec<CompletionRecord>,
     /// Dispatch-authority transitions in the same order as their mutations.
     operations: Vec<crate::dispatch::StoredDispatchEvent>,
 }
@@ -502,9 +509,18 @@ fn claim_exact_with_mode(
         return Ok(None);
     }
     if !terminal_resolution
-        && worker.is_none()
         && !row.cancellation_requested
-        && !can_claim_locally(&row.request.placement)
+        && match worker {
+            Some(worker) => can_assign(
+                worker,
+                &row.request.placement,
+                row.assignment.as_ref(),
+                row.sandbox.is_some(),
+                now_ms,
+            )
+            .is_err(),
+            None => !can_claim_locally(&row.request.placement),
+        }
     {
         return Ok(None);
     }
@@ -616,11 +632,16 @@ fn claim_new_local(
 fn stored_run_evidence<'a>(
     state: &'a State,
     run_id: &RunId,
-) -> (Option<&'a Row>, Option<&'a DispatchCompletion>) {
+) -> (Option<&'a Row>, Option<&'a CompletionRecord>) {
     let live = state.rows.get(run_id);
     let completed = live
         .is_none()
-        .then(|| state.completions.iter().find(|row| &row.run_id == run_id))
+        .then(|| {
+            state
+                .completions
+                .iter()
+                .find(|row| &row.receipt.run_id == run_id)
+        })
         .flatten();
     (live, completed)
 }
@@ -633,7 +654,7 @@ fn known_run_identity(state: &State, request: &RunDispatch) -> Result<bool, Disp
     let stored = match (live, completed) {
         (Some(row), _) => StoredRunIdentity::Live(&row.request),
         (None, Some(completion)) => {
-            StoredRunIdentity::Completed(completion.request_fingerprint.as_deref())
+            StoredRunIdentity::Completed(completion.receipt.request_fingerprint.as_deref())
         }
         (None, None) => StoredRunIdentity::Absent,
     };
@@ -735,8 +756,8 @@ fn known_session_child_threads(state: &State, parent: &ThreadId) -> Vec<ThreadId
         .values()
         .filter_map(|row| session_child_thread(&row.request, parent).cloned())
         .chain(state.completions.iter().filter_map(|completion| {
-            (completion.session_thread_id.as_ref() == Some(parent))
-                .then(|| completion.thread_id.clone())
+            (completion.receipt.session_thread_id.as_ref() == Some(parent))
+                .then(|| completion.receipt.thread_id.clone())
                 .flatten()
                 .filter(|thread| thread != parent)
         }))
@@ -1497,9 +1518,9 @@ impl awaken_dispatch_contract::DispatchControlReads for MemoryDispatchStore {
         Ok(state
             .completions
             .iter()
-            .filter(|completion| completion.sequence > after_sequence)
+            .filter(|completion| completion.receipt.sequence > after_sequence)
             .take(limit)
-            .cloned()
+            .map(|completion| completion.receipt.clone())
             .collect())
     }
 
@@ -1550,7 +1571,20 @@ impl awaken_dispatch_contract::SessionRunAdmissionReads for MemoryDispatchStore 
         }
         Ok(
             completed.map_or(SessionRunAdmissionObservation::Missing, |row| {
-                SessionRunAdmissionObservation::Completed(row.clone())
+                SessionRunAdmissionObservation::Completed {
+                    completion: row.receipt.clone(),
+                    retained_request: row
+                        .retained_request
+                        .as_ref()
+                        .map(|request| {
+                            crate::dispatch::validate_retained_completion_request(
+                                &row.receipt,
+                                request,
+                            )?;
+                            Ok(request.clone())
+                        })
+                        .transpose(),
+                }
             }),
         )
     }
@@ -1636,7 +1670,7 @@ impl awaken_dispatch_contract::SessionRunReservations for MemoryDispatchStore {
         }
         if let Some(completion) = completed {
             return Ok(classify_completed_session_run_reservation(
-                completion.request_fingerprint.as_deref(),
+                completion.receipt.request_fingerprint.as_deref(),
                 &request,
             ));
         }
@@ -1665,7 +1699,7 @@ impl awaken_dispatch_contract::SessionRunReservations for MemoryDispatchStore {
         let completed = state
             .completions
             .iter()
-            .any(|completion| &completion.run_id == run_id);
+            .any(|completion| &completion.receipt.run_id == run_id);
         let live = state.rows.get(run_id).map(|row| (&row.request, row.state));
         if let Some(outcome) = classify_session_run_reservation_activation(
             live,
