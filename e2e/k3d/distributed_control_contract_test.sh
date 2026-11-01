@@ -301,6 +301,19 @@ grep -q 'create secret tls adr71-worker-upstream-tls' "$REPO_ROOT/e2e/k3d/distri
 grep -q 'name: runtime-kube-api' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_attempt' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+# T1 preserves the exact current transport target and each live cause; T2
+# removing its canonical source/floor/feature or restoring a second list/grep
+# path cannot qualify it. Execution/skip/refusal semantics remain owned by the
+# existing required executor's tests, not by another parser in this contract.
+TRANSPORT_GATE=$(sed -n '/^TRANSPORT_TEST=/,/^kubectl -n "\$NS" scale statefulset\/worker/p' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")
+grep -Fq 'source "$REPO_ROOT/scripts/ci/_rust_test_execution.sh"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'AWAKEN_K8S_E2E=1 AWAKEN_K3D_CLUSTER="$CLUSTER" AWAKEN_K8S_FIXTURE_IMAGE="$IMAGE"' <<<"$TRANSPORT_GATE"
+grep -Fq 'AWAKEN_K8S_CONTROL_IMAGE="$SANDBOX_IMAGE"' <<<"$TRANSPORT_GATE"
+grep -Fq 'run_required_rust_tests -p awaken-process-startup --features container-k8s --lib --locked' <<<"$TRANSPORT_GATE"
+grep -Fq '"$TRANSPORT_TEST" --require-case="$TRANSPORT_TEST" -- --exact' <<<"$TRANSPORT_GATE"
+! grep -Eq '^TRANSPORT_TESTS=' <<<"$TRANSPORT_GATE"
+! grep -Fq 'grep -Fqx "$TRANSPORT_TEST: test"' <<<"$TRANSPORT_GATE"
 grep -q "ALTER SYSTEM SET synchronous_commit = 'remote_apply';" "$RENDERED"
 grep -q "ALTER SYSTEM SET synchronous_standby_names = 'FIRST 1 (awaken_standby)';" "$RENDERED"
 ! grep -q -- '- synchronous_commit=remote_apply' "$RENDERED"
@@ -318,7 +331,297 @@ grep -q "sync_state = 'sync'" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 ! grep -q 'ADR71-CHAOS-SLOW' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'NATIVE_CRASH_MARKER="ADR71-NATIVE-HARD-CRASH"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'worker_kubernetes_identity_directory' "$RENDERED"
-grep -q 'restartPolicy: Never' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+# IP-template table: the actual Pod producer keeps Never by default, explicitly
+# renders Always for in-place restart, and rejects other values before kubectl.
+# Stub only IO; do not duplicate the template or its policy selection.
+render_native_worker() (
+  NS=awaken-adr71 IMAGE=contract-image
+  kubectl() { cat >&3; }
+  err() { echo "$*" >&2; }
+  eval "$(sed -n '/^create_native_worker_pod() {/,/^}/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+  create_native_worker_pod contract-worker "$@" 3>&1
+)
+grep -q '^  restartPolicy: Never$' <<<"$(render_native_worker)"
+grep -q '^  restartPolicy: Always$' <<<"$(render_native_worker Always)"
+if render_native_worker invalid >/dev/null 2>&1; then
+  echo "invalid owned Native restart policy was admitted" >&2
+  exit 1
+else
+  [[ "$?" = 2 ]]
+fi
+# IP3 a stale captured container is refused before the one CRI owner is called;
+# no retry may silently resample the replacement. Reuse the actual helper body.
+(
+  CLUSTER=contract NS=awaken-adr71 calls=0
+  err() { echo "$*" >&2; }
+  kubectl() { printf 'uid|k3d-contract-agent-0|containerd://%064d|0' 0; }
+  k3d_hard_stop_cri_container() { calls=$((calls + 1)); return 99; }
+  eval "$(sed -n '/^hard_crash_native_worker() {/,/^}/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+  result=0
+  hard_crash_native_worker contract-worker uid in-place stale-container >/dev/null 2>&1 || result=$?
+  [[ "$result" = 1 && "$calls" = 0 ]]
+)
+# Log-observation decision table, using the ACTUAL runner bodies and IO only:
+# L1 two complete original processes + unchanged full prefixes -> exact total;
+# L2 partial successful text followed by log/API37 is failure, not count1;
+# L3 missing/replaced/restarted participant or changing Deployment -> Unknown;
+# L4 replacement DURING the read is likewise refused before emitting success;
+# L5 same-process log truncation/rotation cannot erase an observed first call;
+# L6 all history survives a long fault window (no --since), so replay totals2;
+# L7 only grep no-match is0; invalid expression is still an error;
+# L8 Coordinator reads use this same full acquisition, but a fresh observation
+# cohort per call because this test intentionally scales those observers later.
+# These stubs prove evidence refusal/counting, never real Kubernetes recovery.
+(
+  fixture=$(mktemp -d)
+  trap 'rm -rf -- "$fixture"' EXIT
+  mkdir "$fixture/evidence"
+  NS=exact K3D_DIAGNOSTIC_TIMEOUT_SECONDS=20
+  log_status=0 get_status=0 changed_during_read=0
+  run_with_deadline() { shift; "$@"; }
+  python3 - "$fixture" <<'PYLOGFIXTURE'
+from pathlib import Path
+import json, sys
+root = Path(sys.argv[1])
+definition = {"kind":"Deployment", "metadata":{"uid":"deployment-uid", "generation":1},
+              "spec":{"replicas":2}, "status":{"observedGeneration":1,"replicas":2,
+              "updatedReplicas":2,"readyReplicas":2,"availableReplicas":2}}
+pods = [{"kind":"Pod", "metadata":{"name":name,"uid":name+"-uid"}, "status":{
+    "containerStatuses":[{"name":"provider","ready":True,"containerID":"containerd://"+name,
+    "restartCount":0,"state":{"running":{"startedAt":"2000-01-01T00:00:00Z"}}}]}}
+    for name in ("provider-a","provider-b")]
+(root/"participants.json").write_text(json.dumps({"items":[definition,*pods]}))
+(root/"original.json").write_bytes((root/"participants.json").read_bytes())
+for name in ("provider-a","provider-b"):
+    (root/(name+".log")).write_bytes(("[pod/"+name+"/provider] old startup\n").encode())
+PYLOGFIXTURE
+  kubectl() {
+    printf '%s\n' "$*" >>"$fixture/calls"
+    [[ "$*" != *--since* ]] || return 91
+    if [[ " $* " = *' get deployment,pod '* ]]; then
+      cat "$fixture/participants.json"
+      return "$get_status"
+    fi
+    if [[ " $* " = *' logs '* ]]; then
+      local previous="" pod="" argument
+      for argument in "$@"; do
+        [[ "$previous" != logs ]] || pod="$argument"
+        previous="$argument"
+      done
+      cat "$fixture/$pod.log"
+      if [[ "$changed_during_read" = 1 ]]; then
+        python3 - "$fixture/participants.json" <<'PYLOGCHANGE'
+import json, sys
+from pathlib import Path
+p=Path(sys.argv[1]); value=json.loads(p.read_text())
+value["items"][1]["status"]["containerStatuses"][0]["containerID"]="foreign"
+p.write_text(json.dumps(value))
+PYLOGCHANGE
+      fi
+      return "$log_status"
+    fi
+    return 92
+  }
+  for owner in role_log_participants role_logs role_log_matches; do
+    eval "$(sed -n "/^$owner() {/,/^}/p" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+  done
+  role_logs provider provider "$fixture/evidence" freeze >/dev/null
+  printf '[pod/provider-a/provider] ADR71_PROVIDER_REQUEST "unique"\n' >>"$fixture/provider-a.log"
+  [[ "$(role_log_matches provider provider -F count 'ADR71_PROVIDER_REQUEST "unique"' "$fixture/evidence")" = 1 ]]
+  [[ "$(role_log_matches provider provider -F lines 'ADR71_PROVIDER_REQUEST "unique"' "$fixture/evidence")" = '[pod/provider-a/provider] ADR71_PROVIDER_REQUEST "unique"' ]]
+  [[ "$(role_log_matches provider provider -F count missing "$fixture/evidence")" = 0 ]]
+  result=0 log_status=37 output=""
+  output=$(role_log_matches provider provider -F count 'ADR71_PROVIDER_REQUEST "unique"' "$fixture/evidence") || result=$?
+  [[ "$result" = 37 && -z "$output" ]]
+  result=0 log_status=0 get_status=31 output=""
+  output=$(role_log_matches provider provider -F count unique "$fixture/evidence") || result=$?
+  [[ "$result" = 31 && -z "$output" ]]
+  get_status=0
+  for cause in missing uid container restart started deployment replicas; do
+    python3 - "$fixture" "$cause" <<'PYLOGCAUSE'
+import json, sys
+from pathlib import Path
+root=Path(sys.argv[1]); value=json.loads((root/"original.json").read_text()); cause=sys.argv[2]
+selected=value["items"][1]["status"]["containerStatuses"][0]
+if cause=="missing": value["items"].pop()
+if cause=="uid": value["items"][1]["metadata"]["uid"]="foreign"
+if cause=="container": selected["containerID"]="foreign"
+if cause=="restart": selected["restartCount"]=1
+if cause=="started": selected["state"]["running"]["startedAt"]="2000-01-02T00:00:00Z"
+if cause=="deployment": value["items"][0]["metadata"]["uid"]="foreign"
+if cause=="replicas": value["items"][0]["spec"]["replicas"]=1
+(root/"participants.json").write_text(json.dumps(value))
+PYLOGCAUSE
+    result=0 output=""
+    output=$(role_log_matches provider provider -F count unique "$fixture/evidence") || result=$?
+    [[ "$result" = 2 && -z "$output" ]]
+  done
+  cp "$fixture/original.json" "$fixture/participants.json"
+  mv "$fixture/evidence/provider-a.log" "$fixture/retained.log"
+  result=0 output=""
+  output=$(role_log_matches provider provider -F count unique "$fixture/evidence") || result=$?
+  [[ "$result" = 2 && -z "$output" ]]
+  mv "$fixture/retained.log" "$fixture/evidence/provider-a.log"
+  result=0 changed_during_read=1 output=""
+  output=$(role_log_matches provider provider -F count unique "$fixture/evidence") || result=$?
+  [[ "$result" = 2 && -z "$output" ]]
+  changed_during_read=0
+  cp "$fixture/original.json" "$fixture/participants.json"
+  cp "$fixture/provider-a.log" "$fixture/saved.log"
+  printf '[pod/provider-a/provider] ADR71_PROVIDER_REQUEST "unique"\n' >"$fixture/provider-a.log"
+  result=0 output=""
+  output=$(role_log_matches provider provider -F count unique "$fixture/evidence") || result=$?
+  [[ "$result" = 2 && -z "$output" ]]
+  cp "$fixture/saved.log" "$fixture/provider-a.log"
+  printf '[pod/provider-b/provider] ADR71_PROVIDER_REQUEST "unique"\n' >>"$fixture/provider-b.log"
+  [[ "$(role_log_matches provider provider -F count 'ADR71_PROVIDER_REQUEST "unique"' "$fixture/evidence")" = 2 ]]
+  result=0 output=""
+  output=$(role_log_matches provider provider -E count '[' "$fixture/evidence" 2>/dev/null) || result=$?
+  [[ "$result" = 2 && -z "$output" ]]
+  # L9 a completed count2 does NOT authorize a fresh baseline if its freeze
+  # completion marker is lost. The same fixture keeps both counts but replaces
+  # one participant UID/CID: read must remain Unknown, never bind that new set.
+  cp "$fixture/evidence/participants" "$fixture/participants.saved"
+  rm "$fixture/evidence/participants"
+  python3 - "$fixture/participants.json" <<'PYLOGLOST'
+import json, sys
+from pathlib import Path
+p=Path(sys.argv[1]); value=json.loads(p.read_text())
+value["items"][1]["metadata"]["uid"]="replacement-uid"
+value["items"][1]["status"]["containerStatuses"][0]["containerID"]="replacement-container"
+p.write_text(json.dumps(value))
+PYLOGLOST
+  result=0 output=""
+  output=$(role_log_matches provider provider -F count 'ADR71_PROVIDER_REQUEST "unique"' "$fixture/evidence") || result=$?
+  printf 'lost-freeze-and-replacement actual_status=%s actual_count=%s expected_status=2\n' "$result" "$output"
+  [[ "$result" = 2 && -z "$output" ]]
+  cp "$fixture/participants.saved" "$fixture/evidence/participants"
+  cp "$fixture/original.json" "$fixture/participants.json"
+  # L10 read is never an initializer: empty/half-written/missing directories and
+  # omitted Provider baseline refuse; an explicit second freeze cannot rewrite
+  # a completed cohort. Only the original startup call may seal an empty path.
+  mkdir "$fixture/uninitialized" "$fixture/partial"
+  cp "$fixture/evidence/provider-a.log" "$fixture/partial/provider-a.log"
+  for evidence in "$fixture/uninitialized" "$fixture/partial" "$fixture/missing" ""; do
+    result=0 output=""
+    output=$(role_log_matches provider provider -F count unique "$evidence") || result=$?
+    [[ "$result" = 2 && -z "$output" ]]
+  done
+  result=0 output=""
+  output=$(role_logs provider provider "$fixture/evidence" freeze) || result=$?
+  [[ "$result" = 2 && -z "$output" ]]
+  # The original sealed cohort remains usable after these refusals.
+  [[ "$(role_log_matches provider provider -F count 'ADR71_PROVIDER_REQUEST "unique"' "$fixture/evidence")" = 2 ]]
+  # Same acquisition for the other role; no Provider lifetime baseline is reused
+  # after the deliberate Coordinator pause/restore changes its own participant set.
+  python3 - "$fixture/participants.json" <<'PYLOGROLE'
+import json, sys
+from pathlib import Path
+p=Path(sys.argv[1]); value=json.loads(p.read_text())
+for pod in value["items"][1:]:
+    pod["status"]["containerStatuses"][0]["name"]="worker-tls"
+p.write_text(json.dumps(value))
+PYLOGROLE
+  [[ "$(role_log_matches coordinator worker-tls -E count 'ADR71_PROVIDER_REQUEST .*unique')" = 2 ]]
+  ! grep -q -- --since "$fixture/calls"
+)
+# Q-read table: exact original UID+fixed commit -> one actual read command;
+# foreign/missing UID -> zero exec; get failure -> raw status. This observes
+# forwarding/refusal only, never stands in for real cluster clone/readback.
+(
+  fixture=$(mktemp -d)
+  trap 'rm -f -- "$fixture/exec"; rmdir -- "$fixture"' EXIT
+  NS=exact current_uid=owned get_status=0
+  kubectl() {
+    if [[ " $* " = *' exec '* ]]; then
+      printf '%s\0' "$@" >"$fixture/exec"
+    else
+      (( get_status == 0 )) || return "$get_status"
+      printf '%s' "$current_uid"
+    fi
+  }
+  eval "$(sed -n '/^verify_checkpoint_repository() {/,/^}/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+  printf -v expected_commit '%040d' 0
+  verify_checkpoint_repository source-pod owned "$expected_commit"
+  python3 - "$fixture/exec" "$expected_commit" <<'PYREAD'
+import pathlib,sys
+args=pathlib.Path(sys.argv[1]).read_bytes().split(b'\0')[:-1]
+assert args[:8] == [b'-n',b'exact',b'exec',b'source-pod',b'-c',b'agent',b'--',b'sh']
+assert args[-2:] == [b'awaken-checkpoint-source',sys.argv[2].encode()]
+assert b'git -C /workspace/source rev-parse HEAD' in args[-3]
+assert b'cmp -s - /workspace/source/README' in args[-3]
+PYREAD
+  rm -f -- "$fixture/exec"
+  current_uid=foreign
+  ! verify_checkpoint_repository source-pod owned "$expected_commit"
+  [[ ! -e "$fixture/exec" ]]
+  ! verify_checkpoint_repository source-pod '' "$expected_commit"
+  [[ ! -e "$fixture/exec" ]]
+  current_uid=owned get_status=31 result=0
+  verify_checkpoint_repository source-pod owned "$expected_commit" || result=$?
+  [[ "$result" = 31 && ! -e "$fixture/exec" ]]
+)
+# CP-restore decision table: P1 owned UID/replicas -> suspend every observer,
+# then restore that original count. P2 scale failure saves restoration BEFORE
+# IO; cleanup can observe the original count and finish idempotently. P3 foreign
+# UID refuses before mutation. P4 rollout failure preserves the restoration
+# receipt for the existing cleanup owner. These are actual helper+IO-stub tests,
+# not Registry/Session or successful live recovery claims.
+(
+  fixture=$(mktemp -d)
+  trap 'rm -f -- "$fixture/uid" "$fixture/replicas" "$fixture/calls"; rmdir -- "$fixture"' EXIT
+  printf original-uid >"$fixture/uid"
+  printf 2 >"$fixture/replicas"
+  NS=exact K3D_DIAGNOSTIC_TIMEOUT_SECONDS=20
+  COORDINATOR_RESTORE_UID="" COORDINATOR_RESTORE_REPLICAS=""
+  scale_status=0 rollout_status=0
+  run_with_deadline() { shift; "$@"; }
+  kubectl() {
+    printf '%s\n' "$*" >>"$fixture/calls"
+    if [[ " $* " = *' get deploy/coordinator '* ]]; then
+      printf '%s|%s|original-rv' "$(cat "$fixture/uid")" "$(cat "$fixture/replicas")"
+    elif [[ " $* " = *' scale deploy/coordinator '* ]]; then
+      [[ "$*" = *'--resource-version=original-rv'* ]] || return 31
+      (( scale_status == 0 )) || return "$scale_status"
+      for argument in "$@"; do
+        [[ "$argument" != --replicas=* ]] || printf '%s' "${argument#--replicas=}" >"$fixture/replicas"
+      done
+    elif [[ " $* " = *' rollout status '* ]]; then
+      return "$rollout_status"
+    elif [[ " $* " = *' wait --for=delete '* ]]; then
+      [[ "$(cat "$fixture/replicas")" = 0 ]]
+    else return 32
+    fi
+  }
+  eval "$(sed -n '/^pause_coordinator_observation() {/,/^}/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+  eval "$(sed -n '/^restore_coordinator_observation() {/,/^}/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+  pause_coordinator_observation
+  [[ "$COORDINATOR_RESTORE_UID/$COORDINATOR_RESTORE_REPLICAS" = original-uid/2 ]]
+  [[ "$(cat "$fixture/replicas")" = 0 ]]
+  restore_coordinator_observation
+  [[ "$(cat "$fixture/replicas")" = 2 && -z "$COORDINATOR_RESTORE_UID" ]]
+  scale_status=43 result=0
+  pause_coordinator_observation || result=$?
+  [[ "$result" = 43 && "$COORDINATOR_RESTORE_UID" = original-uid ]]
+  [[ "$(cat "$fixture/replicas")" = 2 ]]
+  scale_status=0
+  restore_coordinator_observation
+  pause_coordinator_observation
+  printf foreign-uid >"$fixture/uid"
+  prior=$(wc -l <"$fixture/calls")
+  result=0
+  restore_coordinator_observation || result=$?
+  [[ "$result" = 2 && "$(wc -l <"$fixture/calls")" = "$((prior + 1))" ]]
+  [[ "$(cat "$fixture/replicas")" = 0 && -n "$COORDINATOR_RESTORE_UID" ]]
+  printf original-uid >"$fixture/uid"
+  rollout_status=44 result=0
+  restore_coordinator_observation || result=$?
+  [[ "$result" = 44 && -n "$COORDINATOR_RESTORE_UID" ]]
+  [[ "$(cat "$fixture/replicas")" = 2 ]]
+  rollout_status=0
+  restore_coordinator_observation
+  [[ -z "$COORDINATOR_RESTORE_UID" && -z "$COORDINATOR_RESTORE_REPLICAS" ]]
+)
 # The Coordinator adds the Worker process-evidence finalizer at registration;
 # neither a fixture Pod nor the fleet template may carry it from creation.
 ! grep -q 'finalizers: \[awaken.dev/worker-process-evidence\]' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
@@ -328,7 +631,7 @@ grep -Fq 'wait --for=delete "pod/$NATIVE_CRASH_OLD"' \
 grep -q 'prepare-native-crash' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'verify-native-crash' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'NATIVE_PROVIDER_BEFORE_CRASH' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -q 'coordinator_worker_log_count' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'role_log_matches coordinator worker-tls -E count' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 ! grep -q 'logs -l app=coordinator -c worker-tls' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'observe_expired_predecessor' "$REPO_ROOT/crates/server/awaken-dispatch-http/src/worker_dispatch/session_coordination.rs"
 grep -Fq 'hard_crash_native_worker "$NATIVE_CRASH_OLD" "$NATIVE_OLD_UID"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
@@ -340,7 +643,47 @@ grep -Fq '[ "$NATIVE_INFLIGHT_JOURNAL" = "1|0" ]' "$REPO_ROOT/e2e/k3d/distribute
 grep -q 'observe-provider-completed' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'verify-native-inflight' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'reject_old_native_finish' "$RENDERED"
+# IP0-IP2 freeze the original command/commit and fault exactly that container.
+# These composition obligations do not claim live PASS: the original distributed
+# gate must execute the attached physical table and every existing negative.
+STAGE11C="$(sed -n '/log "11c\/11/,/ok "K3D\/K3S FULL/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+grep -Fq 'create_native_worker_pod "$NATIVE_INPLACE" Always' <<<"$STAGE11C"
+grep -Fq 'hard_crash_native_worker "$NATIVE_INPLACE" "$NATIVE_INPLACE_UID" in-place "$NATIVE_INPLACE_CONTAINER"' <<<"$STAGE11C"
+grep -Fq '"$API_URL" "$NATIVE_INPLACE_SESSION" "$NATIVE_INPLACE_RECEIPT" "$NATIVE_INPLACE_MARKER"' <<<"$STAGE11C"
+grep -Fq '[ "$NATIVE_INPLACE_FINAL" = "0|1|1|1|1" ]' <<<"$STAGE11C"
+grep -Fq 'FROM runtime_commit' <<<"$STAGE11C"
+grep -Fq 'FROM runtime_dispatch_operation' <<<"$STAGE11C"
+grep -Fq 'generation > ${NATIVE_INPLACE_GENERATION}' <<<"$STAGE11C"
+grep -Fq 'native-inplace:[^|]+' "$RENDERED"
+grep -Fq '$http_x_awaken_worker_incarnation' "$RENDERED"
+! grep -Fq 'events.send' <<<"$STAGE11C"
+! grep -Fq 'verify-durable' <<<"$STAGE11C"
+! grep -Fq 'delete pod' <<<"$STAGE11C"
 grep -q 'ADR71_PROVIDER_REQUEST' "$REPO_ROOT/crates/devtools/awaken-scenario-host/src/distributed_control.rs"
+# Q0-Q4 composition: the live case must freeze old committed custody and join
+# real original Run/UID/ticket/source effects. These checks guard wiring only,
+# never convert a static match into a physical or current-source PASS.
+STAGE11D="$(sed -n '/log "11d\/11/,/ok "K3D\/K3S FULL/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+grep -Fq 'prepare-native-checkpoint' <<<"$STAGE11D"
+grep -Fq 'observe-native-checkpoint' <<<"$STAGE11D"
+grep -Fq 'resume-native-checkpoint' <<<"$STAGE11D"
+grep -Fq 'FROM runtime_waiting' <<<"$STAGE11D"
+grep -Fq '[ "$CHECKPOINT_CURRENT_TICKET" = "$CHECKPOINT_TICKET" ]' <<<"$STAGE11D"
+grep -Fq 'process_exit_json::jsonb->>' <<<"$STAGE11D"
+grep -Fq "='superseded'" <<<"$STAGE11D"
+grep -Fq 'AND generation=2' <<<"$STAGE11D"
+grep -Fq '[ "$CHECKPOINT_B_REGISTERED" = 0 ]' <<<"$STAGE11D"
+grep -Fq 'int(restarts)==int(count)+2' <<<"$STAGE11D"
+grep -Fq 'k3d_delete_exact_pod "$CLUSTER" "$NS" "$CHECKPOINT_SOURCE_POD" "$CHECKPOINT_SOURCE_UID" "$CHECKPOINT_SOURCE_RV"' <<<"$STAGE11D"
+grep -Fq 'verify_checkpoint_repository "$CHECKPOINT_SOURCE_REPLACEMENT" "$CHECKPOINT_SOURCE_NEW_UID" "$CHECKPOINT_SOURCE_COMMIT"' <<<"$STAGE11D"
+grep -Fq "'{aggregate,environment_materialization,origin,kind}'" <<<"$STAGE11D"
+! grep -Eq '\b(INSERT|UPDATE|DELETE FROM)\b|--force|delete pvc|has_source[[:space:]]*=' <<<"$STAGE11D"
+grep -Fq 'restore_coordinator_observation || coordinator_status=$?' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'k3d_delete_exact_pod_selftest' "$REPO_ROOT/e2e/k3d/harness.sh"
+grep -Fq 'native-checkpoint:[^|]+' "$RENDERED"
+grep -Fq 'waitForSessionCustomToolBoundary' "$REPO_ROOT/e2e/k3d/distributed_control_driver.ts"
+grep -Eq "^const CHECKPOINT_COMMIT = '[0-9a-f]{40}';$" "$REPO_ROOT/e2e/k3d/distributed_control_driver.ts"
+
 # Stage-boundary capacity table: C1 the fault batch owns temporary retained
 # Session Pods/PVCs; C2 later node/database checks retain only the original
 # Session; C3 public disposal is followed by exact backend deletion joins.

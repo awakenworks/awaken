@@ -178,6 +178,8 @@ async fn release_invocations(
     StatusCode::ACCEPTED.into_response()
 }
 
+const CHECKPOINT_MARKER_PREFIX: &str = "ADR71-NATIVE-CHECKPOINT";
+
 async fn distributed_provider_message(
     State(fixture): State<Arc<ProviderFixture>>,
     headers: HeaderMap,
@@ -193,18 +195,26 @@ async fn distributed_provider_message(
         )
             .into_response();
     }
-    let text = request
+    let texts = request
         .get("messages")
         .and_then(serde_json::Value::as_array)
-        .and_then(|messages| {
-            messages
-                .iter()
-                .rev()
-                .find(|message| message["role"] == "user")
-        })
-        .and_then(|message| message.get("content"))
-        .map(message_text)
-        .unwrap_or_default();
+        .into_iter()
+        .flatten()
+        .rev()
+        .filter(|message| message["role"] == "user")
+        .map(|message| message.get("content").map(message_text).unwrap_or_default())
+        .collect::<Vec<_>>();
+    let text = texts.first().cloned().unwrap_or_default();
+    // Ordinary requests retain the old latest-user semantics. Only this one
+    // fixture's tool_result has no direct user text and keeps its original marker.
+    let text = if text.is_empty() {
+        texts
+            .into_iter()
+            .find(|text| text.starts_with(CHECKPOINT_MARKER_PREFIX))
+            .unwrap_or(text)
+    } else {
+        text
+    };
     // Scenario-only arrival evidence for the k3d crash test. JSON encoding keeps
     // one request on one log line; durable product truth remains ThreadCommit.
     eprintln!(
@@ -221,20 +231,66 @@ async fn distributed_provider_message(
         }
     }
     let reply = format!("ADR71-PROVIDER:{text}");
-    if request.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
-        return anthropic_text_stream(&request, &reply);
-    }
-    Json(serde_json::json!({
+    let checkpoint = text.starts_with(CHECKPOINT_MARKER_PREFIX);
+    let returned = request["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|message| message["content"].as_array())
+        .flatten()
+        .filter(|block| {
+            block["type"] == "tool_result" && block["tool_use_id"] == "tool_adr71_checkpoint"
+        })
+        .collect::<Vec<_>>();
+    let (content, stop_reason) = if checkpoint && returned.is_empty() {
+        // This fixture requests a client-owned input, not an external action:
+        // the production Runtime must commit its real Awaiting ticket before
+        // the gate kills the Worker. Never manufacture a resume/closure fact.
+        let tools = request["tools"].as_array().filter(|tools| tools.len() == 1);
+        let Some(name) = tools.and_then(|tools| tools[0]["name"].as_str()) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "type":"error", "error":{"type":"invalid_request_error",
+                    "message":"checkpoint fixture requires its one declared client tool"}
+                })),
+            )
+                .into_response();
+        };
+        (
+            serde_json::json!([{"type":"tool_use", "id":"tool_adr71_checkpoint",
+            "name":name, "input":{"reason":"await the original client"}}]),
+            "tool_use",
+        )
+    } else if checkpoint {
+        if returned.len() != 1 || returned[0]["is_error"] == true {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+        (
+            serde_json::json!([{"type":"text", "text":format!("{reply}:{}",
+            message_text(&returned[0]["content"]))}]),
+            "end_turn",
+        )
+    } else {
+        (
+            serde_json::json!([{"type":"text", "text":reply}]),
+            "end_turn",
+        )
+    };
+    let response = serde_json::json!({
         "id": "msg_adr71",
         "type": "message",
         "role": "assistant",
         "model": request.get("model").and_then(serde_json::Value::as_str).unwrap_or("adr71-echo"),
-        "content": [{ "type": "text", "text": reply }],
-        "stop_reason": "end_turn",
+        "content": content,
+        "stop_reason": stop_reason,
         "stop_sequence": null,
         "usage": { "input_tokens": 1, "output_tokens": 1 }
-    }))
-    .into_response()
+    });
+    if request.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
+        return anthropic_message_stream(&response);
+    }
+    Json(response).into_response()
 }
 
 fn message_text(content: &serde_json::Value) -> String {
@@ -249,58 +305,63 @@ fn message_text(content: &serde_json::Value) -> String {
     }
 }
 
-fn anthropic_text_stream(request: &serde_json::Value, reply: &str) -> Response<Body> {
+fn anthropic_message_stream(response: &serde_json::Value) -> Response<Body> {
+    // One protocol renderer owns old text and the new client-input fixture.
+    // JSON and SSE consume the same response value; neither owns Run state.
     let frame =
         |event: &str, value: serde_json::Value| format!("event: {event}\ndata: {value}\n\n");
-    let model = request
-        .get("model")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("adr71-echo");
-    let body = [
-        frame(
-            "message_start",
-            serde_json::json!({
-                "type": "message_start",
-                "message": {
-                    "id": "msg_adr71", "type": "message", "role": "assistant",
-                    "model": model, "content": [], "stop_reason": null,
-                    "stop_sequence": null,
-                    "usage": { "input_tokens": 1, "output_tokens": 0 }
-                }
-            }),
-        ),
-        frame(
+    let mut initial = response.clone();
+    initial["content"] = serde_json::json!([]);
+    initial["stop_reason"] = serde_json::Value::Null;
+    initial["usage"]["output_tokens"] = serde_json::json!(0);
+    let mut body = frame(
+        "message_start",
+        serde_json::json!({
+            "type":"message_start", "message":initial,
+        }),
+    );
+    for (index, block) in response["content"]
+        .as_array()
+        .expect("fixture content")
+        .iter()
+        .enumerate()
+    {
+        let mut start = block.clone();
+        let delta = if block["type"] == "tool_use" {
+            start["input"] = serde_json::json!({});
+            serde_json::json!({"type":"input_json_delta",
+                "partial_json":serde_json::to_string(&block["input"]).expect("fixture input")})
+        } else {
+            start["text"] = serde_json::json!("");
+            serde_json::json!({"type":"text_delta", "text":block["text"]})
+        };
+        body.push_str(&frame(
             "content_block_start",
             serde_json::json!({
-                "type": "content_block_start", "index": 0,
-                "content_block": { "type": "text", "text": "" }
+                "type":"content_block_start", "index":index, "content_block":start,
             }),
-        ),
-        frame(
+        ));
+        body.push_str(&frame(
             "content_block_delta",
             serde_json::json!({
-                "type": "content_block_delta", "index": 0,
-                "delta": { "type": "text_delta", "text": reply }
+                "type":"content_block_delta", "index":index, "delta":delta,
             }),
-        ),
-        frame(
+        ));
+        body.push_str(&frame(
             "content_block_stop",
-            serde_json::json!({ "type": "content_block_stop", "index": 0 }),
-        ),
-        frame(
-            "message_delta",
             serde_json::json!({
-                "type": "message_delta",
-                "delta": { "stop_reason": "end_turn", "stop_sequence": null },
-                "usage": { "output_tokens": 1 }
+                "type":"content_block_stop", "index":index,
             }),
-        ),
-        frame(
-            "message_stop",
-            serde_json::json!({ "type": "message_stop" }),
-        ),
-    ]
-    .concat();
+        ));
+    }
+    body.push_str(&frame("message_delta", serde_json::json!({
+        "type":"message_delta", "delta":{"stop_reason":response["stop_reason"], "stop_sequence":null},
+        "usage":{"output_tokens":1},
+    })));
+    body.push_str(&frame(
+        "message_stop",
+        serde_json::json!({"type":"message_stop"}),
+    ));
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
@@ -498,5 +559,122 @@ mod tests {
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("ADR71-PROVIDER:marker"), "P2: {body}");
         assert!(body.contains("event: message_stop"), "P2: {body}");
+    }
+    #[tokio::test]
+    async fn checkpoint_fixture_requests_one_client_input_then_consumes_its_actual_result() {
+        // C/E: C1 auth+one declared client tool+original marker -> ToolUse ladder,
+        // no detached Provider invocation. C2 its exact tool_result -> one text
+        // terminal ladder; duplicate/error result or absent descriptor ->400.
+        // Both wire modes share one renderer/value. This tests the protocol
+        // fixture only; real Awaiting/ticket/recovery remain the live gate's job.
+        let app = build_distributed_provider_router();
+        for stream in [false, true] {
+            for returned in [false, true] {
+                let mut messages = vec![serde_json::json!({"role":"user",
+                    "content":"ADR71-NATIVE-CHECKPOINT-unit"})];
+                if returned {
+                    messages.push(serde_json::json!({"role":"user", "content":[{
+                        "type":"tool_result", "tool_use_id":"tool_adr71_checkpoint",
+                        "content":"resume-original", "is_error":false}]}));
+                }
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::post("/v1/messages")
+                            .header("content-type", "application/json")
+                            .header("x-api-key", "adr71-provider-secret")
+                            .body(Body::from(
+                                serde_json::json!({"model":"adr71-echo", "stream":stream,
+                        "tools":[{"name":"checkpoint","input_schema":{"type":"object"}}],
+                        "messages":messages})
+                                .to_string(),
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                let body = String::from_utf8(body.to_vec()).unwrap();
+                assert!(body.contains(if returned {
+                    "resume-original"
+                } else {
+                    "tool_adr71_checkpoint"
+                }));
+                assert!(body.contains(if returned { "end_turn" } else { "tool_use" }));
+                if stream {
+                    assert!(body.starts_with("event: message_start\ndata: "));
+                    assert!(
+                        body.ends_with(
+                            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+                        )
+                    );
+                    let values = body
+                        .split("\n\n")
+                        .filter_map(|frame| {
+                            frame.lines().find_map(|line| line.strip_prefix("data: "))
+                        })
+                        .map(|data| serde_json::from_str::<serde_json::Value>(data).unwrap())
+                        .collect::<Vec<_>>();
+                    assert_eq!(values[0]["message"]["content"], serde_json::json!([]));
+                    assert_eq!(
+                        values[1]["content_block"]["type"],
+                        if returned { "text" } else { "tool_use" }
+                    );
+                    assert_eq!(
+                        values[2]["delta"]["type"],
+                        if returned {
+                            "text_delta"
+                        } else {
+                            "input_json_delta"
+                        }
+                    );
+                }
+            }
+        }
+        for malformed in [
+            serde_json::json!([]),
+            serde_json::json!([{"name":"a"},{"name":"b"}]),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/v1/messages")
+                        .header("content-type", "application/json")
+                        .header("x-api-key", "adr71-provider-secret")
+                        .body(Body::from(
+                            serde_json::json!({"tools":malformed,
+                    "messages":[{"role":"user","content":"ADR71-NATIVE-CHECKPOINT-unit"}]})
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        for content in [
+            serde_json::json!([{"type":"tool_result","tool_use_id":"tool_adr71_checkpoint","content":"x","is_error":true}]),
+            serde_json::json!([{"type":"tool_result","tool_use_id":"tool_adr71_checkpoint","content":"x"},
+                              {"type":"tool_result","tool_use_id":"tool_adr71_checkpoint","content":"x"}]),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/v1/messages")
+                        .header("content-type", "application/json")
+                        .header("x-api-key", "adr71-provider-secret")
+                        .body(Body::from(
+                            serde_json::json!({"tools":[{"name":"checkpoint"}],
+                    "messages":[{"role":"user","content":"ADR71-NATIVE-CHECKPOINT-unit"},
+                                {"role":"user","content":content}]})
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
     }
 }

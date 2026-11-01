@@ -13,8 +13,10 @@ async fn in_place_restart_settles_the_old_container_from_last_state_against_a_re
     // container instance A. RP2 A exits 3 and kubelet restarts the container
     // in place: same Pod UID, restartCount 1, a new container B. RP3 A's
     // binding observes the exact exit 3 from `lastState`, with no DELETE;
-    // B binds as a new incarnation. RP4 retiring A leaves B's Pod alone; the
-    // Pod-level closed-idle retirement of B then deletes it and releases.
+    // B binds as a new incarnation. RP4 retiring A leaves B's Pod alone.
+    // RP5 B exits7, C overwrites lastState: A is now Superseded with no invented
+    // exit code; its receipt binds only A, and retiring A still leaves C alone.
+    // The original Pod-level closed-idle retirement then deletes and releases.
     // This runs the production adapter against a real kubelet, without claiming
     // a Dispatch receipt, remote-effect termination, or a product E2E outcome.
     if !require_live_cluster() {
@@ -44,7 +46,7 @@ async fn in_place_restart_settles_the_old_container_from_last_state_against_a_re
         "spec":{"restartPolicy":"Always","automountServiceAccountToken":false,
             "containers":[{"name":"worker","image":fixture_image(),
                 "command":["/bin/sh","-c",
-                    "if [ -e /work/restarted ]; then exec sleep 3600; fi; touch /work/restarted; while [ ! -e /work/stop ]; do sleep 1; done; exit 3"],
+                    "if [ -e /work/restarted-twice ]; then exec sleep 3600; fi; if [ -e /work/restarted ]; then touch /work/restarted-twice; while [ ! -e /work/stop-again ]; do sleep 1; done; exit 7; fi; touch /work/restarted; while [ ! -e /work/stop ]; do sleep 1; done; exit 3"],
                 "volumeMounts":[{"name":"work","mountPath":"/work"}],
                 "securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}
             }],
@@ -136,6 +138,7 @@ async fn in_place_restart_settles_the_old_container_from_last_state_against_a_re
             .is_none(),
         "RP3/RP4 the newer instance's Pod is untouched"
     );
+    assert_superseded_after_second_restart(&pods, &stopper, &first, &namespace, &name, &uid).await;
     stopper.retire_closed_idle_pod(&name, &uid).await.unwrap();
     // The existing Kubernetes wait owner observes API resource deletion; this
     // test must not introduce another poll loop or settle on a timer.
@@ -149,6 +152,95 @@ async fn in_place_restart_settles_the_old_container_from_last_state_against_a_re
     ]);
     assert!(removed.status.success(), "RP4 retired and removed");
     assert!(matches!(pods.get(&name).await, Err(kube::Error::Api(error)) if error.code == 404));
+}
+
+// RP5 overwrites only kubelet's single previous-instance slot. The same
+// canonical stopper must return a bound supersession rather than fabricate A's
+// exit from B's code7. C remains live under the original UID and retention.
+async fn assert_superseded_after_second_restart(
+    pods: &kube::Api<k8s_openapi::api::core::v1::Pod>,
+    stopper: &PodProcessStopper,
+    first: &PodProcessBinding,
+    namespace: &str,
+    name: &str,
+    uid: &str,
+) {
+    let stop_again = kubectl(&[
+        "exec",
+        "-n",
+        namespace,
+        name,
+        "--",
+        "touch",
+        "/work/stop-again",
+    ]);
+    assert!(stop_again.status.success(), "RP5 end the second container");
+    let restarted_again = kubectl(&[
+        "wait",
+        "-n",
+        namespace,
+        "--for=jsonpath={.status.containerStatuses[0].restartCount}=2",
+        &format!("pod/{name}"),
+        "--timeout=90s",
+    ]);
+    assert!(
+        restarted_again.status.success(),
+        "RP5 second in-place restart"
+    );
+    let running_again = kubectl(&[
+        "wait",
+        "-n",
+        namespace,
+        "--for=condition=Ready",
+        &format!("pod/{name}"),
+        "--timeout=90s",
+    ]);
+    assert!(running_again.status.success(), "RP5 C is actually running");
+    let current = pods.get(name).await.unwrap();
+    assert_eq!(current.metadata.uid.as_deref(), Some(uid), "RP5 same Pod");
+    let current_status = &current
+        .status
+        .as_ref()
+        .unwrap()
+        .container_statuses
+        .as_ref()
+        .unwrap()[0];
+    assert_eq!(current_status.restart_count, 2, "RP5 no third restart");
+    assert!(
+        current_status.state.as_ref().unwrap().running.is_some(),
+        "RP5 C is running at read"
+    );
+    assert_eq!(
+        current_status
+            .last_state
+            .as_ref()
+            .unwrap()
+            .terminated
+            .as_ref()
+            .unwrap()
+            .exit_code,
+        7,
+        "RP5 lastState now belongs to B, never A"
+    );
+    let PodProcessTermination::Superseded(superseded) = stopper.request_stop(first).await.unwrap()
+    else {
+        panic!("RP5 A is superseded, not an invented exact exit");
+    };
+    assert_eq!(superseded.binding(), first, "RP5 original binding");
+    assert!(
+        !superseded.resource_version().is_empty(),
+        "RP5 observation is version-bound"
+    );
+    stopper.retire_closed_idle_incarnation(first).await.unwrap();
+    assert!(
+        pods.get(name)
+            .await
+            .unwrap()
+            .metadata
+            .deletion_timestamp
+            .is_none(),
+        "RP5 old A never deletes C"
+    );
 }
 
 async fn wait_for_binding(
