@@ -31,8 +31,6 @@ pub use supervisor::{
     BackgroundTaskCompletion, BackgroundTaskSupervisor, BackgroundTaskWaitCandidate,
 };
 
-pub const BACKGROUND_TASK_STATE_PREFIX: &str = "background_task/";
-
 /// The extension-owned management surface. These operations act only on the
 /// current Thread; starting the selected ordinary tool still requires Runtime
 /// authorization at its prepared execution boundary.
@@ -53,7 +51,7 @@ pub fn task_state_cell(
     awaken_agent_contract::agent::state::StateCell::new(
         awaken_agent_contract::agent::state::Scope::Thread,
         awaken_agent_contract::agent::state::MergePolicy::Exclusive,
-        format!("{BACKGROUND_TASK_STATE_PREFIX}{}", id.as_str()),
+        awaken_agent_contract::thread::background_task::background_task_state_key(id.as_str()),
     )
 }
 

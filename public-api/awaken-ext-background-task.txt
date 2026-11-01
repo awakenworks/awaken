@@ -177,7 +177,6 @@ pub fn awaken_ext_background_task::TaskObservationRecord::task_id(&self) -> &awa
 pub fn awaken_ext_background_task::TaskObservationRecord::tenure(&self) -> awaken_ext_background_task::TaskTenure
 pub fn awaken_ext_background_task::TaskObservationRecord::waiting(&awaken_ext_background_task::BackgroundTaskWaitCandidate) -> Self
 pub const awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID: &str
-pub const awaken_ext_background_task::BACKGROUND_TASK_STATE_PREFIX: &str
 pub const awaken_ext_background_task::TASK_OBSERVATION_VERSION: u32
 pub fn awaken_ext_background_task::background_task_manifest() -> awaken_runtime_contract::plugin::capability::PluginManifest
 pub fn awaken_ext_background_task::config_schema() -> serde_json::value::Value

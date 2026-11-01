@@ -7,6 +7,7 @@ Notable changes to `awaken-ext-background-task`. Versions follow the [SDK versio
 ### Breaking
 
 - Its public API names types of `awaken-agent-contract` 2.0, `awaken-tool-contract` 2.0 and `awaken-runtime-contract` 2.0; a caller upgrades them together, because a 1.x type is a different type.
+- `BACKGROUND_TASK_STATE_PREFIX` moved to `awaken_agent_contract::thread::background_task`; import it from there (with `background_task_state_key`). It is not re-exported.
 
 ### Added
 

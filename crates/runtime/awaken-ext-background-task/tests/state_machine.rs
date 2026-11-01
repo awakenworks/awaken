@@ -1451,3 +1451,21 @@ fn a_fence_minted_for_another_task_never_owns_this_one() {
     assert_eq!(task, before, "T2 unchanged");
     task.heartbeat(&fence, 1, 10).expect("T1");
 }
+
+#[test]
+fn the_agent_contract_reads_the_same_holder_from_every_committed_slot() {
+    // The Coordinator reads a slot's holder through the agent contract's
+    // minimal view; it must agree with this aggregate in every phase
+    // (Requested, Running, Waiting, Cancelling, Ended).
+    use awaken_agent_contract::thread::background_task::committed_task_holder;
+    for phase in 0..=6 {
+        let task = execution_task(phase);
+        let slot = serde_json::to_value(&task).expect("a committed task serializes");
+        let expected = task.attempt().map(|attempt| attempt.worker_id.clone());
+        assert_eq!(
+            committed_task_holder(task.id.as_str(), &slot),
+            Ok(expected),
+            "phase {phase}"
+        );
+    }
+}

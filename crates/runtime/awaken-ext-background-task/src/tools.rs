@@ -21,9 +21,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::BackgroundTaskSupervisor;
 use crate::{
-    BACKGROUND_TASK_STATE_PREFIX, BackgroundInvocation, BackgroundTask, BackgroundTaskId,
-    BackgroundTaskLifecycle, BackgroundTaskOrigin, task_state_cell,
+    BackgroundInvocation, BackgroundTask, BackgroundTaskId, BackgroundTaskLifecycle,
+    BackgroundTaskOrigin, task_state_cell,
 };
+use awaken_agent_contract::thread::background_task::BACKGROUND_TASK_STATE_PREFIX;
 
 pub(crate) struct RunInBackground {
     allowed: Arc<BTreeSet<String>>,
