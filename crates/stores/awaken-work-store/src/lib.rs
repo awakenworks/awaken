@@ -60,9 +60,9 @@ use awaken_executable_environment_contract::{
     WorkSessionAccess, WorkerLeaseObservation, session_work_release_admission,
 };
 use awaken_session_types::SessionWorkLease;
-use awaken_time::WallClock;
 #[cfg(all(test, not(feature = "loom")))]
 use awaken_time::system_clock;
+use awaken_time::{Expiry, WallClock};
 fn storage(error: impl std::fmt::Display) -> WorkQueueError {
     WorkQueueError::Storage(error.to_string().into())
 }
@@ -304,18 +304,20 @@ impl SessionAccessAuthenticator for SqliteWorkQueue {
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
         let digest = presented.as_str();
         let mut conn = self.connection().await?;
-        // Liveness is judged on the same clock that granted and renewed it.
-        let now_ms = self.clock.now_ms();
         let row: Option<(String, String, String, String, i64, u64)> = sqlx::query_as(
             "SELECT work_id, environment_id, data_id, lease_owner, lease_epoch, lease_expires_ms \
              FROM work_queue_item WHERE data_type = 'session' AND state = 'active' \
-               AND session_token_sha256 = ?1 AND lease_expires_ms > ?2 LIMIT 1",
+               AND session_token_sha256 = ?1 AND lease_expires_ms IS NOT NULL \
+             ORDER BY lease_expires_ms DESC LIMIT 1",
         )
         .bind(digest)
-        .bind(db_millis(now_ms))
         .fetch_optional(&mut *conn)
         .await
         .map_err(storage)?;
+        // Subject fencing precedes the one clock sample: liveness is judged on
+        // the clock that granted and renewed the lease, and only when a bound
+        // lease exists to judge.
+        let row = row.filter(|row| Expiry::from_epoch_ms(row.5).is_live_at(self.clock.now()));
         row.map(
             |(work_id, environment_id, session, lease_owner, epoch, expires_at_unix_ms)| {
                 Ok(WorkSessionAccess {
@@ -761,32 +763,36 @@ impl SessionAccessAuthenticator for PostgresWorkQueue {
         presented: &SessionAccessDigest,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
         let digest = presented.as_str();
-        // Liveness is judged on the same clock that granted and renewed it.
-        let now_ms = self.clock.now_ms();
         let row = sqlx::query(
             "SELECT work_id, environment_id, data_id, lease_owner, lease_epoch, lease_expires_ms \
              FROM work_queue_item WHERE data_type = 'session' AND state = 'active' \
-               AND session_token_sha256 = $1 AND lease_expires_ms > $2 LIMIT 1",
+               AND session_token_sha256 = $1 AND lease_expires_ms IS NOT NULL \
+             ORDER BY lease_expires_ms DESC LIMIT 1",
         )
         .bind(digest)
-        .bind(db_millis(now_ms))
         .fetch_optional(&self.pool)
         .await
         .map_err(storage)?;
-        row.map(|row| {
-            Ok(WorkSessionAccess {
-                work_id: row.try_get(0).map_err(storage)?,
-                environment_id: row.try_get(1).map_err(storage)?,
-                session_id: awaken_session_types::SessionId::from(
-                    row.try_get::<String, _>(2).map_err(storage)?,
-                ),
-                lease_owner: row.try_get(3).map_err(storage)?,
-                lease_epoch: granted_session_epoch(row.try_get::<i64, _>(4).map_err(storage)?)?,
-                expires_at_unix_ms: u64::try_from(row.try_get::<i64, _>(5).map_err(storage)?)
-                    .map_err(storage)?,
-            })
-        })
-        .transpose()
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let expires_at_unix_ms =
+            u64::try_from(row.try_get::<i64, _>(5).map_err(storage)?).map_err(storage)?;
+        // Subject fencing precedes the one clock sample: liveness is judged on
+        // the clock that granted and renewed the lease.
+        if Expiry::from_epoch_ms(expires_at_unix_ms).is_expired_at(self.clock.now()) {
+            return Ok(None);
+        }
+        Ok(Some(WorkSessionAccess {
+            work_id: row.try_get(0).map_err(storage)?,
+            environment_id: row.try_get(1).map_err(storage)?,
+            session_id: awaken_session_types::SessionId::from(
+                row.try_get::<String, _>(2).map_err(storage)?,
+            ),
+            lease_owner: row.try_get(3).map_err(storage)?,
+            lease_epoch: granted_session_epoch(row.try_get::<i64, _>(4).map_err(storage)?)?,
+            expires_at_unix_ms,
+        }))
     }
 }
 

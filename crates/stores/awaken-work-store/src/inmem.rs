@@ -593,8 +593,6 @@ impl SessionAccessAuthenticator for InMemoryWorkQueue {
         presented: &SessionAccessDigest,
     ) -> Result<Option<WorkSessionAccess>, WorkQueueError> {
         let authority = self.authority.lock();
-        // Liveness is judged on the same clock that granted and renewed it.
-        let now_ms = self.clock.now_ms();
         let Some(work_id) = authority
             .session_token_sha256
             .iter()
@@ -612,6 +610,9 @@ impl SessionAccessAuthenticator for InMemoryWorkQueue {
         let WorkPayload::Session { id: session_id } = &work.data else {
             return Ok(None);
         };
+        // Subject fencing precedes the one clock sample: liveness is judged on
+        // the clock that granted and renewed the lease.
+        let now_ms = self.clock.now_ms();
         Ok(authority.book.authority(work_id, now_ms).and_then(
             |(lease_owner, lease_epoch, expires_at_unix_ms)| {
                 Some(WorkSessionAccess {
