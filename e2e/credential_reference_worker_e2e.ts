@@ -42,7 +42,9 @@ import {
 } from './fixtures/thread_commit_fixture.mjs';
 import {
   workdirWorkerManifestFixture,
+  replaceHostModelCapabilitiesFixture,
   WORKER_INHERITED_TOOLSETS_CAPABILITY,
+  WORKER_TOOL_RESULT_JOURNAL_CAPABILITY,
 } from './fixtures/worker_manifest_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -84,6 +86,8 @@ async function registerReadyWorker(workerId: string): Promise<any> {
           capabilities: [
             'host-executor/v1', 'native-runtime', 'session-resources/v1',
             WORKER_INHERITED_TOOLSETS_CAPABILITY,
+            // The frozen Native root carries this exact journal codec.
+            WORKER_TOOL_RESULT_JOURNAL_CAPABILITY,
           ],
         }),
       },
@@ -228,7 +232,11 @@ async function main(): Promise<void> {
     request.inference_plaintext_holder = {
       boundary: 'worker', trust_domain: 'awaken.worker',
     };
-    request.placement.required_capabilities = ['worker-local-credentials/v1', 'native-runtime'];
+    // Replace the seed's Host model demand with this explicit Provider
+    // realization; retain every independent frozen codec and Resource demand.
+    request.placement.required_capabilities = replaceHostModelCapabilitiesFixture(
+      request.placement.required_capabilities, ['worker-local-credentials/v1', 'native-runtime'],
+    );
     request.placement.required_credentials = [{ id: GRANT, revision: GRANT_REVISION }];
     await post('/v1/worker/dispatch/enqueue', { request }, 'seed-worker');
     // Causes: a distinct gateway Run id and ordinary Thread are enqueued.

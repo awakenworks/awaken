@@ -1,5 +1,6 @@
 """Controlled evidence cases loaded by the original SDK checker's self-test."""
 import json
+import hashlib
 import copy
 import contextlib
 import io
@@ -1310,6 +1311,31 @@ def compiler_input_tests(owner):
     """Compose the original fixture without loading its common suite again."""
     class SdkCompilerInputTests(unittest.TestCase):
         @contextlib.contextmanager
+        def directory_alias(self, root, alias, target):
+            # Both endpoints belong to this private fixture. A Windows junction
+            # exercises the same filesystem alias without symlink privilege.
+            root, target = root.resolve(strict=True), target.resolve(strict=True)
+            self.assertTrue(target.is_relative_to(root))
+            self.assertTrue(alias.parent.resolve(strict=True).is_relative_to(root))
+            self.assertFalse(os.path.lexists(alias))
+            if os.name == "nt":
+                import _winapi
+                _winapi.CreateJunction(str(target), str(alias))
+            else:
+                alias.symlink_to(target, target_is_directory=True)
+            try:
+                self.assertEqual(alias.resolve(strict=True), target)
+                yield
+            finally:
+                self.assertEqual(alias.resolve(strict=True), target)
+                if os.name == "nt":
+                    self.assertTrue(alias.is_junction())
+                    alias.rmdir()
+                else:
+                    self.assertTrue(alias.is_symlink())
+                    alias.unlink()
+
+        @contextlib.contextmanager
         def subject(self, *, cause="", baseline_model=None, current_k8s=True):
             with tempfile.TemporaryDirectory() as temporary:
                 helper = owner.SdkConsumerTests()
@@ -1444,6 +1470,32 @@ def compiler_input_tests(owner):
                 status, calls = helper.execute(root, qualification="semver", compiler_cause="valid")
                 self.assertEqual((status, self.compiles(calls)), (1, []))
 
+        def test_baseline_archive_preserves_git_bytes_under_ambient_line_endings(self):
+            # B14 Windows checkout policy is not an authored compiler change.
+            # The same historical Git subject must yield identical compiler
+            # hashes and archive bytes under all three autocrlf modes, without
+            # rewriting any local Git setting. B15 below retains the refusal
+            # when an authored attribute really transforms compiler evidence.
+            with tempfile.TemporaryDirectory() as temporary:
+                helper = owner.SdkConsumerTests()
+                root = helper.repository(Path(temporary))
+                revision = owner.formal_sources.git_output(root, "rev-parse", "HEAD").decode().strip()
+                archives = set()
+                for autocrlf in ("true", "input", "false"):
+                    with self.subTest(autocrlf=autocrlf):
+                        helper.git(root, "config", "core.autocrlf", autocrlf)
+                        helper.git(root, "config", "core.eol", "crlf")
+                        inventory = owner._sdk_compiler_input.baseline_inventory(root, revision)
+                        self.assertEqual(inventory["sdk_crates"], ["fixture-contract", "fixture-provider"])
+                        for path in ("Cargo.toml", "Cargo.lock", "crates/fixture-provider/Cargo.toml"):
+                            original = owner.formal_sources.git_output(root, "show", revision + ":" + path)
+                            self.assertEqual(inventory["source_hashes"][path], hashlib.sha256(original).hexdigest())
+                        archives.add(inventory["archive_sha256"])
+                        for key, expected in (("core.autocrlf", autocrlf), ("core.eol", "crlf")):
+                            self.assertEqual(owner.formal_sources.git_output(root, "config", "--local", "--get", key)
+                                             .decode().strip(), expected)
+                self.assertEqual(len(archives), 1)
+
         def test_baseline_inventory_tracks_existing_package_names_across_historical_paths(self):
             # B1 baseline has the same SDK package at a different directory;
             # current metadata names its current directory. Effect: resolve
@@ -1560,7 +1612,7 @@ def compiler_input_tests(owner):
             # compiler, never classifies it as first release. The original
             # complete/moved/true-new positives above prevent blanket refusal.
             for cause in ("export-ignore", "info-ignore", "info-ignore-lock",
-                          "export-subst-manifest", "export-subst-lock", "info-subst-manifest"):
+                          "export-subst-manifest", "export-subst-lock", "info-subst-manifest", "eol-crlf"):
                 with self.subTest(cause=cause), tempfile.TemporaryDirectory() as temporary:
                     helper = owner.SdkConsumerTests()
                     root = helper.repository(Path(temporary))
@@ -1571,6 +1623,10 @@ def compiler_input_tests(owner):
                     attribute = ("Cargo.lock" if "lock" in cause else
                                  "crates/fixture-provider" if "ignore" in cause else target)
                     content = attribute + (" export-ignore\n" if "ignore" in cause else " export-subst\n")
+                    # B15 explicit authored CRLF conversion remains a byte
+                    # rewrite; do not normalize away the integrity failure.
+                    if cause == "eol-crlf":
+                        content = attribute + " text eol=crlf\n"
                     if not cause.startswith("info-"):
                         (root / ".gitattributes").write_text(content)
                     helper.git(root, "add", ".")
@@ -1596,12 +1652,12 @@ def compiler_input_tests(owner):
             # B12 an unexpanded historical gitlink cannot prove an absent SDK:
             # refuse before compiler, rather than classify it as first release.
             # B13 historical package moved and its old directory is reused by
-            # a current, unselected symlink: read the original relative Git path,
+            # a current, unselected directory alias: read the original relative Git path,
             # not that live filesystem alias. Current metadata still obeys its
             # original absolute/resolve/root gate; historical ../ and absolute
             # Git paths refuse through the same read owner, with no fallback.
             for cause in ("gitlink", "historical-alias"):
-                with self.subTest(cause=cause), tempfile.TemporaryDirectory() as temporary:
+                with self.subTest(cause=cause), tempfile.TemporaryDirectory() as temporary, contextlib.ExitStack() as aliases:
                     helper = owner.SdkConsumerTests()
                     root = helper.repository(Path(temporary))
                     original = root / "crates/fixture-provider"
@@ -1625,7 +1681,7 @@ def compiler_input_tests(owner):
                         helper.compiler_source(root)
                     else:
                         historical.rename(original)
-                        historical.symlink_to(root / "crates/fixture-internal", target_is_directory=True)
+                        aliases.enter_context(self.directory_alias(root, historical, root / "crates/fixture-internal"))
                         workspace = root / "Cargo.toml"
                         workspace.write_text(workspace.read_text().replace('members=["crates/*"]',
                             'members=["crates/fixture-contract","crates/fixture-provider","crates/fixture-internal"]'))

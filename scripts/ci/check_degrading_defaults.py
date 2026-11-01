@@ -420,7 +420,7 @@ def _sources(root: Path) -> dict[str, str]:
     return {
         path.relative_to(root).as_posix(): path.read_text(encoding="utf-8", errors="ignore")
         for path in sorted((root / "crates").rglob("*.rs"))
-        if not path.name.endswith(("tests.rs", "test_support.rs")) and "/tests/" not in str(path)
+        if not path.name.endswith(("tests.rs", "test_support.rs")) and "/tests/" not in path.as_posix()
     }
 
 
@@ -495,6 +495,30 @@ def selftest() -> None:
     assert not fail_open_read_violations(fail_open), "F4/E1"
     assert fail_open_read_errors(propagated), "F5/E2 stale registry entry"
     FAIL_OPEN_READ_EXEMPTIONS = {}
+
+    # A real native path must retain production input while excluding both
+    # nested unit-test directories and integration tests. On Windows, str(path)
+    # has backslashes; scanning a test-only negative control as production made
+    # every otherwise valid commit fail. Do not fix that by hiding production.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        production = "crates/example/provider/src/guard.rs"
+        normal = "crates/example/provider/src/lib.rs"
+        for name in (production, normal, "crates/example/provider/src/tests/guard.rs",
+                     "crates/example/provider/tests/integration.rs",
+                     "crates/example/provider/src/tests.rs",
+                     "crates/example/provider/src/test_support.rs"):
+            source = root / name
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(propagated["a.rs"] if name == normal else fail_open["a.rs"],
+                              encoding="utf-8")
+        collected = _sources(root)
+        assert set(collected) == {production, normal}, "native path source classification"
+        assert fail_open_read_errors(collected), "the same failure in production stays rejected"
+        (root / production).write_text(propagated["a.rs"], encoding="utf-8")
+        assert not fail_open_read_errors(_sources(root)), "test-only negative controls are excluded"
 
     # The ratchet holds a known remainder and refuses one more.
     FAIL_OPEN_READ_BASELINE = {"a.rs": 1}

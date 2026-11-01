@@ -212,8 +212,11 @@ fn fixture_deployment() -> Result<awaken_deployment_config::DeploymentConfig, St
     Ok(deployment)
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    awaken_process_startup::block_on_service(run)
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_observability::init(&Default::default());
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     let credential_id = std::env::var("AWAKEN_TEST_CREDENTIAL_ID")?;
@@ -248,6 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 awaken_worker::StandardManifestConfig::default().with_max_concurrent(3),
             )
             .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
+            .with_remote_session_resource_support()
             .with_inference_materializer(materializer.clone())
             .with_credential_materializer(credentials)
             .with_worker_local_credential_resolver(materializer)

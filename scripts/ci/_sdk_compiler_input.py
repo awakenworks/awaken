@@ -32,7 +32,10 @@ def baseline_inventory(root: Path, revision: str) -> dict:
     if "commit" in formal_sources.git_paths(
             root, "ls-tree", "-r", "--format=%(objecttype)", "-z", revision):
         raise ValueError("SDK baseline gitlinks cannot establish a complete source inventory")
-    archive_bytes = formal_sources.git_output(root, "archive", "--format=tar", revision)
+    # Compare against Git blobs, independent of ambient checkout line endings.
+    # Authored archive attributes still apply and must pass the exact-byte gate.
+    archive_bytes = formal_sources.git_output(root, "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                                             "archive", "--format=tar", revision)
     with tempfile.TemporaryDirectory(prefix="sdk-baseline-inventory-") as temporary:
         directory = Path(temporary)
         archive = directory / "source.tar"

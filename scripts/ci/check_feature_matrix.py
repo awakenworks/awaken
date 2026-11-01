@@ -21,6 +21,10 @@ reach that way --- a crate deliberately outside the workspace, say --- must
 name the gate that verifies it instead.  Registering the substitute is the only
 way past this check; there is no file allowlist to grow.
 
+The isolated CLI dev-target row also keeps upstream test-support feature
+unification from hiding a consumer-side cfg mismatch. Maximal features alone
+cannot prove that row.
+
 Compilation, not execution, is the obligation: the Docker, Podman and
 Kubernetes tiers each need a live daemon to *run*, which their own integration
 gates provide.  Their Cargo.toml comments already promise "Compile-verified";
@@ -32,9 +36,12 @@ from __future__ import annotations
 import argparse
 import glob
 import re
+import shlex
 import sys
 import tomllib
 from pathlib import Path
+
+from generate_hooks import gate_mode_source
 
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts/ci/check-rust.sh"
@@ -146,6 +153,36 @@ def maximal_compile_errors(gate: str) -> list[str]:
                 f"scripts/ci/check-rust.sh {mode} does not run `{MAXIMAL_COMPILE}`, so the "
                 f"features outside its own feature set are not compiled by {mode}"
             )
+    return errors
+
+
+MINIMAL_CLI_DEV_COMPILE = "cargo check -p awaken-cli --no-default-features --example credential_reference_worker"
+
+
+def compiles_minimal_cli_dev(text: str) -> bool:
+    expected = shlex.split(MINIMAL_CLI_DEV_COMPILE)
+    for line in re.sub(r"\\\r?\n", " ", text).splitlines():
+        try:
+            words = shlex.split(line, comments=True)
+        except ValueError:
+            continue
+        if not words or words[0] not in ("cargo", "step", "scoped_step") or "cargo" not in words:
+            continue
+        command = words[words.index("cargo"):]
+        if (command[:len(expected)] == expected
+                and not any(word in ("--all-features", "--features", "-F") or word.startswith("--features=") for word in command)
+                and ("--locked" in command or "${locked[@]}" in command)):
+            return True
+    return False
+
+
+def dev_target_compile_errors(gate: str) -> list[str]:
+    errors = []
+    for mode in ("--push", "--full"):
+        if not compiles_minimal_cli_dev(gate_mode_source(gate, mode)):
+            errors.append(f"{mode} must compile the isolated CLI dev target without enabling its own test-support")
+    if compiles_minimal_cli_dev(gate_mode_source(gate, "--quick")):
+        errors.append("the CLI dev feature-union regression belongs to push/full, not quick")
     return errors
 
 
@@ -303,7 +340,21 @@ def selftest() -> None:
         )
         assert len(gone) == 1 and "no longer exists" in gone[0], f"R4 removed crate {gone}"
         assert compile_surface(manifests, members) == (2, 1), "the reported surface counts members"
-    print("check_feature_matrix self-test: both decision tables hold")
+    # U1 actual minimal dev target in push/full; U2 omitted, comment, print,
+    # or explicit CLI test-support masks the cross-crate feature-union case.
+    command = MINIMAL_CLI_DEV_COMPILE + ' "${locked[@]}"'
+    prefix = 'mode="${1:---full}"\ncase "$mode" in\n  --quick|--push|--full)\n    ;;\nesac\n'
+    isolated = prefix + ('case "$mode" in\n  --quick|--push)\n'
+        '    if [ "$mode" = "--push" ]; then\n      ' + command + '\n    fi\n    ;;\n'
+        '  --full)\n    ' + command + '\n    ;;\nesac\n')
+    assert not dev_target_compile_errors(isolated), "U1"
+    for replacement in ("true", "# " + command, "echo " + command,
+                        command + " --all-features", command + " --features test-support",
+                        command.replace("--no-default-features", "")):
+        assert dev_target_compile_errors(isolated.replace(command, replacement)), ("U2", replacement)
+    assert dev_target_compile_errors(isolated.replace('if [ "$mode" = "--push" ]',
+                                                       'if [ "$mode" = "--quick" ]')), "U3 quick cannot substitute for push"
+    print("check_feature_matrix self-test: maximal, reachability and isolated dev tables hold")
 
 
 def main(arguments: argparse.Namespace) -> int:
@@ -316,6 +367,7 @@ def main(arguments: argparse.Namespace) -> int:
     manifests = repository_manifests(ROOT)
     members = workspace_manifests(ROOT)
     errors = maximal_compile_errors(gate)
+    errors += dev_target_compile_errors(gate)
     errors += unreachable_feature_errors(
         manifests, members, FEATURE_VERIFICATION_EXEMPTIONS, ROOT
     )

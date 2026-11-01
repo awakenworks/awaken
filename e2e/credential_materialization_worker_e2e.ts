@@ -39,7 +39,9 @@ import {
 } from './fixtures/thread_commit_fixture.mjs';
 import {
   workdirWorkerManifestFixture,
+  replaceHostModelCapabilitiesFixture,
   WORKER_INHERITED_TOOLSETS_CAPABILITY,
+  WORKER_TOOL_RESULT_JOURNAL_CAPABILITY,
 } from './fixtures/worker_manifest_fixture.mjs';
 import { createTlsIdentityFixture } from './fixtures/tls_identity_fixture.mjs';
 import { startTlsProxy, stopTlsProxy } from './fixtures/tls_proxy_fixture.mjs';
@@ -106,6 +108,8 @@ async function seedIdentity() {
         capabilities: [
           'host-executor/v1', 'native-runtime', 'session-resources/v1',
           WORKER_INHERITED_TOOLSETS_CAPABILITY,
+          // The frozen Native root carries this exact journal codec.
+          WORKER_TOOL_RESULT_JOURNAL_CAPABILITY,
         ],
       }),
     },
@@ -319,7 +323,11 @@ async function main() {
     dispatch.inference_plaintext_holder = {
       boundary: 'worker', trust_domain: 'awaken.worker',
     };
-    dispatch.placement.required_capabilities = ['credential-source/v1', 'native-runtime'];
+    // Replace the seed's Host model demand with this explicit Provider
+    // realization; retain every independent frozen codec and Resource demand.
+    dispatch.placement.required_capabilities = replaceHostModelCapabilitiesFixture(
+      dispatch.placement.required_capabilities, ['credential-source/v1', 'native-runtime'],
+    );
 
     assert.equal((await request('POST', '/v1/worker/dispatch/enqueue', { request: dispatch }, seed.id)).status, 200);
 
