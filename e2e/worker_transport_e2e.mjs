@@ -32,8 +32,10 @@ import {
 } from './fixtures/thread_commit_fixture.mjs';
 import {
   workdirWorkerManifestFixture,
+  replaceHostModelCapabilitiesFixture,
   WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
   WORKER_INHERITED_TOOLSETS_CAPABILITY,
+  WORKER_TOOL_RESULT_JOURNAL_CAPABILITY,
 } from './fixtures/worker_manifest_fixture.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38812);
@@ -146,6 +148,8 @@ async function registerReadyWorker() {
           // shipped Worker advertises this same capability; this transport
           // fixture claims and commits without executing the inherited tools.
           WORKER_INHERITED_TOOLSETS_CAPABILITY,
+          // The frozen Native root carries this exact journal codec.
+          WORKER_TOOL_RESULT_JOURNAL_CAPABILITY,
           // This fixture claims a Session-owned root. The placement contract
           // therefore requires the Worker to realize its frozen Resources;
           // omitting this capability must yield no claim, not a local bypass.
@@ -391,7 +395,11 @@ async function main() {
     granted.inference_plaintext_holder = {
       boundary: 'worker', trust_domain: 'awaken.worker',
     };
-    granted.placement.required_capabilities = ['credential-source/v1', 'native-runtime'];
+    // Replace the seed's Host model demand with this explicit Provider
+    // realization; retain every independent frozen codec and Resource demand.
+    granted.placement.required_capabilities = replaceHostModelCapabilitiesFixture(
+      granted.placement.required_capabilities, ['credential-source/v1', 'native-runtime'],
+    );
     const enqueuedGrant = await postJson('/v1/worker/dispatch/enqueue', { request: granted });
     assert.equal(enqueuedGrant.status, 200, `grant-bearing dispatch enqueued: ${enqueuedGrant.text}`);
 

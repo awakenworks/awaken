@@ -479,6 +479,10 @@ case "$mode" in
         cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
     fi
     if [ "$mode" = "--push" ]; then
+      # A dev dependency may enable the upstream Host variant while the CLI's
+      # own test-support stays off. The maximal graph cannot prove this row.
+      scoped_step "cli-dev-feature-union" "resolve inference at its owner without consumer-side cfg assumptions" \
+        "awaken-cli" cargo check -p awaken-cli --no-default-features --example credential_reference_worker "${locked[@]}"
       # Push cause/effect table. P1 a commit compiles but carries dead code or
       # another `-D warnings` lint -> the quick check passes, main goes red at
       # the first full run; the pre-push gate runs the same workspace clippy
@@ -527,6 +531,10 @@ case "$mode" in
     fi
     ;;
   --full)
+    # A dev dependency may enable the upstream Host variant while the CLI's
+    # own test-support stays off. The maximal graph cannot prove this row.
+    scoped_step "cli-dev-feature-union" "resolve inference at its owner without consumer-side cfg assumptions" \
+      "awaken-cli" cargo check -p awaken-cli --no-default-features --example credential_reference_worker "${locked[@]}"
     # C1 Cargo's user build-dir differs from target-dir; C2 Scenario tests
     # resolve the real Hand beside their test executable. E1 one full-test
     # artifact tree preserves Cargo's sibling layout for either C1 value.

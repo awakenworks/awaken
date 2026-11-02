@@ -1,3 +1,6 @@
+// @formal surface requirement=assembly.binary_roles.role_assembly
+// @formal reason: Defines required execution roles and selects only the already-resolved inference variant.
+// @formal reason: Concrete model and credential construction remains with the supplying composition callbacks.
 //! [`ExecutionPorts`] — the Session execution the Coordinator composes.
 //!
 //! The process composition root that builds the Session executor (a
@@ -84,6 +87,30 @@ pub enum InferenceSelection {
 }
 
 impl InferenceSelection {
+    /// Resolve the selected realization at the enum owner. A dependency's
+    /// test-support feature may be unified on without enabling its consumer's
+    /// same-named feature; consumers must not repeat this enum's cfg branches.
+    /// Host construction stays gated, while every consumer supplies its exact
+    /// Host realization without gaining another publication or routing policy.
+    pub fn resolve_with<T>(
+        self,
+        published: impl FnOnce() -> T,
+        missing: impl FnOnce() -> T,
+        host: impl FnOnce(Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, String) -> T,
+    ) -> T {
+        #[cfg(not(any(test, feature = "test-support")))]
+        drop(host);
+        match self {
+            Self::PublishedProviders => published(),
+            Self::NoModelConfigured => missing(),
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Host {
+                executor,
+                model_ref,
+            } => host(executor, model_ref),
+        }
+    }
+
     #[must_use]
     pub fn default_model_ref(&self) -> &str {
         match self {
@@ -178,4 +205,56 @@ pub trait ColocatedExecution: Send {
         self: Box<Self>,
         inputs: ColocatedExecutionInputs,
     ) -> Result<PreparedColocatedExecution, String>;
+}
+
+#[cfg(test)]
+mod inference_selection_tests {
+    use super::InferenceSelection;
+    use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result};
+    use std::sync::Arc;
+
+    struct NeverInvoked;
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for NeverInvoked {
+        async fn infer(&self, _: ChatRequest) -> Result<ChatResponse> {
+            panic!("selection must not execute the selected model")
+        }
+    }
+
+    #[test]
+    fn inference_selection_resolves_only_the_selected_production_branch() {
+        assert_eq!(
+            InferenceSelection::PublishedProviders.resolve_with(
+                || "published",
+                || panic!("must not fall back to missing"),
+                |_, _| panic!("must not construct a Host")
+            ),
+            "published"
+        );
+        assert_eq!(
+            InferenceSelection::NoModelConfigured.resolve_with(
+                || panic!("must not select a publication"),
+                || "missing",
+                |_, _| panic!("must not construct a Host")
+            ),
+            "missing"
+        );
+    }
+
+    #[test]
+    fn inference_selection_retains_the_exact_host_executor_and_model_ref() {
+        let executor: Arc<dyn LlmExecutor> = Arc::new(NeverInvoked);
+        let (selected, model_ref) = InferenceSelection::Host {
+            executor: executor.clone(),
+            model_ref: "frozen-host-model".to_owned(),
+        }
+        .resolve_with(
+            || panic!("must not select a publication"),
+            || panic!("must not replace Host with missing"),
+            |executor, model_ref| (executor, model_ref),
+        );
+        assert!(Arc::ptr_eq(&selected, &executor));
+        assert_eq!(model_ref, "frozen-host-model");
+    }
 }

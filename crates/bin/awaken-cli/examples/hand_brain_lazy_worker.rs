@@ -92,8 +92,11 @@ impl InferenceExecutorMaterializer for HostMaterializer {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    awaken_process_startup::block_on_service(run)
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_observability::init(&Default::default());
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     let storage = std::env::var("AWAKEN_TEST_WORKER_STORAGE_DIR")?;

@@ -1,7 +1,8 @@
 // Cross-language E2E wire fixture for the contract-owned
-// `awaken_agent_contract::commit_payload_hash`. It only encodes caller-supplied
-// ThreadCommit bytes and explicit operation coordinates; it owns no claim,
-// Run/Thread, terminal, retry, compatibility, or validation policy.
+// `awaken_agent_contract::commit_payload_hash`. The request encoder preserves
+// caller-supplied bytes and operation coordinates. The terminal helper spells
+// the same Ended fact and lifecycle draft as the native commit assembler; it
+// owns no claim, retry, compatibility, or validation policy.
 
 import { createHash } from 'node:crypto';
 
@@ -47,7 +48,8 @@ export function terminalThreadCommitFixture({ runId, threadId, messageId, text }
       { id: messageId, role: 'Assistant', content: [{ type: 'text', text }] },
     ],
     state: [],
-    events: [],
+    // Session settlement observes this same atomic committed boundary.
+    events: [{ kind: 'RunStateChanged', payload: { state: { Ended: 'NaturalEnd' } } }],
     resume_ticket: null,
   };
 }

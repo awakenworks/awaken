@@ -21,8 +21,8 @@ pub(super) fn runtime_model_wiring(
         &Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>,
     >,
 ) -> RuntimeModelWiring {
-    match runtime {
-        InferenceSelection::PublishedProviders => RuntimeModelWiring {
+    runtime.resolve_with(
+        || RuntimeModelWiring {
             executor: Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             model_ref: awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF
                 .to_string(),
@@ -41,20 +41,16 @@ pub(super) fn runtime_model_wiring(
                     as Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>
             }),
         },
-        InferenceSelection::NoModelConfigured => RuntimeModelWiring {
+        || RuntimeModelWiring {
             executor: Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             model_ref: awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF
                 .to_string(),
             materializer: None,
         },
-        #[cfg(any(test, feature = "test-support"))]
-        InferenceSelection::Host {
-            executor,
-            model_ref,
-        } => RuntimeModelWiring {
+        |executor, model_ref| RuntimeModelWiring {
             executor,
             model_ref,
             materializer: None,
         },
-    }
+    )
 }

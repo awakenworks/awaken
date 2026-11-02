@@ -9,6 +9,8 @@ than growing launcher-local lifecycle paths.
 from __future__ import annotations
 
 from pathlib import Path
+import re
+import tempfile
 
 
 WORKER_MANIFEST = "crates/bin/awaken-worker/Cargo.toml"
@@ -104,6 +106,30 @@ def service_runtime_violations(
         errors.append("service lifecycle must own exactly one explicit Worker stack budget")
     if "pub use awaken_service_lifecycle::block_on_service;" not in cli_process_startup:
         errors.append("aggregate service launchers must reuse the service-lifecycle Runtime")
+    return errors
+
+
+def worker_example_sources(repo_root: Path) -> dict[str, str]:
+    """Discover actual Worker launchers, including new and relocated examples."""
+    sources = {}
+    directory = repo_root / "crates/bin/awaken-cli/examples"
+    for path in sorted(directory.rglob("*.rs")):
+        source = path.read_text(encoding="utf-8")
+        if re.search(r"\bfn\s+main\s*\(", source) and re.search(r"\b(?:awaken_worker|WorkerNodeBuilder)\b", source):
+            sources[path.relative_to(repo_root).as_posix()] = source
+    return sources
+
+
+def worker_example_runtime_violations(sources: dict[str, str]) -> list[str]:
+    """Embedding examples are real Worker launchers, with the same Runtime owner."""
+    if not sources:
+        return ["No Worker example launchers discovered; Runtime scope cannot be empty"]
+    errors = []
+    for path, source in sources.items():
+        if "#[tokio::main" in source:
+            errors.append(f"{path}: Worker example must not recreate Tokio's default-stack Runtime")
+        if source.count("awaken_process_startup::block_on_service(") != 1:
+            errors.append(f"{path}: Worker example must enter exactly one canonical service Runtime")
     return errors
 
 
@@ -371,6 +397,38 @@ def selftest() -> None:
             for error in service_runtime_violations(manifest, main, owner, startup)
         ), f"{rule}/E4"
 
+    # Runtime ownership is independent of the number or name of examples.
+    # Discover new/relocated launchers from the subject, reject an empty scope,
+    # and reject default/missing/duplicated Runtime construction in each one.
+    entry = "fn main() { awaken_worker::WorkerNodeBuilder::new(); awaken_process_startup::block_on_service(run) }"
+    examples = {f"fixture-{index}.rs": entry for index in range(2)}
+    assert worker_example_runtime_violations(examples) == []
+    for path in examples:
+        for changed in ("#[tokio::main] " + entry, "fn main() {}", entry + entry):
+            assert worker_example_runtime_violations({**examples, path: changed}), path
+    assert worker_example_runtime_violations({})
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        directory = root / "crates/bin/awaken-cli/examples"
+        directory.mkdir(parents=True)
+        assert worker_example_runtime_violations(worker_example_sources(root))
+        first = directory / "first_worker.rs"
+        first.write_text(entry, encoding="utf-8")
+        (directory / "other.rs").write_text("fn main() {}", encoding="utf-8")
+        (directory / "helper.rs").write_text("use awaken_worker::WorkerNodeBuilder;", encoding="utf-8")
+        assert list(worker_example_sources(root)) == [first.relative_to(root).as_posix()]
+        nested = directory / "relocated"
+        nested.mkdir()
+        moved = nested / "renamed.rs"
+        first.rename(moved)
+        assert list(worker_example_sources(root)) == [moved.relative_to(root).as_posix()]
+        extra = directory / "new_worker.rs"
+        extra.write_text("#[tokio::main] " + entry, encoding="utf-8")
+        discovered = worker_example_sources(root)
+        assert len(discovered) == 2 and extra.relative_to(root).as_posix() in discovered
+        assert any(extra.relative_to(root).as_posix() in error for error in worker_example_runtime_violations(discovered))
+
+
 
 def check_all(
     repo_root: Path,
@@ -404,4 +462,5 @@ def check_all(
         (repo_root / CLI_PROCESS_STARTUP).read_text(encoding="utf-8"),
     ):
         errors.append(f"Service Runtime: {error}")
+    errors.extend(worker_example_runtime_violations(worker_example_sources(repo_root)))
     return errors

@@ -198,12 +198,20 @@ def _confined_run(root: Path, patterns: list[str], argv: list[str]) -> dict:
 
     with tempfile.TemporaryDirectory() as directory:
         report = Path(directory) / "report.json"
+        invocation = Path(directory) / "invocation.json"
+        # A full staged-file expansion exceeds Windows' process command-line
+        # limit. Preserve the exact argument vector and declarations as data;
+        # the private file outlives the child and introduces no shell parsing.
+        invocation.write_text(json.dumps({"root": str(root), "patterns": patterns, "argv": argv}),
+                              encoding="utf-8")
         bootstrap = (
-            "import json, runpy, sys\n"
-            "sys.path.insert(0, sys.argv[1] + '/scripts/ci')\n"
-            "import _input_closure, pathlib\n"
-            "root, patterns, report, script = sys.argv[1], json.loads(sys.argv[2]), sys.argv[3], sys.argv[4]\n"
-            "sys.argv = sys.argv[4:]\n"
+            "import json, pathlib, runpy, sys\n"
+            "invocation = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
+            "root, patterns, report = invocation['root'], invocation['patterns'], sys.argv[2]\n"
+            "sys.path.insert(0, root + '/scripts/ci')\n"
+            "import _input_closure\n"
+            "sys.argv = invocation['argv']\n"
+            "script = sys.argv[0]\n"
             "status = 0\n"
             "with _input_closure.Confinement(pathlib.Path(root), tuple(patterns)) as confinement:\n"
             "    try:\n"
@@ -214,7 +222,7 @@ def _confined_run(root: Path, patterns: list[str], argv: list[str]) -> dict:
             "    {'status': status, 'escapes': confinement.escapes(unlisted_tools=False)}))\n"
         )
         subprocess.run(
-            [sys.executable, "-c", bootstrap, str(root), json.dumps(patterns), str(report), *argv],
+            [sys.executable, "-c", bootstrap, str(invocation), str(report)],
             cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             check=False,
         )
@@ -384,6 +392,23 @@ def selftest() -> None:
                     "pre-commit `fixture`: check_fixture.py read docs/a.md, which INPUT_GLOBS does not cover"
                 ], "A2"
             assert state() == before, "A5 the exported outer repository is unchanged"
+        # A6-A9: a real child receives >32K of exact paths, Unicode, empty,
+        # quoted and shell-shaped arguments. Covered/stray reads cross success
+        # and17; argv transport cannot erase either refusal or checker status.
+        long_argv = [f"crates/a/long-{index:04d}-" + "segment " * 20 + "file.rs" for index in range(400)]
+        long_argv.extend(["", "汉字 λ", 'quoted "path"', "back\\slash", "$(never-execute);literal"])
+        assert len(subprocess.list2cmdline(long_argv)) > 32767, "A6 real Windows boundary"
+        for stray, status in ((False, 0), (False, 17), (True, 0), (True, 17)):
+            script = "scripts/ci/check_long_arguments.py"
+            (root / script).write_text(
+                "import sys\nfrom pathlib import Path\n"
+                + "assert sys.argv[1:] == " + repr(long_argv) + "\n"
+                + "Path('crates/a/src/lib.rs').read_text()\n"
+                + ("Path('docs/a.md').read_text()\n" if stray else "")
+                + f"raise SystemExit({status})\n", encoding="utf-8")
+            observed = _confined_run(root, ["crates/**", "scripts/ci/*.py"], [script, *long_argv])
+            assert observed == {"status": status, "escapes":
+                ["read docs/a.md, which INPUT_GLOBS does not cover"] if stray else []}, (stray, status, observed)
     print("_input_closure selftest: the decision table holds")
 
 

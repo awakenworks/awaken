@@ -18,6 +18,9 @@ import uuid
 
 from _native_postgres import PostgresService
 from native_services import sha256, windows_executable
+from _native_worker_fixtures import (
+    WORKER_FIXTURE_CASES, discover_fixture_tests, validate_worker_fixture_probe,
+)
 
 ROOT=Path(__file__).resolve().parents[2]
 CASES=(
@@ -27,6 +30,9 @@ CASES=(
 )
 SKIP=re.compile(r"^[ \t]*(?:skip(?:ped|ping)?\b|\[skip\])",re.M|re.I)
 SQL_CASE="Postgres observation preserves rows, quoted identity, bytes, and read-only authority"
+
+
+FIXTURE_TESTS=discover_fixture_tests(ROOT)
 
 def save_record(output: Path, record: dict) -> None:
     pending=output/"result.pending";pending.write_text(json.dumps(record,indent=2),encoding="utf-8")
@@ -59,6 +65,12 @@ def validate_bundle(path: Path, digest: str) -> dict:
         if actual["sha256"]!=row.get("sha256"):raise ValueError("native executable snapshot changed")
     return value["binaries"]
 
+def case_database_name(case: str) -> str:
+    if case not in {row[0] for row in CASES}:
+        raise ValueError("unknown native PostgreSQL scenario")
+    return "awaken_e2e_" + case.replace("-", "_")
+
+
 def case_environment(inherited: dict, url: str, temporary: Path, binaries: dict, psql: Path) -> dict:
     result={k:v for k,v in inherited.items() if not k.upper().startswith(("AWAKEN_","SESSION_","PG","AWS_","MINIO_","MC_HOST_"))}
     if "AWAKEN_NATIVE_BASH" in inherited:result["AWAKEN_NATIVE_BASH"]=inherited["AWAKEN_NATIVE_BASH"]
@@ -83,11 +95,16 @@ def reconcile_execution(output: Path) -> dict:
             or value["source"].get("patch_sha256")!=sha256(output/"source.patch")):
         raise ValueError("native served PostgreSQL receipt does not bind the current source")
     stages=value.get("stages",[])
-    if [row.get("stage") for row in stages]!=["disk-admission","rustc-identity","node-identity","node-dependencies","build-execution-bundles","psql-observation",*[row[0] for row in CASES]]:
+    if [row.get("stage") for row in stages]!=["disk-admission","rustc-identity","node-identity","node-dependencies","worker-fixture-codec","build-execution-bundles","psql-observation",*[row[0] for row in CASES]]:
         raise ValueError("native served PostgreSQL preparation or case inventory changed")
     for row in stages:
         log=output/(row["stage"]+".log")
         if row.get("exit_code")!=0 or row.get("log_sha256")!=sha256(log):raise ValueError("native served PostgreSQL log changed")
+    fixture_probe=value.get("worker_fixture_probe",{})
+    if (fixture_probe.get("status")!="passed" or fixture_probe.get("sources")!={path:sha256(ROOT/path) for path in FIXTURE_TESTS}):
+        raise ValueError("native Worker fixture codec source receipt changed")
+    actual=validate_worker_fixture_probe((output/"worker-fixture-codec.log").read_text(encoding="utf-8",errors="replace"),0)
+    if actual!=fixture_probe.get("cases"):raise ValueError("native Worker fixture codec outcomes changed")
     probe=value.get("sql_probe",{})
     if (probe.get("status")!="passed" or probe.get("source")!="e2e/postgres.test.mjs"
             or probe.get("source_sha256")!=sha256(ROOT/"e2e/postgres.test.mjs")):
@@ -95,6 +112,7 @@ def reconcile_execution(output: Path) -> dict:
     validate_sql_probe((output/"psql-observation.log").read_text(encoding="utf-8",errors="replace"),0)
     for (case,filename,marker),row in zip(CASES,value["cases"],strict=True):
         if (row.get("status")!="passed" or row.get("temporary_removed") is not True
+                or row.get("database")!=case_database_name(case)
                 or row.get("source")!="e2e/"+filename or row.get("source_sha256")!=sha256(ROOT/"e2e"/filename)):
             raise ValueError("native served PostgreSQL case receipt changed")
         validate_case((output/(case+".log")).read_text(encoding="utf-8",errors="replace"),0,marker)
@@ -148,6 +166,10 @@ def worker(args: argparse.Namespace) -> int:
         if "host: x86_64-pc-windows-msvc" not in version:raise ValueError("MSVC host toolchain is required")
         record["node_version"]=run("node-identity",[node["path"],"--version"]).strip()
         run("node-dependencies",[node["path"],"--input-type=module","-e","await import('@anthropic-ai/sdk');"],directory=ROOT/"e2e")
+        text=run("worker-fixture-codec",[node["path"],"--test","--test-reporter=tap",*FIXTURE_TESTS])
+        names=validate_worker_fixture_probe(text,0)
+        record["worker_fixture_probe"]=dict(status="passed",sources={path:sha256(ROOT/path) for path in FIXTURE_TESTS},cases=names)
+        save()
         # Build before PostgreSQL launch; only Cargo's existing artifact/snapshot
         # owner selects these binaries, and no ambient prebuild is accepted.
         prepare=root/"prepared"
@@ -164,11 +186,18 @@ def worker(args: argparse.Namespace) -> int:
         record["sql_probe"]=dict(status="passed",source="e2e/postgres.test.mjs",source_sha256=sha256(ROOT/"e2e/postgres.test.mjs"));save()
         for case,filename,marker in CASES:
             temporary=cases_root/case;temporary.mkdir()
-            environment=case_environment(dict(os.environ),service.url,temporary,binaries,Path(service.binaries["psql"]["path"]))
+            # Claim is global to its database. Independent scenarios must not
+            # inherit an earlier scenario's pending dispatches or recovery Work.
+            # Keep each database for evidence; never truncate prior scenarios.
+            database=case_database_name(case)
+            service.verify()
+            service.sql("CREATE DATABASE "+database)
+            url=service.url.rsplit("/",1)[0]+"/"+database
+            environment=case_environment(dict(os.environ),url,temporary,binaries,Path(service.binaries["psql"]["path"]))
             command=[node["path"],*(["--experimental-strip-types"] if filename.endswith(".ts") else []),"e2e/"+filename]
             text=run(case,command,environment);validate_case(text,0,marker)
             if list(temporary.iterdir()):raise ValueError("served scenario left owned temporary state after child exit")
-            record["cases"].append(dict(case=case,source="e2e/"+filename,source_sha256=sha256(ROOT/"e2e"/filename),
+            record["cases"].append(dict(case=case,database=database,source="e2e/"+filename,source_sha256=sha256(ROOT/"e2e"/filename),
                 marker=marker,status="passed",temporary_removed=True));save()
         validate_bundle(prepare/"build.json",digest)
         service.verify()
