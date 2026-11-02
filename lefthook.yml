@@ -191,6 +191,12 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/test_session_acceptance.py
 
+    formal-native-fixtures:
+      # >>> generated glob from test_formal_gate_mutations.py INPUT_GLOBS — do not edit
+      glob: "scripts/ci/*.py"
+      # <<< generated glob
+      run: python3 scripts/ci/test_formal_gate_mutations.py
+
     # Run the live graph as well as the checker fixtures; fixtures alone
     # cannot reject a newly introduced wait in a production test suite.
     test-orchestration:

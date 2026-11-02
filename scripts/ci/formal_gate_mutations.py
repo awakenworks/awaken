@@ -18,6 +18,7 @@ import shutil
 
 import formal_anchors
 import formal_ledger
+import formal_sources
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +28,18 @@ def prepare_case(case_root: Path) -> None:
     # Copy every writable mutation target and its checker dependencies. The old
     # fixture omitted formal/tla and Web classifications, so an unmutated case
     # already failed and any nonzero-exit oracle reported false kills.
+    if os.name == "nt":
+        # Windows symlinks need a privilege unavailable on ordinary CI hosts.
+        # Copy the admitted source inventory, excluding .git and untracked
+        # caches. Every writable path is private; never use a hard link.
+        for relative in formal_sources.tracked_files(ROOT, allow_nonrepository=True):
+            source = ROOT / relative
+            if ROOT.resolve() not in source.resolve().parents:
+                raise SystemExit(f"mutation fixture source escapes its root: {relative}")
+            destination = case_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+        return
     ignore = shutil.ignore_patterns("__pycache__", ".tlacache")
     shutil.copytree(ROOT / "scripts/ci", case_root / "scripts/ci", ignore=ignore)
     shutil.copytree(ROOT / "formal", case_root / "formal", ignore=ignore)
@@ -85,6 +98,8 @@ def private_source(case_root: Path, relative: str) -> Path:
     copied from.
     """
 
+    if Path(relative).is_absolute() or ".." in Path(relative).parts:
+        raise SystemExit(f"mutation fixture could not privatize {relative}")
     current = case_root
     for part in Path(relative).parts[:-1]:
         current = current / part
@@ -101,9 +116,11 @@ def private_source(case_root: Path, relative: str) -> Path:
         content = path.read_bytes()
         path.unlink()
         path.write_bytes(content)
-        PRIVATE_ORIGINALS[path] = content
     if case_root.resolve() not in path.resolve().parents:
         raise SystemExit(f"mutation fixture could not privatize {relative}")
+    # Native copied sources need the same restoration as symlinked sources.
+    # Repeated access must retain the original bytes, not an earlier mutant.
+    PRIVATE_ORIGINALS.setdefault(path, path.read_bytes())
     return path
 
 
