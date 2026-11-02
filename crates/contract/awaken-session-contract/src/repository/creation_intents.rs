@@ -125,51 +125,6 @@ pub enum PreparedParticipantIntentClaim {
     Absent,
 }
 
-#[cfg(test)]
-mod phase_tests {
-    use super::*;
-
-    #[test]
-    fn only_preparing_adopts_and_completed_abort_is_absorbing() {
-        // DT-P: C1 Preparing/Aborting/Aborted. P1 only Preparing permits
-        // adoption; P2 beginning abort maps Preparing to Aborting; P3 both
-        // already-aborting and completed-abort replay preserve their phase.
-        // Every row preserves the original identity, participants and lease.
-        for (phase, adopts, after) in [
-            (
-                PreparedParticipantIntentPhase::Preparing,
-                true,
-                PreparedParticipantIntentPhase::Aborting,
-            ),
-            (
-                PreparedParticipantIntentPhase::Aborting,
-                false,
-                PreparedParticipantIntentPhase::Aborting,
-            ),
-            (
-                PreparedParticipantIntentPhase::Aborted,
-                false,
-                PreparedParticipantIntentPhase::Aborted,
-            ),
-        ] {
-            assert_eq!(phase.permits_adoption(), adopts);
-            let intent = PreparedParticipantIntent::new(
-                "session".into(),
-                "workspace".into(),
-                vec!["repository".into()],
-                phase,
-                100,
-            );
-            let replay = intent.clone().begin_abort();
-            assert_eq!(replay.phase(), after);
-            assert_eq!(replay.session_id(), intent.session_id());
-            assert_eq!(replay.owner_scope(), intent.owner_scope());
-            assert_eq!(replay.repository_ids(), intent.repository_ids());
-            assert_eq!(replay.lease_expires_at_unix_ms(), 100);
-        }
-    }
-}
-
 /// Outbound port over durable pre-root creation intents.
 ///
 /// The same durable store implements [`SessionRepository`](super::SessionRepository):
@@ -218,4 +173,51 @@ pub trait PreparedParticipantIntents: Send + Sync {
         now_unix_ms: u64,
         limit: usize,
     ) -> Result<Vec<PreparedParticipantIntent>, SessionRepositoryError>;
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::*;
+
+    #[test]
+    fn only_preparing_adopts_and_completed_abort_is_absorbing() {
+        // DT-P: C1 Preparing/Aborting/Aborted. P1 only Preparing permits
+        // adoption; P2 beginning abort maps Preparing to Aborting; P3 both
+        // already-aborting and completed-abort replay preserve their phase.
+        // Every row preserves the original identity, participants and lease.
+        // Moving this test module after the port changes no behavior or rule;
+        // this same three-row partition remains the complete phase coverage.
+        for (phase, adopts, after) in [
+            (
+                PreparedParticipantIntentPhase::Preparing,
+                true,
+                PreparedParticipantIntentPhase::Aborting,
+            ),
+            (
+                PreparedParticipantIntentPhase::Aborting,
+                false,
+                PreparedParticipantIntentPhase::Aborting,
+            ),
+            (
+                PreparedParticipantIntentPhase::Aborted,
+                false,
+                PreparedParticipantIntentPhase::Aborted,
+            ),
+        ] {
+            assert_eq!(phase.permits_adoption(), adopts);
+            let intent = PreparedParticipantIntent::new(
+                "session".into(),
+                "workspace".into(),
+                vec!["repository".into()],
+                phase,
+                100,
+            );
+            let replay = intent.clone().begin_abort();
+            assert_eq!(replay.phase(), after);
+            assert_eq!(replay.session_id(), intent.session_id());
+            assert_eq!(replay.owner_scope(), intent.owner_scope());
+            assert_eq!(replay.repository_ids(), intent.repository_ids());
+            assert_eq!(replay.lease_expires_at_unix_ms(), 100);
+        }
+    }
 }
