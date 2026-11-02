@@ -51,6 +51,8 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
+      - name: Begin build observations
+        run: python3 scripts/ci/ci_performance.py begin --label dependency_fetch --github
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: 1.96.0
@@ -66,12 +68,18 @@ jobs:
       - name: Fetch public locked dependencies with empty Git and Cargo caches
         shell: bash
         run: python scripts/ci/check_dependency_fetch.py --output target/test-timings/dependency-fetch
+      - name: Finish build observations
+        if: always() && env.AWAKEN_BUILD_RUN_ID != ''
+        run: python3 scripts/ci/ci_performance.py finish --conclusion "${{ job.status }}"
+      - name: Summarize build observations
+        if: always() && env.AWAKEN_BUILD_RUN_ID != ''
+        run: python3 scripts/ci/ci_performance.py report --output target/test-timings/performance.json
       - name: Retain cold dependency evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dependencies-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.runner }}
-          path: target/test-timings/dependency-fetch/
+          path: target/test-timings/
           if-no-files-found: error
 
   trusted_host_portability:
@@ -90,6 +98,8 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
+      - name: Begin build observations
+        run: python3 scripts/ci/ci_performance.py begin --label trusted_host_portability --github
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: 1.96.0
@@ -131,6 +141,12 @@ jobs:
           name: session-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.runner }}
           path: target/test-timings/session-observations-*/
           if-no-files-found: error
+      - name: Finish build observations
+        if: always() && env.AWAKEN_BUILD_RUN_ID != ''
+        run: python3 scripts/ci/ci_performance.py finish --conclusion "${{ job.status }}"
+      - name: Summarize build observations
+        if: always() && env.AWAKEN_BUILD_RUN_ID != ''
+        run: python3 scripts/ci/ci_performance.py report --output target/test-timings/performance.json
       - name: Retain native build and cache observations
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -162,6 +178,8 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
+      - name: Begin build observations
+        run: python3 scripts/ci/ci_performance.py begin --label full_quality --github
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.6.0
@@ -237,6 +255,9 @@ jobs:
           awaken_append_repo_tools
           awaken_unset_ambient_api_keys
           python3 scripts/ci/benchmark_rust_build.py -p awaken-resource-worker-http --jobs 1 2 --rounds 2 --timeout 1800
+      - name: Finish build observations
+        if: always() && env.AWAKEN_BUILD_RUN_ID != ''
+        run: python3 scripts/ci/ci_performance.py finish --conclusion "${{ job.status }}"
       - name: Summarize gate and build costs
         if: always()
         run: python3 scripts/ci/ci_performance.py report --output target/test-timings/performance.json

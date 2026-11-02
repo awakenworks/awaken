@@ -161,7 +161,7 @@ def prepare_required(arguments: list[str], build_log: Path, receipt: Path) -> in
     def record(rows):
         document["rows"] = rows
         _write_receipt(receipt, document)
-    status, rows = execute_commands([command], dict(os.environ), root=ROOT, verify=verify,
+    status, rows = execute_commands([command], {**os.environ, 'AWAKEN_BUILD_SOURCE_DIGEST': digest}, root=ROOT, verify=verify,
                                     record=record, run=run)
     try:
         unchanged = source_snapshot()[0] == digest
@@ -275,7 +275,7 @@ def run_required(arguments: list[str], inventory: Path, results: Path, receipt: 
         _write_receipt(receipt, document)
         if errors:
             raise ValueError("; ".join(errors))
-    return execute_commands(commands, dict(os.environ), root=ROOT, verify=verify, record=record, run=run)[0]
+    return execute_commands(commands, {**os.environ, 'AWAKEN_BUILD_SOURCE_DIGEST': digest}, root=ROOT, verify=verify, record=record, run=run)[0]
 
 
 def validate_receipt(inventory: Path, results: Path, status: int, receipt: Path,
@@ -344,6 +344,77 @@ class ExecutionTests(unittest.TestCase):
             for selected in (real/"rustup", exposed/"rustup"):
                 with self.subTest(selected=selected), mock.patch.object(shutil, "which", return_value=str(selected)):
                     self.assertEqual(self.rustup_cargo_proxy(), real/"cargo")
+
+    def test_execution_subject_is_runtime_input_and_contains_no_fixture_secrets(self):
+        with mock.patch.dict(os.environ,{},clear=True):
+            self.assertEqual(execution_inputs(),{"fixture":None,"crash_backend":None})
+            os.environ.update(AWAKEN_TEST_FIXTURE_KIND="postgres",AWAKEN_TEST_FIXTURE_OWNER="owned-pg",
+                              AWAKEN_TEST_DATABASE_URL="postgresql://secret-user:secret-password@localhost/db",
+                              AWAKEN_CRASH_BACKEND="postgres")
+            subject=execution_inputs()
+            self.assertEqual(subject,{"fixture":{"kind":"postgres","owner":"owned-pg"},"crash_backend":"postgres"})
+            self.assertNotIn("secret",json.dumps(subject))
+            os.environ["AWAKEN_TEST_FIXTURE_OWNER"]="another-pg"
+            self.assertNotEqual(execution_inputs(),subject)
+            os.environ["AWAKEN_CRASH_BACKEND"]="sqlite"
+            self.assertNotEqual(execution_inputs(),subject)
+
+    def test_execution_subject_drift_stops_the_real_command_sequence(self):
+        # The actual sequence must fence the boundary after inventory and before
+        # execution. Only Cargo transport/source acquisition are controlled.
+        for variable, replacement in (("AWAKEN_TEST_FIXTURE_OWNER", "another-owner"),
+                                      ("AWAKEN_CRASH_BACKEND", "sqlite"), (None, None)):
+            with self.subTest(variable=variable), tempfile.TemporaryDirectory() as temporary:
+                directory=Path(temporary)
+                facts={"index_tree":b"index", "revision":b"revision", "patch":b""}
+                calls=[]
+                def cargo(command, **kwargs):
+                    calls.append(command)
+                    if "--list" in command:
+                        kwargs["stdout"].write("critical: test\n")
+                        if variable: os.environ[variable]=replacement
+                    else:
+                        kwargs["stdout"].write("test critical ... ok\n"
+                            "test result: ok. 1 passed; 0 failed; 0 ignored;\n")
+                    return subprocess.CompletedProcess(command,0)
+                environment={"AWAKEN_TEST_FIXTURE_KIND":"postgres",
+                    "AWAKEN_TEST_FIXTURE_OWNER":"owned-fixture", "AWAKEN_CRASH_BACKEND":"postgres"}
+                with mock.patch.dict(os.environ,environment,clear=True), \
+                     mock.patch("rust_test_plan.working_subject",return_value=("digest",facts)), \
+                     mock.patch("rust_test_plan.source_snapshot",return_value=("digest",{})), \
+                     mock.patch("crate_test.native_command",side_effect=lambda command,env:command), \
+                     mock.patch.object(subprocess,"run",side_effect=cargo), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    status=run_required(["-p","critical","--lib"],directory/"list.log",
+                                        directory/"results.log",directory/"results.json")
+                receipt=json.loads((directory/"results.json").read_text(encoding="utf-8"))
+                self.assertEqual(status,1 if variable else 0)
+                self.assertEqual(len(calls),1 if variable else 2)
+                if variable:
+                    self.assertIn("Execution fixture or backend changed",receipt["rows"][0]["subject_error"])
+                else:
+                    self.assertEqual(receipt["selected_cases"],["critical"])
+                    self.assertEqual(receipt["executed_cases"],[["critical","ok"]])
+
+    def test_execution_subject_refuses_partial_unknown_or_malformed_identity(self):
+        for environment in ({"AWAKEN_TEST_FIXTURE_KIND":"postgres"},
+                            {"AWAKEN_TEST_FIXTURE_OWNER":"owned-pg"},
+                            {"AWAKEN_TEST_FIXTURE_KIND":"unknown","AWAKEN_TEST_FIXTURE_OWNER":"owned"},
+                            {"AWAKEN_TEST_FIXTURE_KIND":"postgres","AWAKEN_TEST_FIXTURE_OWNER":"secret\nline"},
+                            {"AWAKEN_CRASH_BACKEND":"unknown"}):
+            with self.subTest(environment=environment),mock.patch.dict(os.environ,environment,clear=True):
+                with self.assertRaises(ValueError):execution_inputs()
+
+    def test_selection_projection_is_pure_but_execution_still_owns_capture(self):
+        arguments=["-p","package","--require-case=case","--","--test-threads=1"]
+        with mock.patch.dict(os.environ,{"RUST_TEST_NOCAPTURE":"1"}):
+            self.assertEqual(selection_commands(arguments)[1],["case"])
+            with self.assertRaisesRegex(ValueError,"owns captured output"):
+                required_commands(arguments)
+
+    def setUp(self):
+        from _build_observation_fixture import synthetic_build_observations
+        synthetic_build_observations(self)
 
     def test_execution_subject_is_runtime_input_and_contains_no_fixture_secrets(self):
         with mock.patch.dict(os.environ,{},clear=True):
