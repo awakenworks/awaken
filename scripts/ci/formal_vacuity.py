@@ -317,12 +317,13 @@ def self_test() -> None:
             "1 of 2 cover properties satisfied", "V10"
         results = root / "result_output_dir"
         results.mkdir()
-        (results / "a::harness").write_text(cases["V1"][0] + cases["V6"][0])
+        (results / "a__harness").write_text(cases["V1"][0] + cases["V6"][0])
         assert check([results], None, root) == 0, "a clean result directory passes"
-        (results / "a::vacuous").write_text(cases["V3"][0])
+        (results / "a__vacuous").write_text(cases["V3"][0])
         kept = root / "kept"
         assert check([results], kept, root) == 1, "one vacuous harness refuses the run"
-        assert sorted(path.name for path in kept.iterdir()) == ["a::vacuous"], "--keep holds the evidence"
+        assert sorted(path.name for path in kept.iterdir()) == ["a__vacuous"], "--keep holds the evidence"
+        assert (kept / "a__vacuous").read_bytes() == (results / "a__vacuous").read_bytes(), "retained evidence preserves exact native bytes"
         unfinished = root / "unfinished"
         unfinished.write_text(incomplete + cases["V8"][0])
         assert check([unfinished], kept, root) == 1, "V14 incomplete Check refuses even beside a valid Check"

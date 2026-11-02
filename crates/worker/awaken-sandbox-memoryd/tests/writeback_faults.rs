@@ -263,6 +263,26 @@ fn recovery_has_no_temp_directory_dependency_even_when_cancelled() {
     // T1-T3 temp location is a FILE (unusable for staging); success, abort before
     // commit and abort after commit must work without touching it. Environment
     // mutation is child-only, so other tests cannot race a global TMPDIR change.
+    let child_ran = |output: &std::process::Output| {
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line == "test recovery_without_temp_child ... ok")
+    };
+    // A zero-match libtest child exits successfully. Require its named outcome;
+    // otherwise deleting or renaming the private witness would pass this test.
+    let empty = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "__missing_recovery_temp_child", "--ignored"])
+        .output()
+        .unwrap();
+    assert!(
+        empty.status.success(),
+        "zero selection is the negative control"
+    );
+    assert!(
+        !child_ran(&empty),
+        "exit zero alone is not execution evidence"
+    );
     let root = tempfile::tempdir().unwrap();
     let sentinel = root.path().join("not-a-directory");
     std::fs::write(&sentinel, b"sentinel").unwrap();
@@ -280,8 +300,9 @@ fn recovery_has_no_temp_directory_dependency_even_when_cancelled() {
         .output()
         .unwrap();
     assert!(
-        output.status.success(),
-        "{}",
+        child_ran(&output),
+        "private recovery witness did not run: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel");
