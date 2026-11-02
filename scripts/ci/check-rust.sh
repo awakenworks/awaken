@@ -57,7 +57,10 @@ fail=0
 # the build is already broken).
 step() {
   local label="$1" fix="$2"; shift 2
-  local out="" rc started=$SECONDS
+  local out="" rc started=$SECONDS timing_snapshot=""
+  if [ -n "${AWAKEN_BUILD_RUN_DIRECTORY:-}" ] && [[ " $* " == *" --timings "* ]]; then
+    timing_snapshot=$(python3 scripts/ci/ci_performance.py timings-before --path "$CARGO_TARGET_DIR/cargo-timings") || return 74
+  fi
   if [ -n "${rust_step_evidence:-}" ]; then
     # Spool while the command is alive: an outer deadline must not discard
     # its unfinished build/test output with a shell command-substitution buffer.
@@ -82,6 +85,11 @@ step() {
     rc=0
   else
     rc=$?
+  fi
+  if [ -n "$timing_snapshot" ]; then
+    python3 scripts/ci/ci_performance.py timings-after --snapshot "$timing_snapshot" || {
+      [ "$rc" -ne 0 ] || rc=74
+    }
   fi
   if [ "$rc" -eq 0 ]; then
     echo "✓ $label"
@@ -179,6 +187,9 @@ if [ "$mode" = "--self-test" ]; then
   exit 0
 fi
 
+source scripts/ci/_build_observation.sh
+awaken_begin_build_observation "rust:$mode" || exit $?
+
 # A full run builds the whole workspace plus every test binary. When the target
 # filesystem cannot hold that, the first symptom is a linker or codegen error on
 # an arbitrary crate, which reads as a source defect. Check the named cause.
@@ -189,7 +200,7 @@ fi
 # These are diagnostics, never a full-gate qualification receipt. Every run
 # retains its own source/patch, argv, original output and elapsed/status rows.
 mkdir -p "$CARGO_TARGET_DIR/test-timings" || exit 1
-rust_step_evidence=$(mktemp -d "$CARGO_TARGET_DIR/test-timings/rust-gate.XXXXXX") || exit 1
+rust_step_evidence=$(mktemp -d "$AWAKEN_BUILD_RUN_DIRECTORY/rust-gate.XXXXXX") || exit 1
 git rev-parse HEAD > "$rust_step_evidence/source.txt" || exit 1
 git -c core.fsmonitor=false diff --binary HEAD > "$rust_step_evidence/working-tree.patch" || exit 1
 printf '%s\n' "$mode" > "$rust_step_evidence/mode.txt" || exit 1

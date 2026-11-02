@@ -61,6 +61,9 @@ case "${1:-}" in
     ;;
 esac
 
+source scripts/ci/_build_observation.sh
+awaken_begin_build_observation "check-all:$requested_group:full=$full_gate" || exit $?
+
 gate_candidate_revision="${AWAKEN_FULL_GATE_CANDIDATE:-$(git rev-parse --verify HEAD)}" || exit 1
 if [ "$full_gate" -eq 1 ]; then
   export AWAKEN_ADMISSION_PROFILE=qualification
@@ -98,7 +101,7 @@ failed=()   # labels of checks that failed
 unset AWAKEN_FULL_GATE_CANDIDATE
 repro=()    # standalone reproduce command, parallel to `failed`
 first_failure_status=0
-timing_file="${AWAKEN_TEST_TIMINGS_FILE:-target/test-timings/check-all-${requested_group}.tsv}"
+timing_file="${AWAKEN_TEST_TIMINGS_FILE:-$AWAKEN_BUILD_RUN_DIRECTORY/check-all-${requested_group}.tsv}"
 initialize_timing_file() {
   mkdir -p "$(dirname "$timing_file")"
   if [ ! -e "$timing_file" ]; then
@@ -107,6 +110,7 @@ initialize_timing_file() {
 }
 rm -f "$timing_file"
 initialize_timing_file
+python3 scripts/ci/ci_performance.py register --kind gate --path "$timing_file" || exit $?
 
 # Groups whose external tools have already been decided this run.
 declare -A prechecked=()

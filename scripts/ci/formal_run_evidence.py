@@ -240,19 +240,36 @@ def write_record(path: Path, record: dict) -> None:
             os.unlink(name)
 
 
-def begin_artifacts(repository: Path, parent: Path, kind: str, directory: Path | None = None) -> Path:
+def begin_artifacts(repository: Path, parent: Path, kind: str, directory: Path | None = None,
+                    *, observation_only: bool = False, source_identity: dict | None = None) -> Path:
     """One immutable diagnostic bundle per invocation; never a release proof."""
+    if source_identity is not None and not observation_only:
+        raise ValueError("only diagnostic observations may use a caller-owned source identity")
     parent.mkdir(parents=True, exist_ok=True)
     if directory is None:
         directory = Path(tempfile.mkdtemp(prefix=kind + "-", dir=parent))
     else:
         directory.mkdir(parents=True, exist_ok=False)
     directory = directory.resolve()
-    write_record(directory / "evidence.json", {
+    if source_identity is not None:
+        source = dict(source_identity)
+    else:
+        try:
+            source = source_snapshot(repository)
+        except (OSError, ValueError, KeyError):
+            if not observation_only:
+                raise
+            source = {"available": False, "reason": "source identity unavailable"}
+    record = {
         "schema_version": 1, "kind": kind, "status": "running", "run_id": str(uuid.uuid4()),
-        "source": source_snapshot(repository), "platform": {"system": platform.system(), "machine": platform.machine()},
-        "proof_toolchain": proof_toolchain(repository), "started_at_unix": int(time.time()),
-    })
+        "source": source, "platform": {"system": platform.system(), "machine": platform.machine()},
+        "started_at_unix": int(time.time()),
+    }
+    if observation_only:
+        record.update(observation_only=True, full_gate=False)
+    else:
+        record["proof_toolchain"] = proof_toolchain(repository)
+    write_record(directory / "evidence.json", record)
     return directory
 
 
@@ -268,8 +285,14 @@ def artifact_files(directory: Path) -> dict[str, str]:
 def finish_artifacts(directory: Path, repository: Path, exit_code: int) -> dict:
     record = json.loads((directory / "evidence.json").read_text())
     if record["status"] != "running": raise ValueError("artifact invocation already finished")
-    unchanged = record["source"] == source_snapshot(repository)
-    record.update(status="passed" if exit_code == 0 and unchanged else "failed", exit_code=exit_code,
+    try:
+        unchanged = record["source"] == source_snapshot(repository) if record["source"].get("available", True) else None
+    except (OSError, ValueError, KeyError):
+        if not record.get("observation_only"):
+            raise
+        unchanged = None
+    passed = exit_code == 0 and (record.get("observation_only") or unchanged)
+    record.update(status="passed" if passed else "failed", exit_code=exit_code,
         source_unchanged=unchanged, finished_at_unix=int(time.time()), files=artifact_files(directory))
     write_record(directory / "evidence.json", record)
     return record
@@ -277,6 +300,8 @@ def finish_artifacts(directory: Path, repository: Path, exit_code: int) -> dict:
 
 def verify_artifacts(directory: Path, repository: Path) -> dict:
     record = json.loads((directory / "evidence.json").read_text())
+    if record.get("observation_only"):
+        raise ValueError("performance observations cannot qualify an artifact")
     if record.get("schema_version") != 1 or record.get("status") not in {"passed", "failed"}:
         raise ValueError("artifact invocation is incomplete")
     code, unchanged = record.get("exit_code"), record.get("source_unchanged")

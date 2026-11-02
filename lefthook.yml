@@ -271,7 +271,7 @@ pre-commit:
 
     ci-performance-policy:
       # >>> generated glob from ci_performance.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/quality.yml,scripts/ci/ci_performance.py}"
+      glob: "{.github/workflows/quality.yml,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/rust_test_plan.py}"
       # <<< generated glob
       run: python3 scripts/ci/ci_performance.py workflow
 
@@ -323,8 +323,8 @@ pre-commit:
     # One Rust gate owns source and boundary checks. Trigger it for checker
     # edits too; separate hook invocations would execute the same scan twice.
     rust-quick:
-      # >>> generated glob from check_sdk_consumer.py, check_trust_roots.py, rust_test_plan.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,deny.toml,examples/sdk-consumer/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,tests/**,xtask/**}"
+      # >>> generated glob from check_sdk_consumer.py, check_trust_roots.py, ci_performance.py, rust_test_plan.py INPUT_GLOBS — do not edit
+      glob: "{.cargo/**,.config/**,.github/workflows/quality.yml,Cargo.lock,Cargo.toml,apps/**,crates/**,deny.toml,examples/sdk-consumer/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,tests/**,xtask/**}"
       # <<< generated glob
       run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --quick
 
@@ -433,7 +433,7 @@ pre-commit:
 
     full-gate-admission:
       # >>> generated glob from test_full_gate_admission.py INPUT_GLOBS — do not edit
-      glob: "{scripts/ci/_deadline.sh,scripts/ci/_strict_unittest.py,scripts/ci/check-all.sh,scripts/ci/deadline.py,scripts/ci/test_full_gate_admission.py}"
+      glob: "{scripts/ci/_build_observation.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_deadline.sh,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/check-all.sh,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/rust_test_plan.py,scripts/ci/test_full_gate_admission.py}"
       # <<< generated glob
       # Existing host capability regressions remain separate from the source matrix.
       run: python3 scripts/ci/test_full_gate_admission.py

@@ -1204,6 +1204,7 @@ def main() -> int:
         def record(rows):
             plan.update(status="running", rows=rows)
             receipt.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+        environment['AWAKEN_BUILD_SOURCE_DIGEST'] = fingerprint
         status, rows = crate_test.execute_commands(commands, environment, root=ROOT, verify=verify, record=record)
         try:
             unchanged = source_snapshot()[0] == fingerprint

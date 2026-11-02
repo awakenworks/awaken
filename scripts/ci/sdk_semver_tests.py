@@ -347,6 +347,10 @@ class SdkSemverEvidenceTests(unittest.TestCase):
 def shared_sdk_io_tests(owner):
     """Use the running SDK owner; never import it as a second module instance."""
     class SharedSdkIOTests(unittest.TestCase):
+        def setUp(self):
+            from _build_observation_fixture import synthetic_build_observations
+            synthetic_build_observations(self)
+
         @staticmethod
         def facts(*, dirty=False):
             return {"revision": b"a" * 40 + b"\n", "tree": b"b" * 40 + b"\n",

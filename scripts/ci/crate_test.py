@@ -316,6 +316,47 @@ def environment(root: Path = ROOT) -> dict[str, str]:
 
 def execute_commands(commands: list[list[str]], values: dict[str, str], *, root: Path = ROOT,
                      verify=None, record=None, run=None, assess_result=None) -> tuple[int, list[dict]]:
+    # Every real adapter joins this lifecycle. Tests replace the observer port
+    # explicitly; neither the runner nor environment selects an unobserved path.
+    from ci_performance import TaskRun
+    try:
+        # The caller already owns source capture and verify(). Do not perform a
+        # second Git scan inside an execution adapter or alter its read order.
+        identity = {'available': False, 'scope': 'execution-owner',
+                    'source_digest': values.get('AWAKEN_BUILD_SOURCE_DIGEST'),
+                    'reason': 'full source receipt remains with the execution owner'}
+        task = TaskRun('commands:' + ' '.join(commands[0][:2]) if commands else 'commands:empty',
+                       root, values, workload=commands, source_identity=identity)
+    except (OSError, ValueError) as error:
+        print(f'Cannot initialize build observations: {error}', file=sys.stderr)
+        return 74, []
+    values = {**values, **{key: task.environment[key] for key in
+                          ('AWAKEN_BUILD_RUN_ID', 'AWAKEN_BUILD_RUN_DIRECTORY')}}
+    def retain(rows):
+        task.record_commands(rows)
+        if record is not None:
+            record(rows)
+    try:
+        status, rows = _execute_commands(commands, values, root=root, verify=verify, record=retain,
+                                        run=run, assess_result=assess_result)
+    except BaseException as error:
+        interrupted = 130 if isinstance(error, KeyboardInterrupt) else (
+            error.code if isinstance(error, SystemExit) and isinstance(error.code, int) else 1)
+        try:
+            task.finish(interrupted)
+        except (OSError, ValueError) as observation_error:
+            print(f'Cannot finish interrupted build observations: {observation_error}', file=sys.stderr)
+        raise
+    try:
+        task.finish(status)
+    except (OSError, ValueError) as error:
+        print(f'Cannot finish build observations: {error}', file=sys.stderr)
+        status = status or 74
+    return status, rows
+
+
+def _execute_commands(commands: list[list[str]], values: dict[str, str], *, root: Path = ROOT,
+                      verify=None, record=None, run=None, assess_result=None) -> tuple[int, list[dict]]:
     """One ordinary sequence; original failure outranks source/evidence faults."""
     if run is None:
         def run(command, **kwargs):
@@ -411,6 +452,8 @@ class CrateTestPlan(unittest.TestCase):
     companions = [{"package": "hand", "binary": "hand-bin", "launcher": "launcher"}]
 
     def setUp(self):
+        from _build_observation_fixture import synthetic_build_observations
+        synthetic_build_observations(self)
         # N6: fixtures cannot act on a hook's foreign repository/index.
         environment = mock.patch.dict(os.environ, formal_sources.detached_git_environment(), clear=True)
         environment.start()
@@ -663,7 +706,12 @@ class CrateTestPlan(unittest.TestCase):
                 self.assertEqual(native_command(explicit, values), explicit)
                 find.assert_not_called()
         with mock.patch(__name__ + ".native_command", return_value=["chosen-tools/cargo.cmd", *command[1:]]), \
+                mock.patch("ci_performance.TaskRun") as observation, \
                 mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(command, 0)) as spawn:
+            # This table owns native argument forwarding; the observation
+            # writer's real Git/storage lifecycle has its own I1-I13 table.
+            observation.return_value.environment = {
+                'AWAKEN_BUILD_RUN_ID': 'fixture', 'AWAKEN_BUILD_RUN_DIRECTORY': '/fixture'}
             status, rows = execute_commands([command], values)
             self.assertEqual(status, 0)
             self.assertEqual(rows[0]["command"], command)
@@ -814,6 +862,7 @@ def main(argv: list[str]) -> int:
     def verify():
         if source_snapshot()[0] != fingerprint:
             raise ValueError("Source changed before or during test execution")
+    values['AWAKEN_BUILD_SOURCE_DIGEST'] = fingerprint
     return execute_commands(commands, values, root=ROOT, verify=verify)[0]
 
 

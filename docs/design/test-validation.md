@@ -143,14 +143,78 @@ the actual checkout procedure. Cargo still decides freshness and all selected
 tests execute on every run; a cache hit is never execution evidence.
 
 `check-rust.sh` retains each stage's live output, exact argv, status and elapsed
-seconds under `target/test-timings/rust-gate.*/`. Its `test-build` stage uses the
+seconds under the selected build run's `rust-gate.*/`. Its `test-build` stage uses the
 same canonical feature graph with `cargo test --no-run --timings`, Nextest's
 underlying build command. Test discovery happens once in `test`, which then
 executes that graph under the existing per-test deadline. Cargo's HTML timeline
-in `target/cargo-timings/` separates the dependency path and native linking from
+in `target/cargo-timings/` describes the dependency path and compiler units separately from
 test enumeration/runtime. Preserve both cold and warm runs before attributing
 a speedup to concurrency or caching. These artifacts are diagnostic records,
 not a full-gate receipt.
+
+Every `check-all.sh`/`check-rust.sh` invocation and ordinary crate-test command
+now joins one `build-observations` diagnostic bundle. The existing artifact
+writer owns its identity, source capture, atomic writes and completion. Shell
+re-entry inherits that context; it does not create a second run. Existing
+formal and Session artifact identities remain their own evidence, never
+performance qualification.
+
+The default local root is `~/.local/state/awaken-builds`; it may be provisioned
+as a symlink to the build disk. `AWAKEN_BUILD_OBSERVATIONS` overrides that root.
+CI uses `RUNNER_TEMP/awaken-build-observations`, starts a context before build
+work and always attempts to finish/report it. `run_id` identifies an attempt,
+not a source SHA; workflow run, attempt and job are retained as external keys.
+Each host Cargo call has its own `invocation_id` and optional parent. The host
+launcher's committed `build_observation.py` must be installed alongside
+`cargo_admission.py`; ordinary upstream Cargo binaries do not emit that host
+protocol. CI platforms without it still retain task/command observations and
+explicitly report missing host invocation capture.
+
+Low-level capture adapters retain their existing source verifier and receipt.
+Their command observations carry the supplied working digest where available;
+they do not perform a second Git/source scan or change the verifier's read
+order. A standalone sequence without a full task source snapshot explicitly
+marks that capability unavailable and is excluded from automatic source
+comparison. An inherited source-bound CI/gate context keeps its original owner.
+
+The host record is written before waiting for the existing admission lock.
+It separates queue time, pre-execution observation overhead and execution,
+preserves refusal75, compiler errors and signals, and samples the existing host
+pressure reader once per second. Samples are capped at 86,400 per invocation;
+truncation and unavailable probes are explicit. Reaped-child CPU and largest
+child RSS do not represent a simultaneous tree-wide memory peak. Default
+sccache daemon execution can place compilers outside that process tree.
+Cache snapshots describe a shared-daemon window, never an exclusive build hit
+rate; resets/backend changes make the delta unavailable. No cache is reset.
+SIGKILL/power loss leaves a running/queued record rather than an invented PASS.
+Core storage failure prevents an unobserved start; optional metrics may be
+unavailable. Observation errors do not replace an existing compiler failure.
+
+Rust stage files live in the run directory. Registered external TSV/cache
+observations are copied into it before completion, so later target rotation
+cannot change the completed run. Cargo HTML is retained only when a snapshot
+around the existing timed build proves that report changed; old same-SHA HTML
+is never adopted. Supported observations do not require nightly Cargo JSON or
+alter a caller's message format. Final linking may remain part of a compiler
+unit instead of a separately measured phase.
+
+Use the path printed by the entrypoint to inspect a completed task bundle or
+a standalone Cargo invocation; the reporter emits JSON and Markdown and
+archives task bundles under `target/test-timings/build-runs/<run_id>/`:
+
+```sh
+python3 scripts/ci/ci_performance.py report --path /absolute/run/evidence.json
+python3 scripts/ci/ci_performance.py report --path /absolute/invocation/observation.json
+python3 scripts/ci/ci_performance.py compare --root target/test-timings --output target/test-timings/comparison.json
+```
+
+Comparison groups retain workload, source revision, platform/host,
+configuration and caller-declared `AWAKEN_BUILD_SCENARIO`. They do not infer a
+cold/warm state or clean caches. Failed, source-changed and incomplete runs
+are excluded from duration cohorts; sample counts are reported and build p95
+is unavailable below 20 samples. The ordinary-build benchmark above remains
+pending its whole-graph projection proof. Local fixture tests and exported
+observations do not prove full-workspace speed or remote CI acceptance.
 
 1. Measure first. Preserve `target/test-timings` logs, build/test durations,
    slow cases, selected packages/features, and the source identity. Compare

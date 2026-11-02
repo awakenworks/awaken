@@ -161,7 +161,7 @@ def prepare_required(arguments: list[str], build_log: Path, receipt: Path) -> in
     def record(rows):
         document["rows"] = rows
         _write_receipt(receipt, document)
-    status, rows = execute_commands([command], dict(os.environ), root=ROOT, verify=verify,
+    status, rows = execute_commands([command], {**os.environ, 'AWAKEN_BUILD_SOURCE_DIGEST': digest}, root=ROOT, verify=verify,
                                     record=record, run=run)
     try:
         unchanged = source_snapshot()[0] == digest
@@ -275,7 +275,7 @@ def run_required(arguments: list[str], inventory: Path, results: Path, receipt: 
         _write_receipt(receipt, document)
         if errors:
             raise ValueError("; ".join(errors))
-    return execute_commands(commands, dict(os.environ), root=ROOT, verify=verify, record=record, run=run)[0]
+    return execute_commands(commands, {**os.environ, 'AWAKEN_BUILD_SOURCE_DIGEST': digest}, root=ROOT, verify=verify, record=record, run=run)[0]
 
 
 def validate_receipt(inventory: Path, results: Path, status: int, receipt: Path,
@@ -318,6 +318,10 @@ def validate_receipt(inventory: Path, results: Path, status: int, receipt: Path,
 
 
 class ExecutionTests(unittest.TestCase):
+    def setUp(self):
+        from _build_observation_fixture import synthetic_build_observations
+        synthetic_build_observations(self)
+
     def test_execution_subject_is_runtime_input_and_contains_no_fixture_secrets(self):
         with mock.patch.dict(os.environ,{},clear=True):
             self.assertEqual(execution_inputs(),{"fixture":None,"crash_backend":None})

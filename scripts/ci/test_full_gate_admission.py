@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+import ci_performance
+from generate_hooks import local_imports
 from _strict_unittest import main
 
 # Actual execution subjects own the hook scope; the directory walk below
@@ -15,6 +17,7 @@ INPUT_GLOBS: tuple[str, ...] = (
     "scripts/ci/_deadline.sh",
     "scripts/ci/deadline.py",
     "scripts/ci/check-all.sh",
+    "scripts/ci/_build_observation.sh",
     "scripts/ci/test_full_gate_admission.py",
 )
 ROOT = Path(__file__).resolve().parents[2]
@@ -137,6 +140,11 @@ exec "$entry" "$@"
             scripts.mkdir(parents=True)
             for relative in INPUT_GLOBS[:-1]:
                 shutil.copy2(ROOT / relative, scripts / Path(relative).name)
+            # The real entrypoint now owns a diagnostic context before queuing.
+            # Copy its real Python import closure; the admission/process fakes
+            # below still own only the host boundary exercised by this table.
+            for module in [Path(ci_performance.__file__).name, *local_imports('ci_performance.py')]:
+                shutil.copy2(ROOT / 'scripts/ci' / module, scripts / module)
             (scripts / "_provider_environment.sh").write_text(
                 'awaken_unset_ambient_api_keys() { :; }\nawaken_append_repo_tools() { :; }\n')
             (scripts / "gate_tools.py").write_text('raise SystemExit(0)\n')
@@ -144,6 +152,7 @@ exec "$entry" "$@"
                 'parallel_checks_init() { [ "$AWAKEN_CARGO_ADMITTED" = 1 ] || exit 95; '
                 'echo full-gate-admitted-once; exit 23; }\n')
             env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                       AWAKEN_BUILD_OBSERVATIONS=str(root / 'observations'),
                        AWAKEN_FULL_GATE_TIMEOUT_SECONDS="3")
             for command in (["git", "init", str(checkout)],
                             ["git", "-C", str(checkout), "-c", "user.name=fixture",
