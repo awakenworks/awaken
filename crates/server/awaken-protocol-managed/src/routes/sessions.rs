@@ -281,6 +281,10 @@ fn session_id_from_path(path: &str) -> Option<String> {
 /// is the status-keyed discriminator the SDK expects; the message is preserved so
 /// a caller sees *why* (e.g. a mismatched resume id), not a bare status code.
 pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse>) {
+    let code = match &err {
+        StateError::Run(error) => Some(error.code.clone()),
+        _ => None,
+    };
     let (status, kind, message) = match err {
         StateError::NotFound => (
             StatusCode::NOT_FOUND,
@@ -319,7 +323,9 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
             err.to_string(),
         ),
     };
-    (status, Json(ErrorResponse::new(kind, message)))
+    let mut response = ErrorResponse::new(kind, message);
+    response.error.code = code;
+    (status, Json(response))
 }
 
 fn path_is_family(path: &str, family: &str) -> bool {

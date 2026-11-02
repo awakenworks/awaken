@@ -190,6 +190,7 @@ impl SessionRepository for Divergent {
                 SessionMutationPayload::Delete(tombstone) => {
                     tombstone.deleted_revision = SessionRevision(current.revision.0 + 1)
                 }
+                SessionMutationPayload::EventNoOp { .. } => {}
             }
         }
         self.inner.commit(owner_scope, mutation).await
@@ -209,10 +210,11 @@ impl SessionRepository for Divergent {
         match (self.mode, stored) {
             (Divergence::RebuildsReceipt, Some(_)) => {
                 let current = self.inner.get(id).await?;
-                Ok(Some(SessionIdempotencyReceipt {
-                    payload_hash: SessionMutationPayload::Replace(current.clone()).stable_hash(),
-                    committed_revision: current.revision,
-                }))
+                Ok(Some(SessionIdempotencyReceipt::new(
+                    SessionMutationPayload::Replace(current.clone()).stable_hash(),
+                    current.revision,
+                    Default::default(),
+                )))
             }
             (_, stored) => Ok(stored),
         }

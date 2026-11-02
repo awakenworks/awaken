@@ -76,6 +76,7 @@ outcomes (amended by ADR-0102 D2):
 | budget boundary (definitive) | rejection receipt `managed:session-run-rejection:` in the root's idempotency index | `budget_reached` | `Rejected`, replayed by the caller's retry and cancellation alike |
 | Session store refused before applying (`NotApplied`, determinate) | none | `session_run_not_admitted` (retry the same operation) | completes the admission exactly once, or deletes it on cancellation |
 | Session store outage with unknown effect, or CAS conflict (undecided) | none | `session_run_admission_pending` (retry the same operation) | completes the admission exactly once, or deletes it on cancellation |
+
 | other admission rule | none | its own class | its own class |
 
 An undecided outcome is not a failure: the reservation repair owns its
@@ -86,6 +87,12 @@ operation id, because repair may complete the durable reservation. A rejection
 receipt is written only when the store is healthy; if it cannot be written the
 refusal is reported as pending, which repair still settles.
 
+Both SQL adapters now report the existing `NotApplied` class when a failed
+write has not invoked COMMIT. A COMMIT driver failure retains the existing
+`AuthorityUnavailable` class. This describes one attempt, never proves an
+earlier delivery absent and never authorizes quota release. The Managed error
+envelope retains the existing stable Run code alongside status, type and message.
+
 ### D4 Aggregate admission applies the protocol's Thread rules
 
 Every new Event batch passes `admit_event_batch_topology` before the root CAS:
@@ -94,6 +101,31 @@ reply names the exact committed answerable ticket (current Awaiting Run,
 correlation and call) of its target Thread. A new reply must carry its Thread
 version and Awaiting commit; only retained legacy rows may lack them, and the
 delivery fence keeps the version check.
+
+A pure Interrupt on a budget-paused, inactive root is an accepted no-op only
+after committed root/child snapshots prove no live Run and the existing full
+prefix validator proves those observations remained current. Unknown or moving
+sources cannot supply that result. This policy lives in the Event application;
+the protocol only lowers targets and projects its result.
+
+Every Event command uses the same canonical identity in the original Session
+idempotency index. Its receipt distinguishes a retained Event batch from an
+accepted no-op. Both compete with final close through the same transaction and
+unique key. A no-op inserts only its receipt at the observed root revision;
+it changes no root, timestamp, activity, outbox, dispatch or Run. Exact replay
+returns that receipt before current budget policy, including after allowance
+resumes. PostgreSQL rechecks the same receipt after acquiring its root lock
+because concurrent no-ops deliberately do not advance the root revision.
+
+The application result and Native `event_noop` close proof contain no batch or
+executable event identity. Deletion retains the explicit known-empty no-op
+proof through the existing owner-bound tombstone codec; legacy missing evidence
+remains unknown. A no-op receipt cannot certify a root mutation or cleanup.
+
+The new receipt-kind column is appended through the existing schema ledger;
+historical rows default to their original root-mutation meaning. Event writers
+must upgrade as one source/image cohort: mixed old/new Event writers are not a
+supported deployment because old writers do not use the canonical Event key.
 
 ## Consequences
 

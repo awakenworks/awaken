@@ -64,8 +64,9 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
             None,
         )
         .await
-        .map(|batch| batch.expect("the Event batch is admitted"))
-        .unwrap();
+        .unwrap()
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     let SessionEventCommand::DefineOutcome { outcome_id, .. } = &batch.events[0].event else {
         panic!("O1 retained DefineOutcome")
     };
@@ -260,8 +261,9 @@ async fn terminal_committing_between_outcome_query_and_root_read_cannot_backfill
             None,
         )
         .await
-        .map(|batch| batch.expect("the Event batch is admitted"))
-        .unwrap();
+        .unwrap()
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     let SessionEventCommand::DefineOutcome { outcome_id, .. } = &batch.events[0].event else {
         panic!("O5 retained DefineOutcome")
     };

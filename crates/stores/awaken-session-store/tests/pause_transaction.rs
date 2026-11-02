@@ -29,6 +29,7 @@ use awaken_session_contract::{
 use awaken_session_contract::{
     SessionEventBatch, SessionEventInput, SessionEventInterrupt, SessionEventProjectionAnchor,
 };
+use awaken_session_contract::{SessionRepository as _, SessionRepositoryReads as _};
 use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 use awaken_session_types::{SessionId, SessionRevision};
 use awaken_store_conformance::session_store::{create_session, fact, session};
@@ -232,9 +233,17 @@ async fn rollback_table<S: SessionStore, B: Backend>(
     .await;
     backend.arm(&session_id).await;
     let failed = store.commit("ws_a", failing.mutation.clone()).await;
+    // T3/C3 is before COMMIT, so the actual SQLite/PostgreSQL transaction
+    // certifies this attempt did not commit. The frame below independently
+    // observes rollback; a generic unknown error cannot satisfy this rule.
     assert!(
-        failed.is_err(),
-        "T3 the injected mid-write failure surfaces: {failed:?}"
+        matches!(
+            failed,
+            Err(awaken_session_contract::SessionRepositoryError::NotApplied(
+                _
+            ))
+        ),
+        "T3 the mid-write fault is a proven rollback"
     );
     let after = observe(
         store,
@@ -294,6 +303,9 @@ async fn rollback_table<S: SessionStore, B: Backend>(
         assert_eq!(batch_atomicity(&observed, command), Ok(true), "T1/T2 kept");
     }
 
+    no_op_receipt_table(store, backend, &session_id).await;
+    no_op_deletion_table(store, &session_id).await;
+
     // NC: a half-committed batch (its receipt row removed out of band) must
     // be rejected by the same checker.
     backend.delete_receipt(&session_id, &failing.key).await;
@@ -309,6 +321,208 @@ async fn rollback_table<S: SessionStore, B: Backend>(
         "NC the atomicity checker detects a half-committed batch"
     );
     retried.root
+}
+
+fn no_op_command(root: &PersistedSession, key: &str, fingerprint: &str) -> SessionMutation {
+    SessionMutation {
+        expected_revision: root.revision,
+        idempotency: IdempotencyRecord::event_admission(key, fingerprint),
+        payload: awaken_session_contract::SessionMutationPayload::EventNoOp {
+            session_id: root.session_id.clone(),
+            interrupts: vec![SessionEventInterrupt {
+                requested_target: None,
+                targets: vec![awaken_session_contract::SessionThreadTarget::Primary],
+            }],
+        },
+        lifecycle_facts: Vec::new(),
+    }
+}
+
+async fn no_op_deletion_table<S: SessionStore>(store: &S, original: &SessionId) {
+    // DT-D: C1 accepted no-op has only a command-index receipt; C2 a later
+    // canonical root transition completes terminal cleanup; C3 deletion commits
+    // or replays. D1 C1+C2+C3 => the SAME owner-bound tombstone keeps explicit
+    // known-empty NoOp; D2 changed fingerprint => conflict; D3 foreign owner =>
+    // no proof. Root absence alone never satisfies D1. Both SQL engines run it.
+    use awaken_session_contract::{SessionEventAdmission, resolve_deleted_event_admission};
+    use awaken_store_conformance::session_store::{complete_terminal_cleanup, delete_mutation};
+    let id = SessionId::from(format!("{}-noop-deletion", original.as_str()));
+    let mut root = create_session(store, "ws_a", paused(id.as_str()), Vec::new()).await;
+    let noop = no_op_command(&root, "deleted-noop", "deleted-fingerprint");
+    assert!(matches!(
+        store.commit("ws_a", noop).await.unwrap(),
+        SessionMutationResult::AcknowledgedNoOp { .. }
+    ));
+    root.request_delete("ws_a", 0).unwrap().unwrap();
+    complete_terminal_cleanup(&mut root);
+    let mut aggregate = SessionAggregate::try_from(root).unwrap();
+    let terminal = aggregate.compile_mutation(
+        "ws_a",
+        IdempotencyRecord {
+            key: "test:noop-terminal".into(),
+            payload_hash: "terminal".into(),
+        },
+        Vec::new(),
+        1,
+    );
+    assert!(matches!(
+        store.commit("ws_a", terminal).await.unwrap(),
+        SessionMutationResult::Applied { .. }
+    ));
+    let root = store.get(&id).await.unwrap();
+    let delete = delete_mutation(&root, "test:noop-delete");
+    for replay in [false, true] {
+        let result = store.commit("ws_a", delete.clone()).await.unwrap();
+        assert_eq!(
+            matches!(result, SessionMutationResult::Replayed { .. }),
+            replay
+        );
+        let proof = store
+            .deleted_event_admissions("ws_a", &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            resolve_deleted_event_admission(&proof, "deleted-noop", "deleted-fingerprint").unwrap(),
+            SessionEventAdmission::NoOp,
+            "D1 explicit outcome survives deletion/replay"
+        );
+        assert_eq!(
+            resolve_deleted_event_admission(&proof, "deleted-noop", "changed")
+                .unwrap_err()
+                .code,
+            "idempotency_conflict",
+            "D2"
+        );
+        assert!(
+            store
+                .deleted_event_admissions("foreign", &id)
+                .await
+                .unwrap()
+                .is_none(),
+            "D3"
+        );
+    }
+}
+
+async fn no_op_receipt_table<S: SessionStore, B: Backend>(store: &S, backend: &B, id: &SessionId) {
+    // DT-N (both real engines): C1 current paused root + pure Interrupt;
+    // C2 new/exact/changed receipt fingerprint; C3 two concurrent same-key
+    // callers. N1 new => one EventNoOp receipt, unchanged root/index/outbox;
+    // N2 exact => same acknowledgement, no extra row; N3 changed => conflict;
+    // N4 C3 => both acknowledge one receipt although root revision never moves.
+    // These rows would reject a fake empty batch or a no-op with no durable fact.
+    use awaken_session_contract::SessionCommandReceiptKind;
+    let before = store.get(id).await.unwrap();
+    let raw = backend.raw(id).await;
+    let outbox = store.pending_lifecycle().await.unwrap();
+    let command = |key: &str| no_op_command(&before, key, "noop-fingerprint");
+    let wanted = SessionMutationResult::AcknowledgedNoOp {
+        observed_revision: before.revision,
+    };
+    let first = command("noop-first");
+    assert_eq!(
+        store.commit("ws_a", first.clone()).await.unwrap(),
+        wanted,
+        "N1"
+    );
+    assert_eq!(
+        store.commit("ws_a", first.clone()).await.unwrap(),
+        wanted,
+        "N2"
+    );
+    let receipt = store
+        .idempotency_receipt(id, &first.idempotency.key)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.kind(), SessionCommandReceiptKind::EventNoOp);
+    assert_eq!(receipt.committed_revision, before.revision);
+    assert_eq!(receipt.payload_hash, "noop-fingerprint");
+    let after = backend.raw(id).await;
+    assert_eq!(after.root_revision, raw.root_revision);
+    assert_eq!(after.reconciliation_rows, raw.reconciliation_rows);
+    assert_eq!(after.outbox_rows, raw.outbox_rows);
+    assert_eq!(
+        after.idempotency_rows,
+        raw.idempotency_rows + 1,
+        "N1/N2 one receipt"
+    );
+    let mut changed = first;
+    changed.idempotency.payload_hash = "changed".into();
+    assert_eq!(
+        store.commit("ws_a", changed).await.unwrap(),
+        SessionMutationResult::IdempotencyMismatch,
+        "N3"
+    );
+    let race = command("noop-race");
+    let (left, right) = tokio::join!(
+        store.commit("ws_a", race.clone()),
+        store.commit("ws_a", race.clone())
+    );
+    assert_eq!(left.unwrap(), wanted, "N4 left");
+    assert_eq!(right.unwrap(), wanted, "N4 right");
+    assert_eq!(
+        backend.raw(id).await.idempotency_rows,
+        raw.idempotency_rows + 2,
+        "N4 one concurrent winner"
+    );
+    assert_eq!(
+        store.get(id).await.unwrap(),
+        before,
+        "N1-N4 whole root frame"
+    );
+    assert_eq!(
+        store.pending_lifecycle().await.unwrap(),
+        outbox,
+        "N1-N4 no lifecycle fact"
+    );
+}
+
+async fn postgres_noop_waiter_table(
+    store: &PostgresManagedSessionRepository,
+    pool: &sqlx::PgPool,
+    schema: &str,
+    id: &SessionId,
+) {
+    // N5: hold the real root lock, then wait until BOTH independent writers
+    // have passed their initial absent-receipt read and block on that root.
+    // Releasing it must yield two acknowledgements and one fact despite no
+    // revision increment. Removing the post-lock receipt lookup makes the
+    // second INSERT fail its unique constraint, which this oracle rejects.
+    let before = store.get(id).await.unwrap();
+    let mutation = no_op_command(&before, "pg-gated-noop", "gated-fingerprint");
+    let mut held = pool.begin().await.unwrap();
+    sqlx::query("SELECT session_id FROM managed_session WHERE session_id=$1 FOR UPDATE")
+        .bind(id.as_str())
+        .fetch_one(&mut *held)
+        .await
+        .unwrap();
+    let callers = async {
+        tokio::join!(
+            store.commit("ws_a", mutation.clone()),
+            store.commit("ws_a", mutation.clone())
+        )
+    };
+    let release = async {
+        awaken_reliability_testkit::wait_for_postgres_lock_waiters(
+            pool,
+            schema,
+            2,
+            Some("FOR UPDATE"),
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("N5 both writers reach the real root lock");
+        held.commit().await.unwrap();
+    };
+    let ((left, right), ()) = tokio::join!(callers, release);
+    let expected = SessionMutationResult::AcknowledgedNoOp {
+        observed_revision: before.revision,
+    };
+    assert_eq!(left.unwrap(), expected, "N5 left");
+    assert_eq!(right.unwrap(), expected, "N5 right");
+    assert_eq!(store.get(id).await.unwrap(), before, "N5 root frame");
 }
 
 struct Sqlite {
@@ -509,6 +723,9 @@ async fn postgres_mid_write_failure_rolls_back_the_whole_batch_transaction() {
                 connection
                     .execute(format!("SET search_path = {schema}").as_str())
                     .await?;
+                connection
+                    .execute(format!("SET application_name = '{schema}'").as_str())
+                    .await?;
                 Ok(())
             })
         })
@@ -520,6 +737,13 @@ async fn postgres_mid_write_failure_rolls_back_the_whole_batch_transaction() {
         .expect("T12 PostgreSQL migrations");
     let backend = Postgres { pool: pool.clone() };
     rollback_table(&store, &backend, "sesn_t12_postgres").await;
+    postgres_noop_waiter_table(
+        &store,
+        &pool,
+        &schema,
+        &SessionId::from("sesn_t12_postgres"),
+    )
+    .await;
     drop(store);
     pool.close().await;
     admin

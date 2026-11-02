@@ -476,6 +476,7 @@ impl SessionAssembly {
         ));
         let event_batches = Arc::new(crate::SessionEventBatchCommands::new(
             crate::event_batches::SessionEventBatchCollaborators {
+                runtime_incarnation: kernel.runtime_incarnation.clone(),
                 mutations: kernel.mutations.clone(),
                 clock: kernel.clock.clone(),
                 lifecycle: kernel.lifecycle.clone(),

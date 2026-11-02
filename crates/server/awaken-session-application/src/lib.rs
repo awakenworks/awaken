@@ -53,6 +53,7 @@ fn session_repository_error(error: awaken_session_contract::SessionRepositoryErr
         (Error::AuthorityUnavailable(message), Action::Retry) => {
             RunError::unavailable(message.clone())
         }
+
         (_, Action::Retry) => {
             RunError::unavailable_classified("session_repository_unavailable", error.to_string())
         }
@@ -197,7 +198,9 @@ pub use creation::{
 pub use session_input::{SessionInputRequest, SessionInputTarget};
 mod credentials;
 mod event_batches;
-pub use event_batches::{SessionEventBatchCommands, SessionEventBatchIdempotency};
+pub use event_batches::{
+    SessionEventBatchCommands, SessionEventBatchIdempotency, SessionEventBatchResult,
+};
 mod outcome_reconciliation;
 pub use outcome_reconciliation::SessionOutcomeReconciliation;
 mod projection;

@@ -33,6 +33,15 @@ fn lost(detail: &str) -> SessionRepositoryError {
     SessionRepositoryError::AuthorityUnavailable(format!("injected {detail}"))
 }
 
+fn failed_write(committed: bool) -> SessionRepositoryError {
+    let detail = "injected write response unavailable".into();
+    if committed {
+        SessionRepositoryError::AuthorityUnavailable(detail)
+    } else {
+        SessionRepositoryError::NotApplied(detail)
+    }
+}
+
 impl ResponseLossStore {
     pub(crate) fn new(inner: Arc<dyn crate::SessionStore>) -> Self {
         Self {
@@ -115,7 +124,7 @@ impl SessionRepository for ResponseLossStore {
             )
         };
         if before {
-            return Err(lost("create outage before the root insert"));
+            return Err(failed_write(false));
         }
         self.creates.fetch_add(1, Ordering::SeqCst);
         let result = self
@@ -123,7 +132,7 @@ impl SessionRepository for ResponseLossStore {
             .create(owner_scope, session, idempotency, lifecycle_facts)
             .await?;
         if after {
-            return Err(lost("lost create response"));
+            return Err(failed_write(true));
         }
         Ok(result)
     }
@@ -165,15 +174,14 @@ impl SessionRepository for ResponseLossStore {
             (before, after)
         };
         if before {
-            // The store refused before applying: a determinate outcome.
-            return Err(SessionRepositoryError::NotApplied(
-                "injected root-CAS outage before commit".into(),
-            ));
+            // The decorator knows the real commit boundary. Identical before/
+            // after detail leaves the existing typed outcome as the only signal.
+            return Err(failed_write(false));
         }
         self.commits.fetch_add(1, Ordering::SeqCst);
         let result = self.inner.commit(owner_scope, mutation).await?;
         if after {
-            return Err(lost("lost root-CAS response"));
+            return Err(failed_write(true));
         }
         Ok(result)
     }

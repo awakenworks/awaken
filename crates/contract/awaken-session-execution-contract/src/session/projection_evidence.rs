@@ -18,6 +18,26 @@ use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent};
 
 use crate::{CommittedOutcomeProjection, CoordinatedThreadLink};
 
+mod prefix;
+pub use prefix::same_thread_projection_prefix;
+
+/// Borrowed committed sources; deriving a protocol candidate or admitting an
+/// observational command never creates another retained snapshot authority.
+pub struct SessionProjectionPrefix<'a> {
+    pub root: Option<&'a RunRecoverySnapshot>,
+    pub links: &'a [CoordinatedThreadLink],
+    pub children: &'a ProjectionThreadSnapshots,
+}
+
+/// A child read follows the validation root only for a coordinated Session.
+#[must_use]
+pub const fn projection_validation_needs_trailing_root(
+    coordinated_links: usize,
+    child_snapshots: usize,
+) -> bool {
+    coordinated_links != 0 || child_snapshots != 0
+}
+
 /// Committed projection evidence that contradicts itself. Every reader fails
 /// its whole candidate closed.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

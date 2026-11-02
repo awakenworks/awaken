@@ -168,11 +168,13 @@ pub use session::{
     SessionExecutionOperationInventory, SessionExecutionRecoveryGap,
     SessionExecutionRecoveryObservation, SessionExecutionRoles, SessionExecutionToolOperation,
     SessionExecutor, SessionInputAdmission, SessionModelRequestObservation, SessionPlacementRoles,
-    SessionProjectionReadTimings, SessionProjectionSource, SessionRecoveryPreparationReference,
-    SessionRunExecutionObservation, SessionRuns, SessionSourceDispatchObservation,
-    SessionThreadLiveSubscription, SessionToolUseObservation, StreamingRuns, TerminalCleanup,
-    ThreadReads, committed_lifecycle_prefix, drain_mcp_generation_receipt,
-    outcome_terminal_commit_cursor, publish_mcp_generation_receipt, select_recovery_snapshot_run,
+    SessionProjectionPrefix, SessionProjectionReadTimings, SessionProjectionSource,
+    SessionRecoveryPreparationReference, SessionRunExecutionObservation, SessionRuns,
+    SessionSourceDispatchObservation, SessionThreadLiveSubscription, SessionToolUseObservation,
+    StreamingRuns, TerminalCleanup, ThreadReads, committed_lifecycle_prefix,
+    drain_mcp_generation_receipt, outcome_terminal_commit_cursor,
+    projection_validation_needs_trailing_root, publish_mcp_generation_receipt,
+    same_thread_projection_prefix, select_recovery_snapshot_run,
 };
 
 pub use session_realization::{

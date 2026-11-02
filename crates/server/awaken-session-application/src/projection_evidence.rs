@@ -3,8 +3,8 @@
 // @formal reason: SessionProjectionSource port: a root prefix before retained terminal Outcome queries,
 // @formal reason: that root lent to coordinated-link projection, child prefixes, then the ordered
 // @formal reason: merge of their lifecycle (the merge itself lives beside the port in the runtime contract). It
-// @formal reason: publishes nothing; the Managed projector still re-reads and compares the same
-// @formal reason: prefixes before its CAS publication. Warm/cold, read-order and prefix-race projection
+// @formal reason: publishes nothing; the same read role now validates those prefixes for the Managed
+// @formal reason: projector and observational Event admission. Warm/cold, read-order and prefix-race projection
 // @formal reason: tests cover behavior; reducer TCB linked to the paired-publication obligation.
 //! Read-only committed evidence for Session projections.
 //!
@@ -23,7 +23,9 @@ use awaken_session_contract::PersistedSession;
 use awaken_session_contract::{SessionEventBatch, SessionEventCommand};
 use awaken_session_execution_contract::{
     CommittedSessionFacts, CoordinatedThreadLink, ProjectionThreadSnapshots,
-    SessionProjectionReadTimings, committed_lifecycle_prefix, outcome_terminal_commit_cursor,
+    SessionProjectionPrefix, SessionProjectionReadTimings, committed_lifecycle_prefix,
+    outcome_terminal_commit_cursor, projection_validation_needs_trailing_root,
+    same_thread_projection_prefix,
 };
 use awaken_session_types::RunError;
 
@@ -174,6 +176,59 @@ impl SessionProjectionReads for SessionQueries {
         }
         links.sort_by(|left, right| left.thread_id.0.cmp(&right.thread_id.0));
         Ok((links, snapshots))
+    }
+
+    /// The shared source fence previously lived in the protocol projector.
+    /// Both a disposable projection and a no-op admission revalidate through
+    /// this read-only owner, including Runtime changes without a root revision.
+    async fn projection_prefix_moved(
+        &self,
+        persisted: &PersistedSession,
+        prefix: SessionProjectionPrefix<'_>,
+    ) -> Result<bool, RunError> {
+        let session_id = &persisted.session_id;
+        let validation_root = self
+            .projection_thread_snapshot(session_id, session_id.as_str(), None)
+            .await?;
+        let (final_links, final_children) = self
+            .projection_coordinated_prefix(session_id, validation_root.as_ref())
+            .await?;
+        if prefix.links != final_links.as_slice()
+            || prefix.children.len() != final_children.len()
+            || prefix.children.iter().any(|(thread, initial)| {
+                !same_thread_projection_prefix(Some(initial), final_children.get(thread))
+            })
+        {
+            tracing::debug!(session_id = %session_id, reason = "coordinated_prefix", "Session projection retry");
+            return Ok(true);
+        }
+        let final_root =
+            if projection_validation_needs_trailing_root(final_links.len(), final_children.len()) {
+                self.projection_thread_snapshot(session_id, session_id.as_str(), None)
+                    .await?
+            } else {
+                validation_root
+            };
+        if !same_thread_projection_prefix(prefix.root, final_root.as_ref()) {
+            tracing::debug!(session_id = %session_id, reason = "root_thread_prefix",
+                initial_version = ?prefix.root.map(|snapshot| snapshot.thread_version),
+                final_version = ?final_root.as_ref().map(|snapshot| snapshot.thread_version),
+                "Session projection retry");
+            return Ok(true);
+        }
+        let final_persisted = self
+            .repository
+            .get(session_id)
+            .await
+            .map_err(session_repository_error)?;
+        let moved = final_persisted.session_id != persisted.session_id
+            || final_persisted.revision != persisted.revision;
+        if moved {
+            tracing::debug!(session_id = %session_id, reason = "session_revision",
+                initial_revision = ?persisted.revision, final_revision = ?final_persisted.revision,
+                "Session projection retry");
+        }
+        Ok(moved)
     }
 
     /// Read the complete Runtime evidence of one projection candidate after
