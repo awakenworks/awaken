@@ -23,6 +23,7 @@ const WORKDIR_BASH_PASSTHROUGH: &[&str] = &[
     "CARGO_HOME",
     "RUSTUP_HOME",
     "RUSTUP_TOOLCHAIN",
+    "PLAYWRIGHT_BROWSERS_PATH",
     "GOPATH",
     "GOROOT",
     "GOBIN",
@@ -177,6 +178,10 @@ mod tests {
     /// without credentials; C3 it is unknown or carries credentials. Effects:
     /// C1 and applicable C2 => inherited verbatim; C3 => withheld. Unknown
     /// prefixed names stay unknown, so LC_/XDG_ cannot carry an unseen secret.
+    /// Browser-asset rules: C4 an immutable image selects package-local assets
+    /// with PLAYWRIGHT_BROWSERS_PATH=0; C5 a similarly prefixed secret exists.
+    /// R4 C4 => retain the exact locator through the cleared Hand shell env;
+    /// R5 C4+C5 => retain only the locator, never broaden prefix inheritance.
     #[test]
     fn workdir_shell_inherits_only_locator_and_locale_variables() {
         let worker = [
@@ -184,6 +189,7 @@ mod tests {
             ("HOME", "/home/op"),
             ("HTTPS_PROXY", "http://proxy:3128"),
             ("CARGO_HOME", "/home/op/.cargo"),
+            ("PLAYWRIGHT_BROWSERS_PATH", "0"),
             ("LC_ALL", "C.UTF-8"),
             ("XDG_CACHE_HOME", "/home/op/.cache"),
             ("ANTHROPIC_API_KEY", "sk-ant"),
@@ -196,6 +202,7 @@ mod tests {
             ("SOME_FUTURE_SECRET", "x"),
             ("LC_SECRET_TOKEN", "x"),
             ("XDG_API_KEY", "x"),
+            ("PLAYWRIGHT_TOKEN", "hidden"),
             ("http_proxy", "http://user:password@proxy:3128"),
             ("https_proxy", "https://token@proxy:3128"),
             ("HTTP_PROXY", "not a proxy URL"),
@@ -210,10 +217,12 @@ mod tests {
                 "HTTPS_PROXY",
                 "LC_ALL",
                 "PATH",
+                "PLAYWRIGHT_BROWSERS_PATH",
                 "XDG_CACHE_HOME"
             ]
         );
         assert_eq!(inherited["PATH"], "/usr/bin");
+        assert_eq!(inherited["PLAYWRIGHT_BROWSERS_PATH"], "0", "R4/R5");
     }
 
     #[cfg(windows)]

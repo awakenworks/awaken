@@ -46,10 +46,13 @@ test('canonical image admission verifies selected ACP runtimes on reuse and afte
   // literal major.minor separator (backticks execute a command and yield 3.);
   // C4=complete
   // Hand/helper roles; C5=quality tools; C6=selected runtime negotiates;
+  // C9=the image retains package-local browser assets when HOME/XDG is rebound.
   // C7=current inputs match; C8=build repairs C1-C7.
   // Rules: I1 all required checks pass => no build; I2 any required check
   // fails + C6 => build once and recheck; I3 !C5+!C6 => reject even after
-  // build. Empty selection requires no ACP; Claude requires a real handshake.
+  // build. I4 !C9 rejects stale mutable images and rebuilds once; immutable
+  // digests reject without writes. Empty selection requires no ACP; Claude
+  // requires a real handshake. Real browser launch belongs to the live E2E.
   // This tests the actual shell admission owner with process-boundary fixtures;
   // real image/ACP acceptance remains the responsibility of the service E2E.
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sandbox-admission-'));
@@ -80,6 +83,8 @@ fs.appendFileSync(process.env.ADMISSION_CALLS,JSON.stringify(args)+'\\n');
 const repaired=fs.existsSync(process.env.ADMISSION_STATE);
 const baseProbe=args.includes('/bin/sh')&&args.at(-1)?.includes('RUBY_VERSION');
 if(baseProbe&&!args.at(-1).includes('RUBY_VERSION.split(".")[0,2].join(".")'))process.exit(1);
+if(baseProbe&&!args.at(-1).includes('test "$PLAYWRIGHT_BROWSERS_PATH" = 0'))process.exit(1);
+if(baseProbe&&!repaired&&mode==='browser-assets')process.exit(1);
 if(args[0]==='build'){fs.writeFileSync(process.env.ADMISSION_STATE,'built');process.exit(0);}
 if(args[0]==='image'){
  if(!repaired&&mode==='absent')process.exit(1);
@@ -112,7 +117,7 @@ if(args[0]==='image'){
     const inputHashes = await Promise.all(staticInputs.map(name => fs.readFile(path.join(root, 'deploy/images/sandbox', name)).then(hash)));
     inputHashes.push(hash(await fs.readFile(executable)), hash(Buffer.from('{}\n')));
     for (const [runtimeIds, mode] of [['','ok'], ['claude','ok'], ['all','ok'], ['claude,codex','ok'], ['', 'runtime'], ['', 'current'],
-      ...['absent','label','base','roles','hand','publish','reader','tools','runtime','unrepairable'].map(mode=>['claude', mode])]) {
+      ...['absent','label','base','browser-assets','roles','hand','publish','reader','tools','runtime','unrepairable'].map(mode=>['claude', mode])]) {
       await fs.writeFile(calls, ''); await fs.rm(state, { force:true });
       process.env.ADMISSION_MODE = mode;
       process.env.ADMISSION_FINGERPRINT = hash(Buffer.from(`runtime_ids=${runtimeIds}\n${inputHashes.join('\n')}\n`));
@@ -146,7 +151,7 @@ if(args[0]==='image'){
     // retain the repair effect. Each failed acceptance cause is selected here
     // independently, while the current row covers stale source inputs.
     const immutableImage = `registry.test/awaken-sandbox@sha256:${'a'.repeat(64)}`;
-    for (const mode of ['ok', 'absent', 'label', 'base', 'roles', 'hand', 'publish',
+    for (const mode of ['ok', 'absent', 'label', 'base', 'browser-assets', 'roles', 'hand', 'publish',
       'reader', 'tools', 'runtime', 'unrepairable', 'current']) {
       await fs.writeFile(calls, ''); await fs.rm(state, { force:true });
       process.env.ADMISSION_MODE = mode;
