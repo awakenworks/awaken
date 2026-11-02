@@ -1098,24 +1098,29 @@ mod phase_proofs {
         // non-Writing phase. Effects: no claim and zero token calls. The lease
         // kernel and executable boundary table own the full time domain;
         // these rows isolate the state/side-effect precedence.
+        // T1a any phase + live => Ok(None), no factory invocation.
+        // T1b non-Writing + expired => Ok(None), no factory invocation.
+        // A persistent flag observes any unexpected invocation without adding
+        // overflow arithmetic to a branch required never to execute. It stays
+        // false iff the original zero-call assertion holds across both calls.
         use CredentialMaterialMutationPhase::*;
         let phase = phase();
         let input = takeover_fence(phase, 2, None);
-        let mut calls = 0u8;
+        let mut token_called = false;
         let result = input.claim_after_expiry_with_token(1, 2, || {
-            calls += 1;
+            token_called = true;
             String::new()
         });
         assert!(matches!(result, Ok(None)), "T1 no claim");
-        assert_eq!(calls, 0, "T1 no entropy");
+        assert!(!token_called, "T1 no entropy");
         if phase != Writing {
             let expired = takeover_fence(phase, 1, None);
             let result = expired.claim_after_expiry_with_token(1, 2, || {
-                calls += 1;
+                token_called = true;
                 String::new()
             });
             assert!(matches!(result, Ok(None)), "T1 expired non-Writing");
-            assert_eq!(calls, 0, "T1 expired non-Writing has no entropy");
+            assert!(!token_called, "T1 expired non-Writing has no entropy");
         }
     }
 
@@ -1125,16 +1130,19 @@ mod phase_proofs {
         // T2 causes: Writing expires at now; the successor is equal to or
         // earlier than now. Effects: error before token generation or mutation.
         // The executable boundary table owns zero/MAX time cases.
+        // T2a now=deadline=1 and T2b now=2/deadline=1 both reject before
+        // the factory. The flag spans both rows: any invocation makes the
+        // independent no-entropy observation fail, even if the result is Err.
         use CredentialMaterialMutationPhase::*;
         let input = takeover_fence(Writing, 1, None);
-        let mut calls = 0u8;
+        let mut token_called = false;
         for (now, deadline) in [(1, 1), (2, 1)] {
             let result = input.claim_after_expiry_with_token(now, deadline, || {
-                calls += 1;
+                token_called = true;
                 String::new()
             });
             assert!(result.is_err(), "T2 invalid successor");
-            assert_eq!(calls, 0, "T2 no entropy");
+            assert!(!token_called, "T2 no entropy");
         }
     }
 

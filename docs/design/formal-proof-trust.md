@@ -180,6 +180,33 @@ original batch and vacuity passed and its source is unchanged. Candidate source
 checks and static reviews do not replace new complete affected batches or the
 final strict full run; no vacuity exception, new domain bound or budget is added.
 
+## Current total outcomes and lazy-entropy observations
+
+The strict full run on clean `3d1795c3` stopped with raw75 after 7,412.93s:
+the next session-configuration batch was not admitted when available memory
+fell below the existing 8GiB Cargo floor. It is Not-passed. All 450 completed
+regular results and the verified failed artifact bundle are retained outside
+the Cargo target. The original checker reports four harnesses with unreachable
+proof-code assertions, separately from that resource refusal.
+
+The Dispatch proof now compares the complete exact-claim outcome with its
+independent expected DeadLetter before inspecting the payload. Its cancellation
+preservation, non-requeue and non-claim assertions remain. The adjacent equality
+of an execution-admission call with itself is removed: the existing physical-slot
+and thread-peer proofs already own those execution-admission rules. Production
+reducers, wire types and admission rules are unchanged.
+
+The two Vault no-entropy proofs use a persistent invocation flag instead of
+incrementing a counter in a factory that must never execute. Any invocation
+still fails; the separate exactly-once proofs retain their counters. The
+config-resolver proof combines every original outcome and payload condition
+into one total relation; unsupported error variants still make it false.
+These corrections retain the existing input domains and production decision
+owners. All three
+complete source-derived affected batches and their original vacuity checks,
+plus the owning Native tests, must pass before normal commit. This focused
+qualification cannot replace a fresh strict full run or the all13 gates.
+
 ## Phase 2: what changed
 
 | Change | Harnesses | Argument |

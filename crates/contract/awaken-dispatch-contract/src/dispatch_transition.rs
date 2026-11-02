@@ -1565,8 +1565,6 @@ mod proofs {
         // physical execution admissible where they were not already.
         let slot = arbitrary_physical_slot();
         let cancellation_requested: bool = kani::any();
-        let claim_is_current: bool = kani::any();
-        let thread_peer_occupied: bool = kani::any();
 
         assert_eq!(
             slot.quarantine_admits_occupation(cancellation_requested),
@@ -1585,11 +1583,10 @@ mod proofs {
             slot.permits_settlement(),
             slot == PhysicalAttemptSlot::Empty
         );
-        // Execution admission is untouched by the quarantine rule.
-        assert_eq!(
-            begin_physical_attempt(claim_is_current, slot, thread_peer_occupied, false),
-            begin_physical_attempt(claim_is_current, slot, thread_peer_occupied, false)
-        );
+        // Execution admission is owned by
+        // physical_attempt_slot_installs_and_clears_only_exact_authority and
+        // thread_physical_peer_vetoes_begin_and_handoff. Repeating the same
+        // production call on both sides would prove no additional property.
         if slot.quarantine_admits_occupation(cancellation_requested) {
             assert!(!slot.permits_settlement());
         }
@@ -1621,9 +1618,19 @@ mod proofs {
             assert!(cancellation_requested);
         }
 
-        let GuardedTransition::Applied(dead) = leased.exhaust_retries(lease_epoch, true) else {
-            // An exact epoch with a matching owner always applies.
-            assert!(false, "exact quarantine must apply");
+        // Q1: Leased + exact epoch + matching owner -> Applied(DeadLetter),
+        // preserving epoch and cancellation. Check that total result before
+        // inspecting its payload: a branch-local false assertion would itself
+        // be unreachable when the production reducer satisfies this rule.
+        let outcome = leased.exhaust_retries(lease_epoch, true);
+        assert_eq!(
+            outcome,
+            GuardedTransition::Applied(DispatchTransition {
+                state: crate::DispatchState::DeadLetter,
+                ..leased
+            })
+        );
+        let GuardedTransition::Applied(dead) = outcome else {
             return;
         };
         assert_eq!(dead.state, crate::DispatchState::DeadLetter);
