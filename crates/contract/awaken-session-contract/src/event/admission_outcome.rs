@@ -93,90 +93,63 @@ pub fn event_admission_closed() -> RunError {
 mod verification {
     use super::*;
 
-    // This oracle states each observable outcome's necessary and sufficient
-    // causes. The caller supplies the expected first index independently; it
-    // never searches with the production iterator or calls its error factory.
+    // C/E table: R1 legacy inventory => exact Unavailable; R2 complete/no
+    // first key => exact Deleted revision; R3 first fingerprint differs =>
+    // exact Conflict even if closed; R4/R5 matching first receipt => exact
+    // Closed/Accepted payload, including None versus ordered operation ids.
+    // The caller supplies the first index independently of production lookup.
+    // A missing/out-of-range claimed first is invalid, never silently absent.
+    // One total postcondition is checked in every literal partition: branches
+    // select Boolean conditions, never assertions for another partition.
     fn check_result(
         proof: &DeletedSessionEventAdmissions,
         first: Option<usize>,
         fingerprint: &str,
         result: &Result<SessionEventAdmission, RunError>,
     ) {
-        let selected = first.map(|index| &proof.admissions.as_ref().unwrap()[index]);
-        match result {
+        let selected = proof
+            .admissions
+            .as_ref()
+            .and_then(|rows| first.and_then(|index| rows.get(index)));
+        let valid_first = first.is_none() || selected.is_some();
+        let outcome_matches = match result {
             Err(error) => {
-                if proof.admissions.is_none() {
-                    assert!(
-                        error.kind == RunErrorKind::Unavailable,
-                        "exact retained admission field"
-                    );
-                    assert!(
-                        error.code == "unavailable",
-                        "exact retained admission field"
-                    );
-                    assert!(
-                        error.message == "Legacy Session deletion has no retained admission proof",
-                        "exact retained admission field"
-                    );
-                } else {
-                    let receipt =
-                        selected.expect("complete inventory errors require a matching key");
-                    assert!(receipt.request_fingerprint != fingerprint);
-                    assert!(
-                        error.kind == RunErrorKind::BadRequest,
-                        "exact retained admission field"
-                    );
-                    assert!(
-                        error.code == "idempotency_conflict",
-                        "exact retained admission field"
-                    );
-                    assert!(
-                        error.message
-                            == "Idempotency-Key was already used for another Session Event batch",
-                        "exact retained admission field"
-                    );
-                }
+                let legacy = proof.admissions.is_none()
+                    && error.kind == RunErrorKind::Unavailable
+                    && error.code == "unavailable"
+                    && error.message == "Legacy Session deletion has no retained admission proof";
+                let conflict = proof.admissions.is_some()
+                    && selected.is_some_and(|receipt| receipt.request_fingerprint != fingerprint)
+                    && error.kind == RunErrorKind::BadRequest
+                    && error.code == "idempotency_conflict"
+                    && error.message
+                        == "Idempotency-Key was already used for another Session Event batch";
+                legacy || conflict
             }
             Ok(SessionEventAdmission::Deleted { deleted_revision }) => {
-                assert!(proof.admissions.is_some());
-                assert!(first.is_none());
-                assert!(
-                    *deleted_revision == proof.deleted_revision,
-                    "exact retained admission field"
-                );
+                proof.admissions.is_some()
+                    && first.is_none()
+                    && *deleted_revision == proof.deleted_revision
             }
-            Ok(SessionEventAdmission::Closed { batch_id }) => {
-                let receipt = selected.expect("closed requires retained evidence");
-                assert!(
-                    receipt.request_fingerprint == fingerprint,
-                    "exact retained admission field"
-                );
-                assert!(receipt.closed);
-                assert!(
-                    *batch_id == receipt.batch_id,
-                    "exact retained admission field"
-                );
-            }
+            Ok(SessionEventAdmission::Closed { batch_id }) => selected.is_some_and(|receipt| {
+                receipt.request_fingerprint == fingerprint
+                    && receipt.closed
+                    && *batch_id == receipt.batch_id
+            }),
             Ok(SessionEventAdmission::Accepted {
                 batch_id,
                 operation_ids,
-            }) => {
-                let receipt = selected.expect("acceptance requires retained evidence");
-                assert!(
-                    receipt.request_fingerprint == fingerprint,
-                    "exact retained admission field"
-                );
-                assert!(!receipt.closed);
-                assert!(
-                    *batch_id == receipt.batch_id,
-                    "exact retained admission field"
-                );
-                assert!(
-                    *operation_ids == receipt.operation_ids,
-                    "exact retained admission field"
-                );
-            }
-        }
+            }) => selected.is_some_and(|receipt| {
+                receipt.request_fingerprint == fingerprint
+                    && !receipt.closed
+                    && *batch_id == receipt.batch_id
+                    && *operation_ids == receipt.operation_ids
+            }),
+        };
+        assert!(
+            valid_first && outcome_matches,
+            "exact retained admission outcome and first index"
+        );
     }
 
     fn check_replay_and_frame(
@@ -417,32 +390,41 @@ mod verification {
     // Literal fixtures avoid a second owned input tree; real output Clone,
     // mutation, two-live-output replay and Drop stay intact.
     fn check_literal_frame<const CASE: u8>(proof: &DeletedSessionEventAdmissions, revision: u64) {
-        assert_eq!(proof.deleted_revision, SessionRevision(revision));
-        let rows = proof.admissions.as_ref().expect("literal inventory");
-        assert_eq!(rows.len(), 1);
-        let row = &rows[0];
-        assert_eq!(row.key, if CASE & 1 == 0 { "b" } else { "a" });
-        assert_eq!(
-            row.request_fingerprint,
-            if CASE & 2 == 0 { "b" } else { "a" }
+        // C6 inventory is exactly one borrowed row; C7 ids are independently
+        // None/[]/[x]/[x,y] as CASE selects. Every complete frame coordinate
+        // contributes to this one mandatory postcondition, even when another
+        // literal partition cannot take its data branch. Slice patterns keep
+        // wrong lengths/missing data false without proof-only panic paths.
+        let expected_key = if CASE & 1 == 0 { "b" } else { "a" };
+        let expected_fingerprint = if CASE & 2 == 0 { "b" } else { "a" };
+        let retained_matches = match proof.admissions.as_deref() {
+            Some([row]) => {
+                let ids_match = match CASE >> 3 {
+                    0 => row.operation_ids.is_none(),
+                    1 => row
+                        .operation_ids
+                        .as_deref()
+                        .is_some_and(|ids| matches!(ids, [])),
+                    2 => row
+                        .operation_ids
+                        .as_deref()
+                        .is_some_and(|ids| matches!(ids, [id] if id == "x")),
+                    _ => row.operation_ids.as_deref().is_some_and(
+                        |ids| matches!(ids, [first, second] if first == "x" && second == "y"),
+                    ),
+                };
+                row.key == expected_key
+                    && row.request_fingerprint == expected_fingerprint
+                    && row.batch_id == "0"
+                    && row.closed == (CASE & 4 != 0)
+                    && ids_match
+            }
+            _ => false,
+        };
+        assert!(
+            proof.deleted_revision == SessionRevision(revision) && retained_matches,
+            "complete literal retained admission frame"
         );
-        assert_eq!(row.batch_id, "0");
-        assert_eq!(row.closed, CASE & 4 != 0);
-        match CASE >> 3 {
-            0 => assert!(row.operation_ids.is_none()),
-            1 => assert!(row.operation_ids.as_ref().is_some_and(Vec::is_empty)),
-            2 => {
-                let ids = row.operation_ids.as_ref().expect("one operation");
-                assert_eq!(ids.len(), 1);
-                assert_eq!(ids[0], "x");
-            }
-            _ => {
-                let ids = row.operation_ids.as_ref().expect("two operations");
-                assert_eq!(ids.len(), 2);
-                assert_eq!(ids[0], "x");
-                assert_eq!(ids[1], "y");
-            }
-        }
     }
 
     fn literal_fixture<const CASE: u8>(revision: u64) -> DeletedSessionEventAdmissions {
@@ -523,6 +505,187 @@ mod verification {
             check_single_retained_literal::<29>(revision);
             check_single_retained_literal::<30>(revision);
             check_single_retained_literal::<31>(revision);
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn deleted_admission_oracle_rejects_each_corrupt_error_field_and_selection() {
+        // Negative C/E: start with actual valid legacy/conflict results. Copy
+        // one error field at a time; kind/code/message must each reject. A
+        // false first index or inventory/fingerprint change also rejects.
+        // The same check_result is the only oracle; catch is Native-only.
+        let rejected = |proof: &DeletedSessionEventAdmissions,
+                        first: Option<usize>,
+                        result: &Result<SessionEventAdmission, RunError>| {
+            assert!(std::panic::catch_unwind(|| check_result(proof, first, "a", result)).is_err());
+        };
+        for proof in [
+            DeletedSessionEventAdmissions {
+                deleted_revision: SessionRevision(17),
+                admissions: None,
+            },
+            literal_fixture::<5>(17),
+        ] {
+            let first = proof.admissions.as_ref().map(|_| 0);
+            let result = resolve_deleted_event_admission(&proof, "a", "a");
+            check_result(&proof, first, "a", &result);
+            let error = result.as_ref().unwrap_err();
+            for field in 0..3 {
+                // RunError has no Clone; copy all three actual fields before
+                // changing exactly one, rather than manufacture an expected error.
+                let mut changed = RunError {
+                    kind: error.kind,
+                    code: error.code.clone(),
+                    message: error.message.clone(),
+                };
+                match field {
+                    0 => changed.kind = RunErrorKind::Internal,
+                    1 => changed.code.push('!'),
+                    _ => changed.message.push('!'),
+                }
+                rejected(&proof, first, &Err(changed));
+            }
+            let mut changed = proof.clone();
+            if proof.admissions.is_none() {
+                rejected(&proof, Some(0), &result);
+                changed.admissions = Some(vec![]);
+                rejected(&changed, None, &result);
+            } else {
+                changed.admissions.as_mut().unwrap()[0].request_fingerprint = "a".into();
+                rejected(&changed, first, &result);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn deleted_admission_oracle_rejects_corrupt_outcomes_and_receipt_authority() {
+        // Single-fault rows: Deleted revision/inventory, Closed batch/fp/closed,
+        // Accepted batch/fp/closed and absent/invalid first receipt. Each starts
+        // with a real production result accepted by the unchanged input law.
+        let rejected = |proof: &DeletedSessionEventAdmissions,
+                        first: Option<usize>,
+                        result: &Result<SessionEventAdmission, RunError>| {
+            assert!(std::panic::catch_unwind(|| check_result(proof, first, "a", result)).is_err());
+        };
+        let deleted = literal_fixture::<0>(17);
+        let result = resolve_deleted_event_admission(&deleted, "a", "a");
+        check_result(&deleted, None, "a", &result);
+        let mut changed = result.as_ref().unwrap().clone();
+        let SessionEventAdmission::Deleted { deleted_revision } = &mut changed else {
+            panic!("actual baseline must be Deleted");
+        };
+        *deleted_revision = SessionRevision(18);
+        rejected(&deleted, None, &Ok(changed));
+        let mut missing = deleted.clone();
+        missing.admissions = None;
+        rejected(&missing, None, &result);
+
+        for proof in [literal_fixture::<7>(17), literal_fixture::<27>(17)] {
+            let result = resolve_deleted_event_admission(&proof, "a", "a");
+            check_result(&proof, Some(0), "a", &result);
+            let mut changed = result.as_ref().unwrap().clone();
+            match &mut changed {
+                SessionEventAdmission::Closed { batch_id }
+                | SessionEventAdmission::Accepted { batch_id, .. } => batch_id.push('!'),
+                SessionEventAdmission::Deleted { .. } => panic!("baseline must select a receipt"),
+            }
+            rejected(&proof, Some(0), &Ok(changed));
+            for field in 0..2 {
+                let mut changed = proof.clone();
+                let row = &mut changed.admissions.as_mut().unwrap()[0];
+                if field == 0 {
+                    row.request_fingerprint.push('!');
+                } else {
+                    row.closed = !row.closed;
+                }
+                rejected(&changed, Some(0), &result);
+            }
+            rejected(&proof, None, &result);
+            rejected(&proof, Some(usize::MAX), &result);
+            let mut missing = proof.clone();
+            missing.admissions = Some(vec![]);
+            rejected(&missing, Some(0), &result);
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn deleted_admission_literal_oracle_rejects_each_frame_and_identity_change() {
+        // C/E: the four original id shapes cross each single frame-coordinate
+        // fault; each wrong id shape/content/order is rejected by BOTH existing
+        // frame and result oracles. No production expected-result factory is used.
+        let revision = 17;
+        for (proof, check) in [
+            (
+                literal_fixture::<3>(revision),
+                check_literal_frame::<3> as fn(&DeletedSessionEventAdmissions, u64),
+            ),
+            (literal_fixture::<11>(revision), check_literal_frame::<11>),
+            (literal_fixture::<19>(revision), check_literal_frame::<19>),
+            (literal_fixture::<27>(revision), check_literal_frame::<27>),
+        ] {
+            check(&proof, revision);
+            let baseline = resolve_deleted_event_admission(&proof, "a", "a");
+            check_result(&proof, Some(0), "a", &baseline);
+            let rejected = |changed: &DeletedSessionEventAdmissions| {
+                assert!(std::panic::catch_unwind(|| check(changed, revision)).is_err());
+            };
+            for field in 0..8 {
+                let mut changed = proof.clone();
+                match field {
+                    0 => changed.deleted_revision = SessionRevision(18),
+                    1 => changed.admissions = None,
+                    2 => changed.admissions.as_mut().unwrap().clear(),
+                    3 => {
+                        let rows = changed.admissions.as_mut().unwrap();
+                        let duplicate = rows[0].clone();
+                        rows.push(duplicate);
+                    }
+                    _ => {
+                        let row = &mut changed.admissions.as_mut().unwrap()[0];
+                        match field {
+                            4 => row.key.push('!'),
+                            5 => row.request_fingerprint.push('!'),
+                            6 => row.batch_id.push('!'),
+                            _ => row.closed = !row.closed,
+                        }
+                    }
+                }
+                rejected(&changed);
+            }
+            let original_ids = &proof.admissions.as_ref().unwrap()[0].operation_ids;
+            for ids in [
+                None,
+                Some(vec![]),
+                Some(vec!["x".into()]),
+                Some(vec!["x".into(), "y".into()]),
+                Some(vec!["y".into(), "x".into()]),
+                Some(vec!["changed".into()]),
+                Some(vec!["changed".into(), "y".into()]),
+                Some(vec!["x".into(), "changed".into()]),
+                Some(vec!["x".into(), "y".into(), "z".into()]),
+            ] {
+                if &ids == original_ids {
+                    continue;
+                }
+                let mut changed_frame = proof.clone();
+                changed_frame.admissions.as_mut().unwrap()[0].operation_ids = ids.clone();
+                rejected(&changed_frame);
+                let mut changed_result = baseline.as_ref().unwrap().clone();
+                let SessionEventAdmission::Accepted { operation_ids, .. } = &mut changed_result
+                else {
+                    panic!("actual baseline must be Accepted");
+                };
+                *operation_ids = ids;
+                assert!(
+                    std::panic::catch_unwind(|| {
+                        check_result(&proof, Some(0), "a", &Ok(changed_result))
+                    })
+                    .is_err()
+                );
+            }
         }
     }
 

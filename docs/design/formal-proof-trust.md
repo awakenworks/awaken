@@ -162,6 +162,24 @@ deliberate-unreachable/production exceptions remain unchanged. Pure replay
 parses all 19,934 records and retains the same four findings; this does not
 qualify the changed Vault proof or replace a new complete formal run.
 
+## Current shared proof-helper postconditions
+
+The strict run on clean `2a2eae7a` is Not-passed. Its 55 retained completed
+results contain nine deleted-admission literal partitions whose shared oracle
+has unreachable branch-local assertions. The two oracles now check total
+postconditions at a common assertion: exact outcome fields and valid first
+index, plus the complete borrowed input frame. The original resolver, 35
+harnesses, 32 literal domains, 3174/96-row Native tables and replay/Drop remain;
+three Native negative controls corrupt single fields and require rejection.
+
+An independent original batch confirms one additional unreachable Complete
+assertion in the service-lifecycle helper. Its original harness now updates the
+independent expected model after finish and exercises that same helper, retaining
+the completion condition plus phase and empty-task checks. The Catalog risk's
+original batch and vacuity passed and its source is unchanged. Candidate source
+checks and static reviews do not replace new complete affected batches or the
+final strict full run; no vacuity exception, new domain bound or budget is added.
+
 ## Phase 2: what changed
 
 | Change | Harnesses | Argument |
