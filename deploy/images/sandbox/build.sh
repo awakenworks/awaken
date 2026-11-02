@@ -254,7 +254,7 @@ accept_hand() {
 accept_managed_agents_base() {
   run_with_deadline "$operation_timeout_seconds" \
     "$engine" run --rm --entrypoint /bin/sh "$image" -c \
-    '. /etc/os-release && test "$ID" = ubuntu && test "$VERSION_ID" = 24.04 && test "$(uname -m)" = x86_64 && test "$(id -u)" = 10001 && test "$HOME" = /home/agent && test "$PWD" = /workspace && test "$(node -p '\''process.versions.node.split(`.`)[0]'\'')" = 22 && test "$(go env GOVERSION | cut -d. -f1-2)" = go1.24 && test "$(ruby -e '\''print RUBY_VERSION.split(".")[0,2].join(".")'\'')" = 3.3'
+    '. /etc/os-release && test "$ID" = ubuntu && test "$VERSION_ID" = 24.04 && test "$(uname -m)" = x86_64 && test "$(id -u)" = 10001 && test "$HOME" = /home/agent && test "$PWD" = /workspace && test "$PLAYWRIGHT_BROWSERS_PATH" = 0 && test "$(node -p '\''process.versions.node.split(`.`)[0]'\'')" = 22 && test "$(go env GOVERSION | cut -d. -f1-2)" = go1.24 && test "$(ruby -e '\''print RUBY_VERSION.split(".")[0,2].join(".")'\'')" = 3.3'
 }
 
 image_exists() {

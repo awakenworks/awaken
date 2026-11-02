@@ -66,8 +66,12 @@ RUN sed -i 's#^URIs: http://#URIs: https://#' /etc/apt/sources.list.d/ubuntu.sou
       ca-certificates curl git libgmp10 libyaml-0-2 python3 python3-venv ripgrep tini \
     && python3 -m venv /opt/awaken-python \
     && rm -rf /var/lib/apt/lists/*
+# Environment npm layers install browser payloads beside the exact package.
+# Session HOME/XDG paths are writable workspace state, never an image toolchain
+# lookup authority. Keep the same package-local selector at build and runtime.
 ENV CARGO_HOME="/usr/local/cargo" \
     HOME="/home/agent" \
+    PLAYWRIGHT_BROWSERS_PATH="0" \
     PATH="/usr/local/cargo/bin:/usr/local/go/bin:/opt/awaken-python/bin:${PATH}" \
     RUSTUP_HOME="/usr/local/rustup"
 

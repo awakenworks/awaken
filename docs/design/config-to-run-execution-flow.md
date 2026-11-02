@@ -250,6 +250,15 @@ SelfHosted OR package-free Cloud
   -> Worker uses the configured/default sandbox environment directly
 ```
 
+Browser payloads installed by an Environment's pinned npm package are immutable
+toolchain assets, not Session cache state. The canonical Sandbox base sets
+`PLAYWRIGHT_BROWSERS_PATH=0` during package-image installation and execution so
+Playwright resolves its package-local payload even after the runtime binds
+`HOME` and XDG directories into the writable workspace. The Hand shell's existing
+locator allow-list retains that exact selector while excluding unrelated secrets.
+Image reuse admission verifies the selector; no Session copies a HOME cache or
+downloads a replacement browser to compensate for an incomplete image.
+
 The failure analysis for this path is:
 
 | Failure mode | S/O/D | Effect | Detection | Required elimination/mitigation |
