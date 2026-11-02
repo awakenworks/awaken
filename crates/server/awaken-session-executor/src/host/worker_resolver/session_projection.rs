@@ -5,6 +5,7 @@ mod projection_synchronizer;
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod eager_preparation;
     mod error_projection;
     use crate::host::tests::ManagedSessionRootFixture;
     use crate::host::worker_resolver::test_support::{
@@ -944,12 +945,15 @@ mod tests {
         let _managed = host.clone();
         let mut projection = frozen_projection();
         projection.baseline.agent_revision = Some(7);
-        projection.baseline.runtime = Some("acp:claude".into());
+        // Use the Host-native executor supplied by AdoptionModel. An ACP
+        // publication additionally requires a namespace-capable provider,
+        // which is not part of this frozen-publication identity fixture.
+        projection.baseline.runtime = Some("native:genai".into());
         let mut snapshot = test_activation(thread, "dynamic-publication").snapshot;
         snapshot.metadata.source.revision = 7;
         let (provider, model, _) = snapshot.resolved_spec.model_binding.identity();
         let binding =
-            awaken_runtime_contract::resolved::ModelBinding::parse(provider, model, "acp:claude")
+            awaken_runtime_contract::resolved::ModelBinding::parse(provider, model, "native:genai")
                 .unwrap();
         snapshot.resolved_spec.model_binding =
             awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
@@ -957,6 +961,13 @@ mod tests {
             .recompute_fingerprint()
             .expect("P1 frozen publication has a canonical fingerprint");
         projection.agent_publication = Some(snapshot.clone());
+        // This fixture explicitly prepares an Eager projection. Supply its
+        // ordinary binding authority and continue with the committed readback;
+        // publication delivery alone must not fake a resident Environment.
+        let control = RecoveryControl::fixed(projection.clone());
+        let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
+        host.run_assembly
+            .install_test_environment_binding_sink(binding_sink.clone());
         let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
@@ -979,6 +990,13 @@ mod tests {
         )
         .await
         .expect("projection publication realizes the Session before a Run claim");
+
+        projection = control.current_projection();
+        assert_eq!(
+            binding_sink.calls(),
+            1,
+            "P1 commits the actual Eager binding"
+        );
 
         let mut compatibility_renewal = projection.clone();
         compatibility_renewal.agent_publication = None;
