@@ -293,7 +293,12 @@ class ProfileTests(unittest.TestCase):
             and not line.lstrip().startswith("#")
         ]
         self.assertEqual(len(commands), 1, "R2: exactly one official Chain call")
-        self.assertIn("source scripts/ci/_deadline.sh", gate, "R2: reuse the shared deadline owner")
+        # C2 includes the existing required executor's transitive import: the
+        # same deadline owner is required, without sourcing it twice here.
+        from formal_plan import script_closure
+        self.assertIn("scripts/ci/_deadline.sh",
+                      script_closure(root, ("scripts/ci/check_formal.sh",)),
+                      "R2: reuse the shared deadline owner")
         self.assertEqual(commands[0], [
             "run_with_deadline", "1800", "java",
             "-Djava.io.tmpdir=$tlc_state_root", "-Xmx4096m",
@@ -324,6 +329,44 @@ class ProfileTests(unittest.TestCase):
                              and model_paths.intersection(command)
                              for command in commands),
                          "R2: no duplicate standalone positive baseline")
+
+    def test_native_witness_commands_follow_their_current_owners(self):
+        # C1 a stale selected filter can exit0 with no Rust test; C2 one empty
+        # target can accompany real tests in the SAME Cargo call; C3 ownership
+        # moved, and a neighboring match cannot replace the original witness.
+        # R1 every direct witness uses the original required executor, which
+        # rejects C1 and aggregates C2. R2 the original Host Loom, CLI source
+        # translation and Coordinator rollout remain at their current owners.
+        # R3 their caller-owned floors survive; a missing/ignored/renamed case
+        # fails the existing executor even if another test matches the filter.
+        # This source expectation copies no case inventory and runs no Rust;
+        # the executor's existing list/run/NoTests/skip cases own that law.
+        from check_rust_test_execution import selection_commands
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "scripts/ci/check_formal.sh").read_text()
+        commands = [shlex.split(line, comments=True)
+                    for line in source.replace("\\\n", " ").splitlines()]
+        self.assertIn(["source", "scripts/ci/_rust_test_execution.sh"], commands,
+                      "R1 reuse the existing execution/evidence owner")
+        self.assertFalse(any(command[index:index + 2] == ["cargo", "test"]
+                             for command in commands for index in range(len(command) - 1)),
+                         "R1 every direct witness must reject an empty whole call")
+        witnesses = [command[command.index("run_required_rust_tests") + 1:]
+                     for command in commands if "run_required_rust_tests" in command]
+        moved = [selection_commands(arguments) for arguments in witnesses
+                 if any(value.startswith("binding_batch_") for value in arguments)
+                 or "rollout" in arguments]
+        expected = [
+            ["-p", "awaken-run-executor-acp", "--features", "loom", "--lib", "binding_batch_tests"],
+            ["-p", "awaken-cli", "--lib", "binding_batch_rejection_preserves_every_existing_and_absent_entry"],
+            ["-p", "awaken-coordinator", "--lib", "rollout"],
+        ]
+        self.assertEqual([commands for commands, _ in moved],
+                         [selection_commands(arguments)[0] for arguments in expected],
+                         "R2 preserve the authored owner/feature/target/filter/exact argv")
+        for _, required in moved:
+            self.assertTrue(required, "R3 original cases are required by their caller")
+            self.assertEqual(len(required), len(set(required)), "R3 no duplicated floor")
 
     def test_absent_guardrail_profiles_preserve_legacy_qualification(self):
         # Cause/effect graph: C1 promotion field is absent or an empty list;

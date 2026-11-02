@@ -133,6 +133,35 @@ the new source-derived nanos singleton must be revalidated after its added link.
 The earlier combined CaDiCaL/Z3 resource-bound runs and the historical
 inventory below remain history, not counterexamples or current passes.
 
+## Current required Rust witnesses and property parsing
+
+All 74 Rust witness calls, including the late Eval witness, use the existing
+`_rust_test_execution.sh` / `check_rust_test_execution.py` authority. It builds,
+lists and executes the same authored graph, rejects an empty whole selection,
+and requires every listed named outcome without ignored or skipped cases.
+The Host Loom, CLI source-conversion and Coordinator rollout callers own their
+2/1/9 required-case floors. The obsolete App selector and the former Managed
+rollout selector each selected zero tests on clean `015acb1c`; the original
+required executor rejected both empty selections before execution. No second
+runner, case inventory or dependency graph is introduced.
+
+The interrupted strict full run on that source retained 33 completed Kani
+results and is Not-passed. Its original vacuity check found four unreachable
+array-bounds assertions in the material-input proof helper's absent-predecessor
+branches; the target production-equality assertion itself was SUCCESS. Fixed
+array destructuring removes those proof-only indexed reads while preserving
+the four-slot domain, partition helper and original assertions. The same helper
+returns its single production-call result; four covers at the existing harness
+witness those actual output partitions. New source must still be compiled and proved.
+
+The original property parser also skipped real multiline descriptions and
+qualified names with spaces: it read 7,361 of 19,934 Check records in those
+33 files. The same parser now reads complete record boundaries and rejects
+empty, malformed or incomplete regular input. Its assertion/cover rules and
+deliberate-unreachable/production exceptions remain unchanged. Pure replay
+parses all 19,934 records and retains the same four findings; this does not
+qualify the changed Vault proof or replace a new complete formal run.
+
 ## Phase 2: what changed
 
 | Change | Harnesses | Argument |
