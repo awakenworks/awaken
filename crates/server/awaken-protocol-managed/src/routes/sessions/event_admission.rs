@@ -62,6 +62,10 @@ pub async fn close_event_admission(
         })?;
     use crate::awaken_extensions::{EventAdmissionProof, EventAdmissionStatus};
     let (status, proof) = match admission {
+        awaken_session_contract::SessionEventAdmission::NoOp => (
+            EventAdmissionStatus::Accepted,
+            EventAdmissionProof::EventNoOp { event_ids: [] },
+        ),
         awaken_session_contract::SessionEventAdmission::Accepted {
             batch_id,
             operation_ids,

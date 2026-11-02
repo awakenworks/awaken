@@ -57,6 +57,23 @@ Limitation: an owned credential that a Vault ingress created during a root-less
 prepare is not named by the intent. Its retirement still follows the
 participant's definition and terminal reconciliation, as before.
 
+#### Amendment 2026-11-02: retain the completed local abort fence
+
+Completing a claimed abort retains the same creation-intent row as `aborted`.
+It is no longer pending recovery work, but it permanently refuses both a late
+Root insert and a new prepare under that retired Session identity. Replaying
+completion or claiming the already completed abort cannot reopen the fence.
+An unrelated fresh Session identity remains admissible.
+
+Both SQL adapters use the existing shared intent codec and Core phase predicate;
+the existing creation transaction checks the retained phase before committing.
+The migration appends a portable table replacement preserving all published
+migration checksums, original participant ids, scope and lease coordinates.
+
+This retained row proves local Root-adoption closure only. It does not certify
+Registry/Vault closure or repair the credential-origin limitation above; those
+participants still require their own durable ownership and late-write fences.
+
 ### D2 A determinate refusal is reported as not admitted (amends ADR-0094 D3)
 
 `SessionRepositoryError::NotApplied` means the store refused before applying
@@ -69,11 +86,11 @@ id, because repair may complete the durable reservation. A store reports
 
 ### D3 The budget-pause interrupt no-op is a root-admission rule
 
-The Session application's root-CAS admission decides on the root it commits
-against. An interrupt-only batch on a budget-paused Session whose target
-Threads hold no Awaiting Run returns `None`: an accepted no-op that writes no
-root fact. The protocol parser keeps its early answer, and a pause that races
-validation reaches the same rule.
+The original decision returned `None` and retained an early protocol answer.
+[ADR-0094 D4](0094-session-access-and-run-admission-outcomes.md#d4-aggregate-admission-applies-the-protocols-thread-rules)
+supersedes that representation: the application alone validates the stable
+committed prefix and returns an explicit no-op with its durable command receipt.
+The protocol only projects the result; there is no parser-side acceptance path.
 
 ### D4 Revocation is rechecked after every wait that can outlive it
 
@@ -99,14 +116,45 @@ after every head is cloned. `release_result` attempts every step, treats a
 store that was never created as retired, and returns the first failure. The
 failure keeps the Dream's cleanup pending for its existing retry authority.
 
+### D7 Budget settlements replay their original operation before cursor validation
+
+`SessionLifecycle::reconcile_managed_budget_usage` requires the caller's
+original operation id. The existing Session command receipt binds it to the
+normalized input usage cursor. The lifecycle reads that receipt before testing
+whether cumulative usage would rewind. An exact committed retry therefore
+returns the current root without another charge, revision, reach transition or
+notification, even after a later settlement or a cold reconnect. Changed input
+under the same id is an idempotency mismatch; missing proof never invents a
+prior admission. A receipt newer than the loaded root causes a bounded reread.
+
+| Scope | Authoritative mechanism |
+|---|---|
+| Reused unchanged | Session budget arithmetic, frozen prices, neutral usage cursor, command receipt table and root/outbox transaction |
+| Modified | Lifecycle settlement reads the original receipt, then commits through `SessionMutations::commit_session_snapshot_with_record`; the two coordination callers pass one retained observation id |
+| Added | One pure observation-id compiler and regression cases; no new store, journal, retry service or compatibility entry point |
+
+The coordination observation id includes the Session, source Thread, normalized
+usage and already observed root runtime seconds. Unrelated title/revision writes
+do not change it; new runtime time does, so a previous token receipt cannot hide
+a later runtime charge. Within a call, CAS retries retain this id. After receipt
+absence, the existing kernel validates monotonic usage, joins root-owned runtime
+time and atomically commits the root, receipt and any reach fact. A losing exact
+writer replays that same transaction and reports `reached_now = false`.
+Unchanged usage without a new budget transition preserves the existing read-only
+outcome. Storage outages remain errors and the caller retries the original id.
+
+The frozen-tools title reproducer is enabled without another production path:
+`compile_update_tool_settings` already preserves omitted tools on current main;
+explicit authoring still uses the current compiler.
+
 ## Consequences
 
 - The Session store gains one table (migration `next + 2` of the current tail),
   and every `SessionStore` implements `PreparedParticipantIntents`.
 - A creation that outlives its intent lease may be aborted by recovery. Its root
   insert then fails as tombstoned rather than adopting a retired participant.
-- `SessionEventBatches` appends return `Option`; protocol adapters answer
-  `None` with an empty receipt list.
+- `SessionEventBatches` appends distinguish a retained batch and a durably
+  acknowledged no-op as defined by ADR-0094 D4.
 - New public surface: `PoolShutdown`, `POOL_SHUTDOWN_GRACE`,
   `LIVE_INBOX_CAPACITY`, `Offer::Full`, `LiveInboxError::Full` and
   `coordinator::Error::CapacityExhausted`.

@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 pub struct RetainedEventAdmission {
     pub key: String,
     pub request_fingerprint: String,
-    pub batch_id: String,
+    /// None with an open, known-empty operation set is an accepted no-op.
+    /// Legacy receipts keep their original batch string unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
     pub closed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_ids: Option<Vec<String>>,

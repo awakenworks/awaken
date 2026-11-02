@@ -54,13 +54,66 @@ pub struct IdempotencyRecord {
     pub payload_hash: String,
 }
 
+/// The receipt's committed fact, not an execution or cleanup verdict.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionCommandReceiptKind {
+    #[default]
+    Root,
+    EventBatch,
+    EventNoOp,
+}
+
+impl SessionCommandReceiptKind {
+    pub const fn is_root(&self) -> bool {
+        matches!(self, Self::Root)
+    }
+
+    pub const fn is_event(&self) -> bool {
+        !self.is_root()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionIdempotencyReceipt {
     pub payload_hash: String,
     pub committed_revision: SessionRevision,
+    #[serde(default, skip_serializing_if = "SessionCommandReceiptKind::is_root")]
+    kind: SessionCommandReceiptKind,
+}
+
+impl SessionIdempotencyReceipt {
+    pub fn new(
+        payload_hash: String,
+        committed_revision: SessionRevision,
+        kind: SessionCommandReceiptKind,
+    ) -> Self {
+        Self {
+            payload_hash,
+            committed_revision,
+            kind,
+        }
+    }
+
+    pub const fn kind(&self) -> SessionCommandReceiptKind {
+        self.kind
+    }
 }
 
 impl IdempotencyRecord {
+    /// Retained batches, closure and accepted no-ops arbitrate the same key
+    /// through the existing Session transaction and idempotency index.
+    pub fn event_admission(key: &str, request_fingerprint: &str) -> Self {
+        Self {
+            key: format!("session:event-admission:{key}"),
+            payload_hash: request_fingerprint.to_owned(),
+        }
+    }
+
+    pub fn event_admission_key(&self) -> Option<&str> {
+        self.key.strip_prefix("session:event-admission:")
+    }
+
     /// Compare the receipt read under this record's key with one root snapshot.
     /// A receipt from a later root cannot witness admission in an older snapshot.
     #[must_use]
@@ -69,13 +122,92 @@ impl IdempotencyRecord {
         receipt: &SessionIdempotencyReceipt,
         revision: SessionRevision,
     ) -> bool {
-        self.payload_hash == receipt.payload_hash && receipt.committed_revision.0 <= revision.0
+        self.payload_hash == receipt.payload_hash
+            && self.event_admission_key().is_some() == receipt.kind().is_event()
+            && receipt.committed_revision.0 <= revision.0
     }
 }
 
 #[cfg(test)]
 mod receipt_confirmation_tests {
     use super::*;
+
+    #[test]
+    fn noop_receipt_cannot_confirm_an_unrelated_root_command() {
+        // K1 same hash/revision but root-command key + EventNoOp kind => no
+        // root mutation evidence; K2 its actual Event identity => visible
+        // command receipt; K3 observation before receipt revision => unknown.
+        let root = IdempotencyRecord {
+            key: "archive".into(),
+            payload_hash: "f".into(),
+        };
+        let receipt = SessionIdempotencyReceipt {
+            payload_hash: "f".into(),
+            committed_revision: SessionRevision(2),
+            kind: SessionCommandReceiptKind::EventNoOp,
+        };
+        assert!(!root.confirmed_by(&receipt, SessionRevision(3)));
+        let event = IdempotencyRecord::event_admission("control", "f");
+        assert!(event.confirmed_by(&receipt, SessionRevision(2)));
+        assert!(!event.confirmed_by(&receipt, SessionRevision(1)));
+    }
+
+    #[test]
+    fn noop_command_shape_requires_a_live_pure_interrupt_receipt() {
+        // V1 live revision + nonempty typed Interrupt list + Event identity +
+        // no lifecycle facts => observed revision unchanged. V2 zero revision,
+        // empty intents, root-command identity or outbox facts => reject before
+        // any repository I/O. A no-op does not need an increment at MAX.
+        let valid = SessionMutation {
+            expected_revision: SessionRevision(2),
+            idempotency: IdempotencyRecord::event_admission("control", "f"),
+            payload: SessionMutationPayload::EventNoOp {
+                session_id: "s".into(),
+                interrupts: vec![crate::SessionEventInterrupt {
+                    requested_target: None,
+                    targets: vec![crate::SessionThreadTarget::Primary],
+                }],
+            },
+            lifecycle_facts: Vec::new(),
+        };
+        assert_eq!(valid.validate().unwrap(), SessionRevision(2));
+        let mut exhausted = valid.clone();
+        exhausted.expected_revision = SessionRevision(u64::MAX);
+        assert_eq!(exhausted.validate().unwrap(), SessionRevision(u64::MAX));
+        for cause in 0..5 {
+            let mut invalid = valid.clone();
+            match cause {
+                0 => invalid.expected_revision = SessionRevision(0),
+                1 => {
+                    if let SessionMutationPayload::EventNoOp { interrupts, .. } =
+                        &mut invalid.payload
+                    {
+                        interrupts.clear();
+                    }
+                }
+                2 => invalid.idempotency.key = "archive".into(),
+                3 => invalid.lifecycle_facts.push(ManagedLifecycleFact {
+                    id: "fact".into(),
+                    event_type: "session.status_idled".into(),
+                    object_id: "s".into(),
+                    workspace_id: Some("workspace".into()),
+                    timestamp: 1,
+                    runtime_interval: None,
+                }),
+                _ => {
+                    if let SessionMutationPayload::EventNoOp { interrupts, .. } =
+                        &mut invalid.payload
+                    {
+                        interrupts[0].targets.clear();
+                    }
+                }
+            }
+            assert_eq!(
+                invalid.validate(),
+                Err(SessionMutationValidationError::InvalidEventNoOp)
+            );
+        }
+    }
 
     #[test]
     fn receipt_confirmation_requires_the_same_payload_and_a_visible_commit() {
@@ -98,6 +230,7 @@ mod receipt_confirmation_tests {
             let receipt = SessionIdempotencyReceipt {
                 payload_hash: payload.into(),
                 committed_revision: SessionRevision(committed),
+                kind: SessionCommandReceiptKind::Root,
             };
             assert_eq!(
                 expected.confirmed_by(&receipt, SessionRevision(4)),
@@ -124,6 +257,10 @@ pub enum SessionCreateResult {
 pub enum SessionMutationPayload {
     Replace(PersistedSession),
     Delete(SessionTombstone),
+    EventNoOp {
+        session_id: SessionId,
+        interrupts: Vec<crate::SessionEventInterrupt>,
+    },
 }
 
 impl SessionMutationPayload {
@@ -132,6 +269,7 @@ impl SessionMutationPayload {
         match self {
             Self::Replace(session) => &session.session_id,
             Self::Delete(tombstone) => &tombstone.session_id,
+            Self::EventNoOp { session_id, .. } => session_id,
         }
     }
 
@@ -172,6 +310,7 @@ pub enum SessionMutationResult {
     Replayed { new_revision: SessionRevision },
     Conflict { current_revision: SessionRevision },
     IdempotencyMismatch,
+    AcknowledgedNoOp { observed_revision: SessionRevision },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -180,6 +319,10 @@ pub enum SessionMutationValidationError {
     EmptyIdempotencyKey,
     #[error("Session mutation payload hash is empty")]
     EmptyPayloadHash,
+    #[error("Event admission receipt identity does not match its command")]
+    InvalidEventAdmissionReceipt,
+    #[error("Event no-op requires a live revision, pure interrupts and no lifecycle facts")]
+    InvalidEventNoOp,
     #[error("Session mutation id is empty")]
     EmptySessionId,
     #[error("Session mutation revision is exhausted")]
@@ -279,6 +422,18 @@ pub(crate) fn validate_aggregate_state(
 }
 
 impl SessionMutation {
+    pub fn receipt_kind(&self) -> SessionCommandReceiptKind {
+        match &self.payload {
+            SessionMutationPayload::EventNoOp { .. } => SessionCommandReceiptKind::EventNoOp,
+            SessionMutationPayload::Replace(_)
+                if self.idempotency.event_admission_key().is_some() =>
+            {
+                SessionCommandReceiptKind::EventBatch
+            }
+            _ => SessionCommandReceiptKind::Root,
+        }
+    }
+
     /// Validate all command-local causes before a repository reads or writes.
     /// A successful return is the only root revision the transaction may commit.
     pub fn validate(&self) -> Result<SessionRevision, SessionMutationValidationError> {
@@ -291,6 +446,22 @@ impl SessionMutation {
         let session_id = self.payload.session_id();
         if session_id.as_str().trim().is_empty() {
             return Err(SessionMutationValidationError::EmptySessionId);
+        }
+        if let SessionMutationPayload::EventNoOp { interrupts, .. } = &self.payload {
+            if self.expected_revision.0 == 0
+                || interrupts.is_empty()
+                || interrupts
+                    .iter()
+                    .any(|interrupt| interrupt.validate().is_err())
+                || !self.lifecycle_facts.is_empty()
+                || self
+                    .idempotency
+                    .event_admission_key()
+                    .is_none_or(|key| key.trim().is_empty())
+            {
+                return Err(SessionMutationValidationError::InvalidEventNoOp);
+            }
+            return Ok(self.expected_revision);
         }
         let next = SessionRevision(
             self.expected_revision
@@ -308,6 +479,28 @@ impl SessionMutation {
                 return Err(SessionMutationValidationError::TombstoneRevisionMismatch);
             }
             SessionMutationPayload::Replace(_) | SessionMutationPayload::Delete(_) => {}
+            SessionMutationPayload::EventNoOp { .. } => unreachable!("validated above"),
+        }
+        if let Some(key) = self.idempotency.event_admission_key() {
+            let valid = match &self.payload {
+                SessionMutationPayload::Replace(session) => {
+                    session.event_batches.last().is_some_and(|batch| {
+                        batch.admitted_revision == next
+                            && match (&batch.idempotency_key, &batch.request_fingerprint) {
+                                (None, None) => true,
+                                (Some(stored_key), Some(fingerprint)) => {
+                                    stored_key == key
+                                        && fingerprint == &self.idempotency.payload_hash
+                                }
+                                _ => false,
+                            }
+                    })
+                }
+                _ => false,
+            };
+            if key.trim().is_empty() || !valid {
+                return Err(SessionMutationValidationError::InvalidEventAdmissionReceipt);
+            }
         }
         if let SessionMutationPayload::Replace(session) = &self.payload {
             validate_aggregate_state(session)?;

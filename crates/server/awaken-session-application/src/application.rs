@@ -1003,6 +1003,12 @@ impl RepositoryEnvironmentBindingSink {
                 Ok(SessionMutationResult::IdempotencyMismatch) => {
                     return Err(command.idempotency_mismatch());
                 }
+                Ok(SessionMutationResult::AcknowledgedNoOp { .. }) => {
+                    return Err(RunError::classified(
+                        "session_event_receipt_invalid",
+                        "Event no-op cannot certify an Environment binding mutation",
+                    ));
+                }
                 Err(error) => {
                     // Only admission historically recovers a lost response via
                     // exact authorized readback; Persist retains its old error.

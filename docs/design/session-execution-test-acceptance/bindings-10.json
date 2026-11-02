@@ -398,7 +398,7 @@
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
         "line": 69,
-        "file_sha256": "bc4f970f5eb1eb0c2dbf4475b669f988023b48bbaeeea51651845f7174b37463"
+        "file_sha256": "8364e13619891a1e023978ff6aa3cdd39d34c7d05ecb2708d96e6a1ca4d547ee"
       }
     ],
     "assertion_locations": [
@@ -444,7 +444,7 @@
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
         "line": 93,
-        "file_sha256": "bc4f970f5eb1eb0c2dbf4475b669f988023b48bbaeeea51651845f7174b37463"
+        "file_sha256": "8364e13619891a1e023978ff6aa3cdd39d34c7d05ecb2708d96e6a1ca4d547ee"
       }
     ],
     "assertion_locations": [
@@ -484,14 +484,14 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
-        "line": 317,
-        "file_sha256": "bc4f970f5eb1eb0c2dbf4475b669f988023b48bbaeeea51651845f7174b37463"
+        "line": 319,
+        "file_sha256": "8364e13619891a1e023978ff6aa3cdd39d34c7d05ecb2708d96e6a1ca4d547ee"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
-        "line": 322
+        "line": 324
       }
     ],
     "execution_witnesses": [
@@ -525,22 +525,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
-        "line": 337,
-        "file_sha256": "bc4f970f5eb1eb0c2dbf4475b669f988023b48bbaeeea51651845f7174b37463"
+        "line": 339,
+        "file_sha256": "8364e13619891a1e023978ff6aa3cdd39d34c7d05ecb2708d96e6a1ca4d547ee"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
-        "line": 347
+        "line": 349
       },
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
-        "line": 352
+        "line": 354
       },
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
-        "line": 367
+        "line": 369
       }
     ],
     "execution_witnesses": [

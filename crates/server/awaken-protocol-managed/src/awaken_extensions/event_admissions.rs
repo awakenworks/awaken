@@ -28,6 +28,10 @@ pub struct EventAdmissionReceipt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "proof", rename_all = "snake_case")]
 pub enum EventAdmissionProof {
+    #[serde(rename = "event_noop")]
+    EventNoOp {
+        event_ids: [String; 0],
+    },
     EventBatch {
         batch_id: String,
         /// Exact standard Managed event ids; omitted only for legacy retained

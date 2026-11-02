@@ -39,6 +39,7 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct EventBatchRuntime {
+    coordinated_links: Mutex<Option<Vec<CoordinatedThreadLink>>>,
     pub(super) admission_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     reservation_barriers: Mutex<Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>>,
     reserved: Mutex<BTreeMap<String, AdmitSessionRun>>,
@@ -56,6 +57,8 @@ pub(super) struct EventBatchRuntime {
     committed: Mutex<Vec<Message>>,
     committed_read_trace: Mutex<Vec<String>>,
     committed_read_error: Mutex<Option<RunError>>,
+    recovery_read_error: Mutex<Option<RunError>>,
+    recovery_versions: Mutex<VecDeque<u64>>,
     recovery_projection_override: Mutex<Option<(Vec<u64>, u64)>>,
     trace: Mutex<Vec<String>>,
     outcomes: Mutex<BTreeMap<String, (String, String, u32)>>,
@@ -622,6 +625,9 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchR
         session_id: &SessionId,
         _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<CoordinatedThreadLink>, RunError> {
+        if let Some(links) = self.coordinated_links.lock().unwrap().as_ref() {
+            return Ok(links.clone());
+        }
         Ok(vec![CoordinatedThreadLink {
             session_id: session_id.clone(),
             thread_id: ThreadId("event-child".into()),
@@ -904,6 +910,15 @@ impl awaken_session_execution_contract::ThreadReads for EventBatchRuntime {
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
+        if let Some(error) = self.recovery_read_error.lock().unwrap().take() {
+            return Err(error);
+        }
+        let version = self
+            .recovery_versions
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(1);
         let barrier = self.admission_barrier.lock().unwrap().take();
         if let Some(barrier) = barrier {
             barrier.wait().await;
@@ -936,7 +951,7 @@ impl awaken_session_execution_contract::ThreadReads for EventBatchRuntime {
                     state_commit_cursors: Vec::new(),
                     events: Vec::new(),
                     resume_tickets: Vec::new(),
-                    thread_version: 1,
+                    thread_version: version,
                     store_cursor,
                     next_commit_ordinal: 1,
                 },
@@ -973,7 +988,7 @@ impl awaken_session_execution_contract::ThreadReads for EventBatchRuntime {
                 state_commit_cursors: Vec::new(),
                 events: Vec::new(),
                 resume_tickets: Vec::new(),
-                thread_version: 1,
+                thread_version: version,
                 store_cursor,
                 next_commit_ordinal: 1,
             },
@@ -1225,7 +1240,14 @@ async fn preferred_user_drive_accelerates_only_the_canonical_fifo_head() {
                 Some(("preferred-user".into(), "preferred-user-fingerprint".into())),
             )
             .await
-            .map(|batch| batch.expect("the Event batch is admitted"))
+            .map(|(result, error)| {
+                (
+                    result
+                        .into_batch()
+                        .expect("User message retains its Event batch"),
+                    error,
+                )
+            })
             .expect("append preferred User batch");
         assert!(drive_error.is_none(), "F1-F2 request-local drive");
         tokio::time::timeout(
@@ -1292,7 +1314,14 @@ async fn preferred_user_drive_failure_retains_receipt_and_recovery_wake() {
             Some(("failure-key".into(), "failure-fingerprint".into())),
         )
         .await
-        .map(|batch| batch.expect("the Event batch is admitted"))
+        .map(|(result, error)| {
+            (
+                result
+                    .into_batch()
+                    .expect("User message retains its Event batch"),
+                error,
+            )
+        })
         .expect("E1 accepted receipt survives local drive failure");
     assert!(drive_error.is_some(), "E1 exact drive failure is reported");
     assert_eq!(accepted.events.len(), 1, "E1 exact receipt");
@@ -2058,7 +2087,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
     );
     let first = app
         .event_batches
-        .append_session_event_batch_idempotent(
+        .admit_session_event_batch_idempotent(
             &SessionId::from("event-idempotency"),
             input.clone(),
             None,
@@ -2066,7 +2095,9 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
             Some(("key-1".into(), "fingerprint-1".into())),
         )
         .await
-        .expect("I1/E1");
+        .expect("I1/E1")
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     let accepted_revision = repository
         .get(&SessionId::from("event-idempotency"))
         .await
@@ -2074,7 +2105,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
         .revision;
     let replay = app
         .event_batches
-        .append_session_event_batch_idempotent(
+        .admit_session_event_batch_idempotent(
             &SessionId::from("event-idempotency"),
             input.clone(),
             None,
@@ -2082,7 +2113,9 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
             Some(("key-1".into(), "fingerprint-1".into())),
         )
         .await
-        .expect("I2/E2 warm replay");
+        .expect("I2/E2 warm replay")
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     assert_eq!(replay, first, "I2/E2");
     let warm_replay = repository
         .get(&SessionId::from("event-idempotency"))
@@ -2111,7 +2144,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
     );
     let cold_replay = restarted
         .event_batches
-        .append_session_event_batch_idempotent(
+        .admit_session_event_batch_idempotent(
             &SessionId::from("event-idempotency"),
             input.clone(),
             None,
@@ -2119,7 +2152,9 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
             Some(("key-1".into(), "fingerprint-1".into())),
         )
         .await
-        .expect("I2/E2 cold retry");
+        .expect("I2/E2 cold retry")
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     assert_eq!(cold_replay, first, "I2/E2 cold retry receipt");
     let cold_snapshot = repository
         .get(&SessionId::from("event-idempotency"))
@@ -2129,7 +2164,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
     assert_eq!(cold_snapshot.event_batches.len(), 1, "I2/E2 appends once");
     let conflict = restarted
         .event_batches
-        .append_session_event_batch_idempotent(
+        .admit_session_event_batch_idempotent(
             &SessionId::from("event-idempotency"),
             input.clone(),
             None,
@@ -2142,7 +2177,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
 
     let later = restarted
         .event_batches
-        .append_session_event_batch_idempotent(
+        .admit_session_event_batch_idempotent(
             &SessionId::from("event-idempotency"),
             input,
             None,
@@ -2150,7 +2185,9 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
             Some(("key-2".into(), "fingerprint-1".into())),
         )
         .await
-        .expect("I4/E4");
+        .expect("I4/E4")
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     assert_ne!(later.batch_id, first.batch_id, "I4/E4");
 }
 
@@ -2182,7 +2219,7 @@ async fn event_batch_lost_cas_ack_reloads_the_retained_admission_plan() {
 
     let admitted = app
         .event_batches
-        .append_session_event_batch_idempotent(
+        .admit_session_event_batch_idempotent(
             &SessionId::from("event-lost-ack"),
             vec![SessionEventInput::UserMessage {
                 content: vec![ContentBlock::text("one intent")],
@@ -2192,7 +2229,9 @@ async fn event_batch_lost_cas_ack_reloads_the_retained_admission_plan() {
             Some(("key".into(), "fingerprint".into())),
         )
         .await
-        .expect("R1 reloads the committed winner");
+        .expect("R1 reloads the committed winner")
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
 
     let retained = durable
         .get(&SessionId::from("event-lost-ack"))
@@ -2234,7 +2273,7 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
         let key = Some(("key".to_owned(), "fingerprint".to_owned()));
         if accept_first {
             app.event_batches
-                .append_session_event_batch_idempotent(
+                .admit_session_event_batch_idempotent(
                     &SessionId::from(session),
                     input.clone(),
                     None,
@@ -2242,7 +2281,9 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
                     key.clone(),
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .into_batch()
+                .expect("this fixture requires a retained Event batch");
         }
         let first = app
             .event_batches
@@ -2296,13 +2337,7 @@ async fn final_event_admission_close_is_absorbing_across_restart_and_late_delive
         assert_eq!(first, replay, "F3 stable receipt after reconstruction");
         let late = restarted
             .event_batches
-            .append_session_event_batch_idempotent(
-                &SessionId::from(session),
-                input,
-                None,
-                None,
-                key,
-            )
+            .admit_session_event_batch_idempotent(&SessionId::from(session), input, None, None, key)
             .await;
         if accept_first {
             assert_eq!(
@@ -2379,7 +2414,7 @@ async fn final_event_admission_close_competes_atomically_with_acceptance() {
     );
     let joined_session = SessionId::from("admission-race");
     let (accepted, resolved) = tokio::join!(
-        a.event_batches.append_session_event_batch_idempotent(
+        a.event_batches.admit_session_event_batch_idempotent(
             &joined_session,
             vec![SessionEventInput::UserMessage {
                 content: vec![ContentBlock::text("one request")],
@@ -2489,14 +2524,14 @@ async fn competing_tool_reply_admission_table(repository: Arc<dyn crate::Session
         }
         let joined_session = SessionId::from(session);
         let (ra, rb) = tokio::join!(
-            a.event_batches.append_session_event_batch_idempotent(
+            a.event_batches.admit_session_event_batch_idempotent(
                 &joined_session,
                 vec![left.clone()],
                 None,
                 None,
                 Some(("a".into(), "fa".into()))
             ),
-            b.event_batches.append_session_event_batch_idempotent(
+            b.event_batches.admit_session_event_batch_idempotent(
                 &joined_session,
                 vec![right.clone()],
                 None,
@@ -2525,7 +2560,7 @@ async fn competing_tool_reply_admission_table(repository: Arc<dyn crate::Session
         assert_eq!(before.event_batches.len(), 1);
         assert_eq!(
             &a.event_batches
-                .append_session_event_batch_idempotent(
+                .admit_session_event_batch_idempotent(
                     &SessionId::from(session),
                     vec![input],
                     None,
@@ -2533,13 +2568,17 @@ async fn competing_tool_reply_admission_table(repository: Arc<dyn crate::Session
                     Some((key.into(), fp.into()))
                 )
                 .await
-                .unwrap(),
-            winner,
+                .unwrap()
+                .into_batch()
+                .expect("this fixture requires a retained Event batch"),
+            winner
+                .as_batch()
+                .expect("tool reply retains its Event batch"),
             "R3 exact receipt"
         );
         assert!(
             b.event_batches
-                .append_session_event_batch_idempotent(
+                .admit_session_event_batch_idempotent(
                     &SessionId::from(session),
                     vec![left],
                     None,
@@ -2605,7 +2644,7 @@ async fn concurrent_event_batch_idempotency_converges_under_root_cas() {
     let (equal_a, equal_b) = tokio::join!(
         replica_a
             .event_batches
-            .append_session_event_batch_idempotent(
+            .admit_session_event_batch_idempotent(
                 &joined_session,
                 input.clone(),
                 None,
@@ -2614,7 +2653,7 @@ async fn concurrent_event_batch_idempotency_converges_under_root_cas() {
             ),
         replica_b
             .event_batches
-            .append_session_event_batch_idempotent(
+            .admit_session_event_batch_idempotent(
                 &joined_session,
                 input.clone(),
                 None,
@@ -2640,7 +2679,7 @@ async fn concurrent_event_batch_idempotency_converges_under_root_cas() {
     let (different_a, different_b) = tokio::join!(
         replica_a
             .event_batches
-            .append_session_event_batch_idempotent(
+            .admit_session_event_batch_idempotent(
                 &joined_session,
                 input.clone(),
                 None,
@@ -2649,7 +2688,7 @@ async fn concurrent_event_batch_idempotency_converges_under_root_cas() {
             ),
         replica_b
             .event_batches
-            .append_session_event_batch_idempotent(
+            .admit_session_event_batch_idempotent(
                 &joined_session,
                 input,
                 None,
@@ -5048,140 +5087,6 @@ async fn fresh_user_reservation_snapshots_the_recovered_resource_generation() {
         .position(|entry| entry == "reserve:generation-run")
         .expect("G1/E2 reservation");
     assert!(projection < reservation, "G1/E1 before E2");
-}
-
-#[tokio::test]
-async fn exact_activity_receipt_precedes_fresh_budget_policy() {
-    // Causes: C1-C3 cover committed reservation/receipt, lost response, and a
-    // newly reached budget at exact retry.
-    // Receipt/policy replay graph: C1 a reservation and activity receipt both
-    // committed; C2 the response was lost; C3 the Session budget is reached
-    // before exact retry. Effects: E1 retry does not evaluate fresh projection
-    // or activity policy; E2 Runtime classifies the existing reservation; E3
-    // the original epoch is returned with no Session root mutation.
-    //
-    // | Rule | Receipt | Current budget | Reservation truth | Effect |
-    // |---|---|---|---|---|
-    // | P1 | absent | open | absent | fresh recover -> reserve -> activity |
-    // | P2 | exact | reached | Reserved | E1+E2+E3 |
-    // Constraint/Invariant: an exact committed receipt dominates fresh budget
-    // policy and cannot mutate the Session root. Decision rule: use P1 as setup,
-    // then execute P2 after budget closure and require E1-E3.
-    let repository: Arc<dyn crate::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("receipt-policy repository"),
-    );
-    let runtime = Arc::new(EventBatchRuntime::default());
-    let snapshot = awaken_session_contract::ManagedListPriceSnapshot {
-        snapshot_id: "receipt-policy-price-v1".into(),
-        version: 1,
-        effective_at_unix_ms: 1,
-        arithmetic_version: 1,
-        model_rates: BTreeMap::from([(
-            "model".into(),
-            awaken_session_contract::ManagedTokenListRates {
-                input_micros_per_million: 1_000_000,
-                ..Default::default()
-            },
-        )]),
-        runtime_rates: Default::default(),
-        fingerprint: "receipt-policy-price-v1-fingerprint".into(),
-    };
-    let mut session = persisted("receipt-before-policy", false, "idle");
-    session.budget = awaken_session_contract::SessionBudgetState::active(1, snapshot);
-    create(repository.as_ref(), session).await;
-    let app = application_with_runtime(
-        runtime.clone(),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    let command = SessionUserRunCommand {
-        session_id: "receipt-before-policy".into(),
-        agent_id: "agent".into(),
-        operation_id: "receipt-operation".into(),
-        run_id: RunId("receipt-run".into()),
-        content: vec![ContentBlock::text("one admitted command")],
-        accompanying_system: None,
-        data_subject_id: None,
-        traceparent: None,
-    };
-    let first = app
-        .event_batches
-        .admit_session_user_run(command.clone())
-        .await
-        .expect("P1 fresh admission");
-    let first_epoch = first
-        .delivery()
-        .expect("P1 delivery")
-        .session_activity_epoch;
-    app.lifecycle()
-        .reconcile_managed_budget_usage(
-            &SessionId::from("receipt-before-policy"),
-            awaken_session_contract::SessionUsage {
-                input_tokens: 10_000,
-                by_model: BTreeMap::from([(
-                    "model".into(),
-                    awaken_session_contract::SessionModelUsage {
-                        input_tokens: 10_000,
-                        ..Default::default()
-                    },
-                )]),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("P2 budget settlement");
-    let before = repository
-        .get(&SessionId::from("receipt-before-policy"))
-        .await
-        .unwrap()
-        .revision;
-    let projections_before = runtime
-        .trace
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|entry| entry.starts_with("project:"))
-        .count();
-
-    let replay = app
-        .event_batches
-        .admit_session_user_run(command)
-        .await
-        .expect("P2 exact response-loss replay");
-    assert!(
-        matches!(replay, AdmittedSessionRun::AlreadyReserved(_)),
-        "P2/E2"
-    );
-    assert_eq!(
-        replay
-            .delivery()
-            .expect("P2/E3 delivery")
-            .session_activity_epoch,
-        first_epoch,
-        "P2/E3 original epoch"
-    );
-    assert_eq!(
-        repository
-            .get(&SessionId::from("receipt-before-policy"))
-            .await
-            .unwrap()
-            .revision,
-        before,
-        "P2/E3 no root CAS"
-    );
-    assert_eq!(
-        runtime
-            .trace
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|entry| entry.starts_with("project:"))
-            .count(),
-        projections_before,
-        "P2/E1 no fresh projection policy"
-    );
 }
 
 #[tokio::test]

@@ -79,7 +79,7 @@ async fn budget_settlement_keeps_failed_and_response_lost_cas_on_the_original_ro
         if rule == "before-commit" {
             repository.fail_once(operation);
             let error = lifecycle
-                .reconcile_managed_budget_usage(&id, usage.clone())
+                .reconcile_managed_budget_usage(&id, "budget-failure-operation", usage.clone())
                 .await
                 .unwrap_err();
             assert_eq!(
@@ -97,7 +97,7 @@ async fn budget_settlement_keeps_failed_and_response_lost_cas_on_the_original_ro
             repository.commit_then_conflict_once(operation);
         }
         let settled = lifecycle
-            .reconcile_managed_budget_usage(&id, usage.clone())
+            .reconcile_managed_budget_usage(&id, "budget-failure-operation", usage.clone())
             .await
             .unwrap();
         let committed = store.get(&id).await.unwrap();
@@ -128,7 +128,7 @@ async fn budget_settlement_keeps_failed_and_response_lost_cas_on_the_original_ro
         assert_eq!(reaches.len(), 1, "B10 exact original outbox fact");
         assert_eq!(reaches[0].id, format!("budget-reached:{id}:1"));
         let replay = lifecycle
-            .reconcile_managed_budget_usage(&id, usage)
+            .reconcile_managed_budget_usage(&id, "budget-failure-operation", usage)
             .await
             .unwrap();
         assert!(!replay.reached_now, "B10/E4 {rule}");

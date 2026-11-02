@@ -810,6 +810,7 @@ impl SqliteManagedSessionRepository {
             (
                 Option<String>,
                 Option<i64>,
+                Option<String>,
                 i64,
                 Option<String>,
                 Option<i64>,
@@ -817,7 +818,7 @@ impl SqliteManagedSessionRepository {
             ),
         >(
             "WITH receipt AS (
-                SELECT payload_hash, committed_revision
+                SELECT payload_hash, committed_revision, receipt_kind
                 FROM managed_session_idempotency
                 WHERE session_id = ?1 AND idempotency_key = ?2
              ), identity AS (
@@ -834,6 +835,7 @@ impl SqliteManagedSessionRepository {
              )
              SELECT (SELECT payload_hash FROM receipt),
                     (SELECT committed_revision FROM receipt),
+                    (SELECT receipt_kind FROM receipt),
                     identity_kind, scope_id, revision, aggregate_json
              FROM snapshot ORDER BY identity_kind",
         )
@@ -844,10 +846,19 @@ impl SqliteManagedSessionRepository {
         .map_err(storage)?
         .into_iter()
         .map(
-            |(payload_hash, committed_revision, kind, owner_scope, revision, aggregate_json)| {
+            |(
+                payload_hash,
+                committed_revision,
+                receipt_kind,
+                kind,
+                owner_scope,
+                revision,
+                aggregate_json,
+            )| {
                 (
                     payload_hash,
                     committed_revision,
+                    receipt_kind,
                     RawSessionIdentity {
                         kind,
                         owner_scope,
@@ -861,20 +872,16 @@ impl SqliteManagedSessionRepository {
         let receipt = rows
             .first()
             .ok_or_else(|| corrupt("Session create replay snapshot is empty"))?;
-        let receipt = match (&receipt.0, receipt.1) {
-            (None, None) => None,
-            (Some(payload_hash), Some(committed_revision)) => Some(SessionIdempotencyReceipt {
-                payload_hash: payload_hash.clone(),
-                committed_revision: SessionRevision(
-                    u64::try_from(committed_revision)
-                        .map_err(|_| corrupt("negative committed Session revision"))?,
-                ),
-            }),
+        let receipt = match (&receipt.0, receipt.1, &receipt.2) {
+            (None, None, None) => None,
+            (Some(payload_hash), Some(committed_revision), Some(kind)) => Some(
+                decode_session_receipt(payload_hash.clone(), committed_revision, kind)?,
+            ),
             _ => return Err(corrupt("incomplete Session create receipt")),
         };
         let identity = transactional_session_identity(
             rows.into_iter()
-                .map(|(_, _, identity)| identity)
+                .map(|(_, _, _, identity)| identity)
                 .filter(|identity| identity.kind >= 0)
                 .collect(),
         )?;
@@ -898,84 +905,83 @@ impl SessionRepository for SqliteManagedSessionRepository {
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SessionCreateResult, SessionRepositoryError> {
-        validate_session_create_command(owner_scope, &session, &idempotency, &lifecycle_facts)?;
-        // Acquire the SQLite writer reservation before reading the expected
-        // revision. A deferred read-then-write transaction can otherwise fail
-        // its upgrade immediately when another aggregate writes concurrently.
-        let mut tx = self
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(storage)?;
-        if let Some(replayed) = Self::create_replay(
-            &mut tx,
-            owner_scope,
-            session.session_id.as_str(),
-            &idempotency,
-            MissingCreateReceipt::AllowInsertFence,
-        )
-        .await?
-        {
-            return Ok(SessionCreateResult::Replayed(replayed));
-        }
-        let new_revision = SESSION_CREATE_REVISION;
-        session.revision = new_revision;
-        let inserted = sqlx::query(
-            "INSERT INTO managed_session \
-                (session_id, scope_id, revision, aggregate_json) \
-             VALUES (?1, ?2, ?3, ?4) \
-             ON CONFLICT (session_id) DO NOTHING",
-        )
-        .bind(session.session_id.as_str())
-        .bind(owner_scope)
-        .bind(db_revision(new_revision)?)
-        .bind(aggregate_str(&session)?)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?
-        .rows_affected();
-        if inserted != 1 {
+        async {
+            validate_session_create_command(owner_scope, &session, &idempotency, &lifecycle_facts)?;
+            // Acquire the SQLite writer reservation before reading the expected
+            // revision. A deferred read-then-write transaction can otherwise fail
+            // its upgrade immediately when another aggregate writes concurrently.
+            let mut tx = self
+                .pool
+                .begin_with("BEGIN IMMEDIATE")
+                .await
+                .map_err(storage)?;
             if let Some(replayed) = Self::create_replay(
                 &mut tx,
                 owner_scope,
                 session.session_id.as_str(),
                 &idempotency,
-                MissingCreateReceipt::RejectOccupied,
+                MissingCreateReceipt::AllowInsertFence,
             )
             .await?
             {
                 return Ok(SessionCreateResult::Replayed(replayed));
             }
-            return Err(SessionRepositoryError::Conflict(
-                SessionRepositoryConflict::AlreadyExists,
-            ));
-        }
-        // A concurrent delete can win after the first tombstone read. Recheck
-        // in this same write transaction before any index, receipt, or outbox
-        // row makes a deleted identity live again.
-        if Self::is_tombstoned(&mut tx, session.session_id.as_str()).await? {
-            return Err(SessionRepositoryError::Conflict(
-                SessionRepositoryConflict::Tombstoned,
-            ));
-        }
-        // The root adopts its prepared participants in this same transaction;
-        // an intent already claimed for abort retires the identity instead.
-        Self::adopt_creation_intent(&mut tx, session.session_id.as_str()).await?;
-        Self::sync_session_indexes(&mut tx, &session).await?;
-        sqlx::query(
-            "INSERT INTO managed_session_idempotency
+            let new_revision = SESSION_CREATE_REVISION;
+            session.revision = new_revision;
+            let inserted = sqlx::query(
+                "INSERT INTO managed_session \
+                (session_id, scope_id, revision, aggregate_json) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT (session_id) DO NOTHING",
+            )
+            .bind(session.session_id.as_str())
+            .bind(owner_scope)
+            .bind(db_revision(new_revision)?)
+            .bind(aggregate_str(&session)?)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?
+            .rows_affected();
+            if inserted != 1 {
+                if let Some(replayed) = Self::create_replay(
+                    &mut tx,
+                    owner_scope,
+                    session.session_id.as_str(),
+                    &idempotency,
+                    MissingCreateReceipt::RejectOccupied,
+                )
+                .await?
+                {
+                    return Ok(SessionCreateResult::Replayed(replayed));
+                }
+                return Err(SessionRepositoryError::Conflict(
+                    SessionRepositoryConflict::AlreadyExists,
+                ));
+            }
+            // A concurrent delete can win after the first tombstone read. Recheck
+            // in this same write transaction before any index, receipt, or outbox
+            // row makes a deleted identity live again.
+            if Self::is_tombstoned(&mut tx, session.session_id.as_str()).await? {
+                return Err(SessionRepositoryError::Conflict(
+                    SessionRepositoryConflict::Tombstoned,
+                ));
+            }
+            Self::adopt_creation_intent(&mut tx, session.session_id.as_str()).await?;
+            Self::sync_session_indexes(&mut tx, &session).await?;
+            sqlx::query(
+                "INSERT INTO managed_session_idempotency
                 (session_id, idempotency_key, payload_hash, committed_revision)
              VALUES (?1, ?2, ?3, ?4)",
-        )
-        .bind(session.session_id.as_str())
-        .bind(&idempotency.key)
-        .bind(&idempotency.payload_hash)
-        .bind(db_revision(new_revision)?)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
-        for fact in lifecycle_facts {
-            sqlx::query(
+            )
+            .bind(session.session_id.as_str())
+            .bind(&idempotency.key)
+            .bind(&idempotency.payload_hash)
+            .bind(db_revision(new_revision)?)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+            for fact in lifecycle_facts {
+                sqlx::query(
                 "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
             )
             .bind(&fact.id)
@@ -983,9 +989,12 @@ impl SessionRepository for SqliteManagedSessionRepository {
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
+            }
+            tx.commit().await.map_err(storage)?;
+            Ok(SessionCreateResult::Applied(session))
         }
-        tx.commit().await.map_err(storage)?;
-        Ok(SessionCreateResult::Applied(session))
+        .await
+        .map_err(write_not_committed)
     }
 
     async fn replay_create(
@@ -1021,146 +1030,160 @@ impl SessionRepository for SqliteManagedSessionRepository {
         owner_scope: &str,
         mutation: SessionMutation,
     ) -> Result<SessionMutationResult, SessionRepositoryError> {
-        let next = mutation
-            .validate()
-            .map_err(|error| SessionRepositoryError::InvalidMutation(error.to_string()))?;
-        let session_id = mutation.payload.session_id().to_string();
-        let mut tx = self
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(storage)?;
-        if let Some((stored_hash, committed_revision)) = sqlx::query_as::<_, (String, i64)>(
-            "SELECT payload_hash, committed_revision FROM managed_session_idempotency
+        async {
+            let receipt_kind = mutation.receipt_kind();
+            let next = mutation
+                .validate()
+                .map_err(|error| SessionRepositoryError::InvalidMutation(error.to_string()))?;
+            let session_id = mutation.payload.session_id().to_string();
+            let mut tx = self
+                .pool
+                .begin_with("BEGIN IMMEDIATE")
+                .await
+                .map_err(storage)?;
+            if let Some((stored_hash, committed_revision, stored_kind)) = sqlx::query_as::<_, (String, i64, String)>(
+                "SELECT payload_hash, committed_revision, receipt_kind FROM managed_session_idempotency
                  WHERE session_id = ?1 AND idempotency_key = ?2",
-        )
-        .bind(&session_id)
-        .bind(&mutation.idempotency.key)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        {
-            let committed_revision = SessionRevision(
-                u64::try_from(committed_revision)
-                    .map_err(|_| corrupt("negative committed Session revision"))?,
-            );
-            return classify_mutation_replay(
-                owner_scope,
-                &stored_hash,
-                committed_revision,
-                next,
-                &mutation.idempotency.payload_hash,
-                &Self::session_identity(&mut tx, &session_id).await?,
-            );
-        }
-        let current = sqlx::query_as::<_, (i64, String, String)>(
-            "SELECT revision, scope_id, aggregate_json
-                 FROM managed_session WHERE session_id = ?1",
-        )
-        .bind(&session_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        .map(|(revision, owner, aggregate_json)| {
-            (
-                revision,
-                owner,
-                EncodedSessionRow {
-                    aggregate_json,
-                    revision,
-                },
             )
-        });
-        let Some((current_revision, current_owner, current_row)) = current else {
-            let tombstone_revision = sqlx::query_scalar::<_, i64>(
-                "SELECT deleted_revision FROM managed_session_tombstone WHERE session_id = ?1",
+            .bind(&session_id)
+            .bind(&mutation.idempotency.key)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage)?
+            {
+                let receipt = decode_session_receipt(stored_hash, committed_revision, &stored_kind)?;
+                let identity = Self::session_identity(&mut tx, &session_id).await?;
+                return classify_mutation_replay(owner_scope, &receipt, &mutation, next, &identity);
+            }
+            let current = sqlx::query_as::<_, (i64, String, String)>(
+                "SELECT revision, scope_id, aggregate_json
+                 FROM managed_session WHERE session_id = ?1",
             )
             .bind(&session_id)
             .fetch_optional(&mut *tx)
             .await
             .map_err(storage)?
-            .unwrap_or_default();
-            let tombstone_revision = u64::try_from(tombstone_revision)
-                .map_err(|_| corrupt("negative deleted Session revision"))?;
-            return Ok(SessionMutationResult::Conflict {
-                current_revision: SessionRevision(tombstone_revision),
-            });
-        };
-        let current_revision = SessionRevision(
-            u64::try_from(current_revision)
-                .map_err(|_| corrupt("negative managed Session revision"))?,
-        );
-        if current_owner != owner_scope || current_revision != mutation.expected_revision {
-            return Ok(SessionMutationResult::Conflict { current_revision });
-        }
-        let deleted_admissions = validate_current_mutation(&mutation, current_row)?;
-        match &mutation.payload {
-            SessionMutationPayload::Replace(replacement) => {
-                let mut replacement = replacement.clone();
-                replacement.revision = next;
-                let affected = sqlx::query(
-                    "UPDATE managed_session SET
-                        aggregate_json = ?2, revision = ?3
-                     WHERE session_id = ?1 AND scope_id = ?4 AND revision = ?5",
+            .map(|(revision, owner, aggregate_json)| {
+                (
+                    revision,
+                    owner,
+                    EncodedSessionRow {
+                        aggregate_json,
+                        revision,
+                    },
                 )
-                .bind(replacement.session_id.as_str())
-                .bind(aggregate_str(&replacement)?)
-                .bind(db_revision(next)?)
-                .bind(owner_scope)
-                .bind(db_revision(current_revision)?)
-                .execute(&mut *tx)
-                .await
-                .map_err(storage)?
-                .rows_affected();
-                if affected != 1 {
-                    return Ok(SessionMutationResult::Conflict { current_revision });
-                }
-                Self::sync_session_indexes(&mut tx, &replacement).await?;
-            }
-            SessionMutationPayload::Delete(tombstone) => {
-                let affected = sqlx::query(
-                    "DELETE FROM managed_session
-                         WHERE session_id = ?1 AND scope_id = ?2 AND revision = ?3",
+            });
+            let Some((current_revision, current_owner, current_row)) = current else {
+                let tombstone_revision = sqlx::query_scalar::<_, i64>(
+                    "SELECT deleted_revision FROM managed_session_tombstone WHERE session_id = ?1",
                 )
                 .bind(&session_id)
-                .bind(owner_scope)
-                .bind(db_revision(current_revision)?)
-                .execute(&mut *tx)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(storage)?
-                .rows_affected();
-                if affected != 1 {
-                    return Ok(SessionMutationResult::Conflict { current_revision });
-                }
-                sqlx::query(
-                    "INSERT INTO managed_session_tombstone
-                        (session_id, scope_id, deleted_revision, deleted_at, event_admissions_json)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                .unwrap_or_default();
+                let tombstone_revision = u64::try_from(tombstone_revision)
+                    .map_err(|_| corrupt("negative deleted Session revision"))?;
+                return Ok(SessionMutationResult::Conflict {
+                    current_revision: SessionRevision(tombstone_revision),
+                });
+            };
+            let current_revision = SessionRevision(
+                u64::try_from(current_revision)
+                    .map_err(|_| corrupt("negative managed Session revision"))?,
+            );
+            if current_owner != owner_scope || current_revision != mutation.expected_revision {
+                return Ok(SessionMutationResult::Conflict { current_revision });
+            }
+            let mut deleted_admissions = validate_current_mutation(&mutation, current_row)?;
+            if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
+                let noops = sqlx::query_as::<_, (String, String, i64)>(
+                    "SELECT idempotency_key, payload_hash, committed_revision \
+                     FROM managed_session_idempotency \
+                     WHERE session_id = ?1 AND receipt_kind = ?2",
                 )
-                .bind(tombstone.session_id.as_str())
-                .bind(owner_scope)
-                .bind(db_revision(tombstone.deleted_revision)?)
-                .bind(&tombstone.deleted_at)
-                .bind(deleted_admissions)
-                .execute(&mut *tx)
+                .bind(&session_id)
+                .bind(receipt_kind_value(SessionCommandReceiptKind::EventNoOp))
+                .fetch_all(&mut *tx)
                 .await
                 .map_err(storage)?;
+                if !noops.is_empty() {
+                    deleted_admissions = Some(event_admissions::merge_noops(
+                        deleted_admissions.as_deref().expect("delete encoded its root receipts"),
+                        current_revision,
+                        noops,
+                    )?);
+                }
             }
-        }
-        sqlx::query(
-            "INSERT INTO managed_session_idempotency
-                (session_id, idempotency_key, payload_hash, committed_revision)
-             VALUES (?1, ?2, ?3, ?4)",
-        )
-        .bind(&session_id)
-        .bind(&mutation.idempotency.key)
-        .bind(&mutation.idempotency.payload_hash)
-        .bind(db_revision(next)?)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
-        for fact in &mutation.lifecycle_facts {
+            match &mutation.payload {
+                SessionMutationPayload::Replace(replacement) => {
+                    let mut replacement = replacement.clone();
+                    replacement.revision = next;
+                    let affected = sqlx::query(
+                        "UPDATE managed_session SET
+                        aggregate_json = ?2, revision = ?3
+                     WHERE session_id = ?1 AND scope_id = ?4 AND revision = ?5",
+                    )
+                    .bind(replacement.session_id.as_str())
+                    .bind(aggregate_str(&replacement)?)
+                    .bind(db_revision(next)?)
+                    .bind(owner_scope)
+                    .bind(db_revision(current_revision)?)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(storage)?
+                    .rows_affected();
+                    if affected != 1 {
+                        return Ok(SessionMutationResult::Conflict { current_revision });
+                    }
+                    Self::sync_session_indexes(&mut tx, &replacement).await?;
+                }
+                SessionMutationPayload::Delete(tombstone) => {
+                    let affected = sqlx::query(
+                        "DELETE FROM managed_session
+                         WHERE session_id = ?1 AND scope_id = ?2 AND revision = ?3",
+                    )
+                    .bind(&session_id)
+                    .bind(owner_scope)
+                    .bind(db_revision(current_revision)?)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(storage)?
+                    .rows_affected();
+                    if affected != 1 {
+                        return Ok(SessionMutationResult::Conflict { current_revision });
+                    }
+                    sqlx::query(
+                        "INSERT INTO managed_session_tombstone
+                        (session_id, scope_id, deleted_revision, deleted_at, event_admissions_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    )
+                    .bind(tombstone.session_id.as_str())
+                    .bind(owner_scope)
+                    .bind(db_revision(tombstone.deleted_revision)?)
+                    .bind(&tombstone.deleted_at)
+                    .bind(deleted_admissions)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(storage)?;
+                }
+                SessionMutationPayload::EventNoOp { .. } => {}
+            }
             sqlx::query(
+                "INSERT INTO managed_session_idempotency
+                (session_id, idempotency_key, payload_hash, committed_revision, receipt_kind)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .bind(&session_id)
+            .bind(&mutation.idempotency.key)
+            .bind(&mutation.idempotency.payload_hash)
+            .bind(db_revision(next)?)
+            .bind(receipt_kind_value(receipt_kind))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+            for fact in &mutation.lifecycle_facts {
+                sqlx::query(
                 "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
             )
             .bind(&fact.id)
@@ -1168,9 +1191,16 @@ impl SessionRepository for SqliteManagedSessionRepository {
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
+            }
+            tx.commit().await.map_err(storage)?;
+            Ok(if receipt_kind == SessionCommandReceiptKind::EventNoOp {
+                SessionMutationResult::AcknowledgedNoOp { observed_revision: next }
+            } else {
+                SessionMutationResult::Applied { new_revision: next }
+            })
         }
-        tx.commit().await.map_err(storage)?;
-        Ok(SessionMutationResult::Applied { new_revision: next })
+        .await
+        .map_err(write_not_committed)
     }
 
     async fn preparation_candidates(
@@ -1196,26 +1226,18 @@ impl SessionRepository for SqliteManagedSessionRepository {
         key: &str,
     ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
     {
-        let row = sqlx::query_as::<_, (String, i64)>(
-            "SELECT payload_hash, committed_revision FROM managed_session_idempotency
-                     WHERE session_id = ?1 AND idempotency_key = ?2",
+        let row = sqlx::query_as::<_, (String, i64, String)>(
+            "SELECT payload_hash, committed_revision, receipt_kind \
+             FROM managed_session_idempotency \
+             WHERE session_id = ?1 AND idempotency_key = ?2",
         )
         .bind(session_id.as_str())
         .bind(key)
         .fetch_optional(&self.pool)
         .await
         .map_err(storage)?;
-        row.map(|(payload_hash, revision)| {
-            u64::try_from(revision)
-                .map(
-                    |revision| awaken_session_contract::SessionIdempotencyReceipt {
-                        payload_hash,
-                        committed_revision: SessionRevision(revision),
-                    },
-                )
-                .map_err(|_| corrupt("negative Session idempotency revision"))
-        })
-        .transpose()
+        row.map(|(hash, revision, kind)| decode_session_receipt(hash, revision, &kind))
+            .transpose()
     }
 }
 

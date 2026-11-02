@@ -230,6 +230,26 @@ pub struct SessionEventInterrupt {
     pub targets: Vec<SessionThreadTarget>,
 }
 
+impl SessionEventInterrupt {
+    /// The same intrinsic target grammar applies to retained and no-op commands.
+    pub fn validate(&self) -> Result<(), SessionEventBatchError> {
+        let invalid = match &self.requested_target {
+            Some(requested) => self.targets.len() != 1 || self.targets.first() != Some(requested),
+            None => !self.targets.contains(&SessionThreadTarget::Primary),
+        };
+        if invalid
+            || self
+                .targets
+                .iter()
+                .enumerate()
+                .any(|(ordinal, target)| self.targets[ordinal + 1..].contains(target))
+        {
+            return Err(SessionEventBatchError::InvalidInterruptTargets);
+        }
+        Ok(())
+    }
+}
+
 /// Complete stable input for one Session-root User Run reservation. Runtime
 /// adapters lower this into their existing serializable activation/dispatch;
 /// the Session application retains activity admission ownership.
@@ -822,24 +842,7 @@ impl SessionEventBatch {
                     });
                 }
                 SessionEventInput::Interrupt(interrupt) => {
-                    let target_shape_invalid = match &interrupt.requested_target {
-                        Some(requested) => {
-                            interrupt.targets.len() != 1
-                                || interrupt.targets.first() != Some(requested)
-                        }
-                        None => !interrupt.targets.contains(&SessionThreadTarget::Primary),
-                    };
-                    if target_shape_invalid
-                        || interrupt
-                            .targets
-                            .iter()
-                            .enumerate()
-                            .any(|(ordinal, target)| {
-                                interrupt.targets[ordinal + 1..].contains(target)
-                            })
-                    {
-                        return Err(SessionEventBatchError::InvalidInterruptTargets);
-                    }
+                    interrupt.validate()?;
                     events.push(SessionEventEntry {
                         event: SessionEventCommand::Interrupt {
                             operation_id,

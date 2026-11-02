@@ -1,5 +1,5 @@
 //! T12-C01 (批次边界与拒绝), application-layer rows: every batch reaches the
-//! production `append_session_event_batch_idempotent` root-CAS admission.
+//! production `admit_session_event_batch_idempotent` root-CAS admission.
 //!
 //! Oracles (groups-2.json order):
 //! - O0 stable classification (typed `SessionEventBatchError` text, BadRequest);
@@ -138,7 +138,7 @@ impl BoundaryFixture {
         let error = self
             .app
             .event_batches
-            .append_session_event_batch_idempotent(
+            .admit_session_event_batch_idempotent(
                 &session_id,
                 inputs,
                 None,
@@ -240,7 +240,7 @@ async fn invalid_batches_are_classified_and_have_zero_effect() {
     let accepted = fixture
         .app
         .event_batches
-        .append_session_event_batch_idempotent(
+        .admit_session_event_batch_idempotent(
             &SessionId::from(idle),
             vec![tool_reply_input("t12-call")],
             None,
@@ -248,7 +248,9 @@ async fn invalid_batches_are_classified_and_have_zero_effect() {
             Some(("t12-reply".into(), "t12-reply-fingerprint".into())),
         )
         .await
-        .expect("A6 first reply occupies the pending call");
+        .expect("A6 first reply occupies the pending call")
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     let duplicate = fixture
         .reject_without_effect("A6", idle, vec![tool_reply_input("t12-call")])
         .await;
@@ -294,7 +296,7 @@ async fn invalid_batches_are_classified_and_have_zero_effect() {
     let replay = fixture
         .app
         .event_batches
-        .append_session_event_batch_idempotent(
+        .admit_session_event_batch_idempotent(
             &session_id,
             vec![tool_reply_input("t12-call")],
             None,
@@ -302,7 +304,9 @@ async fn invalid_batches_are_classified_and_have_zero_effect() {
             Some(("t12-reply".into(), "t12-reply-fingerprint".into())),
         )
         .await
-        .expect("A9 exact replay");
+        .expect("A9 exact replay")
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     assert_eq!(replay, accepted, "A9 original receipt");
     let after = fixture.repository.get(&session_id).await.unwrap();
     assert_eq!(after.revision, root.revision, "A9/O2 no new revision");
@@ -397,7 +401,7 @@ async fn interrupt_of_unknown_child_target_is_rejected_without_effect() {
     let result = fixture
         .app
         .event_batches
-        .append_session_event_batch_idempotent(
+        .admit_session_event_batch_idempotent(
             &session_id,
             vec![interrupt(
                 None,

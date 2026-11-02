@@ -4,7 +4,6 @@
 //! Canonical durable Session root mutation boundary.
 
 use std::sync::Arc;
-#[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::SessionCreationError;
@@ -233,6 +232,9 @@ fn snapshot_commit_receipt(
         SessionMutationResult::IdempotencyMismatch => {
             Err(SessionMutationError::IdempotencyMismatch)
         }
+        SessionMutationResult::AcknowledgedNoOp { .. } => Err(SessionMutationError::Internal(
+            "an Event no-op receipt cannot certify a root mutation".into(),
+        )),
     }
 }
 
@@ -272,7 +274,6 @@ pub(crate) const ROOT_CAS_ATTEMPTS: usize = 3;
 pub struct SessionMutations {
     repository: Arc<dyn SessionRepository>,
     clock: Arc<dyn awaken_time::WallClock>,
-    #[cfg(any(test, feature = "test-support"))]
     mutation_sequence: AtomicU64,
 }
 
@@ -284,7 +285,6 @@ impl SessionMutations {
         Self {
             repository,
             clock,
-            #[cfg(any(test, feature = "test-support"))]
             mutation_sequence: AtomicU64::new(0),
         }
     }
@@ -327,7 +327,6 @@ impl SessionMutations {
     /// no external idempotency key. The identity remains stable across this
     /// call's root-CAS retries, while two genuinely distinct concurrent calls
     /// can never collapse merely because their compiled snapshots are equal.
-    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn fresh_mutation_record(
         &self,
         runtime_incarnation: &str,

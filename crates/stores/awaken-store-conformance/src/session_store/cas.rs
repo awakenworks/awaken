@@ -429,10 +429,13 @@ pub fn root_cas_decision_table<
             assert_eq!(
                 repo.idempotency_receipt(&SessionId::from(&id), "create")
                     .await,
-                Ok(Some(awaken_session_contract::SessionIdempotencyReceipt {
-                    payload_hash: create_record.payload_hash.clone(),
-                    committed_revision: SessionRevision(1),
-                })),
+                Ok(Some(
+                    awaken_session_contract::SessionIdempotencyReceipt::new(
+                        create_record.payload_hash.clone(),
+                        SessionRevision(1),
+                        Default::default()
+                    )
+                )),
                 "the decision table reads the same atomic receipt it writes"
             );
 

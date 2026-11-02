@@ -33,13 +33,14 @@ use futures_util::TryStreamExt;
 use {
     awaken_session_contract::{
         IdempotencyRecord, ManagedLifecycleFact, PersistedSession, ScopedPersistedSession,
-        SessionCreateResult, SessionEnvironmentPhase, SessionIdempotencyReceipt, SessionMutation,
-        SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
-        SessionRepositoryError, SessionScan, SessionWorkerObligation,
+        SessionCommandReceiptKind, SessionCreateResult, SessionEnvironmentPhase,
+        SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
+        SessionRepositoryConflict, SessionRepositoryError, SessionScan, SessionWorkerObligation,
     },
     awaken_session_types::SessionRecoveryQuarantine,
 };
 
+mod creation_intents;
 mod deployments;
 mod dream;
 mod event_admissions;
@@ -152,8 +153,52 @@ fn storage(error: impl std::fmt::Display) -> SessionRepositoryError {
     SessionRepositoryError::AuthorityUnavailable(error.to_string())
 }
 
+/// The transaction has not invoked COMMIT. All mutations are still inside its
+/// rollback boundary; permanent/domain errors retain their original classes.
+fn write_not_committed(error: SessionRepositoryError) -> SessionRepositoryError {
+    match error {
+        SessionRepositoryError::AuthorityUnavailable(detail) => {
+            SessionRepositoryError::NotApplied(detail)
+        }
+        error => error,
+    }
+}
+
 fn corrupt(error: impl std::fmt::Display) -> SessionRepositoryError {
     SessionRepositoryError::Corrupt(error.to_string())
+}
+
+fn receipt_kind_value(kind: SessionCommandReceiptKind) -> &'static str {
+    match kind {
+        SessionCommandReceiptKind::Root => "root",
+        SessionCommandReceiptKind::EventBatch => "event_batch",
+        SessionCommandReceiptKind::EventNoOp => "event_no_op",
+    }
+}
+
+fn decode_receipt_kind(value: &str) -> Result<SessionCommandReceiptKind, SessionRepositoryError> {
+    match value {
+        "root" => Ok(SessionCommandReceiptKind::Root),
+        "event_batch" => Ok(SessionCommandReceiptKind::EventBatch),
+        "event_no_op" => Ok(SessionCommandReceiptKind::EventNoOp),
+        _ => Err(corrupt("unknown Session command receipt kind")),
+    }
+}
+
+fn decode_session_receipt(
+    payload_hash: String,
+    revision: i64,
+    kind: &str,
+) -> Result<SessionIdempotencyReceipt, SessionRepositoryError> {
+    let revision = u64::try_from(revision).map_err(corrupt)?;
+    if revision == 0 {
+        return Err(corrupt("zero Session command receipt revision"));
+    }
+    Ok(SessionIdempotencyReceipt::new(
+        payload_hash,
+        SessionRevision(revision),
+        decode_receipt_kind(kind)?,
+    ))
 }
 
 const ENVIRONMENT_COUNT_SQL: &str =
@@ -287,6 +332,11 @@ fn validate_session_create_command(
     idempotency: &IdempotencyRecord,
     lifecycle_facts: &[ManagedLifecycleFact],
 ) -> Result<(), SessionRepositoryError> {
+    if idempotency.event_admission_key().is_some() {
+        return Err(SessionRepositoryError::InvalidMutation(
+            "Session creation cannot consume an Event admission identity".into(),
+        ));
+    }
     if !session_create_shape_is_valid(
         !owner_scope.trim().is_empty(),
         !session.session_id.as_str().trim().is_empty(),
@@ -447,6 +497,11 @@ fn classify_create_replay(
             ),
         };
     };
+    if !receipt.kind().is_root() {
+        return Err(SessionRepositoryError::Conflict(
+            SessionRepositoryConflict::IdempotencyMismatch,
+        ));
+    }
     if receipt.committed_revision != SESSION_CREATE_REVISION {
         return Err(corrupt(
             "Session create receipt has a non-create committed revision",
@@ -488,12 +543,13 @@ fn classify_create_replay(
 
 fn classify_mutation_replay(
     owner_scope: &str,
-    stored_hash: &str,
-    committed_revision: SessionRevision,
+    stored: &SessionIdempotencyReceipt,
+    mutation: &SessionMutation,
     expected_committed_revision: SessionRevision,
-    requested_hash: &str,
     identity: &TransactionalSessionIdentity,
 ) -> Result<SessionMutationResult, SessionRepositoryError> {
+    let committed_revision = stored.committed_revision;
+    let stored_kind = stored.kind();
     let Some((stored_owner, current_revision)) = identity.owner_and_revision()? else {
         return Err(corrupt(
             "Session mutation receipt has no durable aggregate or tombstone",
@@ -507,9 +563,19 @@ fn classify_mutation_replay(
             "Session mutation receipt revision exceeds durable identity",
         ));
     }
-    if stored_hash != requested_hash
-        || committed_revision == SESSION_CREATE_REVISION
-        || committed_revision != expected_committed_revision
+    if stored.payload_hash != mutation.idempotency.payload_hash
+        || stored_kind.is_event() != mutation.receipt_kind().is_event()
+    {
+        return Ok(SessionMutationResult::IdempotencyMismatch);
+    }
+    if stored_kind == SessionCommandReceiptKind::EventNoOp {
+        return Ok(SessionMutationResult::AcknowledgedNoOp {
+            observed_revision: committed_revision,
+        });
+    }
+    if stored_kind.is_root()
+        && (committed_revision == SESSION_CREATE_REVISION
+            || committed_revision != expected_committed_revision)
     {
         return Ok(SessionMutationResult::IdempotencyMismatch);
     }
@@ -537,6 +603,17 @@ fn validate_current_mutation(
             current
                 .validate_observation_replacement(replacement)
                 .map_err(|error| SessionRepositoryError::InvalidMutation(error.to_string()))?;
+            if mutation.receipt_kind().is_root()
+                && replacement
+                    .event_batches
+                    .iter()
+                    .skip(current.event_batches.len())
+                    .any(|batch| batch.idempotency_key.is_some())
+            {
+                return Err(SessionRepositoryError::InvalidMutation(
+                    "a keyed Event append requires its canonical Event receipt identity".into(),
+                ));
+            }
             Ok(None)
         }
         SessionMutationPayload::Delete(tombstone) => {
@@ -548,6 +625,23 @@ fn validate_current_mutation(
                 ));
             }
             Ok(Some(event_admissions::encode(&current)?))
+        }
+        SessionMutationPayload::EventNoOp { .. } => {
+            if !awaken_session_contract::session_is_budget_paused(&current)
+                || !current.active_activity_epochs.is_empty()
+            {
+                return Err(SessionRepositoryError::InvalidMutation(
+                    "Event no-op requires the current budget-paused, inactive root".into(),
+                ));
+            }
+            if current.event_batches.iter().any(|batch| {
+                batch.idempotency_key.as_deref() == mutation.idempotency.event_admission_key()
+            }) {
+                return Err(SessionRepositoryError::Conflict(
+                    SessionRepositoryConflict::IdempotencyMismatch,
+                ));
+            }
+            Ok(None)
         }
     }
 }

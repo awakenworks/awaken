@@ -54,7 +54,7 @@
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 503,
-        "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
+        "file_sha256": "bc23781916846bfcd05426b70fb61db1b136ab23a44d00698abca05c03d74a2e"
       }
     ],
     "assertion_locations": [
@@ -115,7 +115,7 @@
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 523,
-        "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
+        "file_sha256": "bc23781916846bfcd05426b70fb61db1b136ab23a44d00698abca05c03d74a2e"
       }
     ],
     "assertion_locations": [
@@ -172,7 +172,7 @@
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 581,
-        "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
+        "file_sha256": "bc23781916846bfcd05426b70fb61db1b136ab23a44d00698abca05c03d74a2e"
       }
     ],
     "execution_witnesses": [
@@ -221,7 +221,7 @@
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 544,
-        "file_sha256": "996cad1e9fda568cb5ce960fd20636704ebc16479c891a5c523ef77c52965981"
+        "file_sha256": "bc23781916846bfcd05426b70fb61db1b136ab23a44d00698abca05c03d74a2e"
       }
     ],
     "execution_witnesses": [
@@ -414,7 +414,7 @@
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 111,
-        "file_sha256": "90e4940a216718d5c35df258b5ccfd1c339bd08f08eaf8d9be43b0975ef5a043"
+        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95"
       }
     ],
     "assertion_locations": [
@@ -464,7 +464,7 @@
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 272,
-        "file_sha256": "90e4940a216718d5c35df258b5ccfd1c339bd08f08eaf8d9be43b0975ef5a043"
+        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95"
       }
     ],
     "assertion_locations": [
@@ -514,7 +514,7 @@
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 311,
-        "file_sha256": "90e4940a216718d5c35df258b5ccfd1c339bd08f08eaf8d9be43b0975ef5a043"
+        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95"
       }
     ],
     "assertion_locations": [
@@ -563,7 +563,7 @@
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 429,
-        "file_sha256": "64ba0dc3c3a81f0742a4aace839958e4c85b33bb564364e0daf320a5ad1a84b9"
+        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95"
       }
     ],
     "execution_witnesses": [
@@ -609,7 +609,7 @@
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 445,
-        "file_sha256": "64ba0dc3c3a81f0742a4aace839958e4c85b33bb564364e0daf320a5ad1a84b9"
+        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95"
       }
     ],
     "execution_witnesses": [
@@ -665,7 +665,7 @@
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
         "line": 179,
-        "file_sha256": "01a923ba4c5ed7b16d891c1dbb29f6311ad491e9643aaf0c75ce7236495f9021"
+        "file_sha256": "09e3d0d39fad4f610293e25a93d42782ae95b9aba4cd091e6cdfa3503891ce59"
       }
     ],
     "assertion_locations": [
@@ -679,7 +679,7 @@
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
-        "line": 273
+        "line": 275
       }
     ],
     "execution_witnesses": [
@@ -716,18 +716,18 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
-        "line": 323,
-        "file_sha256": "01a923ba4c5ed7b16d891c1dbb29f6311ad491e9643aaf0c75ce7236495f9021"
+        "line": 327,
+        "file_sha256": "09e3d0d39fad4f610293e25a93d42782ae95b9aba4cd091e6cdfa3503891ce59"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
-        "line": 347
+        "line": 351
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
-        "line": 354
+        "line": 358
       }
     ],
     "execution_witnesses": [

@@ -19,7 +19,7 @@ pub(super) fn encode(session: &PersistedSession) -> Result<String, SessionReposi
             (Some(key), Some(fingerprint)) => receipts.push(RetainedEventAdmission {
                 key: key.clone(),
                 request_fingerprint: fingerprint.clone(),
-                batch_id: batch.batch_id.clone(),
+                batch_id: Some(batch.batch_id.clone()),
                 closed: batch.admission_closed,
                 operation_ids: Some(batch.operation_ids()),
             }),
@@ -50,7 +50,16 @@ pub(super) fn decode(
         for receipt in receipts {
             if receipt.key.trim().is_empty()
                 || receipt.request_fingerprint.trim().is_empty()
-                || receipt.batch_id.trim().is_empty()
+                || receipt
+                    .batch_id
+                    .as_ref()
+                    .is_some_and(|id| id.trim().is_empty())
+                || (receipt.batch_id.is_none()
+                    && (receipt.closed
+                        || receipt
+                            .operation_ids
+                            .as_ref()
+                            .is_none_or(|ids| !ids.is_empty())))
                 || !keys.insert(&receipt.key)
             {
                 return Err(super::corrupt(
@@ -58,12 +67,13 @@ pub(super) fn decode(
                 ));
             }
             if let Some(ids) = &receipt.operation_ids
+                && receipt.batch_id.is_some()
                 && ((receipt.closed && !ids.is_empty())
                     || (!receipt.closed && ids.is_empty())
                     || ids.iter().enumerate().any(|(ordinal, id)| {
                         awaken_session_contract::decode_session_event_batch_operation(id)
                             .is_none_or(|coordinate| {
-                                coordinate.batch_id != receipt.batch_id
+                                Some(coordinate.batch_id) != receipt.batch_id.as_deref()
                                     || coordinate.ordinal != ordinal
                             })
                     }))
@@ -80,10 +90,93 @@ pub(super) fn decode(
     })
 }
 
+/// Delete copies the canonical receipt-only facts under the same root lock.
+/// No message, input payload or inferred empty legacy receipt is retained.
+pub(super) fn merge_noops(
+    encoded: &str,
+    current_revision: SessionRevision,
+    mut rows: Vec<(String, String, i64)>,
+) -> Result<String, SessionRepositoryError> {
+    let mut receipts: Vec<RetainedEventAdmission> =
+        serde_json::from_str(encoded).map_err(super::corrupt)?;
+    rows.sort_by(|left, right| (left.2, &left.0).cmp(&(right.2, &right.0)));
+    for (key, payload_hash, revision) in rows {
+        let record = awaken_session_contract::IdempotencyRecord { key, payload_hash };
+        let receipt = super::decode_session_receipt(
+            record.payload_hash.clone(),
+            revision,
+            super::receipt_kind_value(
+                awaken_session_contract::SessionCommandReceiptKind::EventNoOp,
+            ),
+        )?;
+        if !record.confirmed_by(&receipt, current_revision) {
+            return Err(super::corrupt(
+                "Event no-op receipt exceeds its root observation",
+            ));
+        }
+        receipts.push(RetainedEventAdmission {
+            key: record
+                .event_admission_key()
+                .ok_or_else(|| super::corrupt("Event no-op key has no Event namespace"))?
+                .to_owned(),
+            request_fingerprint: record.payload_hash,
+            batch_id: None,
+            closed: false,
+            operation_ids: Some(Vec::new()),
+        });
+    }
+    let encoded = serde_json::to_string(&receipts).map_err(super::corrupt)?;
+    // The existing decoder owns uniqueness and complete/legacy shape checks.
+    decode(super::db_revision(current_revision)?, Some(encoded.clone()))?;
+    Ok(encoded)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn noop_deletion_codec_requires_one_consistent_receipt_shape_and_visible_revision() {
+        // C1 missing batch, open receipt and known-empty ids; C2 any mixed or
+        // omitted field; C3 future/duplicate/wrong-namespace receipt. N1 C1 =>
+        // retain exact no-op; N2 C2/C3 => Corrupt. No legacy absence becomes [].
+        let valid = json!({"key":"k","request_fingerprint":"f","closed":false,"operation_ids":[]});
+        assert!(
+            decode(2, Some(json!([valid.clone()]).to_string()))
+                .unwrap()
+                .admissions
+                .unwrap()[0]
+                .batch_id
+                .is_none()
+        );
+        for patch in [
+            json!({"closed":true}),
+            json!({"operation_ids":null}),
+            json!({"operation_ids":["x"]}),
+            json!({"batch_id":"fake-batch"}),
+        ] {
+            let mut row = valid.clone();
+            for (key, value) in patch.as_object().unwrap() {
+                row[key] = value.clone();
+            }
+            assert!(decode(2, Some(json!([row]).to_string())).is_err());
+        }
+        let key = awaken_session_contract::IdempotencyRecord::event_admission("k", "f").key;
+        let encoded =
+            merge_noops("[]", SessionRevision(2), vec![(key.clone(), "f".into(), 1)]).unwrap();
+        assert_eq!(
+            decode(3, Some(encoded)).unwrap().admissions.unwrap()[0].key,
+            "k"
+        );
+        for rows in [
+            vec![(key.clone(), "f".into(), 3)],
+            vec![("root:key".into(), "f".into(), 1)],
+            vec![(key.clone(), "f".into(), 1), (key.clone(), "f".into(), 1)],
+        ] {
+            assert!(merge_noops("[]", SessionRevision(2), rows).is_err());
+        }
+    }
 
     #[test]
     fn retained_proof_codec_rejects_ambiguous_or_corrupt_evidence() {

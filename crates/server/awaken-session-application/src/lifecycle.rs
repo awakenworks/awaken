@@ -22,7 +22,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_session_application_contract::LifecycleFactNotifier;
 use awaken_session_contract::LifecycleOutbox;
 use awaken_session_contract::SessionEventProjectionAnchor;
-use awaken_session_contract::{ManagedBudgetUsageCursor, SessionUsage};
+use awaken_session_contract::{IdempotencyRecord, ManagedBudgetUsageCursor, SessionUsage};
 use awaken_session_contract::{
     ManagedLifecycleFact, PersistedSession, SessionActivitySettlementPlan,
     SessionEventDispatchSettlementEffect, SessionExecutionState, SessionRuntimeIntervalObservation,
@@ -90,7 +90,7 @@ impl SessionDeleteCommand {
 /// use awaken_session_contract::SessionUsage;
 /// use awaken_session_types::SessionId;
 /// async fn settle(service: &SessionLifecycle, id: &SessionId, usage: SessionUsage) {
-///     let _ = service.reconcile_managed_budget_usage(id, usage).await;
+///     let _ = service.reconcile_managed_budget_usage(id, "operation", usage).await;
 /// }
 /// ```
 ///
@@ -99,7 +99,7 @@ impl SessionDeleteCommand {
 /// use awaken_session_contract::SessionUsage;
 /// use awaken_session_types::SessionId;
 /// async fn old_command(app: &SessionApplication, id: &SessionId, usage: SessionUsage) {
-///     let _ = app.reconcile_managed_budget_usage(id, usage).await;
+///     let _ = app.reconcile_managed_budget_usage(id, "operation", usage).await;
 /// }
 /// ```
 ///
@@ -278,8 +278,14 @@ impl SessionLifecycle {
     pub async fn reconcile_managed_budget_usage(
         &self,
         session_id: &awaken_session_types::SessionId,
+        operation_id: &str,
         usage: SessionUsage,
     ) -> Result<BudgetSettlementOutcome, SessionMutationError> {
+        if operation_id.trim().is_empty() {
+            return Err(SessionMutationError::Internal(
+                "budget settlement requires its original operation identity".into(),
+            ));
+        }
         let mutations = &self.mutations;
         for attempt in 0..ROOT_CAS_ATTEMPTS {
             let owner_scope = mutations.owner(session_id).await?;
@@ -295,6 +301,38 @@ impl SessionLifecycle {
                         "Session baseline is not frozen while settling budget".into(),
                     )
                 })?;
+            let mut usage_cursor =
+                ManagedBudgetUsageCursor::from_session_usage(&usage, Some(fallback_model.as_str()))
+                    .map_err(SessionStateViolation::from)?;
+            // Bind the caller's original observation, before mutable Root time
+            // is joined below. A committed operation is replayed before a later
+            // cursor could make that same observation appear to be a rewind.
+            let record = IdempotencyRecord {
+                key: format!(
+                    "session:reconcile-managed-budget-usage:{session_id}:{}:{operation_id}",
+                    operation_id.len()
+                ),
+                payload_hash: awaken_agent_contract::stable_fingerprint(&usage_cursor),
+            };
+            if let Some(receipt) = mutations
+                .repository()
+                .idempotency_receipt(session_id, &record.key)
+                .await
+                .map_err(repository_failure)?
+            {
+                if receipt.payload_hash != record.payload_hash {
+                    return Err(SessionMutationError::IdempotencyMismatch);
+                }
+                if !record.confirmed_by(&receipt, session.revision) {
+                    // A concurrent commit became visible after this Root read.
+                    // Retry the same operation against a Root that includes it.
+                    continue;
+                }
+                return Ok(BudgetSettlementOutcome {
+                    session: session.into_snapshot(),
+                    reached_now: false,
+                });
+            }
             let was_admissible = session.budget.can_admit_model_request();
             // Historical rows recorded the unconditional cursor only inside a
             // configured budget. Seed the new neutral root projection from that
@@ -304,9 +342,6 @@ impl SessionLifecycle {
                 .usage_cursor
                 .active_seconds
                 .max(usage.active_seconds);
-            let mut usage_cursor =
-                ManagedBudgetUsageCursor::from_session_usage(&usage, Some(fallback_model.as_str()))
-                    .map_err(SessionStateViolation::from)?;
             usage_cursor.active_seconds = active_seconds;
             if !usage_cursor.is_at_least(&session.usage_cursor) {
                 return Err(SessionMutationError::Internal(
@@ -354,15 +389,11 @@ impl SessionLifecycle {
                 Vec::new()
             };
             match mutations
-                .commit_session_snapshot_with_outcome(
-                    &owner_scope,
-                    session,
-                    "reconcile-managed-budget-usage",
-                    lifecycle_facts,
-                )
+                .commit_session_snapshot_with_record(&owner_scope, session, record, lifecycle_facts)
                 .await
             {
                 Ok(commit) => {
+                    let reached_now = reached_now && commit.transitioned();
                     if reached_now {
                         self.notify_fact();
                     }
@@ -376,6 +407,38 @@ impl SessionLifecycle {
             }
         }
         Err(SessionMutationError::Conflict)
+    }
+
+    /// Compile one observation identity from the existing public usage cursor
+    /// and the Session's already observed runtime time. New Root-owned runtime
+    /// seconds produce a new observation even when token usage is unchanged.
+    /// Callers keep this value across delivery/CAS retries, without adding an
+    /// identity registry or using time/randomness as a replacement operation.
+    pub(crate) fn budget_usage_observation_id(
+        session: &PersistedSession,
+        source_thread_id: &str,
+        usage: &SessionUsage,
+    ) -> Result<String, SessionMutationError> {
+        let model = session.frozen_baseline().ok_or_else(|| {
+            SessionMutationError::Internal(
+                "Session baseline is not frozen while observing usage".into(),
+            )
+        })?;
+        let cursor =
+            ManagedBudgetUsageCursor::from_session_usage(usage, Some(&model.execution_model_ref))
+                .map_err(SessionStateViolation::from)?;
+        Ok(format!(
+            "observed-budget:{}",
+            awaken_agent_contract::stable_fingerprint(&(
+                &session.session_id,
+                source_thread_id,
+                session
+                    .usage_cursor
+                    .active_seconds
+                    .max(cursor.active_seconds),
+                cursor,
+            ))
+        ))
     }
 
     /// Settle one admitted activity while retaining the exact Runtime commit

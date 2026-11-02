@@ -569,7 +569,8 @@ impl SessionActivities {
     /// | Refusal | Durable effect | Caller answer |
     /// |---|---|---|
     /// | budget reached | rejection receipt | `budget_reached`, replayed by every later recovery |
-    /// | store outage or CAS conflict | none; the reservation stays repairable | `session_run_admission_pending` |
+    /// | proven write rollback | this attempt did not commit | `session_run_not_admitted` |
+    /// | unknown write, observation outage or CAS conflict | original identity stays repairable | `session_run_admission_pending` |
     /// | other | none | its own class |
     pub(crate) async fn begin_run_activity_at_revision(
         &self,

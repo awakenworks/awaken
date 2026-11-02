@@ -624,8 +624,9 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
             None,
         )
         .await
-        .map(|batch| batch.expect("the Event batch is admitted"))
-        .unwrap();
+        .unwrap()
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     warm.refresh_committed_events(&session.id).await.unwrap();
     let issued_prefix = warm
         .list_events(&session.id, None, None, false)
@@ -662,8 +663,9 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
             None,
         )
         .await
-        .map(|batch| batch.expect("the Event batch is admitted"))
-        .unwrap();
+        .unwrap()
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     persist_batch_projection_anchors(&warm, &session.id, &interrupt.batch_id, &[7]).await;
 
     warm.refresh_committed_events(&session.id).await.unwrap();
@@ -1072,8 +1074,9 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
             Some((key.into(), fingerprint)),
         )
         .await
-        .map(|batch| batch.expect("the Event batch is admitted"))
-        .expect("IR1 durable root receipt");
+        .expect("IR1 durable root receipt")
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     let revision = state
         .roles
         .roots
@@ -1267,8 +1270,9 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
                         Some(("race-key".into(), fingerprint)),
                     )
                     .await
-                    .map(|batch| batch.expect("the Event batch is admitted"))
-                    .unwrap(),
+                    .unwrap()
+                    .into_batch()
+                    .expect("this fixture requires a retained Event batch"),
             )
         };
         let root_before = repository.get(&SessionId::from(&session.id)).await.unwrap();
@@ -2791,8 +2795,9 @@ async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
                     Some(("original".into(), fingerprint)),
                 )
                 .await
-                .map(|batch| batch.expect("the Event batch is admitted"))
-                .expect("R1 retain the exact accepted receipt");
+                .expect("R1 retain the exact accepted receipt")
+                .into_batch()
+                .expect("this fixture requires a retained Event batch");
             let expected = SendEventsResponse {
                 data: accepted_inbound_receipts(&session_id, &retained)
                     .into_iter()
@@ -2947,8 +2952,9 @@ async fn retained_unprocessed_tool_reply_queues_a_followup_user_message() {
             None,
         )
         .await
-        .map(|batch| batch.expect("the Event batch is admitted"))
-        .expect("AR2 retain reply without driving it");
+        .expect("AR2 retain reply without driving it")
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
 
     let followup = state
         .validate_event_batch(
@@ -4060,7 +4066,7 @@ fn coordinated_projection_validation_retains_only_required_trailing_root_reads()
     for links in 0..=1 {
         for children in 0..=1 {
             assert_eq!(
-                committed_projection::source_fence::projection_validation_needs_trailing_root(
+                awaken_session_execution_contract::projection_validation_needs_trailing_root(
                     links, children
                 ),
                 links != 0 || children != 0,
@@ -4699,8 +4705,9 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
             None,
         )
         .await
-        .map(|batch| batch.expect("the Event batch is admitted"))
-        .expect("C1 retains the canonical User Event in the Session root");
+        .expect("C1 retains the canonical User Event in the Session root")
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     let operation_id = retained.events[0].event.operation_id().to_string();
     persist_batch_projection_anchors(&warm, &session.id, &retained.batch_id, &[1]).await;
     *runtime.messages.lock().unwrap() = vec![Message::new(
@@ -5189,8 +5196,9 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                     None,
                 )
                 .await
-                .map(|batch| batch.expect("the Event batch is admitted"))
-                .unwrap();
+                .unwrap()
+                .into_batch()
+                .expect("this fixture requires a retained Event batch");
             let first_activity = warm
                 .application
                 .activities()
@@ -5223,8 +5231,9 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                     None,
                 )
                 .await
-                .map(|batch| batch.expect("the Event batch is admitted"))
-                .unwrap();
+                .unwrap()
+                .into_batch()
+                .expect("this fixture requires a retained Event batch");
             let overlapping_activity = warm
                 .application
                 .activities()
@@ -5377,8 +5386,9 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                 None,
             )
             .await
-            .map(|batch| batch.expect("the Event batch is admitted"))
-            .unwrap();
+            .unwrap()
+            .into_batch()
+            .expect("this fixture requires a retained Event batch");
         let second_activity = warm
             .application
             .activities()
@@ -5699,8 +5709,9 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
             None,
         )
         .await
-        .map(|batch| batch.expect("the Event batch is admitted"))
-        .unwrap();
+        .unwrap()
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     warm.application
         .activities()
         .begin_activity(&SessionId::from(&session.id))
@@ -5894,8 +5905,9 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
             None,
         )
         .await
-        .map(|batch| batch.expect("the Event batch is admitted"))
-        .unwrap();
+        .unwrap()
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     state
         .update_session(
             &session.id,
@@ -12495,8 +12507,9 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                         None,
                     )
                     .await
-                    .map(|batch| batch.expect("the Event batch is admitted"))
-                    .unwrap();
+                    .unwrap()
+                    .into_batch()
+                    .expect("this fixture requires a retained Event batch");
                 let run = match &retained.events[0].event {
                     SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
                     _ => unreachable!(),
@@ -12586,7 +12599,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                         expected_thread_version: Some(2), answered_pending_commit_cursor: Some(2),
                         runtime_tool_use_id: "test-call".into(),
                         reply: awaken_session_contract::SessionEventToolReplyKind::Confirmation { allow: true, deny_message: None },
-                    })], None, None, None).await.map(|batch| batch.expect("the Event batch is admitted")).unwrap();
+                    })], None, None, None).await.unwrap().into_batch().expect("this fixture requires a retained Event batch");
                 persist_batch_projection_anchors(&state, &session.id, &reply.batch_id, &[3]).await;
                 let second = state
                     .application

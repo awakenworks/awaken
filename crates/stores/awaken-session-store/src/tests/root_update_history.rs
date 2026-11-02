@@ -80,12 +80,10 @@ fn legacy(id: &str) -> PersistedSession {
 }
 
 fn mutation(candidate: PersistedSession, key: &str) -> SessionMutation {
+    let expected_revision = candidate.revision;
     let payload = SessionMutationPayload::Replace(candidate);
     SessionMutation {
-        expected_revision: match &payload {
-            SessionMutationPayload::Replace(root) => root.revision,
-            SessionMutationPayload::Delete(_) => unreachable!(),
-        },
+        expected_revision,
         idempotency: IdempotencyRecord {
             key: key.into(),
             payload_hash: payload.stable_hash(),

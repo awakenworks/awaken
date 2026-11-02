@@ -43,6 +43,10 @@ pub struct ApiError {
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub message: String,
+    /// Additive Native recovery fact. The SDK status/type discriminator and
+    /// human message keep their existing meanings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 impl ErrorResponse {
@@ -53,6 +57,7 @@ impl ErrorResponse {
             error: ApiError {
                 kind: error_type,
                 message: message.into(),
+                code: None,
             },
             request_id: None,
         }

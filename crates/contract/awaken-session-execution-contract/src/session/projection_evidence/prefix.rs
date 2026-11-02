@@ -1,4 +1,8 @@
-//! Equality of two committed Thread prefixes for projection fencing.
+// @formal surface obligation=session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
+// @formal reason: The original complete committed-prefix comparison moved unchanged with its
+// @formal reason: serialized-field decision table beside the shared evidence contract. It compares
+// @formal reason: retained facts, not database IO or publication; unrelated diagnostic high-water is ignored.
+//! Equality of two committed Thread prefixes for projection and admission fencing.
 
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 

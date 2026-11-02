@@ -12,6 +12,7 @@ mod nats_fixture;
 #[cfg(feature = "postgres")]
 pub use fixture::{
     assert_postgres_fixture_child_contract, postgres_fixture_pool, postgres_fixture_url,
+    wait_for_postgres_lock_waiters,
 };
 pub use nats_fixture::{
     assert_nats_fixture_child_contract, nats_fixture_url, report_nats_fixture_exercised,

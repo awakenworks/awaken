@@ -4213,6 +4213,9 @@ fn report_committed_mutation_as_conflict(
     match result {
         awaken_session_contract::SessionMutationResult::Applied { new_revision }
         | awaken_session_contract::SessionMutationResult::Replayed { new_revision }
+        | awaken_session_contract::SessionMutationResult::AcknowledgedNoOp {
+            observed_revision: new_revision,
+        }
         | awaken_session_contract::SessionMutationResult::Conflict {
             current_revision: new_revision,
         } => awaken_session_contract::SessionMutationResult::Conflict {
@@ -4633,6 +4636,9 @@ impl SessionRepository for FaultingSessionRepository {
                 | awaken_session_contract::SessionMutationResult::Replayed { new_revision } => {
                     new_revision
                 }
+                awaken_session_contract::SessionMutationResult::AcknowledgedNoOp {
+                    observed_revision,
+                } => observed_revision,
                 conflict @ awaken_session_contract::SessionMutationResult::Conflict { .. }
                 | conflict @ awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
                     return Ok(conflict);

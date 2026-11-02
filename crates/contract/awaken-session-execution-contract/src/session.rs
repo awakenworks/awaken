@@ -21,7 +21,9 @@ use awaken_session_contract::SessionUsage;
 pub use neutral::NeutralRuntime;
 pub use projection_evidence::{
     CommittedEvidenceError, CommittedSessionFacts, ProjectionThreadSnapshots,
-    SessionProjectionReadTimings, committed_lifecycle_prefix, outcome_terminal_commit_cursor,
+    SessionProjectionPrefix, SessionProjectionReadTimings, committed_lifecycle_prefix,
+    outcome_terminal_commit_cursor, projection_validation_needs_trailing_root,
+    same_thread_projection_prefix,
 };
 pub use projection_source::{
     CommittedSessionProjection, SessionProjectionSource, select_recovery_snapshot_run,

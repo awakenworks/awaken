@@ -524,6 +524,9 @@ impl SessionTerminalCleanups {
             SessionMutationResult::IdempotencyMismatch => {
                 Err(SessionMutationError::IdempotencyMismatch)
             }
+            SessionMutationResult::AcknowledgedNoOp { .. } => Err(SessionMutationError::Internal(
+                "Event no-op cannot certify Session deletion".into(),
+            )),
         }
     }
 }

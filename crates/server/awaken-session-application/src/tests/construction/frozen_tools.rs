@@ -3,11 +3,9 @@
 //! compiler is the CURRENT authority for new authoring, but must not
 //! re-decide the frozen settings of an unrelated command.
 //!
-//! Production today recompiles the stored `session.tools` with the current
-//! compiler on every non-replay update, even a title-only one, and discards the
-//! result (update.rs:320-339, called at :831-832). The ignored reproducer
-//! records that a title-only update is then refused. The passing test pins
-//! O0 as it holds today: whatever the outcome, the frozen settings never change.
+//! The update compiler judges explicitly authored tools and preserves omitted
+//! tools. These tests pin both sides: an unrelated title update succeeds with
+//! the admitted settings unchanged, while new legacy authoring is refused.
 use super::*;
 use awaken_agent_contract::{
     ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
@@ -57,9 +55,19 @@ fn app(
     repository: Arc<awaken_session_store::SqliteManagedSessionRepository>,
     strict: bool,
 ) -> SessionApplication {
-    SessionApplicationBuilder::fixture(
+    let executor = SessionExecutor::colocated(
         Arc::new(creation::RecordingCreateRuntime::default()),
         Arc::new(NoopMcpRealizer),
+    );
+    // This fixture has committed no Thread. Select its existing empty read
+    // role before construction; the general creation-failure fixture keeps
+    // its intentional unsupported-read behavior for cleanup admission tests.
+    let roles = awaken_session_execution_contract::SessionExecutionRoles {
+        thread_reads: Arc::new(NoopRuntime),
+        ..(*executor).clone()
+    };
+    SessionApplicationBuilder::new(
+        roles,
         SessionPersistence::new(repository, system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         {
@@ -149,8 +157,12 @@ async fn a_stricter_current_compiler_never_rewrites_frozen_tool_settings() {
 }
 
 #[tokio::test]
-#[ignore = "product gap: every non-replay update recompiles the frozen session.tools with the current tool compiler (update.rs:331-335), so a title-only update of a Session admitted under an older compiler is refused"]
 async fn a_title_only_update_does_not_revalidate_frozen_tool_settings() {
+    // DT-T: C1 an older compiler admitted these frozen settings; C2 today's
+    // compiler refuses new authoring of the same settings; C3 tools omitted
+    // during a title update. T1 C1+C2+C3 => title commits, frozen tools remain
+    // byte-equal. The sibling explicit-authoring row independently proves C2;
+    // this test reuses the existing omission branch, adding no alternate compiler.
     let (repository, created) = admitted_under_the_old_compiler("frozen-tools-title").await;
     let current = app(repository.clone(), true);
     let outcome = current

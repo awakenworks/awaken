@@ -60,7 +60,7 @@
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
         "line": 61,
-        "file_sha256": "d33b8bd8ea0c2af7adf374ed222a8652a239c4e5c51dd4606cb525fc7cd632c9"
+        "file_sha256": "a9c814702c77fc0be421a1367283cb16a063e078cd313f98881f4a14cfedbe00"
       }
     ],
     "assertion_locations": [
@@ -78,7 +78,7 @@
       },
       {
         "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
-        "line": 87
+        "line": 91
       }
     ],
     "execution_witnesses": [

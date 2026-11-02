@@ -43,9 +43,10 @@ use disposition::{SessionDeleteDispositionClass, session_delete_request_plan};
 pub use disposition::{SessionDisposition, SessionDispositionTransitionError};
 use mutation::session_tombstone_is_admitted;
 pub use mutation::{
-    IdempotencyRecord, ScopedPersistedSession, SessionCreateResult, SessionIdempotencyReceipt,
-    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
-    SessionRepositoryConflict, SessionRepositoryError, SessionTombstone,
+    IdempotencyRecord, ScopedPersistedSession, SessionCommandReceiptKind, SessionCreateResult,
+    SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionMutationValidationError, SessionRepositoryConflict, SessionRepositoryError,
+    SessionTombstone,
 };
 pub use persisted_session::{
     PersistedSession, SessionEventDispatchSettlementEffect,

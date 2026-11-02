@@ -9,6 +9,8 @@ use awaken_session_types::{RunError, RunErrorKind, SessionRevision};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionEventAdmission {
+    /// Accepted without a batch or executable operation.
+    NoOp,
     Accepted {
         batch_id: String,
         /// None is a legacy retained receipt with no observation coordinate.
@@ -58,12 +60,27 @@ pub fn resolve_deleted_event_admission(
             batch_id: receipt
                 .expect("closed class has retained evidence")
                 .batch_id
-                .clone(),
+                .clone()
+                .ok_or_else(|| {
+                    RunError::unavailable("Closed Event receipt has no retained batch identity")
+                })?,
         }),
         crate::SessionEventBatchAdmissionClass::Accepted => {
             let receipt = receipt.expect("accepted class has retained evidence");
+            if receipt.batch_id.is_none() {
+                return if receipt.operation_ids.as_ref().is_some_and(Vec::is_empty) {
+                    Ok(SessionEventAdmission::NoOp)
+                } else {
+                    Err(RunError::unavailable(
+                        "Event no-op receipt has no known-empty operation proof",
+                    ))
+                };
+            }
             Ok(SessionEventAdmission::Accepted {
-                batch_id: receipt.batch_id.clone(),
+                batch_id: receipt
+                    .batch_id
+                    .clone()
+                    .expect("checked retained batch identity"),
                 operation_ids: receipt.operation_ids.clone(),
             })
         }
@@ -93,10 +110,82 @@ pub fn event_admission_closed() -> RunError {
 mod verification {
     use super::*;
 
+    #[test]
+    fn deleted_noop_requires_explicit_known_empty_proof_and_keeps_legacy_unknown() {
+        // DT-D: C1 no batch identity; C2 known-empty/unknown operation proof;
+        // C3 matching/different fingerprint. D1 C1+empty+match => NoOp;
+        // D2 C1+unknown => unavailable; D3 changed => conflict; D4 a legacy
+        // retained batch with omitted ids remains Accepted with unknown ids.
+        let row = crate::RetainedEventAdmission {
+            key: "k".into(),
+            request_fingerprint: "f".into(),
+            batch_id: None,
+            closed: false,
+            operation_ids: Some(Vec::new()),
+        };
+        let proof = |row| DeletedSessionEventAdmissions {
+            deleted_revision: SessionRevision(7),
+            admissions: Some(vec![row]),
+        };
+        assert_eq!(
+            resolve_deleted_event_admission(&proof(row.clone()), "k", "f").unwrap(),
+            SessionEventAdmission::NoOp
+        );
+        assert_eq!(
+            resolve_deleted_event_admission(&proof(row.clone()), "k", "changed")
+                .unwrap_err()
+                .code,
+            "idempotency_conflict"
+        );
+        let mut unknown = row.clone();
+        unknown.operation_ids = None;
+        assert_eq!(
+            resolve_deleted_event_admission(&proof(unknown), "k", "f")
+                .unwrap_err()
+                .kind,
+            RunErrorKind::Unavailable
+        );
+        let mut legacy = row;
+        legacy.batch_id = Some("batch".into());
+        legacy.operation_ids = None;
+        assert_eq!(
+            resolve_deleted_event_admission(&proof(legacy), "k", "f").unwrap(),
+            SessionEventAdmission::Accepted {
+                batch_id: "batch".into(),
+                operation_ids: None
+            }
+        );
+        // DT-N: C1 matching/different fingerprint; C2 open/closed; C3
+        // absent/known-empty/nonempty ids, all with no batch. N1 !C1 =>
+        // Conflict before malformed proof; N2 C1+open+empty => NoOp;
+        // N3 C1+closed or C1+open+nonempty/unknown => exact Unavailable.
+        // All 12 rows reuse main's complete result/frame/replay oracle.
+        for fingerprint in ["f", "changed"] {
+            for closed in [false, true] {
+                for operation_ids in [None, Some(vec![]), Some(vec!["op".into()])] {
+                    check_replay_and_frame(
+                        proof(crate::RetainedEventAdmission {
+                            key: "k".into(),
+                            request_fingerprint: "f".into(),
+                            batch_id: None,
+                            closed,
+                            operation_ids,
+                        }),
+                        "k",
+                        fingerprint,
+                        Some(0),
+                    );
+                }
+            }
+        }
+    }
+
     // C/E table: R1 legacy inventory => exact Unavailable; R2 complete/no
     // first key => exact Deleted revision; R3 first fingerprint differs =>
     // exact Conflict even if closed; R4/R5 matching first receipt => exact
     // Closed/Accepted payload, including None versus ordered operation ids.
+    // R6 matching open receipt with no batch and known-empty ids => NoOp;
+    // R7 closed/malformed batchless evidence => exact Unavailable.
     // The caller supplies the first index independently of production lookup.
     // A missing/out-of-range claimed first is invalid, never silently absent.
     // One total postcondition is checked in every literal partition: branches
@@ -124,7 +213,19 @@ mod verification {
                     && error.code == "idempotency_conflict"
                     && error.message
                         == "Idempotency-Key was already used for another Session Event batch";
-                legacy || conflict
+                let invalid_receipt = selected.is_some_and(|receipt| {
+                    receipt.request_fingerprint == fingerprint
+                        && receipt.batch_id.is_none()
+                        && if receipt.closed {
+                            error.message == "Closed Event receipt has no retained batch identity"
+                        } else {
+                            !receipt.operation_ids.as_ref().is_some_and(Vec::is_empty)
+                                && error.message
+                                    == "Event no-op receipt has no known-empty operation proof"
+                        }
+                }) && error.kind == RunErrorKind::Unavailable
+                    && error.code == "unavailable";
+                legacy || conflict || invalid_receipt
             }
             Ok(SessionEventAdmission::Deleted { deleted_revision }) => {
                 proof.admissions.is_some()
@@ -134,7 +235,7 @@ mod verification {
             Ok(SessionEventAdmission::Closed { batch_id }) => selected.is_some_and(|receipt| {
                 receipt.request_fingerprint == fingerprint
                     && receipt.closed
-                    && *batch_id == receipt.batch_id
+                    && Some(batch_id.as_str()) == receipt.batch_id.as_deref()
             }),
             Ok(SessionEventAdmission::Accepted {
                 batch_id,
@@ -142,8 +243,14 @@ mod verification {
             }) => selected.is_some_and(|receipt| {
                 receipt.request_fingerprint == fingerprint
                     && !receipt.closed
-                    && *batch_id == receipt.batch_id
+                    && Some(batch_id.as_str()) == receipt.batch_id.as_deref()
                     && *operation_ids == receipt.operation_ids
+            }),
+            Ok(SessionEventAdmission::NoOp) => selected.is_some_and(|receipt| {
+                receipt.request_fingerprint == fingerprint
+                    && !receipt.closed
+                    && receipt.batch_id.is_none()
+                    && receipt.operation_ids.as_ref().is_some_and(Vec::is_empty)
             }),
         };
         assert!(
@@ -298,7 +405,7 @@ mod verification {
                                         "changed"
                                     }
                                     .into(),
-                                    batch_id: format!("batch:{index}"),
+                                    batch_id: Some(format!("batch:{index}")),
                                     closed: flags & (1 << (len + index)) != 0,
                                     operation_ids: match (ids >> (2 * index)) & 3 {
                                         0 => None,
@@ -415,7 +522,7 @@ mod verification {
                 };
                 row.key == expected_key
                     && row.request_fingerprint == expected_fingerprint
-                    && row.batch_id == "0"
+                    && row.batch_id.as_deref() == Some("0")
                     && row.closed == (CASE & 4 != 0)
                     && ids_match
             }
@@ -432,7 +539,7 @@ mod verification {
         let receipt = || RetainedEventAdmission {
             key: if CASE & 1 == 0 { "b" } else { "a" }.into(),
             request_fingerprint: if CASE & 2 == 0 { "b" } else { "a" }.into(),
-            batch_id: "0".into(),
+            batch_id: Some("0".into()),
             closed: CASE & 4 != 0,
             operation_ids: match CASE >> 3 {
                 0 => None,
@@ -562,7 +669,10 @@ mod verification {
     #[test]
     fn deleted_admission_oracle_rejects_corrupt_outcomes_and_receipt_authority() {
         // Single-fault rows: Deleted revision/inventory, Closed batch/fp/closed,
-        // Accepted batch/fp/closed and absent/invalid first receipt. Each starts
+        // Accepted batch/fp/closed and absent/invalid first receipt. A forged
+        // NoOp must fail for a retained batch or absent receipt. A real NoOp
+        // rejects fabricated batch/deletion outcomes and each independent
+        // batch/closed/unknown-or-nonempty-ids/fingerprint fault. Each starts
         // with a real production result accepted by the unchanged input law.
         let rejected = |proof: &DeletedSessionEventAdmissions,
                         first: Option<usize>,
@@ -581,6 +691,7 @@ mod verification {
         let mut missing = deleted.clone();
         missing.admissions = None;
         rejected(&missing, None, &result);
+        rejected(&deleted, None, &Ok(SessionEventAdmission::NoOp));
 
         for proof in [literal_fixture::<7>(17), literal_fixture::<27>(17)] {
             let result = resolve_deleted_event_admission(&proof, "a", "a");
@@ -589,9 +700,12 @@ mod verification {
             match &mut changed {
                 SessionEventAdmission::Closed { batch_id }
                 | SessionEventAdmission::Accepted { batch_id, .. } => batch_id.push('!'),
-                SessionEventAdmission::Deleted { .. } => panic!("baseline must select a receipt"),
+                SessionEventAdmission::NoOp | SessionEventAdmission::Deleted { .. } => {
+                    panic!("baseline must select a retained batch")
+                }
             }
             rejected(&proof, Some(0), &Ok(changed));
+            rejected(&proof, Some(0), &Ok(SessionEventAdmission::NoOp));
             for field in 0..2 {
                 let mut changed = proof.clone();
                 let row = &mut changed.admissions.as_mut().unwrap()[0];
@@ -608,6 +722,40 @@ mod verification {
             missing.admissions = Some(vec![]);
             rejected(&missing, Some(0), &result);
         }
+
+        let mut noop = literal_fixture::<11>(17);
+        noop.admissions.as_mut().unwrap()[0].batch_id = None;
+        let result = resolve_deleted_event_admission(&noop, "a", "a");
+        check_result(&noop, Some(0), "a", &result);
+        assert_eq!(result.as_ref().unwrap(), &SessionEventAdmission::NoOp);
+        for changed in [
+            SessionEventAdmission::Accepted {
+                batch_id: "0".into(),
+                operation_ids: Some(vec![]),
+            },
+            SessionEventAdmission::Closed {
+                batch_id: "0".into(),
+            },
+            SessionEventAdmission::Deleted {
+                deleted_revision: SessionRevision(17),
+            },
+        ] {
+            rejected(&noop, Some(0), &Ok(changed));
+        }
+        for field in 0..5 {
+            let mut changed = noop.clone();
+            let row = &mut changed.admissions.as_mut().unwrap()[0];
+            match field {
+                0 => row.batch_id = Some("0".into()),
+                1 => row.closed = true,
+                2 => row.operation_ids = None,
+                3 => row.operation_ids = Some(vec!["op".into()]),
+                _ => row.request_fingerprint.push('!'),
+            }
+            rejected(&changed, Some(0), &result);
+        }
+        rejected(&noop, None, &result);
+        rejected(&noop, Some(usize::MAX), &result);
     }
 
     #[cfg(test)]
@@ -648,7 +796,11 @@ mod verification {
                         match field {
                             4 => row.key.push('!'),
                             5 => row.request_fingerprint.push('!'),
-                            6 => row.batch_id.push('!'),
+                            6 => row
+                                .batch_id
+                                .as_mut()
+                                .expect("literal fixture retains its batch identity")
+                                .push('!'),
                             _ => row.closed = !row.closed,
                         }
                     }

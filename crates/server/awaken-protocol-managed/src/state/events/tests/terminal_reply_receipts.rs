@@ -88,6 +88,7 @@ async fn ended_run_refuses_new_replies_and_replays_only_the_exact_receipt() {
             )
             .await
             .expect("setup: retain the accepted receipt")
+            .into_batch()
             .expect("setup: an input batch is admitted, not a root no-op");
         let expected = SendEventsResponse {
             data: accepted_inbound_receipts(&session_id, &retained)

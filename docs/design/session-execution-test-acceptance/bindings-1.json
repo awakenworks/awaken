@@ -271,7 +271,7 @@
       {
         "path": "crates/server/awaken-session-application/src/tests/budget_settlement.rs",
         "line": 17,
-        "file_sha256": "4c7b79a9c25c829a541a3a0f8a95f3830f51d143217d5adbb0e2e349e3fa5c5a"
+        "file_sha256": "c55f5d55128cef23f553be7201ffed56e254ee608bd7fd9e96c23bd055a5bda1"
       }
     ],
     "execution_witnesses": [
@@ -677,8 +677,8 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
-        "line": 11849,
-        "file_sha256": "11640504e0e22a8e267aba867a274dc87d1364b65294c60b6fa5cbdad0b27bc0"
+        "line": 11992,
+        "file_sha256": "cff04e16f81092b500d1277dd6e1beead945a888f6711bf8de65d2af913dd0ec"
       }
     ],
     "execution_witnesses": [
@@ -745,8 +745,8 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/event_batches.rs",
-        "line": 1973,
-        "file_sha256": "d5a835661f961f443c7799c1c209856d0b0966397c62e5cbb9e727f2d8dc1cd4"
+        "line": 2058,
+        "file_sha256": "d1d3ba775c742b469a7a4169019605e7c36d0672c6c94f3e91d0612a77eb2b20"
       }
     ],
     "execution_witnesses": [

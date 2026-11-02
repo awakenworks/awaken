@@ -251,6 +251,33 @@ fn append_current_tail(bundle: MigrationBundle) -> Result<MigrationBundle, Migra
          CREATE INDEX {prefix}_session_creation_intent_recoverable_idx \
              ON {prefix}_session_creation_intent (lease_expires_at_unix_ms, session_id)",
     )?);
+    migrations.push(Migration::new(
+        next + 3,
+        "retain Event no-op outcomes in the existing command receipt index",
+        "ALTER TABLE {prefix}_session_idempotency \
+             ADD COLUMN receipt_kind TEXT NOT NULL DEFAULT 'root' \
+             CHECK (receipt_kind IN ('root', 'event_batch', 'event_no_op'))",
+    )?);
+    migrations.push(Migration::new(
+        next + 4,
+        "retain completed creation abort identities",
+        "CREATE TABLE {prefix}_session_creation_intent_retained (\
+             session_id TEXT PRIMARY KEY CHECK (length(session_id) > 0), \
+             scope_id TEXT NOT NULL CHECK (length(scope_id) > 0), \
+             phase TEXT NOT NULL CHECK (phase IN ('preparing', 'aborting', 'aborted')), \
+             repository_ids_json TEXT NOT NULL, \
+             lease_expires_at_unix_ms BIGINT NOT NULL \
+                 CHECK (lease_expires_at_unix_ms >= 0)); \
+         INSERT INTO {prefix}_session_creation_intent_retained \
+             (session_id, scope_id, phase, repository_ids_json, lease_expires_at_unix_ms) \
+             SELECT session_id, scope_id, phase, repository_ids_json, lease_expires_at_unix_ms \
+             FROM {prefix}_session_creation_intent; \
+         DROP TABLE {prefix}_session_creation_intent; \
+         ALTER TABLE {prefix}_session_creation_intent_retained \
+             RENAME TO {prefix}_session_creation_intent; \
+         CREATE INDEX {prefix}_session_creation_intent_recoverable_idx \
+             ON {prefix}_session_creation_intent (lease_expires_at_unix_ms, session_id)",
+    )?);
     MigrationBundle::new(bundle.bundle_id(), migrations)
 }
 
@@ -273,7 +300,7 @@ mod tests {
     fn session_schema_preserves_v1_and_adds_owned_dependency_and_worker_indexes() {
         // Causes: C1 published V1 receipt; C2 missing additive V2/V3/V4/V5;
         // C3 current receipts. Effects: E1 V1 checksum remains accepted;
-        // E2 deterministic source, tombstone and Worker-obligation DDL tails;
+        // E2 deterministic source, tombstone, Worker and typed-receipt DDL tails;
         // E3 current ledger replay is a no-op. M1=C1+C2=>E1+E2;
         // M2=C1+C3=>E1+E3. Backfill belongs to repository startup, whose
         // canonical Rust root decoder owns derived index truth.
@@ -284,7 +311,7 @@ mod tests {
                 .iter()
                 .map(awaken_scoped_migration::Migration::version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5]
+            [1, 2, 3, 4, 5, 6, 7]
         );
         let sql = bundle.migrations()[0].sql_for(awaken_scoped_migration::Dialect::Sqlite);
         for retired in [
@@ -309,6 +336,135 @@ mod tests {
             bundle.migrations()[3].sql_for(awaken_scoped_migration::Dialect::Sqlite);
         assert!(worker_index_sql.contains("worker_owner"));
         assert!(worker_index_sql.contains("preparation_candidate"));
+        let receipt_sql = bundle.migrations()[5].sql_for(Dialect::Sqlite);
+        assert!(receipt_sql.contains("receipt_kind TEXT NOT NULL DEFAULT 'root'"));
+        assert!(receipt_sql.contains("'event_batch', 'event_no_op'"));
+        for dialect in [Dialect::Sqlite, Dialect::Postgres] {
+            let close_sql = bundle.migrations()[6].sql_for(dialect);
+            assert!(close_sql.contains("'preparing', 'aborting', 'aborted'"));
+            assert!(close_sql.contains(
+                "SELECT session_id, scope_id, phase, repository_ids_json, lease_expires_at_unix_ms"
+            ));
+        }
+    }
+
+    async fn assert_upgraded_creation_intents(
+        store: &dyn awaken_session_application::SessionStore,
+    ) {
+        // Shared DT-U oracle: V6 Preparing/Aborting rows survive V7 with exact
+        // id/scope/phase/participants/lease. Completion then retains the local
+        // abort fence; the backend-specific wrappers own the real upgrade.
+        use awaken_session_contract::PreparedParticipantIntentPhase;
+        let intents = store.recoverable_creation_intents(2000, 50).await.unwrap();
+        assert_eq!(intents.len(), 2);
+        for intent in &intents {
+            assert_eq!(intent.owner_scope(), "original-workspace");
+            assert_eq!(intent.repository_ids(), &["original-repository"]);
+            let expected = match intent.session_id().as_str() {
+                "preparing-before-upgrade" => (PreparedParticipantIntentPhase::Preparing, 1000),
+                "aborting-before-upgrade" => (PreparedParticipantIntentPhase::Aborting, 900),
+                other => panic!("foreign upgraded intent {other}"),
+            };
+            assert_eq!(
+                (intent.phase(), intent.lease_expires_at_unix_ms()),
+                expected
+            );
+        }
+        store
+            .complete_creation_abort(&"aborting-before-upgrade".into())
+            .await
+            .unwrap();
+    }
+
+    async fn assert_retained_creation_abort(store: &dyn awaken_session_application::SessionStore) {
+        use awaken_session_contract::{SessionRepositoryConflict, SessionRepositoryError};
+        assert_eq!(
+            store
+                .recoverable_creation_intents(2000, 50)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(matches!(
+            store
+                .record_creation_intent(
+                    "original-workspace",
+                    &"aborting-before-upgrade".into(),
+                    "original-repository",
+                    3000
+                )
+                .await,
+            Err(SessionRepositoryError::Conflict(
+                SessionRepositoryConflict::Tombstoned
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn retained_abort_upgrade_preserves_existing_intent_coordinates_and_replays() {
+        // DT-U: C1 published V6 DB contains Preparing/Aborting intents; C2 V7
+        // upgrades the SAME file; C3 complete abort and cold reopen. U1 C1+C2
+        // => exact durable coordinates, historical checksums still admitted;
+        // U2 C3 => closure refuses re-prepare and is not recovery work.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("intent-upgrade.db");
+        let raw = crate::tests::raw_sqlite(&path).await;
+        let prior = crate::tests::migration_prefix_through(&session_bundle().unwrap(), 6);
+        crate::tests::migrate_fixture(&raw, crate::NS, &prior).await;
+        for (id, phase, lease) in [
+            ("preparing-before-upgrade", "preparing", 1000_i64),
+            ("aborting-before-upgrade", "aborting", 900_i64),
+        ] {
+            sqlx::query("INSERT INTO managed_session_creation_intent (session_id,scope_id,phase,repository_ids_json,lease_expires_at_unix_ms) VALUES (?1,'original-workspace',?2,'[\"original-repository\"]',?3)")
+                .bind(id).bind(phase).bind(lease).execute(&raw).await.unwrap();
+        }
+        raw.close().await;
+        let store = crate::SqliteManagedSessionRepository::open(path.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_upgraded_creation_intents(&store).await;
+        drop(store);
+        let reopened = crate::SqliteManagedSessionRepository::open(path.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_retained_creation_abort(&reopened).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_retained_abort_upgrade_preserves_existing_intents_after_reconnect() {
+        // DT-U PostgreSQL row: configured real V6 schema with live intents ->
+        // the same portable V7 migration -> new pool on the SAME schema.
+        // Uses the exact SQLite oracle, not a second upgrade interpretation.
+        let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+            return;
+        };
+        let pool = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
+        let prior = crate::tests::migration_prefix_through(&session_bundle().unwrap(), 6);
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            crate::NS,
+        )
+        .unwrap()
+        .run_bundle(&prior)
+        .await
+        .unwrap();
+        for (id, phase, lease) in [
+            ("preparing-before-upgrade", "preparing", 1000_i64),
+            ("aborting-before-upgrade", "aborting", 900_i64),
+        ] {
+            sqlx::query("INSERT INTO managed_session_creation_intent (session_id,scope_id,phase,repository_ids_json,lease_expires_at_unix_ms) VALUES ($1,'original-workspace',$2,'[\"original-repository\"]',$3)")
+                .bind(id).bind(phase).bind(lease).execute(&pool).await.unwrap();
+        }
+        let store = crate::PostgresManagedSessionRepository::with_pool(pool)
+            .await
+            .unwrap();
+        assert_upgraded_creation_intents(&store).await;
+        drop(store);
+        let reopened = crate::PostgresManagedSessionRepository::connect(&url)
+            .await
+            .unwrap();
+        assert_retained_creation_abort(&reopened).await;
     }
 
     #[test]
@@ -345,7 +501,7 @@ mod tests {
         );
         assert_eq!(
             original.complete.migrations().last().unwrap().version(),
-            26,
+            28,
             "E2"
         );
         let compacted_receipts = BTreeMap::from([
@@ -368,7 +524,7 @@ mod tests {
         );
         assert_eq!(
             compacted.complete.migrations().last().unwrap().version(),
-            24,
+            26,
             "E3"
         );
         let converged_original_receipts = original

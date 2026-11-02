@@ -254,8 +254,14 @@ impl SessionCoordination {
             .observations
             .session_usage_for_model_request(session.session_id.as_str(), &source_thread_id.0)
             .await?;
+        let operation_id = crate::SessionLifecycle::budget_usage_observation_id(
+            &session,
+            &source_thread_id.0,
+            &usage,
+        )
+        .map_err(RunError::from)?;
         self.lifecycle
-            .reconcile_managed_budget_usage(&session.session_id, usage)
+            .reconcile_managed_budget_usage(&session.session_id, &operation_id, usage)
             .await
             .map(|outcome| outcome.session)
             .map_err(|error| {
@@ -845,8 +851,11 @@ impl SessionAgentCoordination for SessionCoordination {
             .observations
             .session_usage_for_model_request(session_id.as_str(), &thread_id.0)
             .await?;
+        let operation_id =
+            crate::SessionLifecycle::budget_usage_observation_id(&session, &thread_id.0, &usage)
+                .map_err(RunError::from)?;
         self.lifecycle
-            .reconcile_managed_budget_usage(session_id, usage)
+            .reconcile_managed_budget_usage(session_id, &operation_id, usage)
             .await
             .map(|outcome| outcome.session.budget.can_admit_model_request())
             .map_err(|error| {

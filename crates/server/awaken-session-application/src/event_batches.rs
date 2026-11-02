@@ -10,8 +10,8 @@
 //! This module coordinates existing owners only. It does not persist an Event
 //! log, execute a Run, or retain a completion registry.
 
-use crate::SessionRootReads as _;
 use crate::mutation::ROOT_CAS_ATTEMPTS;
+use crate::{SessionProjectionReads as _, SessionRootReads as _};
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_session_contract::SessionThreadTarget;
@@ -46,7 +46,49 @@ const EVENT_BATCH_RECONCILIATION_STEPS: usize = 50;
 pub enum SessionEventBatchIdempotency {
     Absent,
     Exact(SessionEventBatch),
+    NoOp,
     Conflict,
+}
+
+/// A no-op has an accepted command receipt but no retained Event batch.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionEventBatchResult {
+    Batch(SessionEventBatch),
+    NoOp,
+}
+
+impl SessionEventBatchResult {
+    pub fn as_batch(&self) -> Option<&SessionEventBatch> {
+        match self {
+            Self::Batch(batch) => Some(batch),
+            Self::NoOp => None,
+        }
+    }
+
+    pub fn into_batch(self) -> Option<SessionEventBatch> {
+        match self {
+            Self::Batch(batch) => Some(batch),
+            Self::NoOp => None,
+        }
+    }
+
+    fn require_accepted(&self) -> Result<(), RunError> {
+        match self {
+            Self::Batch(batch) => batch
+                .require_accepted()
+                .map_err(|_| awaken_session_contract::event_admission_closed()),
+            Self::NoOp => Ok(()),
+        }
+    }
+}
+
+impl From<&SessionEventBatchResult> for awaken_session_contract::SessionEventAdmission {
+    fn from(result: &SessionEventBatchResult) -> Self {
+        match result {
+            SessionEventBatchResult::Batch(batch) => batch.into(),
+            SessionEventBatchResult::NoOp => Self::NoOp,
+        }
+    }
 }
 
 enum EventBatchAdmission {
@@ -63,6 +105,23 @@ enum EventBatchAdmission {
 }
 
 impl EventBatchAdmission {
+    fn record(
+        &self,
+        mutations: &crate::SessionMutations,
+        runtime_incarnation: &str,
+        session_id: &awaken_session_types::SessionId,
+    ) -> awaken_session_contract::IdempotencyRecord {
+        if let Some((key, fingerprint)) = self.idempotency() {
+            return awaken_session_contract::IdempotencyRecord::event_admission(key, fingerprint);
+        }
+        let fresh = mutations.fresh_mutation_record(
+            runtime_incarnation,
+            session_id.as_str(),
+            "event-batch",
+        );
+        awaken_session_contract::IdempotencyRecord::event_admission(&fresh.key, &fresh.payload_hash)
+    }
+
     fn action(&self) -> SessionEventBatchAdmissionAction {
         match self {
             Self::Accept { .. } => SessionEventBatchAdmissionAction::Accept,
@@ -87,12 +146,13 @@ struct RetainedEventBatchAdmission<'a> {
     batch: Option<&'a SessionEventBatch>,
     fingerprint_matches: bool,
     admission_closed: bool,
+    no_op: bool,
 }
 
 impl RetainedEventBatchAdmission<'_> {
     fn classification(&self) -> SessionEventBatchAdmissionClass {
         classify_session_event_batch_admission(
-            self.batch.is_some(),
+            self.batch.is_some() || self.no_op,
             self.fingerprint_matches,
             self.admission_closed,
         )
@@ -103,7 +163,7 @@ impl RetainedEventBatchAdmission<'_> {
         action: SessionEventBatchAdmissionAction,
     ) -> SessionEventBatchAdmissionPlan {
         resolve_session_event_batch_admission(
-            self.batch.is_some(),
+            self.batch.is_some() || self.no_op,
             self.fingerprint_matches,
             self.admission_closed,
             action,
@@ -111,39 +171,92 @@ impl RetainedEventBatchAdmission<'_> {
     }
 }
 
-fn retained_event_batch_admission<'a>(
-    batches: &'a [SessionEventBatch],
-    key: &str,
-    request_fingerprint: &str,
-) -> RetainedEventBatchAdmission<'a> {
-    let batch = batches
-        .iter()
-        .find(|batch| batch.idempotency_key.as_deref() == Some(key));
-    RetainedEventBatchAdmission {
-        batch,
-        fingerprint_matches: batch
-            .is_some_and(|batch| batch.request_fingerprint.as_deref() == Some(request_fingerprint)),
-        admission_closed: batch.is_some_and(|batch| batch.admission_closed),
+fn snapshot_has_no_live_run(
+    snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    known_absent: bool,
+) -> Result<bool, RunError> {
+    let Some(snapshot) = snapshot else {
+        return Ok(known_absent);
+    };
+    let _ = snapshot.current_run().map_err(|error| {
+        RunError::classified("session_event_snapshot_invalid", error.to_string())
+    })?;
+    if snapshot.runs.is_empty() {
+        return Ok(known_absent && snapshot.resume_tickets.is_empty());
     }
+    Ok(snapshot
+        .runs
+        .iter()
+        .all(|run| matches!(run.state, RunState::Ended(_))))
 }
 
-fn classify_event_batch_idempotency(
-    batches: &[SessionEventBatch],
-    key: &str,
-    request_fingerprint: &str,
-) -> SessionEventBatchIdempotency {
-    let retained = retained_event_batch_admission(batches, key, request_fingerprint);
-    match retained.classification() {
-        SessionEventBatchAdmissionClass::Absent => SessionEventBatchIdempotency::Absent,
-        SessionEventBatchAdmissionClass::Accepted | SessionEventBatchAdmissionClass::Closed => {
-            SessionEventBatchIdempotency::Exact(
-                retained
-                    .batch
-                    .expect("exact classification has a retained batch")
-                    .clone(),
-            )
+fn retained_event_batch_admission<'a>(
+    batches: &'a [SessionEventBatch],
+    external_key: Option<&str>,
+    record: &awaken_session_contract::IdempotencyRecord,
+    receipt: Option<&awaken_session_contract::SessionIdempotencyReceipt>,
+    revision: SessionRevision,
+) -> Result<RetainedEventBatchAdmission<'a>, RunError> {
+    use awaken_session_contract::SessionCommandReceiptKind as Kind;
+    let invalid = || {
+        RunError::classified(
+            "session_event_receipt_invalid",
+            "Event receipt contradicts its retained Session facts",
+        )
+    };
+    let batch = if let Some(key) = external_key {
+        batches
+            .iter()
+            .find(|batch| batch.idempotency_key.as_deref() == Some(key))
+    } else {
+        receipt
+            .filter(|receipt| receipt.kind() == Kind::EventBatch)
+            .and_then(|receipt| {
+                batches
+                    .iter()
+                    .find(|batch| batch.admitted_revision == receipt.committed_revision)
+            })
+    };
+    let no_op = receipt.is_some_and(|receipt| receipt.kind() == Kind::EventNoOp);
+    if let Some(receipt) = receipt
+        && (receipt.committed_revision.0 == 0
+            || receipt.committed_revision > revision
+            || receipt.kind() == Kind::Root
+            || (no_op && batch.is_some())
+            || (receipt.kind() == Kind::EventBatch && batch.is_none())
+            || batch.is_some_and(|batch| batch.admitted_revision != receipt.committed_revision))
+    {
+        return Err(invalid());
+    }
+    Ok(RetainedEventBatchAdmission {
+        batch,
+        fingerprint_matches: receipt.map_or_else(
+            || {
+                batch.is_some_and(|batch| {
+                    batch.request_fingerprint.as_deref() == Some(record.payload_hash.as_str())
+                })
+            },
+            |receipt| receipt.payload_hash == record.payload_hash,
+        ),
+        admission_closed: batch.is_some_and(|batch| batch.admission_closed),
+        no_op,
+    })
+}
+
+impl RetainedEventBatchAdmission<'_> {
+    fn idempotency(&self) -> SessionEventBatchIdempotency {
+        match self.classification() {
+            SessionEventBatchAdmissionClass::Absent => SessionEventBatchIdempotency::Absent,
+            SessionEventBatchAdmissionClass::Conflict => SessionEventBatchIdempotency::Conflict,
+            SessionEventBatchAdmissionClass::Accepted if self.no_op => {
+                SessionEventBatchIdempotency::NoOp
+            }
+            SessionEventBatchAdmissionClass::Accepted | SessionEventBatchAdmissionClass::Closed => {
+                SessionEventBatchIdempotency::Exact(
+                    self.batch.expect("retained batch receipt").clone(),
+                )
+            }
         }
-        SessionEventBatchAdmissionClass::Conflict => SessionEventBatchIdempotency::Conflict,
     }
 }
 
@@ -246,6 +359,7 @@ fn committed_message_anchor<'a>(
 /// admission, activity and coordination components an event drives, and the Thread,
 /// coordination, streaming and Outcome runtime roles.
 pub struct SessionEventBatchCommands {
+    runtime_incarnation: String,
     mutations: Arc<crate::SessionMutations>,
     clock: Arc<dyn awaken_time::WallClock>,
     lifecycle: Arc<crate::SessionLifecycle>,
@@ -262,6 +376,7 @@ pub struct SessionEventBatchCommands {
 
 /// The collaborators one [`SessionEventBatchCommands`] is built from.
 pub(crate) struct SessionEventBatchCollaborators {
+    pub(crate) runtime_incarnation: String,
     pub(crate) mutations: Arc<crate::SessionMutations>,
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
     pub(crate) lifecycle: Arc<crate::SessionLifecycle>,
@@ -275,6 +390,7 @@ pub(crate) struct SessionEventBatchCollaborators {
 impl SessionEventBatchCommands {
     pub(crate) fn new(collaborators: SessionEventBatchCollaborators) -> Self {
         let SessionEventBatchCollaborators {
+            runtime_incarnation,
             mutations,
             clock,
             lifecycle,
@@ -285,6 +401,7 @@ impl SessionEventBatchCommands {
             runtime,
         } = collaborators;
         Self {
+            runtime_incarnation,
             mutations,
             clock,
             lifecycle,
@@ -309,16 +426,27 @@ impl SessionEventBatchCommands {
         key: &str,
         request_fingerprint: &str,
     ) -> Result<SessionEventBatchIdempotency, RunError> {
+        let record =
+            awaken_session_contract::IdempotencyRecord::event_admission(key, request_fingerprint);
+        let receipt = self
+            .mutations
+            .repository()
+            .idempotency_receipt(session_id, &record.key)
+            .await
+            .map_err(repository_run_error)?;
         let session = self
             .mutations
             .session_aggregate(session_id)
             .await
             .map_err(repository_run_error)?;
-        Ok(classify_event_batch_idempotency(
+        Ok(retained_event_batch_admission(
             &session.event_batches,
-            key,
-            request_fingerprint,
-        ))
+            Some(key),
+            &record,
+            receipt.as_ref(),
+            session.revision,
+        )?
+        .idempotency())
     }
 
     async fn message_projection_anchor(
@@ -428,8 +556,7 @@ impl SessionEventBatchCommands {
 
     /// The Event append every caller outside this crate uses. Ownership was
     /// decided once, when `access` was minted; only this crate's own
-    /// reconcilers append without it. `None` is an accepted no-op that left
-    /// no root fact (see [`Self::admit_session_event_batch_idempotent`]).
+    /// reconcilers append without it.
     pub async fn append_owned_session_event_batch(
         &self,
         access: &crate::SessionAccess,
@@ -437,7 +564,7 @@ impl SessionEventBatchCommands {
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
-    ) -> Result<Option<SessionEventBatch>, RunError> {
+    ) -> Result<SessionEventBatchResult, RunError> {
         self.admit_session_event_batch_idempotent(
             access.session_id(),
             inputs,
@@ -456,7 +583,7 @@ impl SessionEventBatchCommands {
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
-    ) -> Result<Option<(SessionEventBatch, Option<RunError>)>, RunError> {
+    ) -> Result<(SessionEventBatchResult, Option<RunError>), RunError> {
         self.append_and_drive_session_event_batch_idempotent(
             access.session_id(),
             inputs,
@@ -479,21 +606,26 @@ impl SessionEventBatchCommands {
         data_subject_id: Option<String>,
         traceparent: Option<String>,
     ) -> Result<SessionEventBatch, RunError> {
-        self.append_session_event_batch_idempotent(
+        self.admit_session_event_batch_idempotent(
             &awaken_session_types::SessionId::from(session_id),
             inputs,
             data_subject_id,
             traceparent,
             None,
         )
-        .await
+        .await?
+        .into_batch()
+        .ok_or_else(|| {
+            RunError::classified(
+                "session_event_batch_missing",
+                "ordinary batch fixture received an accepted no-op",
+            )
+        })
     }
 
     /// Atomically append or replay one HTTP-idempotent Event batch. The key and
     /// fingerprint live on the existing root command, so concurrent callers
     /// either observe that exact batch or a conflict under the same root CAS.
-    /// `None` is the accepted no-op of an interrupt-only batch on a budget
-    /// paused Session: there is nothing to stop, so no root fact is written.
     pub(crate) async fn admit_session_event_batch_idempotent(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -501,8 +633,8 @@ impl SessionEventBatchCommands {
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
-    ) -> Result<Option<SessionEventBatch>, RunError> {
-        let Some(batch) = self
+    ) -> Result<SessionEventBatchResult, RunError> {
+        let batch = self
             .resolve_session_event_batch(
                 session_id,
                 EventBatchAdmission::Accept {
@@ -513,44 +645,17 @@ impl SessionEventBatchCommands {
                 },
                 true,
             )
-            .await?
-        else {
-            return Ok(None);
-        };
+            .await?;
         batch
             .require_accepted()
             .map_err(|_| awaken_session_contract::event_admission_closed())?;
-        Ok(Some(batch))
-    }
-
-    /// Test form of [`Self::admit_session_event_batch_idempotent`] for batches
-    /// that always leave a root fact.
-    #[cfg(test)]
-    pub(crate) async fn append_session_event_batch_idempotent(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        inputs: Vec<SessionEventInput>,
-        data_subject_id: Option<String>,
-        traceparent: Option<String>,
-        idempotency: Option<(String, String)>,
-    ) -> Result<SessionEventBatch, RunError> {
-        self.admit_session_event_batch_idempotent(
-            session_id,
-            inputs,
-            data_subject_id,
-            traceparent,
-            idempotency,
-        )
-        .await?
-        .ok_or_else(|| RunError::internal("the Event batch was an accepted no-op"))
+        Ok(batch)
     }
 
     /// Accept through the same root CAS, then perform the request-local drive
     /// before notifying the full recovery sweep. This removes a duplicate race
     /// between the synchronous driver and its own wake while retaining the
     /// periodic recovery authority if this future is lost after acceptance.
-    /// `None` is the same accepted no-op as in
-    /// [`Self::admit_session_event_batch_idempotent`]; nothing is driven.
     pub(crate) async fn append_and_drive_session_event_batch_idempotent(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -558,8 +663,8 @@ impl SessionEventBatchCommands {
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
-    ) -> Result<Option<(SessionEventBatch, Option<RunError>)>, RunError> {
-        let Some(batch) = self
+    ) -> Result<(SessionEventBatchResult, Option<RunError>), RunError> {
+        let batch = self
             .resolve_session_event_batch(
                 session_id,
                 EventBatchAdmission::Accept {
@@ -570,22 +675,22 @@ impl SessionEventBatchCommands {
                 },
                 false,
             )
-            .await?
-        else {
-            return Ok(None);
-        };
+            .await?;
         batch
             .require_accepted()
             .map_err(|_| awaken_session_contract::event_admission_closed())?;
+        let Some(retained) = batch.as_batch() else {
+            return Ok((batch, None));
+        };
         let drive_error = self
-            .drive_session_event_batches(session_id, Some(&batch.batch_id))
+            .drive_session_event_batches(session_id, Some(&retained.batch_id))
             .await
             .err();
         // The full sweep remains the one retry owner. Waking after the local
         // attempt preserves queued predecessors and retryable failures without
         // racing this request's append/admission/activation root mutations.
         self.lifecycle.request_reconciliation();
-        Ok(Some((batch, drive_error)))
+        Ok((batch, drive_error))
     }
 
     /// Resolve response loss without replaying execution. If acceptance already
@@ -621,12 +726,7 @@ impl SessionEventBatchCommands {
                 },
                 true,
             )
-            .await
-            .and_then(|batch| {
-                batch.ok_or_else(|| {
-                    RunError::internal("a closed admission always leaves a root fact")
-                })
-            });
+            .await;
         match result {
             Ok(batch) => Ok((&batch).into()),
             Err(error) => {
@@ -669,31 +769,88 @@ impl SessionEventBatchCommands {
         Ok((owner, session))
     }
 
+    async fn budget_interrupt_is_noop(&self, session: &PersistedSession) -> Result<bool, RunError> {
+        if !awaken_session_contract::session_is_budget_paused(session)
+            || !session.active_activity_epochs.is_empty()
+        {
+            return Ok(false);
+        }
+        let root = self
+            .queries
+            .projection_thread_snapshot(&session.session_id, session.session_id.as_str(), None)
+            .await?;
+        let (links, children) = self
+            .queries
+            .projection_coordinated_prefix(&session.session_id, root.as_ref())
+            .await?;
+        let known_absent = |thread: &str| {
+            session
+                .run_activities()
+                .is_some_and(|(records, unrecorded)| {
+                    !unrecorded
+                        && records
+                            .iter()
+                            .all(|record| record.thread_id().0.as_str() != thread)
+                })
+        };
+        if !snapshot_has_no_live_run(root.as_ref(), known_absent(session.session_id.as_str()))? {
+            return Ok(false);
+        }
+        for link in &links {
+            if !snapshot_has_no_live_run(
+                children.get(&link.thread_id.0),
+                link.latest_run_id.is_none() && known_absent(&link.thread_id.0),
+            )? {
+                return Ok(false);
+            }
+        }
+        Ok(!self
+            .queries
+            .projection_prefix_moved(
+                session,
+                awaken_session_execution_contract::SessionProjectionPrefix {
+                    root: root.as_ref(),
+                    links: &links,
+                    children: &children,
+                },
+            )
+            .await?)
+    }
+
     async fn resolve_session_event_batch(
         &self,
         session_id: &awaken_session_types::SessionId,
         admission: EventBatchAdmission,
         wake_after_accept: bool,
-    ) -> Result<Option<SessionEventBatch>, RunError> {
+    ) -> Result<SessionEventBatchResult, RunError> {
         let mutations = &self.mutations;
         let (thread_reads, coordination) = (self.thread_reads.as_ref(), &*self.coordination_reads);
+        let record = admission.record(mutations, &self.runtime_incarnation, session_id);
 
         for attempt in 0..ROOT_CAS_ATTEMPTS {
+            let receipt = mutations
+                .repository()
+                .idempotency_receipt(session_id, &record.key)
+                .await
+                .map_err(repository_run_error)?;
             let (owner, mut session) = self.load_event_root(session_id).await?;
-            let retained = admission.idempotency().map(|(key, request_fingerprint)| {
-                retained_event_batch_admission(&session.event_batches, key, request_fingerprint)
-            });
-            let plan = match retained.as_ref() {
-                Some(retained) => retained.resolution(admission.action()),
-                None => SessionEventBatchAdmissionPlan::AppendAccepted,
-            };
+            let retained = retained_event_batch_admission(
+                &session.event_batches,
+                admission.idempotency().map(|(key, _)| key),
+                &record,
+                receipt.as_ref(),
+                session.revision,
+            )?;
+            let plan = retained.resolution(admission.action());
             match plan {
                 SessionEventBatchAdmissionPlan::ReplayAccepted
                 | SessionEventBatchAdmissionPlan::ReplayClosed => {
-                    return Ok(Some(
+                    if retained.no_op {
+                        return Ok(SessionEventBatchResult::NoOp);
+                    }
+                    return Ok(SessionEventBatchResult::Batch(
                         retained
-                            .as_ref()
-                            .and_then(|retained| retained.batch)
+                            .batch
                             .expect("replay admission plan has one retained batch")
                             .clone(),
                     ));
@@ -712,16 +869,61 @@ impl SessionEventBatchCommands {
                     "Session no longer accepts Event batches",
                 ));
             }
-            // The budget-pause interrupt no-op is decided on the same root the
-            // CAS commits against, so a pause racing protocol validation can
-            // never leave an interrupt retained behind a paused Session.
-            if plan == SessionEventBatchAdmissionPlan::AppendAccepted
-                && let EventBatchAdmission::Accept { inputs, .. } = &admission
-                && self
-                    .budget_paused_interrupt_is_no_op(session_id, &session, inputs)
-                    .await?
-            {
-                return Ok(None);
+            if let EventBatchAdmission::Accept { inputs, .. } = &admission {
+                for input in inputs {
+                    if let SessionEventInput::Interrupt(interrupt) = input {
+                        interrupt.validate()?;
+                    }
+                }
+                // The shared Thread law applies to every internal/protocol
+                // caller before either retaining a batch or acknowledging no-op.
+                admit_event_batch_topology(coordination, thread_reads, session_id, inputs).await?;
+                let interrupts = inputs
+                    .iter()
+                    .map(|input| match input {
+                        SessionEventInput::Interrupt(interrupt) => Some(interrupt.clone()),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let Some(interrupts) = interrupts
+                    && !interrupts.is_empty()
+                    && self.budget_interrupt_is_noop(&session).await?
+                {
+                    let result = mutations
+                        .commit_mutation(
+                            &owner,
+                            awaken_session_contract::SessionMutation {
+                                expected_revision: session.revision,
+                                idempotency: record.clone(),
+                                payload:
+                                    awaken_session_contract::SessionMutationPayload::EventNoOp {
+                                        session_id: session_id.clone(),
+                                        interrupts,
+                                    },
+                                lifecycle_facts: Vec::new(),
+                            },
+                        )
+                        .await
+                        .map_err(mutation_run_error)?;
+                    match result {
+                        awaken_session_contract::SessionMutationResult::AcknowledgedNoOp {
+                            observed_revision,
+                        } if observed_revision.0 > 0 => return Ok(SessionEventBatchResult::NoOp),
+                        awaken_session_contract::SessionMutationResult::Replayed { .. }
+                        | awaken_session_contract::SessionMutationResult::Conflict { .. } => {
+                            continue;
+                        }
+                        awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
+                            return Err(awaken_session_contract::event_admission_conflict());
+                        }
+                        _ => {
+                            return Err(RunError::classified(
+                                "session_event_receipt_invalid",
+                                "Repository returned a root mutation for an Event no-op",
+                            ));
+                        }
+                    }
+                }
             }
             let admission_projection_anchor =
                 if plan == SessionEventBatchAdmissionPlan::AppendAccepted {
@@ -784,81 +986,57 @@ impl SessionEventBatchCommands {
             {
                 batch.bind_idempotency(key.to_owned(), request_fingerprint.to_owned())?;
             }
-            // Protocol validation can race another key before either root CAS.
-            // Recheck on EVERY retry; the durable batch owns occupancy even
-            // after Runtime delivery, without a second registry or local lock.
-            if let EventBatchAdmission::Accept { inputs, .. } = &admission {
-                admit_event_batch_topology(coordination, thread_reads, session_id, inputs).await?;
-            }
             batch.validate_tool_reply_occupancy(&session.event_batches)?;
             session
                 .events()
                 .append_batch(batch.clone())
                 .map_err(|error| RunError::internal(error.to_string()))?;
-            match mutations
-                .commit_session_snapshot_with_outcome(
-                    &owner,
-                    session,
-                    "append-event-batch",
-                    Vec::new(),
-                )
-                .await
+            match Box::pin(crate::SessionMutations::commit_observed_snapshot(
+                mutations.repository().as_ref(),
+                &owner,
+                &mut session,
+                record.clone(),
+                Vec::new(),
+                self.clock.now_ms(),
+            ))
+            .await
             {
-                Ok(_) => {
+                Ok(awaken_session_contract::SessionMutationResult::Applied { new_revision })
+                    if new_revision == committed_revision =>
+                {
                     if !batch.admission_closed && wake_after_accept {
                         self.lifecycle.request_reconciliation();
                     }
-                    return Ok(Some(batch));
+                    return Ok(SessionEventBatchResult::Batch(batch));
                 }
-                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
-                Err(error) => return Err(mutation_run_error(error)),
+                Ok(awaken_session_contract::SessionMutationResult::AcknowledgedNoOp {
+                    observed_revision,
+                }) if observed_revision.0 > 0 => return Ok(SessionEventBatchResult::NoOp),
+                Ok(awaken_session_contract::SessionMutationResult::Replayed { .. }) => {
+                    continue;
+                }
+                Ok(awaken_session_contract::SessionMutationResult::Conflict { .. })
+                    if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
+                Ok(awaken_session_contract::SessionMutationResult::IdempotencyMismatch) => {
+                    return Err(awaken_session_contract::event_admission_conflict());
+                }
+                Ok(awaken_session_contract::SessionMutationResult::Conflict { .. }) => {
+                    return Err(RunError::unavailable(
+                        "Session Event state changed concurrently",
+                    ));
+                }
+                Ok(_) => {
+                    return Err(RunError::classified(
+                        "session_event_receipt_invalid",
+                        "Repository returned an invalid Event receipt revision",
+                    ));
+                }
+                Err(error) => return Err(repository_run_error(error)),
             }
         }
         Err(RunError::unavailable(
             "Session Event batch admission changed concurrently",
         ))
-    }
-
-    /// An interrupt-only batch on a budget-paused Session has nothing to stop
-    /// and is an accepted no-op, unless a target Thread holds an Awaiting Run
-    /// the interrupt must still settle.
-    async fn budget_paused_interrupt_is_no_op(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        session: &PersistedSession,
-        inputs: &[SessionEventInput],
-    ) -> Result<bool, RunError> {
-        if inputs.is_empty()
-            || !awaken_session_contract::session_is_budget_paused(session)
-            || !inputs
-                .iter()
-                .all(|input| matches!(input, SessionEventInput::Interrupt(_)))
-        {
-            return Ok(false);
-        }
-        for input in inputs {
-            let SessionEventInput::Interrupt(interrupt) = input else {
-                unreachable!("interrupt-only batch was classified above");
-            };
-            for target in &interrupt.targets {
-                let thread_id = target.thread_id(session_id);
-                let Some(snapshot) = self
-                    .thread_reads
-                    .session_thread_recovery_snapshot(session_id, &thread_id.0)
-                    .await?
-                else {
-                    continue;
-                };
-                let awaiting = snapshot
-                    .current_run()
-                    .map_err(|error| RunError::internal(format!("Thread recovery: {error}")))?
-                    .is_some_and(|run| run.state == RunState::Awaiting);
-                if awaiting {
-                    return Ok(false);
-                }
-            }
-        }
-        Ok(true)
     }
 
     /// Revisit every unfinished root-owned Event batch through the one Session
@@ -1686,7 +1864,7 @@ impl crate::SessionEventBatches for SessionEventBatchCommands {
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
-    ) -> Result<Option<(SessionEventBatch, Option<RunError>)>, RunError> {
+    ) -> Result<(SessionEventBatchResult, Option<RunError>), RunError> {
         SessionEventBatchCommands::append_and_drive_owned_session_event_batch(
             self,
             access,
@@ -1705,7 +1883,7 @@ impl crate::SessionEventBatches for SessionEventBatchCommands {
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
-    ) -> Result<Option<SessionEventBatch>, RunError> {
+    ) -> Result<SessionEventBatchResult, RunError> {
         SessionEventBatchCommands::append_owned_session_event_batch(
             self,
             access,

@@ -49,7 +49,7 @@ async fn append(
     fingerprint: &str,
 ) -> Result<SessionEventBatch, RunError> {
     app.event_batches
-        .append_session_event_batch_idempotent(
+        .admit_session_event_batch_idempotent(
             &SessionId::from(SESSION),
             input(text),
             None,
@@ -57,6 +57,11 @@ async fn append(
             Some((key.into(), fingerprint.into())),
         )
         .await
+        .map(|result| {
+            result
+                .into_batch()
+                .expect("User input retains a real Event batch")
+        })
 }
 
 #[tokio::test]
@@ -190,9 +195,9 @@ async fn driven_event_batch_replay_executes_its_run_once() {
             .filter(|entry| entry.starts_with(prefix))
             .count()
     };
-    let (first, first_error) = drive()
-        .await
-        .expect("R5 first drive")
+    let (first, first_error) = drive().await.expect("R5 first drive");
+    let first = first
+        .into_batch()
         .expect("R5 an input batch is not a root no-op");
     assert!(first_error.is_none(), "R5 first drive completes");
     let reserved = runtime.reserved.lock().unwrap().len();
@@ -203,9 +208,9 @@ async fn driven_event_batch_replay_executes_its_run_once() {
     assert_eq!(activate_calls, 1, "R5 one activation call");
     let root = repository.get(&session_id).await.unwrap();
 
-    let (replay, _) = drive()
-        .await
-        .expect("R5 replay drive")
+    let (replay, _) = drive().await.expect("R5 replay drive");
+    let replay = replay
+        .into_batch()
         .expect("R5 the replay is not a root no-op");
     assert!(is_original_receipt(&replay, &first), "R5/O0 driven replay");
     assert_eq!(

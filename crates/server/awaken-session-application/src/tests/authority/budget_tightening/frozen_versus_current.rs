@@ -82,7 +82,11 @@ async fn frozen_pins_survive_a_moved_price_catalog_through_later_commands() {
     .await
     .expect("dynamic budget update");
     app.lifecycle()
-        .reconcile_managed_budget_usage(&SessionId::from(id), usage(FIRST_STEP_TOKENS))
+        .reconcile_managed_budget_usage(
+            &SessionId::from(id),
+            "tightening-first-settlement",
+            usage(FIRST_STEP_TOKENS),
+        )
         .await
         .expect("settlement replay");
 

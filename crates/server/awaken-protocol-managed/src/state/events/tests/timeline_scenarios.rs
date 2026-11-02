@@ -633,8 +633,9 @@ impl Timeline for RootTimeline {
                         None,
                     )
                     .await
-                    .map(|batch| batch.expect("the Event batch is admitted"))
-                    .unwrap();
+                    .unwrap()
+                    .into_batch()
+                    .expect("this fixture requires a retained Event batch");
                 let SessionEventCommand::UserMessage { run_id, .. } = &retained.events[0].event
                 else {
                     unreachable!("the retained batch holds the user message")

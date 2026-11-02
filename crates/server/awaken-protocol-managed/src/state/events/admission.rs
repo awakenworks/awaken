@@ -91,24 +91,6 @@ impl ManagedState {
                 .iter()
                 .all(|event| matches!(event, InboundEvent::UserInterrupt { .. }));
         if interrupt_only {
-            let mut has_awaiting_run = false;
-            for snapshot in root_snapshot.iter().chain(child_snapshots.values()) {
-                has_awaiting_run |= Self::current_recovery_run(snapshot)?.is_some_and(|run| {
-                    run.state == awaken_agent_contract::agent::run::RunState::Awaiting
-                });
-            }
-            // Preserve the existing accepted no-op for a pure budget pause, but
-            // never mistake an Awaiting Run with an isolated/corrupt ticket for
-            // that no-op. Interrupt needs topology and lifecycle facts, not reply
-            // authority, so it deliberately does not materialize ResumeTickets.
-            if awaken_session_contract::session_is_budget_paused(&persisted_session)
-                && !has_awaiting_run
-            {
-                return Ok(ValidatedEventBatch {
-                    inputs: Vec::new(),
-                    drive: ValidatedEventBatchDrive::PreferredBatch,
-                });
-            }
             let inputs = events
                 .iter()
                 .map(|event| {
@@ -464,19 +446,26 @@ impl ManagedState {
                     batch.require_accepted().map_err(|_| {
                         StateError::Run(awaken_session_contract::event_admission_closed())
                     })?;
-                    Ok(Some(batch))
+                    Ok(Some(
+                        awaken_session_application::SessionEventBatchResult::Batch(batch),
+                    ))
                 }
+                awaken_session_application::SessionEventBatchIdempotency::NoOp => Ok(Some(
+                    awaken_session_application::SessionEventBatchResult::NoOp,
+                )),
                 awaken_session_application::SessionEventBatchIdempotency::Conflict => {
                     Err(StateError::IdempotencyMismatch)
                 }
             }
         };
         let receipt_response =
-            |batch: &awaken_session_contract::SessionEventBatch| SendEventsResponse {
-                data: accepted_inbound_receipts(session_id, batch)
-                    .into_iter()
-                    .map(|projection| projection.event)
-                    .collect(),
+            |result: &awaken_session_application::SessionEventBatchResult| SendEventsResponse {
+                data: result.as_batch().map_or_else(Vec::new, |batch| {
+                    accepted_inbound_receipts(session_id, batch)
+                        .into_iter()
+                        .map(|projection| projection.event)
+                        .collect()
+                }),
             };
         if let Some(batch) = classify_retry().await? {
             return Ok(receipt_response(&batch));
@@ -555,9 +544,6 @@ impl ManagedState {
                 // Batch admission precedes the first receipt/event append. One invalid
                 // member therefore cannot leave a partial public history.
                 let validated = self.validate_event_batch(session_id, &req.events).await?;
-                if validated.inputs.is_empty() {
-                    return Ok(None);
-                }
                 let drive = validated.drive;
                 let append = if drive == ValidatedEventBatchDrive::PreferredBatch {
                     self.roles
@@ -581,10 +567,10 @@ impl ManagedState {
                             idempotency_key.clone().zip(request_fingerprint.clone()),
                         )
                         .await
-                        .map(|batch| batch.map(|batch| (batch, None)))
+                        .map(|batch| (batch, None))
                 };
-                // `None` is the root-CAS budget-pause no-op: a pause that won
-                // the race after validation still answers with no receipt.
+                // The application owns both retained batches and explicit no-op
+                // receipts, including a pause that races protocol validation.
                 append.map_err(|error| {
                     if error.code == "idempotency_conflict" {
                         StateError::IdempotencyMismatch
@@ -596,12 +582,14 @@ impl ManagedState {
             .await
         };
         let (accepted, drive_error) = match admission {
-            Ok(Some(accepted)) => accepted,
-            Ok(None) => return Ok(SendEventsResponse { data: Vec::new() }),
+            Ok(accepted) => accepted,
             Err(error) => match classify_retry().await? {
                 Some(batch) => return Ok(receipt_response(&batch)),
                 None => return Err(error),
             },
+        };
+        let Some(accepted) = accepted.into_batch() else {
+            return Ok(SendEventsResponse { data: Vec::new() });
         };
 
         // Retryable dependency failure after the root CAS cannot revoke an
