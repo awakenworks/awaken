@@ -316,6 +316,52 @@ class MutationOracleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "coverage is incomplete"):
                 render_observations(raw, output, ROOT, manifest, True)
 
+            # X1: a real applied binding may share its predecessor's clock
+            # (200 -> 200), so assigning that old value is not a mutation.
+            # X2: the existing complete clock scenario includes legacy None ->
+            # 50 plus equal/backward rows. Reuse its legacy row to remove the
+            # stamp; preserve all three rows and the actual rendered relation.
+            # R1 old equal-clock no-op must not reach TLC. R2 a distinct legacy
+            # mutant reaches the original strict oracle as constant:TraceRefines.
+            # Only TLC transport stops after the root family here; this is a
+            # mutation-selection test, not a mocked TLC success or full coverage.
+            document["steps"] = [{"rule": "binding-apply",
+                "before": {"exists": True, "revision": 5, "created": 100, "updated": 200},
+                "after": {"exists": True, "revision": 6, "created": 100, "updated": 200}, "now": 200}]
+            write_json(raw / "binding-apply.json", document)
+            clocks = {**document, "name": "binding-clock-cases", "steps": [
+                {"rule": rule,
+                 "before": {"exists": True, "revision": 1, "created": None, "updated": previous},
+                 "after": {"exists": True, "revision": 2, "created": None, "updated": observed},
+                 "now": now}
+                for rule, previous, now, observed in (
+                    ("legacy", None, 50, 50), ("equal", 100, 100, 100),
+                    ("backward", 200, 100, 200))]}
+            write_json(raw / "binding-clock-cases.json", clocks)
+            render_observations(raw, output, ROOT, manifest, False)
+            module = "RustTraceBindingClockCases"
+            baseline = (output / f"{module}.tla").read_text()
+            config = (output / f"{module}.cfg").read_text()
+            with patch(f"{__name__}.check_tlc_model_mutations",
+                       side_effect=InterruptedError("root mutation recorded")) as runner:
+                with self.assertRaisesRegex(InterruptedError, "root mutation recorded"):
+                    check_observation_trace_mutants(Path("tlc.jar"), raw)
+            runner.assert_called_once()
+            args, kwargs = runner.call_args
+            self.assertEqual(args[:4], (Path("tlc.jar"), module, baseline, config))
+            self.assertEqual(kwargs, {"dependencies": ("SessionRoot", "SessionRootKernel")})
+            [(mutant, mutant_config, oracle)] = args[4]
+            self.assertEqual((mutant_config, oracle), (config, "constant:TraceRefines"))
+            self.assertNotEqual(mutant, baseline)
+            self.assertEqual(mutant.count("RootObservationStep("), 3)
+            differences = [(before, after) for before, after in
+                           zip(baseline.splitlines(), mutant.splitlines()) if before != after]
+            self.assertEqual(len(differences), 1, "X2 changes only the legacy relation")
+            self.assertEqual(mutant.count("updated |-> UnknownTime"),
+                             baseline.count("updated |-> UnknownTime") + 1)
+            self.assertEqual(json.loads((raw / "binding-clock-cases.json").read_text()), clocks,
+                             "the original production observation remains immutable")
+
     def test_temporal_mutation_requires_exact_exit_and_a_single_property(self) -> None:
         # T1 green base + exit 13 + temporal violation + one named property is
         # a kill. T2 unrelated safety/parser/tool failures cannot count. T3 a
@@ -1453,7 +1499,7 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
     # X1 bypass binding stamping; X2 resample processed time; X3 publish retired;
     # X4 rewrite recovered metadata. Mutate REAL emitted observations, not the
     # model. Each must violate the exact relation against a green trace baseline.
-    for name in ["binding-apply", "processed-first-replay-terminal", "publication-cardinality-renewal", "store-torn-prefix", "environment-projection-convergence"]:
+    for name in ["binding-clock-cases", "processed-first-replay-terminal", "publication-cardinality-renewal", "store-torn-prefix", "environment-projection-convergence"]:
         document = json.loads((trace_dir / f"{name}.json").read_text())
         with tempfile.TemporaryDirectory(prefix="awaken-observation-mutant-") as temp:
             directory = Path(temp)
@@ -1467,7 +1513,10 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
             config = (rendered / f"{module}.cfg").read_text()
             family = document["family"]
             if family == "root":
-                step = document["steps"][0]
+                # An applied binding may have an equal/backwards clock. Reuse
+                # the existing legacy clock row, whose real None -> now stamp
+                # is distinct, while retaining the complete three-row scenario.
+                step = next(s for s in document["steps"] if s["rule"] == "legacy")
                 step["after"]["updated"] = step["before"]["updated"]
             elif family == "processed":
                 document["steps"][0]["after"]["time"] += 1
