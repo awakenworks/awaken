@@ -644,7 +644,9 @@ where
             barrier.wait().await;
             let title = match &mutation.payload {
                 SessionMutationPayload::Replace(session) => session.title.clone().unwrap(),
-                SessionMutationPayload::Delete(_) => unreachable!("M1 replacement only"),
+                SessionMutationPayload::Delete(_) | SessionMutationPayload::EventNoOp { .. } => {
+                    unreachable!("M1 replacement only")
+                }
             };
             (title, repo.commit("ws_a", mutation).await)
         }
@@ -1460,7 +1462,8 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
     // root; C2 the same command carries one exact lifecycle fact; C3 the
     // database rejects that outbox INSERT after the root write; C4 the adapter
     // returns the transaction error. Effects: E1 no aggregate/tombstone change;
-    // E2 no idempotency receipt; E3 no outbox change. Decision table:
+    // E2 no idempotency receipt; E3 no outbox change; E4 this attempt is
+    // classified NotCommitted at the real pre-COMMIT fault. Decision table:
     // | Rule | root path | C2 | C3 | Effect |
     // |---|---|---|---|---|
     // | A1 | create | T | T | E1 absent + E2 + E3 |
@@ -1506,7 +1509,7 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
                 )],
             )
             .await,
-            Err(SessionRepositoryError::AuthorityUnavailable(_))
+            Err(SessionRepositoryError::NotApplied(_))
         ),
         "A1 injected outbox failure reaches the transaction boundary"
     );
@@ -1550,7 +1553,7 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
                 },
             )
             .await,
-            Err(SessionRepositoryError::AuthorityUnavailable(_))
+            Err(SessionRepositoryError::NotApplied(_))
         ),
         "A2 injected outbox failure reaches the transaction boundary"
     );
@@ -1593,7 +1596,7 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
                 },
             )
             .await,
-            Err(SessionRepositoryError::AuthorityUnavailable(_))
+            Err(SessionRepositoryError::NotApplied(_))
         ),
         "A3 injected outbox failure reaches the transaction boundary"
     );

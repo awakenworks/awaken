@@ -32,11 +32,11 @@ use awaken_environment_contract::EnvItem;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_application_contract::ExecutableProjectionAdmission;
 use awaken_session_contract::SessionEventAdmission;
+use awaken_session_contract::SessionEventInput;
 use awaken_session_contract::SessionUsage;
 use awaken_session_contract::{
     DeletedSessionEventAdmissions, IdempotencyRecord, PersistedSession, SessionRepositoryError,
 };
-use awaken_session_contract::{SessionEventBatch, SessionEventInput};
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, CoordinatedThreadLink, SessionRunActivation,
     SessionThreadLiveSubscription,
@@ -187,6 +187,13 @@ pub trait SessionProjectionReads: Send + Sync {
         observed_root: Option<&RunRecoverySnapshot>,
     ) -> Result<(Vec<CoordinatedThreadLink>, ProjectionThreadSnapshots), RunError>;
 
+    /// Revalidate the existing complete prefix and root-revision fence.
+    async fn projection_prefix_moved(
+        &self,
+        persisted: &PersistedSession,
+        prefix: awaken_session_execution_contract::SessionProjectionPrefix<'_>,
+    ) -> Result<bool, RunError>;
+
     /// See [`crate::SessionQueries::read_session_projection`].
     async fn read_session_projection(
         &self,
@@ -210,9 +217,9 @@ pub trait SessionEventBatches: Send + Sync {
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
-    ) -> Result<Option<(SessionEventBatch, Option<RunError>)>, RunError>;
+    ) -> Result<(crate::SessionEventBatchResult, Option<RunError>), RunError>;
 
-    /// See [`SessionApplication::append_session_event_batch_idempotent`].
+    /// See [`SessionApplication::admit_session_event_batch_idempotent`].
     async fn append_session_event_batch_idempotent(
         &self,
         access: &crate::SessionAccess,
@@ -220,7 +227,7 @@ pub trait SessionEventBatches: Send + Sync {
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
-    ) -> Result<Option<SessionEventBatch>, RunError>;
+    ) -> Result<crate::SessionEventBatchResult, RunError>;
 
     /// See [`SessionApplication::session_event_batch_idempotency`].
     async fn session_event_batch_idempotency(

@@ -15,33 +15,11 @@ use super::{
     storage,
 };
 
-const PREPARING: &str = "preparing";
-const ABORTING: &str = "aborting";
+use crate::creation_intents::{
+    ABORTED, ABORTING, IntentRow, PREPARING, db_ms, decode_intent, decode_phase,
+};
 
-type IntentRow = (String, String, String, String, i64);
 type Tx<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
-
-fn decode_intent(row: IntentRow) -> Result<PreparedParticipantIntent, SessionRepositoryError> {
-    let (session_id, owner_scope, phase, repository_ids, lease) = row;
-    let phase = match phase.as_str() {
-        PREPARING => PreparedParticipantIntentPhase::Preparing,
-        ABORTING => PreparedParticipantIntentPhase::Aborting,
-        other => return Err(corrupt(format!("unknown creation intent phase `{other}`"))),
-    };
-    Ok(PreparedParticipantIntent::new(
-        session_id.into(),
-        owner_scope,
-        serde_json::from_str(&repository_ids).map_err(corrupt)?,
-        phase,
-        u64::try_from(lease).map_err(corrupt)?,
-    ))
-}
-
-fn db_ms(value: u64) -> Result<i64, SessionRepositoryError> {
-    i64::try_from(value).map_err(|_| {
-        SessionRepositoryError::InvalidMutation("creation intent lease is out of range".into())
-    })
-}
 
 impl PostgresManagedSessionRepository {
     /// Consume the Session's creation intent inside the root-insert
@@ -58,7 +36,9 @@ impl PostgresManagedSessionRepository {
         .fetch_optional(&mut **tx)
         .await
         .map_err(storage)?;
-        if phase.as_deref() == Some(ABORTING) {
+        if let Some(phase) = phase.as_deref()
+            && !decode_phase(phase)?.permits_adoption()
+        {
             return Err(SessionRepositoryError::Conflict(
                 SessionRepositoryConflict::Tombstoned,
             ));
@@ -132,7 +112,7 @@ impl PreparedParticipantIntents for PostgresManagedSessionRepository {
             // Dropping the transaction rolls back the placeholder row.
             return Ok(PreparedParticipantIntentRecord::RootExists);
         }
-        if intent.phase() == PreparedParticipantIntentPhase::Aborting {
+        if !intent.phase().permits_adoption() {
             return Err(SessionRepositoryError::Conflict(
                 SessionRepositoryConflict::Tombstoned,
             ));
@@ -179,6 +159,9 @@ impl PreparedParticipantIntents for PostgresManagedSessionRepository {
             tx.commit().await.map_err(storage)?;
             return Ok(PreparedParticipantIntentClaim::Absent);
         }
+        if intent.phase() == PreparedParticipantIntentPhase::Aborted {
+            return Ok(PreparedParticipantIntentClaim::Claimed(intent));
+        }
         sqlx::query("UPDATE managed_session_creation_intent SET phase = $2 WHERE session_id = $1")
             .bind(session_id.as_str())
             .bind(ABORTING)
@@ -196,10 +179,11 @@ impl PreparedParticipantIntents for PostgresManagedSessionRepository {
         session_id: &awaken_session_types::SessionId,
     ) -> Result<(), SessionRepositoryError> {
         sqlx::query(
-            "DELETE FROM managed_session_creation_intent WHERE session_id = $1 AND phase = $2",
+            "UPDATE managed_session_creation_intent SET phase = $3 WHERE session_id = $1 AND phase = $2",
         )
         .bind(session_id.as_str())
         .bind(ABORTING)
+        .bind(ABORTED)
         .execute(&self.pool)
         .await
         .map_err(storage)?;
@@ -214,12 +198,13 @@ impl PreparedParticipantIntents for PostgresManagedSessionRepository {
         sqlx::query_as::<_, IntentRow>(
             "SELECT session_id, scope_id, phase, repository_ids_json, lease_expires_at_unix_ms \
              FROM managed_session_creation_intent \
-             WHERE phase = $1 OR lease_expires_at_unix_ms <= $2 \
+             WHERE phase = $1 OR (phase = $4 AND lease_expires_at_unix_ms <= $2) \
              ORDER BY lease_expires_at_unix_ms, session_id LIMIT $3",
         )
         .bind(ABORTING)
         .bind(db_ms(now_unix_ms)?)
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+        .bind(PREPARING)
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?

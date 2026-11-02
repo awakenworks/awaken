@@ -85,7 +85,7 @@ async fn append(
     client
         .app
         .event_batches
-        .append_session_event_batch_idempotent(
+        .admit_session_event_batch_idempotent(
             session,
             vec![input],
             None,
@@ -93,6 +93,11 @@ async fn append(
             Some((key.into(), format!("fingerprint-{key}"))),
         )
         .await
+        .map(|result| {
+            result
+                .into_batch()
+                .expect("reply fixture retains its Event batch")
+        })
 }
 
 fn normalized(result: &Result<awaken_session_contract::SessionEventBatch, RunError>) -> String {

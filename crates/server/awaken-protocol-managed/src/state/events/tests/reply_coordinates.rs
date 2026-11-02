@@ -420,7 +420,7 @@ async fn forged_application_reply(
             Some(("forged-application".into(), "fingerprint".into())),
         )
         .await
-        .map(|batch| batch.expect("the Event batch is admitted"))
+        .map(|result| result.into_batch().expect("the Event batch is admitted"))
         .map(|_| ());
     (runtime, state, session_id, before, outcome)
 }

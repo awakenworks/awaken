@@ -905,7 +905,7 @@ fn directory_snapshot(directory: &std::path::Path) -> std::collections::BTreeMap
         .collect()
 }
 
-fn migration_prefix_through(
+pub(crate) fn migration_prefix_through(
     source: &awaken_scoped_migration::MigrationBundle,
     tail: i64,
 ) -> awaken_scoped_migration::MigrationBundle {
@@ -940,7 +940,11 @@ async fn materialize_foundation_ledger_generation(
 
 /// Apply a migration prefix to a fixture database with the canonical runner,
 /// as a deployed binary of that generation would have.
-async fn migrate_fixture(conn: &sqlx::SqlitePool, prefix: &str, bundle: &MigrationBundle) {
+pub(crate) async fn migrate_fixture(
+    conn: &sqlx::SqlitePool,
+    prefix: &str,
+    bundle: &MigrationBundle,
+) {
     SqliteMigrationRunner::with_prefix(conn.clone(), prefix)
         .unwrap()
         .run_bundle(bundle)
@@ -1483,7 +1487,11 @@ async fn sqlite_original_history_converges_without_a_parallel_session_model() {
     .fetch_one(conn)
     .await
     .unwrap();
-    assert_eq!(ledgers, (26, 1), "E1");
+    assert_eq!(
+        ledgers,
+        (28, 1),
+        "E1 includes additive typed-receipt and retained-abort tails"
+    );
     let retired_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('managed_session') WHERE name IN ('agent_id','metadata_json','runtime_json')",
     )
@@ -1597,7 +1605,7 @@ async fn postgres_original_history_converges_with_the_same_domain_effects() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(ledgers, (26, 1), "E1");
+    assert_eq!(ledgers, (28, 1), "E1");
     let retired_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM information_schema.columns \
          WHERE table_schema='t_session_original_upgrade' AND table_name='managed_session' \
@@ -1655,6 +1663,10 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
     let original = original_published_session_bundle().unwrap();
     let compacted = compacted_published_session_bundle().unwrap();
 
+    // PGV1..PGV6 retain their published prefix inputs. The current tail adds
+    // the event-receipt kind and retained abort fence: exact history totals
+    // are now original 28 / compacted 26. E1 must still reject a missing or
+    // duplicate migration; PGV7 below still requires a read-only Server open.
     for (rule, schema, source, tail, seed_root, expected_main_receipts) in [
         (
             "PGV1",
@@ -1662,20 +1674,20 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
             &original,
             1,
             false,
-            26_usize,
+            28_usize,
         ),
-        ("PGV2", "t_session_original_v9", &original, 9, false, 26),
-        ("PGV3", "t_session_original_v12", &original, 12, false, 26),
-        ("PGV4", "t_session_original_v13", &original, 13, true, 26),
+        ("PGV2", "t_session_original_v9", &original, 9, false, 28),
+        ("PGV3", "t_session_original_v12", &original, 12, false, 28),
+        ("PGV4", "t_session_original_v13", &original, 13, true, 28),
         (
             "PGV5",
             "t_session_original_v22_matrix",
             &original,
             22,
             true,
-            26,
+            28,
         ),
-        ("PGV6", "t_session_compacted_v20", &compacted, 20, true, 24),
+        ("PGV6", "t_session_compacted_v20", &compacted, 20, true, 26),
     ] {
         let _ = admin
             .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())

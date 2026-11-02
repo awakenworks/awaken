@@ -174,10 +174,11 @@ where
                 .idempotency_receipt(&race.session_id, &won.key)
                 .await
                 .expect("W4 winner receipt read"),
-            Some(awaken_session_contract::SessionIdempotencyReceipt {
-                payload_hash: won.mutation.idempotency.payload_hash.clone(),
-                committed_revision: next,
-            }),
+            Some(awaken_session_contract::SessionIdempotencyReceipt::new(
+                won.mutation.idempotency.payload_hash.clone(),
+                next,
+                Default::default()
+            )),
             "W4/O1 winner receipt names the committed revision"
         );
         assert_eq!(

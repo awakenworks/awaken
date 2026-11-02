@@ -31,7 +31,6 @@ mod order;
 mod outcome;
 mod permission;
 mod position;
-mod prefix;
 mod role;
 mod stop;
 mod transcript;
@@ -50,6 +49,7 @@ pub use aggregate::{
     AggregateFallbackClose, AggregateIntervalClose, AggregatePlan, AggregateStop, IntervalHold,
     IntervalUsage, interval_hold, plan_aggregate,
 };
+pub use awaken_session_execution_contract::same_thread_projection_prefix;
 pub use budget::BudgetReach;
 pub use coordination::{
     CoordinationReceipts, IssuedToolEvent, SEND_MESSAGE_TOOL_ID, coordination_orders, cross_posts,
@@ -84,7 +84,6 @@ pub use observation::run_observation_facts;
 pub use order::{EventPosition, Ordinal, historical_pending_projection_order};
 pub use outcome::{AnchoredOutcome, CommittedOutcome, OutcomeAnchor};
 pub use position::{AnchoredEvent, EventAnchor, position_events};
-pub use prefix::same_thread_projection_prefix;
 pub use role::{ManagedEventType, TranscriptRole, phase};
 pub use stop::{StopFact, terminal_stop};
 pub use transcript::{

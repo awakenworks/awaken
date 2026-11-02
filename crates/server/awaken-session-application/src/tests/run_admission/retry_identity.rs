@@ -15,8 +15,8 @@
 //! | Q3 | commit, response lost as `Unavailable` | `Err` `session_run_admission_pending` (unknown) | the committed epoch | exactly one record, committed before the retry |
 //! | NC | Q3, but the client mints a NEW operation on `Unavailable` | - | - | two epochs: detected by the same checker |
 //!
-//! The Q1/Q3 caller errors carry distinct classes (ADR-0094 D3 as amended):
-//! "not admitted" and "unknown"; both retry only the same operation.
+//! Q1/Q3 retain distinct repository-proven write outcomes. Both keep the
+//! original operation: a failed attempt never proves final non-admission.
 use super::*;
 use crate::tests::effect_counting_runtime::EffectCountingRuntime;
 use crate::tests::run_admission::response_loss_store::ResponseLossStore;
@@ -91,7 +91,7 @@ fn single_admission(session: &PersistedSession) -> Result<(String, u64), String>
 
 struct Fixture {
     _directory: tempfile::TempDir,
-    durable: Arc<awaken_session_store::SqliteManagedSessionRepository>,
+    durable: Arc<dyn crate::SessionStore>,
     loss: Arc<ResponseLossStore>,
     faulting: Arc<FaultingSessionRepository>,
     runtime: Arc<EffectCountingRuntime>,
@@ -107,6 +107,14 @@ async fn fixture(sessions: &[&str]) -> Fixture {
         .await
         .expect("T33 file SQLite"),
     );
+    fixture_with_store(sessions, directory, durable).await
+}
+
+async fn fixture_with_store(
+    sessions: &[&str],
+    directory: tempfile::TempDir,
+    durable: Arc<dyn crate::SessionStore>,
+) -> Fixture {
     for session in sessions {
         create(durable.as_ref(), fresh_session(session)).await;
     }
@@ -253,20 +261,106 @@ async fn minting_a_new_operation_on_unavailable_is_detected() {
 #[tokio::test]
 async fn unadmitted_and_unknown_failures_are_classified_apart() {
     let fixture = fixture(&["t33-gap-q1", "t33-gap-q3"]).await;
+    write_outcome_classification_table(&fixture, "t33-gap-q1", "t33-gap-q3").await;
+}
+
+#[tokio::test]
+async fn postgres_unadmitted_and_unknown_failures_are_classified_apart() {
+    // The same Q1/Q3 rules below execute real PostgreSQL commits. Only response
+    // delivery is faulted by the decorator; no SQL result is fabricated.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    let durable = Arc::new(
+        awaken_session_store::PostgresManagedSessionRepository::connect(&url)
+            .await
+            .expect("T33 configured PostgreSQL"),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let nonce = directory
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let before = format!("t33-pg-q1-{nonce}");
+    let after = format!("t33-pg-q3-{nonce}");
+    let fixture = fixture_with_store(&[before.as_str(), after.as_str()], directory, durable).await;
+    write_outcome_classification_table(&fixture, &before, &after).await;
+}
+
+#[test]
+fn postgres_write_outcome_classification_fixture_admission() {
+    awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+        "tests::run_admission::retry_identity::postgres_unadmitted_and_unknown_failures_are_classified_apart",
+    );
+}
+
+async fn write_outcome_classification_table(fixture: &Fixture, before: &str, after: &str) {
+    // Causes: C1 failure before the real activity commit; C2 the real commit
+    // succeeds and its response is lost; C3 retry uses the original operation.
+    // The fault decorator emits identical detail for C1/C2, never message tags.
+    // Effects/rules: Q1 C1 => not-committed code + no activity record; Q3 C2 =>
+    // pending code + exactly one durable epoch; Q1/Q3+C3 => one original Run
+    // identity and one epoch, with Q3 preserving its pre-retry epoch. No code
+    // proves earlier deliveries absent or permits a fresh operation/quota release.
     fixture.loss.commit_unavailable_once(ACTIVITY_CAS);
     let not_admitted = fixture
-        .admit("t33-gap-q1", "gap-q1")
+        .admit(before, "gap-q1")
         .await
         .expect_err("pre-commit outage");
     fixture.loss.commit_then_unavailable_once(ACTIVITY_CAS);
     let unknown = fixture
-        .admit("t33-gap-q3", "gap-q3")
+        .admit(after, "gap-q3")
         .await
         .expect_err("lost committed response");
-    assert_ne!(
-        (not_admitted.kind, not_admitted.code.clone()),
-        (unknown.kind, unknown.code.clone()),
-        "a caller must be able to tell 'retry may admit' from 'observe the original first'"
+    assert_eq!(
+        not_admitted.kind,
+        awaken_session_types::RunErrorKind::Unavailable
+    );
+    assert_eq!(
+        unknown.kind,
+        awaken_session_types::RunErrorKind::Unavailable
+    );
+    assert_eq!(not_admitted.code, "session_run_not_admitted");
+    assert_eq!(unknown.code, "session_run_admission_pending");
+    assert!(
+        fixture
+            .root(before)
+            .await
+            .run_activities()
+            .unwrap()
+            .0
+            .is_empty(),
+        "Q1 no activity was committed by the failed attempt"
+    );
+    let (_, original_epoch) =
+        single_admission(&fixture.root(after).await).expect("Q3 committed before retry");
+    for (session, operation) in [(before, "gap-q1"), (after, "gap-q3")] {
+        let retried = fixture
+            .retry(session, operation)
+            .await
+            .expect("same-operation retry");
+        assert_eq!(
+            single_admission(&fixture.root(session).await),
+            Ok((
+                admit_command(session, operation).run_id.0,
+                delivery_epoch(&retried)
+            )),
+            "one original admission after retry"
+        );
+        if session == after {
+            assert_eq!(
+                delivery_epoch(&retried),
+                original_epoch,
+                "Q3 original epoch"
+            );
+        }
+    }
+    assert_eq!(
+        fixture.runtime.counts().activations,
+        0,
+        "admission does not execute"
     );
     assert_eq!(
         not_admitted.code, "session_run_not_admitted",

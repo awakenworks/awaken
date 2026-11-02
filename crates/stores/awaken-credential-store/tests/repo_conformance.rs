@@ -1858,21 +1858,15 @@ mod postgres {
             .fetch_one(pool)
             .await
             .unwrap();
-        for _ in 0..200 {
-            let waiters = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM pg_stat_activity \
-                 WHERE application_name = $1 AND wait_event_type = 'Lock'",
-            )
-            .bind(&application_name)
-            .fetch_one(pool)
-            .await
-            .unwrap();
-            if waiters >= expected {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        panic!("writers did not reach the expected PostgreSQL lock boundary");
+        awaken_reliability_testkit::wait_for_postgres_lock_waiters(
+            pool,
+            &application_name,
+            expected,
+            None,
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .expect("writers reach the expected PostgreSQL lock boundary");
     }
 
     #[tokio::test]

@@ -180,6 +180,51 @@ fn namespaced_url(url: &str, namespace: &str) -> String {
     format!("{url}{separator}options=-c%20search_path%3D{namespace}")
 }
 
+/// Observe a test-owned PostgreSQL scheduling barrier before releasing its
+/// held lock. This witnesses admission to an exact database lock, never product
+/// completion; domain suites assert committed results after the barrier opens.
+#[cfg(feature = "postgres")]
+pub async fn wait_for_postgres_lock_waiters(
+    pool: &sqlx::PgPool,
+    application_name: &str,
+    expected: i64,
+    query_contains: Option<&str>,
+    budget: std::time::Duration,
+) -> Result<(), sqlx::Error> {
+    if application_name.trim().is_empty() || expected <= 0 {
+        return Err(sqlx::Error::Protocol(
+            "PostgreSQL lock barrier requires an owned application and positive waiter count"
+                .into(),
+        ));
+    }
+    let mut observed = 0_i64;
+    let result = tokio::time::timeout(budget, async {
+        // awaken-allow(wait): This bounded database scheduling barrier observes owned lock waiters; durable settlement is asserted separately after releasing the lock.
+        loop {
+            observed = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity \
+                 WHERE datname=current_database() AND application_name=$1 \
+                   AND wait_event_type='Lock' \
+                   AND ($2::text IS NULL OR strpos(query,$2)>0)",
+            )
+            .bind(application_name)
+            .bind(query_contains)
+            .fetch_one(pool)
+            .await?;
+            if observed >= expected {
+                return Ok::<(), sqlx::Error>(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    result.unwrap_or_else(|_| {
+        Err(sqlx::Error::Protocol(format!(
+            "PostgreSQL lock admission timed out: {observed} waiters, expected {expected}"
+        )))
+    })
+}
+
 fn postgres_fixture_required(value: Result<String, std::env::VarError>) -> bool {
     match value {
         Err(std::env::VarError::NotPresent) => false,
@@ -207,6 +252,74 @@ fn admit_postgres_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn lock_barrier_invalid_identity_and_database_failure_never_admit() {
+        // DT-L: C1 missing owner/nonpositive count => reject before IO; C2
+        // valid request but closed pool => propagate PoolClosed, never success.
+        // No network fixture is needed for these two failure cuts.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://127.0.0.1:1/unreachable")
+            .unwrap();
+        for (owner, count) in [("", 1), ("owned", 0), ("owned", -1)] {
+            assert!(
+                matches!(
+                    wait_for_postgres_lock_waiters(
+                        &pool,
+                        owner,
+                        count,
+                        None,
+                        std::time::Duration::from_secs(1)
+                    )
+                    .await,
+                    Err(sqlx::Error::Protocol(_))
+                ),
+                "L1"
+            );
+        }
+        pool.close().await;
+        assert!(
+            matches!(
+                wait_for_postgres_lock_waiters(
+                    &pool,
+                    "owned",
+                    1,
+                    None,
+                    std::time::Duration::from_secs(1)
+                )
+                .await,
+                Err(sqlx::Error::PoolClosed)
+            ),
+            "L2"
+        );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn lock_barrier_deadline_never_becomes_a_successful_admission() {
+        // L3: real PostgreSQL is readable but no session has this owned
+        // application name. The genuine timing boundary must return timeout,
+        // never a successful barrier; domain tests own L4's positive two-waiter
+        // witness and their actual durable CAS assertions.
+        let Some(url) = postgres_fixture_url() else {
+            return;
+        };
+        let pool = postgres_fixture_pool(&url).await;
+        let owner = format!("unregistered-lock-witness-{}", std::process::id());
+        let result = wait_for_postgres_lock_waiters(
+            &pool,
+            &owner,
+            1,
+            Some("FOR UPDATE"),
+            std::time::Duration::from_millis(50),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(sqlx::Error::Protocol(message)) if message.contains("timed out")),
+            "L3"
+        );
+    }
 
     #[test]
     fn fixture_admission_distinguishes_absent_configured_and_invalid() {

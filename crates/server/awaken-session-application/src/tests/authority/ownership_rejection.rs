@@ -409,7 +409,7 @@ async fn invoke(row: &str, app: &SessionApplication, session: &str) -> String {
                         Some(("t06-append".into(), "t06-append-fingerprint".into())),
                     )
                     .await
-                    .map(|batch| batch.expect("the Event batch is admitted"))
+                    .map(|result| result.into_batch().expect("the Event batch is admitted"))
                     .map(|_| ())
             }
             .await
@@ -611,8 +611,9 @@ async fn owner_scoped_event_append_refuses_a_foreign_owner_like_missing() {
             Some(("t06-owner-key".into(), "t06-owner-fingerprint".into())),
         )
         .await
-        .map(|batch| batch.expect("the Event batch is admitted"))
-        .expect("the owner's access appends");
+        .expect("the owner's access appends")
+        .into_batch()
+        .expect("this fixture requires a retained Event batch");
     assert_eq!(
         fixture
             .durable
