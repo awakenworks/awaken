@@ -17,7 +17,7 @@ POSTGRES_PACKAGES = {
     "storage": (
         "awaken-sql-storage", "awaken-session-store", "awaken-config-store", "awaken-store-postgres",
         "awaken-env-store", "awaken-file-store", "awaken-store-schema", "awaken-store-sqlite"),
-    "storage-observations": ("awaken-sql-storage", "awaken-store-postgres"),
+    "storage-observations": ("awaken-session-store", "awaken-sql-storage", "awaken-store-postgres"),
     "resources": ('awaken-admin-config-api', 'awaken-resource-store', 'awaken-resource-persistence', 'awaken-session-application', 'awaken-protocol-managed', 'awaken-sandbox-policy-store', 'awaken-executable-agent-catalog', 'awaken-executable-environment-catalog', 'awaken-environment-application', 'awaken-environment-image-build'),
 }
 
@@ -158,6 +158,61 @@ def _require_work_store_phase(phases, root):
         raise ValueError('PostgreSQL Work store must validate actual Cargo targets before execution')
 
 
+
+SESSION_CAPACITY_OBSERVATION_CASE = "postgres_session_capacity_reference_and_indexed_observation"
+SESSION_CAPACITY_ROOTS = 100_000
+
+
+def _require_session_capacity_observation_phase(phases):
+    selected = [phase for phase in phases if phase.package == "awaken-session-store"]
+    expected = (
+        "--locked", "-p", "awaken-session-store", "--features", "test-support",
+        "--test", "session_repo_conformance", SESSION_CAPACITY_OBSERVATION_CASE,
+        "--require-case=" + SESSION_CAPACITY_OBSERVATION_CASE,
+        "--", "--ignored", "--exact", "--test-threads=1",
+    )
+    if (len(selected) != 1 or selected[0].selector != "storage_observation_evidence"
+            or selected[0].arguments != expected
+            or selected[0].environment != (("AWAKEN_SESSION_PERF_ROOTS", "100000"),)):
+        raise ValueError("PostgreSQL selector changed independent Session capacity observation/default workload")
+
+
+def require_session_capacity_result(phase, results):
+    """Qualify functional capacity observations; absent RSS never becomes zero evidence."""
+    if phase.selector != "storage_observation_evidence" or phase.package != "awaken-session-store":
+        return None
+    import math
+    import re
+    lines = re.findall(r"^session_capacity (.+)$", results, re.M)
+    if len(lines) != 1:
+        raise ValueError("Session capacity requires one complete observation row")
+    pairs = [token.split("=", 1) for token in lines[0].split()]
+    expected = {"roots", "reference_ms", "indexed_ms", "startup_ms", "count_ms",
+                "global_count", "high_water_kib", "owners"}
+    if (any(len(pair) != 2 for pair in pairs) or len(pairs) != len(expected)
+            or {pair[0] for pair in pairs} != expected):
+        raise ValueError("Session capacity observation fields are missing or duplicated")
+    fields = dict(pairs)
+    try:
+        counts = {key: int(fields[key]) for key in ("roots", "global_count", "owners", "high_water_kib")}
+        times = {key: float(fields[key]) for key in ("reference_ms", "indexed_ms", "startup_ms", "count_ms")}
+    except ValueError as error:
+        raise ValueError("Session capacity observation is not numeric") from error
+    if (counts["roots"] != SESSION_CAPACITY_ROOTS
+            or counts["global_count"] != SESSION_CAPACITY_ROOTS + 1
+            or counts["owners"] != 1 or counts["high_water_kib"] < 0
+            or any(not math.isfinite(value) or value < 0 for value in times.values())):
+        raise ValueError("Session capacity observation does not preserve the default workload and exact outcomes")
+    peak = counts["high_water_kib"] or None
+    return {
+        "roots": counts["roots"], "global_count": counts["global_count"], "owners": counts["owners"],
+        "timings_ms": times, "peak_resident_kib": peak,
+        "unverified_metrics": [] if peak is not None else ["process peak RSS unavailable on this platform"],
+        "scope": "Functional PostgreSQL capacity observation; no production capacity or baseline speedup claim.",
+    }
+
+
+
 def postgres_phases(scope, root=None):
     if scope not in POSTGRES_SELECTORS:
         raise ValueError("unsupported native PostgreSQL scope")
@@ -166,6 +221,8 @@ def postgres_phases(scope, root=None):
         raise ValueError("PostgreSQL selector changed independent required domain coverage")
     if scope == 'storage':
         _require_session_extraction_phase(phases)
+    if scope == 'storage-observations':
+        _require_session_capacity_observation_phase(phases)
     if scope == 'core':
         _require_work_parity_phase(phases, root or Path(__file__).resolve().parents[2])
         _require_work_store_phase(phases, root or Path(__file__).resolve().parents[2])

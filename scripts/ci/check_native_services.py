@@ -17,7 +17,7 @@ import uuid
 from native_services import NatsService, sha256
 from _native_postgres import PostgresService
 from _native_postgres_gap_policy import postgres_product_gap_report, postgres_work_limitations
-from _native_postgres_scopes import POSTGRES_SELECTORS, postgres_phases, postgres_plan
+from _native_postgres_scopes import POSTGRES_SELECTORS, postgres_phases, postgres_plan, require_session_capacity_result
 from _native_s3 import MinioService
 from _native_recovery_postgres import ArchivePrimary
 from _native_recovery_drill import run_recovery
@@ -112,8 +112,12 @@ def reconcile_receipts(log: str, source_digest: str, *, service: str, fixture_ow
             raise ValueError("S3 credential phase did not report actual live protocol assertions")
         if (directory/"results.json").read_bytes()!=receipt_bytes:
             raise ValueError("native service receipt changed during verification")
-        receipts.append({"directory":str(directory),"receipt_sha256":hashlib.sha256(receipt_bytes).hexdigest(),
-            "selected_cases":document["selected_cases"]})
+        row={"directory":str(directory),"receipt_sha256":hashlib.sha256(receipt_bytes).hexdigest(),
+            "selected_cases":document["selected_cases"]}
+        if postgres:
+            capacity=require_session_capacity_result(phase,results)
+            if capacity is not None: row["capacity_observation"]=capacity
+        receipts.append(row)
     if s3:
         expected = [frozenset(("object::s3_fixture::tests::required_switch_has_one_canonical_value",
             "object::s3_fixture::tests::admission_table_preserves_values_and_rejects_missing_invalid_or_empty_fields")),

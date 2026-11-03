@@ -243,7 +243,12 @@ critical_durability_evidence() {
 }
 
 storage_observation_evidence() {
-  # These six heavy observations are selected explicitly, not silently ignored
+  AWAKEN_SESSION_PERF_ROOTS=100000 pg_required_test --locked -p awaken-session-store --features test-support \
+    --test session_repo_conformance postgres_session_capacity_reference_and_indexed_observation \
+    --require-case=postgres_session_capacity_reference_and_indexed_observation \
+    -- --ignored --exact --test-threads=1 || record_failure "$?"
+
+  # These seven heavy observations are selected explicitly, not silently ignored
   # inside the ordinary correctness lane. Timings do not establish a fleet SLO.
   pg_required_test --locked -p awaken-sql-storage --features postgres --lib postgres_tests::checkout_health_policy_performance_observation \
     --require-case=postgres_tests::checkout_health_policy_performance_observation \

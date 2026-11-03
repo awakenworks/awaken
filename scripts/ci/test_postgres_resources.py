@@ -200,7 +200,8 @@ class ApplicationCaseFloorTests(unittest.TestCase):
     def test_original_core_and_storage_domain_policies_are_retained(self):
         self.assertEqual(len(policy.postgres_phases('core', gate.ROOT)), 18)
         self.assertEqual(len(policy.postgres_phases('storage', gate.ROOT)), 8)
-        self.assertEqual(len(policy.postgres_phases('storage-observations', gate.ROOT)), 2)
+        observations = policy.postgres_phases('storage-observations', gate.ROOT)
+        self.assertEqual([phase.package for phase in observations], ['awaken-session-store', 'awaken-sql-storage', 'awaken-store-postgres'])
 
 
 class SessionExtractionFloorTests(unittest.TestCase):

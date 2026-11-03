@@ -814,6 +814,177 @@ def _third_outcome_problems() -> list[str]:
     return problems
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def _self_test_probe_snapshot():
+    """One live inventory for this self-test only; real gate calls stay fresh."""
+    from unittest.mock import patch
+
+    original_locate, original_version = locate, version_problem
+    locations: dict[str, Found] = {}
+    versions: dict[tuple[str, str, str, str], str | None] = {}
+
+    def location(tool):
+        key = json.dumps(tool, sort_keys=True)
+        if key not in locations:
+            locations[key] = original_locate(tool)
+        return locations[key]
+
+    def version(tool, found):
+        key = (json.dumps(tool, sort_keys=True), found.status, found.where, found.detail)
+        if key not in versions:
+            versions[key] = original_version(tool, found)
+        return versions[key]
+
+    with patch(__name__ + '.locate', side_effect=location), \
+            patch(__name__ + '.version_problem', side_effect=version):
+        yield
+
+
+def _self_test_inventory(manifest: dict, groups: set[str], homes: set[str]) -> list[str]:
+    """Validate this one live host inventory and its original admission verdicts."""
+    names: set[str] = set()
+    problems: list[str] = []
+    with _self_test_probe_snapshot():
+        for tool in manifest["tools"]:
+            name = tool.get("name", "")
+            if not name or name in names:
+                problems.append(f"M1 duplicate or unnamed row: {name!r}")
+            names.add(name)
+            if tool.get("locate") not in LOCATE_KINDS:
+                problems.append(f"M1 {name}: unknown locate kind {tool.get('locate')!r}")
+            if tool.get("requirement") not in REQUIREMENTS:
+                problems.append(f"M1 {name}: unknown requirement {tool.get('requirement')!r}")
+            if not tool.get("gates"):
+                problems.append(f"M1 {name}: names no gate")
+            if not tool.get("install"):
+                problems.append(f"M1 {name}: says nothing about how to get it")
+            if tool.get("requirement") == "optional" and not tool.get("skip"):
+                problems.append(f"M2 {name}: optional but does not say what its gate skips")
+            if tool.get("requirement") != "optional" and tool.get("skip"):
+                problems.append(f"M2 {name}: not optional, so it must not declare a skip")
+            for gate in tool.get("gates", []):
+                if groups and gate not in groups:
+                    problems.append(f"M3 {name}: gate {gate!r} is not a check-all.sh group")
+            pin = tool.get("version", {})
+            if pin.get("owner"):
+                literal = _owner_literal(pin["owner"])
+                if literal is None:
+                    problems.append(
+                        f"M9 {name}: no constant named by {pin['owner']!r} could be read, so the "
+                        "manifest's pin has no owner to agree with"
+                    )
+                else:
+                    declared = pin.get("expect") or pin.get("contains") or name
+                    if literal[1] != declared:
+                        problems.append(
+                            f"M9 {name}: the manifest says {declared!r} but {pin['owner']} says "
+                            f"{literal[1]!r}; one pin drifted from the other"
+                        )
+            if tool.get("locate") == "bundle":
+                for directory in _bundle_directories(tool):
+                    if directory.rstrip("/") not in homes:
+                        problems.append(
+                            f"M6 {name}: tool home {directory} is not appended by "
+                            "_provider_environment.sh, so a non-login shell cannot find it"
+                        )
+
+            found = locate(tool)
+            if found.usable:
+                pin = tool.get("version", {})
+                problem = version_problem(tool, found)
+                if problem and pin.get("mismatch") == "hard-error":
+                    problems.append(f"M5 {problem}")
+            elif tool["requirement"] == "required":
+                # M4: legitimately absent. The report must then name the gate it
+                # blocks, so nothing silently runs a gate this machine cannot run.
+                for gate in tool["gates"]:
+                    if _quiet(lambda gate=gate: command_require(manifest, gate)) == 0:
+                        problems.append(
+                            f"M4 {name} is absent but gate {gate!r} still reports itself ready"
+                        )
+
+    return problems
+
+
+def _probe_snapshot_problems() -> list[str]:
+    """M12: deduplicate IO, never a refusal, definition, or future gate query."""
+    from unittest.mock import patch
+
+    problems = []
+    row = dict(name='snapshot-fixture', locate='path', requirement='required',
+               gates=['snapshot'], install='fixture only', version={'expect': 'fixture', 'mismatch': 'hard-error'})
+    # Same authored rows can be read directly, via several gates, and as copies.
+    # Both known absence and unread probes must keep their existing verdicts.
+    for status, requirement, expected in (
+        ('present', 'required', 0), ('absent', 'required', 1),
+        ('absent', 'fetched', 0), ('absent', 'optional', 0),
+        ('undecidable', 'required', 1), ('undecidable', 'fetched', 1),
+        ('undecidable', 'optional', 1),
+    ):
+        tool = dict(row, requirement=requirement)
+        if requirement == 'optional':
+            tool['skip'] = 'fixture only'
+        found = Found(status, 'fixture-tool', 'fixture probe result')
+        with patch(__name__ + '.locate', return_value=found) as query, \
+                patch(__name__ + '.version_problem', return_value=None) as pin:
+            with _self_test_probe_snapshot():
+                for _ in range(3):
+                    if _quiet(lambda: command_require({'tools': [dict(tool)]}, 'snapshot')) != expected:
+                        problems.append(f'M12 {status}/{requirement}: admission verdict changed')
+            if query.call_count != 1 or pin.call_count != int(found.usable):
+                problems.append(f'M12 {status}/{requirement}: repeated IO was not deduplicated')
+            _quiet(lambda: command_require({'tools': [tool]}, 'snapshot'))
+            if query.call_count != 2:
+                problems.append('M12 self-test cache escaped into the next real gate query')
+            with _self_test_probe_snapshot():
+                _quiet(lambda: command_require({'tools': [tool]}, 'snapshot'))
+            if query.call_count != 3:
+                problems.append('M12 a later self-test reused an earlier inventory')
+    with patch(__name__ + '.locate', return_value=Found('present', 'first')) as query, \
+            patch(__name__ + '.version_problem', return_value='version query unread') as pin:
+        with _self_test_probe_snapshot():
+            for _ in range(2):
+                if _quiet(lambda: command_require({'tools': [row]}, 'snapshot')) != 1:
+                    problems.append('M12 unread hard version pin was admitted')
+            # Full definitions and resolved coordinates, not names, own reuse.
+            changed = dict(row, version={'expect': 'different'})
+            locate(changed)
+            version_problem(changed, Found('present', 'first'))
+            version_problem(row, Found('present', 'second'))
+        if query.call_count != 2 or pin.call_count != 3:
+            problems.append('M12 a changed definition or resolved coordinate reused stale evidence')
+        try:
+            with _self_test_probe_snapshot():
+                raise RuntimeError('fixture body interrupted')
+        except RuntimeError:
+            pass
+        if locate is not query or version_problem is not pin:
+            problems.append('M12 interruption leaked the self-test probe wrappers')
+    # Exercise the actual host-inventory adapter too: testing only the cache
+    # helper would miss a future caller that forgot to enter the snapshot.
+    rows = [dict(row, name='inventory-missing'), dict(row, name='inventory-present')]
+    queried, pinned = [], []
+
+    def host_location(tool):
+        queried.append(tool['name'])
+        return Found('absent' if tool['name'] == 'inventory-missing' else 'present', 'fixture')
+
+    def host_version(tool, found):
+        pinned.append(tool['name'])
+        return None
+
+    with patch(__name__ + '.locate', side_effect=host_location), \
+            patch(__name__ + '.version_problem', side_effect=host_version):
+        errors = _self_test_inventory({'tools': rows}, {'snapshot'}, set())
+    if errors or sorted(queried) != ['inventory-missing', 'inventory-present'] or pinned != ['inventory-present']:
+        problems.append('M12 actual host inventory adapter lost snapshot ownership or admission semantics')
+
+    return problems
+
+
 def self_test() -> int:
     """Prove the manifest against this machine.
 
@@ -835,66 +1006,9 @@ def self_test() -> int:
     manifest = load()
     groups = _check_all_groups()
     homes = _declared_tool_homes()
-    names: set[str] = set()
     problems: list[str] = []
 
-    for tool in manifest["tools"]:
-        name = tool.get("name", "")
-        if not name or name in names:
-            problems.append(f"M1 duplicate or unnamed row: {name!r}")
-        names.add(name)
-        if tool.get("locate") not in LOCATE_KINDS:
-            problems.append(f"M1 {name}: unknown locate kind {tool.get('locate')!r}")
-        if tool.get("requirement") not in REQUIREMENTS:
-            problems.append(f"M1 {name}: unknown requirement {tool.get('requirement')!r}")
-        if not tool.get("gates"):
-            problems.append(f"M1 {name}: names no gate")
-        if not tool.get("install"):
-            problems.append(f"M1 {name}: says nothing about how to get it")
-        if tool.get("requirement") == "optional" and not tool.get("skip"):
-            problems.append(f"M2 {name}: optional but does not say what its gate skips")
-        if tool.get("requirement") != "optional" and tool.get("skip"):
-            problems.append(f"M2 {name}: not optional, so it must not declare a skip")
-        for gate in tool.get("gates", []):
-            if groups and gate not in groups:
-                problems.append(f"M3 {name}: gate {gate!r} is not a check-all.sh group")
-        pin = tool.get("version", {})
-        if pin.get("owner"):
-            literal = _owner_literal(pin["owner"])
-            if literal is None:
-                problems.append(
-                    f"M9 {name}: no constant named by {pin['owner']!r} could be read, so the "
-                    "manifest's pin has no owner to agree with"
-                )
-            else:
-                declared = pin.get("expect") or pin.get("contains") or name
-                if literal[1] != declared:
-                    problems.append(
-                        f"M9 {name}: the manifest says {declared!r} but {pin['owner']} says "
-                        f"{literal[1]!r}; one pin drifted from the other"
-                    )
-        if tool.get("locate") == "bundle":
-            for directory in _bundle_directories(tool):
-                if directory.rstrip("/") not in homes:
-                    problems.append(
-                        f"M6 {name}: tool home {directory} is not appended by "
-                        "_provider_environment.sh, so a non-login shell cannot find it"
-                    )
-
-        found = locate(tool)
-        if found.usable:
-            pin = tool.get("version", {})
-            problem = version_problem(tool, found)
-            if problem and pin.get("mismatch") == "hard-error":
-                problems.append(f"M5 {problem}")
-        elif tool["requirement"] == "required":
-            # M4: legitimately absent. The report must then name the gate it
-            # blocks, so nothing silently runs a gate this machine cannot run.
-            for gate in tool["gates"]:
-                if _quiet(lambda gate=gate: command_require(manifest, gate)) == 0:
-                    problems.append(
-                        f"M4 {name} is absent but gate {gate!r} still reports itself ready"
-                    )
+    problems.extend(_self_test_inventory(manifest, groups, homes))
 
     for group in sorted(groups - {gate for tool in manifest["tools"] for gate in tool["gates"]}):
         problems.append(
@@ -1055,6 +1169,7 @@ def self_test() -> int:
     if _quiet(lambda: command_solver_status(manifest, "no-such-solver")) != SOLVER_REFUSED:
         problems.append("M8 an undeclared solver was admitted instead of refused")
 
+    problems.extend(_probe_snapshot_problems())
     problems.extend(_third_outcome_problems())
     problems.extend(_host_resource_problems())
 
