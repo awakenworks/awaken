@@ -217,3 +217,37 @@ export function assertPropagation(spans, route, tid, sid) {
   assert.equal(s.trace_id, tid, `inbound traceparent trace id not continued (${s.trace_id} != ${tid})`);
   assert.equal(s.parent_span_id, sid, `inbound traceparent parent not honored (${s.parent_span_id} != ${sid})`);
 }
+
+
+/// Attribute each captured model request through its original invoke_agent
+/// ancestry. Expected targets/Thread identities come from independent case
+/// inputs and receipts, never from the observed model or frozen projection.
+export function assertThreadModelRequests(spans, expectedModel, roleThreads) {
+  assert.ok(Array.isArray(spans) && spans.length > 0, 'model attribution requires captured spans');
+  assertValidIds(spans);
+  assertConnected(spans);
+  const { byId } = index(spans);
+  const requests = spans.filter(span => span.attributes?.['gen_ai.operation.name'] === 'chat')
+    .map(chat => {
+      const invoke = ancestors(chat, byId).find(span => span.attributes?.['gen_ai.operation.name'] === 'invoke_agent');
+      assert.ok(invoke, `chat ${chat.span_id} has no invoke_agent ancestry`);
+      assert.equal(chat.trace_id, invoke.trace_id, 'request and invocation share their trace');
+      const thread = invoke.attributes?.['awaken.thread.id'];
+      const run = invoke.attributes?.['awaken.run.id'];
+      const model = chat.attributes?.['gen_ai.request.model'];
+      assert.ok(typeof thread === 'string' && thread.length > 0, 'model request has an exact runtime Thread');
+      assert.ok(typeof run === 'string' && run.length > 0, 'model request has an exact Run');
+      assert.ok(typeof model === 'string' && model.length > 0, 'model request has an observed target');
+      return { model, thread_id: thread, run_id: run, trace_id: chat.trace_id,
+        chat_span_id: chat.span_id, invoke_span_id: invoke.span_id };
+    });
+  const roles = {};
+  for (const [role, thread] of Object.entries(roleThreads)) {
+    assert.ok(typeof thread === 'string' && thread.length > 0, `${role} has an exact owned runtime Thread`);
+    const matched = requests.filter(request => request.thread_id === thread);
+    assert.ok(matched.length > 0, `${role} model requests are captured`);
+    for (const request of matched) assert.equal(request.model, expectedModel, `${role} request uses the selected offering`);
+    roles[role] = matched;
+  }
+  return { expected_model: expectedModel, roles };
+}

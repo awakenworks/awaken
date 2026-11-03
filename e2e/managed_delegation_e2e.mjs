@@ -339,7 +339,19 @@ async function main() {
 
     // M1: discover the roster, enqueue Native `researcher`, then observe its
     // reply on the child relationship rather than in the send receipt.
-    const ok = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
+    // Input-source C/E: the preset's assistant and researcher both publish empty
+    // instructions. A Session-only override makes the sources distinguishable:
+    // four coordinator requests must retain it; the ordinary different-Agent
+    // child's exact User command must use its own publication, without it.
+    // This owns deterministic Anthropic wire input provenance only, not the
+    // missing real DeepSeek input or the cause of its incorrect public reply.
+    const coordinatorSystem = 'Managed delegation Session-only coordinator instruction sentinel';
+    const m1RequestStart = upstream.requests.length;
+    const ok = await client.beta.sessions.create({
+      agent: { type: 'agent_with_overrides', id: 'assistant', system: coordinatorSystem },
+      environment_id: 'env_local',
+      betas: BETAS,
+    });
     const okEvents = await runSession(client, ok.id, 'research the answer');
     assert.deepEqual(
       toolNames(okEvents),
@@ -376,6 +388,22 @@ async function main() {
       `delegated usage folds in the sub-agent (cache_read): ${JSON.stringify(okUsage)}`);
     assert.equal(okUsage.cache_creation?.ephemeral_5m_input_tokens, FAKE_USAGE.cache_creation_input_tokens * INFERENCES,
       `delegated usage folds in the sub-agent (cache_creation): ${JSON.stringify(okUsage)}`);
+
+    // M1 input-source rules: R1 complete five-request cut + exact child User
+    // command => one child and four coordinator requests. R2 each coordinator
+    // retains the independent Session override; R3 the different-Agent child
+    // cannot inherit it. The child publication has empty instructions; existing
+    // request-only/tool guidance is not mistaken for an authored system prompt.
+    const m1Requests = upstream.requests.slice(m1RequestStart);
+    assert.equal(m1Requests.length, INFERENCES, 'M1 input sources cover the complete five inferences');
+    const m1ChildRequests = m1Requests.filter((request) => request.lastUserText === 'do the research');
+    assert.equal(m1ChildRequests.length, 1, 'M1 exact child User command occurs once');
+    const m1CoordinatorRequests = m1Requests.filter((request) => request.lastUserText !== 'do the research');
+    assert.equal(m1CoordinatorRequests.length, 4, 'M1 every other request belongs to the coordinator');
+    assert.ok(m1CoordinatorRequests.every((request) => request.system.includes(coordinatorSystem)),
+      'M1 coordinator requests retain their Session system override');
+    assert.ok(!m1ChildRequests[0].system.includes(coordinatorSystem),
+      'M1 ordinary different-Agent child does not inherit the coordinator system override');
 
     // D4: the delegate call spawned a subagent child thread — announced by
     // `session.thread_created` and enumerable via the threads API.
@@ -994,8 +1022,12 @@ async function main() {
     // M2: `{type:"self"}` is compiled as an explicit recursive edge, not an ordinary
     // owner-id cycle. The child executes the same frozen Native Agent snapshot and
     // remains context-isolated in its own Thread.
+    // M2 input-source positive: explicit self shares the baseline Agent id, so
+    // its isolated child legitimately inherits this Session system override.
+    // Rejecting R3's ordinary-child leak must not erase this distinct rule.
+    const m2RequestStart = upstream.requests.length;
     const selfSession = await client.beta.sessions.create({
-      agent: 'assistant',
+      agent: { type: 'agent_with_overrides', id: 'assistant', system: coordinatorSystem },
       environment_id: 'env_local',
       betas: BETAS,
     });
@@ -1017,6 +1049,15 @@ async function main() {
     assert.equal(selfChild.agent.id, 'assistant');
     assert.equal(selfChild.parent_thread_id, selfPrimary.id);
     assert.match(receivedText(selfEvents, 'assistant'), /self copy: 42/);
+
+    // M2/R4: exact self-copy input and all five actual requests retain the
+    // independent Session override, including the one isolated self child.
+    const m2Requests = upstream.requests.slice(m2RequestStart);
+    assert.equal(m2Requests.length, INFERENCES, 'M2 input sources cover the complete five inferences');
+    assert.equal(m2Requests.filter((request) => request.lastUserText === 'self-copy task').length, 1,
+      'M2 exact self-copy User command occurs once');
+    assert.ok(m2Requests.every((request) => request.system.includes(coordinatorSystem)),
+      'M2 explicit self child and coordinator retain their Session system override');
 
     // M3: the same parent-mediated lifecycle routes an ACP roster member by its
     // frozen backend_ref; its committed reply is another cross-Thread event.

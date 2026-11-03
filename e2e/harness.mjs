@@ -1546,21 +1546,34 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
     behavior,
     ...(opts.upstream ?? {}),
   });
-  const listenPort = await availablePort(port);
-  // When `opts.capture` is set, pipe the child's stdout/stderr so a test can scan
-  // the server logs (e.g. the secret-non-leak invariant), teeing them through to
-  // this process's streams so behavior is unchanged for a human watching. The
-  // accumulated text is exposed to `fn` as a third `{ text() }` argument.
-  const capture = opts.capture ? { buf: '' } : null;
-  const env = realServerEnv(behavior, upstream, opts);
-  const { server, baseUrl } = spawnServer(env.AWAKEN_MODEL_MODE, listenPort, env, process.env, capture);
+  let server, result;
+  const failures = [];
   try {
+    // The upstream is already acquired. Port selection, environment/Hand
+    // preparation and spawn can all throw before a Native child exists.
+    const listenPort = await availablePort(port);
+    // Expose the original capture as the third callback argument.
+    const capture = opts.capture ? { buf: '' } : null;
+    const env = realServerEnv(behavior, upstream, opts);
+    const started = spawnServer(env.AWAKEN_MODEL_MODE, listenPort, env, process.env, capture);
+    server = started.server;
     await waitForServer(server, listenPort);
-    return await fn(baseUrl, upstream, capture ? { text: () => capture.buf } : null);
-  } finally {
-    await stopServer(server);
-    upstream.close();
+    result = await fn(started.baseUrl, upstream, capture ? { text: () => capture.buf } : null);
+  } catch (error) {
+    failures.push(error);
   }
+  try {
+    await runCleanupSteps([
+      async () => { if (server) await stopServer(server); },
+      () => upstream.close(),
+    ], failures);
+  } catch (error) {
+    // Keep the wrapper's existing lone-error identity; the shared cleanup
+    // owner retains every cause when the body and/or both teardowns fail.
+    if (error instanceof AggregateError && error.errors.length === 1) throw error.errors[0];
+    throw error;
+  }
+  return result;
 }
 
 // Spawn the server without a fixed lifetime, so a test can stop and restart it
