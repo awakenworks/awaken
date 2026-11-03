@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import ts from 'typescript';
 import * as driver from './provider_connection_matrix_real_e2e.mjs';
+import * as trace from './trace_validate.mjs';
 import { cleanupFixtureTree, deploymentEnv, runCleanupSteps, stopServer } from './harness.mjs';
 import { provisionProviderTestModel } from './harness.mjs';
 import {
@@ -247,12 +248,15 @@ test('provider case can request the Control-owned default endpoint', () => {
 // D3 failure before the old list point => ONE post-failure readonly attempt;
 // its unavailability is recorded and never replaces D2. D4 no raw-model port
 // => explicitly unavailable. Existing model/prompt/maxAttempts3 remain owners.
+const diagnosticAuthoredModel = 'profile=fixture';
+const diagnosticPublications = { coordinator: { source_revision: 1 }, worker: { source_revision: 1 } };
 const diagnosticMarkers = { childReply: 'AWAKEN-MANAGED-FIXTURE-CHILD-OK',
   sendAccepted: 'AWAKEN-MANAGED-FIXTURE-SEND-ACCEPTED',
   reportAck: 'AWAKEN-MANAGED-FIXTURE-REPORT-ACK' };
 
 function providerWireFixture(t, { reply = diagnosticMarkers.childReply,
-  message = `Reply with exactly ${diagnosticMarkers.childReply}`, factsUnavailable = false } = {}) {
+  message = `Reply with exactly ${diagnosticMarkers.childReply}`, factsUnavailable = false,
+  frozenReference = diagnosticAuthoredModel, frozenVersion = 1, primaryAgent = 'coordinator' } = {}) {
   const calls = [];
   const text = value => [{ type: 'text', text: value }];
   const event = (id, type, fields = {}) => ({ id, type, processed_at: '2026-01-01T00:00:00Z', ...fields });
@@ -280,8 +284,8 @@ function providerWireFixture(t, { reply = diagnosticMarkers.childReply,
     if (url.pathname === '/v1/sessions/session/threads') {
       if (factsUnavailable) return Response.json({ error: { type: 'unavailable', message: 'fixture' } }, { status: 503 });
       return Response.json({ data: [
-        { id: 'primary', parent_thread_id: null, agent: { id: 'coordinator', model: { id: 'selected' } } },
-        { id: 'child', parent_thread_id: 'primary', status: 'idle', agent: { id: 'worker', version: 1, model: { id: 'selected' } } },
+        { id: 'primary', parent_thread_id: null, agent: { id: primaryAgent, version: frozenVersion, model: { id: frozenReference } } },
+        { id: 'child', parent_thread_id: 'primary', status: 'idle', agent: { id: 'worker', version: frozenVersion, model: { id: frozenReference } } },
       ], has_more: false });
     }
     if (url.pathname === '/v1/sessions/session/threads/child/events') {
@@ -298,7 +302,7 @@ function providerWireFixture(t, { reply = diagnosticMarkers.childReply,
 
 test('provider diagnostic retains receipt and real SDK facts without changing the healthy oracle', async t => {
   const f = providerWireFixture(t); const observation = { boundary: 'create' };
-  await driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', 'selected', diagnosticMarkers, observation);
+  await driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel, diagnosticPublications);
   assert.ok(observation.accepted_receipt, 'D1 diagnostic receipt was retained');
   assert.equal(observation.accepted_receipt.id, 'accepted', 'D1 original accepted coordinate');
   assert.equal(observation.session_id, 'session');
@@ -306,7 +310,7 @@ test('provider diagnostic retains receipt and real SDK facts without changing th
   assert.deepEqual(observation.events_after_receipt.find(e => e.id === 'send').input,
     { agent_id: 'worker', message: `Reply with exactly ${diagnosticMarkers.childReply}` });
   assert.equal(observation.frozen_threads.after_failure, false, 'D1 existing positive read point');
-  assert.equal(observation.frozen_threads.items[1].agent.model_id, 'selected');
+  assert.equal(observation.frozen_threads.items[1].agent.model_id, diagnosticAuthoredModel);
   assert.equal(observation.child_events.events[0].content[0].text, `Reply with exactly ${diagnosticMarkers.childReply}`);
   assert.equal(observation.child_events.after_failure, false);
   assert.equal(observation.raw_model_output.available, false, 'D4 SDK events are not raw provider output');
@@ -320,7 +324,7 @@ for (const reply of ['AWAKEN-MI\u200b\u200bNDED-MANAGED-FIXTURE-CHILD-OK',
   test(`provider diagnostic preserves original reply rejection and input bytes: ${JSON.stringify(reply)}`, async t => {
     const message = `Reply with exactly ${reply}`;
     const f = providerWireFixture(t, { reply, message }); const observation = { boundary: 'create' };
-    await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', 'selected', diagnosticMarkers, observation),
+    await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel, diagnosticPublications),
       error => error.code === 'ERR_ASSERTION' && error.actual === reply && error.expected === diagnosticMarkers.childReply);
     assert.ok(observation.failure, 'D2 diagnostic failure boundary was retained');
     assert.equal(observation.failure.boundary, 'exact_child_reply', 'D2 original failure stays authoritative');
@@ -336,7 +340,7 @@ for (const reply of ['AWAKEN-MI\u200b\u200bNDED-MANAGED-FIXTURE-CHILD-OK',
 
 test('provider diagnostic missing readonly facts cannot replace the primary assertion or retry the SDK read', async t => {
   const f = providerWireFixture(t, { reply: 'wrong', factsUnavailable: true }); const observation = { boundary: 'create' };
-  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', 'selected', diagnosticMarkers, observation),
+  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel, diagnosticPublications),
     error => error.code === 'ERR_ASSERTION' && error.actual === 'wrong');
   assert.equal(observation.frozen_threads.available, false);
   assert.equal(observation.child_events.available, false);
@@ -347,7 +351,7 @@ test('provider diagnostic missing readonly facts cannot replace the primary asse
 
 test('provider diagnostic keeps original three attempts and all three rejected public replies', async t => {
   const f = providerWireFixture(t, { reply: 'wrong' }); const observations = [];
-  await assert.rejects(driver.managedMultiagentRun('http://controlled.invalid', 'coordinator', 'worker', 'selected', diagnosticMarkers, observations),
+  await assert.rejects(driver.managedMultiagentRun('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observations, diagnosticAuthoredModel, diagnosticPublications),
     /attempt 1: exact real child reply[\s\S]*attempt 2:[\s\S]*attempt 3:/u);
   assert.equal(observations.length, 3);
   assert.deepEqual(observations.map(o => o.status), ['failed', 'failed', 'failed']);
@@ -383,8 +387,11 @@ for (const primaryFailure of [false, true]) {
     // SAME primary error and independently retain cleanup failure. No fallback
     // no-op stopper or force signal is introduced by the diagnostic caller.
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-cleanup-law-'));
-    t.after(() => cleanupFixtureTree(temp));
     let child; let ownedDirectory;
+    t.after(async () => {
+      if (child) await stopServer(child);
+      cleanupFixtureTree(temp);
+    });
     const primary = Object.assign(new Error('controlled original functional failure'), { code: 'ORIGINAL' });
     const context = vm.createContext({ assert, fs, path, os: { tmpdir: () => temp }, performance,
       BASE_PORT: 1, process: { env: {} }, publicProviderCase,
@@ -392,15 +399,14 @@ for (const primaryFailure of [false, true]) {
       spawnServer: (_mode, _port, env) => {
         ownedDirectory = path.dirname(env.HOME);
         fs.writeFileSync(path.join(ownedDirectory, 'platform-workspace-id'), 'workspace');
-        child = spawn(process.execPath, ['-e', `process.stdin.resume();process.stdin.on('end',()=>process.exit(${exitCode}));process.stdout.write('ready\\n')`],
-          { stdio: ['pipe', 'pipe', 'pipe'] });
+        child = strictStopNodeChild(exitCode);
         return { server: child };
       },
       waitForPort: async () => { await once(child.stdout, 'data'); },
       provisionProviderTestModel: async () => ({ offering: { model_id: 'selected' }, discoveredModels: 1, model: 'selected' }),
       publishManagementAgent: async () => ({ installed: true }),
       managedRun: async () => { if (primaryFailure) throw primary; },
-      pass: () => {}, stopServer, cleanupFixtureTree, runCleanupSteps,
+      pass: () => {}, stopServer, cleanupFixtureTree, runCleanupSteps, assertThreadModelRequests: trace.assertThreadModelRequests,
       readSpans: () => { throw new Error('no Native trace in controlled leaf'); },
     });
     const actual = new vm.Script(`${certifyDeclaration.getText(providerAst)}\ncertifyProvider;`).runInContext(context);
@@ -432,7 +438,7 @@ for (const primaryFailure of [false, true]) {
 test('provider diagnostic original readonly failure is explicit and never retried as a second read', async t => {
   const f = providerWireFixture(t, { factsUnavailable: true });
   const observation = { boundary: 'create' };
-  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', 'selected', diagnosticMarkers, observation),
+  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel, diagnosticPublications),
     error => error.status === 503);
   assert.ok(observation.frozen_threads, 'D8 failed original read retained explicit unavailable facts');
   assert.equal(observation.frozen_threads.available, false);
@@ -442,3 +448,117 @@ test('provider diagnostic original readonly failure is explicit and never retrie
   assert.equal(f.calls.filter(c => c.path.endsWith('/threads')).length, 3, 'D8 original one SDK call + its default two retries only');
   assert.equal(observation.session_delete.status, 'completed');
 });
+
+
+// Two-layer E7 table. The authored reference/publication revisions are fixture
+// INPUT expectations, not derived from frozen reads. The execution expectation
+// comes independently from the selected offering. E1 both right =>0;
+// E2 only profile/version/primary identity wrong => reject selection despite
+// valid request model. Same-profile/same-version primaryOther must not pass.
+for (const changed of [{ frozenReference: 'profile=other' }, { frozenVersion: 2 }, { primaryAgent: 'other' }]) {
+  test(`provider E7 frozen authored identity remains independent: ${JSON.stringify(changed)}`, async t => {
+    providerWireFixture(t, changed); const observation = { boundary: 'create' };
+    await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation,
+      diagnosticAuthoredModel, diagnosticPublications), error => error.code === 'ERR_ASSERTION');
+    assert.equal(observation.failure.boundary, 'frozen_model_assertions');
+    assert.doesNotThrow(() => trace.assertThreadModelRequests(requestTrace(), 'selected', { coordinator: 'session', child: 'child' }));
+  });
+}
+
+function requestTrace() {
+  const tid = '1'.repeat(32); const sid = value => String(value).padStart(16, '0');
+  const span = (id, name, parent, attributes) => ({ name, trace_id: tid, span_id: sid(id), parent_span_id: parent === null ? null : sid(parent), attributes });
+  return [span(1, 'http.request', null, { 'http.route': '/v1/sessions/{id}/events' }),
+    span(2, 'invoke_agent', 1, { 'gen_ai.operation.name': 'invoke_agent', 'awaken.thread.id': 'session', 'awaken.run.id': 'coordinator-run' }),
+    span(3, 'chat', 2, { 'gen_ai.operation.name': 'chat', 'gen_ai.request.model': 'selected' }),
+    span(4, 'invoke_agent', 1, { 'gen_ai.operation.name': 'invoke_agent', 'awaken.thread.id': 'child', 'awaken.run.id': 'child-run' }),
+    span(5, 'chat', 4, { 'gen_ai.operation.name': 'chat', 'gen_ai.request.model': 'selected' })];
+}
+
+test('provider E7 request attribution joins existing ancestry and both independent role targets', () => {
+  const observed = trace.assertThreadModelRequests(requestTrace(), 'selected', { coordinator: 'session', child: 'child' });
+  assert.equal(observed.roles.coordinator.length, 1);
+  assert.equal(observed.roles.child.length, 1);
+});
+
+// E3 wrong coordinator/child target => reject despite a correct profile.
+// E4 missing role/parent/model or changed thread/trace => unproven/reject;
+// never substitute the frozen profile/current catalog for missing request facts.
+for (const cause of ['coordinator-model', 'child-model', 'missing-child', 'missing-parent', 'missing-model', 'wrong-thread', 'wrong-trace']) {
+  test(`provider E7 request facts fail closed: ${cause}`, () => {
+    const spans = requestTrace();
+    if (cause === 'coordinator-model') spans[2].attributes['gen_ai.request.model'] = 'other';
+    if (cause === 'child-model') spans[4].attributes['gen_ai.request.model'] = 'other';
+    if (cause === 'missing-child') spans.pop();
+    if (cause === 'missing-parent') spans[4].parent_span_id = null;
+    if (cause === 'missing-model') delete spans[4].attributes['gen_ai.request.model'];
+    if (cause === 'wrong-thread') spans[3].attributes['awaken.thread.id'] = 'foreign';
+    if (cause === 'wrong-trace') spans[4].trace_id = '2'.repeat(32);
+    assert.throws(() => trace.assertThreadModelRequests(spans, 'selected', { coordinator: 'session', child: 'child' }));
+  });
+}
+
+// E5 integration of existing caller + existing aggregate/strict stopper only:
+// protocol0,targetwrong => overall1/cleanup0; protocolwrong,targetok => original
+// primary remains errors[0], attribution0/cleanup0; stop1 => retain/unproven.
+// E6 protocol0 with empty attempts => attribution failure, never empty-map0.
+// E7 requested mode fails before attempts => not_reached, preserve primary.
+// The protocol/setup leaves declare data, not a fake Session/Run authority.
+for (const cause of ['wrong-target', 'protocol-error', 'stop-error', 'missing-role', 'missing-parent', 'missing-model', 'missing-attempt', 'not-reached']) {
+  test(`provider E7 wiring keeps functional attribution separate from cleanup: ${cause}`, async t => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-E7-wiring-'));
+    let child; let ownedDirectory;
+    t.after(async () => {
+      if (child) await stopServer(child);
+      cleanupFixtureTree(temp);
+    });
+    const primary = Object.assign(new Error('original exact child reply'), { code: 'ERR_ASSERTION' });
+    const spans = requestTrace();
+    if (cause === 'wrong-target') spans[4].attributes['gen_ai.request.model'] = 'other';
+    if (cause === 'missing-role') spans.pop();
+    if (cause === 'missing-parent') spans[4].parent_span_id = null;
+    if (cause === 'missing-model') delete spans[4].attributes['gen_ai.request.model'];
+    const exitCode = cause === 'stop-error' ? 37 : 0;
+    const context = vm.createContext({ assert, fs, path, os: { tmpdir: () => temp }, performance,
+      BASE_PORT: 1, process: { env: { AWAKEN_PROVIDER_MATRIX_MANAGED_MULTIAGENT: '1' } }, publicProviderCase,
+      deploymentEnv,
+      spawnServer: (_mode, _port, env) => {
+        ownedDirectory = path.dirname(env.HOME); fs.writeFileSync(path.join(ownedDirectory, 'platform-workspace-id'), 'workspace');
+        child = strictStopNodeChild(exitCode);
+        return { server: child };
+      },
+      waitForPort: async () => { await once(child.stdout, 'data'); },
+      provisionProviderTestModel: async () => ({ offering: { model_id: 'selected' }, discoveredModels: 1,
+        model: { mode: 'profile', profile_id: 'provider-fixture' } }),
+      publishManagementAgent: async () => ({ installed: true, source_revision: 1 }),
+      managedRun: async () => { if (cause === 'not-reached') throw primary; },
+      managedMultiagentRun: async (...args) => {
+        // The same controlled IO leaf accepts the old/private call shape for
+        // the old-red comparison; no production compatibility path is added.
+        const observations = args.find(Array.isArray);
+        if (cause !== 'missing-attempt') observations.push({ attempt: 1, session_id: 'session', child_thread_id: 'child' });
+        if (cause === 'protocol-error') throw primary;
+      },
+      pass: () => {}, stopServer, cleanupFixtureTree, runCleanupSteps,
+      readSpans: () => spans, assertThreadModelRequests: trace.assertThreadModelRequests,
+    });
+    const actual = new vm.Script(`${certifyDeclaration.getText(providerAst)}\ncertifyProvider;`).runInContext(context);
+    const observation = {};
+    await assert.rejects(actual({ id: 'fixture' }, 0, observation), error => {
+      if (cause === 'protocol-error' || cause === 'not-reached') assert.equal(error.errors[0], primary, 'E5 preserve the original primary');
+      return true;
+    });
+    assert.ok(observation.attribution, 'E5 attribution status is independently retained');
+    assert.equal(observation.attribution.status, cause === 'protocol-error' ? 'passed' : cause === 'stop-error' ? 'unproven' : cause === 'not-reached' ? 'not_reached' : 'failed');
+    assert.equal(observation.status, 'failed');
+    assert.equal(observation.cleanup.server.status, exitCode === 0 ? 'passed' : 'failed');
+    assert.equal(observation.cleanup.directory.status, exitCode === 0 ? 'removed' : 'retained');
+    assert.equal(fs.existsSync(ownedDirectory), exitCode !== 0);
+  });
+}
+
+// One test-only Node EOF leaf shared by the strict-cleanup and E7-wiring tables.
+function strictStopNodeChild(exitCode) {
+  return spawn(process.execPath, ['-e', `process.stdin.resume();process.stdin.on('end',()=>process.exit(${exitCode}));process.stdout.write('ready\\n')`],
+    { stdio: ['pipe', 'pipe', 'pipe'] });
+}

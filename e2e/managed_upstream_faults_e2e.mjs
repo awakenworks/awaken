@@ -21,14 +21,16 @@ async function main() {
   // F1 success => one request, one exact reply, no error (positive control).
   // F2 complete 503 + later success => two requests, one reply, available Session.
   // F3 complete 503 + persistent rejection => three requests (default retry
-  // budget), one stable unknown_error/exhausted, available Session, no reply.
+  // budget), one stable model_overloaded_error/exhausted, available Session, no reply.
   // F4/F5 interrupted 503 + either C3 => one request, no reply, one stable
   // unknown_error/terminal before logical Thread idle; physical slot retained.
   // Their input remains unprocessed: the canonical retained-unknown oracle
   // owns that distinction AND checks the real Dispatch slot, not elapsed time.
   // A status line and hypothetical later success cannot prove remote termination.
   // C4 proves these are committed outcomes, not an HTTP admission rejection.
-  // Runtime failure.rs owns retries with positive NotDispatched evidence;
+  // The existing Runtime inference/retry owners require positive NotDispatched
+  // or Terminated evidence. F3 preserves the committed overloaded cause after
+  // exhaustion; F4/F5 remain ExecutionUnknown despite their observed HTTP503.
   // execution.rs covers Unknown across retry/failover/tolerance and recovery.
   // The Kani model_execution_reentry_requires_positive_evidence kernel owns
   // the exhaustive three-valued gate; this HTTP test checks its adapter wiring.
@@ -83,7 +85,8 @@ async function main() {
             assert.equal(events.some((event) => event.type === 'session.status_idle'), !unknown,
               `${rule} Session availability requires positive physical termination evidence`);
             assert.equal(errors.length, 1, `${rule} exactly one stable failure`);
-            assert.equal(errors[0].error.type, 'unknown_error');
+            assert.equal(errors[0].error.type, unknown ? 'unknown_error' : 'model_overloaded_error',
+              `${rule} complete overload retains its SDK kind; unknown execution stays generic`);
             assert.equal(errors[0].error.retry_status.type, unknown ? 'terminal' : 'exhausted');
             if (unknown) assert.match(errors[0].error.message, /will not be automatically repeated/);
             if (previous) assert.deepEqual(errors[0], previous, `${rule} stable error identity and payload`);
