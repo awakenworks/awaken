@@ -268,6 +268,23 @@ is never adopted. Supported observations do not require nightly Cargo JSON or
 alter a caller's message format. Final linking may remain part of a compiler
 unit instead of a separately measured phase.
 
+The generated-trigger owner also checks that every declared checker is wired
+into a hook. Both the early preflight and graph validation reuse that one
+model, so an unwired declaration is refused before expensive suites start.
+
+Pre-commit prints the live log path when each checker starts, then elapsed
+progress every 15 seconds while it runs. Rust reports its current substage and
+retains each substage's output/status; quick/push compilation retains Cargo
+HTML through the same before/after collector as the full test build. The
+shared-unit peer proof and conservative whole-workspace fallback stay in force.
+Crate-boundary rules and Rust execution/benchmark framework cases write
+individual timings into the existing task's command observations. Skips and
+expected failures remain distinct from passed cases. Nested durations are
+costs to inspect, never extra wall time to add to their parent hook.
+The portability entrypoint owns one task and its required phases join it;
+subprocess fixtures use private synthetic observations instead of inheriting
+the developer's build identity.
+
 Use the path printed by the entrypoint to inspect a completed task bundle or
 a standalone Cargo invocation; the reporter emits JSON and Markdown and
 archives task bundles under `target/test-timings/build-runs/<run_id>/`:
@@ -322,6 +339,19 @@ no global incremental/cache policy is changed and no speedup is claimed before
 the existing workload projection requirement is met. S3/OBS caching remains
 deferred; shared compiler results and per-worktree mutable target/build state
 keep their existing owners.
+
+Developer experience is not qualified by a single faster run. Acceptance
+targets are first visible feedback within 2 seconds, common static errors
+within 10 seconds, proven non-Rust/docs warm p95 at most 30 seconds, and local
+Rust warm p50 at most 60 seconds / p95 at most 120 seconds. Compare at least
+20 samples of each declared scenario under matching workload/configuration;
+report missing or ineligible samples as unverified. Synthetic fixtures are not
+developer samples. The paused whole-graph benchmark cannot be bypassed to
+claim these targets. Queue p95 targets 30 seconds, but the exclusive full gate
+on this single host prevents an unconditional guarantee. The existing full
+workflow is scheduled for 02:17 Asia/Singapore (18:17 UTC); push/PR/manual gate
+requirements are unchanged. This schedule takes effect only after publication
+to the remote default branch and availability of its registered runner.
 
 1. Measure first. Preserve `target/test-timings` logs, build/test durations,
    slow cases, selected packages/features, and the source identity. Compare

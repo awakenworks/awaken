@@ -76,12 +76,21 @@ def build_context(root: Path, arguments: list[str], expected: dict | None = None
         path = Path(values.get(name, str(fallback)))
         return path if path.is_absolute() else root/path
     frontends = ("cargo", "rustc", "rustup", *(("cl", "link", "lib", "rc", "mt") if os.name == "nt" else ("cc", "c++", "ar", "ld")))
-    tools, resolved = {}, {}
+    tools, resolved, identities = {}, {}, {}
+    def fingerprint(path):
+        # rustc/rustup and configured wrappers can resolve to the same file.
+        # Read each physical identity once WITHIN this acquisition, returning
+        # independent role records. Every later fence acquires fresh bytes;
+        # equal size/mtime never permits cross-acquisition reuse.
+        canonical = path.resolve()
+        if canonical not in identities:
+            identities[canonical] = _file(canonical)
+        return dict(identities[canonical])
     for name in (*frontends, "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
                  "CARGO_BUILD_RUSTC", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"):
         program = name if name in frontends else values.get(name)
         resolved[name] = shutil.which(program, path=values.get("PATH")) if program else None
-        tools[name] = _file(Path(resolved[name])) if resolved[name] else None
+        tools[name] = fingerprint(Path(resolved[name])) if resolved[name] else None
     if expected is not None and expected.get("tools") != tools:
         raise ValueError("Required build compiler/tool identity changed")
     selected = {name: values.get(name) for name in names}
@@ -102,7 +111,7 @@ def build_context(root: Path, arguments: list[str], expected: dict | None = None
             # Inline configuration is bound by literal argv. External files of
             # any name are bound by bytes, without interpreting their contents.
             if "=" not in value or path.is_file(): configs.add(path)
-    files = [_file(path) for path in sorted(configs)]
+    files = [fingerprint(path) for path in sorted(configs)]
     context = {"kind": "known-compilation-inputs", "environment": environment, "files": files, "tools": tools}
     if expected is not None:
         if expected.get("environment") != environment or expected.get("files") != files:

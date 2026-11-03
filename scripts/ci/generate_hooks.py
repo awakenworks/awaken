@@ -627,6 +627,23 @@ def wired_scripts(hooks: str) -> set[str]:
     return wired
 
 
+def generated_hook_glob_errors(hooks: str, declarations: dict[str, tuple[str, ...]]) -> list[str]:
+    """One generated-trigger/wiring model for preflight and graph validation.
+
+    N1 rendered regions + every declaring checker wired => accept;
+    N2 stale/hand-edited regions => reject; N3 unwired declaration => reject.
+    The orchestration decision table exercises these same rules.
+    """
+    errors = []
+    if render(hooks, declarations) != hooks:
+        errors.append('lefthook.yml trigger globs are hand-edited or stale; regenerate them with '
+                      'python3 scripts/ci/generate_hooks.py')
+    for script in sorted(set(declarations) - wired_scripts(hooks)):
+        errors.append(f'scripts/ci/{script} declares INPUT_GLOBS but no lefthook pre-commit '
+                      'command runs it, so the declaration triggers nothing')
+    return errors
+
+
 def undeclared_invocations(hooks: str, declarations: dict[str, tuple[str, ...]]) -> list[str]:
     """Checkers a ``pre-commit`` command runs that declare no ``INPUT_GLOBS``.
 
@@ -912,7 +929,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     rendered = render(current, declarations)
-    execution_errors = hook_execution_errors(rendered)
+    execution_errors = hook_execution_errors(rendered) + generated_hook_glob_errors(rendered, declarations)
     if execution_errors:
         print('\n'.join(execution_errors), file=sys.stderr)
         return 1
