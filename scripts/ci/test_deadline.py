@@ -135,8 +135,11 @@ exec(sys.argv[4])
             self.assertIsNotNone(process.poll(), "R3 producer reaped")
             for pid in members.values():
                 stat = Path(f"/proc/{pid}/stat")
-                self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z",
-                                "R3 no surviving fixture process")
+                try:
+                    state = stat.read_text().split()[2]
+                except (FileNotFoundError, ProcessLookupError):
+                    state = None  # Reaping can retire /proc between lookup and read.
+                self.assertIn(state, (None, "Z"), "R3 no surviving fixture process")
 
     def test_fixture_cleanup_refuses_the_observer_group_before_any_signal(self):
         # F1 coordinate names the observer itself => refuse before signaling.
@@ -183,8 +186,10 @@ esac
         if redirected:
             environment["FIXTURE_CALL_LOG"] = str(root / "call.log")
             invocation += ' >"$FIXTURE_CALL_LOG" 2>&1'
+        # Source the helper explicitly; SSH startup files must not precede the
+        # strict-mode/redirection oracle or write outside this fixture's log.
         result = subprocess.run(
-            ["bash", *shell_flags, "-c", invocation,
+            ["bash", "--noprofile", "--norc", *shell_flags, "-c", invocation,
              "deadline-fixture", str(HELPER), *(["--admit"] if admit else []), "0.25",
              *([] if admit else ["cargo", "fixture"]),
              *command, *arguments],
@@ -658,6 +663,65 @@ else:
 
     def test_native_job_reaps_children_when_deadline_owner_dies(self):
         self.owned_tree(kill_owner=True)
+
+
+@unittest.skipIf(os.name == "nt", "POSIX wait-lock cancellation")
+class DeadlineWaitLockTests(unittest.TestCase):
+    def test_signal_after_wait_lock_acquisition_reaps_the_child(self):
+        # W1 acquire the real Popen waitpid lock, then deliver real TERM/INT
+        # before acquire returns to Popen's try/finally. Asynchronous raises
+        # leak that lock and deadlock cleanup. W2 a pending-only handler must
+        # return the original signal status and reap the actual child within
+        # the unchanged 1s execution / 10s observation / 5s cleanup budgets.
+        driver = """
+from pathlib import Path
+import importlib.util, os, signal, subprocess, sys
+from unittest.mock import patch
+spec=importlib.util.spec_from_file_location('deadline_subject',sys.argv[1])
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+before={number:signal.getsignal(number) for number in (signal.SIGTERM,signal.SIGINT)}
+real=subprocess.Popen
+class SignalAtAcquire:
+    def __init__(self, lock):
+        self.lock=lock;self.fired=False
+    def acquire(self, *args, **kwargs):
+        acquired=self.lock.acquire(*args, **kwargs)
+        if acquired and not self.fired:
+            self.fired=True
+            os.kill(os.getpid(),int(sys.argv[3]))
+        return acquired
+    def release(self):
+        return self.lock.release()
+    def __enter__(self):
+        self.acquire();return self
+    def __exit__(self, *args):
+        self.release()
+def spawn(*args, **kwargs):
+    child=real(*args, **kwargs)
+    child._waitpid_lock=SignalAtAcquire(child._waitpid_lock)
+    coordinate=Path(sys.argv[2]);pending=coordinate.with_suffix('.pending')
+    pending.write_text(str(child.pid));pending.replace(coordinate)
+    return child
+with patch.object(module.subprocess,'Popen',side_effect=spawn):
+    status=module.run(1,[sys.executable,'-c','import time;time.sleep(120)'])
+assert all(signal.getsignal(number)==handler for number,handler in before.items())
+assert module.run(1,[sys.executable,'-c','pass'])==0
+assert all(signal.getsignal(number)==handler for number,handler in before.items())
+raise SystemExit(status)
+"""
+        for number in (signal.SIGTERM, signal.SIGINT):
+            with self.subTest(signal=number), tempfile.TemporaryDirectory() as tmp:
+                coordinate = Path(tmp) / "group"
+                process = subprocess.Popen(
+                    [sys.executable, "-c", driver, str(DEADLINE), str(coordinate), str(int(number))],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    output, errors = process.communicate(timeout=10)
+                    self.assertEqual(process.returncode, 128 + number, (output, errors))
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(int(coordinate.read_text()), 0)
+                finally:
+                    cleanup_fixture_group(coordinate, process)
 
 
 if __name__ == "__main__":
