@@ -332,6 +332,9 @@ def execute_commands(commands: list[list[str]], values: dict[str, str], *, root:
         return 74, []
     values = {**values, **{key: task.environment[key] for key in
                           ('AWAKEN_BUILD_RUN_ID', 'AWAKEN_BUILD_RUN_DIRECTORY')}}
+    for key in ('AWAKEN_BUILD_WORKLOAD_KIND', 'AWAKEN_BUILD_OBSERVATION_KIND'):
+        if key in task.environment:
+            values[key] = task.environment[key]
     def retain(rows):
         task.record_commands(rows)
         if record is not None:

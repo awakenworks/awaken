@@ -26,15 +26,37 @@ awaken_host_cargo_directory() {
 }
 
 run_with_deadline() (
-  local admitted_job=0
+  local admitted_job=0 cooperative_job=0
   if [ "${1:-}" = --admit ]; then
     admitted_job=1
+    shift
+  elif [ "${1:-}" = --cooperative-admit ]; then
+    admitted_job=1
+    cooperative_job=1
     shift
   fi
   local seconds=$1
   shift
   local deadline_dir
   deadline_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  if [ "$cooperative_job" -eq 1 ]; then
+    local host_cargo_directory
+    host_cargo_directory=$(awaken_host_cargo_directory) || return "$?"
+    python3 - "$host_cargo_directory/awaken-build-admission" <<'PY' || return 75
+import json, subprocess, sys
+try:
+    value=json.loads(subprocess.check_output([sys.argv[1], '--capabilities'], text=True))
+    if (value.get('kind') != 'host-admission-capabilities' or value.get('schema_version') != 1
+            or value.get('scheduler') != 'fair-single-lane-v1'
+            or value.get('execution_slots') != 1 or value.get('cooperative_formal') is not True):
+        raise ValueError('unsupported cooperative admission')
+except (OSError, ValueError, subprocess.SubprocessError) as error:
+    print('cooperative formal admission unavailable; install the committed host policy: '+str(error), file=sys.stderr)
+    raise SystemExit(75)
+PY
+    PATH="$host_cargo_directory:$PATH"
+    export AWAKEN_ADMISSION_MODE=cooperative AWAKEN_BUILD_WORKLOAD_KIND=formal
+  fi
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
       # Native Windows Cargo cannot discover a Unix shebang/symlink addon.
@@ -76,3 +98,15 @@ run_with_deadline() (
     python3 "$deadline_dir/deadline.py" "$seconds" -- "$@"
   fi
 )
+
+# Existing command owner, used only at declared safe Formal phase boundaries.
+# The cooperative root's original deadline still bounds all phases and queues.
+run_admitted_phase() {
+  local budget="$1"
+  shift
+  if [ "${AWAKEN_ADMISSION_PHASE_MODE:-}" = 1 ] && [ "${AWAKEN_CARGO_ADMITTED:-}" != 1 ]; then
+    run_with_deadline --admit "$budget" "$@"
+  else
+    "$@"
+  fi
+}

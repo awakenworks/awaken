@@ -29,6 +29,10 @@ on:
 permissions:
   contents: read
 
+env:
+  AWAKEN_BUILD_OBSERVATION_KIND: project
+  AWAKEN_BUILD_WORKLOAD_KIND: feedback
+
 concurrency:
   group: awaken-full-quality-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -162,6 +166,8 @@ jobs:
     needs: dependency_fetch
     env:
       AWAKEN_STATIC_JOBS: "4"
+      AWAKEN_BUILD_WORKLOAD_KIND: qualification
+      AWAKEN_BUILD_OBSERVATION_KIND: project
     # The strict sandbox group requires Docker, unprivileged user namespaces,
     # /dev/fuse, k3d and kubectl. A named runner contract makes missing
     # substrates a scheduling failure instead of a successful test skip.
