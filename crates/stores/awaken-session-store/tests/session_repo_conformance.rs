@@ -120,6 +120,20 @@ async fn postgres_backend_conforms() {
 }
 
 #[test]
+fn postgres_backend_conforms_with_bounded_polling_stack() {
+    // The same complete PostgreSQL suite must fit the SQLite regression's
+    // original 1 MiB budget as well. Its existing explicit fixture admission
+    // still distinguishes absent configuration from an unreachable service.
+    std::thread::Builder::new()
+        .name("postgres-conformance".into())
+        .stack_size(1024 * 1024)
+        .spawn(postgres_backend_conforms)
+        .expect("spawn bounded PostgreSQL conformance")
+        .join()
+        .expect("bounded PostgreSQL conformance")
+}
+
+#[test]
 fn postgres_fixture_absence_and_configured_failure_are_distinct() {
     awaken_reliability_testkit::assert_postgres_fixture_child_contract("postgres_backend_conforms");
 }

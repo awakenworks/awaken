@@ -620,177 +620,184 @@ pub fn root_cas_decision_table<
     })
 }
 
-async fn materialization_retention_rows<
+fn materialization_retention_rows<
     R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
     repo: &R,
-) {
-    // M1 actual first CAS -> immutable pending. M2 fresh mutation trying
-    // known->None/empty/another first -> full root/outbox stutter. M3 matched
-    // receipt -> origin; replay of the older first mutation must classify its
-    // exact receipt before the replacement law and preserve the later origin.
-    // M4 an old Unknown root cannot be upgraded by a generic replacement.
-    use awaken_session_contract::{
-        SessionAggregate, SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind,
-    };
-    let old = session("sesn_materialization_cas", "fresh");
-    let fresh = PersistedSession::frozen_with_budget(
-        old.session_id.clone(),
-        old.frozen_baseline().unwrap().clone(),
-        old.resources,
-        old.mcp,
-        old.title,
-        old.metadata,
-        old.tools,
-        old.budget,
-    );
-    let fresh = create_session(repo, "ws_a", fresh, Vec::new()).await;
-    let mut claimed = SessionAggregate::try_from(fresh).unwrap();
-    let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
-        owner: "worker".into(),
-        runtime_incarnation: "worker:1:boot".into(),
-        epoch: 1,
-        expires_at_unix_ms: u64::MAX,
-    };
-    claimed.assignment().claim(lease.clone(), false).unwrap();
-    let empty = replace_session(
-        repo,
-        "ws_a",
-        claimed.into_snapshot(),
-        "materialization-claim",
-        Vec::new(),
-    )
-    .await;
-    let intent = SessionEnvironmentEffectIntent::new(
-        empty.session_id.clone(),
-        SessionEnvironmentEffectKind::Create,
-        Some(lease.clone()),
-    )
-    .for_environment(
-        empty
-            .frozen_baseline()
-            .unwrap()
-            .environment
-            .config_fingerprint
-            .0
-            .clone(),
-    );
-    let mut admitted = SessionAggregate::try_from(empty.clone()).unwrap();
-    admitted
-        .environment()
-        .admit_environment_effect("ws_a", &intent, 1)
-        .unwrap();
-    let payload = SessionMutationPayload::Replace(admitted.into_snapshot());
-    let first = SessionMutation {
-        expected_revision: empty.revision,
-        idempotency: record("materialization-first", &payload),
-        payload,
-        lifecycle_facts: Vec::new(),
-    };
-    assert!(matches!(
-        repo.commit("ws_a", first.clone()).await.unwrap(),
-        SessionMutationResult::Applied { .. }
-    ));
-    let pending = repo.get(&empty.session_id).await.unwrap();
-    assert_eq!(
-        pending.environment_materialization().unwrap().pending(),
-        Some(&intent)
-    );
-    let outbox = repo.pending_lifecycle().await.unwrap();
-    let mut erased_wire = serde_json::to_value(&pending).unwrap();
-    erased_wire
-        .as_object_mut()
-        .unwrap()
-        .remove("environment_materialization");
-    let erased: PersistedSession = serde_json::from_value(erased_wire).unwrap();
-    let mut reset = empty.clone();
-    reset.revision = pending.revision;
-    let mut wire = serde_json::to_value(&pending).unwrap();
-    let mut shortened = lease;
-    shortened.expires_at_unix_ms -= 1;
-    wire["environment_materialization"]["pending"] = serde_json::to_value(
-        SessionEnvironmentEffectIntent::new(
-            pending.session_id.clone(),
-            SessionEnvironmentEffectKind::Create,
-            Some(shortened),
+) -> impl std::future::Future<Output = ()> + '_ {
+    // Box this phase at its constructor boundary. Otherwise its inline
+    // state inflates the parent CAS poll frame even when that parent is
+    // already pinned, overflowing the same 1 MiB MSVC regression thread.
+    Box::pin(async move {
+        // M1 actual first CAS -> immutable pending. M2 fresh mutation trying
+        // known->None/empty/another first -> full root/outbox stutter. M3 matched
+        // receipt -> origin; replay of the older first mutation must classify its
+        // exact receipt before the replacement law and preserve the later origin.
+        // M4 an old Unknown root cannot be upgraded by a generic replacement.
+        use awaken_session_contract::{
+            SessionAggregate, SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind,
+        };
+        let old = session("sesn_materialization_cas", "fresh");
+        let fresh = PersistedSession::frozen_with_budget(
+            old.session_id.clone(),
+            old.frozen_baseline().unwrap().clone(),
+            old.resources,
+            old.mcp,
+            old.title,
+            old.metadata,
+            old.tools,
+            old.budget,
+        );
+        let fresh = create_session(repo, "ws_a", fresh, Vec::new()).await;
+        let mut claimed = SessionAggregate::try_from(fresh).unwrap();
+        let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: "worker:1:boot".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        };
+        claimed.assignment().claim(lease.clone(), false).unwrap();
+        let empty = replace_session(
+            repo,
+            "ws_a",
+            claimed.into_snapshot(),
+            "materialization-claim",
+            Vec::new(),
         )
-        .for_environment(intent.environment_fingerprint().unwrap()),
-    )
-    .unwrap();
-    let overwritten: PersistedSession = serde_json::from_value(wire).unwrap();
-    for (index, bad) in [erased, reset, overwritten].into_iter().enumerate() {
-        let payload = SessionMutationPayload::Replace(bad);
-        let mutation = SessionMutation {
-            expected_revision: pending.revision,
-            idempotency: record(&format!("materialization-reset-{index}"), &payload),
+        .await;
+        let intent = SessionEnvironmentEffectIntent::new(
+            empty.session_id.clone(),
+            SessionEnvironmentEffectKind::Create,
+            Some(lease.clone()),
+        )
+        .for_environment(
+            empty
+                .frozen_baseline()
+                .unwrap()
+                .environment
+                .config_fingerprint
+                .0
+                .clone(),
+        );
+        let mut admitted = SessionAggregate::try_from(empty.clone()).unwrap();
+        admitted
+            .environment()
+            .admit_environment_effect("ws_a", &intent, 1)
+            .unwrap();
+        let payload = SessionMutationPayload::Replace(admitted.into_snapshot());
+        let first = SessionMutation {
+            expected_revision: empty.revision,
+            idempotency: record("materialization-first", &payload),
             payload,
             lifecycle_facts: Vec::new(),
         };
-        assert!(
-            matches!(
-                repo.commit("ws_a", mutation).await,
-                Err(SessionRepositoryError::InvalidMutation(_))
-            ),
-            "M2 {index}"
+        assert!(matches!(
+            repo.commit("ws_a", first.clone()).await.unwrap(),
+            SessionMutationResult::Applied { .. }
+        ));
+        let pending = repo.get(&empty.session_id).await.unwrap();
+        assert_eq!(
+            pending.environment_materialization().unwrap().pending(),
+            Some(&intent)
         );
-        assert_eq!(repo.get(&pending.session_id).await.unwrap(), pending);
-        assert_eq!(repo.pending_lifecycle().await.unwrap(), outbox);
-    }
-    let mut completed = SessionAggregate::try_from(pending.clone()).unwrap();
-    completed
-        .environment()
-        .try_apply_environment_receipt(
-            "ws_a",
-            &awaken_session_contract::SessionEnvironmentReceipt::from_intent(&intent, "binding")
-                .unwrap(),
-            1,
+        let outbox = repo.pending_lifecycle().await.unwrap();
+        let mut erased_wire = serde_json::to_value(&pending).unwrap();
+        erased_wire
+            .as_object_mut()
+            .unwrap()
+            .remove("environment_materialization");
+        let erased: PersistedSession = serde_json::from_value(erased_wire).unwrap();
+        let mut reset = empty.clone();
+        reset.revision = pending.revision;
+        let mut wire = serde_json::to_value(&pending).unwrap();
+        let mut shortened = lease;
+        shortened.expires_at_unix_ms -= 1;
+        wire["environment_materialization"]["pending"] = serde_json::to_value(
+            SessionEnvironmentEffectIntent::new(
+                pending.session_id.clone(),
+                SessionEnvironmentEffectKind::Create,
+                Some(shortened),
+            )
+            .for_environment(intent.environment_fingerprint().unwrap()),
         )
         .unwrap();
-    let origin = replace_session(
-        repo,
-        "ws_a",
-        completed.into_snapshot(),
-        "materialization-completed",
-        Vec::new(),
-    )
-    .await;
-    assert!(
-        matches!(
-            repo.commit("ws_a", first).await.unwrap(),
-            SessionMutationResult::Replayed { .. }
-        ),
-        "M3 replay before reset gate"
-    );
-    assert_eq!(repo.get(&origin.session_id).await.unwrap(), origin);
-    let legacy = create_session(
-        repo,
-        "ws_a",
-        session("sesn_materialization_legacy", "old"),
-        Vec::new(),
-    )
-    .await;
-    let mut backfilled_wire = serde_json::to_value(&legacy).unwrap();
-    backfilled_wire["environment_materialization"] =
-        serde_json::to_value(empty.environment_materialization()).unwrap();
-    let backfilled: PersistedSession = serde_json::from_value(backfilled_wire).unwrap();
-    let payload = SessionMutationPayload::Replace(backfilled);
-    assert!(
-        matches!(
-            repo.commit(
+        let overwritten: PersistedSession = serde_json::from_value(wire).unwrap();
+        for (index, bad) in [erased, reset, overwritten].into_iter().enumerate() {
+            let payload = SessionMutationPayload::Replace(bad);
+            let mutation = SessionMutation {
+                expected_revision: pending.revision,
+                idempotency: record(&format!("materialization-reset-{index}"), &payload),
+                payload,
+                lifecycle_facts: Vec::new(),
+            };
+            assert!(
+                matches!(
+                    repo.commit("ws_a", mutation).await,
+                    Err(SessionRepositoryError::InvalidMutation(_))
+                ),
+                "M2 {index}"
+            );
+            assert_eq!(repo.get(&pending.session_id).await.unwrap(), pending);
+            assert_eq!(repo.pending_lifecycle().await.unwrap(), outbox);
+        }
+        let mut completed = SessionAggregate::try_from(pending.clone()).unwrap();
+        completed
+            .environment()
+            .try_apply_environment_receipt(
                 "ws_a",
-                SessionMutation {
-                    expected_revision: legacy.revision,
-                    idempotency: record("materialization-backfill", &payload),
-                    payload,
-                    lifecycle_facts: Vec::new()
-                }
+                &awaken_session_contract::SessionEnvironmentReceipt::from_intent(
+                    &intent, "binding",
+                )
+                .unwrap(),
+                1,
             )
-            .await,
-            Err(SessionRepositoryError::InvalidMutation(_))
-        ),
-        "M4"
-    );
-    assert_eq!(repo.get(&legacy.session_id).await.unwrap(), legacy);
+            .unwrap();
+        let origin = replace_session(
+            repo,
+            "ws_a",
+            completed.into_snapshot(),
+            "materialization-completed",
+            Vec::new(),
+        )
+        .await;
+        assert!(
+            matches!(
+                repo.commit("ws_a", first).await.unwrap(),
+                SessionMutationResult::Replayed { .. }
+            ),
+            "M3 replay before reset gate"
+        );
+        assert_eq!(repo.get(&origin.session_id).await.unwrap(), origin);
+        let legacy = create_session(
+            repo,
+            "ws_a",
+            session("sesn_materialization_legacy", "old"),
+            Vec::new(),
+        )
+        .await;
+        let mut backfilled_wire = serde_json::to_value(&legacy).unwrap();
+        backfilled_wire["environment_materialization"] =
+            serde_json::to_value(empty.environment_materialization()).unwrap();
+        let backfilled: PersistedSession = serde_json::from_value(backfilled_wire).unwrap();
+        let payload = SessionMutationPayload::Replace(backfilled);
+        assert!(
+            matches!(
+                repo.commit(
+                    "ws_a",
+                    SessionMutation {
+                        expected_revision: legacy.revision,
+                        idempotency: record("materialization-backfill", &payload),
+                        payload,
+                        lifecycle_facts: Vec::new()
+                    }
+                )
+                .await,
+                Err(SessionRepositoryError::InvalidMutation(_))
+            ),
+            "M4"
+        );
+        assert_eq!(repo.get(&legacy.session_id).await.unwrap(), legacy);
+    })
 }
 
 pub async fn create_receipt_decision_table<
