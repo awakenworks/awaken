@@ -254,7 +254,7 @@ def compile_scope(metadata: dict, changed: list[str], original: list[str], root:
     index = 0
     while index < len(flags):
         argument = flags[index]
-        if argument in ("--locked", "--message-format=json"):
+        if argument in ("--locked", "--message-format=json", "--timings"):
             index += 1
         elif argument == "--features" and index + 1 < len(flags):
             for feature in flags[index + 1].replace(" ", ",").split(","):
@@ -980,6 +980,13 @@ else:
         self.assertEqual(command, ["cargo", "check", "-p", "cli", "-p", "kernel", "-p", "peer", "-p", "second", "--all-targets", *original[4:]])
         self.assertIn("potentially", reason)
         self.assertNotIn("-E", command)
+        # B12 diagnostic HTML timings change no target/feature selection and
+        # survive projection verbatim. Unknown timing formats stay whole.
+        timed, timed_selected, _ = compile_scope(metadata, ["crates/kernel/src/lib.rs"], [*original, '--timings'])
+        self.assertEqual(timed, [*command, '--timings'])
+        self.assertEqual(timed_selected, selected)
+        unknown = [*original, '--timings=json']
+        self.assertEqual(compile_scope(metadata, ["crates/kernel/src/lib.rs"], unknown)[0], unknown)
         for kind in (None, "dev", "build"):
             metadata["resolve"]["nodes"][1]["deps"][0]["dep_kinds"][0]["kind"] = kind
             self.assertEqual(compile_scope(metadata, ["crates/kernel/src/lib.rs"], original)[1], selected)

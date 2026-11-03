@@ -421,48 +421,6 @@ def release_gate_errors(check_all: str, public_api: str, check_rust: str) -> lis
     return errors
 
 
-# A hook that runs only when certain files are staged is a gate whose trigger
-# set must contain its input set: a check that reads `e2e/package.json` but
-# fires only on `packages/managed-sdk-oracle/**` passes by never running when
-# that manifest changes.
-#
-# The previous answer was a registry here that named each command and the extra
-# files it reads. That registry could go stale in exactly the way it existed to
-# prevent -- nothing made anyone add a row -- so it is gone. The rule below is
-# structural instead: a checker declares its own inputs as INPUT_GLOBS, that
-# declaration is the *only* author of the command's glob, and this refuses both
-# a hand-written drift from the rendered glob and a declaration nothing runs.
-def generated_hook_glob_errors(
-    hooks: str, declarations: dict[str, tuple[str, ...]]
-) -> list[str]:
-    """Cause/effect for the generated trigger globs:
-
-    | Rule | generated regions match the render | every declaring checker wired | Effect |
-    |------|------------------------------------|-------------------------------|--------|
-    | N1   | yes                                | yes                           | accept |
-    | N2   | no (a glob was hand-edited or is stale) | yes                      | reject |
-    | N3   | yes                                | no                            | reject |
-
-    N4 is the admitted case and needs no row: a command that runs a checker
-    which declares nothing is not governed at all, and its hand-written glob is
-    left exactly as authored.
-    """
-
-    errors: list[str] = []
-    if generate_hooks.render(hooks, declarations) != hooks:
-        errors.append(
-            "lefthook.yml trigger globs are hand-edited or stale; regenerate them with "
-            "python3 scripts/ci/generate_hooks.py"
-        )
-    unwired = sorted(set(declarations) - generate_hooks.wired_scripts(hooks))
-    for script in unwired:
-        errors.append(
-            f"scripts/ci/{script} declares INPUT_GLOBS but no lefthook pre-commit "
-            "command runs it, so the declaration triggers nothing"
-        )
-    return errors
-
-
 def e2e_lock_owner_errors(pnpm_lock: str) -> list[str]:
     if re.search(r"^  e2e:$", pnpm_lock, re.MULTILINE):
         return ["E2E dependencies have a duplicate pnpm importer beside package-lock.json"]
@@ -1015,7 +973,7 @@ def validate(root: Path) -> list[str]:
     ))
     errors.extend(hook_entry_errors((root / "lefthook.yml").read_text(encoding="utf-8")))
     errors.extend(
-        generated_hook_glob_errors(
+        generate_hooks.generated_hook_glob_errors(
             (root / "lefthook.yml").read_text(encoding="utf-8"),
             generate_hooks.declared_input_globs(root / "scripts/ci"),
         )
@@ -1212,17 +1170,17 @@ def self_test() -> None:
         "      run: tools/opaque.sh\n",
         declarations,
     )
-    assert not generated_hook_glob_errors(synthetic, declarations), "N1"
+    assert not generate_hooks.generated_hook_glob_errors(synthetic, declarations), "N1"
     hand_edited = synthetic.replace(
         '{docs/*.md,scripts/ci/check_alpha.py}', "docs/README.md"
     )
-    assert hand_edited != synthetic and generated_hook_glob_errors(hand_edited, declarations), "N2"
-    assert generated_hook_glob_errors(
+    assert hand_edited != synthetic and generate_hooks.generated_hook_glob_errors(hand_edited, declarations), "N2"
+    assert generate_hooks.generated_hook_glob_errors(
         synthetic, {**declarations, "check_unwired.py": ("formal/*.json",)}
     ), "N3"
     assert '      glob: "crates/**/*.rs"\n' in synthetic and "opaque.sh" in synthetic, "N4"
     # Live: the repository's own hooks are exactly what their declarations render.
-    assert not generated_hook_glob_errors(
+    assert not generate_hooks.generated_hook_glob_errors(
         hooks, generate_hooks.declared_input_globs(ROOT / "scripts/ci")
     ), "N1 live"
     for checker in GATE_OWNED_CHECKERS:

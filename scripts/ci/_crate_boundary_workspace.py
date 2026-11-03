@@ -16,8 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
 # Keep both raw and production projections of the current ~2700-file
 # workspace hot. Entries remain bounded and keyed by immutable source text;
-# filesystem reads are never memoized. Native measurements are ~4 minutes
-# with this capacity, versus repeated eviction with the smaller working set.
+# filesystem reads are never memoized. A smaller working set repeatedly evicted
+# projections that later rules still needed.
 _RUST_PROJECTION_CACHE_SIZE = 8192
 
 
@@ -187,19 +187,18 @@ def _character_literal_end(source: str, start: int) -> int | None:
     return None
 
 
-# Every lexer decision below starts at one of these characters; any other run
-# of characters is copied unchanged, so the loops jump over it in one step.
-_COMMENT_LEXEME_START = re.compile(r"[bcr\"'/]")
-_LITERAL_LEXEME_START = re.compile(r"[bcr\"']")
+# A raw prefix matters only at an identifier boundary and before its quote.
+# Ordinary b/c/r letters used to enter the lexer millions of times. All other
+# literal/comment decisions start at a quote or slash; skip whole ordinary runs.
+_RUST_LEXEME_START = re.compile(r'(?<!\w)(?:br|cr|r)(?=\#*")|["\'/]')
 
 
-@lru_cache(maxsize=_RUST_PROJECTION_CACHE_SIZE)
-def rust_without_comments(source: str) -> str:
-    """Blank Rust comments without changing offsets, lines, or string literals."""
+def _project_rust(source: str, *, blank_literals: bool) -> str:
+    """One lexical authority for both immutable Rust text projections."""
     output: list[str] = []
     cursor = 0
     while cursor < len(source):
-        start = _COMMENT_LEXEME_START.search(source, cursor)
+        start = _RUST_LEXEME_START.search(source, cursor)
         if start is None:
             output.append(source[cursor:])
             break
@@ -208,18 +207,21 @@ def rust_without_comments(source: str) -> str:
             cursor = start.start()
         raw_end = _raw_string_end(source, cursor)
         if raw_end is not None:
-            output.append(source[cursor:raw_end])
+            literal = source[cursor:raw_end]
+            output.append(_blank_preserving_lines(literal) if blank_literals else literal)
             cursor = raw_end
             continue
         if source[cursor] == '"':
             string_end = _quoted_string_end(source, cursor)
-            output.append(source[cursor:string_end])
+            literal = source[cursor:string_end]
+            output.append(_blank_preserving_lines(literal) if blank_literals else literal)
             cursor = string_end
             continue
         if source[cursor] == "'":
             character_end = _character_literal_end(source, cursor)
             if character_end is not None:
-                output.append(source[cursor:character_end])
+                literal = source[cursor:character_end]
+                output.append(_blank_preserving_lines(literal) if blank_literals else literal)
                 cursor = character_end
                 continue
         if source.startswith("//", cursor):
@@ -249,38 +251,15 @@ def rust_without_comments(source: str) -> str:
 
 
 @lru_cache(maxsize=_RUST_PROJECTION_CACHE_SIZE)
+def rust_without_comments(source: str) -> str:
+    """Blank Rust comments without changing offsets, lines, or string literals."""
+    return _project_rust(source, blank_literals=False)
+
+
+@lru_cache(maxsize=_RUST_PROJECTION_CACHE_SIZE)
 def rust_syntax(source: str) -> str:
-    """Blank comments and literals while retaining Rust syntax and line structure."""
-    source = rust_without_comments(source)
-    output: list[str] = []
-    cursor = 0
-    while cursor < len(source):
-        start = _LITERAL_LEXEME_START.search(source, cursor)
-        if start is None:
-            output.append(source[cursor:])
-            break
-        if start.start() > cursor:
-            output.append(source[cursor:start.start()])
-            cursor = start.start()
-        raw_end = _raw_string_end(source, cursor)
-        if raw_end is not None:
-            output.append(_blank_preserving_lines(source[cursor:raw_end]))
-            cursor = raw_end
-            continue
-        if source[cursor] == '"':
-            string_end = _quoted_string_end(source, cursor)
-            output.append(_blank_preserving_lines(source[cursor:string_end]))
-            cursor = string_end
-            continue
-        if source[cursor] == "'":
-            character_end = _character_literal_end(source, cursor)
-            if character_end is not None:
-                output.append(_blank_preserving_lines(source[cursor:character_end]))
-                cursor = character_end
-                continue
-        output.append(source[cursor])
-        cursor += 1
-    return "".join(output)
+    """Blank comments and literals in one pass, retaining offsets and lines."""
+    return _project_rust(source, blank_literals=True)
 
 
 def _balanced_end(source: str, start: int, opening: str, closing: str) -> int | None:
@@ -982,6 +961,41 @@ def _selftest_projection_cache() -> None:
         projector.cache_clear()
 
 
+def _selftest_lexical_projection() -> None:
+    # Causes: C1 quoted/raw/character literal contains comment delimiters;
+    # C2 nested/line comments contain fake quotes; C3 identifiers/lifetimes
+    # contain b/c/r or apostrophes; C4 CRLF/Unicode/unclosed lexemes occur.
+    # Effects: comments-only preserves literals; syntax blanks literals too;
+    # both preserve every offset/newline and all real code. Decision rows:
+    # L1=C1+C2+C3, L2=L1+C4, L3=unterminated comment/string. Explicit expected
+    # bytes are independent of the shared lexer; neither API is the oracle.
+    for literal, syntax in (
+        ('"a\\\"//b/*c*/"', None),
+        ('r###"a"//b/*c*/"###', None),
+        ('br#"a//b/*c*/"#', None),
+        ('cr"a//b/*c*/"', None),
+        ("'λ'", None),
+        ("'\\n'", None),
+        ('b"//"', 'b    '),
+    ):
+        for newline in ('\n', '\r\n'):
+            prefix = "fn borrow<'a>(racer: &'a str) { let bracer = "
+            comment = '/* outer " /* nested */ end */'
+            tail = '; // "fake"' + newline + 'let λ = bracer; }'
+            source = prefix + literal + comment + tail
+            expected_tail = '; ' + ' ' * len('// "fake"') + newline + 'let λ = bracer; }'
+            expected_comment = ' ' * len(comment)
+            assert rust_without_comments(source) == prefix + literal + expected_comment + expected_tail, 'L1/L2 literal retained'
+            expected_literal = _blank_preserving_lines(literal) if syntax is None else syntax
+            assert rust_syntax(source) == prefix + expected_literal + expected_comment + expected_tail, 'L1/L2 syntax and offsets'
+    for source, comments, syntax in (
+        ('r#"unclosed\nλ', 'r#"unclosed\nλ', ' ' * 11 + '\n '),
+        ('x /* "open\nλ', 'x ' + ' ' * 8 + '\n ', 'x ' + ' ' * 8 + '\n '),
+    ):
+        assert rust_without_comments(source) == comments, 'L3 terminal comment projection'
+        assert rust_syntax(source) == syntax, 'L3 terminal syntax projection'
+
+
 def selftest() -> None:
     """Cause/effect table for first-party facade discovery.
 
@@ -1010,6 +1024,7 @@ def selftest() -> None:
         else:
             raise AssertionError("P4 outside source must not become an ownership key")
     _selftest_projection_cache()
+    _selftest_lexical_projection()
     _selftest_crate_discovery()
     _selftest_manifest_source_projection()
     _selftest_dependency_declarations()

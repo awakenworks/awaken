@@ -52,6 +52,26 @@ def config(jobs):
 
 
 class HookFeedbackTests(unittest.TestCase):
+    def test_progress_reports_elapsed_stage_and_log_without_replaying_output(self):
+        # H1 alive worker => elapsed/current Rust stage/log are visible; H2
+        # stop => no further heartbeat; H3 private arbitrary child output is
+        # retained in the log, without being replayed as progress. Controlled
+        # event boundaries exercise the real heartbeat without a timing sleep.
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as raw:
+            log = Path(raw) / 'output.log'
+            log.write_text('private output\n[stage] check: started; log nested.log\n', encoding='utf-8')
+            stopped = Mock()
+            stopped.wait.side_effect = [False, True]
+            stopped.is_set.return_value = False
+            output = io.StringIO()
+            with patch.object(parallel_check.time, 'monotonic', return_value=23), contextlib.redirect_stdout(output):
+                parallel_check.hook_progress(stopped, 'rust-quick', log, 3)
+            self.assertIn('[running] rust-quick: 20s; [stage] check:', output.getvalue())
+            self.assertIn(str(log), output.getvalue())
+            self.assertNotIn('private output', output.getvalue())
+            self.assertEqual(output.getvalue().count('[running]'), 1)
+
     def fixture(self):
         task, root, environment = real_build_observations(self)
         return task, root, {key: value for key, value in task.environment.items()
@@ -124,6 +144,20 @@ class HookFeedbackTests(unittest.TestCase):
         self.assertIn('stage_fixed: true', generate_hooks.command_blocks(writer)['writer'])
         self.assertEqual(generate_hooks.hook_run("      run: 'echo ''quoted'' text'\n"), "echo 'quoted' text")
         self.assertEqual(generate_hooks.hook_run('      run: |-\n        echo body\n\n      stage_fixed: true\n'), 'echo body')
+        # I5 a declaring checker with no caller is rejected by the real early
+        # preflight in both check/write modes, before rewriting configuration
+        # or starting expensive suites. The graph checker shares this owner.
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'lefthook.yml'
+            path.write_text(rendered)
+            for arguments in (['--check'], []):
+                errors = io.StringIO()
+                with patch.object(generate_hooks, 'HOOKS', path), \
+                     patch.object(generate_hooks, 'declared_input_globs', return_value={**declared, 'unwired.py': ('src/**',)}), \
+                     contextlib.redirect_stderr(errors):
+                    self.assertEqual(generate_hooks.main(arguments), 1)
+                self.assertIn('unwired.py declares INPUT_GLOBS', errors.getvalue())
+                self.assertEqual(path.read_text(), rendered)
         native = json.loads(subprocess.check_output(['lefthook', 'dump', '--format', 'json'], cwd=ROOT, text=True))
         def names(jobs):
             return [name for job in jobs for name in (names(job['group']['jobs'])

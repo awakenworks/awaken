@@ -4,6 +4,16 @@ import tempfile
 from unittest import mock
 
 
+def synthetic_build_environment(root):
+    """Subprocess fixtures cannot append fake commands to a real parent run."""
+    from formal_sources import detached_git_environment
+    environment = {key: value for key, value in detached_git_environment().items()
+                   if not key.startswith('AWAKEN_BUILD_')}
+    environment.update(AWAKEN_BUILD_OBSERVATIONS=str((root / 'target/observations').resolve()),
+                       AWAKEN_BUILD_OBSERVATION_KIND='synthetic')
+    return environment
+
+
 def synthetic_build_observations(case):
     # Synthetic subprocess tables do not represent real builds. Their original
     # source/status/evidence assertions stay active; I1-I19 and real Cargo own

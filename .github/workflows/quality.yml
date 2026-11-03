@@ -13,7 +13,8 @@ on:
   # pull request's pr tier leaves out; the nightly run of the full gate below
   # is the scheduled full formal run.
   schedule:
-    - cron: "17 3 * * *"
+    # UTC: 02:17 Asia/Singapore, outside the single host's development window.
+    - cron: "17 18 * * *"
   workflow_dispatch:
     inputs:
       sdk_qualification:

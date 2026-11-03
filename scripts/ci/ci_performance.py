@@ -181,6 +181,22 @@ def register_evidence(path, kind, environment=None):
                  {'kind': kind, 'path': str(path.resolve())})
 
 
+def record_stage(label, elapsed, status, *, semantic_result=None):
+    """One writer for CLI stages, checker rules and framework case timings."""
+    from formal_run_evidence import write_record
+    if type(elapsed) not in (int, float) or not math.isfinite(elapsed) or elapsed < 0:
+        raise ValueError('stage requires a nonnegative finite elapsed duration')
+    directory = task_directory()
+    if directory is None:
+        return
+    active = require_active_task(directory)
+    row = {'label': label, 'duration_seconds': elapsed, 'exit_code': status}
+    if semantic_result is not None:
+        row['semantic_result'] = semantic_result
+    write_record(directory / 'commands' / (str(uuid.uuid4()) + '.json'),
+                 {'run_id': active['run_id'], 'rows': [row]})
+
+
 def archive_task(directory, destination):
     """Artifact copy of one selected run; never merge runs by source revision."""
     if destination.resolve() == directory.resolve():
@@ -594,6 +610,13 @@ def write_report(data, output):
             lines.append(f"  - {step['name']}: {step['seconds']} s; {step['conclusion']}")
     for row in data.get('local', {}).get('gate_timings', [])[:10]:
         lines.append(f"- {row['group']}/{row['check']}: {row['seconds']} s; exit {row['exit_code']}")
+    stages = [row for row in local.get('commands', [])
+              if row.get('label', '').startswith(('boundary-rule:', 'unittest:'))]
+    if stages:
+        lines.append('- Slow rule/case costs below are nested within their parent hook, not additional wall time.')
+        for row in sorted(stages, key=lambda row: row['duration_seconds'], reverse=True)[:10]:
+            outcome = row.get('semantic_result', 'failed' if row['exit_code'] else 'passed')
+            lines.append(f"- {row['label']}: {row['duration_seconds']:.2f} s; {outcome}")
     for row in data.get('local', {}).get('rust', []):
         costs = row.get('test_costs', {})
         lines.append(f"- Rust observed passes: {costs.get('observed_passes')}; p50 {costs.get('p50_seconds')} s; p95 {costs.get('p95_seconds')} s")
@@ -704,11 +727,10 @@ def main():
                 parser.error('register requires --path and --kind')
             register_evidence(args.path, args.kind)
         elif args.mode == 'stage':
-            if args.elapsed is None or not math.isfinite(args.elapsed) or args.elapsed < 0:
-                parser.error('stage requires a nonnegative finite --elapsed')
-            write_record(directory / 'commands' / (str(uuid.uuid4()) + '.json'),
-                         {'run_id': os.environ['AWAKEN_BUILD_RUN_ID'], 'rows': [
-                             {'label': args.label, 'duration_seconds': args.elapsed, 'exit_code': args.exit_code}]})
+            try:
+                record_stage(args.label, args.elapsed, args.exit_code)
+            except ValueError as error:
+                parser.error(str(error))
         elif args.mode == 'timings-before':
             if args.path is None:
                 parser.error('timings-before requires --path')
