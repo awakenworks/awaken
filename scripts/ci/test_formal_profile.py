@@ -39,6 +39,26 @@ def fixture():
 
 
 class ProfileTests(unittest.TestCase):
+    def test_observation_mutation_fails_before_kani_without_duplicate_oracle(self):
+        # M1 real observations -> the existing actual-trace mutation oracle,
+        # once, then Kani. M2 unavailable/wrong TLC -> strict failure before
+        # physical witnesses; permissive missing tools remains nonqualifying.
+        # This is an ordering/ownership regression; the mutation owner's tests
+        # exercise bad baselines, ineffective mutants and missing observations.
+        root = Path(__file__).resolve().parents[2]
+        gate = (root / 'scripts/ci/check_formal.sh').read_text()
+        mutation = '--session-observation-trace-mutants'
+        self.assertEqual(gate.count(mutation), 1)
+        producer = gate.index('scripts/ci/check-reliability.sh --session-observations')
+        oracle = gate.index(mutation)
+        kani = gate.index('if command -v cargo-kani')
+        self.assertLess(producer, oracle)
+        self.assertLess(oracle, kani)
+        self.assertLess(gate.index('unexpected TLC version'), producer)
+        self.assertLess(gate.index('required TLC environment unavailable'), producer)
+        self.assertIn('--observation-trace-dir "$observation_trace_dir"', gate)
+        self.assertIn('AWAKEN_FORMAL_MUTATION_EVIDENCE_DIR="$formal_artifact_dir/observation-mutations"', gate)
+
     def test_evidence_namespaces_require_their_existing_product_journeys(self):
         # J1 explicit obligation / exact namespace + existing product journey
         # => complete. J2 remove its edge => reject the disconnected proof even

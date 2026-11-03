@@ -87,6 +87,8 @@ class TaskRun:
             path = self.directory / 'evidence.json'
             record = json.loads(path.read_text())
             record.update(label=label, started_monotonic=time.monotonic(), repository=str(root.resolve()),
+                          workload_kind=self.environment.get('AWAKEN_BUILD_WORKLOAD_KIND', 'unclassified'),
+                          observation_kind=self.environment.get('AWAKEN_BUILD_OBSERVATION_KIND', 'unclassified'),
                           parent_run_id=self.environment.get('AWAKEN_BUILD_RUN_ID'),
                           parent_invocation_id=self.environment.get('AWAKEN_BUILD_INVOCATION_ID'),
                           workload_digest=None if workload is None else hashlib.sha256(json.dumps(workload).encode()).hexdigest(),
@@ -285,6 +287,94 @@ def percentile(values, fraction):
     return values[lower] + (values[min(lower + 1, len(values) - 1)] - values[lower]) * (position - lower)
 
 
+def host_observation_query(option, path):
+    """The host owns process birth/lifecycle and record discovery, not this repo."""
+    observer = os.environ.get('AWAKEN_HOST_ADMISSION') or shutil.which('awaken-build-admission')
+    if not observer:
+        raise ValueError('host observation reader unavailable')
+    try:
+        value = json.loads(subprocess.check_output([observer, option, str(path)], text=True, timeout=30))
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise ValueError('host observation reader unavailable') from error
+    expected = 'cargo-observation-snapshot' if option == '--observations' else 'cargo-observation-state'
+    if value.get('schema_version') != 1 or value.get('kind') != expected:
+        raise ValueError('unsupported host observation protocol')
+    return value
+
+
+def invocation_view(record, path):
+    if record.get('finished_at_unix') is not None:
+        return {**record, 'observed_state': {'status': record['status'], 'reason': 'recorded terminal result'}}
+    try:
+        view = host_observation_query('--observation-state', path)
+        if view['invocation_id'] != record.get('invocation_id'):
+            raise ValueError('host observation identity mismatch')
+        state = view['observed_state']
+    except ValueError:
+        state = {'status': 'unverified', 'reason': 'host lifecycle reader unavailable'}
+    return {**record, 'observed_state': state}
+
+
+def invocation_summary(snapshot):
+    """Summarize admission costs without adding inclusive parent/child time."""
+    if snapshot.get('schema_version') != 1 or snapshot.get('kind') != 'cargo-observation-snapshot':
+        raise ValueError('unsupported Cargo snapshot')
+    rows = snapshot['records']
+    identities = [row['invocation_id'] for row in rows]
+    if len(set(identities)) != len(identities):
+        raise ValueError('duplicate invocation identity')
+    cohorts, states = {}, {}
+    synthetic = 0
+    def sample(values):
+        return {'samples': len(values), 'sum_seconds': sum(values), 'p50_seconds': percentile(values, .5),
+                'p95_seconds': percentile(values, .95) if len(values) >= 20 else None}
+    def duration(row, key):
+        value = row.get(key)
+        if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or value < 0):
+            raise ValueError('invalid invocation duration: ' + key)
+        return value
+    for row in rows:
+        if row.get('kind') != 'cargo-build-observation' or row.get('schema_version') != 1:
+            raise ValueError('unsupported invocation')
+        state = row.get('observed_state', {}).get('status', 'unverified')
+        states[state] = states.get(state, 0) + 1
+        if row.get('observation_kind') == 'synthetic':
+            synthetic += 1
+            continue
+        identity = {key: row.get(key, 'unclassified') for key in ('workload_kind', 'observation_kind')}
+        identity['repository'] = row.get('source', {}).get('repository')
+        key = json.dumps(identity, sort_keys=True)
+        cohort = cohorts.setdefault(key, {'identity': identity, 'records': 0, 'terminal_admissions': 0,
+                                         'queue': [], 'lane': [], 'legacy_execution': []})
+        cohort['records'] += 1
+        # Orphans/unknown liveness have no invented end time or success. Nested
+        # calls inherit a lease: their inclusive durations cannot be added.
+        if row.get('finished_at_unix') is None or row.get('nested_admission'):
+            continue
+        cohort['terminal_admissions'] += 1
+        for field, destination in (('queue_seconds', 'queue'), ('lane_seconds', 'lane')):
+            value = duration(row, field)
+            if value is not None:
+                cohort[destination].append(value)
+        # Legacy execution lacks exact lock boundaries. Keep it separate, and
+        # never count cooperative roots as occupancy during child queues/work.
+        if row.get('lane_seconds') is None and row.get('holds_execution_lane', True):
+            value = duration(row, 'execution_seconds')
+            if value is not None:
+                cohort['legacy_execution'].append(value)
+    return {'record_count': len(rows), 'states': states, 'synthetic_excluded': synthetic,
+            'root_invocations': sum(row.get('parent_invocation_id') is None for row in rows),
+            'parents_outside_snapshot': sum(row.get('parent_invocation_id') is not None
+                                          and row['parent_invocation_id'] not in identities for row in rows),
+            'read_errors': len(snapshot.get('errors', [])),
+            'cohorts': [{**{key: value for key, value in cohort.items() if not isinstance(value, list)},
+                         **{key: sample(cohort[key]) for key in ('queue', 'lane', 'legacy_execution')}}
+                        for cohort in cohorts.values()],
+            'scope': 'Cargo invocations, not task/build count; per-repository declared workloads; '
+                     'legacy/unclassified rows remain separate; queue/lane sums are request costs, not elapsed wall time; '
+                     'nested inclusive execution is never summed; legacy execution is not exact lane occupancy'}
+
+
 def test_costs(text):
     matches = re.findall(r'^\s*PASS\s+\[\s*([\d.]+)s\]\s+(?:\([^)]*\)\s+)?(\S+)\s+(\S+)', text, re.MULTILINE)
     if not matches:
@@ -356,7 +446,7 @@ def local_report(root, revision, run_id=None):
         value = json.loads(path.read_text())
         if value.get('schema_version') != 1 or value.get('kind') != 'cargo-build-observation' or value.get('run_id') != record['run_id']:
             raise ValueError('foreign or unsupported Cargo observation')
-        result['cargo_invocations'].append(value)
+        result['cargo_invocations'].append(invocation_view(value, path))
     if not result['cargo_invocations']:
         result['missing'].append('host Cargo invocation capture unavailable or no Cargo build reached')
     for directory in sorted(run_root.glob('rust-gate.*')):
@@ -442,7 +532,14 @@ def write_report(data, output):
         calls = local.get('cargo_invocations', [])
         lines.append(f"- Observed Cargo calls: {len(calls)}; waiting and execution remain separate; nested durations are not summed.")
         for call in calls:
-            lines.append(f"- Cargo {call['invocation_id']}: {call['status']}; queue {call.get('queue_seconds')} s; execution {call.get('execution_seconds')} s")
+            state = call.get('observed_state', {}).get('status', call['status'])
+            lines.append(f"- Cargo {call.get('invocation_id')}: {state} (recorded {call['status']}); queue {call.get('queue_seconds')} s; inclusive execution {call.get('execution_seconds')} s; lane {call.get('lane_seconds')} s")
+    if data.get('invocation_summary'):
+        summary = data['invocation_summary']
+        lines.append(f"- Cargo records: {summary['record_count']}; lifecycle states {summary['states']}; synthetic excluded {summary['synthetic_excluded']}; read errors {summary['read_errors']}")
+        lines.append('- ' + summary['scope'])
+        for cohort in summary['cohorts']:
+            lines.append(f"- {cohort['identity']}: terminal admission requests {cohort['terminal_admissions']}; queue {cohort['queue']}; exact lane {cohort['lane']}; legacy execution {cohort['legacy_execution']}")
     for job in data.get('workflow', {}).get('jobs', []):
         label = job['job'].replace('|', '\\|').replace('\n', ' ')
         lines.append(f"- {label}: {job['seconds']} s; {job['conclusion']}")
@@ -466,7 +563,7 @@ def write_report(data, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('mode', choices=('report', 'cache', 'github', 'workflow', 'begin', 'finish',
-                                       'validate', 'register', 'stage', 'timings-before', 'timings-after', 'compare'), nargs='?', default='report')
+                                       'validate', 'register', 'stage', 'timings-before', 'timings-after', 'compare', 'invocations'), nargs='?', default='report')
     parser.add_argument('--root', type=Path, default=Path('target/test-timings'))
     parser.add_argument('--revision', default=os.environ.get('GITHUB_SHA'))
     parser.add_argument('--output', type=Path, default=Path('target/test-timings/performance.json'))
@@ -485,6 +582,10 @@ def main():
     args = parser.parse_args()
     if args.self_test:
         return int(not unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(PerformanceTests)).wasSuccessful())
+    if args.mode == 'invocations':
+        snapshot = json.loads(args.snapshot.read_text()) if args.snapshot else host_observation_query('--observations', args.root)
+        write_report({'invocations': snapshot, 'invocation_summary': invocation_summary(snapshot)}, args.output)
+        return 0
     if args.mode == 'workflow':
         errors = artifact_policy_errors(Path('.github/workflows/quality.yml').read_text(encoding='utf-8'))
         if errors:
@@ -554,7 +655,10 @@ def main():
             value = run.get('duration_seconds')
             if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
                 continue
-            identity = {key: run.get(key) for key in ('label', 'workload_digest', 'configuration', 'platform', 'host', 'workflow', 'scenario')}
+            if run.get('observation_kind') == 'synthetic':
+                continue
+            identity = {key: run.get(key) for key in ('label', 'workload_digest', 'workload_kind', 'observation_kind',
+                                                     'configuration', 'platform', 'host', 'workflow', 'scenario')}
             # Workflow attempt identifies a sample, not a comparable workload.
             identity['workflow'] = {key: run.get('workflow', {}).get(key) for key in ('GITHUB_JOB', 'RUNNER_NAME')}
             key = json.dumps(identity, sort_keys=True)
@@ -581,7 +685,7 @@ def main():
             raise ValueError('unsupported build observation schema')
         if call.get('kind') == 'cargo-build-observation':
             data = {'revision': call.get('source', {}).get('revision'),
-                    'local': {'run': call, 'cargo_invocations': [call], 'missing': [],
+                    'local': {'run': call, 'cargo_invocations': [invocation_view(call, args.path)], 'missing': [],
                               'scope': 'one explicit invocation; shared cache and resource attribution are retained'}}
         elif call.get('kind') == 'build-observations' and call.get('observation_only') is True:
             revision = call['source'].get('commit')
@@ -633,6 +737,58 @@ def main():
 
 
 class PerformanceTests(unittest.TestCase):
+    def test_invocation_summary_keeps_roots_children_orphans_and_synthetic_distinct(self):
+        # A1 exclusive parent + inherited child -> one lane cost, no inclusive
+        # double count. A2 cooperative root + child lease -> exact short initial
+        # lease plus child lease, never root runtime. A3 dead/unknown nonterminal
+        # -> no duration invented. A4 synthetic -> excluded, legacy -> separate.
+        # A5 duplicate ID / NaN -> reject instead of silently biasing statistics.
+        def row(identity, **values):
+            return {'schema_version': 1, 'kind': 'cargo-build-observation', 'invocation_id': identity,
+                    'status': 'passed', 'observed_state': {'status': 'passed'}, 'finished_at_unix': 1,
+                    'workload_kind': 'formal', 'observation_kind': 'project', 'queue_seconds': 2,
+                    'execution_seconds': 100, 'lane_seconds': 10, **values}
+        rows = [row('outer'), row('nested', parent_invocation_id='outer', nested_admission=True),
+                row('coop', holds_execution_lane=False, lane_seconds=.1),
+                row('phase', parent_invocation_id='coop', lane_seconds=3),
+                row('orphan', finished_at_unix=None, observed_state={'status': 'orphaned'}),
+                row('unknown', finished_at_unix=None, observed_state={'status': 'unverified'}),
+                row('fake', observation_kind='synthetic'),
+                row('old', lane_seconds=None, observation_kind='unclassified')]
+        snapshot = {'schema_version': 1, 'kind': 'cargo-observation-snapshot', 'records': rows, 'errors': []}
+        summary = invocation_summary(snapshot)
+        project = next(c for c in summary['cohorts'] if c['identity']['observation_kind'] == 'project')
+        self.assertEqual(project['queue']['samples'], 3)
+        self.assertEqual(project['lane']['sum_seconds'], 13.1)
+        self.assertEqual(project['legacy_execution']['samples'], 0)
+        self.assertEqual(summary['synthetic_excluded'], 1)
+        self.assertEqual(summary['states']['orphaned'], 1)
+        self.assertIsNone(project['queue']['p95_seconds'])
+        for bad in (rows + [rows[0]], [row('nan', queue_seconds=float('nan'))]):
+            with self.assertRaises(ValueError):
+                invocation_summary({**snapshot, 'records': bad})
+
+    def test_readonly_host_protocol_views_preserve_receipt_and_frozen_snapshot(self):
+        # P1 missing/old host -> nonterminal unverified, raw status untouched.
+        # P2 host-derived orphan -> view only. P3 terminal -> no process probe.
+        # P4 frozen snapshot uses no host and writes a reproducible report.
+        raw = {'schema_version': 1, 'kind': 'cargo-build-observation', 'invocation_id': 'call', 'status': 'queued'}
+        with mock.patch(__name__ + '.host_observation_query', side_effect=ValueError('old')):
+            self.assertEqual(invocation_view(raw, Path('record'))['observed_state']['status'], 'unverified')
+        with mock.patch(__name__ + '.host_observation_query', return_value={
+                'invocation_id': 'call', 'observed_state': {'status': 'orphaned'}}):
+            self.assertEqual(invocation_view(raw, Path('record'))['observed_state']['status'], 'orphaned')
+        self.assertNotIn('observed_state', raw)
+        with mock.patch(__name__ + '.host_observation_query', side_effect=AssertionError('terminal probe')):
+            self.assertEqual(invocation_view({**raw, 'status': 'failed', 'finished_at_unix': 1}, Path('record'))['observed_state']['status'], 'failed')
+            with tempfile.TemporaryDirectory() as temp:
+                path, output = Path(temp) / 'snapshot.json', Path(temp) / 'report.json'
+                path.write_text(json.dumps({'schema_version': 1, 'kind': 'cargo-observation-snapshot',
+                                            'records': [], 'errors': []}))
+                with mock.patch.object(sys, 'argv', [__file__, 'invocations', '--snapshot', str(path), '--output', str(output)]):
+                    self.assertEqual(main(), 0)
+                self.assertEqual(json.loads(output.read_text())['invocation_summary']['record_count'], 0)
+
     def fixture_task(self, label='fixture'):
         from formal_sources import detached_git_environment
         temporary = tempfile.TemporaryDirectory()

@@ -76,6 +76,11 @@ if [ -n "$formal_affected" ]; then
   formal_selection+=(--affected "$formal_affected")
 fi
 
+if [ "${AWAKEN_BUILD_WORKLOAD_KIND:-}" != qualification ]; then
+  export AWAKEN_BUILD_WORKLOAD_KIND=formal
+fi
+export AWAKEN_BUILD_OBSERVATION_KIND="${AWAKEN_BUILD_OBSERVATION_KIND:-project}"
+
 # One invocation replaces any previous receipt with Running before executing.
 # Only successful artifact finalization may publish Passed. The quality workflow
 # retains this file beside its existing exact-SHA timing evidence.
@@ -179,6 +184,51 @@ fi
 # preflight failure retires a stale Passed like any other gate failure.
 python3 scripts/ci/gate_tools.py require --gate formal
 python3 scripts/ci/gate_tools.py disk --stage formal
+
+# Resolve the existing TLC owner before expensive work. The real observation
+# mutation check below depends on this tool, not on Kani/TLAPS completion.
+tlc_available=0
+tla_jar="${TLA2TOOLS_JAR:-}"
+if [ -z "$tla_jar" ]; then
+  user_data_root="${XDG_DATA_HOME:-${HOME}/.local/share}"
+  installed_tla_jar="$user_data_root/tlaplus/tla2tools.jar"
+  if [ -f "$installed_tla_jar" ]; then
+    tla_jar="$installed_tla_jar"
+  fi
+fi
+if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; then
+  tlc_version_output="$(java -cp "$tla_jar" tlc2.TLC -version 2>&1 || true)"
+  actual_tlc_version="${tlc_version_output%%$'\n'*}"
+  if [ "$actual_tlc_version" != "$tlc_version" ]; then
+    echo "unexpected TLC version: $actual_tlc_version" >&2
+    exit 1
+  fi
+  tlc_available=1
+  tlc_state_root="$formal_tmp_root/tlc-states"
+elif [ "$require_tools" -eq 1 ]; then
+  missing=1
+  echo "required TLC environment unavailable before formal execution" >&2
+  exit 1
+fi
+
+formal_phase_budget="${AWAKEN_FORMAL_TIMEOUT_SECONDS:-86400}"
+if [ "${AWAKEN_ADMISSION_PHASE_MODE:-}" = 1 ]; then
+  [[ "$formal_phase_budget" =~ ^[1-9][0-9]*$ ]] || { echo 'invalid formal phase budget' >&2; exit 2; }
+  # Python mutation drivers also launch Java. This scoped argv adapter enters
+  # the SAME host/deadline owners; it is removed with the existing temp root.
+  if [ "$tlc_available" -eq 1 ]; then
+    original_java="$(command -v java)"
+    phase_tools="$formal_tmp_root/admitted-tools"
+    mkdir -p "$phase_tools"
+    {
+      printf '#!/usr/bin/env bash\nset -euo pipefail\nsource %q\n' "$PWD/scripts/ci/_deadline.sh"
+      printf 'if [ "${AWAKEN_CARGO_ADMITTED:-}" = 1 ]; then exec %q "$@"; fi\n' "$original_java"
+      printf 'run_with_deadline --admit %q %q "$@"\n' "$formal_phase_budget" "$original_java"
+    } > "$phase_tools/java"
+    chmod 700 "$phase_tools/java"
+    export PATH="$phase_tools:$PATH"
+  fi
+fi
 
 rust_trace_dir="$formal_artifact_dir/rust-traces"
 rendered_trace_dir="$formal_artifact_dir/rendered-traces"
@@ -414,13 +464,22 @@ python3 scripts/ci/render_runtime_refinement_traces.py \
 
 # Actual application/driver/store observations refine the SAME relations used
 # by the Session/Store models below. Missing scenarios fail before TLC runs.
-AWAKEN_SESSION_EVIDENCE_DIR="$formal_artifact_dir/session-observations" scripts/ci/check-reliability.sh --session-observations
+AWAKEN_SESSION_EVIDENCE_DIR="$formal_artifact_dir/session-observations" \
+  run_admitted_phase "$formal_phase_budget" scripts/ci/check-reliability.sh --session-observations
+
+# Consume the real producer output exactly once before the long solver batches.
+# The existing checker owns baseline, mutant construction and exact oracles.
+# A no-op/invalid mutation must fail here without spending hours in Kani first.
+if [ "$tlc_available" -eq 1 ]; then
+  AWAKEN_FORMAL_MUTATION_EVIDENCE_DIR="$formal_artifact_dir/observation-mutations" \
+    python3 scripts/ci/check_formal_mutations.py --session-observation-trace-mutants "$tla_jar" --observation-trace-dir "$observation_trace_dir"
+fi
 
 if command -v cargo-kani >/dev/null 2>&1; then
-  scripts/ci/bootstrap_kani.sh --verify-source "$kani_source_dir" \
+  run_admitted_phase "$formal_phase_budget" scripts/ci/bootstrap_kani.sh --verify-source "$kani_source_dir" \
     > "$formal_artifact_dir/kani-source-build.txt"
   # A matching version string cannot establish full-width enum code generation.
-  run_with_deadline "$kani_batch_timeout_seconds" kani \
+  run_with_deadline --admit "$kani_batch_timeout_seconds" kani \
     scripts/ci/fixtures/kani_wide_niche.rs \
     --target-dir "$formal_tmp_root/kani-toolchain" --output-format terse
   # Kani compiles every selected package once and verifies its named harnesses
@@ -574,47 +633,29 @@ if [ -n "$tlapm_bin" ] && [ -x "$tlapm_bin" ]; then
     echo "unexpected TLAPM version: $actual_tlapm_version" >&2
     exit 1
   fi
-  "$tlapm_bin" -I formal/tla formal/tla/RuntimeSystemProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/RuntimeImplementationProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/ThreadCommitProjectionProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/WorkQueueProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/SessionActivityProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/SessionRootProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/SessionStartRootProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/SessionOwnershipProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/SessionNetworkPolicyProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/LiveInboxProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/ServiceLifecycleProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/ObservationReconcileProof.tla
-  "$tlapm_bin" -I formal/tla formal/tla/ExecutableProjectionRefreshProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/RuntimeSystemProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/RuntimeImplementationProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/ThreadCommitProjectionProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/WorkQueueProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/SessionActivityProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/SessionRootProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/SessionStartRootProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/SessionOwnershipProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/SessionNetworkPolicyProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/LiveInboxProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/ServiceLifecycleProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/ObservationReconcileProof.tla
+  run_admitted_phase "$formal_phase_budget" "$tlapm_bin" -I formal/tla formal/tla/ExecutableProjectionRefreshProof.tla
 else
   echo "skipped TLAPS: set TLAPM_BIN or install tlapm"
   missing=1
 fi
 
-tla_jar="${TLA2TOOLS_JAR:-}"
-if [ -z "$tla_jar" ]; then
-  user_data_root="${XDG_DATA_HOME:-${HOME}/.local/share}"
-  installed_tla_jar="$user_data_root/tlaplus/tla2tools.jar"
-  if [ -f "$installed_tla_jar" ]; then
-    tla_jar="$installed_tla_jar"
-  fi
-fi
-if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; then
-  tlc_version_output="$(java -cp "$tla_jar" tlc2.TLC -version 2>&1 || true)"
-  actual_tlc_version="${tlc_version_output%%$'\n'*}"
-  if [ "$actual_tlc_version" != "$tlc_version" ]; then
-    echo "unexpected TLC version: $actual_tlc_version" >&2
-    exit 1
-  fi
-  tlc_state_root="$formal_tmp_root/tlc-states"
+if [ "$tlc_available" -eq 1 ]; then
   # This existing mutation entry checks the complete green baseline from
   # formal/tla/SessionRunBudgetAdmission.tla and
   # formal/tla/SessionRunBudgetAdmission.cfg before its exact mutants/witnesses.
   python3 scripts/ci/check_formal_mutations.py --session-observation-model-mutants "$tla_jar"
-  AWAKEN_FORMAL_MUTATION_EVIDENCE_DIR="$formal_artifact_dir/observation-mutations" \
-    python3 scripts/ci/check_formal_mutations.py --session-observation-trace-mutants "$tla_jar" --observation-trace-dir "$observation_trace_dir"
-
   python3 scripts/ci/check_formal_mutations.py --cowork-lifecycle-model-mutants "$tla_jar"
   # The standalone instance loads the canonical transition owner from
   # formal/tla/RunIngressKernel.tla; TLC checks that composition through this

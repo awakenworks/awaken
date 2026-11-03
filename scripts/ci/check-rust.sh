@@ -188,6 +188,8 @@ if [ "$mode" = "--self-test" ]; then
 fi
 
 source scripts/ci/_build_observation.sh
+export AWAKEN_BUILD_WORKLOAD_KIND="${AWAKEN_BUILD_WORKLOAD_KIND:-feedback}"
+export AWAKEN_BUILD_OBSERVATION_KIND="${AWAKEN_BUILD_OBSERVATION_KIND:-project}"
 awaken_begin_build_observation "rust:$mode" || exit $?
 
 # A full run builds the whole workspace plus every test binary. When the target

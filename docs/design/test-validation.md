@@ -225,7 +225,39 @@ archives task bundles under `target/test-timings/build-runs/<run_id>/`:
 python3 scripts/ci/ci_performance.py report --path /absolute/run/evidence.json
 python3 scripts/ci/ci_performance.py report --path /absolute/invocation/observation.json
 python3 scripts/ci/ci_performance.py compare --root target/test-timings --output target/test-timings/comparison.json
+python3 scripts/ci/ci_performance.py invocations --root "$HOME/.local/state/awaken-builds" --output target/test-timings/invocations.json
+python3 scripts/ci/ci_performance.py invocations --snapshot /absolute/frozen-snapshot.json --output target/test-timings/replay.json
 ```
+
+The host launcher remains the sole admission, process-lifecycle and Cargo record
+discovery owner. The repository reuses that read-only protocol; task bundles,
+Cargo invocations and declared synthetic observations are counted separately.
+Reports retain raw recorded status beside current orphaned/unverified views,
+without rewriting receipts or inventing terminal times. Workload/repository
+cohorts separate feedback, Formal and qualification; old unclassified records
+are not relabeled as known workloads. Exact `lane_seconds` measures lock occupancy;
+legacy execution is a separate diagnostic. Inclusive parent/child execution is
+never summed. Cache listener instance changes invalidate shared-daemon deltas;
+unobservable manual resets and other clients still limit attribution.
+
+On the single Linux host, `check-all.sh --group formal` defaults to cooperative
+admission through the existing `_deadline.sh`/host owners. The root waits for
+initial admission, then starts one unchanged total deadline (default 86,400s,
+`AWAKEN_FORMAL_TIMEOUT_SECONDS`). Existing required-test phases, each Kani batch,
+Java mutation/model calls and TLAPS commands re-enter the same execution lane.
+The initial wait is outside that deadline; subsequent phase queues spend it.
+Feedback gets priority for at most four admissions before a waiting batch gets
+a turn. There is still one heavy execution at a time, with no preemption of a
+running solver. `--full-gate` remains exclusive for the complete qualification.
+Direct `check_formal.sh` is the gate body; use the group entry for cooperative
+scheduling. An inherited exclusive gate keeps its original lease.
+An old/missing host capability refuses cooperative execution with 75.
+
+The actual Session observation mutation oracle now runs once immediately after
+its real observation producer and before Kani. Its original evidence and failure
+criteria are retained; TLC availability/version is checked before expensive
+witness work. This catches an ineffective mutation without first spending the
+long Kani run. No proof selection, Clippy coverage or release threshold is reduced.
 
 Comparison groups retain workload, source revision, platform/host,
 configuration and caller-declared `AWAKEN_BUILD_SCENARIO`. They do not infer a
@@ -234,6 +266,11 @@ are excluded from duration cohorts; sample counts are reported and build p95
 is unavailable below 20 samples. The ordinary-build benchmark above remains
 pending its whole-graph projection proof. Local fixture tests and exported
 observations do not prove full-workspace speed or remote CI acceptance.
+The paused benchmark also blocks a representative incremental A/B experiment:
+no global incremental/cache policy is changed and no speedup is claimed before
+the existing workload projection requirement is met. S3/OBS caching remains
+deferred; shared compiler results and per-worktree mutable target/build state
+keep their existing owners.
 
 1. Measure first. Preserve `target/test-timings` logs, build/test durations,
    slow cases, selected packages/features, and the source identity. Compare

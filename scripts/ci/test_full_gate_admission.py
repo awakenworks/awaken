@@ -120,6 +120,33 @@ exec "$entry" "$@"
                 self.assertIn("same host policy", result.stderr)
                 self.assertFalse(marker.exists())
 
+    def gate_checkout(self, root, env):
+        checkout = root / "gate checkout"
+        scripts = checkout / "scripts/ci"
+        scripts.mkdir(parents=True)
+        for relative in INPUT_GLOBS[:-1]:
+            shutil.copy2(ROOT / relative, scripts / Path(relative).name)
+        # The real entrypoint now owns a diagnostic context before queuing.
+        # Copy its real Python import closure; the admission/process fakes
+        # below still own only the host boundary exercised by this table.
+        for module in [Path(ci_performance.__file__).name, *local_imports('ci_performance.py')]:
+            shutil.copy2(ROOT / 'scripts/ci' / module, scripts / module)
+        (scripts / "_provider_environment.sh").write_text(
+            'awaken_unset_ambient_api_keys() { :; }\nawaken_append_repo_tools() { :; }\n')
+        (scripts / "gate_tools.py").write_text('raise SystemExit(0)\n')
+        (scripts / "_parallel_checks.sh").write_text(
+            'parallel_checks_init() { [ "$AWAKEN_CARGO_ADMITTED" = 1 ] || exit 95; '
+            'echo full-gate-admitted-once; exit 23; }\n')
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                   AWAKEN_BUILD_OBSERVATIONS=str(root / 'observations'),
+                   AWAKEN_FULL_GATE_TIMEOUT_SECONDS="3")
+        for command in (["git", "init", str(checkout)],
+                        ["git", "-C", str(checkout), "-c", "user.name=fixture",
+                         "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
+                         "commit", "--allow-empty", "-m", "fixture"]):
+            subprocess.run(command, env=env, capture_output=True, check=True)
+        return checkout, scripts
+
     def test_real_full_gate_entry_admits_once_when_native_cargo_is_first(self):
         # Stop with a deliberate 23 at the first static queue, after the real
         # full-gate admission and log re-entry. No full-gate success is invented.
@@ -135,30 +162,7 @@ exec "$entry" "$@"
                                        "AWAKEN_FULL_GATE_LOG": str(root / "outer.log"),
                                        "AWAKEN_TEST_TIMINGS_FILE": str(outer_timing)}):
                 host, env = self.fixture(root)
-            checkout = root / "gate checkout"
-            scripts = checkout / "scripts/ci"
-            scripts.mkdir(parents=True)
-            for relative in INPUT_GLOBS[:-1]:
-                shutil.copy2(ROOT / relative, scripts / Path(relative).name)
-            # The real entrypoint now owns a diagnostic context before queuing.
-            # Copy its real Python import closure; the admission/process fakes
-            # below still own only the host boundary exercised by this table.
-            for module in [Path(ci_performance.__file__).name, *local_imports('ci_performance.py')]:
-                shutil.copy2(ROOT / 'scripts/ci' / module, scripts / module)
-            (scripts / "_provider_environment.sh").write_text(
-                'awaken_unset_ambient_api_keys() { :; }\nawaken_append_repo_tools() { :; }\n')
-            (scripts / "gate_tools.py").write_text('raise SystemExit(0)\n')
-            (scripts / "_parallel_checks.sh").write_text(
-                'parallel_checks_init() { [ "$AWAKEN_CARGO_ADMITTED" = 1 ] || exit 95; '
-                'echo full-gate-admitted-once; exit 23; }\n')
-            env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
-                       AWAKEN_BUILD_OBSERVATIONS=str(root / 'observations'),
-                       AWAKEN_FULL_GATE_TIMEOUT_SECONDS="3")
-            for command in (["git", "init", str(checkout)],
-                            ["git", "-C", str(checkout), "-c", "user.name=fixture",
-                             "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
-                             "commit", "--allow-empty", "-m", "fixture"]):
-                subprocess.run(command, env=env, capture_output=True, check=True)
+            checkout, scripts = self.gate_checkout(root, env)
             result = subprocess.run(["bash", str(scripts / "check-all.sh"), "--full-gate", "--record"],
                                     cwd=checkout, env=env, capture_output=True, text=True, timeout=12)
             self.assertEqual(result.returncode, 23, result.stderr + result.stdout)
@@ -175,6 +179,74 @@ exec "$entry" "$@"
             env["FIXTURE_STATUS"] = "75"
             marker = root / "executed"
             result = self.invoke(root, env, "touch", str(marker))
+            self.assertEqual(result.returncode, 75, result.stderr)
+            self.assertFalse(marker.exists())
+
+    def test_formal_group_requires_admission_or_inherits_an_existing_exclusive_job(self):
+        # G1 ordinary Formal + old/missing capability ->75 before gate body.
+        # G2 an arbitrary legacy environment switch cannot bypass G1.
+        # G3 an already admitted exclusive job -> body exactly once (fixture23),
+        # without a cooperative re-entry or changing its lease contract.
+        for inherited, switch, expected in ((False, '', 75), (False, 'exclusive', 75),
+                                             (False, 'bogus', 75), (True, '', 23)):
+            with self.subTest(inherited=inherited, switch=switch), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                _, env = self.fixture(root)
+                checkout, scripts = self.gate_checkout(root, env)
+                if inherited:
+                    env['AWAKEN_CARGO_ADMITTED'] = '1'
+                env['AWAKEN_FORMAL_SCHEDULING'] = switch
+                result = subprocess.run(['bash', str(scripts / 'check-all.sh'), '--group', 'formal'],
+                                        cwd=checkout, env=env, capture_output=True, text=True, timeout=12)
+                self.assertEqual(result.returncode, expected, result.stderr + result.stdout)
+                self.assertEqual(result.stdout.count('full-gate-admitted-once'), int(inherited))
+
+    def test_cooperative_capability_contract_phase_markers_and_total_deadline(self):
+        # C1 matching host capability -> root has phase mode, no exclusive
+        # marker; child phase reacquires and sees the existing exclusive marker.
+        # C2 initial admission wait exceeds budget -> excluded as before.
+        # C3 later phase queue exceeds root budget -> root124, child never runs;
+        # yielding cannot reset the total deadline. C4 old host ->75, no child.
+        for phase_wait, expected in (('0', 23), ('1.2', 124)):
+            with self.subTest(phase_wait=phase_wait), tempfile.TemporaryDirectory(prefix='formal phases ') as tmp:
+                root = Path(tmp)
+                host, env = self.fixture(root)
+                policy = '''#!/usr/bin/env bash
+if [ "${0##*/}" = awaken-build-admission ]; then
+  echo '{"schema_version":1,"kind":"host-admission-capabilities","scheduler":"fair-single-lane-v1","execution_slots":1,"cooperative_formal":true}'
+  exit 0
+fi
+if [ "${AWAKEN_ADMISSION_MODE:-}" = cooperative ]; then
+  sleep 1.2
+  unset AWAKEN_ADMISSION_MODE AWAKEN_CARGO_ADMITTED
+  export AWAKEN_ADMISSION_PHASE_MODE=1
+else
+  sleep "$PHASE_WAIT"
+  export AWAKEN_CARGO_ADMITTED=1
+fi
+entry=$(command -v "cargo-$1") || exit 97
+exec "$entry" "$@"
+'''
+                for name in ('cargo', 'awaken-build-admission'):
+                    (host / name).write_text(policy)
+                env['PHASE_WAIT'] = phase_wait
+                marker = root / 'phase-executed'
+                phase = 'test "$AWAKEN_CARGO_ADMITTED" = 1 || exit 95; touch "$1"; exit 23'
+                body = ('test "${AWAKEN_CARGO_ADMITTED:-}" != 1 || exit 94; '
+                        'test "$AWAKEN_ADMISSION_PHASE_MODE" = 1 || exit 93; '
+                        'source "$1"; run_admitted_phase 2 bash -c "$2" phase "$3"')
+                result = subprocess.run(['bash', '-c', 'source "$1"; shift; run_with_deadline --cooperative-admit 1 "$@"',
+                                         'fixture', str(HELPER), 'bash', '-c', body, 'root', str(HELPER), phase, str(marker)],
+                                        env=env, capture_output=True, text=True, timeout=12)
+                self.assertEqual(result.returncode, expected, result.stderr + result.stdout)
+                self.assertEqual(marker.exists(), expected == 23)
+                self.assertFalse((root / 'wrong-cargo-ran').exists())
+        with tempfile.TemporaryDirectory(prefix='old formal host ') as tmp:
+            root = Path(tmp)
+            _, env = self.fixture(root)
+            marker = root / 'executed'
+            result = subprocess.run(['bash', '-c', 'source "$1"; run_with_deadline --cooperative-admit 1 touch "$2"',
+                                     'fixture', str(HELPER), str(marker)], env=env, capture_output=True, text=True, timeout=12)
             self.assertEqual(result.returncode, 75, result.stderr)
             self.assertFalse(marker.exists())
 

@@ -16,5 +16,6 @@ def synthetic_build_observations(case):
     task.return_value.environment = {
         'AWAKEN_BUILD_RUN_ID': 'synthetic-fixture',
         'AWAKEN_BUILD_RUN_DIRECTORY': str(Path(temporary.name).resolve()),
+        'AWAKEN_BUILD_OBSERVATION_KIND': 'synthetic',
     }
     return task
