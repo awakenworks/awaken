@@ -10,10 +10,29 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
 import deadline
+
+
+def hook_progress(stopped, label, log, started):
+    """Read diagnostics only; deadline.run remains the sole child/tree owner."""
+    position, stage = 0, ''
+    while not stopped.wait(15):
+        try:
+            with log.open(encoding='utf-8', errors='replace') as output:
+                output.seek(position)
+                for line in iter(output.readline, ''):
+                    if line.startswith('[stage] '):
+                        stage = '; ' + line.strip()
+                position = output.tell()
+        except OSError:
+            pass  # The worker's original log writer owns storage failures.
+        if stopped.is_set():
+            return
+        print(f'[running] {label}: {time.monotonic() - started:.0f}s{stage}; log {log}', flush=True)
 
 
 def parser():
@@ -51,7 +70,10 @@ def observe_hook(args, arguments):
               'collector_setup_seconds': time.monotonic() - started,
               'duration_scope': 'worker observation entry through terminal write start; excludes native launcher startup'}
     write_record(receipt, record)  # Core evidence failure prevents execution.
-    print(f'[start] {args.hook_label}', flush=True)
+    print(f'[start] {args.hook_label}; log {log}', flush=True)
+    stopped = threading.Event()
+    progress = threading.Thread(target=hook_progress, args=(stopped, args.hook_label, log, started), daemon=True)
+    progress.start()
     status = 74
     try:
         environment = os.environ.copy()
@@ -79,6 +101,8 @@ def observe_hook(args, arguments):
         record['reason'] = type(error).__name__ + ': ' + str(error)
         status = status or 74
     finally:
+        stopped.set()
+        progress.join(timeout=1)
         duration = time.monotonic() - started
         record.update(status='passed' if status == 0 else 'failed', exit_code=status,
                       duration_seconds=duration, finished_at_unix=time.time())

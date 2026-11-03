@@ -416,6 +416,38 @@ class ExecutionTests(unittest.TestCase):
         from _build_observation_fixture import synthetic_build_observations
         synthetic_build_observations(self)
 
+    def test_compilation_identity_aliases_share_one_read_but_never_a_later_snapshot(self):
+        # DT-ID: C1 compiler/resolver roles resolve to one file => one byte
+        # read, distinct role records; C2 same-size/mtime replacement at the
+        # next fence => refuse BEFORE running that resolver. No stat-keyed or
+        # process-global cache is allowed. Existing config/tool drift tables
+        # retain the real preparation/list/execution boundary coverage.
+        import _required_build_context as context
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            tool = root / 'tool'
+            tool.write_bytes(b'first')
+            original = Path.read_bytes
+            reads = []
+            def read(path):
+                if path == tool: reads.append(path)
+                return original(path)
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                 mock.patch.object(context.shutil, 'which', side_effect=lambda name, **kw: str(tool) if name in ('cargo', 'rustc', 'rustup') else None), \
+                 mock.patch.object(context, '_toolchain', return_value='fixture') as resolver, \
+                 mock.patch.object(Path, 'read_bytes', read):
+                first = context.build_context(root, [])
+                self.assertEqual(len(reads), 1)
+                self.assertEqual(first['tools']['rustc'], first['tools']['rustup'])
+                self.assertIsNot(first['tools']['rustc'], first['tools']['rustup'])
+                stamp = tool.stat()
+                tool.write_bytes(b'later')
+                os.utime(tool, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                with self.assertRaisesRegex(ValueError, 'compiler/tool identity changed'):
+                    context.build_context(root, [], first)
+                self.assertEqual(len(reads), 2)
+                self.assertEqual(resolver.call_count, 1)
+
     def test_execution_subject_is_runtime_input_and_contains_no_fixture_secrets(self):
         with mock.patch.dict(os.environ,{},clear=True):
             self.assertEqual(execution_inputs(),{"fixture":None,"crash_backend":None})
@@ -543,7 +575,7 @@ class ExecutionTests(unittest.TestCase):
 
     @staticmethod
     def cargo_fixture(fixture: Path, body: str) -> dict[str, str]:
-        from formal_sources import detached_git_environment
+        from _build_observation_fixture import synthetic_build_environment
         (fixture / "target").mkdir(exist_ok=True)
         binary = fixture / "bin"
         binary.mkdir(exist_ok=True)
@@ -567,7 +599,7 @@ case " $* " in *" --no-run "*)
 esac
 ''' + body, encoding="utf-8")
         cargo.chmod(0o755)
-        values = dict(detached_git_environment(), PATH=str(binary) + os.pathsep + os.environ['PATH'],
+        values = dict(synthetic_build_environment(fixture), PATH=str(binary) + os.pathsep + os.environ['PATH'],
                       CARGO_TARGET_DIR=str(fixture / "target"))
         if os.name == "nt":
             from _native_test_launcher import native_fixture_launcher
@@ -1496,6 +1528,14 @@ if [ "$1" = --input-type=module ]; then echo /owned/hand; else echo E2E >> "$CAL
                                         capture_output=True, text=True, timeout=90)
                 passing = case in ("passing", "extra-floor")
                 self.assertEqual(result.returncode == 0, passing, result.stdout + result.stderr)
+                # P5 all actual required phases join one private, terminal
+                # synthetic task; no fake commands escape to the parent run.
+                tasks = list((fixture / 'target/observations').glob('*/evidence.json'))
+                self.assertEqual(len(tasks), 1)
+                observed = json.loads(tasks[0].read_text())
+                self.assertEqual(observed['status'], 'passed' if passing else 'failed')
+                self.assertEqual(observed['observation_kind'], 'synthetic')
+                self.assertTrue(observed['source_unchanged'])
                 calls = (fixture / "target/calls").read_text().splitlines()
                 if passing:
                     self.assertIn(f"test --locked -p awaken-execution-composition --lib {selected} -- --exact --list", calls)
@@ -1899,7 +1939,8 @@ def main() -> int:
         if args.inventory or args.results or args.exit_code is not None or args.run or args.prepare or args.build_log or args.prepared or args.receipt or args.arguments or args.require_case:
             parser.error("--self-test cannot be combined with execution arguments")
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(ExecutionTests)
-        return int(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())
+        from _strict_unittest import observed_runner
+        return int(not observed_runner(verbosity=2).run(suite).wasSuccessful())
     if args.prepare:
         if (args.run or args.inventory or args.results or args.exit_code is not None
                 or args.require_case or args.prepared or args.build_log is None or args.receipt is None):

@@ -58,6 +58,7 @@ fail=0
 step() {
   local label="$1" fix="$2"; shift 2
   local out="" rc started=$SECONDS timing_snapshot=""
+  echo "[stage] $label: started; log ${rust_step_evidence:-not-recorded}/$label.log"
   if [ -n "${AWAKEN_BUILD_RUN_DIRECTORY:-}" ] && [[ " $* " == *" --timings "* ]]; then
     timing_snapshot=$(python3 scripts/ci/ci_performance.py timings-before --path "$CARGO_TARGET_DIR/cargo-timings") || return 74
   fi
@@ -92,7 +93,7 @@ step() {
     }
   fi
   if [ "$rc" -eq 0 ]; then
-    echo "✓ $label"
+    echo "✓ $label ($((SECONDS - started))s)"
     return 0
   fi
   {
@@ -474,11 +475,11 @@ case "$mode" in
     if [ "$mode" = "--quick" ]; then
       step "check" "fix the compile errors shown above" \
         python3 scripts/ci/rust_test_plan.py --base HEAD --run --check-command \
-        cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
+        cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}" --timings
     else
       step "check" "fix the compile errors shown above" \
         python3 scripts/ci/rust_test_plan.py --base "$scope_base" --run --check-command \
-        cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
+        cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}" --timings
     fi
     if [ "$mode" = "--push" ]; then
       # A dev dependency may enable the upstream Host variant while the CLI's

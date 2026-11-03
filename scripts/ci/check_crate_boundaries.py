@@ -29,6 +29,7 @@ import argparse
 import re
 import sys
 import tempfile
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -1522,7 +1523,60 @@ def selftest_model_binding_producers_are_ratcheted() -> None:
         UNVALIDATED_MODEL_BINDING_BASELINE = saved
 
 
+def measured_rule(rule, *arguments):
+    """Record each existing rule in the enclosing task, without another runner."""
+    from ci_performance import record_stage
+    started = time.monotonic()
+    label = 'boundary-rule:' + rule.__module__ + '.' + rule.__name__
+    try:
+        errors = rule(*arguments)
+    except BaseException:
+        try:
+            record_stage(label, time.monotonic() - started, 1)
+        except (OSError, ValueError):
+            pass  # Preserve the original rule failure.
+        raise
+    record_stage(label, time.monotonic() - started, int(bool(errors)))
+    return errors
+
+
+def selftest_measured_rule():
+    # R1 no violations/R2 violations/R3 rule raises => record 0/1/1 and
+    # retain exactly the result/exception. R4 failed metrics + rule error
+    # must retain the original error; R5 failed metrics after success must
+    # refuse a measured pass. Exercise this wrapper with the writer port only
+    # controlled; the reporter must not import the entire boundary gate.
+    import ci_performance
+    original, rows = ci_performance.record_stage, []
+    def rule(): return []
+    def violating(): return ['original violation']
+    def broken(): raise RuntimeError('original rule failure')
+    def unavailable(*arguments): raise OSError('metric storage')
+    try:
+        ci_performance.record_stage = lambda *arguments: rows.append(arguments)
+        assert measured_rule(rule) == [] and rows[-1][2] == 0, 'R1'
+        assert measured_rule(violating) == ['original violation'] and rows[-1][2] == 1, 'R2'
+        for writer in (ci_performance.record_stage, unavailable):
+            ci_performance.record_stage = writer
+            try:
+                measured_rule(broken)
+            except RuntimeError as error:
+                assert str(error) == 'original rule failure', 'R3/R4'
+            else:
+                raise AssertionError('R3/R4 original rule must fail')
+        assert rows[-1][2] == 1, 'R3 failed rule observation'
+        try:
+            measured_rule(rule)
+        except OSError:
+            pass
+        else:
+            raise AssertionError('R5 storage failure must refuse success')
+    finally:
+        ci_performance.record_stage = original
+
+
 def main() -> int:
+    selftest_measured_rule()
     selftest_cloud_placement_boundary()
     selftest_generation_witnesses()
     selftest_mcp_tool_identity_ownership()
@@ -1562,51 +1616,53 @@ def main() -> int:
     selftest_backend_configuration_is_opaque()
     selftest_composite_identity_is_stated()
     selftest_model_binding_producers_are_ratcheted()
+    # One immutable metadata snapshot for these read-only consumers. Discovery
+    # stays fresh on the next invocation; no path/mtime or manifest cache.
+    dependency_specs = tuple(dependency_fitness_specs())
     errors = (
-        _crate_boundary_workspace.check_crate_manifests_match_workspace()
-        + check_no_direct_transport_dependency()
-        +
-        _crate_dependency_fitness.check_all(dependency_fitness_specs())
-        + _bounded_context_fitness.check_all(dependency_fitness_specs())
-        + _context_map_fitness.check_all(dependency_fitness_specs(), CRATES)
-        + _crate_separation_fitness.check_all(CRATES)
-        + _dependency_use_fitness.check_all(CRATES)
-        + _modularity_fitness.check_all(CRATES)
-        + _single_owner_fitness.check_all(CRATES)
-        + _contract_map_fitness.check_all(CRATES)
-        + _naming_fitness.check_all(CRATES)
-        + check_neutral_code_boundaries()
-        + check_builtin_tool_ownership()
-        + check_background_task_is_state_only()
-        + check_backend_configuration_is_opaque()
-        + check_tests_are_not_arch_owners()
-        + check_cloud_placement_boundary()
-        + check_generation_witnesses_are_complete()
-        + check_mcp_tool_identity_is_owned()
-        + check_tenancy_is_not_optional()
-        + check_no_ambient_tenant_default()
-        + check_composite_identity_is_stated()
-        + check_model_binding_producers_are_ratcheted()
-        + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
-        + _wire_closure_fitness.check_all(REPO_ROOT, CRATES)
-        + _cancel_safety_fitness.check_all(REPO_ROOT, CRATES)
-        + _provider_env_fitness.check_all(REPO_ROOT, CRATES)
-        + _realization_error_fitness.check_all(REPO_ROOT)
-        + _poisoned_lock_fitness.check_all(REPO_ROOT)
-        + _dispatch_boundary_fitness.check_all()
-        + _protocol_translation_fitness.check_all(REPO_ROOT)
-        + _realization_permit_fitness.check_all(REPO_ROOT)
-        + _ownership_fence_fitness.check_all(REPO_ROOT)
-        + _arch_fitness.check_all(architecture_fitness_specs())
-        + _coordinator_authority_fitness.check_all(REPO_ROOT, CRATES)
-        + _migration_fitness.check_all(REPO_ROOT)
-        + _session_effect_fitness.check_all(REPO_ROOT)
-        + _session_state_ownership_fitness.check_all(REPO_ROOT)
-        + _service_data_ownership_fitness.check_all(REPO_ROOT)
-        + _execution_ownership_fitness.check_all(REPO_ROOT)
-        + _managed_protocol_boundary.check_managed_route_inventory(REPO_ROOT)
-        + _managed_protocol_boundary.check_session_admission_ownership(REPO_ROOT)
-        + _managed_protocol_boundary.check_projection_input_boundary(REPO_ROOT)
+        measured_rule(_crate_boundary_workspace.check_crate_manifests_match_workspace)
+        + measured_rule(check_no_direct_transport_dependency)
+        + measured_rule(_crate_dependency_fitness.check_all, dependency_specs)
+        + measured_rule(_bounded_context_fitness.check_all, dependency_specs)
+        + measured_rule(_context_map_fitness.check_all, dependency_specs, CRATES)
+        + measured_rule(_crate_separation_fitness.check_all, CRATES)
+        + measured_rule(_dependency_use_fitness.check_all, CRATES)
+        + measured_rule(_modularity_fitness.check_all, CRATES)
+        + measured_rule(_single_owner_fitness.check_all, CRATES)
+        + measured_rule(_contract_map_fitness.check_all, CRATES)
+        + measured_rule(_naming_fitness.check_all, CRATES)
+        + measured_rule(check_neutral_code_boundaries)
+        + measured_rule(check_builtin_tool_ownership)
+        + measured_rule(check_background_task_is_state_only)
+        + measured_rule(check_backend_configuration_is_opaque)
+        + measured_rule(check_tests_are_not_arch_owners)
+        + measured_rule(check_cloud_placement_boundary)
+        + measured_rule(check_generation_witnesses_are_complete)
+        + measured_rule(check_mcp_tool_identity_is_owned)
+        + measured_rule(check_tenancy_is_not_optional)
+        + measured_rule(check_no_ambient_tenant_default)
+        + measured_rule(check_composite_identity_is_stated)
+        + measured_rule(check_model_binding_producers_are_ratcheted)
+        + measured_rule(_resource_plane_fitness.check_all, REPO_ROOT, CRATES)
+        + measured_rule(_wire_closure_fitness.check_all, REPO_ROOT, CRATES)
+        + measured_rule(_cancel_safety_fitness.check_all, REPO_ROOT, CRATES)
+        + measured_rule(_provider_env_fitness.check_all, REPO_ROOT, CRATES)
+        + measured_rule(_realization_error_fitness.check_all, REPO_ROOT)
+        + measured_rule(_poisoned_lock_fitness.check_all, REPO_ROOT)
+        + measured_rule(_dispatch_boundary_fitness.check_all)
+        + measured_rule(_protocol_translation_fitness.check_all, REPO_ROOT)
+        + measured_rule(_realization_permit_fitness.check_all, REPO_ROOT)
+        + measured_rule(_ownership_fence_fitness.check_all, REPO_ROOT)
+        + measured_rule(_arch_fitness.check_all, architecture_fitness_specs())
+        + measured_rule(_coordinator_authority_fitness.check_all, REPO_ROOT, CRATES)
+        + measured_rule(_migration_fitness.check_all, REPO_ROOT)
+        + measured_rule(_session_effect_fitness.check_all, REPO_ROOT)
+        + measured_rule(_session_state_ownership_fitness.check_all, REPO_ROOT)
+        + measured_rule(_service_data_ownership_fitness.check_all, REPO_ROOT)
+        + measured_rule(_execution_ownership_fitness.check_all, REPO_ROOT)
+        + measured_rule(_managed_protocol_boundary.check_managed_route_inventory, REPO_ROOT)
+        + measured_rule(_managed_protocol_boundary.check_session_admission_ownership, REPO_ROOT)
+        + measured_rule(_managed_protocol_boundary.check_projection_input_boundary, REPO_ROOT)
     )
     if errors:
         for error in errors:

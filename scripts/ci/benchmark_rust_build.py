@@ -80,7 +80,8 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        return int(not unittest.TextTestRunner().run(
+        from _strict_unittest import observed_runner
+        return int(not observed_runner().run(
             unittest.defaultTestLoader.loadTestsFromTestCase(BenchmarkTests)).wasSuccessful())
     if not args.package or len(set(args.package)) != len(args.package) or len(set(args.jobs)) != len(args.jobs):
         parser.error("packages and job counts must be nonempty and unique")

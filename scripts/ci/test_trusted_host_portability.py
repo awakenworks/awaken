@@ -58,6 +58,7 @@ run_required_rust_tests() {
 """, encoding="utf-8")
         for name in ("_provider_environment.sh", "_rust_test_execution.sh"):
             (ci / name).write_text("# Test-owned inert dependencies.\n", encoding="utf-8")
+        (ci / '_build_observation.sh').write_text('awaken_begin_build_observation() { :; }\n', encoding='utf-8')
         result = subprocess.run(
             [bash, GATE, *arguments], cwd=root,
             env=dict(os.environ, TEST_SYSTEM=system),

@@ -22,6 +22,12 @@ elif [[ "$#" != 0 ]]; then
   echo "usage: $0 [--linux-supervision]" >&2
   exit 2
 fi
+# One task owns this entrypoint's observations. Required builds/execution join
+# it instead of creating and sealing a separate diagnostic bundle per command.
+source scripts/ci/_build_observation.sh
+export AWAKEN_BUILD_WORKLOAD_KIND="${AWAKEN_BUILD_WORKLOAD_KIND:-qualification}"
+export AWAKEN_BUILD_OBSERVATION_KIND="${AWAKEN_BUILD_OBSERVATION_KIND:-project}"
+awaken_begin_build_observation trusted-host-portability || exit $?
 if [[ "$linux_supervision" == true ]]; then
   cargo test -p awaken-sandbox --test linux_scoped
 fi
