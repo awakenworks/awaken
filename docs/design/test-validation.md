@@ -465,6 +465,18 @@ post-rebase 2026-07-22 changed-line audit against `t` measured 1589/1662 =
 production lines are separately bounded and audited rather than hidden by broad
 exclusions.
 
+For the v5 comparison, the original `f03c55823bbe` sample failed before export:
+its exact JS response assertion omitted the SDK-required nullable `url_sources`
+member. The user approved a separate production-equivalent reference containing
+only the same assertion correction as `d99b2e526f35`; all other tracked blobs and
+modes, including production code, locks, sampling tools and waivers, must remain
+identical to f03. Bind sampling to the reference's actual commit/tree, use fresh
+profiles, and retain the original f03 failure with no measurement. Upstream,
+shutdown, source-fence or export failure invalidates a measurement; an isolated
+terminal waiver refusal remains a failed gate even when independently valid
+counters can be reviewed. Compare like-for-like served and combined counts and
+ownership separately, not percentages with different changed-line denominators.
+
 ### Distributed role E2E scope
 
 [ADR-0071](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md)'s
@@ -636,6 +648,32 @@ qualification are separate claims.
   local fast-forward receipts. These are Linux source/integration results for
   their actual Native-395 compositions, not qualification of later Native
   source, production images, deployment, public release or Windows.
+- **Native-a309 Rust / SDK checkpoint (2026-11-03).** Clean
+  `a309bcad0fde` (tree `326f06030256`) passed the original complete
+  `check-all.sh --group rust`: 10,525 nextest cases passed, 129 were skipped
+  separately, and both Clippy graphs and doctests passed. Annotated
+  `verified/20261103-1135` records that Linux Rust scope. The three original
+  SDK package, artifact and compiler-SemVer qualifiers also exited 0 on this
+  unchanged source: 24 current package subjects, 22 historical SemVer subjects
+  and two first releases; the forced major audit included all 17 intended
+  packages and both 45-case/50-step consumer profiles. These are neither full13
+  nor Windows/public-registry qualifications.
+- **Native continuation delivery.** The IAM 0.2 typed-error/atomic-publication
+  integration, Org-authorized explicit principal selection, poison-guard
+  consolidation and exact-identity fixture cleanup passed owning checks and
+  normal hooks before protected FF. The lazy-role caller then reused the
+  original binary resolver for each actual role and was normally delivered as
+  `a309bcad0fde`. The later one-file `d99b2e526f35` assertion correction passed
+  the original Managed capabilities entry and normal hooks before FF; it does
+  not inherit a309's exact-source Rust/SDK results or repair the failed
+  historical f03 sample in place.
+- **Native-a309 Cloud cohort (2026-11-03).** Cloud `8e657bbb` (tree
+  `8a1a97e78ac9`) resolves Native `a309bcad` and IAM `07af02a7` (0.2) through
+  its original locked composition. All 32 original qualification commands
+  passed, including actual PostgreSQL/directory and Worker cases, both Phase1
+  history subjects and browser checks (94 passed, two original unconfigured
+  deployment-OAuth cases skipped). Its normal commit and local FF passed;
+  this does not qualify Flow, production images, deployment or Native coverage.
 - **Downstream component checkpoints.** Cloud `6fda36a9`, consuming Native
   `e9773cf5` and IAM `dc0c68b4`, passed all eight selected Worker-access cases,
   both owning Clippy checks, documentation checks, normal hooks and safe FF.

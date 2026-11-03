@@ -39,7 +39,7 @@ consistent vocabulary. This affects the documentation layers differently:
 
 ## Architecture Execution
 
-Reviewed main `9b341367046d` (2026-11-03), after the qualified `395303e5e3ab`
+Reviewed main `d99b2e526f35` (2026-11-03), after the qualified `a309bcad0fde`
 checkpoint. This is the single progress record for the crate-boundary
 program; decisions remain in their ADRs and code, and executed results remain
 in the [qualification record](design/test-validation.md#integrated-source-qualification-record).
@@ -49,13 +49,18 @@ Plan v5 is in force; the v4 slices below identify their existing owners.
   repair, G, nanos-image proof and BackgroundTask consolidation have normal
   commit and protected FF receipts; no push is claimed. Their distinct source
   subjects and executed scopes remain in the [qualification record](design/test-validation.md#integrated-source-qualification-record).
-- **Tags.** `verified/20261102-1723` peels to `395303e5e3ab` and records the
+- **Tags.** `verified/20261103-1135` peels to `a309bcad0fde` and records the
   original Linux Rust group only. Earlier tags retain their own subjects;
   formal, full13, downstream, SDK release and product evidence stay separate.
 - **Source versus delivery.** G's runtime `2903a249449a` and normal delivery
   `a4402c05ca68`, nanos follow-up `fcf046d5150e` and BackgroundTask follow-up
   `2d195c4174b7` each retain their own evidence. Remaining formal, SDK release,
   coverage and live acceptance stay separate in the [qualification record](design/test-validation.md#integrated-source-qualification-record).
+- **Current continuation.** Typed IAM failure handling, Org-authorized principal
+  selection, the stronger poison guard, exact-identity fixture cleanup and the
+  canonical lazy-role builder are normally committed and fast-forwarded.
+  The later `d99b2e526f35` required-nullable JS correction passed its original
+  scenario, but does not inherit the earlier Rust/SDK qualification.
 - **Historical diagnostics.** The earlier V4 candidate's
   `python3 scripts/ci/principle_status.py --guards` report held 1 lock-poison panic,
   33 `Weak`, 55 optional borrowed roles, 1 string-flattening pattern, 30 contract
@@ -77,23 +82,23 @@ Plan v5 is in force; the v4 slices below identify their existing owners.
 | Contract convergence | Canonical owners and imports follow [ADR-0090](adr/0090-session-state-model.md) and [ADR-0091](adr/0091-architecture-rules.md); distinct Dream/provider/transport contracts remain distinct. | V4 and G are delivered with source-bound check results; downstream callers still need their own cohort qualification. |
 | Formal | The proof owner records tools, domains and resource limits ([formal trust](design/formal-proof-trust.md)). | The original observation mutant repair is delivered; fresh complete formal qualification remains open in the [record](design/test-validation.md#integrated-source-qualification-record). |
 | Integrated qualification | Original Rust/PG/API entrypoints, normal hooks and protected FF ([record](design/test-validation.md#integrated-source-qualification-record)). | Whole-SHA formal/release/live evidence remains open; G's delivered gates do not establish full13 or coverage. |
-| Downstream | Cloud `4e0f228a` and Flow `02b81c1c` both resolve Native `395303e5` through their original locked compositions. | Their Linux source/integration gates, normal commits and local FF passed; a changed Native candidate and deployed product retain separate qualification. |
+| Downstream | Cloud `8e657bbb` resolves qualified Native `a309bcad` and IAM `07af02a7`; Flow main remains `02b81c1c`. | Cloud's original Linux source/integration checks, normal commit and local FF passed; Flow's same-cohort migration is still under validation. |
 
 ### Plan v5
 
 | Item | Scope | Status |
 |---|---|---|
-| V0 | Source-bound Rust, PG and cold recovery qualification | The original complete Linux Rust group passed on `395303e5e3ab`; later Memory Copy and native-fixture changes require qualification of the final source. PG/cold-recovery results retain their separate subjects in the [record](design/test-validation.md#integrated-source-qualification-record). |
+| V0 | Source-bound Rust, PG and cold recovery qualification | The original complete Linux Rust group passed on `a309bcad0fde`, with 10,525 passed and 129 skipped separately. The later JS correction and final integrated source require their own qualification; PG/cold recovery retain their separate subjects in the [record](design/test-validation.md#integrated-source-qualification-record). |
 | V0b/V0c | Container-instance identity and same-Run/Session recovery | Host cold recovery passed; the joined real k3d recovery candidate is prepared but not executed. |
 | V1 | Prefer compiler/Cargo controls; consolidate actual duplicate guards | CrateSpec/lexer consolidation has pure self-test evidence; semantic guards remain, and numerical targets are not declared complete. |
-| V2 | Preserve lock-poisoning policy and typed failures | IAM `07af02a7` (0.2) and Native `509367f1` are normally committed checkpoints; the Native checkpoint passed its owning Control/Startup tests. This integration requires Org credential authority for explicit principal selection and removes the guard's annotation waiver; final whole-source qualification remains pending. |
+| V2 | Preserve lock-poisoning policy and typed failures | IAM `07af02a7` (0.2) and the Native typed-failure, atomic-publication and Org credential-authority changes are normally committed and fast-forwarded. The stronger guard removes annotation-based poison exemptions; Native's owning tests and subsequent `a309bcad` whole Rust group passed, while final combined qualification remains pending. |
 | V3 | Complete construction roles and typed boundary errors | App/SDK migrations and G are delivered; the remaining source-bound gates are in the [record](design/test-validation.md#integrated-source-qualification-record). |
 | V4 | Canonical bounded-context contracts and `RunIngress` naming | Delivered; the historical Baseline interpreter stays with its existing type owner without a new upward edge. Later G results retain their own source subject. |
 | V5 | Keep one short status record and linked design owners | This is the single progress owner; executed details stay in the existing qualification/M5 owners without a second status ledger. |
 | V6 | Every formal gate proof finishes within host resources | The `3eeb9532` full run completed Kani/vacuity and TLAPS before the observation-mutant failure repaired in `395303e5`; the later full attempt returned resource 75. Fresh complete qualification and the existing rerun markers remain open. |
-| V7 | Upgrade the real Cloud/Flow composition cohort | Cloud `4e0f228a` and Flow `02b81c1c` passed their complete Linux source/integration entrypoints with Native `395303e5`, then normal commits and local FF. IAM 0.2 caller migrations are prepared; final pins, locks, APIs and execution must bind the final H/C/F and actual artifacts. |
-| V8 | Linux, k3d and distributed product acceptance on one final BOM | The E2E lifecycle now retains creation identities and refuses mixed ownership; controlled Docker/k3d helper fixtures passed. Native, Provider and distributed product acceptance on the final BOM remain pending; helper fixtures, PG recovery and image health are separate evidence. |
-| V9 | G private Task control and L SDK SemVer; retire LocalWorker after V8 | G is delivered; original package and artifact qualification passed on `395303e5`, while actual compiler SemVer exposed report-format/approval drift and an omitted McpWire major cohort. SemVer/release remain open; LocalWorker retirement follows V8 and requalifies its changed source. |
+| V7 | Upgrade the real Cloud/Flow composition cohort | Cloud `8e657bbb` passed its original 32-command Linux qualification with Native `a309bcad` and IAM `07af02a7`, followed by normal commit and local FF. Flow's same-cohort API comparisons passed, but its full required-PG validation and delivery remain open. |
+| V8 | Linux, k3d and distributed product acceptance on one final BOM | Exact-identity Docker/k3d helper fixtures passed; the real Provider chain failed its exact child-reply assertion and the original f03 coverage sample failed before export. The user approved an independent production-equivalent coverage reference; its measurements, final full13/distributed/live acceptance and BOM remain pending. |
+| V9 | G private Task control and L SDK SemVer; retire LocalWorker after V8 | G is delivered; all three original SDK package/artifact/compiler-SemVer qualifiers passed on `a309bcad`, with historical and first-release subjects distinguished. Public publication and Windows remain separate; LocalWorker retirement follows V8 and requalifies its changed source. |
 
 ## Document Readiness
 
