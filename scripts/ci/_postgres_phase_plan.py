@@ -50,8 +50,12 @@ def selector_phases(source: str, selector: str) -> tuple[PostgresPhase, ...]:
         if not words:
             continue
         environment = ()
-        if words[0] == "AWAKEN_CRASH_BACKEND=postgres":
-            environment = (("AWAKEN_CRASH_BACKEND", "postgres"),)
+        literal_environment = {
+            "AWAKEN_CRASH_BACKEND=postgres": ("AWAKEN_CRASH_BACKEND", "postgres"),
+            "AWAKEN_SESSION_PERF_ROOTS=100000": ("AWAKEN_SESSION_PERF_ROOTS", "100000"),
+        }
+        if words[0] in literal_environment:
+            environment = (literal_environment[words[0]],)
             words = words[1:]
         if not words or words[0] != "pg_required_test":
             raise ValueError(location + ": only literal pg_required_test calls are admitted")
@@ -96,7 +100,10 @@ def self_test(root: Path) -> None:
     assert len(two) == 2 and two[0].identity != two[1].identity, "P2 preserve phase multiplicity"
     pg = selector_phases(source.replace("  pg_required_test", "  AWAKEN_CRASH_BACKEND=postgres pg_required_test"), "selected")
     assert pg[0].environment == (("AWAKEN_CRASH_BACKEND", "postgres"),), "P3 backend is execution input"
+    capacity = selector_phases(source.replace("  pg_required_test", "  AWAKEN_SESSION_PERF_ROOTS=100000 pg_required_test"), "selected")
+    assert capacity[0].environment == (("AWAKEN_SESSION_PERF_ROOTS", "100000"),), "P9 fixed native capacity workload"
     for mutant in (
+        source.replace("  pg_required_test", "  AWAKEN_SESSION_PERF_ROOTS=10000 pg_required_test"),
         source + source, source.replace(call, ""), source.replace("-p package", "-p $PACKAGE"),
         source.replace(call, call + "\n  " + call), source.replace("--require-case=case", ""),
         source.replace("pg_required_test", "ordinary_test"), source.replace("-p package", "-p package; touch ignored"),
@@ -119,7 +126,7 @@ def self_test(root: Path) -> None:
     selectors = ("backend_parity", "work_store_evidence", "http_transport_evidence",
                  "critical_durability_evidence", "storage_observation_evidence", "resources_evidence", "storage_evidence")
     phases = read_phases(root, selectors)
-    assert len(phases) == 38, "P6 current required selector inventory"
+    assert len(phases) == 39, "P6 current required selector inventory"
     startup = [phase for phase in phases if phase.package == "awaken-process-startup"]
     assert len(startup) == 2 and startup[0].arguments != startup[1].arguments, "P7 distinct process bootstrap phases"
     assert all(phase.environment == (("AWAKEN_CRASH_BACKEND", "postgres"),)

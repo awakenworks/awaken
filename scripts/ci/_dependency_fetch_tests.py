@@ -31,8 +31,35 @@ class DependencyFetchTests(unittest.TestCase):
         self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
 
     def test_ci_cannot_replace_cold_fetch_with_a_warm_or_git_only_tier(self):
+        # Cause/effect graph: C1=cold admission is unconditional and uncached;
+        # C2=only terminal observations use their run-bound always condition;
+        # C3=the evidence upload is always retained. E1=admit iff C1+C2+C3;
+        # E2=reject a condition on admission, cache/bypass, or a terminal step
+        # hiding verification. Decision rows: shipped workflow -> E1; each
+        # single invalid cause below -> E2. Telemetry must not grant admission.
         workflow = (fetch.ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
         self.assertEqual(fetch.workflow_errors(workflow), [])
+        admission = "        run: python scripts/ci/check_dependency_fetch.py --output target/test-timings/dependency-fetch"
+        terminal_condition = "        if: always() && env.AWAKEN_BUILD_RUN_ID != ''\n"
+        for name in ("Finish build observations", "Summarize build observations"):
+            prefix = f"      - name: {name}\n"
+            self.assertIn(prefix + terminal_condition, workflow)
+            for changed_step in (
+                prefix,
+                prefix + "        if: false\n",
+                prefix + "        if: always()\n",
+            ):
+                changed = workflow.replace(prefix + terminal_condition, changed_step, 1)
+                with self.subTest(terminal=name, mutation=changed_step):
+                    self.assertTrue(fetch.workflow_errors(changed))
+            hidden = workflow.replace(admission, "        run: echo bypassed admission", 1).replace(
+                prefix + terminal_condition, prefix + terminal_condition + admission + "\n", 1)
+            with self.subTest(hidden_admission=name):
+                self.assertTrue(fetch.workflow_errors(hidden))
+        for condition in ("always()", "false", "always() && env.AWAKEN_BUILD_RUN_ID != ''"):
+            with self.subTest(admission_condition=condition):
+                self.assertTrue(fetch.workflow_errors(workflow.replace(
+                    admission, f"        if: {condition}\n" + admission, 1)))
         for changed in (workflow.replace("dependency_fetch:", "other:", 1),
                         workflow.replace("needs: dependency_fetch", "needs: other", 1),
                         workflow.replace("runner: [ubuntu-22.04, windows-2025]", "runner: [ubuntu-22.04]", 1),

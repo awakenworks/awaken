@@ -398,35 +398,6 @@ Current focused results, partial environments, per-crate counters and quick
 plans must retain their stated scope. See the existing
 [full-gate policy](../adr/0080-full-gate-freshness-and-declared-tool-environment.md).
 
-### Served-process E2E coverage
-
-`scripts/ci/e2e-coverage.sh` measures deterministic served-process API coverage
-and prints the current total and executed numerator. `stage_change_coverage_e2e.ts`
-owns uniquely identified functional obligations, including the served-process
-deployment mappings used to assess the G42/G43 Target guardrails; those rows do
-not change guardrail status or replace the formal qualification profiles. The
-post-rebase 2026-07-22 changed-line audit against `t` measured 1589/1662 =
-95.61%, above the enforced strict threshold of >95%; 264 non-API-reachable
-production lines are separately bounded and audited rather than hidden by broad
-exclusions.
-
-### Distributed role E2E scope
-
-[ADR-0071](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md)'s
-P2-B process-level acceptance ([k3d guide](../../deploy/k3d/README.md),
-`e2e/k3d/distributed_control_e2e.sh`) runs the production Control process with
-only a deterministic model-publication fact injected at its existing SPI,
-replicated shipped Coordinator roles, two shipped `awaken-worker` processes,
-signed Worker traffic, exact Credential/File/Memory/Skill realization, four
-owner databases, one public API endpoint, active-active projection refresh,
-Worker incarnation restart, Pod/node/Provider faults, PostgreSQL standby
-promotion and concurrent load. It also hard-stops a retained Pod-bound Native
-Worker, independently proves the exact old Pod exited, classifies the committed
-closed `ModelOnlyV1` surface, retires only that predecessor Dispatch slot and
-settles through a new Pod UID without another provider request. Worker Pods
-receive no authority database or seal configuration and are checked for zero
-PostgreSQL sockets.
-
 ### Qualification checkpoints and cohorts
 
 Each recorded outcome binds its exact source, declared inputs, artifact,

@@ -679,7 +679,7 @@ class DispatchObservationSelectionTests(unittest.TestCase):
         self.assertEqual(dispatch[0].selector,'backend_parity')
         self.assertIn('--require-case=postgres_exact_physical_execution_observations_use_the_original_store_clock',dispatch[0].arguments)
         self.assertNotIn('--ignored',dispatch[0].arguments)
-        self.assertEqual(len(postgres_phases('storage-observations',gate.ROOT)),2)
+        self.assertEqual(len(postgres_phases('storage-observations',gate.ROOT)),3)
 
     def test_same_package_substitution_cannot_erase_the_real_dispatch_outcome(self):
         text=(gate.ROOT/'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
@@ -741,6 +741,128 @@ class DispatchObservationSelectionTests(unittest.TestCase):
         changed=changed[:critical.end()-1]+statement+changed[critical.end()-1:]
         with self.assertRaisesRegex(ValueError,'independent Dispatch observation outcome'):
             self.verify(changed)
+
+
+class SessionCapacityObservationSelectionTests(unittest.TestCase):
+    def text(self):
+        return (gate.ROOT / "scripts/ci/pg_tests.sh").read_text(encoding="utf-8")
+
+    def verify(self, text):
+        from _native_postgres_scopes import postgres_phases
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "scripts/ci/pg_tests.sh"
+            source.parent.mkdir(parents=True)
+            source.write_text(text, encoding="utf-8")
+            return postgres_phases("storage-observations", root)
+
+    def phase(self):
+        return next(phase for phase in self.verify(self.text()) if phase.package == "awaken-session-store")
+
+    def test_capacity_is_an_exact_separate_ignored_phase_at_default_workload(self):
+        from _native_postgres_scopes import SESSION_CAPACITY_OBSERVATION_CASE
+        phases = self.verify(self.text())
+        self.assertEqual(len(phases), 3)
+        phase = self.phase()
+        self.assertEqual(phase.environment, (("AWAKEN_SESSION_PERF_ROOTS", "100000"),))
+        self.assertIn("--require-case=" + SESSION_CAPACITY_OBSERVATION_CASE, phase.arguments)
+        self.assertEqual(phase.arguments[-4:], ("--", "--ignored", "--exact", "--test-threads=1"))
+
+    def test_missing_substituted_or_small_workload_capacity_phase_cannot_pass(self):
+        import re
+        from _native_postgres_scopes import SESSION_CAPACITY_OBSERVATION_CASE as case
+        text = self.text()
+        statement = re.search(
+            r'(?ms)^  AWAKEN_SESSION_PERF_ROOTS=100000 pg_required_test .*?record_failure "\$\?"\n',
+            text,
+        ).group(0)
+        mutants = {
+            "omitted": text.replace(statement, "", 1),
+            "duplicated": text.replace(statement, statement + statement, 1),
+            "wrong-floor": text.replace(statement, statement.replace("--require-case=" + case, "--require-case=another_case"), 1),
+            "wrong-filter": text.replace(statement, statement.replace("--test session_repo_conformance " + case, "--test session_repo_conformance another_case"), 1),
+            "ordinary": text.replace(statement, statement.replace("--ignored ", ""), 1),
+            "skipped": text.replace(statement, statement.replace("--ignored", "--skip " + case), 1),
+            "small-workload": text.replace(statement, statement.replace("ROOTS=100000", "ROOTS=10000"), 1),
+            "ambient-workload": text.replace(statement, statement.replace("AWAKEN_SESSION_PERF_ROOTS=100000 ", ""), 1),
+            "wrong-backend": text.replace(statement, statement.replace("AWAKEN_SESSION_PERF_ROOTS=100000", "AWAKEN_CRASH_BACKEND=postgres"), 1),
+        }
+        for name, changed in mutants.items():
+            self.assertNotEqual(changed, text)
+            with self.subTest(mutation=name), self.assertRaises(ValueError):
+                self.verify(changed)
+
+    def observation(self, **changes):
+        fields = dict(roots="100000", reference_ms="12.5", indexed_ms="1.0",
+                      startup_ms="2.0", count_ms="8.0", global_count="100001",
+                      high_water_kib="0", owners="1")
+        fields.update(changes)
+        return "session_capacity " + " ".join(key + "=" + value for key, value in fields.items()) + "\n"
+
+    def test_functional_capacity_pass_does_not_invent_missing_windows_rss(self):
+        from _native_postgres_scopes import require_session_capacity_result
+        observed = require_session_capacity_result(self.phase(), self.observation())
+        self.assertEqual(observed["roots"], 100000)
+        self.assertEqual(observed["global_count"], 100001)
+        self.assertIsNone(observed["peak_resident_kib"])
+        self.assertEqual(len(observed["unverified_metrics"]), 1)
+        available = require_session_capacity_result(self.phase(), self.observation(high_water_kib="4096"))
+        self.assertEqual(available["peak_resident_kib"], 4096)
+        self.assertEqual(available["unverified_metrics"], [])
+
+
+    def test_native_receipt_reconciliation_requires_the_real_capacity_outcome(self):
+        import _native_service_receipt_fixture as fixture
+        from _native_postgres_scopes import postgres_phases
+        phases = self.verify(self.text())
+        # Synthetic tool I/O only. Preparation is deliberately mocked here;
+        # this is an omission/refusal unit test, never a real-service receipt.
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            with mock.patch.object(fixture, "postgres_phases", return_value=phases):
+                paths = postgres_receipts(base, "storage-observations")
+            session = paths[next(i for i, phase in enumerate(phases) if phase.package == "awaken-session-store")]
+            raw = (session / "results.log").read_text(encoding="utf-8")
+            log = "".join("execution evidence: " + str(path) + "\n" for path in paths)
+            with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(base)}), \
+                    mock.patch("check_rust_test_execution.verify_preparation"):
+                for outcome, accepted in ((self.observation(), True),
+                                          (self.observation(global_count="100000"), False),
+                                          ("", False)):
+                    (session / "results.log").write_text(
+                        raw.replace("test result:", outcome + "test result:", 1), encoding="utf-8")
+                    if accepted:
+                        receipts = gate.reconcile_postgres(log, "source", "storage-observations", fixture_owner=FIXTURE_OWNER)
+                        observed = next(row["capacity_observation"] for row in receipts if "capacity_observation" in row)
+                        self.assertEqual(observed["global_count"], 100001)
+                        self.assertIsNone(observed["peak_resident_kib"])
+                    else:
+                        with self.assertRaisesRegex(ValueError, "Session capacity"):
+                            gate.reconcile_postgres(log, "source", "storage-observations", fixture_owner=FIXTURE_OWNER)
+
+
+    def test_partial_duplicate_or_wrong_capacity_outcomes_cannot_pass(self):
+        from _native_postgres_scopes import require_session_capacity_result
+        phase = self.phase()
+        good = self.observation()
+        mutants = {
+            "absent": "",
+            "duplicated-row": good + good,
+            "missing-field": good.replace("owners=1", ""),
+            "duplicate-field": good.rstrip() + " owners=1\n",
+            "small-roots": self.observation(roots="10000"),
+            "incomplete-count": self.observation(global_count="100000"),
+            "no-owner": self.observation(owners="0"),
+            "extra-owner": self.observation(owners="2"),
+            "invalid-time": self.observation(count_ms="nan"),
+            "negative-time": self.observation(indexed_ms="-1"),
+            "negative-rss": self.observation(high_water_kib="-1"),
+        }
+        for name, changed in mutants.items():
+            with self.subTest(mutation=name), self.assertRaises(ValueError):
+                require_session_capacity_result(phase, changed)
+
+
 
 # unittest discovers these imported policy cases in the native gate suite.
 from test_postgres_work_tiers import WorkCalibrationAdmissionTests, WorkParitySelectionTests, WorkStoreSelectionTests

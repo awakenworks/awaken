@@ -1,9 +1,10 @@
 # Contract convergence by bounded context
 
-Status: implemented in the current source. The implementation record below
-describes the completed contract and ownership changes. The original design
-measurements used `1b56f9aea0` (descends from main `72518f3094`).
-Build and runtime qualification remain separate evidence.
+This document owns the boundary decisions of plan v5 item V4. Delivery progress
+is tracked in [STATUS](../STATUS.md#implementation-and-evidence), and source-bound
+execution in the [qualification record](test-validation.md#integrated-source-qualification-record).
+The measurements below describe the historical design input `1b56f9aea0`
+(descending from `72518f3094`); they are not a current-source inventory.
 
 ## Rule
 
