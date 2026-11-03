@@ -279,6 +279,7 @@ run static "node dependencies" python3 scripts/ci/check_node_dependencies.py
 run static "e2e runner unit" npm --prefix e2e run test:runner
 run static "command deadline tests" python3 scripts/ci/test_deadline.py
 run static "full-gate host admission tests" python3 scripts/ci/test_full_gate_admission.py
+run static "hook feedback process tests" python3 scripts/ci/test_hook_feedback.py
 run static "native service runner self-test" python3 scripts/ci/test_native_services.py
 run static "native physical recovery decision tables" python3 scripts/ci/test_native_recovery.py
 run static "native PostgreSQL storage selection" python3 scripts/ci/test_postgres_storage.py

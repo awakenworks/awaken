@@ -713,8 +713,7 @@ def push_gate_commands(gate: str) -> tuple[str, ...]:
 
 def execution_framework_hook_errors(hooks: str) -> list[str]:
     """Keep impact planning and expensive runner fixtures independently triggered."""
-    lines, spans=generate_hooks._spans(hooks)
-    blocks={name:"".join(lines[start:end]) for name,start,end in spans}
+    blocks=generate_hooks.command_blocks(hooks)
     framework=blocks.get("rust-execution-framework", "")
     planner=blocks.get("affected-rust-plan", "")
     expected={"affected-rust-plan":"python3 scripts/ci/rust_test_plan.py --self-test",
@@ -751,6 +750,7 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     the full gate's compile surface without widening the push gate's is a
     failure here instead of a divergence nobody notices.
     """
+    hooks = generate_hooks.pre_commit_view(hooks)
     errors = []
     pre_commit = hooks.split("pre-commit:", 1)[-1].split("\npre-push:", 1)[0]
     pre_push = hooks.split("\npush-qualification:", 1)[-1] if "\npush-qualification:" in hooks else ""
@@ -1101,7 +1101,10 @@ def self_test() -> None:
     # first -> reject, because an absent toolchain must not hide static failures.
     # Cross H2/H3/H4 with the remaining gate-owned scans; crate boundaries
     # instead runs once in the universal hook and once in release static.
-    hooks = (ROOT / "lefthook.yml").read_text(encoding="utf-8")
+    # These original composition mutants operate on the canonical logical
+    # command view. Native grouping/transport mutations have their own process
+    # tests; both views are derived by generate_hooks' single source reader.
+    hooks = generate_hooks.pre_commit_view((ROOT / "lefthook.yml").read_text(encoding="utf-8"))
     gate = (ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8")
     assert not rust_hook_errors(hooks, gate), "H1 single owner"
     orchestration = ("python3 scripts/ci/check_test_orchestration.py --self-test "

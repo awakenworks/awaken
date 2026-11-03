@@ -16,6 +16,11 @@ from _native_shell import bash_executable
 INPUT_GLOBS: tuple[str, ...] = (
     "lefthook.yml",
     "scripts/ci/pre-push/qualify.sh",
+    "scripts/ci/pre-commit/observe.sh",
+    "scripts/ci/_build_observation.sh",
+    "scripts/ci/parallel_check.py",
+    "scripts/ci/ci_performance.py",
+    "scripts/ci/generate_hooks.py",
     "scripts/ci/_lefthook_fitness.py",
     "scripts/ci/_native_shell.py",
     "scripts/ci/_native_shell_tests.py",
@@ -26,6 +31,8 @@ HOOK_ENTRY = "scripts/ci/pre-push/qualify.sh"
 
 
 def hook_entry_errors(hooks: str) -> list[str]:
+    from generate_hooks import hook_execution_errors, observation_entry_errors
+    errors = hook_execution_errors(hooks) + observation_entry_errors(hooks)
     bridge = re.search(r"(?ms)^pre-push:\n(.*?)(?=^\S|\Z)", hooks)
     lines = [line.strip() for line in bridge.group(1).splitlines()
              if line.strip() and not line.lstrip().startswith("#")] if bridge else []
@@ -38,8 +45,8 @@ def hook_entry_errors(hooks: str) -> list[str]:
     if (re.findall(r"(?m)^source_dir:\s*(\S+)\s*$", hooks) != ["scripts/ci"]
             or lines != ["scripts:", "qualify.sh:", "runner: python3 scripts/ci/_native_shell.py", "args: --qualify"]
             or len(re.findall(r"(?m)^push-qualification:$", hooks)) != 1 or commands != required):
-        return ["pre-push must use the mandatory script bootstrap and its independent qualification hook"]
-    return []
+        errors.append("pre-push must use the mandatory script bootstrap and its independent qualification hook")
+    return errors
 
 
 def self_test(root: Path) -> None:

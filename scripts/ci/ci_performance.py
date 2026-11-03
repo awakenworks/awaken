@@ -97,7 +97,7 @@ class TaskRun:
                               'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT',
                               'GITHUB_JOB', 'RUNNER_NAME') if key in self.environment},
                           configuration={name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-                              for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
+                              for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'lefthook.yml',
                                            '.config/rust-tests.toml', '.github/workflows/quality.yml')
                               if (root / name).is_file()},
                           scenario=self.environment.get('AWAKEN_BUILD_SCENARIO', 'unspecified'))
@@ -134,6 +134,16 @@ def finish_task(directory, root, status):
     from formal_run_evidence import finish_artifacts, write_record
     path = directory / 'evidence.json'
     record = require_active_task(directory)
+    projection = directory / 'hook-config.json'
+    if projection.is_file():
+        projected = json.loads(projection.read_text())
+        if projected['source_digest'] != hashlib.sha256((root / 'lefthook.yml').read_bytes()).hexdigest():
+            raise ValueError('hook configuration changed during execution')
+    if (directory / 'hooks').is_dir():
+        hooks = hook_observations(directory)
+        record['workload_digest'] = hashlib.sha256(json.dumps(sorted(
+            (row['label'], row['command_digest'], row['arguments_digest']) for row in hooks['rows'])).encode()).hexdigest()
+        write_report({'hooks': hooks}, directory / 'hook-summary.json')
     duration = time.monotonic() - record['started_monotonic']
     record.update(duration_seconds=duration if duration >= 0 else None)
     # Freeze externally written stage files before the existing bundle owner
@@ -406,6 +416,37 @@ def footprint(paths, budget=5):
     return {'bytes': total, 'files': files, 'complete': True, 'scan_seconds': time.monotonic() - started}
 
 
+def hook_observations(directory):
+    run = json.loads((directory / 'evidence.json').read_text())
+    rows = []
+    for path in sorted((directory / 'hooks').glob('*/observation.json')):
+        value = json.loads(path.read_text())
+        if (value.get('schema_version') != 1 or value.get('kind') != 'hook-check-observation'
+                or value.get('run_id') != run['run_id']):
+            raise ValueError('foreign or unsupported hook observation')
+        duration = value.get('duration_seconds')
+        if duration is not None and (type(duration) not in (int, float)
+                                    or not math.isfinite(duration) or duration < 0):
+            raise ValueError('invalid hook duration')
+        if duration is None:
+            if value.get('status') != 'running' or value.get('exit_code') is not None:
+                raise ValueError('unfinished hook cannot carry a terminal outcome')
+        elif (type(value.get('exit_code')) is not int or not 0 <= value['exit_code'] <= 255
+              or value.get('status') != ('passed' if value['exit_code'] == 0 else 'failed')
+              or type(value.get('started_monotonic')) not in (int, float)
+              or not math.isfinite(value['started_monotonic'])):
+            raise ValueError('invalid hook terminal outcome')
+        rows.append({**value, 'path': str(path.relative_to(directory))})
+    completed = [row for row in rows if row.get('duration_seconds') is not None]
+    failures = [row['started_monotonic'] + row['duration_seconds'] - run['started_monotonic']
+                for row in completed if row.get('exit_code') != 0]
+    return {'rows': rows, 'completed': len(completed), 'unfinished': len(rows) - len(completed),
+            'first_failure_seconds': min(failures) if failures else None,
+            'sum_worker_seconds': sum(row['duration_seconds'] for row in completed),
+            'scope': 'per-hook inclusive durations; parallel workers and nested Cargo must not be summed into wall time',
+            'slowest': sorted(completed, key=lambda row: row['duration_seconds'], reverse=True)[:10]}
+
+
 def local_report(root, revision, run_id=None):
     result = {'gate_timings': [], 'rust': [], 'build_timelines': [], 'benchmarks': [],
               'cache': [], 'missing': [], 'commands': [], 'cargo_invocations': []}
@@ -423,6 +464,7 @@ def local_report(root, revision, run_id=None):
     if record['source'].get('commit') not in (None, revision):
         raise ValueError('selected build run belongs to another revision')
     result['run'] = record
+    result['hooks'] = hook_observations(directory)
     if record['source'].get('available') is False:
         result['missing'].append('full source snapshot remains with the execution owner; see its source digest/receipt')
     run_root = directory
@@ -526,6 +568,11 @@ def write_report(data, output):
     output.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
     lines = ['## CI performance observations', '', 'Performance telemetry is separate from gate qualification.', '']
     local = data.get('local', {})
+    hooks = local.get('hooks', data.get('hooks'))
+    if hooks:
+        lines.append(f"- Hook checks: {hooks['completed']} completed; {hooks['unfinished']} unfinished; first failure {hooks['first_failure_seconds']} s. {hooks['scope']}")
+        for row in hooks['slowest']:
+            lines.append(f"- Hook {row['label']}: {row['duration_seconds']:.2f} s; {row['status']}; exit {row['exit_code']}; {row['path']}")
     if local.get('run'):
         run = local['run']
         lines.append(f"- Build run {run['run_id']}: {run['status']}; {run.get('duration_seconds')} s")
@@ -563,7 +610,7 @@ def write_report(data, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('mode', choices=('report', 'cache', 'github', 'workflow', 'begin', 'finish',
-                                       'validate', 'register', 'stage', 'timings-before', 'timings-after', 'compare', 'invocations'), nargs='?', default='report')
+                                       'validate', 'register', 'stage', 'timings-before', 'timings-after', 'compare', 'invocations', 'hooks', 'hook-config'), nargs='?', default='report')
     parser.add_argument('--root', type=Path, default=Path('target/test-timings'))
     parser.add_argument('--revision', default=os.environ.get('GITHUB_SHA'))
     parser.add_argument('--output', type=Path, default=Path('target/test-timings/performance.json'))
@@ -585,6 +632,40 @@ def main():
     if args.mode == 'invocations':
         snapshot = json.loads(args.snapshot.read_text()) if args.snapshot else host_observation_query('--observations', args.root)
         write_report({'invocations': snapshot, 'invocation_summary': invocation_summary(snapshot)}, args.output)
+        return 0
+    if args.mode == 'hooks':
+        directory = task_directory()
+        if directory is None:
+            raise ValueError('hook summary requires its build run context')
+        write_report({'hooks': hook_observations(directory)}, args.output)
+        return 0
+    if args.mode == 'hook-config':
+        from generate_hooks import native_pre_commit_configuration
+        from formal_run_evidence import write_record
+        directory = task_directory()
+        if directory is None:
+            raise ValueError('hook configuration requires its build context')
+        record = require_active_task(directory)
+        root = Path(__file__).resolve().parents[2]
+        source = (root / 'lefthook.yml').read_bytes()
+        source_digest = hashlib.sha256(source).hexdigest()
+        if record['configuration'].get('lefthook.yml') != source_digest:
+            raise ValueError('hook configuration changed before execution')
+        if (directory / 'hook-config.json').exists():
+            raise ValueError('hook configuration projection must be fresh')
+        native = native_pre_commit_configuration(source.decode()).encode()
+        descriptor, name = tempfile.mkstemp(prefix='hook-config-', suffix='.yml', dir=directory)
+        try:
+            with os.fdopen(descriptor, 'wb') as stream:
+                stream.write(native)
+            write_record(directory / 'hook-config.json', {'schema_version': 1,
+                'kind': 'hook-configuration-projection', 'source_digest': source_digest,
+                'native_digest': hashlib.sha256(native).hexdigest(),
+                'scope': 'same repository job inventory; native Lefthook retains filtering and staging'})
+        except BaseException:
+            Path(name).unlink(missing_ok=True)
+            raise
+        print(Path(name).as_posix())
         return 0
     if args.mode == 'workflow':
         errors = artifact_policy_errors(Path('.github/workflows/quality.yml').read_text(encoding='utf-8'))
@@ -790,21 +871,8 @@ class PerformanceTests(unittest.TestCase):
                 self.assertEqual(json.loads(output.read_text())['invocation_summary']['record_count'], 0)
 
     def fixture_task(self, label='fixture'):
-        from formal_sources import detached_git_environment
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name) / 'repository'
-        root.mkdir()
-        environment = {key: value for key, value in detached_git_environment().items() if not key.startswith('AWAKEN_BUILD_')}
-        environment.update(AWAKEN_BUILD_OBSERVATIONS=str(Path(temporary.name) / 'records'),
-                           GIT_AUTHOR_NAME='Build tests', GIT_AUTHOR_EMAIL='build@example.test',
-                           GIT_COMMITTER_NAME='Build tests', GIT_COMMITTER_EMAIL='build@example.test')
-        subprocess.run(['git', 'init', '-q', str(root)], check=True, env=environment)
-        (root / 'source').write_text('original\n')
-        (root / '.gitignore').write_text('target/\narchive/\n')
-        subprocess.run(['git', '-C', str(root), 'add', 'source', '.gitignore'], check=True, env=environment)
-        subprocess.run(['git', '-C', str(root), '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture'], check=True, env=environment)
-        return TaskRun(label, root, environment), root, environment
+        from _build_observation_fixture import real_build_observations
+        return real_build_observations(self, label)
 
     def test_run_identity_reentry_and_same_revision_attempts_are_separate(self):
         # Cause graph I1 no context -> one new bundle; I2 inherited exact live

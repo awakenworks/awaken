@@ -145,6 +145,57 @@ wall-clock budget; this change does not extend it or qualify a full gate.
 
 ## Reduce total time without losing evidence
 
+Git pre-commit uses the same declared check inventory in `lefthook.yml`.
+Its mandatory `scripts/ci/pre-commit/observe.sh` bridge creates a fresh child
+build observation, then `generate_hooks.py` projects that inventory to a
+temporary native `pre-commit` configuration. Lefthook retains staged-file
+filtering, quoting, local configuration and `stage_fixed`; the child uses
+`--no-auto-install` so its temporary view cannot replace shared Git hooks.
+The temporary configuration is removed before the run is sealed. Only source
+and projection digests remain in the observation. An older worktree's generic
+Git hook still selects this current-worktree script on its first invocation.
+
+Cheap hygiene/input checks run first. Remaining adjacent checks declared
+`read-only` use at most four serial lanes inside a native parallel group;
+small regions use a direct bounded group. Lane placement is authored in the
+same inventory using frozen diagnostic costs, never selected from mutable
+runtime statistics. The structure validator computes recursive concurrency
+width and refuses a parallel writer or any tree that could exceed four workers.
+Groups drain before a formatter, baseline writer, frontend command or Rust
+gate. The outer pipeline stops after a failed group; peers in that group
+finish and retain their own results. No Cargo parallelism or qualification
+threshold is changed. The existing whole fallback for executor, Cargo config,
+manifest, lockfile and unknown inputs remains in `rust_test_plan.py`.
+
+The existing `parallel_check.py`/`deadline.py` worker owns deadlines and
+descendant cleanup. Hook mode writes a durable initial receipt before starting
+the checker, prints concise start/completion lines and retains full output in
+`hooks/<id>/output.log`. Read-only workers bind the existing source/index
+snapshot before and after execution; an unexpected mutation rejects the job.
+Selected filenames are passed as arguments to an owned script, never evaluated
+as shell code. Native temporary-config environment is restored before the
+checker starts, so nested tools retain their original context.
+
+Each `hooks/<id>/observation.json` records label, command/argument digests,
+original exit code, elapsed time, collection overhead and source fence result.
+The existing performance reporter emits slow hooks, first-failure latency and
+unfinished counts in `hook-summary.json`/`.md`. Parallel worker durations and
+nested Cargo durations are inclusive costs, not additive wall time. Corrupt or
+unfinished receipts cannot become passing execution evidence; tests execute
+again on every selected run. No PASS cache or second test selector is used.
+
+For a standalone pre-commit run with the same observation lifecycle, use:
+
+```sh
+python3 scripts/ci/_native_shell.py scripts/ci/pre-commit/observe.sh --observe
+```
+
+`generate_hooks.py --check`, `_input_closure.py` and the composition guards all
+read the same decoded command view. `test_hook_feedback.py` exercises real
+Git/Lefthook selection, parallel barriers, automatic staging, exact filenames,
+failure short-circuiting, storage faults and signal cleanup. These are local
+orchestration checks; they do not qualify a full Formal or platform gate.
+
 Ordinary dev/test profiles use `line-tables-only`: failures retain backtrace
 filenames/lines without emitting type and variable records into every native
 test binary's PDB. Debug assertions, overflow checks, optimization and test

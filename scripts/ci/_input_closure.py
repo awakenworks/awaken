@@ -178,15 +178,14 @@ def main(argv: list[str]) -> int:
 def invocations(hooks: str) -> list[tuple[str, list[str]]]:
     """(command, argv) of every literal ``python3 scripts/ci/<checker>.py`` call in a pre-commit run body."""
 
-    lines, spans = generate_hooks._spans(hooks)
     found = []
-    for command, header, end in spans:
-        block = "".join(generate_hooks._without_generated(
-            lines[header + 1:generate_hooks._body_end(lines, header + 1, end)]))
-        run = re.search(r"(?m)^\s*run:\s*(.*)$", block)
-        if run is None:
-            continue
-        for part in re.split(r"&&|;", run.group(1)):
+    for command, block in generate_hooks.command_blocks(hooks).items():
+        for part in re.split(r"&&|;|\n", generate_hooks.hook_run(block)):
+            # Only literal checker calls are audit subjects. Opaque shell/Node
+            # bodies may contain quoted semicolons; do not tokenize those as
+            # Python argument vectors or hide malformed actual checker calls.
+            if not re.match(r'^\s*python3\s+scripts/ci/\w+\.py(?:\s|$)', part):
+                continue
             words = shlex.split(part)
             if len(words) >= 2 and words[0] == "python3" and re.fullmatch(r"scripts/ci/\w+\.py", words[1]):
                 found.append((command, words[1:]))

@@ -48,15 +48,19 @@ def terminate_group(process: subprocess.Popen[bytes]) -> None:
     process.wait()
 
 
-def run(seconds: float, command: list[str]) -> int:
+def run(seconds: float, command: list[str], *, stdout=None, stderr=None, environment=None) -> int:
     if not math.isfinite(seconds) or seconds <= 0 or not command:
         return 2
+    stdio = {name: value for name, value in (('stdout', stdout), ('stderr', stderr)) if value is not None}
+    if environment is not None:
+        stdio['env'] = environment
     if os.name == "nt":
         from _windows_job import WindowsJob
 
         with WindowsJob() as job:
             process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
-                                        "--windows-job-child", job.name, "--", *command])
+                                        "--windows-job-child", job.name, "--", *command],
+                                       **stdio)
             try:
                 return process.wait(timeout=seconds)
             except subprocess.TimeoutExpired:
@@ -97,7 +101,7 @@ def run(seconds: float, command: list[str]) -> int:
     try:
         for number in (signal.SIGTERM, signal.SIGINT):
             previous_handlers[number] = signal.signal(number, interrupted)
-        process = subprocess.Popen(command, start_new_session=True)
+        process = subprocess.Popen(command, start_new_session=True, **stdio)
         if pending_signal is not None:
             raise Cancelled(pending_signal)
         result = process.wait(timeout=seconds)
