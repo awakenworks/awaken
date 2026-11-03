@@ -62,9 +62,26 @@ case "${1:-}" in
 esac
 
 source scripts/ci/_build_observation.sh
+if [ "$full_gate" -eq 1 ]; then
+  export AWAKEN_BUILD_WORKLOAD_KIND=qualification
+elif [ "$requested_group" = formal ] && [ "${AWAKEN_BUILD_WORKLOAD_KIND:-}" != qualification ]; then
+  export AWAKEN_BUILD_WORKLOAD_KIND=formal
+else
+  export AWAKEN_BUILD_WORKLOAD_KIND="${AWAKEN_BUILD_WORKLOAD_KIND:-feedback}"
+fi
+export AWAKEN_BUILD_OBSERVATION_KIND="${AWAKEN_BUILD_OBSERVATION_KIND:-project}"
 awaken_begin_build_observation "check-all:$requested_group:full=$full_gate" || exit $?
 
 gate_candidate_revision="${AWAKEN_FULL_GATE_CANDIDATE:-$(git rev-parse --verify HEAD)}" || exit 1
+if [ "$requested_group" = formal ] && [ "$full_gate" -eq 0 ] \
+    && [ "${AWAKEN_CARGO_ADMITTED:-}" != 1 ] && [ "${AWAKEN_ADMISSION_PHASE_MODE:-}" != 1 ] \
+    && [ "$(uname -s)" = Linux ]; then
+  source scripts/ci/_deadline.sh
+  formal_budget="${AWAKEN_FORMAL_TIMEOUT_SECONDS:-86400}"
+  [[ "$formal_budget" =~ ^[1-9][0-9]*$ ]] || { echo 'invalid formal group deadline' >&2; exit 2; }
+  run_with_deadline --cooperative-admit "$formal_budget" "$0" "${original_arguments[@]}"
+  exit $?
+fi
 if [ "$full_gate" -eq 1 ]; then
   export AWAKEN_ADMISSION_PROFILE=qualification
   if [ "${AWAKEN_CARGO_ADMITTED:-}" != 1 ]; then
@@ -262,6 +279,7 @@ run static "node dependencies" python3 scripts/ci/check_node_dependencies.py
 run static "e2e runner unit" npm --prefix e2e run test:runner
 run static "command deadline tests" python3 scripts/ci/test_deadline.py
 run static "full-gate host admission tests" python3 scripts/ci/test_full_gate_admission.py
+run static "hook feedback process tests" python3 scripts/ci/test_hook_feedback.py
 run static "native service runner self-test" python3 scripts/ci/test_native_services.py
 run static "native physical recovery decision tables" python3 scripts/ci/test_native_recovery.py
 run static "native PostgreSQL storage selection" python3 scripts/ci/test_postgres_storage.py

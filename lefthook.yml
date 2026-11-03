@@ -1,7 +1,8 @@
-# Hooks print nothing when every check passes; a failing check prints its own
-# output and name.
+# Selected hook workers print concise live progress; full output stays in run logs.
 output:
   - failure
+  - execution_out
+  - summary
 
 # Repository guardrails for the runtime design corpus and future Rust/frontend
 # engineering workspace.
@@ -23,9 +24,9 @@ output:
 # Trigger globs are NOT written here. A command that runs a scripts/ci checker
 # declaring INPUT_GLOBS carries its `glob:` line between `>>> generated glob`
 # markers, rendered by `python3 scripts/ci/generate_hooks.py` from that
-# declaration; `--check` refuses a stale or hand-edited one. Everything else on
-# this page -- command names, `run:` bodies, these comments, and the globs of
-# commands that run shell or Node tools -- stays human-authored.
+# declaration; `--check` refuses a stale or hand-edited one. The same renderer
+# owns the observation wrapper syntax around each original command body.
+# Names, bodies, read-only declarations and serial barriers are authored here.
 
 glob_matcher: doublestar
 
@@ -35,502 +36,589 @@ glob_matcher: doublestar
 source_dir: scripts/ci
 
 pre-commit:
-  # Cargo, code generation and workspace formatting share the same resource
-  # budget. Keep every check, but avoid concurrent compiler processes during
-  # commits; low-memory Windows hosts otherwise fail before a useful diagnosis.
+  follow: true
+  scripts:
+    observe.sh:
+      runner: python3 scripts/ci/_native_shell.py
+      args: --observe
+
+# Definition only: observe.sh projects these same jobs to native pre-commit.
+# That preserves native glob filtering, stage_fixed and normal local settings.
+commit-checks:
   parallel: false
-  commands:
-    # 1. Repository-wide hygiene that should never depend on project language.
-    repository-hygiene:
-      # >>> generated glob from check_repository_hygiene.py INPUT_GLOBS — do not edit
-      # no glob: check_repository_hygiene.py reads every staged file, so this command
-      # must keep the whole staged set as its trigger.
-      # <<< generated glob
-      run: python3 scripts/ci/check_repository_hygiene.py --staged
+  piped: true
+  follow: true
+  jobs:
+    - name: read-only-phase-1
+      group:
+        parallel: true
+        jobs:
+          # 1. Repository-wide hygiene that should never depend on project language.
+          - name: repository-hygiene
+            # >>> generated glob from check_repository_hygiene.py INPUT_GLOBS — do not edit
+            # no glob: check_repository_hygiene.py reads every staged file, so this command
+            # must keep the whole staged set as its trigger.
+            # <<< generated glob
+            tags: [read-only]
+            run: python3 scripts/ci/parallel_check.py --hook-label repository-hygiene --timeout 600 --read-only --shell 'python3 scripts/ci/check_repository_hygiene.py --staged' --
+          # Every `glob:` below that sits between generated markers is rendered from
+          # the INPUT_GLOBS the invoked checker declares. Editing one by hand is
+          # refused by check_test_orchestration.py, because a trigger narrower than
+          # the checker's real input set is a gate that never runs when it matters.
+          - name: hook-globs
+            # >>> generated glob from _input_closure.py, generate_hooks.py INPUT_GLOBS — do not edit
+            glob: "{lefthook.yml,scripts/ci/*.py,scripts/ci/check-rust.sh}"
+            # <<< generated glob
+            tags: [read-only]
+            run: python3 scripts/ci/parallel_check.py --hook-label hook-globs --timeout 600 --read-only --shell 'python3 scripts/ci/generate_hooks.py --check && python3 scripts/ci/_input_closure.py --self-test' --
+          # 2. High-signal credential scanner. Generic secret assignments only fail
+          #    in source/config files, so design examples can stay readable.
+          - name: secrets
+            # >>> generated glob from check_secrets.py INPUT_GLOBS — do not edit
+            # no glob: check_secrets.py reads every staged file, so this command
+            # must keep the whole staged set as its trigger.
+            # <<< generated glob
+            tags: [read-only]
+            run: python3 scripts/ci/parallel_check.py --hook-label secrets --timeout 600 --read-only --shell 'python3 scripts/ci/check_secrets.py --staged' --
+          # 3. Report file-length diagnostics for source, tests, config and design.
+          #    Size findings warn; source selection and input failures remain checked.
+          - name: file-limits
+            # >>> generated glob from check_file_limits.py INPUT_GLOBS — do not edit
+            # no glob: check_file_limits.py reads every staged file, so this command
+            # must keep the whole staged set as its trigger.
+            # <<< generated glob
+            tags: [read-only]
+            run: python3 scripts/ci/parallel_check.py --hook-label file-limits --timeout 600 --read-only --shell 'python3 scripts/ci/check_file_limits.py --staged' --
 
-    # Every `glob:` below that sits between generated markers is rendered from
-    # the INPUT_GLOBS the invoked checker declares. Editing one by hand is
-    # refused by check_test_orchestration.py, because a trigger narrower than
-    # the checker's real input set is a gate that never runs when it matters.
-    hook-globs:
-      # >>> generated glob from _input_closure.py, generate_hooks.py INPUT_GLOBS — do not edit
-      glob: "{lefthook.yml,scripts/ci/*.py,scripts/ci/check-rust.sh}"
-      # <<< generated glob
-      run: python3 scripts/ci/generate_hooks.py --check && python3 scripts/ci/_input_closure.py --self-test
-
-    hook-bootstrap:
-      # >>> generated glob from _lefthook_fitness.py INPUT_GLOBS — do not edit
-      glob: "{lefthook.yml,scripts/ci/_lefthook_fitness.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py,scripts/ci/deadline.py,scripts/ci/pre-push/qualify.sh}"
-      # <<< generated glob
-      run: python3 scripts/ci/_lefthook_fitness.py --self-test && python3 scripts/ci/_lefthook_fitness.py --integration-test
-
-    # An evidence link replaces its former standalone source classification.
-    # Metadata/checker changes must pass the same strict validators as CI:
-    # duplicate ownership or missing coverage rejects the commit; no solver is
-    # started here. The ledger also asserts that every path an obligation cites
-    # still exists, and an obligation may cite any repository path, so this
-    # command has no trigger set to narrow and runs on every commit.
-    formal-ledger:
-      # >>> generated glob from check_formal_coverage.py, formal_ledger.py, formal_plan.py INPUT_GLOBS — do not edit
-      # no glob: check_formal_coverage.py, formal_ledger.py, formal_plan.py reads every staged file, so this command
-      # must keep the whole staged set as its trigger.
-      # <<< generated glob
-      run: python3 scripts/ci/formal_ledger.py --self-test && python3 scripts/ci/formal_plan.py --self-test && python3 scripts/ci/check_formal_coverage.py --require-evidence-complete
-
-    # The ledger above proves each obligation carries evidence; this one proves
-    # the product still consumes it. An obligation whose prefix no requirement
-    # owns reddens every later commit by everyone, so it must fail the commit
-    # that introduces it. It reads three JSON files and the paths they cite:
-    # 0.05s, no solver, no toolchain.
-    formal-product-ledger:
-      # >>> generated glob from check_feature_coverage.py INPUT_GLOBS — do not edit
-      # no glob: check_feature_coverage.py reads every staged file, so this command
-      # must keep the whole staged set as its trigger.
-      # <<< generated glob
-      run: python3 scripts/ci/check_feature_coverage.py --require-complete
-
-    # Source-surface classification is incremental here: only staged production
-    # Rust is lexed, so the trigger can honestly include every crates/**/*.rs
-    # file the checker reads. The global coverage ratio still needs the whole
-    # walk, which stays on check-rust.sh --push and the formal release group.
-    # The existing formal-surface L4 test owns that decision table.
-    formal-evidence:
-      # >>> generated glob from check_formal_surface.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/*.json,formal/coverage.toml,formal/obligations/**/*,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_file_limits.py,scripts/ci/check_formal_surface.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/formal_anchors.py,scripts/ci/formal_ledger.py,scripts/ci/formal_sources.py,web/src/**/*}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_formal_surface.py --staged {staged_files}
-
-    # A Kani harness that takes a free symbol where production computes the
-    # fact, restates its callee's body, or hides a #[cfg(kani)] fork inside a
-    # production entrypoint, is green and proves nothing. The justified
-    # registry and the `/// @proof-input-debt` tags on harnesses ratchet the
-    # ones that already exist; a staged debt HEAD does not carry is refused.
-    proof-input-derivation:
-      # >>> generated glob from check_proof_input_derivation.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/coverage.toml,formal/obligations/**/*,formal/proof-input-exceptions.json,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_file_limits.py,scripts/ci/check_proof_input_derivation.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/formal_anchors.py,scripts/ci/formal_ledger.py,scripts/ci/formal_sources.py,web/src/**/*}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_proof_input_derivation.py --staged {staged_files}
-
-    # 2. High-signal credential scanner. Generic secret assignments only fail
-    #    in source/config files, so design examples can stay readable.
-    secrets:
-      # >>> generated glob from check_secrets.py INPUT_GLOBS — do not edit
-      # no glob: check_secrets.py reads every staged file, so this command
-      # must keep the whole staged set as its trigger.
-      # <<< generated glob
-      run: python3 scripts/ci/check_secrets.py --staged
-
-    # 3. Report file-length diagnostics for source, tests, config and design.
-    #    Size findings warn; source selection and input failures remain checked.
-    file-limits:
-      # >>> generated glob from check_file_limits.py INPUT_GLOBS — do not edit
-      # no glob: check_file_limits.py reads every staged file, so this command
-      # must keep the whole staged set as its trigger.
-      # <<< generated glob
-      run: python3 scripts/ci/check_file_limits.py --staged
-
-    # 3b. A test must settle on a value the product committed, never on a
-    #     lifecycle signal, a fixture counter, or elapsed time. Two regressions
-    #     in main came from that one shape; the ratchet freezes today's debt.
-    test-waits:
-      # >>> generated glob from check_test_waits.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/src/**/*.rs,crates/**/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.rs,e2e/**/*.sh,e2e/**/*.ts,lefthook.yml,scripts/ci/*.py,scripts/ci/test_waits_baseline.json,web/e2e/**/*.mjs,web/e2e/**/*.ts}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_test_waits.py
-
-    # 3b. An SDK public-API change ships only with the crate version bump it
-    #     needs against the last SDK release, and a changelog entry for it
-    #     (docs/design/sdk-versioning.md). Pure Python over the committed
-    #     snapshots; check_public_api.sh proves the snapshots are current.
-    sdk-semver:
-      # >>> generated glob from check_sdk_semver.py INPUT_GLOBS — do not edit
-      glob: "{Cargo.toml,crates/**/CHANGELOG.md,crates/**/Cargo.toml,public-api/*.txt,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_sdk_semver.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_sdk_semver.py
-
-    # 3b. Dependency direction and ownership rules. It also runs inside the
-    #     rust gate; as its own hook it still runs on commits that skip that gate.
-    #     It reads no documentation, so a docs-only commit skips it; every run
-    #     fails if it reads a path its declared inputs do not cover.
-    crate-boundaries:
-      # >>> generated glob from check_crate_boundaries.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,Cargo.lock,Cargo.toml,contracts/anthropic-managed/upstream-oracle.generated.json,crates/**,deploy/**,e2e/**,rust-toolchain.toml,scripts/**,web/src/**}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_crate_boundaries.py
-
-    # 3b. No Rust test disappears silently. Moving a test between crates or
-    #     rewriting its fixtures keeps it (identity is the function name); a
-    #     rename or deletion is recorded in the ledger in the same commit.
-    test-inventory:
-      # >>> generated glob from check_test_inventory.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/*.py,scripts/ci/test_inventory.txt,scripts/ci/test_inventory_ledger.json}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_test_inventory.py
-
-    # 3b'. A trait default that degrades silently, and a verification gate
-    #      that passes because its dependency was absent, are refused at commit
-    #      as well as in the full gate.
-    degrading-defaults:
-      # >>> generated glob from check_degrading_defaults.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_architecture_ratchet.py,scripts/ci/_contract_map_fitness.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_naming_fitness.py,scripts/ci/_single_owner_fitness.py,scripts/ci/check_degrading_defaults.py,scripts/ci/check_fabricated_facts.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_degrading_defaults.py --self-test && python3 scripts/ci/check_degrading_defaults.py
-
-    dependency-gates:
-      # >>> generated glob from check_dependency_gates.py INPUT_GLOBS — do not edit
-      glob: "{crates/**,e2e/**,scripts/**}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_dependency_gates.py --self-test && python3 scripts/ci/check_dependency_gates.py
-
-    # The Session acceptance ledger's gate tests drive the real workspace
-    # guards, impact planner and ledger validator with injected
-    # counter-examples; a change to what they read re-proves the refusals.
-    session-acceptance-gates:
-      # >>> generated glob from test_session_acceptance.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.gitattributes,Cargo.lock,Cargo.toml,crates/**/*.rs,crates/**/Cargo.toml,docs/design/session-execution-test-acceptance/**,e2e/**,examples/**,packages/managed-sdk-oracle/package.json,rust-toolchain.toml,scripts/ci/*.json,scripts/ci/*.py,scripts/ci/*.sh}"
-      # <<< generated glob
-      run: python3 scripts/ci/test_session_acceptance.py
-
-    formal-native-fixtures:
-      # >>> generated glob from test_formal_gate_mutations.py INPUT_GLOBS — do not edit
-      glob: "scripts/ci/*.py"
-      # <<< generated glob
-      run: python3 scripts/ci/test_formal_gate_mutations.py
-
-    # Run the live graph as well as the checker fixtures; fixtures alone
-    # cannot reject a newly introduced wait in a production test suite.
-    test-orchestration:
-      # >>> generated glob from check_test_orchestration.py INPUT_GLOBS — do not edit
-      glob: "{.config/**,.github/workflows/*.yml,crates/**,e2e/**,lefthook.yml,pnpm-lock.yaml,scripts/ci/**,scripts/e2e/*.sh}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_test_orchestration.py --self-test && python3 scripts/ci/check_test_orchestration.py
-
-    affected-rust-plan:
-      # >>> generated glob from rust_test_plan.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,tests/**,xtask/**}"
-      # <<< generated glob
-      run: python3 scripts/ci/rust_test_plan.py --self-test
-
-    # Fixture-based execution regressions follow their own script/tool inputs.
-    # Ordinary Rust edits still run the impact planner and every live gate.
-    rust-execution-framework:
-      # >>> generated glob from benchmark_rust_build.py, check_rust_test_execution.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/e2e/sandbox_capability_suite.sh}"
-      # <<< generated glob
-      run: python3 scripts/ci/benchmark_rust_build.py --self-test && python3 scripts/ci/check_rust_test_execution.py --self-test
-
-    # 3b. A failed read of durable state may never become an absence. The
-    #     recovery path is derived -- every production module that names a
-    #     checkpoint or the tri-state -- so a file joins the rule by doing the
-    #     thing the rule is about, and the trigger follows the same declaration.
-    observation-collapse:
-      # >>> generated glob from check_observation_collapse.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/Cargo.toml,crates/**/src/**/*.rs,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_observation_collapse.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_observation_collapse.py
-
-    # 3b. The principle table (plan v5 S3) is printed by
-    #     `python3 scripts/ci/principle_status.py`; it is informational and
-    #     never fails on a count. Only its own decision table runs here.
-    principle-status:
-      # >>> generated glob from principle_status.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/*.py,scripts/ci/*_baseline.json}"
-      # <<< generated glob
-      run: python3 scripts/ci/principle_status.py --self-test
-
-    # 3c. A guard's scope must be derived from its subject, never written out a
-    #     second time by hand. The checkers are themselves the corpus here: a new
-    #     literal list of paths among them is refused, and today's are registered
-    #     with the reason each cannot be derived.
-    scan-scope:
-      # >>> generated glob from check_scan_scope.py INPUT_GLOBS — do not edit
-      glob: "{scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/scan_scope_registry.json}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_scan_scope.py
-
-    # The existing release source validator inventories every tracked writer.
-    # Its declaration and pre-commit trigger cover that same repository corpus.
-    sandbox-release-source:
-      # >>> generated glob from check_sandbox_image_release.py INPUT_GLOBS — do not edit
-      # no glob: check_sandbox_image_release.py reads every staged file, so this command
-      # must keep the whole staged set as its trigger.
-      # <<< generated glob
-      run: python3 scripts/ci/check_sandbox_image_release.py
-
-    # 3b. The one declaration of every external tool a gate needs. Its self-test
-    #    proves each row can still be located by the method it states, so a row
-    #    that stopped describing reality fails here rather than inside a proof.
-    gate-tools:
-      # >>> generated glob from gate_tools.py INPUT_GLOBS — do not edit
-      glob: "{e2e/package.json,package.json,pnpm-workspace.yaml,scripts/ci/*.sh,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_node_dependencies.py,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,web/package.json}"
-      # <<< generated glob
-      run: python3 scripts/ci/gate_tools.py --self-test
-
-    # 3c. Build output is derived and grows without bound; a checkout is not and
-    #    must never be touched. This proves that distinction still holds before
-    #    anyone runs the reclaimer with --apply.
-    reclaim-build-space:
-      # >>> generated glob from reclaim_build_space.py INPUT_GLOBS — do not edit
-      glob: "{scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_node_dependencies.py,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,scripts/ci/reclaim_build_space.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/reclaim_build_space.py --self-test
-
-    ci-performance-policy:
-      # >>> generated glob from ci_performance.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/quality.yml,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/rust_test_plan.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/ci_performance.py workflow
-
-    # 3c-bis. A gate entry point that accepts an argument it does not implement
-    #    runs something other than what the caller asked for and still exits
-    #    zero. check-all.sh invoked `--selftest` for years against a script whose
-    #    flag was `--self-test`, so that self-test never once ran. The rule is
-    #    over the whole set of entry points, so a new checker inherits it.
-    gate-arguments:
-      # >>> generated glob from check_gate_arguments.py, guards.py INPUT_GLOBS — do not edit
-      glob: "{CONTRIBUTING.md,deploy/images/sandbox/build.sh,deploy/k3d/test_image_contract.py,e2e/*.py,e2e/*.sh,e2e/k3d/*.py,e2e/k3d/*.sh,e2e/k6/*.sh,lefthook.yml,scripts/ci/*.py,scripts/ci/*.sh,scripts/contract/*.py,scripts/contract/*.sh,scripts/e2e/*.sh,scripts/release/*.py,scripts/release/*.sh}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_gate_arguments.py && python3 scripts/ci/guards.py --self-test
-
-    # 3a'. A shell or YAML gate that hands a crate file path to a tool must name
-    #    a file that exists. A refactor moved a UTC codec and the reliability
-    #    lane kept mutating the old path; nothing ran until hours later.
-    gate-path-references:
-      # >>> generated glob from check_gate_path_references.py INPUT_GLOBS — do not edit
-      glob: "{.github/**/*.yml,crates/**,deploy/**/*.sh,deploy/**/*.yaml,deploy/**/*.yml,e2e/**/*.sh,lefthook.yml,scripts/**/*.sh,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_file_limits.py,scripts/ci/check_gate_path_references.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/formal_sources.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_gate_path_references.py --self-test && python3 scripts/ci/check_gate_path_references.py
-
-    # 3c-ter. An executable no lane runs still reads as coverage, still gets
-    #    cited as evidence, and rots in place. Three k3d runners sat unrun for
-    #    months and one of them is named in the formal/obligations ledger as the proof of
-    #    a requirement. Every executable is selected or registered with a reason.
-    lane-reachability:
-      # >>> generated glob from check_lane_reachability.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/*.yml,contracts/**,crates/**/*.rs,crates/**/Cargo.toml,deploy/**/*,e2e/**/*,formal/coverage.toml,formal/obligations/**/*,lefthook.yml,package.json,packages/**,scripts/**/*,web/scripts/**,web/src/**/*}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_lane_reachability.py
-
-    # 3d. The record of the last green full gate is evidence, so a commit may not
-    #    leave it naming a commit that is gone, off main, or blessed by a partial
-    #    run. Staleness is a schedule and is reported by check-all, not here.
-    gate-freshness:
-      # >>> generated glob from check_gate_freshness.py INPUT_GLOBS — do not edit
-      glob: "{scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check-all.sh,scripts/ci/check_gate_freshness.py,scripts/ci/check_node_dependencies.py,scripts/ci/gate_record.json,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_gate_freshness.py --self-test
+    - name: read-only-phase-2
+      group:
+        parallel: true
+        jobs:
+          - name: read-only-lane-2-1
+            group:
+              piped: true
+              jobs:
+                # Fixture-based execution regressions follow their own script/tool inputs.
+                # Ordinary Rust edits still run the impact planner and every live gate.
+                - name: rust-execution-framework
+                  # >>> generated glob from benchmark_rust_build.py, check_rust_test_execution.py INPUT_GLOBS — do not edit
+                  glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/e2e/sandbox_capability_suite.sh}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label rust-execution-framework --timeout 600 --read-only --shell 'python3 scripts/ci/benchmark_rust_build.py --self-test && python3 scripts/ci/check_rust_test_execution.py --self-test' --
+          - name: read-only-lane-2-2
+            group:
+              piped: true
+              jobs:
+                # 3b. Dependency direction and ownership rules. It also runs inside the
+                #     rust gate; as its own hook it still runs on commits that skip that gate.
+                #     It reads no documentation, so a docs-only commit skips it; every run
+                #     fails if it reads a path its declared inputs do not cover.
+                - name: crate-boundaries
+                  # >>> generated glob from check_crate_boundaries.py INPUT_GLOBS — do not edit
+                  glob: "{.cargo/**,Cargo.lock,Cargo.toml,contracts/anthropic-managed/upstream-oracle.generated.json,crates/**,deploy/**,e2e/**,rust-toolchain.toml,scripts/**,web/src/**}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label crate-boundaries --timeout 600 --read-only --shell 'python3 scripts/ci/check_crate_boundaries.py' --
+          - name: read-only-lane-2-3
+            group:
+              piped: true
+              jobs:
+                - name: hook-bootstrap
+                  # >>> generated glob from _lefthook_fitness.py INPUT_GLOBS — do not edit
+                  glob: "{lefthook.yml,scripts/ci/_build_observation.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_lefthook_fitness.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/pre-commit/observe.sh,scripts/ci/pre-push/qualify.sh,scripts/ci/rust_test_plan.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label hook-bootstrap --timeout 600 --read-only --shell 'python3 scripts/ci/_lefthook_fitness.py --self-test && python3 scripts/ci/_lefthook_fitness.py --integration-test' --
+                - name: hook-feedback
+                  # >>> generated glob from test_hook_feedback.py INPUT_GLOBS — do not edit
+                  glob: "{lefthook.yml,scripts/ci/_build_observation.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_input_closure.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/pre-commit/observe.sh,scripts/ci/rust_test_plan.py,scripts/ci/test_hook_feedback.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label hook-feedback --timeout 600 --read-only --shell 'python3 scripts/ci/test_hook_feedback.py' --
+                # The ledger above proves each obligation carries evidence; this one proves
+                # the product still consumes it. An obligation whose prefix no requirement
+                # owns reddens every later commit by everyone, so it must fail the commit
+                # that introduces it. It reads three JSON files and the paths they cite:
+                # 0.05s, no solver, no toolchain.
+                - name: formal-product-ledger
+                  # >>> generated glob from check_feature_coverage.py INPUT_GLOBS — do not edit
+                  # no glob: check_feature_coverage.py reads every staged file, so this command
+                  # must keep the whole staged set as its trigger.
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label formal-product-ledger --timeout 600 --read-only --shell 'python3 scripts/ci/check_feature_coverage.py --require-complete' --
+                # Source-surface classification is incremental here: only staged production
+                # Rust is lexed, so the trigger can honestly include every crates/**/*.rs
+                # file the checker reads. The global coverage ratio still needs the whole
+                # walk, which stays on check-rust.sh --push and the formal release group.
+                # The existing formal-surface L4 test owns that decision table.
+                - name: formal-evidence
+                  # >>> generated glob from check_formal_surface.py INPUT_GLOBS — do not edit
+                  glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/*.json,formal/coverage.toml,formal/obligations/**/*,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_file_limits.py,scripts/ci/check_formal_surface.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/formal_anchors.py,scripts/ci/formal_ledger.py,scripts/ci/formal_sources.py,web/src/**/*}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label formal-evidence --timeout 600 --read-only --shell 'python3 scripts/ci/check_formal_surface.py --staged "$@"' -- {staged_files}
+                # A Kani harness that takes a free symbol where production computes the
+                # fact, restates its callee's body, or hides a #[cfg(kani)] fork inside a
+                # production entrypoint, is green and proves nothing. The justified
+                # registry and the `/// @proof-input-debt` tags on harnesses ratchet the
+                # ones that already exist; a staged debt HEAD does not carry is refused.
+                - name: proof-input-derivation
+                  # >>> generated glob from check_proof_input_derivation.py INPUT_GLOBS — do not edit
+                  glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/coverage.toml,formal/obligations/**/*,formal/proof-input-exceptions.json,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_file_limits.py,scripts/ci/check_proof_input_derivation.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/formal_anchors.py,scripts/ci/formal_ledger.py,scripts/ci/formal_sources.py,web/src/**/*}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label proof-input-derivation --timeout 600 --read-only --shell 'python3 scripts/ci/check_proof_input_derivation.py --staged "$@"' -- {staged_files}
+                # 3b. No Rust test disappears silently. Moving a test between crates or
+                #     rewriting its fixtures keeps it (identity is the function name); a
+                #     rename or deletion is recorded in the ledger in the same commit.
+                - name: test-inventory
+                  # >>> generated glob from check_test_inventory.py INPUT_GLOBS — do not edit
+                  glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/*.py,scripts/ci/test_inventory.txt,scripts/ci/test_inventory_ledger.json}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label test-inventory --timeout 600 --read-only --shell 'python3 scripts/ci/check_test_inventory.py' --
+                # 3b'. A trait default that degrades silently, and a verification gate
+                #      that passes because its dependency was absent, are refused at commit
+                #      as well as in the full gate.
+                - name: degrading-defaults
+                  # >>> generated glob from check_degrading_defaults.py INPUT_GLOBS — do not edit
+                  glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_architecture_ratchet.py,scripts/ci/_contract_map_fitness.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_naming_fitness.py,scripts/ci/_single_owner_fitness.py,scripts/ci/check_degrading_defaults.py,scripts/ci/check_fabricated_facts.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label degrading-defaults --timeout 600 --read-only --shell 'python3 scripts/ci/check_degrading_defaults.py --self-test && python3 scripts/ci/check_degrading_defaults.py' --
+                - name: affected-rust-plan
+                  # >>> generated glob from rust_test_plan.py INPUT_GLOBS — do not edit
+                  glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,tests/**,xtask/**}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label affected-rust-plan --timeout 600 --read-only --shell 'python3 scripts/ci/rust_test_plan.py --self-test' --
+                # The existing release source validator inventories every tracked writer.
+                # Its declaration and pre-commit trigger cover that same repository corpus.
+                - name: sandbox-release-source
+                  # >>> generated glob from check_sandbox_image_release.py INPUT_GLOBS — do not edit
+                  # no glob: check_sandbox_image_release.py reads every staged file, so this command
+                  # must keep the whole staged set as its trigger.
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label sandbox-release-source --timeout 600 --read-only --shell 'python3 scripts/ci/check_sandbox_image_release.py' --
+                # 3c. Build output is derived and grows without bound; a checkout is not and
+                #    must never be touched. This proves that distinction still holds before
+                #    anyone runs the reclaimer with --apply.
+                - name: reclaim-build-space
+                  # >>> generated glob from reclaim_build_space.py INPUT_GLOBS — do not edit
+                  glob: "{scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_node_dependencies.py,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,scripts/ci/reclaim_build_space.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label reclaim-build-space --timeout 600 --read-only --shell 'python3 scripts/ci/reclaim_build_space.py --self-test' --
+                - name: ci-performance-policy
+                  # >>> generated glob from ci_performance.py INPUT_GLOBS — do not edit
+                  glob: "{.github/workflows/quality.yml,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/rust_test_plan.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label ci-performance-policy --timeout 600 --read-only --shell 'python3 scripts/ci/ci_performance.py workflow' --
+                # 3a'. A shell or YAML gate that hands a crate file path to a tool must name
+                #    a file that exists. A refactor moved a UTC codec and the reliability
+                #    lane kept mutating the old path; nothing ran until hours later.
+                - name: gate-path-references
+                  # >>> generated glob from check_gate_path_references.py INPUT_GLOBS — do not edit
+                  glob: "{.github/**/*.yml,crates/**,deploy/**/*.sh,deploy/**/*.yaml,deploy/**/*.yml,e2e/**/*.sh,lefthook.yml,scripts/**/*.sh,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_file_limits.py,scripts/ci/check_gate_path_references.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/formal_sources.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label gate-path-references --timeout 600 --read-only --shell 'python3 scripts/ci/check_gate_path_references.py --self-test && python3 scripts/ci/check_gate_path_references.py' --
+          - name: read-only-lane-2-4
+            group:
+              piped: true
+              jobs:
+                # An evidence link replaces its former standalone source classification.
+                # Metadata/checker changes must pass the same strict validators as CI:
+                # duplicate ownership or missing coverage rejects the commit; no solver is
+                # started here. The ledger also asserts that every path an obligation cites
+                # still exists, and an obligation may cite any repository path, so this
+                # command has no trigger set to narrow and runs on every commit.
+                - name: formal-ledger
+                  # >>> generated glob from check_formal_coverage.py, formal_ledger.py, formal_plan.py INPUT_GLOBS — do not edit
+                  # no glob: check_formal_coverage.py, formal_ledger.py, formal_plan.py reads every staged file, so this command
+                  # must keep the whole staged set as its trigger.
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label formal-ledger --timeout 600 --read-only --shell 'python3 scripts/ci/formal_ledger.py --self-test && python3 scripts/ci/formal_plan.py --self-test && python3 scripts/ci/check_formal_coverage.py --require-evidence-complete' --
+                # 3b. A test must settle on a value the product committed, never on a
+                #     lifecycle signal, a fixture counter, or elapsed time. Two regressions
+                #     in main came from that one shape; the ratchet freezes today's debt.
+                - name: test-waits
+                  # >>> generated glob from check_test_waits.py INPUT_GLOBS — do not edit
+                  glob: "{crates/**/src/**/*.rs,crates/**/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.rs,e2e/**/*.sh,e2e/**/*.ts,lefthook.yml,scripts/ci/*.py,scripts/ci/test_waits_baseline.json,web/e2e/**/*.mjs,web/e2e/**/*.ts}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label test-waits --timeout 600 --read-only --shell 'python3 scripts/ci/check_test_waits.py' --
+                # 3b. An SDK public-API change ships only with the crate version bump it
+                #     needs against the last SDK release, and a changelog entry for it
+                #     (docs/design/sdk-versioning.md). Pure Python over the committed
+                #     snapshots; check_public_api.sh proves the snapshots are current.
+                - name: sdk-semver
+                  # >>> generated glob from check_sdk_semver.py INPUT_GLOBS — do not edit
+                  glob: "{Cargo.toml,crates/**/CHANGELOG.md,crates/**/Cargo.toml,public-api/*.txt,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_sdk_semver.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label sdk-semver --timeout 600 --read-only --shell 'python3 scripts/ci/check_sdk_semver.py' --
+                - name: dependency-gates
+                  # >>> generated glob from check_dependency_gates.py INPUT_GLOBS — do not edit
+                  glob: "{crates/**,e2e/**,scripts/**}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label dependency-gates --timeout 600 --read-only --shell 'python3 scripts/ci/check_dependency_gates.py --self-test && python3 scripts/ci/check_dependency_gates.py' --
+                # The Session acceptance ledger's gate tests drive the real workspace
+                # guards, impact planner and ledger validator with injected
+                # counter-examples; a change to what they read re-proves the refusals.
+                - name: session-acceptance-gates
+                  # >>> generated glob from test_session_acceptance.py INPUT_GLOBS — do not edit
+                  glob: "{.cargo/**,.gitattributes,Cargo.lock,Cargo.toml,crates/**/*.rs,crates/**/Cargo.toml,docs/design/session-execution-test-acceptance/**,e2e/**,examples/**,packages/managed-sdk-oracle/package.json,rust-toolchain.toml,scripts/ci/*.json,scripts/ci/*.py,scripts/ci/*.sh}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label session-acceptance-gates --timeout 600 --read-only --shell 'python3 scripts/ci/test_session_acceptance.py' --
+                - name: formal-native-fixtures
+                  # >>> generated glob from test_formal_gate_mutations.py INPUT_GLOBS — do not edit
+                  glob: "scripts/ci/*.py"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label formal-native-fixtures --timeout 600 --read-only --shell 'python3 scripts/ci/test_formal_gate_mutations.py' --
+                # Run the live graph as well as the checker fixtures; fixtures alone
+                # cannot reject a newly introduced wait in a production test suite.
+                - name: test-orchestration
+                  # >>> generated glob from check_test_orchestration.py INPUT_GLOBS — do not edit
+                  glob: "{.config/**,.github/workflows/*.yml,crates/**,e2e/**,lefthook.yml,pnpm-lock.yaml,scripts/ci/**,scripts/e2e/*.sh}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label test-orchestration --timeout 600 --read-only --shell 'python3 scripts/ci/check_test_orchestration.py --self-test && python3 scripts/ci/check_test_orchestration.py' --
+                # 3b. A failed read of durable state may never become an absence. The
+                #     recovery path is derived -- every production module that names a
+                #     checkpoint or the tri-state -- so a file joins the rule by doing the
+                #     thing the rule is about, and the trigger follows the same declaration.
+                - name: observation-collapse
+                  # >>> generated glob from check_observation_collapse.py INPUT_GLOBS — do not edit
+                  glob: "{crates/**/Cargo.toml,crates/**/src/**/*.rs,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_observation_collapse.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label observation-collapse --timeout 600 --read-only --shell 'python3 scripts/ci/check_observation_collapse.py' --
+                # 3b. The principle table (plan v5 S3) is printed by
+                #     `python3 scripts/ci/principle_status.py`; it is informational and
+                #     never fails on a count. Only its own decision table runs here.
+                - name: principle-status
+                  # >>> generated glob from principle_status.py INPUT_GLOBS — do not edit
+                  glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/*.py,scripts/ci/*_baseline.json}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label principle-status --timeout 600 --read-only --shell 'python3 scripts/ci/principle_status.py --self-test' --
+                # 3c. A guard's scope must be derived from its subject, never written out a
+                #     second time by hand. The checkers are themselves the corpus here: a new
+                #     literal list of paths among them is refused, and today's are registered
+                #     with the reason each cannot be derived.
+                - name: scan-scope
+                  # >>> generated glob from check_scan_scope.py INPUT_GLOBS — do not edit
+                  glob: "{scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/scan_scope_registry.json}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label scan-scope --timeout 600 --read-only --shell 'python3 scripts/ci/check_scan_scope.py' --
+                # 3b. The one declaration of every external tool a gate needs. Its self-test
+                #    proves each row can still be located by the method it states, so a row
+                #    that stopped describing reality fails here rather than inside a proof.
+                - name: gate-tools
+                  # >>> generated glob from gate_tools.py INPUT_GLOBS — do not edit
+                  glob: "{e2e/package.json,package.json,pnpm-workspace.yaml,scripts/ci/*.sh,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_node_dependencies.py,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,web/package.json}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label gate-tools --timeout 600 --read-only --shell 'python3 scripts/ci/gate_tools.py --self-test' --
+                # 3c-bis. A gate entry point that accepts an argument it does not implement
+                #    runs something other than what the caller asked for and still exits
+                #    zero. check-all.sh invoked `--selftest` for years against a script whose
+                #    flag was `--self-test`, so that self-test never once ran. The rule is
+                #    over the whole set of entry points, so a new checker inherits it.
+                - name: gate-arguments
+                  # >>> generated glob from check_gate_arguments.py, guards.py INPUT_GLOBS — do not edit
+                  glob: "{CONTRIBUTING.md,deploy/images/sandbox/build.sh,deploy/k3d/test_image_contract.py,e2e/*.py,e2e/*.sh,e2e/k3d/*.py,e2e/k3d/*.sh,e2e/k6/*.sh,lefthook.yml,scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/pre-commit/observe.sh,scripts/contract/*.py,scripts/contract/*.sh,scripts/e2e/*.sh,scripts/release/*.py,scripts/release/*.sh}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label gate-arguments --timeout 600 --read-only --shell 'python3 scripts/ci/check_gate_arguments.py && python3 scripts/ci/guards.py --self-test' --
+                # 3c-ter. An executable no lane runs still reads as coverage, still gets
+                #    cited as evidence, and rots in place. Three k3d runners sat unrun for
+                #    months and one of them is named in the formal/obligations ledger as the proof of
+                #    a requirement. Every executable is selected or registered with a reason.
+                - name: lane-reachability
+                  # >>> generated glob from check_lane_reachability.py INPUT_GLOBS — do not edit
+                  glob: "{.github/workflows/*.yml,contracts/**,crates/**/*.rs,crates/**/Cargo.toml,deploy/**/*,e2e/**/*,formal/coverage.toml,formal/obligations/**/*,lefthook.yml,package.json,packages/**,scripts/**/*,web/scripts/**,web/src/**/*}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label lane-reachability --timeout 600 --read-only --shell 'python3 scripts/ci/check_lane_reachability.py' --
+                # 3d. The record of the last green full gate is evidence, so a commit may not
+                #    leave it naming a commit that is gone, off main, or blessed by a partial
+                #    run. Staleness is a schedule and is reported by check-all, not here.
+                - name: gate-freshness
+                  # >>> generated glob from check_gate_freshness.py INPUT_GLOBS — do not edit
+                  glob: "{scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check-all.sh,scripts/ci/check_gate_freshness.py,scripts/ci/check_node_dependencies.py,scripts/ci/gate_record.json,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label gate-freshness --timeout 600 --read-only --shell 'python3 scripts/ci/check_gate_freshness.py --self-test' --
 
     # 4. Rust checks are active as soon as a Cargo workspace exists.
-    rustfmt:
+    - name: rustfmt
       glob: "**/*.rs"
-      run: rustfmt {staged_files}
+      run: python3 scripts/ci/parallel_check.py --hook-label rustfmt --timeout 14400 --shell 'rustfmt "$@"' -- {staged_files}
       stage_fixed: true
 
     # One Rust gate owns source and boundary checks. Trigger it for checker
     # edits too; separate hook invocations would execute the same scan twice.
-    rust-quick:
+    - name: rust-quick
       # >>> generated glob from check_sdk_consumer.py, check_trust_roots.py, ci_performance.py, rust_test_plan.py INPUT_GLOBS — do not edit
       glob: "{.cargo/**,.config/**,.github/workflows/quality.yml,Cargo.lock,Cargo.toml,apps/**,crates/**,deny.toml,examples/sdk-consumer/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,tests/**,xtask/**}"
       # <<< generated glob
-      run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --quick
+      run: python3 scripts/ci/parallel_check.py --hook-label rust-quick --timeout 14400 --shell 'python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --quick' --
 
-    # An observation time is a fact its owner observed, not a value the code
-    # chose. No date literal may reach a `*_at`-shaped field outside tests, and
-    # the wall clock may be read only where a clock port is declared or the
-    # program is composed. Both are ratcheted per file, and each allowance
-    # carries the owner and expiry that stop it becoming permanent.
-    fabricated-facts:
-      # >>> generated glob from check_fabricated_facts.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_degrading_defaults.py,scripts/ci/check_fabricated_facts.py,scripts/ci/fabricated_facts_baseline.json}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_fabricated_facts.py --self-test && python3 scripts/ci/check_fabricated_facts.py
+    - name: read-only-phase-3
+      group:
+        parallel: true
+        jobs:
+          # An observation time is a fact its owner observed, not a value the code
+          # chose. No date literal may reach a `*_at`-shaped field outside tests, and
+          # the wall clock may be read only where a clock port is declared or the
+          # program is composed. Both are ratcheted per file, and each allowance
+          # carries the owner and expiry that stop it becoming permanent.
+          - name: fabricated-facts
+            # >>> generated glob from check_fabricated_facts.py INPUT_GLOBS — do not edit
+            glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/check_degrading_defaults.py,scripts/ci/check_fabricated_facts.py,scripts/ci/fabricated_facts_baseline.json}"
+            # <<< generated glob
+            tags: [read-only]
+            run: python3 scripts/ci/parallel_check.py --hook-label fabricated-facts --timeout 600 --read-only --shell 'python3 scripts/ci/check_fabricated_facts.py --self-test && python3 scripts/ci/check_fabricated_facts.py' --
 
     # Contract structure stays constrained: no cycle, deeper dependency chain,
     # new backend-noun types, catch-all String errors or capability-style Err
     # defaults (ADR-0081). Module line measurements are diagnostic (ADR-0091 D8).
-    contract-shape:
+    - name: contract-shape
       # >>> generated glob from check_contract_shape.py INPUT_GLOBS — do not edit
       glob: "{Cargo.toml,crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_architecture_ratchet.py,scripts/ci/_contract_map_fitness.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_naming_fitness.py,scripts/ci/_single_owner_fitness.py,scripts/ci/check_contract_shape.py,scripts/ci/contract_shape_baseline.json}"
       # <<< generated glob
       # A fall is recorded here, by the tool, and staged with the commit that
       # achieved it; only growth needs a person (--write-baseline --reason).
-      run: python3 scripts/ci/check_contract_shape.py --self-test && python3 scripts/ci/check_contract_shape.py --tighten --stage
+      run: python3 scripts/ci/parallel_check.py --hook-label contract-shape --timeout 14400 --shell 'python3 scripts/ci/check_contract_shape.py --self-test && python3 scripts/ci/check_contract_shape.py --tighten --stage' --
 
     # Protocol/credential codec changes must exercise the existing cross-language
     # drift test even when no E2E file changed. Its decision table owns the
     # version-match/mismatch oracle; the full runner remains in check-all static.
-    worker-fixture-contract:
+    - name: worker-fixture-contract
       glob: "{lefthook.yml,crates/contract/awaken-worker-contract/src/manifest.rs,crates/contract/awaken-credential-contract/src/realization_capabilities.rs,e2e/fixtures/worker_manifest_fixture.mjs,e2e/worker_manifest_fixture.test.mjs}"
-      run: node --test e2e/worker_manifest_fixture.test.mjs
+      run: python3 scripts/ci/parallel_check.py --hook-label worker-fixture-contract --timeout 14400 --shell 'node --test e2e/worker_manifest_fixture.test.mjs' --
 
     # 5. Frontend checks are active as soon as package.json exists. The frontend
     #    project must expose lint/typecheck/build scripts.
-    frontend-quick:
+    - name: frontend-quick
       glob: "{package.json,pnpm-lock.yaml,package-lock.json,yarn.lock,bun.lockb,apps/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},packages/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},web/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py}"
-      run: python3 scripts/ci/_native_shell.py scripts/ci/check-frontend.sh --quick
+      run: python3 scripts/ci/parallel_check.py --hook-label frontend-quick --timeout 14400 --shell 'python3 scripts/ci/_native_shell.py scripts/ci/check-frontend.sh --quick' --
 
     # The oracle's check reads the E2E manifest and the workspace lockfile as
     # well as its own package: the trigger names every input so a version bump
     # in one place cannot pass by never running the check.
-    managed-sdk-oracle:
+    - name: managed-sdk-oracle
       glob: "{packages/managed-sdk-oracle/**/*,contracts/anthropic-managed/*,crates/server/awaken-protocol-managed/contracts/*,e2e/package.json,pnpm-lock.yaml}"
-      run: pnpm --filter @awaken/managed-sdk-oracle test && pnpm --filter @awaken/managed-sdk-oracle check
+      run: python3 scripts/ci/parallel_check.py --hook-label managed-sdk-oracle --timeout 14400 --shell 'pnpm --filter @awaken/managed-sdk-oracle test && pnpm --filter @awaken/managed-sdk-oracle check' --
 
-    # Every Managed wire type names its SDK counterpart (or says why it has
-    # none). Reads the generated oracle's declared-type vocabulary, so it runs
-    # when the types, the baseline, or the oracle change.
-    managed-wire-naming:
-      # >>> generated glob from check_managed_wire_naming.py INPUT_GLOBS — do not edit
-      glob: "{contracts/anthropic-managed/upstream-oracle.generated.json,crates/server/awaken-protocol-managed/src/types/**/*.rs,scripts/ci/check_managed_wire_naming.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_managed_wire_naming.py --self-test && python3 scripts/ci/check_managed_wire_naming.py
+    - name: read-only-phase-4
+      group:
+        parallel: true
+        jobs:
+          - name: read-only-lane-4-1
+            group:
+              piped: true
+              jobs:
+                - name: full-gate-admission
+                  # >>> generated glob from test_full_gate_admission.py INPUT_GLOBS — do not edit
+                  glob: "{scripts/ci/_build_observation.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_deadline.sh,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/check-all.sh,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/rust_test_plan.py,scripts/ci/test_full_gate_admission.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  # Existing host capability regressions remain separate from the source matrix.
+                  run: python3 scripts/ci/parallel_check.py --hook-label full-gate-admission --timeout 600 --read-only --shell 'python3 scripts/ci/test_full_gate_admission.py' --
+          - name: read-only-lane-4-2
+            group:
+              piped: true
+              jobs:
+                # The declared deadline subjects select their existing process tests here;
+                # full CI uses the same owner through check-all.sh's static lane.
+                - name: command-deadline
+                  # >>> generated glob from test_deadline.py INPUT_GLOBS — do not edit
+                  glob: "{scripts/ci/_deadline.sh,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/deadline.py,scripts/ci/test_deadline.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label command-deadline --timeout 600 --read-only --shell 'python3 scripts/ci/test_deadline.py' --
+          - name: read-only-lane-4-3
+            group:
+              piped: true
+              jobs:
+                - name: native-service-runner
+                  # >>> generated glob from test_native_services.py INPUT_GLOBS — do not edit
+                  glob: "{.github/workflows/windows-native-services.yml,crates/stores/awaken-work-store/tests/work_queue_conformance/**,docs/design/session-execution-test-acceptance/**,scripts/ci/**}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label native-service-runner --timeout 600 --read-only --shell 'python3 scripts/ci/test_native_services.py' --
+                - name: native-recovery-laws
+                  # >>> generated glob from test_native_recovery.py INPUT_GLOBS — do not edit
+                  glob: "{.github/workflows/windows-native-services.yml,crates/stores/awaken-work-store/tests/work_queue_conformance/**,docs/design/session-execution-test-acceptance/**,scripts/ci/**}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label native-recovery-laws --timeout 600 --read-only --shell 'python3 scripts/ci/test_native_recovery.py' --
+                - name: postgres-storage-selection
+                  # >>> generated glob from _postgres_phase_plan.py, test_postgres_storage.py INPUT_GLOBS — do not edit
+                  glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label postgres-storage-selection --timeout 600 --read-only --shell 'python3 scripts/ci/_postgres_phase_plan.py --self-test && python3 scripts/ci/test_postgres_storage.py' --
+                - name: native-postgres-e2e-laws
+                  # >>> generated glob from test_native_postgres_e2e.py INPUT_GLOBS — do not edit
+                  glob: "{.github/workflows/windows-native-services.yml,e2e/**,scripts/ci/**}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label native-postgres-e2e-laws --timeout 600 --read-only --shell 'python3 scripts/ci/test_native_postgres_e2e.py' --
+                - name: windows-test-matrix
+                  # >>> generated glob from check_windows_test_matrix.py INPUT_GLOBS — do not edit
+                  # no glob: check_windows_test_matrix.py reads every staged file, so this command
+                  # must keep the whole staged set as its trigger.
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label windows-test-matrix --timeout 600 --read-only --shell 'python3 scripts/ci/check_windows_test_matrix.py --self-test' --
+          - name: read-only-lane-4-4
+            group:
+              piped: true
+              jobs:
+                # Every Managed wire type names its SDK counterpart (or says why it has
+                # none). Reads the generated oracle's declared-type vocabulary, so it runs
+                # when the types, the baseline, or the oracle change.
+                - name: managed-wire-naming
+                  # >>> generated glob from check_managed_wire_naming.py INPUT_GLOBS — do not edit
+                  glob: "{contracts/anthropic-managed/upstream-oracle.generated.json,crates/server/awaken-protocol-managed/src/types/**/*.rs,scripts/ci/check_managed_wire_naming.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label managed-wire-naming --timeout 600 --read-only --shell 'python3 scripts/ci/check_managed_wire_naming.py --self-test && python3 scripts/ci/check_managed_wire_naming.py' --
+                # A declared budget checker must use its existing decision-table self-test;
+                # leaving it unwired makes the generated hook ownership check fail.
+                - name: formal-budget
+                  # >>> generated glob from formal_budget.py INPUT_GLOBS — do not edit
+                  glob: "scripts/ci/formal_budget.py"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label formal-budget --timeout 600 --read-only --shell 'python3 scripts/ci/formal_budget.py --self-test' --
+                - name: native-recording-laws
+                  # >>> generated glob from test_native_recording.py INPUT_GLOBS — do not edit
+                  glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label native-recording-laws --timeout 600 --read-only --shell 'python3 scripts/ci/test_native_recording.py' --
+                - name: postgres-resource-selection
+                  # >>> generated glob from test_postgres_resources.py INPUT_GLOBS — do not edit
+                  glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label postgres-resource-selection --timeout 600 --read-only --shell 'python3 scripts/ci/test_postgres_resources.py' --
 
-    # A declared budget checker must use its existing decision-table self-test;
-    # leaving it unwired makes the generated hook ownership check fail.
-    formal-budget:
-      # >>> generated glob from formal_budget.py INPUT_GLOBS — do not edit
-      glob: "scripts/ci/formal_budget.py"
-      # <<< generated glob
-      run: python3 scripts/ci/formal_budget.py --self-test
-
-    # The declared deadline subjects select their existing process tests here;
-    # full CI uses the same owner through check-all.sh's static lane.
-    command-deadline:
-      # >>> generated glob from test_deadline.py INPUT_GLOBS — do not edit
-      glob: "{scripts/ci/_deadline.sh,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/deadline.py,scripts/ci/test_deadline.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/test_deadline.py
-
-    native-service-runner:
-      # >>> generated glob from test_native_services.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/windows-native-services.yml,crates/stores/awaken-work-store/tests/work_queue_conformance/**,docs/design/session-execution-test-acceptance/**,scripts/ci/**}"
-      # <<< generated glob
-      run: python3 scripts/ci/test_native_services.py
-
-    native-recovery-laws:
-      # >>> generated glob from test_native_recovery.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/windows-native-services.yml,crates/stores/awaken-work-store/tests/work_queue_conformance/**,docs/design/session-execution-test-acceptance/**,scripts/ci/**}"
-      # <<< generated glob
-      run: python3 scripts/ci/test_native_recovery.py
-
-    native-recording-laws:
-      # >>> generated glob from test_native_recording.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
-      # <<< generated glob
-      run: python3 scripts/ci/test_native_recording.py
-
-    postgres-storage-selection:
-      # >>> generated glob from _postgres_phase_plan.py, test_postgres_storage.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
-      # <<< generated glob
-      run: python3 scripts/ci/_postgres_phase_plan.py --self-test && python3 scripts/ci/test_postgres_storage.py
-
-    postgres-resource-selection:
-      # >>> generated glob from test_postgres_resources.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/windows-native-services.yml,scripts/ci/**}"
-      # <<< generated glob
-      run: python3 scripts/ci/test_postgres_resources.py
-
-    native-postgres-e2e-laws:
-      # >>> generated glob from test_native_postgres_e2e.py INPUT_GLOBS — do not edit
-      glob: "{.github/workflows/windows-native-services.yml,e2e/**,scripts/ci/**}"
-      # <<< generated glob
-      run: python3 scripts/ci/test_native_postgres_e2e.py
-
-    full-gate-admission:
-      # >>> generated glob from test_full_gate_admission.py INPUT_GLOBS — do not edit
-      glob: "{scripts/ci/_build_observation.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_deadline.sh,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/check-all.sh,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/rust_test_plan.py,scripts/ci/test_full_gate_admission.py}"
-      # <<< generated glob
-      # Existing host capability regressions remain separate from the source matrix.
-      run: python3 scripts/ci/test_full_gate_admission.py
-
-    windows-test-matrix:
-      # >>> generated glob from check_windows_test_matrix.py INPUT_GLOBS — do not edit
-      # no glob: check_windows_test_matrix.py reads every staged file, so this command
-      # must keep the whole staged set as its trigger.
-      # <<< generated glob
-      run: python3 scripts/ci/check_windows_test_matrix.py --self-test
-
-    native-postgres-bundle-laws:
+    - name: native-postgres-bundle-laws
       glob: "e2e/**"
-      run: node --test e2e/native_postgres_build.test.mjs e2e/harness_home.test.mjs
+      run: python3 scripts/ci/parallel_check.py --hook-label native-postgres-bundle-laws --timeout 14400 --shell 'node --test e2e/native_postgres_build.test.mjs e2e/harness_home.test.mjs' --
 
     # Generated wire artifacts are derived from the admin-config and Managed
     # DTOs; a DTO edit without regeneration is refused here, not at release.
-    generated-contracts:
+    - name: generated-contracts
       glob: "{.gitattributes,contracts/**/*,scripts/contract/**/*,crates/control/awaken-admin-config-api/**/*.rs,crates/server/awaken-protocol-managed/src/**/*.rs,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py}"
-      run: python3 scripts/ci/_native_shell.py scripts/contract/generate-contracts.sh --check
+      run: python3 scripts/ci/parallel_check.py --hook-label generated-contracts --timeout 14400 --shell 'python3 scripts/ci/_native_shell.py scripts/contract/generate-contracts.sh --check' --
 
-    # 6. Every relative Markdown link resolves to a real file and anchor.
-    check-doc-links:
-      # >>> generated glob from check_doc_links.py INPUT_GLOBS — do not edit
-      glob: "{CONTRIBUTING.md,docs/**/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_doc_links.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_doc_links.py {staged_files}
-
-    # 7. The OKF wiki keeps its shape: frontmatter `type`, FACT-* records with
-    #    Status/Owner/Fact/Links/Verification, owner links that resolve.
-    check-wiki-okf:
-      # >>> generated glob from check_wiki_okf.py INPUT_GLOBS — do not edit
-      glob: "{docs/**/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_wiki_okf.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_wiki_okf.py {staged_files}
-
-    # 8. Wiki facts stay thin: a FACT must summarize and cite an invariant id,
-    #    not paste the invariant statement verbatim (drift guard).
-    check-wiki-no-invariant-copy:
-      # >>> generated glob from check_wiki_no_invariant_copy.py INPUT_GLOBS — do not edit
-      glob: "{docs/INVARIANTS.md,docs/wiki/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_wiki_no_invariant_copy.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_wiki_no_invariant_copy.py {staged_files}
-
-    # 9. Invariant registry is complete (Statement/Source/Enforcer, unique ids)
-    #    and every invariant id a wiki fact cites is actually defined.
-    check-invariants:
-      # >>> generated glob from check_invariants.py INPUT_GLOBS — do not edit
-      glob: "{docs/**/*.md,formal/features.json,scripts/ci/check_invariants.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_invariants.py
-
-    # 10. The wiki ownership index lists every design document. Whole-tree scan,
-    #    so any added/renamed/removed design doc trips it regardless of glob.
-    check-ownership-index:
-      # >>> generated glob from check_ownership_index.py INPUT_GLOBS — do not edit
-      glob: "{docs/adr/*.md,docs/design/*.md,docs/wiki/document-ownership.md,scripts/ci/check_ownership_index.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_ownership_index.py
-
-    # 11. Source documents declare whether they own, delegate, or do not need a
-    #    role/component catalog; the declared policy must match the document.
-    check-role-catalogs:
-      # >>> generated glob from check_role_catalogs.py INPUT_GLOBS — do not edit
-      glob: "{docs/*.md,docs/adr/*.md,docs/design/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_role_catalogs.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_role_catalogs.py
-
-    # 12. ADRs have a stable structure (title/number, Status, required sections,
-    #    unique numbers) so the decision-first model (ADR-0001) stays executable.
-    check-adr:
-      # >>> generated glob from check_adr.py INPUT_GLOBS — do not edit
-      glob: "{docs/adr/*.md,scripts/ci/check_adr.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_adr.py
-
-    # Harness containers never leak anonymous Docker volumes (explicit mounts,
-    # `docker rm -v`).
-    check-docker-volumes:
-      # >>> generated glob from check_docker_volumes.py INPUT_GLOBS — do not edit
-      glob: "{e2e/**/*.sh,scripts/**/*.sh,scripts/ci/check_docker_volumes.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_docker_volumes.py
-
-    # 13. Active architecture docs use the ADR-0071 service vocabulary and keep
-    #     the retired whole-catalog path historical. Canonical owners are English.
-    check-architecture-vocabulary:
-      # >>> generated glob from check_architecture_vocabulary.py INPUT_GLOBS — do not edit
-      glob: "{docs/**/*.md,scripts/ci/check_architecture_vocabulary.py}"
-      # <<< generated glob
-      run: python3 scripts/ci/check_architecture_vocabulary.py
+    - name: read-only-phase-5
+      group:
+        parallel: true
+        jobs:
+          - name: read-only-lane-5-1
+            group:
+              piped: true
+              jobs:
+                # 8. Wiki facts stay thin: a FACT must summarize and cite an invariant id,
+                #    not paste the invariant statement verbatim (drift guard).
+                - name: check-wiki-no-invariant-copy
+                  # >>> generated glob from check_wiki_no_invariant_copy.py INPUT_GLOBS — do not edit
+                  glob: "{docs/INVARIANTS.md,docs/wiki/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_wiki_no_invariant_copy.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label check-wiki-no-invariant-copy --timeout 600 --read-only --shell 'python3 scripts/ci/check_wiki_no_invariant_copy.py "$@"' -- {staged_files}
+          - name: read-only-lane-5-2
+            group:
+              piped: true
+              jobs:
+                # 12. ADRs have a stable structure (title/number, Status, required sections,
+                #    unique numbers) so the decision-first model (ADR-0001) stays executable.
+                - name: check-adr
+                  # >>> generated glob from check_adr.py INPUT_GLOBS — do not edit
+                  glob: "{docs/adr/*.md,scripts/ci/check_adr.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label check-adr --timeout 600 --read-only --shell 'python3 scripts/ci/check_adr.py' --
+          - name: read-only-lane-5-3
+            group:
+              piped: true
+              jobs:
+                # 7. The OKF wiki keeps its shape: frontmatter `type`, FACT-* records with
+                #    Status/Owner/Fact/Links/Verification, owner links that resolve.
+                - name: check-wiki-okf
+                  # >>> generated glob from check_wiki_okf.py INPUT_GLOBS — do not edit
+                  glob: "{docs/**/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_wiki_okf.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label check-wiki-okf --timeout 600 --read-only --shell 'python3 scripts/ci/check_wiki_okf.py "$@"' -- {staged_files}
+                # 10. The wiki ownership index lists every design document. Whole-tree scan,
+                #    so any added/renamed/removed design doc trips it regardless of glob.
+                - name: check-ownership-index
+                  # >>> generated glob from check_ownership_index.py INPUT_GLOBS — do not edit
+                  glob: "{docs/adr/*.md,docs/design/*.md,docs/wiki/document-ownership.md,scripts/ci/check_ownership_index.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label check-ownership-index --timeout 600 --read-only --shell 'python3 scripts/ci/check_ownership_index.py' --
+                # 13. Active architecture docs use the ADR-0071 service vocabulary and keep
+                #     the retired whole-catalog path historical. Canonical owners are English.
+                - name: check-architecture-vocabulary
+                  # >>> generated glob from check_architecture_vocabulary.py INPUT_GLOBS — do not edit
+                  glob: "{docs/**/*.md,scripts/ci/check_architecture_vocabulary.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label check-architecture-vocabulary --timeout 600 --read-only --shell 'python3 scripts/ci/check_architecture_vocabulary.py' --
+          - name: read-only-lane-5-4
+            group:
+              piped: true
+              jobs:
+                # 6. Every relative Markdown link resolves to a real file and anchor.
+                - name: check-doc-links
+                  # >>> generated glob from check_doc_links.py INPUT_GLOBS — do not edit
+                  glob: "{CONTRIBUTING.md,docs/**/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_doc_links.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label check-doc-links --timeout 600 --read-only --shell 'python3 scripts/ci/check_doc_links.py "$@"' -- {staged_files}
+                # 9. Invariant registry is complete (Statement/Source/Enforcer, unique ids)
+                #    and every invariant id a wiki fact cites is actually defined.
+                - name: check-invariants
+                  # >>> generated glob from check_invariants.py INPUT_GLOBS — do not edit
+                  glob: "{docs/**/*.md,formal/features.json,scripts/ci/check_invariants.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label check-invariants --timeout 600 --read-only --shell 'python3 scripts/ci/check_invariants.py' --
+                # 11. Source documents declare whether they own, delegate, or do not need a
+                #    role/component catalog; the declared policy must match the document.
+                - name: check-role-catalogs
+                  # >>> generated glob from check_role_catalogs.py INPUT_GLOBS — do not edit
+                  glob: "{docs/*.md,docs/adr/*.md,docs/design/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_role_catalogs.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label check-role-catalogs --timeout 600 --read-only --shell 'python3 scripts/ci/check_role_catalogs.py' --
+                # Harness containers never leak anonymous Docker volumes (explicit mounts,
+                # `docker rm -v`).
+                - name: check-docker-volumes
+                  # >>> generated glob from check_docker_volumes.py INPUT_GLOBS — do not edit
+                  glob: "{e2e/**/*.sh,scripts/**/*.sh,scripts/ci/check_docker_volumes.py}"
+                  # <<< generated glob
+                  tags: [read-only]
+                  run: python3 scripts/ci/parallel_check.py --hook-label check-docker-volumes --timeout 600 --read-only --shell 'python3 scripts/ci/check_docker_volumes.py' --
 
     # 14. Only the crates deny.toml lists as wrappers depend on a transport
     #    crate (`reqwest`, `rustls`). Production graph only (`--exclude-dev`);
@@ -538,13 +626,12 @@ pre-commit:
     #    cargo-deny reads Cargo metadata and builds nothing, so it is started
     #    directly rather than through the host's build admission. Skips with a
     #    hint if cargo-deny is not installed.
-    check-dep-direction:
+    - name: check-dep-direction
       glob: "{Cargo.toml,Cargo.lock,deny.toml,crates/**/Cargo.toml}"
       # Fold to one shell command: Windows' hook launcher cannot carry the
       # nested double-quoted, multiline `sh -c` body intact.
-      run: >-
-        if command -v cargo-deny >/dev/null 2>&1; then cargo-deny --exclude-dev --log-level error check --disable-fetch -D unused-wrapper bans;
-        else echo 'cargo-deny not installed; skipping dependency-direction check (cargo install cargo-deny)'; fi
+      run: python3 scripts/ci/parallel_check.py --hook-label check-dep-direction --timeout 14400 --shell 'if command -v cargo-deny >/dev/null 2>&1; then cargo-deny --exclude-dev --log-level error check --disable-fetch -D unused-wrapper bans; else echo '"'"'cargo-deny not installed; skipping dependency-direction check (cargo install cargo-deny)'"'"'; fi' --
+
 
 commit-msg:
   commands:

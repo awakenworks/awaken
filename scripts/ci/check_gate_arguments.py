@@ -58,6 +58,7 @@ INPUT_GLOBS: tuple[str, ...] = (
     "lefthook.yml",
     "scripts/ci/*.py",
     "scripts/ci/*.sh",
+    "scripts/ci/pre-commit/observe.sh",
     "scripts/contract/*.sh",
     "scripts/contract/*.py",
     "scripts/e2e/*.sh",
@@ -101,6 +102,7 @@ ENTRY_POINT_DIRECTORIES = (
 # Entry points a lane invokes from outside those directories. Listed by path so
 # that adding one is a decision rather than a side effect of a glob.
 ADDITIONAL_ENTRY_POINTS = (
+    "scripts/ci/pre-commit/observe.sh",
     "deploy/images/sandbox/build.sh",
     "deploy/k3d/test_image_contract.py",
 )
@@ -406,6 +408,9 @@ def lane_call_site_errors(lanes: dict[str, str], declared: dict[str, set[str]], 
 
     errors: list[str] = []
     for lane, text in sorted(lanes.items()):
+        if lane == 'lefthook.yml':
+            from generate_hooks import pre_commit_view
+            text = pre_commit_view(text)
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("#"):

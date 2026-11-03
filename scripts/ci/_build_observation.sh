@@ -28,3 +28,9 @@ awaken_begin_build_observation() {
   rm -f "$context_file"
   trap 'awaken_finish_build_observation "$?"' EXIT
 }
+
+awaken_begin_hook_observation() {
+  export AWAKEN_BUILD_WORKLOAD_KIND="${AWAKEN_BUILD_WORKLOAD_KIND:-feedback}"
+  export AWAKEN_BUILD_OBSERVATION_KIND="${AWAKEN_BUILD_OBSERVATION_KIND:-project}"
+  awaken_begin_build_observation pre-commit
+}

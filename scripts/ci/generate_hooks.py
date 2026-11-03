@@ -17,12 +17,16 @@ such a checker, between generated markers.  ``--check`` fails with a diff when
 
 Scope and its reasons:
 
-* Only ``pre-commit`` commands are rendered.  ``commit-msg`` and ``pre-push``
+* Only the ``pre-commit`` inventory is rendered. ``commit-checks`` is its one
+  authored definition; a transient child view retains the native hook name so
+  Lefthook still owns filtering and automatic staging. ``commit-msg``/``pre-push``
   commands have no staged-file trigger set, so there is nothing to narrow: the
   commit-message validator takes the message file as ``{1}``, and the push gate
   runs unconditionally.
-* Only the ``glob:`` line is generated. Command names, ``run:`` bodies and the
-  surrounding comments stay human-authored. The Rust shell gate's literal mode
+* Generated globs and observation transport surround the original checker body.
+  Command names, bodies, read-only grouping and comments stay human-authored.
+  The renderer decodes that same body for every composition/input reader; no
+  second command inventory or filter is maintained. The Rust shell's literal mode
   arms and guards select its Python input owners; unsupported control shapes
   refuse generation. Other shell scripts and non-Python tools stay untouched.
 * The invoked checker's own path, and the path of every ``scripts/ci`` module
@@ -41,7 +45,9 @@ from __future__ import annotations
 import argparse
 import ast
 import difflib
+import json
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -61,7 +67,7 @@ INDENT = "      "
 
 COMMAND = re.compile(r"^    ([A-Za-z0-9][A-Za-z0-9_.-]*):[ \t]*$")
 TOP_LEVEL = re.compile(r"^[A-Za-z]")
-GLOB_LINE = re.compile(r"^      glob:")
+GLOB_LINE = re.compile(r"^\s+glob:")
 INVOCATION = re.compile(r"scripts/ci/([A-Za-z0-9_]+\.py)")
 PATTERN = re.compile(r"[A-Za-z0-9_./*-]+")
 
@@ -155,19 +161,7 @@ def gate_mode_source(gate: str, mode: str) -> str:
 
 def invoked_scripts(block: str, *, expand_rust_gate: bool = True) -> set[str]:
     """Direct Python calls plus the Rust gate's actual literal hook mode."""
-    lines = block.splitlines()
-    commands = []
-    for index, line in enumerate(lines):
-        run = re.match(r"^(\s*)run:\s*(.*)$", line)
-        if not run:
-            continue
-        commands.append(run.group(2))
-        if run.group(2) in ("|", "|-", ">", ">-"):
-            for following in lines[index + 1:]:
-                if following.strip() and len(following) - len(following.lstrip()) <= len(run.group(1)):
-                    break
-                commands.append(following)
-    block = "\n".join(commands)
+    block = hook_run(block)
     # The native shell launcher transports a shell command; its own unit-test
     # inputs cannot replace that command's existing frontend/contract inputs.
     # Only the literal shell-transport form is excluded. Direct --self-test
@@ -181,6 +175,91 @@ def invoked_scripts(block: str, *, expand_rust_gate: bool = True) -> set[str]:
             raise SystemExit("generate_hooks: Rust hook needs one literal mode")
         scripts.update(INVOCATION.findall(gate_mode_source((ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"), modes[0])))
     return scripts
+
+
+def hook_run(block: str, *, unwrap=True) -> str:
+    """The actual checker body, independent of the observation transport."""
+    lines = block.splitlines()
+    commands = []
+    for index, line in enumerate(lines):
+        run = re.match(r"^(\s*)run:\s*(.*)$", line)
+        if not run:
+            continue
+        value = run.group(2)
+        if value in ("|", "|-", ">", ">-"):
+            style = value
+            following_lines = []
+            for following in lines[index + 1:]:
+                if following.strip() and len(following) - len(following.lstrip()) <= len(run.group(1)):
+                    break
+                following_lines.append(following[len(run.group(1)) + 2:])
+            value = ('\n'.join(following_lines).rstrip('\n') + ('\n' if style == '|' else '')
+                     if style.startswith('|') else ' '.join(line.strip() for line in following_lines))
+        if value.startswith('"'):
+            value = json.loads(value)  # JSON strings are an unambiguous YAML scalar subset.
+        elif value.startswith("'") and value.endswith("'"):
+            value = value[1:-1].replace("''", "'")
+        prefix = "python3 scripts/ci/parallel_check.py --hook-label "
+        if unwrap and value.startswith(prefix):
+            from parallel_check import parser
+            words = shlex.split(value)
+            args = parser().parse_args(words[2:])
+            tail = args.command[1:] if args.command[:1] == ['--'] else args.command
+            if not args.hook_label or not args.shell or tail not in ([], ['{staged_files}']):
+                raise SystemExit('generate_hooks: unsupported hook observation transport')
+            value = args.shell
+            if tail:
+                if value.count('"$@"') != 1:
+                    raise SystemExit('generate_hooks: staged argument transport must occur once')
+                value = value.replace('"$@"', '{staged_files}')
+        commands.append(value)
+    return "\n".join(commands)
+
+
+def observed_hook_run(name: str, body: str, *, readonly: bool, timeout=None) -> str:
+    """Render the adapter; Lefthook alone selects and quotes staged filenames."""
+    uses_files = '{staged_files}' in body
+    if body.count('{staged_files}') > 1:
+        raise SystemExit('generate_hooks: staged template must occur at most once')
+    command = ('python3 scripts/ci/parallel_check.py --hook-label ' + name
+               + ' --timeout ' + str(timeout if timeout is not None else 600 if readonly else 14400)
+               + (' --read-only' if readonly else '')
+               + ' --shell ' + shlex.quote(body.replace('{staged_files}', '"$@"'))
+               + ' --' + (' {staged_files}' if uses_files else ''))
+    return json.dumps(command) if '\n' in command or ': ' in command else command
+
+
+def _observed_body(name, body):
+    text = ''.join(body)
+    readonly = bool(re.search(r'(?m)^\s+tags: \[read-only\]$', text))
+    raw = hook_run(text, unwrap=False)
+    timeout = None
+    if raw.startswith('python3 scripts/ci/parallel_check.py --hook-label '):
+        from parallel_check import parser
+        timeout = parser().parse_args(shlex.split(raw)[2:]).timeout
+    value = observed_hook_run(name, hook_run(text), readonly=readonly, timeout=timeout)
+    return _replace_hook_run(body, value)
+
+
+def _replace_hook_run(body, value):
+    """Replace only run/its YAML continuation, retaining every later option."""
+    output, in_literal_body, continuation_indent = [], False, ''
+    for line in body:
+        match = re.match(r'^(\s*)run:', line)
+        if match:
+            if '\n' in value:
+                output.append(match[1] + ('run: |\n' if value.endswith('\n') else 'run: |-\n'))
+                output.extend(match[1] + '  ' + part + '\n' for part in value.splitlines())
+            else:
+                output.append(match[1] + 'run: ' + value + '\n')
+            in_literal_body = line.strip() in ('run: |', 'run: |-', 'run: >', 'run: >-')
+            continuation_indent = match[1] + '  '
+        elif in_literal_body and (not line.strip() or line.startswith(continuation_indent)):
+            continue
+        else:
+            in_literal_body = False
+            output.append(line)
+    return output
 
 
 def _expand_braces(pattern: str) -> list[str]:
@@ -279,39 +358,178 @@ def declared_input_globs(scripts: Path) -> dict[str, tuple[str, ...]]:
     return declarations
 
 
-def _spans(hooks: str) -> tuple[list[str], list[list]]:
-    """Line list plus ``[name, header_index, end_index]`` per pre-commit command."""
+def _hook_nodes(hooks: str):
+    """One reader for authored groups and leaves, with original source spans."""
 
     lines = hooks.splitlines(keepends=True)
     section: str | None = None
-    spans: list[list] = []
+    sections = {'commit-checks'} if re.search(r'(?m)^commit-checks:', hooks) else {'pre-commit'}
+    headers = []
     for index, line in enumerate(lines):
         if TOP_LEVEL.match(line):
-            if spans and spans[-1][2] is None:
-                spans[-1][2] = index
             section = line.split(":", 1)[0]
             continue
-        if section != "pre-commit":
+        if section not in sections:
             continue
-        match = COMMAND.match(line)
-        if match is None:
-            continue
-        if spans and spans[-1][2] is None:
-            spans[-1][2] = index
-        spans.append([match.group(1), index, None])
-    for span in spans:
-        if span[2] is None:
-            span[2] = len(lines)
+        match = re.fullmatch(r'(\s*)- name: ([A-Za-z0-9_.-]+)\s*', line)
+        if re.match(r'\s+- (?:name|run|script|group):', line) and not match:
+            raise SystemExit('generate_hooks: hook jobs require one literal, named source node')
+        old = COMMAND.match(line) if section == 'pre-commit' else None
+        if match or old:
+            headers.append((match.group(2) if match else old.group(1), index,
+                            len(match.group(1)) if match else 4))
+    nodes = []
+    for name, start, indent in headers:
+        end = next((index for index in range(start + 1, len(lines))
+                    if TOP_LEVEL.match(lines[index]) or (lines[index].strip()
+                       and not lines[index].lstrip().startswith('#')
+                       and len(lines[index]) - len(lines[index].lstrip()) <= indent)), len(lines))
+        body = ''.join(lines[start + 1:end])
+        group = bool(re.search(r'(?m)^' + ' ' * (indent + 2) + r'group:', body))
+        nodes.append([name, start, end, indent, group])
+    if len({node[0] for node in nodes}) != len(nodes):
+        raise SystemExit('generate_hooks: duplicate pre-commit job name')
+    return lines, nodes
+
+
+def _spans(hooks: str) -> tuple[list[str], list[list]]:
+    lines, nodes = _hook_nodes(hooks)
+    spans = [[name, start, end] for name, start, end, _, group in nodes if not group]
     return lines, spans
+
+
+def hook_execution_errors(hooks: str) -> list[str]:
+    """Native Lefthook executes one bounded view of the existing job inventory."""
+    section_name = 'commit-checks' if 'commit-checks:' in hooks else 'pre-commit'
+    section = hooks.split(section_name + ':\n', 1)[-1].split('\ncommit-msg:', 1)[0]
+    if not re.search(r'(?m)^\s+- name:', section):
+        return []  # Read-only parser fixtures also cover the original flat syntax.
+    from parallel_check import parser
+    lines, nodes = _hook_nodes(hooks)
+    errors = []
+    direct = [line.strip() for line in section.splitlines() if re.match(r'^  \S', line)]
+    if direct != ['parallel: false', 'piped: true', 'follow: true', 'jobs:']:
+        errors.append('pre-commit must keep sequential barriers and live worker output')
+    by_start = {node[1]: node for node in nodes}
+    parents = {}
+    children = {None: []}
+    for node in nodes:
+        candidates = [other for other in nodes if other[4] and other[1] < node[1] < other[2]]
+        parent = max(candidates, key=lambda item: item[1])[1] if candidates else None
+        parents[node[1]] = parent
+        children.setdefault(parent, []).append(node)
+    modes = {}
+    for name, start, end, indent, group in nodes:
+        body = ''.join(lines[start + 1:end])
+        parent = parents[start]
+        expected_indent = by_start[parent][3] + 6 if parent is not None else 4
+        if indent != expected_indent:
+            errors.append('unsupported hook nesting: ' + name)
+        if group:
+            direct_children = children.get(start, [])
+            prefix = ''.join(lines[start + 1:direct_children[0][1]]) if direct_children else body
+            settings = [line.strip() for line in prefix.splitlines()
+                        if line.strip() and not line.lstrip().startswith('#')]
+            if settings == ['group:', 'parallel: true', 'jobs:']:
+                modes[start] = 'parallel'
+            elif settings == ['group:', 'piped: true', 'jobs:']:
+                modes[start] = 'serial'
+            else:
+                errors.append('invalid bounded read-only group: ' + name)
+            if not direct_children:
+                errors.append('empty hook group: ' + name)
+    def width(node):
+        if not node[4]:
+            return 1
+        widths = [width(child) for child in children.get(node[1], [])]
+        return sum(widths) if modes.get(node[1]) == 'parallel' else max(widths, default=0)
+    if any(width(node) > 4 for node in children.get(None, [])):
+        errors.append('hook execution may exceed four workers')
+    for name, start, end, indent, group in nodes:
+        if group:
+            continue
+        body = ''.join(lines[start + 1:end])
+        ancestor, parallel_parent = parents[start], False
+        while ancestor is not None:
+            parallel_parent |= modes.get(ancestor) == 'parallel'
+            ancestor = parents[ancestor]
+        raw = hook_run(body, unwrap=False)
+        try:
+            properties = re.findall(r'(?m)^' + ' ' * (indent + 2) + r'([a-z_]+):', body)
+            if len(properties) != len(set(properties)) or set(properties) - {'run', 'glob', 'tags', 'stage_fixed'}:
+                raise ValueError('unsupported or duplicate job option')
+            if not raw.startswith('python3 scripts/ci/parallel_check.py --hook-label '):
+                raise ValueError('missing observation transport')
+            args = parser().parse_args(shlex.split(raw)[2:])
+            readonly = bool(re.search(r'(?m)^\s+tags: \[read-only\]$', body))
+            if (args.hook_label != name or args.read_only != readonly or args.timeout <= 0
+                    or (parallel_parent and not readonly) or (readonly and 'stage_fixed:' in body)):
+                raise ValueError('invalid label, readonly declaration, timeout or staging writer')
+            hook_run(body)  # The same decoder proves exact staged argv transport.
+        except (ValueError, SystemExit) as error:
+            errors.append('invalid hook worker ' + name + ': ' + str(error))
+    return errors
 
 
 def _body_end(lines: list[str], start: int, limit: int) -> int:
     """Trim the blank lines and indent-4 comments that introduce the next command."""
 
     end = limit
-    while end > start and (not lines[end - 1].strip() or lines[end - 1].startswith("    #")):
+    indent = len(lines[start - 1]) - len(lines[start - 1].lstrip())
+    while end > start and (not lines[end - 1].strip() or (
+            lines[end - 1].lstrip().startswith('#')
+            and len(lines[end - 1]) - len(lines[end - 1].lstrip()) <= indent)):
         end -= 1
     return end
+
+
+def command_blocks(hooks: str) -> dict[str, str]:
+    """One logical flat view for all trigger, audit and composition readers."""
+    lines, spans = _spans(hooks)
+    blocks = {}
+    for name, start, end in spans:
+        indent = len(lines[start]) - len(lines[start].lstrip()) + 2
+        body = lines[start + 1:_body_end(lines, start + 1, end)]
+        normalized = [' ' * 6 + line[indent:] if line.strip() else line for line in body]
+        text = ''.join(_replace_hook_run(normalized, hook_run(''.join(normalized))))
+        blocks[name] = f'    {name}:\n' + text
+    return blocks
+
+
+def pre_commit_view(hooks: str) -> str:
+    """Compatibility of the source reader, not a second execution path."""
+    if not any('- name:' in line for line in hooks.splitlines()):
+        return hooks
+    start = hooks.index('pre-commit:')
+    end = hooks.index('\ncommit-msg:', start)
+    return hooks[:start] + 'pre-commit:\n  commands:\n' + ''.join(command_blocks(hooks).values()) + hooks[end:]
+
+
+def native_pre_commit_configuration(hooks: str) -> str:
+    """Project the one source inventory to the native pre-commit hook name.
+
+    File filtering, stage_fixed, local config and extensions remain Lefthook's
+    responsibility. The bridge is absent only in this transient child view.
+    """
+    entry = re.search(r'(?ms)^pre-commit:\n(.*?)(?=^\S|\Z)', hooks)
+    checks = re.search(r'(?ms)^commit-checks:\n(.*?)(?=^\S|\Z)', hooks)
+    if observation_entry_errors(hooks) or not entry or not checks or checks.start() < entry.end():
+        raise ValueError('missing canonical pre-commit inventory or observation bridge')
+    if hook_execution_errors(hooks):
+        raise ValueError('unsafe pre-commit execution structure')
+    return (hooks[:entry.start()] + 'pre-commit:\n' + checks[1]
+            + hooks[entry.end():checks.start()] + hooks[checks.end():])
+
+
+def observation_entry_errors(hooks: str) -> list[str]:
+    entry = re.search(r'(?ms)^pre-commit:\n(.*?)(?=^\S|\Z)', hooks)
+    lines = [line.strip() for line in entry[1].splitlines()
+             if line.strip() and not line.lstrip().startswith('#')] if entry else []
+    if (lines != ['follow: true', 'scripts:', 'observe.sh:', 'runner: python3 scripts/ci/_native_shell.py', 'args: --observe']
+            or len(re.findall(r'(?m)^pre-commit:', hooks)) != 1
+            or len(re.findall(r'(?m)^commit-checks:', hooks)) != 1):
+        return ['pre-commit must retain its mandatory observation script and single command inventory']
+    return []
 
 
 def _without_generated(block: list[str]) -> list[str]:
@@ -440,7 +658,8 @@ def render(hooks: str, declarations: dict[str, tuple[str, ...]]) -> str:
     lines, spans = _spans(hooks)
     output: list[str] = []
     cursor = 0
-    for _, header, end in spans:
+    native = any('- name:' in lines[start] for _, start, _ in spans)
+    for name, header, end in spans:
         body_end = _body_end(lines, header + 1, end)
         block = lines[header + 1:body_end]
         cleaned = _without_generated(block)
@@ -452,11 +671,13 @@ def render(hooks: str, declarations: dict[str, tuple[str, ...]]) -> str:
             }
         )
         marked = any(line.strip().startswith(MARKER_BEGIN) for line in block)
-        if not scripts and not marked:
+        if not scripts and not marked and not native:
             continue
         output.extend(lines[cursor:header + 1])
-        output.extend(_region(scripts, declarations) if scripts else [])
-        output.extend(cleaned)
+        indent = len(lines[header]) - len(lines[header].lstrip()) + 2
+        region = [line for chunk in _region(scripts, declarations) for line in chunk.splitlines(keepends=True)] if scripts else []
+        selected = [(' ' * indent + line[6:]) for line in region] + cleaned if scripts or marked else block
+        output.extend(_observed_body(name, selected) if native else selected)
         cursor = body_end
     output.extend(lines[cursor:])
     return _with_matcher("".join(output))
@@ -691,6 +912,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     rendered = render(current, declarations)
+    execution_errors = hook_execution_errors(rendered)
+    if execution_errors:
+        print('\n'.join(execution_errors), file=sys.stderr)
+        return 1
     if rendered == current:
         print("lefthook.yml generated globs are current")
         return 0
