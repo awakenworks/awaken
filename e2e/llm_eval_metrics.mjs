@@ -118,15 +118,21 @@ export function makeEvaluation({ suite, subject, backend, model, sampleSize, met
   };
 }
 
-export function emitEvaluation(evaluation, environment = process.env, enforce = true) {
-  const serialized = JSON.stringify(evaluation);
-  console.log(`AWAKEN_LLM_EVAL ${serialized}`);
+// One public JSON/artifact IO owner for evaluation and provider certification.
+// Callers keep their own document schema and acceptance rules.
+export function emitPublicReport(prefix, suite, document, environment = process.env) {
+  const serialized = JSON.stringify(document);
+  console.log(`${prefix} ${serialized}`);
   const directory = environment.AWAKEN_EVAL_ARTIFACT_DIR;
   if (directory) {
     fs.mkdirSync(directory, { recursive: true });
-    const safeSuite = evaluation.suite.replaceAll(/[^a-zA-Z0-9._-]/gu, '_');
-    fs.writeFileSync(path.join(directory, `${safeSuite}.json`), `${JSON.stringify(evaluation, null, 2)}\n`);
+    const safeSuite = suite.replaceAll(/[^a-zA-Z0-9._-]/gu, '_');
+    fs.writeFileSync(path.join(directory, `${safeSuite}.json`), `${JSON.stringify(document, null, 2)}\n`);
   }
+}
+
+export function emitEvaluation(evaluation, environment = process.env, enforce = true) {
+  emitPublicReport('AWAKEN_LLM_EVAL', evaluation.suite, evaluation, environment);
   if (enforce) {
     assert.ok(evaluation.pass, `LLM evaluation thresholds failed: ${JSON.stringify(evaluation.violations)}`);
   }

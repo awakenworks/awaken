@@ -11,11 +11,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  cleanupFixtureTree,
   deploymentEnv,
   pass,
   publishManagementAgent,
+  runCleanupSteps,
   provisionProviderTestModel,
   spawnServer,
   stopServer,
@@ -28,17 +31,48 @@ import {
   requiredProviderCaseIds,
   selectProviderCases,
 } from './provider_compat_cases.mjs';
+import { emitPublicReport } from './llm_eval_metrics.mjs';
+import { readSpans } from './trace_validate.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const BASE_PORT = Number(process.env.E2E_PORT ?? 38327);
 
-async function managedRun(base, agent, marker) {
+// SDK-decoded, task-owned public observations only. Tool arguments retain only
+// this case's agent_id/message; no provider object, headers, env or error body.
+// Text bytes remain exact. Non-text payloads are explicitly not captured here.
+export function publicAttemptEvent(event) {
+  if (!event || typeof event !== 'object') return { available: false };
+  const fields = ['id', 'type', 'processed_at', 'session_thread_id',
+    'from_session_thread_id', 'to_session_thread_id', 'tool_use_id', 'name'];
+  const observed = Object.fromEntries(fields.filter(key => event[key] !== undefined)
+    .map(key => [key, event[key]]));
+  if (Array.isArray(event.content)) {
+    observed.content = event.content.map(block => block?.type === 'text'
+      ? { type: block.type, text: block.text }
+      : { type: block?.type ?? null, payload_captured: false });
+  } else if (event.content !== undefined) observed.content_captured = false;
+  if (event.type === 'agent.tool_use') {
+    observed.input = Object.fromEntries(['agent_id', 'message']
+      .filter(key => typeof event.input?.[key] === 'string')
+      .map(key => [key, event.input[key]]));
+  }
+  if (event.stop_reason !== undefined) {
+    observed.stop_reason = { type: event.stop_reason?.type,
+      ...(event.stop_reason?.event_ids ? { event_ids: event.stop_reason.event_ids } : {}) };
+  }
+  if (event.error !== undefined) observed.error = { type: event.error?.type };
+  return observed;
+}
+
+async function managedRun(base, agent, marker, observation) {
   const client = new Anthropic({ apiKey: 'local-provider-certification', baseURL: base }); // awaken-allow(secret): (local fixture)
   const session = await client.beta.sessions.create({
     agent,
     environment_id: 'env_local',
     betas: BETAS,
   });
+  observation.session_id = session.id;
+  observation.boundary = 'send';
   // Single-Run provider cause/effect rule S1: C1=the official SDK returns one
   // durable User Event receipt; C2=provider execution may settle after that
   // HTTP response. E1=the exact receipt becomes processed; E2=only a later
@@ -52,6 +86,7 @@ async function managedRun(base, agent, marker) {
     }],
     betas: BETAS,
   });
+  observation.accepted_receipt = receipt.data.map(publicAttemptEvent);
   const acceptedId = receipt.data[0]?.id;
   assert.equal(typeof acceptedId, 'string', 'S1 exact accepted User Event id');
   const { delta: events } = await waitForSessionEventReceipt(
@@ -59,16 +94,22 @@ async function managedRun(base, agent, marker) {
     session.id,
     acceptedId,
     BETAS,
-    ({ delta }) => delta.some(
-      (event) => event.type === 'agent.message' && eventText(event).includes(marker),
-    )
-      && delta.some((event) => event.type === 'session.status_idle'),
+    ({ delta }) => {
+      observation.events_after_receipt = delta.map(publicAttemptEvent);
+      observation.boundary = 'receipt_and_terminal';
+      return delta.some(
+        (event) => event.type === 'agent.message' && eventText(event).includes(marker),
+      ) && delta.some((event) => event.type === 'session.status_idle');
+    },
     `${agent} exact provider certification Run to settle`,
     { timeoutMs: 120_000, pollMs: 200 },
   );
   assert.match(JSON.stringify(events), new RegExp(marker, 'u'));
   assert.ok(events.some((event) => event.type === 'session.status_idle'));
+  observation.boundary = 'delete';
   await client.beta.sessions.delete(session.id, { betas: BETAS });
+  observation.session_delete = { status: 'completed' };
+  observation.status = 'passed';
   // DELETE acknowledges the lifecycle transition before asynchronous resource
   // cleanup drains. Keep the owned server alive long enough to observe that
   // boundary instead of cancelling cleanup during fixture teardown.
@@ -81,14 +122,36 @@ const eventText = (event) => (event.content ?? [])
   .join('')
   .trim();
 
-async function exerciseManagedMultiagentAttempt(base, coordinator, worker, servedModel, markers) {
+export async function exerciseManagedMultiagentAttempt(base, coordinator, worker, servedModel, markers, observation) {
   const client = new Anthropic({ apiKey: 'local-provider-certification', baseURL: base }); // awaken-allow(secret): (local fixture)
   const session = await client.beta.sessions.create({
     agent: coordinator,
     environment_id: 'env_local',
     betas: BETAS,
   });
+  observation.session_id = session.id;
+  observation.boundary = 'send';
+  observation.raw_model_output = { available: false, reason: 'SDK events and structured spans are not raw provider output' };
   let failure;
+  let childId;
+  let threadsReadAttempted = false;
+  const readThreads = async (afterFailure = false) => {
+    threadsReadAttempted = true;
+    try {
+      const threads = [];
+      for await (const thread of client.beta.sessions.threads.list(session.id, { betas: BETAS },
+        afterFailure ? { maxRetries: 0 } : undefined)) threads.push(thread);
+      observation.frozen_threads = { observed_at: new Date().toISOString(), after_failure: afterFailure,
+        items: threads.map(thread => ({ id: thread.id, parent_thread_id: thread.parent_thread_id,
+          status: thread.status, agent: { id: thread.agent?.id, version: thread.agent?.version,
+            model_id: thread.agent?.model?.id } })) };
+      return threads;
+    } catch (error) {
+      observation.frozen_threads = { observed_at: new Date().toISOString(), after_failure: afterFailure,
+        available: false, error: { name: error.name, code: error.code ?? null } };
+      throw error;
+    }
+  };
   try {
     // Multi-Agent receipt rule M1: C7 exact coordinator command receipt plus
     // C1-C6 protocol effects; E3 the receipt is processed only when aggregate
@@ -101,6 +164,7 @@ async function exerciseManagedMultiagentAttempt(base, coordinator, worker, serve
       }],
       betas: BETAS,
     })).data[0];
+    observation.accepted_receipt = publicAttemptEvent(receipt);
     let aggregate;
     const { events } = await waitForSessionEventReceipt(
       client,
@@ -108,7 +172,10 @@ async function exerciseManagedMultiagentAttempt(base, coordinator, worker, serve
       receipt.id,
       BETAS,
       async ({ delta }) => {
+        observation.events_after_receipt = delta.map(publicAttemptEvent);
+        observation.boundary = 'receipt_and_aggregate';
         aggregate = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
+        observation.aggregate = { id: aggregate.id, status: aggregate.status };
         if (aggregate.status === 'terminated') {
           throw new Error('real multi-Agent Session terminated before report acknowledgement');
         }
@@ -138,7 +205,8 @@ async function exerciseManagedMultiagentAttempt(base, coordinator, worker, serve
 
     const created = events.filter((event) => event.type === 'session.thread_created');
     assert.equal(created.length, 1, 'exactly one ordinary child Thread is created');
-    const childId = created[0].session_thread_id;
+    childId = created[0].session_thread_id;
+    observation.child_thread_id = childId;
     const childLifecycle = events.filter((event) => (
       event.session_thread_id === childId
       || event.to_session_thread_id === childId
@@ -160,13 +228,13 @@ async function exerciseManagedMultiagentAttempt(base, coordinator, worker, serve
       childLifecycle[3].content.every((block) => legalThreadMessageTypes.has(block.type)),
       `child delivery uses only the official SDK content union: ${childLifecycle[3].content.map((block) => block.type)}`,
     );
+    observation.boundary = 'exact_child_reply';
+    observation.expected_child_reply = markers.childReply;
     assert.equal(eventText(childLifecycle[3]), markers.childReply, 'exact real child reply');
     assert.equal(childLifecycle[4].stop_reason?.type, 'end_turn');
 
-    const threads = [];
-    for await (const thread of client.beta.sessions.threads.list(session.id, { betas: BETAS })) {
-      threads.push(thread);
-    }
+    observation.boundary = 'frozen_model_assertions';
+    const threads = await readThreads();
     assert.equal(threads.length, 2, 'primary + one real child Thread');
     const primary = threads.find((thread) => thread.parent_thread_id === null);
     const child = threads.find((thread) => thread.id === childId);
@@ -176,20 +244,41 @@ async function exerciseManagedMultiagentAttempt(base, coordinator, worker, serve
     assert.equal(primary.agent.model.id, servedModel, 'the coordinator freezes the selected provider model');
     assert.equal(child.agent.model.id, servedModel, 'the child freezes the same selected provider model');
     assert.equal(child.status, 'idle');
+    observation.status = 'passed';
   } catch (error) {
     failure = error;
+    observation.status = 'failed';
+    observation.failure = { boundary: observation.boundary, name: error.name, code: error.code ?? null };
     throw error;
   } finally {
+    // One post-failure read, before deletion, supplements missing facts only.
+    // It is NOT a pre-failure snapshot and cannot replace the primary error.
+    if (!threadsReadAttempted) {
+      try { await readThreads(Boolean(failure)); }
+      catch { /* readThreads retained its own unavailable facts; preserve the primary failure. */ }
+    }
+    if (childId) {
+      try {
+        const events = [];
+        for await (const event of client.beta.sessions.threads.events.list(childId,
+          { session_id: session.id, betas: BETAS }, { maxRetries: 0 })) events.push(publicAttemptEvent(event));
+        observation.child_events = { observed_at: new Date().toISOString(), after_failure: Boolean(failure), events };
+      } catch (error) { observation.child_events = { available: false, after_failure: Boolean(failure),
+        error: { name: error.name, code: error.code ?? null } }; }
+    } else observation.child_events = { available: false, reason: 'the case never selected an exact child Thread' };
+    observation.session_delete = { status: 'attempted' };
     try {
       await client.beta.sessions.delete(session.id, { betas: BETAS });
+      observation.session_delete.status = 'completed';
     } catch (cleanupError) {
+      observation.session_delete = { status: 'failed', error: { name: cleanupError.name, code: cleanupError.code ?? null } };
       if (!failure) throw cleanupError;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }
 
-async function managedMultiagentRun(base, coordinator, worker, servedModel, markers) {
+export async function managedMultiagentRun(base, coordinator, worker, servedModel, markers, observations) {
   // Real-model cause/effect graph:
   // C1 the coordinator sees both fixed tools; C2 it follows list -> send once;
   // C3 the child produces an exact reply on its ordinary Thread; C4 the report
@@ -211,10 +300,14 @@ async function managedMultiagentRun(base, coordinator, worker, servedModel, mark
   const maxAttempts = 3;
   const failures = [];
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const observation = { attempt, status: 'running', boundary: 'create' };
+    observations.push(observation);
     try {
-      await exerciseManagedMultiagentAttempt(base, coordinator, worker, servedModel, markers);
+      await exerciseManagedMultiagentAttempt(base, coordinator, worker, servedModel, markers, observation);
       return;
     } catch (error) {
+      observation.status = 'failed';
+      observation.failure ??= { boundary: observation.boundary, name: error.name, code: error.code ?? null };
       const retryable = error?.code === 'ERR_ASSERTION'
         || String(error?.message ?? error).includes('did not settle');
       failures.push(`attempt ${attempt}: ${error?.message ?? error}`);
@@ -224,20 +317,35 @@ async function managedMultiagentRun(base, coordinator, worker, servedModel, mark
   throw new Error(`real Managed multi-Agent certification failed: ${failures.join(' | ')}`);
 }
 
-async function certifyProvider(item, index) {
+async function certifyProvider(item, index, result) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), `awaken-provider-${item.id}-`));
   const port = BASE_PORT + index;
   const env = deploymentEnv(directory, { identityMode: 'no-login' });
-  const { server } = spawnServer('management-providers', port, env);
-  const started = performance.now();
+  const traceFile = path.join(directory, 'provider.spans.jsonl');
+  let server;
+  let failure;
+  let started;
+  result.fixture_directory = directory;
+  result.boundary = 'fixture_build';
+  result.selected_model = null;
+  result.discovered_models = null;
+  result.cleanup = { server: { status: 'not_started' }, directory: { status: 'retained' } };
   try {
+    ({ server } = spawnServer('management-providers', port, { ...env, AWAKEN_TRACE_FILE: traceFile }));
+    result.process = { pid: server.pid, port };
+    started = performance.now();
+    result.boundary = 'wait_for_port';
     await waitForPort(port, 180_000, server);
     const base = `http://127.0.0.1:${port}`;
     const workspace = fs.readFileSync(path.join(directory, 'platform-workspace-id'), 'utf8').trim();
+    result.boundary = 'discovery_and_exact_credential';
     const { offering, discoveredModels, model } = await provisionProviderTestModel(
       base, workspace, item, `provider-${item.id}`,
     );
 
+    result.selected_model = offering.model_id;
+    result.discovered_models = discoveredModels;
+    result.boundary = 'publication';
     const agent = `provider-cert-${item.id}`;
     const published = await publishManagementAgent(base, agent, {
       id: agent,
@@ -250,10 +358,13 @@ async function certifyProvider(item, index) {
     assert.equal(published.installed, true, `${item.id}: agent was not installed`);
 
     const marker = `AWAKEN-PROVIDER-${item.id.toUpperCase()}-OK`;
-    await managedRun(base, agent, marker);
+    result.boundary = 'single_managed_run';
+    result.single_run = { status: 'running', boundary: 'create' };
+    await managedRun(base, agent, marker, result.single_run);
     pass(`${item.id}: discovery -> exact credential -> publication -> real Managed Run`);
     const certifyManagedMultiagent = process.env.AWAKEN_PROVIDER_MATRIX_MANAGED_MULTIAGENT === '1';
     if (certifyManagedMultiagent) {
+      result.boundary = 'multiagent_publication';
       const coordinator = `${agent}-coordinator`;
       const markerPrefix = `AWAKEN-MANAGED-${item.id.toUpperCase().replace(/[^A-Z0-9]+/gu, '-')}`;
       const markers = {
@@ -282,53 +393,109 @@ async function certifyProvider(item, index) {
         },
       });
       assert.equal(publishedCoordinator.installed, true, `${item.id}: coordinator was not installed`);
-      await managedMultiagentRun(base, coordinator, agent, offering.model_id, markers);
+      result.boundary = 'managed_multiagent';
+      result.managed_attempts = [];
+      await managedMultiagentRun(base, coordinator, agent, offering.model_id, markers, result.managed_attempts);
       pass(`${item.id}: real coordinator -> fixed tools -> child -> report -> aggregate idle`);
     }
-    return {
-      ...publicProviderCase(item),
-      selected_model: offering.model_id,
-      discovered_models: discoveredModels,
-      latency_ms: performance.now() - started,
-      ...(certifyManagedMultiagent ? { managed_multiagent: 'passed' } : {}),
-      status: 'passed',
-    };
-  } finally {
-    await stopServer(server).catch(() => {});
-    fs.rmSync(directory, { recursive: true, force: true });
+    Object.assign(result, { latency_ms: performance.now() - started,
+      ...(certifyManagedMultiagent ? { managed_multiagent: 'passed' } : {}), functional_status: 'passed' });
+  } catch (error) {
+    failure = error;
+    result.functional_status = 'failed';
+    result.failure = { boundary: result.boundary, name: error.name, code: error.code ?? null };
+    if (result.single_run?.status === 'running') {
+      result.single_run.status = 'failed';
+      result.single_run.failure = { boundary: result.single_run.boundary, name: error.name, code: error.code ?? null };
+    }
   }
+  try {
+    await runCleanupSteps([async () => {
+      let cleanupBoundary = 'server';
+      try {
+        if (server) {
+          await stopServer(server, { requireCleanExit: true });
+          result.cleanup.server = { status: 'passed', pid: server.pid,
+            exit_code: server.exitCode, signal: server.signalCode };
+          try {
+            const attributes = ['gen_ai.operation.name', 'gen_ai.request.model', 'gen_ai.tool.name',
+              'gen_ai.tool.call.id', 'awaken.run.id', 'awaken.thread.id', 'gen_ai.conversation.id',
+              'http.route', 'http.response.status_code', 'otel.status_code'];
+            result.trace = { scope: 'structured spans after strict shutdown; not raw model output',
+              spans: readSpans(traceFile).map(span => ({ name: span.name, trace_id: span.trace_id,
+                span_id: span.span_id, parent_span_id: span.parent_span_id,
+                attributes: Object.fromEntries(attributes.filter(key => span.attributes?.[key] !== undefined)
+                  .map(key => [key, span.attributes[key]])) })) };
+          } catch (error) { result.trace = { available: false,
+            error: { name: error.name, code: error.code ?? null } }; }
+        }
+        cleanupBoundary = 'directory';
+        cleanupFixtureTree(directory);
+        result.cleanup.directory.status = 'removed';
+      } catch (error) {
+        result.cleanup.error = { boundary: cleanupBoundary, name: error.name, code: error.code ?? null };
+        if (server && cleanupBoundary === 'server') result.cleanup.server = { status: 'failed', pid: server.pid,
+          exit_code: server.exitCode, signal: server.signalCode };
+        throw error;
+      }
+    }], failure ? [failure] : []);
+    result.status = 'passed';
+  } catch (error) {
+    result.status = 'failed';
+    throw error;
+  }
+  return result;
 }
 
 async function main() {
-  // Test design (real-provider matrix). Causes: C1=zero or more canonical
-  // provider cases have live credentials; C2=strict required ids select an
-  // ordered subset; C3=Managed multi-Agent certification is enabled. Effects:
-  // E1=no cases skips unless strict; E2=each selected provider completes
-  // discovery, exact credential binding, publication, and one marked Managed
-  // Run; E3=C3 additionally completes coordinator->child->report once.
-  // Constraints/invariant: provider cases come only from the canonical catalog,
-  // secrets never enter evidence, and each result names its exact dialect/model.
-  // Decision rules: P0=!C1&&!strict=>E1; P1=C1+C2=>E2;
-  // P2=P1+C3=>E2+E3; missing required identity fails before provider I/O.
-  const cases = loadProviderCases();
-  const requiredCaseIds = requiredProviderCaseIds();
-  if (cases.length === 0) {
-    if (process.env.AWAKEN_PROVIDER_MATRIX_REQUIRE_CASES === '1' || requiredCaseIds.length > 0) {
-      throw new Error('provider certification requires at least one configured provider case');
+  const report = { version: 1, results: [] };
+  let failure;
+  try {
+    // Test design (real-provider matrix). Causes: C1=zero or more canonical
+    // provider cases have live credentials; C2=strict required ids select an
+    // ordered subset; C3=Managed multi-Agent certification is enabled. Effects:
+    // E1=no cases skips unless strict; E2=each selected provider completes
+    // discovery, exact credential binding, publication, and one marked Managed
+    // Run; E3=C3 additionally completes coordinator->child->report once.
+    // Constraints/invariant: provider cases come only from the canonical catalog,
+    // secrets never enter evidence, and each result names its exact dialect/model.
+    // Decision rules: P0=!C1&&!strict=>E1; P1=C1+C2=>E2;
+    // P2=P1+C3=>E2+E3; missing required identity fails before provider I/O.
+    const cases = loadProviderCases();
+    const requiredCaseIds = requiredProviderCaseIds();
+    if (cases.length === 0) {
+      if (process.env.AWAKEN_PROVIDER_MATRIX_REQUIRE_CASES === '1' || requiredCaseIds.length > 0) {
+        throw new Error('provider certification requires at least one configured provider case');
+      }
+      console.log('SKIP provider_connection_matrix_real_e2e: no provider credentials configured.');
+      return;
     }
-    console.log('SKIP provider_connection_matrix_real_e2e: no provider credentials configured.');
-    return;
+    const selectedCases = selectProviderCases(cases, requiredCaseIds);
+    const results = report.results;
+    for (const [index, item] of selectedCases.entries()) {
+      const result = { ...publicProviderCase(item), status: 'running' };
+      results.push(result);
+      await certifyProvider(item, index, result);
+    }
+  } catch (error) {
+    failure = error;
+    report.failure = { name: error.name, code: error.code ?? null };
+    throw error;
   }
-  const selectedCases = selectProviderCases(cases, requiredCaseIds);
-  const results = [];
-  for (const [index, item] of selectedCases.entries()) {
-    results.push(await certifyProvider(item, index));
+  finally {
+    report.status = failure ? 'failed' : report.results.length ? 'passed' : 'skipped';
+    try { emitPublicReport('AWAKEN_PROVIDER_COMPAT', 'provider-compat', report); }
+    catch (error) {
+      if (!failure) throw error;
+      console.error('Provider report write failed:', error.name, error.code ?? 'unknown');
+    }
   }
-  console.log(`AWAKEN_PROVIDER_COMPAT ${JSON.stringify({ version: 1, results })}`);
-  console.log(`E2E PASS: ${results.length} real provider/dialect compatibility case(s).`);
+  console.log(`E2E PASS: ${report.results.length} real provider/dialect compatibility case(s).`);
 }
 
-main().catch((error) => {
-  console.error('E2E FAIL:', error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error('E2E FAIL:', error);
+    process.exitCode = 1;
+  });
+}

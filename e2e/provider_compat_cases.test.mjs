@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import vm from 'node:vm';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import ts from 'typescript';
+import * as driver from './provider_connection_matrix_real_e2e.mjs';
+import { cleanupFixtureTree, deploymentEnv, runCleanupSteps, stopServer } from './harness.mjs';
 import { provisionProviderTestModel } from './harness.mjs';
 import {
   loadProviderCases,
@@ -227,4 +236,209 @@ test('provider case can request the Control-owned default endpoint', () => {
   const [item] = loadProviderCases(authored([{id: 'default', provider_id: 'deepseek',
     dialect: 'anthropic_messages', secret_env: 'VENDOR_KEY'}], {VENDOR_KEY: 'inert'}));
   assert.equal(item.base_url, undefined);
+});
+
+
+// Provider diagnostics are observations, not a new protocol oracle. These
+// official-SDK wire fixtures never start Native, a model, Cargo or a service.
+// D1 good args/reply => original assertions0 + exact receipt/Thread facts.
+// D2 changed send arg + any wrong public reply => SAME original reply error;
+// retain both texts, never normalize or decide which layer changed them.
+// D3 failure before the old list point => ONE post-failure readonly attempt;
+// its unavailability is recorded and never replaces D2. D4 no raw-model port
+// => explicitly unavailable. Existing model/prompt/maxAttempts3 remain owners.
+const diagnosticMarkers = { childReply: 'AWAKEN-MANAGED-FIXTURE-CHILD-OK',
+  sendAccepted: 'AWAKEN-MANAGED-FIXTURE-SEND-ACCEPTED',
+  reportAck: 'AWAKEN-MANAGED-FIXTURE-REPORT-ACK' };
+
+function providerWireFixture(t, { reply = diagnosticMarkers.childReply,
+  message = `Reply with exactly ${diagnosticMarkers.childReply}`, factsUnavailable = false } = {}) {
+  const calls = [];
+  const text = value => [{ type: 'text', text: value }];
+  const event = (id, type, fields = {}) => ({ id, type, processed_at: '2026-01-01T00:00:00Z', ...fields });
+  const events = [
+    event('accepted', 'user.message'),
+    event('list', 'agent.tool_use', { name: 'list_agents', input: {} }),
+    event('send', 'agent.tool_use', { name: 'send_message',
+      input: { agent_id: 'worker', message, unknown_private: 'MUST-NOT-RECORD' } }),
+    event('ack', 'agent.message', { content: text(diagnosticMarkers.sendAccepted) }),
+    event('created', 'session.thread_created', { session_thread_id: 'child' }),
+    event('running', 'session.thread_status_running', { session_thread_id: 'child' }),
+    event('sent', 'agent.thread_message_sent', { to_session_thread_id: 'child', content: text(message) }),
+    event('received', 'agent.thread_message_received', { from_session_thread_id: 'child', content: text(reply) }),
+    event('child-idle', 'session.thread_status_idle', { session_thread_id: 'child', stop_reason: { type: 'end_turn' } }),
+    event('report', 'agent.message', { content: text(diagnosticMarkers.reportAck) }),
+    event('idle', 'session.status_idle', { stop_reason: { type: 'end_turn' } }),
+  ];
+  t.mock.method(globalThis, 'fetch', async (input, init = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const method = init.method ?? (input instanceof Request ? input.method : 'GET');
+    calls.push({ path: url.pathname, method });
+    if (url.pathname === '/v1/sessions' && method === 'POST') return Response.json({ id: 'session' });
+    if (url.pathname === '/v1/sessions/session/events' && method === 'POST') return Response.json({ data: [events[0]] });
+    if (url.pathname === '/v1/sessions/session/events') return Response.json({ data: events, has_more: false });
+    if (url.pathname === '/v1/sessions/session/threads') {
+      if (factsUnavailable) return Response.json({ error: { type: 'unavailable', message: 'fixture' } }, { status: 503 });
+      return Response.json({ data: [
+        { id: 'primary', parent_thread_id: null, agent: { id: 'coordinator', model: { id: 'selected' } } },
+        { id: 'child', parent_thread_id: 'primary', status: 'idle', agent: { id: 'worker', version: 1, model: { id: 'selected' } } },
+      ], has_more: false });
+    }
+    if (url.pathname === '/v1/sessions/session/threads/child/events') {
+      if (factsUnavailable) return Response.json({ error: { type: 'unavailable', message: 'fixture' } }, { status: 503 });
+      return Response.json({ data: [event('input', 'user.message', { content: text(message) }),
+        event('output', 'agent.message', { content: text(reply) })], has_more: false });
+    }
+    if (url.pathname === '/v1/sessions/session' && method === 'DELETE') return Response.json({ id: 'session', type: 'session.deleted' });
+    if (url.pathname === '/v1/sessions/session') return Response.json({ id: 'session', status: 'idle' });
+    throw new Error(`unexpected controlled SDK route ${method} ${url.pathname}`);
+  });
+  return { calls, events };
+}
+
+test('provider diagnostic retains receipt and real SDK facts without changing the healthy oracle', async t => {
+  const f = providerWireFixture(t); const observation = { boundary: 'create' };
+  await driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', 'selected', diagnosticMarkers, observation);
+  assert.ok(observation.accepted_receipt, 'D1 diagnostic receipt was retained');
+  assert.equal(observation.accepted_receipt.id, 'accepted', 'D1 original accepted coordinate');
+  assert.equal(observation.session_id, 'session');
+  assert.equal(observation.status, 'passed');
+  assert.deepEqual(observation.events_after_receipt.find(e => e.id === 'send').input,
+    { agent_id: 'worker', message: `Reply with exactly ${diagnosticMarkers.childReply}` });
+  assert.equal(observation.frozen_threads.after_failure, false, 'D1 existing positive read point');
+  assert.equal(observation.frozen_threads.items[1].agent.model_id, 'selected');
+  assert.equal(observation.child_events.events[0].content[0].text, `Reply with exactly ${diagnosticMarkers.childReply}`);
+  assert.equal(observation.child_events.after_failure, false);
+  assert.equal(observation.raw_model_output.available, false, 'D4 SDK events are not raw provider output');
+  assert.equal(observation.session_delete.status, 'completed');
+  assert.ok(!JSON.stringify(observation).includes('MUST-NOT-RECORD'));
+  assert.equal(f.calls.filter(c => c.path.endsWith('/threads')).length, 1);
+});
+
+for (const reply of ['AWAKEN-MI\u200b\u200bNDED-MANAGED-FIXTURE-CHILD-OK',
+  'AWAKEN-M<refusal>MANAGED-FIXTURE-CHILD-OK', 'AWAKEN-MANAGED-F#IXTURE-CHILD-OK']) {
+  test(`provider diagnostic preserves original reply rejection and input bytes: ${JSON.stringify(reply)}`, async t => {
+    const message = `Reply with exactly ${reply}`;
+    const f = providerWireFixture(t, { reply, message }); const observation = { boundary: 'create' };
+    await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', 'selected', diagnosticMarkers, observation),
+      error => error.code === 'ERR_ASSERTION' && error.actual === reply && error.expected === diagnosticMarkers.childReply);
+    assert.ok(observation.failure, 'D2 diagnostic failure boundary was retained');
+    assert.equal(observation.failure.boundary, 'exact_child_reply', 'D2 original failure stays authoritative');
+    assert.equal(observation.events_after_receipt.find(e => e.id === 'send').input.message, message);
+    assert.equal(observation.events_after_receipt.find(e => e.id === 'received').content[0].text, reply);
+    assert.equal(observation.frozen_threads.after_failure, true, 'D3 observed later, not a pre-failure snapshot');
+    assert.equal(observation.child_events.after_failure, true);
+    assert.equal(observation.child_events.events[1].content[0].text, reply);
+    assert.equal(observation.session_delete.status, 'completed');
+    assert.equal(f.calls.filter(c => c.path.endsWith('/threads')).length, 1);
+  });
+}
+
+test('provider diagnostic missing readonly facts cannot replace the primary assertion or retry the SDK read', async t => {
+  const f = providerWireFixture(t, { reply: 'wrong', factsUnavailable: true }); const observation = { boundary: 'create' };
+  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', 'selected', diagnosticMarkers, observation),
+    error => error.code === 'ERR_ASSERTION' && error.actual === 'wrong');
+  assert.equal(observation.frozen_threads.available, false);
+  assert.equal(observation.child_events.available, false);
+  assert.equal(observation.session_delete.status, 'completed');
+  assert.equal(f.calls.filter(c => c.path.endsWith('/threads')).length, 1, 'D3 diagnostic maxRetries0');
+  assert.equal(f.calls.filter(c => c.path.endsWith('/child/events')).length, 1);
+});
+
+test('provider diagnostic keeps original three attempts and all three rejected public replies', async t => {
+  const f = providerWireFixture(t, { reply: 'wrong' }); const observations = [];
+  await assert.rejects(driver.managedMultiagentRun('http://controlled.invalid', 'coordinator', 'worker', 'selected', diagnosticMarkers, observations),
+    /attempt 1: exact real child reply[\s\S]*attempt 2:[\s\S]*attempt 3:/u);
+  assert.equal(observations.length, 3);
+  assert.deepEqual(observations.map(o => o.status), ['failed', 'failed', 'failed']);
+  assert.equal(f.calls.filter(c => c.path === '/v1/sessions' && c.method === 'POST').length, 3);
+});
+
+// D5 unknown fields/content never become a credential/header/env dump. The
+// projection records existing SDK data; it neither reparses nor normalizes it.
+test('provider diagnostic public projection excludes unknown material and preserves exact text', () => {
+  const token = 'NOT-A-REAL-CREDENTIAL'; // awaken-allow(secret): inert exclusion-test sentinel, never a credential input
+  const observed = driver.publicAttemptEvent({ id: 'call', type: 'agent.tool_use', name: 'send_message',
+    input: { agent_id: 'worker', message: 'M\u200b<refusal>#', secret: token, headers: { authorization: token } },
+    secret: token, env: { KEY: token }, content: [{ type: 'text', text: 'M\u200b<refusal>#', secret: token }] });
+  assert.equal(observed.input.message, 'M\u200b<refusal>#');
+  assert.equal(observed.content[0].text, 'M\u200b<refusal>#');
+  assert.ok(!JSON.stringify(observed).includes(token));
+});
+
+// Reuse the repository's TypeScript AST mechanism to execute the ACTUAL private
+// certifyProvider body. Only construction/model/setup IO leaves are declared;
+// the real existing stopServer owns a real Node child's EOF/exit/close. This is
+// controlled wiring evidence, not a provider, Native process or Kernel test.
+const providerSource = fs.readFileSync(new URL('./provider_connection_matrix_real_e2e.mjs', import.meta.url), 'utf8');
+const providerAst = ts.createSourceFile('provider_connection_matrix_real_e2e.mjs', providerSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+const certifyDeclaration = providerAst.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'certifyProvider');
+assert.ok(certifyDeclaration);
+
+for (const exitCode of [0, 37])
+for (const primaryFailure of [false, true]) {
+  test(`provider diagnostic strict cleanup preserves outcomes; exit=${exitCode}; primary=${primaryFailure}`, async t => {
+    // D6 exit0 closes/removes; primary+exit0 still rejects the original error.
+    // functional0+exit37 => reject/retain; functional-error+exit37 => keep
+    // SAME primary error and independently retain cleanup failure. No fallback
+    // no-op stopper or force signal is introduced by the diagnostic caller.
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-cleanup-law-'));
+    t.after(() => cleanupFixtureTree(temp));
+    let child; let ownedDirectory;
+    const primary = Object.assign(new Error('controlled original functional failure'), { code: 'ORIGINAL' });
+    const context = vm.createContext({ assert, fs, path, os: { tmpdir: () => temp }, performance,
+      BASE_PORT: 1, process: { env: {} }, publicProviderCase,
+      deploymentEnv,
+      spawnServer: (_mode, _port, env) => {
+        ownedDirectory = path.dirname(env.HOME);
+        fs.writeFileSync(path.join(ownedDirectory, 'platform-workspace-id'), 'workspace');
+        child = spawn(process.execPath, ['-e', `process.stdin.resume();process.stdin.on('end',()=>process.exit(${exitCode}));process.stdout.write('ready\\n')`],
+          { stdio: ['pipe', 'pipe', 'pipe'] });
+        return { server: child };
+      },
+      waitForPort: async () => { await once(child.stdout, 'data'); },
+      provisionProviderTestModel: async () => ({ offering: { model_id: 'selected' }, discoveredModels: 1, model: 'selected' }),
+      publishManagementAgent: async () => ({ installed: true }),
+      managedRun: async () => { if (primaryFailure) throw primary; },
+      pass: () => {}, stopServer, cleanupFixtureTree, runCleanupSteps,
+      readSpans: () => { throw new Error('no Native trace in controlled leaf'); },
+    });
+    const actual = new vm.Script(`${certifyDeclaration.getText(providerAst)}\ncertifyProvider;`).runInContext(context);
+    const observation = {};
+    if (primaryFailure || exitCode !== 0) {
+      await assert.rejects(actual({ id: 'fixture' }, 0, observation), error => {
+        assert.ok(error instanceof AggregateError, 'D6 existing runCleanupSteps owns aggregation');
+        if (primaryFailure) assert.equal(error.errors[0], primary, 'D6 preserve the primary object');
+        assert.equal(error.errors.some(item => /failed clean shutdown/u.test(item.message)), exitCode !== 0);
+        return true;
+      });
+    } else {
+      assert.equal(await actual({ id: 'fixture' }, 0, observation), observation);
+    }
+    assert.equal(child.exitCode, exitCode);
+    assert.equal(observation.status, primaryFailure || exitCode !== 0 ? 'failed' : 'passed');
+    assert.equal(observation.cleanup.server.status, exitCode === 0 ? 'passed' : 'failed');
+    assert.equal(observation.cleanup.directory.status, exitCode === 0 ? 'removed' : 'retained');
+    assert.equal(fs.existsSync(ownedDirectory), exitCode !== 0);
+  });
+}
+
+
+// D8 a healthy reply reaches the ORIGINAL positive Threads.list, which returns
+// 503 after its unchanged default two transport retries. Effects: preserve that
+// SDK503 as primary, record this read as unavailable/after_failure=false, and
+// do not perform another post-failure Threads.list. The new child-event read
+// remains separately best-effort and Session deletion still occurs.
+test('provider diagnostic original readonly failure is explicit and never retried as a second read', async t => {
+  const f = providerWireFixture(t, { factsUnavailable: true });
+  const observation = { boundary: 'create' };
+  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', 'selected', diagnosticMarkers, observation),
+    error => error.status === 503);
+  assert.ok(observation.frozen_threads, 'D8 failed original read retained explicit unavailable facts');
+  assert.equal(observation.frozen_threads.available, false);
+  assert.equal(observation.frozen_threads.after_failure, false);
+  assert.equal(typeof observation.frozen_threads.observed_at, 'string');
+  assert.equal(observation.failure.boundary, 'frozen_model_assertions');
+  assert.equal(f.calls.filter(c => c.path.endsWith('/threads')).length, 3, 'D8 original one SDK call + its default two retries only');
+  assert.equal(observation.session_delete.status, 'completed');
 });
