@@ -87,10 +87,10 @@ def run(seconds: float, command: list[str], *, stdout=None, stderr=None, environ
         if cleaning:
             return
         pending_signal = pending_signal or number
-        # During Popen construction the child may exist before Python assigns
-        # its handle. Defer cancellation until that exact handle is retained.
-        if process is not None:
-            raise Cancelled(pending_signal)
+        # Never raise from a signal handler: Popen may hold its non-reentrant
+        # waitpid lock before its cleanup guard has been established. Retain
+        # cancellation during construction, waiting and repeated signals; the
+        # ordinary wait boundary below owns unwinding and group cleanup.
 
     def cleanup() -> None:
         nonlocal cleaning
@@ -102,9 +102,20 @@ def run(seconds: float, command: list[str], *, stdout=None, stderr=None, environ
         for number in (signal.SIGTERM, signal.SIGINT):
             previous_handlers[number] = signal.signal(number, interrupted)
         process = subprocess.Popen(command, start_new_session=True, **stdio)
-        if pending_signal is not None:
-            raise Cancelled(pending_signal)
-        result = process.wait(timeout=seconds)
+        until = time.monotonic() + seconds
+        while True:
+            if pending_signal is not None:
+                raise Cancelled(pending_signal)
+            remaining = until - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, seconds)
+            try:
+                result = process.wait(timeout=min(remaining, 0.05))
+            except subprocess.TimeoutExpired:
+                continue
+            if pending_signal is not None:
+                raise Cancelled(pending_signal)
+            break
         if result < 0:
             # A child killed by a signal reports a negative Python return code.
             # Shell callers need the conventional 128 + signal status; otherwise
