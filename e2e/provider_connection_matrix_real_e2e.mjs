@@ -32,7 +32,7 @@ import {
   selectProviderCases,
 } from './provider_compat_cases.mjs';
 import { emitPublicReport } from './llm_eval_metrics.mjs';
-import { readSpans } from './trace_validate.mjs';
+import { assertThreadModelRequests, readSpans } from './trace_validate.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const BASE_PORT = Number(process.env.E2E_PORT ?? 38327);
@@ -122,7 +122,7 @@ const eventText = (event) => (event.content ?? [])
   .join('')
   .trim();
 
-export async function exerciseManagedMultiagentAttempt(base, coordinator, worker, servedModel, markers, observation) {
+export async function exerciseManagedMultiagentAttempt(base, coordinator, worker, markers, observation, authoredModelId, publications) {
   const client = new Anthropic({ apiKey: 'local-provider-certification', baseURL: base }); // awaken-allow(secret): (local fixture)
   const session = await client.beta.sessions.create({
     agent: coordinator,
@@ -240,9 +240,12 @@ export async function exerciseManagedMultiagentAttempt(base, coordinator, worker
     const child = threads.find((thread) => thread.id === childId);
     assert.ok(primary && child, 'both primary and real child are addressable');
     assert.equal(child.parent_thread_id, primary.id);
+    assert.equal(primary.agent.id, coordinator, 'the primary freezes the authored coordinator publication');
     assert.equal(child.agent.id, worker, 'the child freezes the authored worker publication');
-    assert.equal(primary.agent.model.id, servedModel, 'the coordinator freezes the selected provider model');
-    assert.equal(child.agent.model.id, servedModel, 'the child freezes the same selected provider model');
+    assert.equal(primary.agent.model.id, authoredModelId, 'the coordinator freezes the authored profile selection');
+    assert.equal(child.agent.model.id, authoredModelId, 'the child freezes the authored profile selection');
+    assert.equal(primary.agent.version, publications.coordinator.source_revision, 'the coordinator freezes its publication revision');
+    assert.equal(child.agent.version, publications.worker.source_revision, 'the child freezes its publication revision');
     assert.equal(child.status, 'idle');
     observation.status = 'passed';
   } catch (error) {
@@ -278,16 +281,19 @@ export async function exerciseManagedMultiagentAttempt(base, coordinator, worker
   }
 }
 
-export async function managedMultiagentRun(base, coordinator, worker, servedModel, markers, observations) {
+export async function managedMultiagentRun(base, coordinator, worker, markers, observations, authoredModelId, publications) {
   // Real-model cause/effect graph:
   // C1 the coordinator sees both fixed tools; C2 it follows list -> send once;
   // C3 the child produces an exact reply on its ordinary Thread; C4 the report
   // wakes a later coordinator Run; C5 child delivery uses only the SDK's public
-  // Text/Image/Document/Redacted union; C6 both frozen Thread snapshots name the
-  // exact model selected from this provider profile. Effects are E1 two exact tool events, E2 one
+  // Text/Image/Document/Redacted union; C6 both frozen Thread snapshots match
+  // their authored profile, Agent identity and publication revision.
+  // Effects are E1 two exact tool events, E2 one
   // child lifecycle, E3 one receipt acknowledgement, E4 one report
   // acknowledgement, E5 aggregate idle, E6 exact public child content, and E7
-  // exact provider/model attribution. A provider-format/model-choice
+  // frozen selection identity. Actual request targets are separately audited
+  // for both roles from flushed spans after strict shutdown; missing or wrong
+  // targets reject the case even when this protocol succeeds. A format/selection
   // miss may retry the entire fresh Session, but no assertion is relaxed.
   //
   // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
@@ -303,7 +309,7 @@ export async function managedMultiagentRun(base, coordinator, worker, servedMode
     const observation = { attempt, status: 'running', boundary: 'create' };
     observations.push(observation);
     try {
-      await exerciseManagedMultiagentAttempt(base, coordinator, worker, servedModel, markers, observation);
+      await exerciseManagedMultiagentAttempt(base, coordinator, worker, markers, observation, authoredModelId, publications);
       return;
     } catch (error) {
       observation.status = 'failed';
@@ -322,6 +328,7 @@ async function certifyProvider(item, index, result) {
   const port = BASE_PORT + index;
   const env = deploymentEnv(directory, { identityMode: 'no-login' });
   const traceFile = path.join(directory, 'provider.spans.jsonl');
+  const certifyManagedMultiagent = process.env.AWAKEN_PROVIDER_MATRIX_MANAGED_MULTIAGENT === '1';
   let server;
   let failure;
   let started;
@@ -338,11 +345,17 @@ async function certifyProvider(item, index, result) {
     await waitForPort(port, 180_000, server);
     const base = `http://127.0.0.1:${port}`;
     const workspace = fs.readFileSync(path.join(directory, 'platform-workspace-id'), 'utf8').trim();
+    // This fixture's original profile id is URL-unreserved by the case loader.
+    // The independent expected wire is test data, not a new model-id formatter.
+    const profileId = `provider-${item.id}`;
+    const authoredModelId = `profile=${profileId}`;
     result.boundary = 'discovery_and_exact_credential';
     const { offering, discoveredModels, model } = await provisionProviderTestModel(
-      base, workspace, item, `provider-${item.id}`,
+      base, workspace, item, profileId,
     );
 
+    result.authored_model = model;
+    result.expected_authored_model_id = authoredModelId;
     result.selected_model = offering.model_id;
     result.discovered_models = discoveredModels;
     result.boundary = 'publication';
@@ -356,13 +369,13 @@ async function certifyProvider(item, index, result) {
       tools: [],
     });
     assert.equal(published.installed, true, `${item.id}: agent was not installed`);
+    result.publications = { worker: published };
 
     const marker = `AWAKEN-PROVIDER-${item.id.toUpperCase()}-OK`;
     result.boundary = 'single_managed_run';
     result.single_run = { status: 'running', boundary: 'create' };
     await managedRun(base, agent, marker, result.single_run);
     pass(`${item.id}: discovery -> exact credential -> publication -> real Managed Run`);
-    const certifyManagedMultiagent = process.env.AWAKEN_PROVIDER_MATRIX_MANAGED_MULTIAGENT === '1';
     if (certifyManagedMultiagent) {
       result.boundary = 'multiagent_publication';
       const coordinator = `${agent}-coordinator`;
@@ -393,15 +406,17 @@ async function certifyProvider(item, index, result) {
         },
       });
       assert.equal(publishedCoordinator.installed, true, `${item.id}: coordinator was not installed`);
+      result.publications.coordinator = publishedCoordinator;
       result.boundary = 'managed_multiagent';
       result.managed_attempts = [];
-      await managedMultiagentRun(base, coordinator, agent, offering.model_id, markers, result.managed_attempts);
+      await managedMultiagentRun(base, coordinator, agent, markers, result.managed_attempts, authoredModelId, result.publications);
       pass(`${item.id}: real coordinator -> fixed tools -> child -> report -> aggregate idle`);
     }
     Object.assign(result, { latency_ms: performance.now() - started,
-      ...(certifyManagedMultiagent ? { managed_multiagent: 'passed' } : {}), functional_status: 'passed' });
+      ...(certifyManagedMultiagent ? { managed_multiagent: 'passed' } : {}), protocol_status: 'passed', functional_status: 'passed' });
   } catch (error) {
     failure = error;
+    result.protocol_status = 'failed';
     result.functional_status = 'failed';
     result.failure = { boundary: result.boundary, name: error.name, code: error.code ?? null };
     if (result.single_run?.status === 'running') {
@@ -436,6 +451,31 @@ async function certifyProvider(item, index, result) {
         result.cleanup.error = { boundary: cleanupBoundary, name: error.name, code: error.code ?? null };
         if (server && cleanupBoundary === 'server') result.cleanup.server = { status: 'failed', pid: server.pid,
           exit_code: server.exitCode, signal: server.signalCode };
+        throw error;
+      }
+    }, async () => {
+      if (!certifyManagedMultiagent) {
+        result.attribution = { status: 'not_requested' };
+        return;
+      }
+      if (!result.managed_attempts) {
+        result.attribution = { status: 'not_reached', reason: 'requested mode did not reach an attempt' };
+        return;
+      }
+      if (result.cleanup.server.status !== 'passed') {
+        result.attribution = { status: 'unproven', reason: 'strict server stop did not prove a flushed trace' };
+        return;
+      }
+      try {
+        assert.ok(Array.isArray(result.managed_attempts) && result.managed_attempts.length > 0,
+          'requested multiagent certification requires observed attempts');
+        const attempts = result.managed_attempts.map(attempt => ({ attempt: attempt.attempt,
+          ...assertThreadModelRequests(result.trace?.spans, result.selected_model,
+            { coordinator: attempt.session_id, child: attempt.child_thread_id }) }));
+        result.attribution = { status: 'passed', attempts };
+      } catch (error) {
+        result.functional_status = 'failed';
+        result.attribution = { status: 'failed', error: { name: error.name, code: error.code ?? null } };
         throw error;
       }
     }], failure ? [failure] : []);

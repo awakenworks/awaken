@@ -228,3 +228,77 @@ test('Native and ACP resource peers consume one exact Runtime File reference', (
     }
   }
 });
+
+
+test('Memory wire proposals match the canonical write arguments', async (t) => {
+  // M1 default fact / M2 distinct fact tag / M3 latest authored rule, crossed
+  // with JSON/SSE delivery. The existing WriteMemoryArgs owns exactly
+  // {name, content}; full object equality rejects obsolete/unknown fields.
+  // Each input independently selects the expected literal, not a second
+  // runtime decoder or a simulated MemoryStore write.
+  for (const [rule, user, input, stream] of [
+    ['M1', 'remember the sky', {name:'sky-color', content:'the sky is green today'}, false],
+    ['M2', 'remember fact-zebra7', {name:'fact-zebra7', content:'remember fact-zebra7'}, true],
+    ['M3', 'memory-rule-format=compact memory-rule-format=expanded',
+      {name:'rule-format', content:'memory-rule-format=expanded'}, false],
+  ]) {
+    await t.test(rule, async () => {
+      const upstream = await startFakeAnthropic('fixture-key', {behavior:'memory'});
+      const client = new Anthropic({baseURL:upstream.url, apiKey:'fixture-key', maxRetries:0}); // awaken-allow(secret): -- synthetic loopback fixture
+      try {
+        const params = {model:'fixture-model', max_tokens:128,
+          system:'You are the memory extraction Agent.', messages:[{role:'user', content:user}]};
+        const reply = stream ? await client.messages.stream(params).finalMessage()
+          : await client.messages.create(params);
+        assert.equal(reply.stop_reason, 'tool_use', rule);
+        assert.deepEqual(reply.content, [{type:'tool_use', id:'memwrite-1', name:'write_memory', input}], rule);
+        assert.equal(upstream.attempts, 1, `${rule} one explicit inference`);
+      } finally { await upstream.close(); }
+    });
+  }
+});
+
+test('Memory wire proposal stops after the original tool result', async () => {
+  // M4: a canonical assistant write proposal followed by its tool_result
+  // terminates with the existing saved reply, never a repeated write. This
+  // is only fixture response sequencing; the Memory controller still owns
+  // successful committed results, mutation CAS and durable receipts.
+  const upstream = await startFakeAnthropic('fixture-key', {behavior:'memory'});
+  const client = new Anthropic({baseURL:upstream.url, apiKey:'fixture-key', maxRetries:0}); // awaken-allow(secret): -- synthetic loopback fixture
+  try {
+    const reply = await client.messages.create({model:'fixture-model', max_tokens:128,
+      system:'You are the memory extraction Agent.', messages:[
+        {role:'user', content:'remember the sky'},
+        {role:'assistant', content:[{type:'tool_use', id:'memwrite-1', name:'write_memory',
+          input:{name:'sky-color', content:'the sky is green today'}}]},
+        {role:'user', content:[{type:'tool_result', tool_use_id:'memwrite-1', content:'saved memory /sky-color.md'}]},
+      ]});
+    assert.equal(reply.stop_reason, 'end_turn');
+    assert.deepEqual(reply.content, [{type:'text', text:'memory saved'}]);
+    assert.equal(upstream.attempts, 1, 'only the explicitly supplied continuation');
+  } finally { await upstream.close(); }
+});
+
+
+test('Memory selector response is scoped to its canonical role prefix', async (t) => {
+  // M5/M6: default selector role -> the existing strict bracket-index wire;
+  // M7/M8: an ordinary parent merely quoting that prefix -> normal recall
+  // echo. JSON/SSE both use the same response owner. This fixed probe selects
+  // one valid candidate; Memory's parser, bounds and live manifest stay native.
+  const selector = "You select which of a user's saved memories are relevant to their current message.";
+  for (const [rule, exactRole, stream] of [['M5',true,false],['M6',true,true],['M7',false,false],['M8',false,true]]) {
+    await t.test(rule, async () => {
+      const upstream = await startFakeAnthropic('fixture-key', {behavior:'memory'});
+      const client = new Anthropic({baseURL:upstream.url, apiKey:'fixture-key', maxRetries:0}); // awaken-allow(secret): -- synthetic loopback fixture
+      try {
+        const system = exactRole ? selector : `Parent recall quotes: ${selector}`;
+        const user = exactRole ? 'User message:\nquery\n\nSaved memories:\n[0] durable fact\n\nReturn up to 40 relevant indices.' : 'ordinary query';
+        const params = {model:'fixture-model',max_tokens:128,system,messages:[{role:'user',content:user}]};
+        const reply = stream ? await client.messages.stream(params).finalMessage() : await client.messages.create(params);
+        assert.equal(reply.stop_reason, 'end_turn', rule);
+        assert.deepEqual(reply.content, [{type:'text',text:exactRole ? '[0]' : `recall:[${system}] echo:${user}`}], rule);
+        assert.equal(upstream.attempts, 1, `${rule} only one explicit request`);
+      } finally { await upstream.close(); }
+    });
+  }
+});

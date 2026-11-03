@@ -104,7 +104,7 @@
       "e2e/managed_dream_real_eval_e2e.mjs": 2,
       "e2e/managed_dream_restart_sdk_e2e.ts": 1,
       "e2e/managed_full_chain_e2e.mjs": 1,
-      "e2e/managed_memory_e2e.mjs": 3,
+      "e2e/managed_memory_e2e.mjs": 2,
       "e2e/managed_memory_extraction_durable_e2e.mjs": 1,
       "e2e/managed_namespace_session_environment_e2e.mjs": 1,
       "e2e/management_deployment_schedule_e2e.mjs": 1,
@@ -133,7 +133,6 @@
       "e2e/dispatch_metrics_export_e2e.mjs": 1,
       "e2e/durable_cross_protocol_resume_e2e.mjs": 1,
       "e2e/managed_full_chain_e2e.mjs": 1,
-      "e2e/managed_memory_e2e.mjs": 1,
       "e2e/managed_memory_extraction_durable_e2e.mjs": 1,
       "e2e/metrics_export_e2e.mjs": 2,
       "e2e/remote_worker_recovery_e2e.ts": 1
