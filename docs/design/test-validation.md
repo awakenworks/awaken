@@ -110,8 +110,27 @@ names an explicit mount (`--tmpfs` for throwaway data, a run-scoped named volume
 when the container restarts) and every `docker rm` passes `-v`.
 `scripts/ci/check_docker_volumes.py` enforces this for `e2e/` and `scripts/` in
 the static group; `scripts/ci/e2e_docker_lib.sh` labels harness objects with
-`awaken.e2e.owner`/`awaken.e2e.run` and sweeps a killed run's leftovers at the
-next start.
+`awaken.e2e.owner`/`awaken.e2e.run` and per-request volume creation labels.
+The shared lifecycle refuses existing or unobservable cluster coordinates and
+uses its retained creation receipts: exact Docker CIDs, the K3D creator's new
+network ID, and checked volume identities. It never hands a validated name back
+to K3D for a second deletion selection. Mixed or unconfirmed objects stay with
+a cleanup failure; SIGKILL leftovers require explicit ownership recovery, not
+an automatic next-run sweep. Private kubeconfigs stay with the original
+caller-owned artifact cleanup.
+
+The pinned K3D startup still requires its empty images volume. The same checked
+volume creator selects it before K3D's idempotent ensure; the canonical archive
+exporter uses the original direct stream import, so there is no second archive
+store. Node effects use retained CIDs, the network is removed last by its ID,
+and volume removal is non-force and never deletes a borrower to make room.
+This protects normal concurrent runs following the canonical creator/cleanup
+owner. Docker's volume API has no generation/UID compare-and-delete: the
+per-request marker rejects existing/replaced names, but cannot defend the last
+check-to-remove window against an external Docker administrator who first
+violates ownership by deleting this run's volume and recreating its name.
+There is no global prune/GC or additional permission layer. Product Session/Pod/
+PVC UID guarantees and physical acceptance remain their own separate evidence.
 
 Required focused Rust runs list and execute identical arguments, then compare
 named outcomes and occurrence counts. Equal totals with different names,

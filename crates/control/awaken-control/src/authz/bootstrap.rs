@@ -3,26 +3,32 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! First-boot operator credential hand-off for embedded IAM.
 
-use std::io::Write;
 use std::path::Path;
 
 use super::{ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, ManagementAuthz, TokenSpec};
 
 /// Mint the first `admin` token and hand it off through an owner-only file.
-pub(super) fn bootstrap_admin_token(authz: &ManagementAuthz, dir: &Path, workspace_id: &str) {
-    let secret = authz
-        .mint_service_token(TokenSpec {
-            token_id: "tok_mgmt_bootstrap".to_string(),
-            service_id: BOOTSTRAP_PRINCIPAL.to_string(),
-            workspace_id: workspace_id.to_string(),
-            role: "admin".to_string(),
-            created_at: None,
-            expires_at: None,
-        })
-        .expect("mint the bootstrap admin token");
+pub(super) fn bootstrap_admin_token(
+    authz: &ManagementAuthz,
+    dir: &Path,
+    workspace_id: &str,
+) -> Result<(), String> {
     let path = dir.join(ADMIN_TOKEN_FILE);
-    write_owner_only(&path, &secret).expect("write the bootstrap admin-token file");
+    authz
+        .mint_token_with_handoff(
+            TokenSpec {
+                token_id: "tok_mgmt_bootstrap".to_string(),
+                service_id: BOOTSTRAP_PRINCIPAL.to_string(),
+                workspace_id: workspace_id.to_string(),
+                role: "admin".to_string(),
+                created_at: None,
+                expires_at: None,
+            },
+            Some(&path),
+        )
+        .map_err(|error| error.to_string())?;
     eprintln!("{}", bootstrap_notice(&path, workspace_id));
+    Ok(())
 }
 
 fn bootstrap_notice(path: &Path, workspace_id: &str) -> String {
@@ -33,18 +39,6 @@ fn bootstrap_notice(path: &Path, workspace_id: &str) -> String {
          ROTATE IT: anyone who can read that file has full management authority.",
         path.display()
     )
-}
-
-/// Write `contents` to `path` readable by the owner only (0600 on unix).
-fn write_owner_only(path: &Path, contents: &str) -> std::io::Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path)?.write_all(contents.as_bytes())
 }
 
 #[cfg(test)]

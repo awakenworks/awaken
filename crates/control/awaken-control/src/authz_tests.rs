@@ -428,7 +428,7 @@ fn embedded_resource_profile_authorizes_every_preset_reader_role() {
         .enumerate()
     {
         let dir = tempfile::tempdir().unwrap();
-        let iam = embedded_iam(dir.path(), awaken_time::system_clock());
+        let iam = embedded_iam(dir.path(), awaken_time::system_clock()).unwrap();
         let service_id = format!("resource-profile-{index}");
         iam.mint_service_token(TokenSpec {
             token_id: format!("tok_resource_profile_{index}"),
@@ -536,7 +536,7 @@ use tower::ServiceExt as _;
 /// the caller keeps it alive for the test.
 pub(super) fn fresh_iam() -> (tempfile::TempDir, Arc<ManagementAuthz>) {
     let dir = tempfile::tempdir().unwrap();
-    let iam = embedded_iam(dir.path(), awaken_time::system_clock());
+    let iam = embedded_iam(dir.path(), awaken_time::system_clock()).unwrap();
     (dir, iam)
 }
 
@@ -1353,7 +1353,8 @@ async fn af6_workspace_user_reading_credentials_denies() {
             principal,
             APIKEY_READ,
             ScopeRef::Workspace { workspace_id: ws }
-        ),
+        )
+        .unwrap(),
         AuthorizationDecision::Deny
     );
 }
@@ -1432,25 +1433,25 @@ async fn authenticate_ok_expired_and_invalid() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn authorize_at_target_allow_deny_and_require_approval() {
+    // C/E table: the existing PDP evaluates the explicit target scope. Allow
+    // -> no refusal; Deny -> 403; RequireApproval -> 403 with its existing
+    // approval message. The selected-principal test owns the added Org scope.
     let (dir, iam) = fresh_iam();
     let bootstrap = admin_token(dir.path());
     let (admin_principal, _) = iam.authenticate(&bootstrap).unwrap();
+    let target = ScopeRef::Workspace {
+        workspace_id: WorkspaceId(BOOTSTRAP_WORKSPACE.into()),
+    };
 
     // (a) Allow → None.
     assert!(
-        authorize_at_target(
-            &iam,
-            admin_principal.clone(),
-            APIKEY_WRITE,
-            BOOTSTRAP_WORKSPACE
-        )
-        .is_none()
+        authorize_at_target(&iam, admin_principal.clone(), APIKEY_WRITE, target.clone()).is_none()
     );
 
     // (c) Deny → 403.
     let user = mint(&iam, "tok_at_user", BOOTSTRAP_WORKSPACE, "workspace_user");
     let (user_principal, _) = iam.authenticate(&user).unwrap();
-    let refusal = authorize_at_target(&iam, user_principal, APIKEY_WRITE, BOOTSTRAP_WORKSPACE)
+    let refusal = authorize_at_target(&iam, user_principal, APIKEY_WRITE, target.clone())
         .expect("deny yields a refusal");
     assert_eq!(resp_parts(refusal).await.0, StatusCode::FORBIDDEN);
 
@@ -1467,7 +1468,7 @@ async fn authorize_at_target_allow_deny_and_require_approval() {
             scope: ScopeRef::Global,
             effect: Effect::RequireApproval,
         });
-    let refusal = authorize_at_target(&iam, admin_principal, APIKEY_WRITE, BOOTSTRAP_WORKSPACE)
+    let refusal = authorize_at_target(&iam, admin_principal, APIKEY_WRITE, target)
         .expect("require-approval yields a refusal");
     let (s, err) = resp_parts(refusal).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -1929,7 +1930,7 @@ async fn embedded_iam_rehydrates_minted_and_revoked_tokens_across_a_restart() {
     let survivor;
     let revoked;
     {
-        let iam = embedded_iam(dir.path(), awaken_time::system_clock());
+        let iam = embedded_iam(dir.path(), awaken_time::system_clock()).unwrap();
         survivor = mint(&iam, "tok_survivor", BOOTSTRAP_WORKSPACE, "admin");
         revoked = mint(&iam, "tok_revoked_restart", BOOTSTRAP_WORKSPACE, "admin");
         iam.revoke_token("tok_revoked_restart").unwrap();
@@ -1937,7 +1938,7 @@ async fn embedded_iam_rehydrates_minted_and_revoked_tokens_across_a_restart() {
 
     // Reopen over the SAME data dir: tokens already exist, so no re-bootstrap;
     // the durable rows rehydrate into a fresh live evaluator.
-    let iam2 = embedded_iam(dir.path(), awaken_time::system_clock());
+    let iam2 = embedded_iam(dir.path(), awaken_time::system_clock()).unwrap();
     let app = guarded_app(iam2);
 
     // The survivor still authenticates AND authorizes (admin reads the catalog).
@@ -1970,3 +1971,6 @@ mod identity_tests;
 mod token_view_tests;
 #[path = "authz_tunnel_guard_tests.rs"]
 mod tunnel_guard_tests;
+
+#[path = "authz/tests/failure_tests.rs"]
+mod failure_tests;

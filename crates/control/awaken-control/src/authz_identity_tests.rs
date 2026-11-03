@@ -28,7 +28,8 @@ fn embedded_iam_bootstrap_uses_the_platform_provisioned_workspace() {
         dir.path(),
         "workspace_platform_owned",
         awaken_time::system_clock(),
-    );
+    )
+    .unwrap();
     let token = std::fs::read_to_string(dir.path().join(ADMIN_TOKEN_FILE)).unwrap();
     let (_, workspace) = iam.authenticate(token.trim()).unwrap();
     assert_eq!(workspace.0, "workspace_platform_owned");
@@ -42,7 +43,8 @@ fn embedded_iam_registers_only_org_to_workspace_scope() {
         "org_local",
         "workspace_local",
         awaken_time::system_clock(),
-    );
+    )
+    .unwrap();
     let token = std::fs::read_to_string(dir.path().join(ADMIN_TOKEN_FILE)).unwrap();
     let (principal, _) = iam.authenticate(token.trim()).unwrap();
     assert_eq!(
@@ -52,7 +54,8 @@ fn embedded_iam_registers_only_org_to_workspace_scope() {
             ScopeRef::Workspace {
                 workspace_id: WorkspaceId("workspace_local".into())
             },
-        ),
+        )
+        .unwrap(),
         AuthorizationDecision::Allow
     );
 }

@@ -7,7 +7,9 @@ fn workspace_profile_is_one_deterministic_workspace_scoped_contract() {
     // Cause/effect decision table:
     // | Cause | Effect |
     // | repeated construction | byte-identical profile |
-    // | each product-owned family | one registered Workspace-scoped pattern |
+    // | each product-owned family | original registered Workspace-scoped pattern |
+    // | exact existing apikey.write | registered Org + Workspace scope |
+    // | any other action | Workspace only; declaring a scope grants no role |
     // | agent publisher authors configuration | allow workspace.* |
     // | agent publisher discovers executable model supply | allow exact model_supply.read |
     // | agent publisher accesses credentials or mutates supply | no matching grant |
@@ -21,6 +23,25 @@ fn workspace_profile_is_one_deterministic_workspace_scoped_contract() {
     assert_eq!(first.namespace.0, AWAKEN_WORKSPACE_POLICY_NAMESPACE);
     assert_eq!(first.created_at.0, AUTHORIZATION_PROFILE_EPOCH);
 
+    let expected_scopes = [
+        ("awaken.workspace::workspace.*", vec![ScopeKind::Workspace]),
+        ("awaken.workspace::apikey.*", vec![ScopeKind::Workspace]),
+        (
+            "awaken.workspace::model_supply.*",
+            vec![ScopeKind::Workspace],
+        ),
+        ("awaken.workspace::file.*", vec![ScopeKind::Workspace]),
+        ("awaken.workspace::skill.*", vec![ScopeKind::Workspace]),
+        (
+            "awaken.workspace::tunnel.manage",
+            vec![ScopeKind::Workspace],
+        ),
+        (
+            "awaken.workspace::apikey.write",
+            vec![ScopeKind::Org, ScopeKind::Workspace],
+        ),
+    ];
+
     let actions = first
         .document
         .resource_model
@@ -30,21 +51,22 @@ fn workspace_profile_is_one_deterministic_workspace_scoped_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         actions,
-        [
-            "awaken.workspace::workspace.*",
-            "awaken.workspace::apikey.*",
-            "awaken.workspace::model_supply.*",
-            "awaken.workspace::file.*",
-            "awaken.workspace::skill.*",
-            "awaken.workspace::tunnel.manage",
-        ]
+        expected_scopes
+            .iter()
+            .map(|(action, _)| *action)
+            .collect::<Vec<_>>()
     );
-    assert!(
+    assert_eq!(
         first
             .document
             .action_scope_rules
             .iter()
-            .all(|rule| rule.allowed_scope_kinds == [ScopeKind::Workspace])
+            .map(|rule| (
+                rule.action_pattern.as_str(),
+                rule.allowed_scope_kinds.clone()
+            ))
+            .collect::<Vec<_>>(),
+        expected_scopes
     );
     assert!(!first.document.grants.is_empty());
     // Multiple authorities per role must compile to distinct durable grant IDs;
@@ -207,62 +229,72 @@ fn built_in_profile_reconciles_changed_contract_once_and_hydrates_replays() {
      * Effects: the durable PAP and live PDP select the same current document;
      * immutable older revisions remain audit history rather than runtime policy.
      */
-    let profiles = AuthorizationProfileAdmin::new(Arc::new(InMemoryStore::new()));
-    let mut engine = AuthzApi::new();
-    let current = workspace_authorization_profile();
-    let mut legacy = current.clone();
-    legacy
-        .document
-        .resource_model
-        .actions
-        .retain(|action| !action.0.contains("model_supply"));
-    legacy
-        .document
-        .action_scope_rules
-        .retain(|rule| !rule.action_pattern.contains("model_supply"));
-    legacy
-        .document
-        .grants
-        .retain(|grant| !grant.action_pattern.contains("model_supply"));
+    // C1 retains the original missing-model-supply case. C2 represents the
+    // previous profile with its original six registrations and grants, but no
+    // exact Org credential-write declaration. Both take R1-R4 through the same
+    // PAP/CAS reconciliation; equal restarts never append another revision.
+    for missing in ["model_supply", "awaken.workspace::apikey.write"] {
+        let profiles = AuthorizationProfileAdmin::new(Arc::new(InMemoryStore::new()));
+        let mut engine = AuthzApi::new();
+        let current = workspace_authorization_profile();
+        let mut legacy = current.clone();
+        legacy
+            .document
+            .resource_model
+            .actions
+            .retain(|action| !action.0.contains(missing));
+        legacy
+            .document
+            .action_scope_rules
+            .retain(|rule| !rule.action_pattern.contains(missing));
+        if missing == "model_supply" {
+            legacy
+                .document
+                .grants
+                .retain(|grant| !grant.action_pattern.contains(missing));
+        } else {
+            assert_eq!(legacy.document.grants, current.document.grants);
+        }
 
-    reconcile_builtin_profile(&profiles, &mut engine, legacy.clone());
-    assert_eq!(
-        profiles
-            .active(&legacy.namespace)
-            .unwrap()
-            .unwrap()
-            .revision,
-        1,
-        "R1"
-    );
-    reconcile_builtin_profile(&profiles, &mut engine, legacy.clone());
-    assert_eq!(profiles.list(&legacy.namespace).unwrap().len(), 1, "R2");
+        reconcile_builtin_profile(&profiles, &mut engine, legacy.clone()).unwrap();
+        assert_eq!(
+            profiles
+                .active(&legacy.namespace)
+                .unwrap()
+                .unwrap()
+                .revision,
+            1,
+            "R1"
+        );
+        reconcile_builtin_profile(&profiles, &mut engine, legacy.clone()).unwrap();
+        assert_eq!(profiles.list(&legacy.namespace).unwrap().len(), 1, "R2");
 
-    reconcile_builtin_profile(&profiles, &mut engine, current.clone());
-    let active = profiles.active(&current.namespace).unwrap().unwrap();
-    assert_eq!(active.revision, 2, "R3");
-    assert_eq!(active.document, current.document);
-    assert_eq!(
-        engine
-            .snapshot()
-            .active_profiles
-            .iter()
-            .find(|profile| profile.namespace == current.namespace)
-            .expect("live PDP contains the reconciled profile")
-            .revision,
-        2
-    );
+        reconcile_builtin_profile(&profiles, &mut engine, current.clone()).unwrap();
+        let active = profiles.active(&current.namespace).unwrap().unwrap();
+        assert_eq!(active.revision, 2, "R3");
+        assert_eq!(active.document, current.document);
+        assert_eq!(
+            engine
+                .snapshot()
+                .active_profiles
+                .iter()
+                .find(|profile| profile.namespace == current.namespace)
+                .expect("live PDP contains the reconciled profile")
+                .revision,
+            2
+        );
 
-    reconcile_builtin_profile(&profiles, &mut engine, current.clone());
-    assert_eq!(profiles.list(&current.namespace).unwrap().len(), 2, "R4");
-    assert_eq!(
-        profiles
-            .active(&current.namespace)
-            .unwrap()
-            .unwrap()
-            .revision,
-        2
-    );
+        reconcile_builtin_profile(&profiles, &mut engine, current.clone()).unwrap();
+        assert_eq!(profiles.list(&current.namespace).unwrap().len(), 2, "R4");
+        assert_eq!(
+            profiles
+                .active(&current.namespace)
+                .unwrap()
+                .unwrap()
+                .revision,
+            2
+        );
+    }
 }
 
 #[test]
@@ -310,12 +342,12 @@ fn workspace_cutover_retires_both_legacy_active_heads_without_deleting_history()
             .unwrap();
     }
 
-    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile()).unwrap();
     for namespace in [
         LEGACY_MANAGEMENT_POLICY_NAMESPACE,
         LEGACY_RESOURCE_POLICY_NAMESPACE,
     ] {
-        retire_legacy_profile(&profiles, &mut engine, namespace);
+        retire_legacy_profile(&profiles, &mut engine, namespace).unwrap();
         let namespace = NamespaceId(namespace.to_owned());
         assert!(profiles.active(&namespace).unwrap().is_none());
         assert_eq!(

@@ -24,13 +24,17 @@ impl ManagementAuthz {
             account_id.clone(),
             Arc::new(self.store.clone()),
         )?;
-        self.enable_local_browser(&browser, &account_id);
+        self.enable_local_browser(&browser, &account_id)?;
         Ok((browser, handoff))
     }
 
     /// Bind the stable local browser account as this installation's Org admin
     /// and attach IAM's canonical session authority to the existing gate.
-    fn enable_local_browser(&self, browser: &LocalBrowserAuth, account_id: &AccountId) {
+    fn enable_local_browser(
+        &self,
+        browser: &LocalBrowserAuth,
+        account_id: &AccountId,
+    ) -> Result<(), LocalBrowserAuthError> {
         let principal = PrincipalRef::Account {
             account_id: account_id.clone(),
         };
@@ -41,10 +45,17 @@ impl ManagementAuthz {
                 org_id: self.org_id.clone(),
             },
         };
+        // State -> original attachment guard, both before persistence. SQL
+        // acknowledgement is followed only by infallible in-memory publication.
+        let mut state = self
+            .iam_state()
+            .map_err(|_| LocalBrowserAuthError::Unavailable)?;
+        let attachment = browser.reserve_attachment(&self.gate)?;
         RoleBindingRepository::add(&self.store, binding.clone())
-            .expect("persist local browser admin binding");
-        self.iam_state().authz.policy_mut().bind_role(binding);
-        browser.attach_to(&self.gate);
+            .map_err(|_| LocalBrowserAuthError::Unavailable)?;
+        state.authz.policy_mut().bind_role(binding);
+        attachment.publish();
+        Ok(())
     }
 
     pub(super) fn authenticate_browser(
@@ -64,6 +75,7 @@ impl ManagementAuthz {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_iam_server::SqlConn as _;
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -86,7 +98,7 @@ mod tests {
     async fn session_survives_sqlite_restart_but_logout_does_not() {
         let dir = tempfile::tempdir().unwrap();
         let account = AccountId("local-console-admin".into());
-        let first_iam = embedded_iam(dir.path(), awaken_time::system_clock());
+        let first_iam = embedded_iam(dir.path(), awaken_time::system_clock()).unwrap();
         let (first_browser, handoff) = first_iam.begin_local_browser(account.clone()).unwrap();
         let exchange = awaken_iam_host::local_browser_router(first_browser)
             .oneshot(
@@ -110,9 +122,42 @@ mod tests {
             .next()
             .unwrap()
             .to_owned();
+        // R3 a binding write is unavailable after reserving the original
+        // attachment -> refuse without live policy/version or binding effects;
+        // the previous browser attachment survives and its cookie stays valid.
+        let before = first_iam.state.lock().unwrap().authz.snapshot();
+        first_iam
+            .store
+            .backend()
+            .execute("PRAGMA query_only=ON", &[])
+            .unwrap();
+        let refused = AccountId("must-not-attach".into());
+        assert!(matches!(
+            first_iam.begin_local_browser(refused.clone()),
+            Err(LocalBrowserAuthError::Unavailable)
+        ));
+        assert_eq!(first_iam.state.lock().unwrap().authz.snapshot(), before);
+        assert!(
+            RoleBindingRepository::list_for_principal(
+                &first_iam.store,
+                &PrincipalRef::Account {
+                    account_id: refused
+                }
+            )
+            .unwrap()
+            .is_empty()
+        );
+        first_iam
+            .store
+            .backend()
+            .execute("PRAGMA query_only=OFF", &[])
+            .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(COOKIE, cookie.parse().unwrap());
+        assert!(first_iam.authenticate_browser(&headers).is_ok());
         drop(first_iam);
 
-        let restarted_iam = embedded_iam(dir.path(), awaken_time::system_clock());
+        let restarted_iam = embedded_iam(dir.path(), awaken_time::system_clock()).unwrap();
         let (restarted_browser, _) = restarted_iam.begin_local_browser(account.clone()).unwrap();
         async fn echo() -> Response {
             (StatusCode::OK, "ok").into_response()
@@ -148,7 +193,7 @@ mod tests {
             .unwrap();
         assert_eq!(logout.status(), StatusCode::NO_CONTENT);
 
-        let after_logout_iam = embedded_iam(dir.path(), awaken_time::system_clock());
+        let after_logout_iam = embedded_iam(dir.path(), awaken_time::system_clock()).unwrap();
         let (after_logout_browser, _) = after_logout_iam.begin_local_browser(account).unwrap();
         let rejected = awaken_iam_host::local_browser_router(after_logout_browser)
             .oneshot(

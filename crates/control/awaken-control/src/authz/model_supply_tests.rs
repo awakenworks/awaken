@@ -16,12 +16,13 @@ fn hosted_member_bundle_reads_workspace_resources_and_runs_only_at_its_workspace
     let profiles =
         AuthorizationProfileAdmin::new(Arc::new(awaken_iam_server::InMemoryStore::new()));
     let mut engine = AuthzApi::new();
-    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile()).unwrap();
     reconcile_builtin_profile(
         &profiles,
         &mut engine,
         hosted_runtime_authorization_profile(),
-    );
+    )
+    .unwrap();
     let principal = PrincipalRef::Account {
         account_id: awaken_iam_contract::AccountId("member".into()),
     };
@@ -97,12 +98,13 @@ fn agent_executor_is_exact_workspace_and_hosted_run_only() {
     let profiles =
         AuthorizationProfileAdmin::new(Arc::new(awaken_iam_server::InMemoryStore::new()));
     let mut engine = AuthzApi::new();
-    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile()).unwrap();
     reconcile_builtin_profile(
         &profiles,
         &mut engine,
         hosted_runtime_authorization_profile(),
-    );
+    )
+    .unwrap();
 
     let principal = PrincipalRef::Service {
         service_id: "flow-agent-executor".to_owned(),
@@ -197,7 +199,7 @@ fn workspace_publisher_can_discover_but_cannot_administer_model_supply() {
     let profiles =
         AuthorizationProfileAdmin::new(Arc::new(awaken_iam_server::InMemoryStore::new()));
     let mut engine = AuthzApi::new();
-    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile()).unwrap();
 
     let principal = PrincipalRef::Service {
         service_id: "flow-publisher".to_owned(),
@@ -336,12 +338,13 @@ fn credential_ingress_is_exact_workspace_apikey_and_provider_connect_only() {
     let profiles =
         AuthorizationProfileAdmin::new(Arc::new(awaken_iam_server::InMemoryStore::new()));
     let mut engine = AuthzApi::new();
-    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile()).unwrap();
     reconcile_builtin_profile(
         &profiles,
         &mut engine,
         hosted_runtime_authorization_profile(),
-    );
+    )
+    .unwrap();
 
     let principal = PrincipalRef::Service {
         service_id: "flow-credential-ingress".to_owned(),

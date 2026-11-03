@@ -61,8 +61,10 @@ async fn assemble(shape: Shape, iam_root: &std::path::Path) -> ProcessRouters {
             (in_memory_process_stores().await, None, Role::AllInOne)
         }
     };
-    let iam = matches!(shape, Shape::SecuredAllInOne)
-        .then(|| awaken_control::embedded_iam(iam_root, stores.clock.clone()));
+    let iam = matches!(shape, Shape::SecuredAllInOne).then(|| {
+        awaken_control::embedded_iam(iam_root, stores.clock.clone())
+            .expect("prepare secured route inventory IAM")
+    });
     let mut process = crate::exact_host_model::local_test_process_options(
         &stores,
         Box::new(awaken_cli::LocalExecution::workdir()),

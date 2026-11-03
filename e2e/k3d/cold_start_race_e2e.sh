@@ -47,6 +47,8 @@ DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
 MANIFEST="$DEPLOY_DIR/cold-start"
 DRIVER="$REPO_ROOT/e2e/k3d/scaling_driver.ts"
 PF_PID=""
+KUBECONFIG_FILE="$(mktemp)"
+k3d_use_private_kubeconfig "$KUBECONFIG_FILE"
 
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
 ok()  { echo -e "\033[1;32m$*\033[0m"; }
@@ -55,7 +57,7 @@ err() { echo -e "\033[1;31m$*\033[0m"; }
 cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d_delete_cluster_and_remove "$CLUSTER" "$DEPLOY_DIR/awaken-server"
+  k3d_delete_cluster_and_remove "$CLUSTER" "$DEPLOY_DIR/awaken-server" "$KUBECONFIG_FILE"
 }
 k3d_install_exit_cleanup cleanup
 
@@ -75,6 +77,7 @@ k3d_docker_build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPL
 log "3/5 create SINGLE-node k3d cluster $CLUSTER (--agents 0, disk-lean)"
 # The shared harness owns nested-node reserve and actual capacity admission.
 k3d_create_cluster "$CLUSTER" 0
+k3d_bind_private_kubeconfig "$CLUSTER"
 
 log "4/5 side-load images into the cluster (single-platform tars)"
 k3d_import_images "$CLUSTER" "$IMAGE" postgres:16

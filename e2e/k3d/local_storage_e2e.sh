@@ -12,30 +12,35 @@ LOCAL_STORAGE_CLUSTER="awaken-pvc-$$"
 LOCAL_STORAGE_CONTEXT="k3d-$LOCAL_STORAGE_CLUSTER"
 LOCAL_STORAGE_OUTPUT="${AWAKEN_EVAL_ARTIFACT_DIR:-$LOCAL_STORAGE_ROOT/target/test-evidence/local-storage}"
 LOCAL_STORAGE_CREATED=0
-LOCAL_STORAGE_PRIOR_CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
+LOCAL_STORAGE_KUBECONFIG="$(mktemp)"
+k3d_use_private_kubeconfig "$LOCAL_STORAGE_KUBECONFIG"
 mkdir -p "$LOCAL_STORAGE_OUTPUT"
 cleanup() {
-  local status=$?
+  local status=0 step_status=0 node
   if [[ "$LOCAL_STORAGE_CREATED" = 1 ]]; then
+    _k3d_check_creation || return "$?"
+    node=$(_k3d_created_node_id "k3d-$LOCAL_STORAGE_CLUSTER-server-0") || return "$?"
     kubectl --context "$LOCAL_STORAGE_CONTEXT" get pv -o json > "$LOCAL_STORAGE_OUTPUT/final-pvs.json" 2>&1 || true
     kubectl --context "$LOCAL_STORAGE_CONTEXT" get events -A -o json > "$LOCAL_STORAGE_OUTPUT/final-events.json" 2>&1 || true
     kubectl --context "$LOCAL_STORAGE_CONTEXT" -n awaken-storage logs daemonset/awaken-local-storage --tail=300 > "$LOCAL_STORAGE_OUTPUT/controller.log" 2>&1 || true
-    kubectl --context "$LOCAL_STORAGE_CONTEXT" delete namespace pvc-a pvc-b --ignore-not-found --wait=true --timeout=90s >/dev/null 2>&1 || true
-    kubectl --context "$LOCAL_STORAGE_CONTEXT" -n awaken-storage delete daemonset awaken-local-storage --ignore-not-found --wait=true --timeout=90s >/dev/null 2>&1 || true
-    docker exec "k3d-$LOCAL_STORAGE_CLUSTER-server-0" sh -ec 'for path in /mnt/awaken-local/volume-*; do test -d "$path" || continue; umount "$path"; done' >/dev/null 2>&1 || true
-    k3d_delete_cluster "$LOCAL_STORAGE_CLUSTER" || status=1
+    kubectl --context "$LOCAL_STORAGE_CONTEXT" delete namespace pvc-a pvc-b --ignore-not-found --wait=true --timeout=90s >/dev/null 2>&1 || status=$?
+    kubectl --context "$LOCAL_STORAGE_CONTEXT" -n awaken-storage delete daemonset awaken-local-storage --ignore-not-found --wait=true --timeout=90s >/dev/null 2>&1 || step_status=$?
+    [[ "$status" != 0 ]] || status="$step_status"
+    step_status=0
+    docker exec "$node" sh -ec 'for path in /mnt/awaken-local/volume-*; do test -d "$path" || continue; umount "$path"; done' >/dev/null 2>&1 || step_status=$?
+    [[ "$status" != 0 ]] || status="$step_status"
   fi
-  if [[ -n "$LOCAL_STORAGE_PRIOR_CONTEXT" && "$(kubectl config current-context 2>/dev/null || true)" = "$LOCAL_STORAGE_CONTEXT" ]]; then
-    kubectl config use-context "$LOCAL_STORAGE_PRIOR_CONTEXT" >/dev/null || status=1
-  fi
-  exit "$status"
+  step_status=0
+  k3d_delete_cluster_and_remove "$LOCAL_STORAGE_CLUSTER" "$LOCAL_STORAGE_KUBECONFIG" || step_status=$?
+  [[ "$status" != 0 ]] || status="$step_status"
+  return "$status"
 }
-trap cleanup EXIT
-if k3d cluster list -o json | python3 -c 'import json,sys;sys.exit(0 if any(x["name"]==sys.argv[1] for x in json.load(sys.stdin)) else 1)' "$LOCAL_STORAGE_CLUSTER"; then
-  echo 'unique fixture already exists; refusing replacement' >&2; exit 2
-fi
-LOCAL_STORAGE_CREATED=1
+k3d_install_exit_cleanup cleanup
+# The shared creator alone refuses collisions and unknown observations.
 k3d_create_cluster "$LOCAL_STORAGE_CLUSTER" 0 128Mi '' "$(k3d_local_storage_image)"
+LOCAL_STORAGE_CREATED=1
+k3d_bind_private_kubeconfig "$LOCAL_STORAGE_CLUSTER"
+
 k3d_import_storage_images "$LOCAL_STORAGE_CLUSTER"
 k3d_install_local_storage "$LOCAL_STORAGE_CLUSTER" "$LOCAL_STORAGE_OUTPUT/install" 4
 AWAKEN_LOCAL_STORAGE_CONTEXT="$LOCAL_STORAGE_CONTEXT" AWAKEN_EVAL_ARTIFACT_DIR="$LOCAL_STORAGE_OUTPUT" \

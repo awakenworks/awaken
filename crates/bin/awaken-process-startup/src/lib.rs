@@ -502,7 +502,7 @@ pub async fn build_secured_all_in_one_router(
         .await
         .unwrap_or_else(|error| panic!("open local deployment stores: {error}"));
     // IAM judges tokens on the same wall clock the stores stamp with.
-    let iam = embedded_iam(dir, stores.clock.clone());
+    let iam = embedded_iam(dir, stores.clock.clone()).expect("prepare secured test IAM");
     let options = exact_host_model::local_test_process_options(&stores, execution);
     let router = prepare_runtime_routers(
         stores,
