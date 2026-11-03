@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use awaken_agent_contract::{RedactedString, RedactedStringSource};
+use awaken_iam_client::IamDecisionError;
 use awaken_iam_contract::{
     AuthorizationDecision, AuthorizationRequest, PrincipalRef, ScopeRef, Timestamp,
 };
@@ -85,6 +86,7 @@ pub(super) async fn authenticate_off_event_loop(
         Ok(Err(AuthReject::Expired)) => Err(RemoteAuthenticationFailure::Expired),
         Ok(Err(AuthReject::Revoked)) => Err(RemoteAuthenticationFailure::Revoked),
         Ok(Err(AuthReject::Invalid)) => Err(RemoteAuthenticationFailure::Invalid),
+        Ok(Err(AuthReject::Unavailable)) => Err(RemoteAuthenticationFailure::Transport),
         Err(_) => Err(RemoteAuthenticationFailure::Transport),
     }
 }
@@ -188,7 +190,7 @@ impl RemoteManagementAuthz {
             None => {
                 sourced = self
                     .cloud_user_token()
-                    .map_err(|_| AuthReject::Invalid)?
+                    .map_err(|_| AuthReject::Unavailable)?
                     .ok_or(AuthReject::Invalid)?;
                 sourced.expose_secret()
             }
@@ -196,7 +198,7 @@ impl RemoteManagementAuthz {
         let principal = self
             .gate
             .read()
-            .map_err(|_| AuthReject::Invalid)?
+            .map_err(|_| AuthReject::Unavailable)?
             .gate
             .authenticate_detailed(
                 token,
@@ -221,11 +223,11 @@ impl RemoteManagementAuthz {
         action: &str,
         scope: ScopeRef,
         namespace: ActionNamespace,
-    ) -> AuthorizationDecision {
-        let Ok(gate) = self.gate_for_authorization() else {
-            return AuthorizationDecision::Deny;
-        };
-        IamClient::authorize(
+    ) -> Result<AuthorizationDecision, IamDecisionError> {
+        let gate = self
+            .gate_for_authorization()
+            .map_err(|_| IamDecisionError::Unavailable)?;
+        IamClient::authorize_result(
             &gate,
             AuthorizationRequest::direct(principal, qualified_action(namespace, action), scope),
         )

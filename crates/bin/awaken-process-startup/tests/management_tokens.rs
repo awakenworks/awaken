@@ -255,7 +255,7 @@ fn a_workspace_bound_admin_mints_only_for_its_own_workspace() {
     run_local_deployment(async {
         let dir = tempfile::tempdir().unwrap();
         let (app, iam) = shared_secured_all_in_one_router(dir.path(), &KEY).await;
-        iam.register_workspace(OTHER_WORKSPACE);
+        iam.register_workspace(OTHER_WORKSPACE).unwrap();
         let bootstrap = admin_token(dir.path());
         let (scoped, _) = mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
 

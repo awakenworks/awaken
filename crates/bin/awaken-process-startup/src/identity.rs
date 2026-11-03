@@ -109,9 +109,9 @@ fn identity_wiring_blocking(
                     platform_workspace,
                     clock,
                 ),
-            };
+            }?;
             for workspace_id in &deployment.iam_workspaces {
-                iam.register_workspace(workspace_id);
+                iam.register_workspace(workspace_id)?;
             }
             let account_id = AccountId("local-console-admin".to_owned());
             let (browser, handoff) = iam

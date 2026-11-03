@@ -225,7 +225,7 @@ fn built_in_profile_reconciles_changed_contract_once_and_hydrates_replays() {
         .grants
         .retain(|grant| !grant.action_pattern.contains("model_supply"));
 
-    reconcile_builtin_profile(&profiles, &mut engine, legacy.clone());
+    reconcile_builtin_profile(&profiles, &mut engine, legacy.clone()).unwrap();
     assert_eq!(
         profiles
             .active(&legacy.namespace)
@@ -235,10 +235,10 @@ fn built_in_profile_reconciles_changed_contract_once_and_hydrates_replays() {
         1,
         "R1"
     );
-    reconcile_builtin_profile(&profiles, &mut engine, legacy.clone());
+    reconcile_builtin_profile(&profiles, &mut engine, legacy.clone()).unwrap();
     assert_eq!(profiles.list(&legacy.namespace).unwrap().len(), 1, "R2");
 
-    reconcile_builtin_profile(&profiles, &mut engine, current.clone());
+    reconcile_builtin_profile(&profiles, &mut engine, current.clone()).unwrap();
     let active = profiles.active(&current.namespace).unwrap().unwrap();
     assert_eq!(active.revision, 2, "R3");
     assert_eq!(active.document, current.document);
@@ -253,7 +253,7 @@ fn built_in_profile_reconciles_changed_contract_once_and_hydrates_replays() {
         2
     );
 
-    reconcile_builtin_profile(&profiles, &mut engine, current.clone());
+    reconcile_builtin_profile(&profiles, &mut engine, current.clone()).unwrap();
     assert_eq!(profiles.list(&current.namespace).unwrap().len(), 2, "R4");
     assert_eq!(
         profiles
@@ -310,12 +310,12 @@ fn workspace_cutover_retires_both_legacy_active_heads_without_deleting_history()
             .unwrap();
     }
 
-    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile()).unwrap();
     for namespace in [
         LEGACY_MANAGEMENT_POLICY_NAMESPACE,
         LEGACY_RESOURCE_POLICY_NAMESPACE,
     ] {
-        retire_legacy_profile(&profiles, &mut engine, namespace);
+        retire_legacy_profile(&profiles, &mut engine, namespace).unwrap();
         let namespace = NamespaceId(namespace.to_owned());
         assert!(profiles.active(&namespace).unwrap().is_none());
         assert_eq!(

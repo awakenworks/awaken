@@ -18,13 +18,13 @@ pub(super) fn reconcile_agents_directory(
     org_id: &str,
     workspace_id: &str,
     at: &Timestamp,
-) {
+) -> Result<(), String> {
     let mut pap = PolicyAdminApi::new(store.clone());
     let directory = DirectoryApi::new(store.clone());
     let org = OrgId(org_id.to_owned());
     if pap
         .get_org(&org)
-        .expect("read local IAM organization")
+        .map_err(|error| format!("read local IAM organization: {error}"))?
         .is_none()
     {
         pap.create_org(
@@ -39,7 +39,7 @@ pub(super) fn reconcile_agents_directory(
             },
             at.clone(),
         )
-        .expect("create local IAM organization");
+        .map_err(|error| format!("create local IAM organization: {error}"))?;
     }
 
     let product_space = ProductSpaceRef {
@@ -62,7 +62,8 @@ pub(super) fn reconcile_agents_directory(
                 at.clone(),
             ),
         )
-        .expect("ensure Agents Directory placement");
+        .map_err(|error| format!("ensure Agents Directory placement: {error}"))?;
+    Ok(())
 }
 
 #[cfg(test)]

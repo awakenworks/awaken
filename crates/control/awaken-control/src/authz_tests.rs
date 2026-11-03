@@ -428,7 +428,7 @@ fn embedded_resource_profile_authorizes_every_preset_reader_role() {
         .enumerate()
     {
         let dir = tempfile::tempdir().unwrap();
-        let iam = embedded_iam(dir.path(), awaken_time::system_clock());
+        let iam = embedded_iam(dir.path(), awaken_time::system_clock()).unwrap();
         let service_id = format!("resource-profile-{index}");
         iam.mint_service_token(TokenSpec {
             token_id: format!("tok_resource_profile_{index}"),
@@ -536,7 +536,7 @@ use tower::ServiceExt as _;
 /// the caller keeps it alive for the test.
 pub(super) fn fresh_iam() -> (tempfile::TempDir, Arc<ManagementAuthz>) {
     let dir = tempfile::tempdir().unwrap();
-    let iam = embedded_iam(dir.path(), awaken_time::system_clock());
+    let iam = embedded_iam(dir.path(), awaken_time::system_clock()).unwrap();
     (dir, iam)
 }
 
@@ -1353,7 +1353,8 @@ async fn af6_workspace_user_reading_credentials_denies() {
             principal,
             APIKEY_READ,
             ScopeRef::Workspace { workspace_id: ws }
-        ),
+        )
+        .unwrap(),
         AuthorizationDecision::Deny
     );
 }
@@ -1929,7 +1930,7 @@ async fn embedded_iam_rehydrates_minted_and_revoked_tokens_across_a_restart() {
     let survivor;
     let revoked;
     {
-        let iam = embedded_iam(dir.path(), awaken_time::system_clock());
+        let iam = embedded_iam(dir.path(), awaken_time::system_clock()).unwrap();
         survivor = mint(&iam, "tok_survivor", BOOTSTRAP_WORKSPACE, "admin");
         revoked = mint(&iam, "tok_revoked_restart", BOOTSTRAP_WORKSPACE, "admin");
         iam.revoke_token("tok_revoked_restart").unwrap();
@@ -1937,7 +1938,7 @@ async fn embedded_iam_rehydrates_minted_and_revoked_tokens_across_a_restart() {
 
     // Reopen over the SAME data dir: tokens already exist, so no re-bootstrap;
     // the durable rows rehydrate into a fresh live evaluator.
-    let iam2 = embedded_iam(dir.path(), awaken_time::system_clock());
+    let iam2 = embedded_iam(dir.path(), awaken_time::system_clock()).unwrap();
     let app = guarded_app(iam2);
 
     // The survivor still authenticates AND authorizes (admin reads the catalog).
@@ -1970,3 +1971,6 @@ mod identity_tests;
 mod token_view_tests;
 #[path = "authz_tunnel_guard_tests.rs"]
 mod tunnel_guard_tests;
+
+#[path = "authz/tests/failure_tests.rs"]
+mod failure_tests;
