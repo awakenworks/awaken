@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 import ts from 'typescript';
 
 const driver = new URL('./managed_skill_lazy_real_e2e.mjs', import.meta.url);
@@ -172,4 +173,117 @@ test('a pre-existing dangling receipt is rejected before stopping the runtime', 
   assert.equal(f.calls[0].args[0], 'inspect');
   assert.equal(f.calls[0].args.at(-1), oldId);
   assert.equal(fs.lstatSync(f.receipt).isSymbolicLink(), true);
+});
+
+// Build-input decision table, separate from the CID transition evidence above:
+// C1 default/explicit runtime image; C2 each exact role resolves/fails; C3 a
+// nondefault target has stale target/release decoys; C4 alias copy/image fails.
+// Effects: E1 stage CLI/Coordinator/Worker snapshots with the exact feature and
+// release inputs, reusing CLI bytes for awaken-server; E2 preserve the original
+// failure before later image/cluster work; E3 explicit image performs no build.
+// B1 C1=default+C2=all healthy+C3 => E1; B2 any C2 failure or C4 => E2;
+// B3 C1=explicit => E3. Execute the ACTUAL inline shell branch between its two
+// fixed surrounding statements. Only resolver/Cargo/copy/image IO is replaced;
+// the final marker observes continuation, not a fake cluster or product Ready.
+const shellSource = fs.readFileSync(new URL('./k3d/managed_skill_lazy_real_e2e.sh', import.meta.url), 'utf8');
+const buildStart = 'if [[ -z "${AWAKEN_LAZY_RUNTIME_IMAGE:-}" ]]; then\n';
+const buildEnd = '\nfi\n[[ "$(docker inspect';
+assert.equal(shellSource.split(buildStart).length, 2, 'one original runtime build branch');
+assert.equal(shellSource.split(buildEnd).length, 2, 'one original post-build boundary');
+const buildBegin = shellSource.indexOf(buildStart);
+const buildFinish = shellSource.indexOf(buildEnd, buildBegin);
+assert.ok(buildFinish > buildBegin, 'original branch boundaries remain ordered');
+const originalBuildBranch = shellSource.slice(buildBegin, buildFinish + '\nfi'.length);
+
+function shellBuildFixture(t, { failure = '', explicitImage = false } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-lazy-build-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const context = path.join(root, 'runtime image context');
+  fs.mkdirSync(context);
+  const decoys = path.join(root, 'target', 'release');
+  fs.mkdirSync(decoys, { recursive: true });
+  for (const name of ['awaken', 'awaken-coordinator', 'awaken-worker']) {
+    fs.writeFileSync(path.join(decoys, name), `stale:${name}`);
+  }
+  const calls = path.join(root, 'io.jsonl');
+  fs.writeFileSync(calls, '');
+  const stub = path.join(root, 'io.mjs');
+  fs.writeFileSync(stub, `import fs from 'node:fs';
+const [operation, ...args] = process.argv.slice(2);
+fs.appendFileSync(process.env.LAZY_IO_CALLS, JSON.stringify({ operation, args, target: process.env.CARGO_TARGET_DIR })+'\\n');
+if (operation === 'resolve') {
+  const failure = new Map([['awaken-cli',41],['awaken-coordinator-process',42],['awaken-worker',43]]);
+  if (process.env.LAZY_IO_FAILURE === args[0]) process.exit(failure.get(args[0]));
+  const destination = args[args.indexOf('--snapshot-destination') + 1];
+  if (!args.includes('--snapshot-destination')) process.exit(98);
+  fs.writeFileSync(destination, 'selected:'+args[0]+'/'+args[1], { mode: 0o755 });
+} else if (operation === 'copy') {
+  if (process.env.LAZY_IO_FAILURE === 'copy') process.exit(29);
+  fs.copyFileSync(args[0], args[1]);
+} else if (operation === 'image' && process.env.LAZY_IO_FAILURE === 'image') process.exit(37);
+`);
+  const result = spawnSync('bash', ['-c', `set -euo pipefail
+resolve_cargo_executable() { "$LAZY_IO_NODE" "$LAZY_IO_STUB" resolve "$@"; }
+cargo() { "$LAZY_IO_NODE" "$LAZY_IO_STUB" cargo "$@"; }
+cp() { "$LAZY_IO_NODE" "$LAZY_IO_STUB" copy "$@"; }
+k3d_docker_build() { "$LAZY_IO_NODE" "$LAZY_IO_STUB" image "$@"; }
+${originalBuildBranch}
+"$LAZY_IO_NODE" "$LAZY_IO_STUB" continuation
+`], { cwd: root, encoding: 'utf8', env: { ...process.env,
+    CARGO_TARGET_DIR: path.join(root, 'nondefault final target'),
+    AWAKEN_LAZY_RUNTIME_IMAGE: explicitImage ? 'fixture:already-built' : '',
+    LAZY_TEMP: context, LAZY_COMMIT: 'a'.repeat(40), LAZY_IMAGE: 'fixture:runtime',
+    LAZY_IO_NODE: process.execPath, LAZY_IO_STUB: stub, LAZY_IO_CALLS: calls,
+    LAZY_IO_FAILURE: failure } });
+  assert.ifError(result.error);
+  return { result, context, decoys,
+    calls: fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean).map(JSON.parse),
+    target: path.join(root, 'nondefault final target') };
+}
+
+test('default image stages all exact role snapshots instead of stale target paths', t => {
+  const f = shellBuildFixture(t);
+  assert.equal(f.result.status, 0, f.result.stderr);
+  assert.equal(fs.readFileSync(path.join(f.context, 'awaken'), 'utf8'), 'selected:awaken-cli/awaken', 'B1 current CLI, not the stale decoy');
+  assert.equal(fs.readFileSync(path.join(f.context, 'awaken-server'), 'utf8'), 'selected:awaken-cli/awaken', 'B1 same CLI snapshot alias');
+  assert.equal(fs.readFileSync(path.join(f.context, 'awaken-coordinator'), 'utf8'), 'selected:awaken-coordinator-process/awaken-coordinator', 'B1 independently declared Coordinator');
+  assert.equal(fs.readFileSync(path.join(f.context, 'awaken-worker'), 'utf8'), 'selected:awaken-worker/awaken-worker', 'B1 Worker');
+  const roles = [['awaken-cli', 'awaken'], ['awaken-coordinator-process', 'awaken-coordinator'], ['awaken-worker', 'awaken-worker']];
+  assert.deepEqual(f.calls.filter(call => call.operation === 'resolve'), roles.map(([owner, binary]) => ({
+    operation: 'resolve', args: [owner, binary, '--release', '--features', 'container-k8s', '--snapshot-destination', path.join(f.context, binary)], target: f.target,
+  })), 'B1 exact role/feature/profile/snapshot inputs');
+  assert.equal(f.calls.some(call => call.operation === 'cargo'), false, 'B1 no second Cargo path');
+  assert.deepEqual(f.calls.filter(call => call.operation === 'copy').map(call => call.args), [[path.join(f.context, 'awaken'), path.join(f.context, 'awaken-server')]], 'B1 one alias copy');
+  assert.deepEqual(f.calls.filter(call => call.operation === 'image').map(call => call.args), [[
+    '--load', '-f', 'deploy/k3d/Dockerfile', '--build-arg', 'AUXILIARY_EXECUTABLE=awaken',
+    '--label', `org.opencontainers.image.revision=${'a'.repeat(40)}`, '-t', 'fixture:runtime', f.context,
+  ]], 'B1 original image inputs');
+  assert.equal(f.calls.at(-1).operation, 'continuation');
+  for (const [, binary] of roles) assert.equal(fs.readFileSync(path.join(f.decoys, binary), 'utf8'), `stale:${binary}`, 'B1 decoys untouched');
+});
+
+for (const [owner, status] of [['awaken-cli', 41], ['awaken-coordinator-process', 42], ['awaken-worker', 43]]) {
+  test(`${owner} resolution failure preserves its code before image or cluster work`, t => {
+    const f = shellBuildFixture(t, { failure: owner });
+    assert.equal(f.result.status, status, 'B2 original resolver code');
+    assert.equal(f.calls.at(-1).args[0], owner, 'B2 failed selected role is the last operation');
+    assert.equal(f.calls.some(call => ['image', 'continuation'].includes(call.operation)), false, 'B2 no later effects');
+  });
+}
+
+for (const [failure, status] of [['copy', 29], ['image', 37]]) {
+  test(`runtime ${failure} failure preserves its code and blocks continuation`, t => {
+    const f = shellBuildFixture(t, { failure });
+    assert.equal(f.result.status, status, 'B2 original IO code');
+    assert.equal(f.calls.at(-1).operation, failure, 'B2 no later operation');
+    assert.equal(f.calls.some(call => call.operation === 'continuation'), false, 'B2 no cluster handoff');
+    if (failure === 'copy') assert.equal(f.calls.some(call => call.operation === 'image'), false);
+  });
+}
+
+test('an explicit runtime image skips all host role builds and staging', t => {
+  const f = shellBuildFixture(t, { explicitImage: true });
+  assert.equal(f.result.status, 0, f.result.stderr);
+  assert.deepEqual(f.calls, [{ operation: 'continuation', args: [], target: f.target }], 'B3 original override branch');
+  assert.deepEqual(fs.readdirSync(f.context), [], 'B3 no new build artifacts');
 });
