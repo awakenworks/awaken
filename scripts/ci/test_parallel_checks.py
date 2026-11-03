@@ -95,25 +95,32 @@ test -s results || exit 55
                 self.assertEqual(self.run_queue(Path(temporary), "", jobs=jobs).returncode, 2)
 
     def test_worker_timeout_and_signal_are_failures_with_child_cleanup(self) -> None:
+        from test_deadline import cleanup_fixture_group
+
         for signal_worker in (False, True):
             with self.subTest(signal_worker=signal_worker), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 marker = root / "pid"
                 receipt = root / "receipt.json"
-                child = "import os,pathlib,time,sys;pathlib.Path(sys.argv[1]).write_text(str(os.getpid()));time.sleep(120)"
+                child = ("import os,pathlib,time,sys;p=pathlib.Path(sys.argv[1]);"
+                         "pending=p.with_suffix('.pending');pending.write_text(str(os.getpid()));"
+                         "pending.replace(p);time.sleep(120)")
                 process = subprocess.Popen([sys.executable, str(ROOT / "scripts/ci/parallel_check.py"), "--receipt", str(receipt), "--timeout", "1", "--", sys.executable, "-c", child, str(marker)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                until = time.monotonic() + 5
-                # awaken-allow(wait): the actual child PID exists before cancellation.
-                while not marker.exists() and process.poll() is None and time.monotonic() < until:
-                    time.sleep(0.01)
-                self.assertTrue(marker.exists())
-                if signal_worker:
-                    process.terminate()
-                output = process.communicate(timeout=10)
-                self.assertEqual(process.returncode, 143 if signal_worker else 124, output)
-                self.assertNotEqual(json.loads(receipt.read_text())["status"], 0)
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(int(marker.read_text()), 0)
+                try:
+                    until = time.monotonic() + 5
+                    # awaken-allow(wait): the actual child PID exists before cancellation.
+                    while not marker.exists() and process.poll() is None and time.monotonic() < until:
+                        time.sleep(0.01)
+                    self.assertTrue(marker.exists())
+                    if signal_worker:
+                        process.terminate()
+                    output = process.communicate(timeout=10)
+                    self.assertEqual(process.returncode, 143 if signal_worker else 124, output)
+                    self.assertNotEqual(json.loads(receipt.read_text())["status"], 0)
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(int(marker.read_text()), 0)
+                finally:
+                    cleanup_fixture_group(marker, process)
 
     def test_resource_refusal_stops_dependent_gate_work_with_exact_evidence(self):
         # G1 a selected sequential gate returns 75 => preserve 75 and its
@@ -134,7 +141,11 @@ test -s results || exit 55
                 scripts = root / 'scripts/ci'; scripts.mkdir(parents=True)
                 for name in ('check-all.sh', '_provider_environment.sh', '_parallel_checks.sh',
                              'parallel_check.py', 'deadline.py', '_deadline.sh',
-                             'check-rust.sh', '_cargo_target.sh'):
+                             'check-rust.sh', '_cargo_target.sh', '_rust_test_execution.sh',
+                             '_build_observation.sh', 'ci_performance.py',
+                             'formal_run_evidence.py', 'formal_sources.py', 'formal_plan.py',
+                             'formal_anchors.py', 'formal_kani_options.py',
+                             '_crate_boundary_workspace.py', '_crate_dependency_fitness.py'):
                     shutil.copyfile(ROOT / 'scripts/ci' / name, scripts / name)
                 (scripts / 'check-rust.sh').chmod(0o755)
                 (root / 'Cargo.toml').write_text('[workspace]\nmembers=[]\n')

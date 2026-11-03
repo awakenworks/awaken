@@ -620,7 +620,9 @@ class BootstrapTests(unittest.TestCase):
         current = self.cache / "selected"
         current.symlink_to(self.cache / "A")
         gate = (ROOT / "scripts/ci/check_formal.sh").read_text()
-        selection = 'kani_selection=' + gate.split('kani_selection=', 1)[1].split("\nrust_trace_dir=", 1)[0]
+        selection_start = gate.index('kani_selection=')
+        selection_end = gate.index('\n# Declared-environment preflight.', selection_start)
+        selection = gate[selection_start:selection_end]
         selection = selection.replace('scripts/ci/bootstrap_kani.sh --paths', 'bash scripts/ci/bootstrap_kani.sh --paths')
         script = selection + (
             '\nln -sfn "$CACHE_B" "$AWAKEN_KANI_SOURCE_DIR"'
