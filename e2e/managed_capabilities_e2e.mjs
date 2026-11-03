@@ -59,6 +59,9 @@ async function main() {
       // | R1 | read/glob/grep | perception | inherit default (no config) |
       // | R2 | bash/write/edit | controlled modification | enabled + always_ask |
       // | R3 | web_fetch/web_search | no routed plugin | disabled + always_allow |
+      // R3's pinned SDK response requires WebFetch's nullable url_sources even
+      // while disabled. No source restriction -> explicit null; WebSearch keeps
+      // its distinct shape. Retain exact equality for the complete wire member.
       const cfg = Object.fromEntries(ts.configs.map((c) => [c.name, c]));
       for (const inherited of ['read', 'glob', 'grep']) {
         assert.ok(!(inherited in cfg), `${inherited} inherits the exact Agent-toolset default`);
@@ -76,6 +79,7 @@ async function main() {
         type: 'web_fetch',
         enabled: false,
         permission_policy: { type: 'always_allow' },
+        url_sources: null,
       });
       assert.deepEqual(cfg.web_search, {
         name: 'web_search',
