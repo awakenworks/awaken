@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+from collections import Counter
 from pathlib import Path
 
 COHORT = {
@@ -21,6 +22,7 @@ COHORT = {
     "awaken-ext-compact": ("1.0.0", "2.0.0"),
     "awaken-ext-goal": ("1.0.0", "2.0.0"),
     "awaken-ext-mcp": ("0.1.0", "0.2.0"),
+    "awaken-mcp-wire": ("0.1.0", "0.2.0"),
     "awaken-ext-memory": ("1.0.0", "2.0.0"),
     "awaken-ext-permission": ("1.0.0", "2.0.0"),
     "awaken-ext-skills": ("0.1.0", "0.2.0"),
@@ -36,6 +38,13 @@ COHORT = {
 # selected_hand_recovery_modes is a real removed SDK API, acknowledged by2.0.
 # Provider's empty findings are a tool blindspot, not compatibility: its original
 # enum/Client E0004/E0308 and successful migration controls remain mandatory.
+# Fresh H395 (395303e5) default/all pinned0.47 raw reports versus the same
+# 50b3 baseline additionally record the v5 Credential/Goal/Memory/Tool/Contract
+# breaks below. Repeated entries are actual public-export occurrences, not
+# normalized away; audit acceptance requires their exact reviewed multiplicity.
+# McpWire's declared 0.2 ToolFault enum break is independently observed with
+# 222 nonempty forced-patch queries in each profile (ADR-0103), so its normal
+# major/zero-query observation cannot escape the same cohort audit boundary.
 # These data never replace nonempty queries, exact source/profile receipts, or
 # raw statuses; an unestablished/unknown set still refuses in the same parser.
 # Runtime/Contract findings were independently observed in the pinned0.47
@@ -64,22 +73,65 @@ APPROVED_FINDINGS = {
         ("inherent_method_missing", "method", "Runtime::with_max_consecutive_inference_failures"),
         ("struct_missing", "struct", "awaken_runtime::EmbeddedSession"),
     },
-    "awaken-runtime-contract": {
+    "awaken-runtime-contract": (
+        ("constructible_struct_adds_field", "field", "RuntimeRunContext.cancellation_cause"),
+        ("constructible_struct_adds_field", "field", "RuntimeRunContext.cancellation_cause"),
+        ("enum_variant_added", "variant", "EditError:Unavailable"),
         ("enum_variant_added", "variant", "Error:Admission"),
+        ("enum_variant_added", "variant", "Offer:Full"),
+        ("enum_variant_added", "variant", "WaitOutcome:Unavailable"),
         ("module_missing", "mod", "awaken_runtime_contract::credential"),
+        ("pub_module_level_const_missing", "const", "THREAD_USAGE_STATE_KEY"),
+        ("struct_missing", "struct", "awaken_runtime_contract::llm::ThreadUsage"),
+        ("struct_missing", "struct", "awaken_runtime_contract::llm::ThreadUsageKey"),
+        ("trait_method_missing", "method", "next_client_execution of trait OwnedToolContinuation"),
+    ),
+    "awaken-agent-contract": {
+        ("constructible_struct_adds_field", "field", "CredentialExecutionPolicy.handling_mode"),
+        ("enum_variant_added", "variant", "Error:CapacityExhausted"),
+        ("enum_variant_added", "variant", "Disposition:StopRouting"),
     },
-    "awaken-agent-contract": {("enum_variant_added", "variant", "Disposition:StopRouting")},
-    "awaken-ext-background-task": set(),
+    "awaken-ext-background-task": {
+        ("enum_missing", "enum", "awaken_ext_background_task::BackgroundTaskEnd"),
+        ("enum_missing", "enum", "awaken_ext_background_task::BackgroundTaskError"),
+        ("enum_missing", "enum", "awaken_ext_background_task::BackgroundWait"),
+        ("pub_module_level_const_missing", "const", "BACKGROUND_TASK_STATE_PREFIX"),
+        ("struct_missing", "struct", "awaken_ext_background_task::BackgroundTaskId"),
+        ("struct_missing", "struct", "awaken_ext_background_task::BackgroundTaskScope"),
+        ("struct_missing", "struct", "awaken_ext_background_task::BackgroundTaskCompletion"),
+        ("struct_missing", "struct", "awaken_ext_background_task::BackgroundTaskWaitCandidate"),
+    },
     "awaken-ext-compact": set(),
-    "awaken-ext-goal": set(),
+    "awaken-ext-goal": {
+        ("auto_trait_impl_removed", "type", "Error is no longer UnwindSafe"),
+        ("auto_trait_impl_removed", "type", "Error is no longer RefUnwindSafe"),
+        ("derive_trait_impl_removed", "type", "Error no longer derives PartialEq"),
+        ("derive_trait_impl_removed", "type", "Error no longer derives Eq"),
+        ("enum_variant_added", "variant", "Error:Admission"),
+    },
+    "awaken-mcp-wire": {
+        ("enum_variant_added", "variant", "McpTransportError:ToolFault"),
+    },
     "awaken-ext-mcp": set(),
-    "awaken-ext-memory": set(),
+    "awaken-ext-memory": (
+        ("constructible_struct_adds_field", "field", "MemoryTerminalExtractionRequest.execution"),
+        ("constructible_struct_adds_field", "field", "MemoryTerminalExtractionRequest.execution"),
+        ("constructible_struct_adds_private_field", "field", "MemoryExtractionIntent.execution"),
+        ("constructible_struct_adds_private_field", "field", "MemoryExtractionIntent.execution"),
+        ("enum_variant_added", "variant", "MemoryExtractionError:Unavailable"),
+        ("enum_variant_added", "variant", "MemoryExtractionError:Unavailable"),
+    ),
     "awaken-ext-permission": set(),
     "awaken-ext-skills": set(),
     "awaken-ext-state-machine": set(),
     "awaken-observability": set(),
     "awaken-store-inmem": set(),
-    "awaken-tool-contract": set(),
+    "awaken-tool-contract": (
+        ("enum_variant_added", "variant", "ToolCallPhase:Returned"),
+        ("enum_variant_added", "variant", "ToolCallPhase:KnownAborted"),
+        ("enum_variant_added", "variant", "ToolCallPhase:Returned"),
+        ("enum_variant_added", "variant", "ToolCallPhase:KnownAborted"),
+    ),
 }
 GENAI_GIT = "https://github.com/awakenworks/rust-genai.git"
 GENAI_REV = "da7b568fb413b3197acc13c93f334884f97c81ad"
@@ -108,6 +160,18 @@ def observations(output: str, expected: list[str], *, strict=False) -> dict[str,
             finding = ("method", method[1]) if method else None
         elif lint == "enum_variant_added":
             finding = ("variant", variant[1]) if variant else None
+        elif lint in ("constructible_struct_adds_field", "constructible_struct_adds_private_field"):
+            field = re.fullmatch(r"  field (\S+) in .+:\d+", line)
+            finding = ("field", field[1]) if field else None
+        elif lint in ("auto_trait_impl_removed", "derive_trait_impl_removed"):
+            grammar = (r"  type (.+ is no longer \S+), in .+:\d+"
+                       if lint == "auto_trait_impl_removed" else
+                       r"  type (.+ no longer derives \S+), in .+:\d+")
+            removed = re.fullmatch(grammar, line)
+            finding = ("type", removed[1]) if removed else None
+        elif lint == "pub_module_level_const_missing":
+            constant = re.fullmatch(r"  (\S+) in file .+:\d+", line)
+            finding = ("const", constant[1]) if constant else None
         else:
             finding = tagged.groups() if tagged else None
         summary = re.fullmatch(r"\s*Summary (.+)", line)
@@ -140,8 +204,9 @@ def observations(output: str, expected: list[str], *, strict=False) -> dict[str,
             if current is None or lint is None or "summary" in current:
                 raise ValueError("SDK SemVer finding has no package or lint")
             item = (lint, *finding)
-            if item in current["findings"]:
-                raise ValueError("SDK SemVer finding is duplicated")
+            # Pinned 0.47 can report one source item through multiple public
+            # exports. Preserve every physical occurrence; only the exact
+            # reviewed multiset in validate_audit can accept that multiplicity.
             current["findings"].append(item)
         elif summary:
             failed_in = False
@@ -200,7 +265,7 @@ def validate_audit(output: str, original_status: int, *, approved=APPROVED_FINDI
         if ((row["old_version"], row["new_version"]) != COHORT[name]
                 or row["version_change"] != "assume patch change"
                 or row["checks"] <= 0 or row["warned"]
-                or set(row["findings"]) != set(approved[name])):
+                or Counter(row["findings"]) != Counter(approved[name])):
             raise ValueError(f"SDK major audit is incomplete or has unreviewed changes: {name}")
     required_status = int(any(row["failed"] for row in rows.values()))
     if original_status != required_status:
@@ -281,7 +346,7 @@ def witness_cases(current: bool) -> dict[str, tuple[str | None, str]]:
             "owner_old_credential_root", "owner_old_tool_module", "owner_old_tool_root",
             "owner_canonical",
             "inference_old_disposition", "inference_old_error", "inference_old_gate",
-            "inference_old_runtime_ceiling",
+            "inference_old_runtime_ceiling", "mcp_old_transport_error",
         )}
     return {
         "old_enum": ("E0004", "match adapter {"),
@@ -310,6 +375,10 @@ def witness_cases(current: bool) -> dict[str, tuple[str | None, str]]:
         "inference_migrated_gate": (None, ""),
         "inference_old_runtime_ceiling": ("E0599", "runtime.with_max_consecutive_inference_failures(3)"),
         "inference_migrated_runtime_policy": (None, ""),
+        # ADR-0103: the original exhaustive wire error match compiles at the
+        # baseline, refuses ToolFault with E0004 now, and migrates explicitly.
+        "mcp_old_transport_error": ("E0004", "match error {"),
+        "mcp_migrated_transport_error": (None, ""),
     }
 
 
@@ -1054,5 +1123,60 @@ pub fn canonical_policy(
     runtime.with_retry_policy(policy)
 }
 fn main() {}
+''',
+    'mcp_old_transport_error': r'''// Compiler C/E: baseline exhaustive twelve-variant match -> build; the same
+// source against current ToolFault -> E0004 at the original match; explicit
+// ToolFault handling -> current build. No wildcard, shim, local error copy or
+// production compatibility path may hide the source break (ADR-0103).
+use awaken_mcp_wire::McpTransportError;
+
+pub fn classify(error: McpTransportError) -> bool {
+    match error {
+        McpTransportError::NotDispatched(_)
+        | McpTransportError::UnknownTool(_)
+        | McpTransportError::ServerNotFound(_)
+        | McpTransportError::ServerError(_)
+        | McpTransportError::TransportError(_)
+        | McpTransportError::IoError(_)
+        | McpTransportError::JsonError(_)
+        | McpTransportError::Timeout(_)
+        | McpTransportError::ProtocolError(_)
+        | McpTransportError::NotSupported(_)
+        | McpTransportError::ConnectionClosed
+        | McpTransportError::ServerRestarting(_) => false,
+    }
+}
+
+fn main() {
+    let _classifier: fn(McpTransportError) -> bool = classify;
+}
+''',
+    'mcp_migrated_transport_error': r'''// Compiler C/E: baseline exhaustive twelve-variant match -> build; the same
+// source against current ToolFault -> E0004 at the original match; explicit
+// ToolFault handling -> current build. No wildcard, shim, local error copy or
+// production compatibility path may hide the source break (ADR-0103).
+use awaken_mcp_wire::McpTransportError;
+
+pub fn classify(error: McpTransportError) -> bool {
+    match error {
+        McpTransportError::NotDispatched(_)
+        | McpTransportError::UnknownTool(_)
+        | McpTransportError::ServerNotFound(_)
+        | McpTransportError::ServerError(_)
+        | McpTransportError::TransportError(_)
+        | McpTransportError::IoError(_)
+        | McpTransportError::JsonError(_)
+        | McpTransportError::Timeout(_)
+        | McpTransportError::ProtocolError(_)
+        | McpTransportError::NotSupported(_)
+        | McpTransportError::ConnectionClosed
+        | McpTransportError::ServerRestarting(_) => false,
+        McpTransportError::ToolFault(_, _) => true,
+    }
+}
+
+fn main() {
+    let _classifier: fn(McpTransportError) -> bool = classify;
+}
 ''',
 }

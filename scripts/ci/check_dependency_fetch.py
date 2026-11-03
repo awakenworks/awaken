@@ -37,9 +37,27 @@ def workflow_errors(text: str) -> list[str]:
     errors = []
     if "runner: [ubuntu-22.04, windows-2025]" not in job or job.count(command) != 1:
         errors.append("cold dependency fetch must run on both Linux and Windows")
-    conditions = re.findall(r"(?m)^[ \t]*if:[ \t]*(.*)$", job)
+    # Admission stays unconditional. The existing terminal observation steps
+    # may depend on a run having started, without conditioning the cold fetch.
+    observation_commands = {
+        "name: Finish build observations":
+            'run: python3 scripts/ci/ci_performance.py finish --conclusion "${{ job.status }}"',
+        "name: Summarize build observations":
+            "run: python3 scripts/ci/ci_performance.py report --output target/test-timings/performance.json",
+    }
+    conditions = []
+    invalid_observation = False
+    for step in re.split(r"(?m)^      - ", job):
+        selected_conditions = re.findall(r"(?m)^[ \t]*if:[ \t]*(.*)$", step)
+        observation = observation_commands.get(step.split("\n", 1)[0])
+        if observation is None:
+            conditions.extend(selected_conditions)
+        elif (selected_conditions != ["always() && env.AWAKEN_BUILD_RUN_ID != ''"]
+              or step.count("        " + observation + "\n") != 1
+              or "check_dependency_fetch.py" in step):
+            invalid_observation = True
     if (any(value in job for value in ("rust-cache", "actions/cache", "continue-on-error", "--git-only"))
-            or conditions != ["always()"]):
+            or invalid_observation or conditions != ["always()"]):
         errors.append("cold dependency tier must not restore caches or suppress verification")
     for guard in ("python scripts/ci/check_trust_roots.py --self-test",
                   "python scripts/ci/check_trust_roots.py\n"):

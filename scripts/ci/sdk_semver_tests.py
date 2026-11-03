@@ -95,6 +95,12 @@ class SdkSemverEvidenceTests(unittest.TestCase):
                         value += f"  {item[2]}, previously in file baseline.rs:1\n"
                     elif lint == "enum_variant_added":
                         value += f"  variant {item[2]} in current.rs:1\n"
+                    elif lint in ("constructible_struct_adds_field", "constructible_struct_adds_private_field"):
+                        value += f"  field {item[2]} in current.rs:1\n"
+                    elif lint in ("auto_trait_impl_removed", "derive_trait_impl_removed"):
+                        value += f"  type {item[2]}, in current.rs:1\n"
+                    elif lint == "pub_module_level_const_missing":
+                        value += f"  {item[2]} in file baseline.rs:1\n"
                     else:
                         value += f"  {item[1]} {item[2]}, previously in file baseline.rs:1\n"
         summary = (f"semver requires new major version: {failed} major and 0 minor checks failed"
@@ -125,8 +131,9 @@ class SdkSemverEvidenceTests(unittest.TestCase):
         # B1-B5 cause/effect table, matching the actual pinned0.47 reports:
         # typed removed item / unprefixed method / current variant -> retain
         # each exact item; multiple items under one lint -> one failed query.
-        # Wrong lint/shape, duplicate item/block, or an unknown extra row in
-        # an otherwise complete block -> refusal. Parsing grants no approval;
+        # Wrong lint/shape, duplicate block, or an unknown extra row -> refusal.
+        # Repeated physical items stay observable; an unreviewed extra occurrence
+        # is refused by the same audit owner below. Parsing grants no approval;
         # version policy and original tool status remain separate decisions.
         findings = {
             ("inherent_method_missing", "method", "Runtime::session"),
@@ -142,13 +149,45 @@ class SdkSemverEvidenceTests(unittest.TestCase):
         for changed in (
             output.replace(variant, variant.replace(" in ", " at ")),
             output.replace(method, "  method Runtime::session, previously in file baseline.rs:1\n"),
-            output.replace(method, method * 2),
             output.replace(variant, variant + "  variant hidden with unsupported syntax\n"),
             output.replace("--- failure enum_variant_added:", "--- failure function_missing:"),
             output.replace("Failed in:\n", "Failed in:\nFailed in:\n", 1),
         ):
             with self.subTest(report=changed), self.assertRaises(ValueError):
                 evidence.observations(changed, ["awaken-runtime"], strict=True)
+
+        known = {name: findings if name == "awaken-runtime" else set() for name in evidence.COHORT}
+        complete = "".join(self.report(name, failures=known[name]) for name in sorted(known))
+        with self.assertRaises(ValueError):
+            evidence.validate_audit(complete.replace(method, method * 2), 1, approved=known)
+
+    def test_pinned_current_rows_preserve_exact_reviewed_export_occurrences(self):
+        # C/E table: known field/auto-trait/derive/const grammar + complete pinned
+        # report -> retain exact items; reviewed two-export occurrence -> accept.
+        # Missing/extra occurrence, unknown item/grammar or wrong lint -> refuse.
+        # This is controlled parser input, not a production approval or Cargo run.
+        known = {name: [] for name in evidence.COHORT}
+        field = ("constructible_struct_adds_field", "field", "Fixture.public")
+        findings = [field, field,
+            ("constructible_struct_adds_private_field", "field", "Fixture.private"),
+            ("auto_trait_impl_removed", "type", "Fixture is no longer UnwindSafe"),
+            ("derive_trait_impl_removed", "type", "Fixture no longer derives Eq"),
+            ("pub_module_level_const_missing", "const", "FIXTURE_CONST")]
+        known["awaken-agent-contract"] = findings
+        complete = "".join(self.report(name, failures=known[name]) for name in sorted(known))
+        rows = evidence.validate_audit(complete, 1, approved=known)
+        self.assertCountEqual(rows["awaken-agent-contract"]["findings"], findings)
+        self.assertEqual(rows["awaken-agent-contract"]["failed"], 5)
+        physical = "  field Fixture.public in current.rs:1\n"
+        for changed in (complete.replace(physical, "", 1),
+                        complete.replace(physical, physical * 2, 1),
+                        complete.replace("Fixture.private", "Fixture.unreviewed"),
+                        complete.replace("Fixture is no longer", "Fixture became"),
+                        complete.replace("FIXTURE_CONST in file", "FIXTURE_CONST at file"),
+                        complete.replace("--- failure constructible_struct_adds_private_field:",
+                                         "--- failure function_missing:")):
+            with self.subTest(report=changed), self.assertRaises(ValueError):
+                evidence.validate_audit(changed, 1, approved=known)
 
     def test_missing_duplicate_unknown_or_empty_audit_refuses(self):
         # A2 complete known set + checked + Finished + declared versions is
@@ -206,6 +245,21 @@ class SdkSemverEvidenceTests(unittest.TestCase):
             with self.subTest(proof=proof), self.assertRaises(ValueError):
                 evidence.validate_standard(output, names, proof)
         self.assertEqual(set(evidence.validate_standard(output, names, audited)), set(names))
+        # A7: the actual declared wire 0.1 -> 0.2 major must not disappear
+        # behind a normal zero-query observation. Version literals below are
+        # independent of COHORT: omission of that package must fail this positive
+        # even when its complete nonempty audit is otherwise available. These
+        # are controlled observations, not an actual compiler/tool receipt.
+        wire = ("Checking awaken-mcp-wire v0.1.0 -> v0.2.0 (major change)\n"
+                "Checked [0.1s] 0 checks: 0 pass, 252 skip\n"
+                "Summary no semver update required\nFinished [0.1s] awaken-mcp-wire\n")
+        wire_audit = {"awaken-mcp-wire": {"checks": 222,
+                      "old_version": "0.1.0", "new_version": "0.2.0"}}
+        for missing in (None, {}, {"awaken-mcp-wire": {**wire_audit["awaken-mcp-wire"], "checks": 0}}):
+            with self.subTest(wire_audit=missing), self.assertRaises(ValueError):
+                evidence.validate_standard(wire, ["awaken-mcp-wire"], missing)
+        self.assertEqual(set(evidence.validate_standard(wire, ["awaken-mcp-wire"], wire_audit)),
+                         {"awaken-mcp-wire"})
         nonmajor = self.report("other-sdk", checks=0)
         with self.assertRaises(ValueError):
             evidence.validate_standard(nonmajor, ["other-sdk"], {"other-sdk": audited[names[0]]})
@@ -237,29 +291,24 @@ class SdkSemverEvidenceTests(unittest.TestCase):
 
         # R8-R10 exercise the production default policy, independently of the
         # controlled empty Runtime fixtures above. The two actual reviewed
-        # report sets are necessary; dropping a reviewed item or adding an
+        # report inputs are necessary; dropping a reviewed occurrence or adding an
         # unreviewed one refuses. This checks policy application only, never
         # substitutes for original compiler/report/source-profile receipts.
-        reviewed = {
-            "awaken-runtime": {
-                ("inherent_method_missing", "method", "Runtime::session"),
-                ("inherent_method_missing", "method", "Runtime::with_max_consecutive_inference_failures"),
-                ("struct_missing", "struct", "awaken_runtime::EmbeddedSession"),
-            },
-            "awaken-runtime-contract": {
-                ("enum_variant_added", "variant", "Error:Admission"),
-                ("module_missing", "mod", "awaken_runtime_contract::credential"),
-            },
-        }
+        # Production policy has one curated authority. The real pinned report
+        # is its independent oracle; do not keep an aging second Runtime subset
+        # here. This controlled test checks default-policy wiring and rejection
+        # of each missing/extra occurrence, including the declared Mcp major.
+        reviewed = {name: tuple(evidence.APPROVED_FINDINGS[name]) for name in (
+            "awaken-runtime", "awaken-runtime-contract", "awaken-mcp-wire")}
         reports = {
-            name: self.report(name, failures=reviewed.get(name, evidence.APPROVED_FINDINGS[name]))
+            name: self.report(name, failures=evidence.APPROVED_FINDINGS[name])
             for name in evidence.COHORT
         }
         production_output = "".join(reports.values())
         self.assertEqual(set(evidence.validate_audit(production_output, 1)), set(evidence.COHORT))
         for name, findings in reviewed.items():
-            for changed in [*(findings - {item} for item in findings),
-                            findings | {("function_missing", "function", "fixture::unreviewed")}]:
+            for changed in [*(findings[:i] + findings[i + 1:] for i in range(len(findings))),
+                            findings + (("function_missing", "function", "fixture::unreviewed"),)]:
                 with self.subTest(package=name, findings=changed), self.assertRaises(ValueError):
                     evidence.validate_audit(production_output.replace(reports[name], self.report(name, failures=changed)), 1)
 
@@ -808,7 +857,7 @@ def shared_sdk_io_tests(owner):
             # negatives and four canonical positives. Counts derive from the
             # same tables; mock statuses are never real compiler observations.
             # These are controlled design observations, not real compiler results.
-            # Metadata carries each side's four major +two ordinary owners; these
+            # Metadata carries each side's declared major and ordinary owners; these
             # controlled observations never fill production approval or receipts.
             # Each side supplies its own declared features;
             # all enables those dependency keys, while default keeps defaults.
@@ -827,9 +876,9 @@ def shared_sdk_io_tests(owner):
                         runtime_names = {"old_runtime_type", "old_runtime_method", "migrated_runtime"}
                         contract_names = {"old_retry_policy_decide", "migrated_retry_policy_decide"}
                         inference_cases = [row for row in receipt["cases"] if row["case"].startswith("inference_")]
-                        retained_cases = [row for row in receipt["cases"] if not row["case"].startswith("inference_")]
+                        retained_cases = [row for row in receipt["cases"] if not row["case"].startswith(("inference_", "mcp_"))]
                         retained_steps = [row for row in receipt["steps"] if "--bin" not in row["command"]
-                            or not row["command"][row["command"].index("--bin") + 1].startswith("inference_")]
+                            or not row["command"][row["command"].index("--bin") + 1].startswith(("inference_", "mcp_"))]
                         original_cases = [row for row in retained_cases if not row["case"].startswith("owner_")]
                         original_steps = [row for row in retained_steps if "--bin" not in row["command"]
                             or not row["command"][row["command"].index("--bin") + 1].startswith("owner_")]
@@ -839,6 +888,12 @@ def shared_sdk_io_tests(owner):
                         core_cases = [row for row in runtime_cases if row["case"] not in runtime_names]
                         core_steps = [row for row in runtime_steps if "--bin" not in row["command"]
                             or row["command"][row["command"].index("--bin") + 1] not in runtime_names]
+                        # Original historical floors stay byte-for-byte below;
+                        # the three new wire controls are an independent append,
+                        # not a reason to raise or relabel those old witnesses.
+                        mcp_cases = [row for row in receipt["cases"] if row["case"].startswith("mcp_")]
+                        self.assertEqual(len(mcp_cases), 3)
+                        self.assertEqual(sum(row["original_exit_code"] == 101 for row in mcp_cases), 1)
                         self.assertEqual((len(core_cases), len(core_steps)), (9, 14))
                         self.assertEqual(sum(row["exit_code"] == 101 for row in core_steps), 3)
                         self.assertEqual((len(runtime_cases), len(runtime_steps)), (14, 19))
@@ -861,9 +916,9 @@ def shared_sdk_io_tests(owner):
                         self.assertEqual({(row["side"], row["case"]): row["original_exit_code"]
                                           for row in inference_cases}, expected_inference)
                         self.assertEqual((len(receipt["cases"]), len(receipt["steps"])),
-                                         (len(retained_cases) + len(expected_inference),
-                                          len(retained_steps) + len(expected_inference)))
-                        self.assertEqual(sum(row["exit_code"] == 101 for row in receipt["steps"]), 11 + len(pairs))
+                                         (len(retained_cases) + len(expected_inference) + len(mcp_cases),
+                                          len(retained_steps) + len(expected_inference) + len(mcp_cases)))
+                        self.assertEqual(sum(row["exit_code"] == 101 for row in receipt["steps"]), 11 + len(pairs) + 1)
                         contract_results = {(row["side"], row["case"]): row["original_exit_code"]
                                             for row in receipt["cases"] if row["case"] in contract_names}
                         self.assertEqual(contract_results, {
@@ -1222,7 +1277,7 @@ def shared_sdk_io_tests(owner):
                 runtime_names = {"old_runtime_type", "old_runtime_method", "migrated_runtime"}
                 contract_names = {"old_retry_policy_decide", "migrated_retry_policy_decide"}
                 retained_observations = [[row for row in rows if "--bin" not in row["command"]
-                    or not row["command"][row["command"].index("--bin") + 1].startswith("inference_")]
+                    or not row["command"][row["command"].index("--bin") + 1].startswith(("inference_", "mcp_"))]
                     for rows in observations]
                 original_observations = [[row for row in rows if "--bin" not in row["command"]
                     or not row["command"][row["command"].index("--bin") + 1].startswith("owner_")]
@@ -1233,6 +1288,12 @@ def shared_sdk_io_tests(owner):
                 core_observations = [[row for row in rows if "--bin" not in row["command"]
                     or row["command"][row["command"].index("--bin") + 1] not in runtime_names]
                     for rows in runtime_observations]
+                # Keep the historical projections/floors intact while the
+                # existing complete plan gains the three explicit wire controls.
+                mcp_observations = [[row for row in rows if "--bin" in row["command"]
+                    and row["command"][row["command"].index("--bin") + 1].startswith("mcp_")]
+                    for rows in observations]
+                self.assertEqual([len(rows) for rows in mcp_observations], [3, 3])
                 self.assertEqual([len(rows) for rows in core_observations], [14, 14])
                 self.assertEqual([len(rows) for rows in runtime_observations], [19, 19])
                 self.assertEqual([len(rows) for rows in original_observations], [22, 22])

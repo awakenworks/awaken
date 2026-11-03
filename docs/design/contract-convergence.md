@@ -1,9 +1,10 @@
 # Contract convergence by bounded context
 
-Status: source replay prepared on `v5/contract-convergence-4` (plan v5 item V4);
-awaiting the integrated build, test run and normal commit. The first nine replay
-commits are retained; the remaining source changes are uncommitted. The design
-was measured on `1b56f9aea0` (descends from main `72518f3094`).
+This document owns the boundary decisions of plan v5 item V4. Delivery progress
+is tracked in [STATUS](../STATUS.md#architecture-execution), and source-bound
+execution in the [qualification record](test-validation.md#integrated-source-qualification-record).
+The measurements below describe the historical design input `1b56f9aea0`
+(descending from `72518f3094`); they are not a current-source inventory.
 
 ## Rule
 

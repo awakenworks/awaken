@@ -599,6 +599,24 @@ qualification are separate claims.
   48 archives with the original normalized-manifest and VCS audits. This
   records packaging only; unpacked artifact consumption, compiler SemVer,
   registry publication and native Windows retain their own outcomes.
+- **SDK artifact checkpoint `395303e5e3ab`.** The original artifact qualifier
+  completed its 27-package archive closure, consumed 13 SDK packages from the
+  verified unpacked archives, and passed all eight task cases and the sample.
+  Both original major-consumer audits separately passed their 47 steps and 42
+  cases. The complete SemVer qualifier did not pass: the pinned tool emitted
+  unrecognized field/trait/constant rows, the approved findings predated G, and
+  the existing McpWire `0.2.0` major was absent from the forced-audit cohort.
+  Independent raw reports and pure parser tests do not constitute a successful
+  combined qualification of its proposed replacement.
+- **Native-395 downstream cohort (2026-11-03).** Flow `02b81c1c` passed the
+  original complete check including required PostgreSQL, all 39 public-API
+  comparisons without blessing, and the 15 critical cases without skips.
+  Cloud `4e0f228a` passed its original 30 commands, including required SQL
+  cases, both Phase1 history subjects and the eight selected Worker cases.
+  Both retained their original ignored/skipped cases, locks, normal-hook and
+  local fast-forward receipts. These are Linux source/integration results for
+  their actual Native-395 compositions, not qualification of later Native
+  source, production images, deployment, public release or Windows.
 - **Downstream component checkpoints.** Cloud `6fda36a9`, consuming Native
   `e9773cf5` and IAM `dc0c68b4`, passed all eight selected Worker-access cases,
   both owning Clippy checks, documentation checks, normal hooks and safe FF.
