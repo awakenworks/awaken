@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import * as reports from './llm_eval_metrics.mjs';
 import {
   aggregateUsage,
   evaluateThresholds,
@@ -98,4 +102,35 @@ test('evaluation document is versioned and carries threshold violations', () => 
   assert.equal(evaluation.schema_version, 1);
   assert.equal(evaluation.pass, false);
   assert.equal(evaluation.violations[0].metric, 'recall');
+});
+
+
+// Report IO cause/effect table: I1 evaluation or compatibility schema -> one
+// existing stdout+artifact sink preserves exact JSON/prefix/path; I2 no output
+// dir -> stdout only; I3 write error -> throw (never emit a qualified result).
+// Metric thresholds/acceptance remain in emitEvaluation after that same sink.
+test('public report uses the original artifact selector and exact document once', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-report-law-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const lines = []; t.mock.method(console, 'log', line => lines.push(line));
+  const document = { version: 1, status: 'failed', results: [{ id: 'fixture', status: 'failed', attempts: [] }] };
+  reports.emitPublicReport('AWAKEN_PROVIDER_COMPAT', 'provider-compat', document, { AWAKEN_EVAL_ARTIFACT_DIR: directory });
+  assert.deepEqual(lines, [`AWAKEN_PROVIDER_COMPAT ${JSON.stringify(document)}`]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directory, 'provider-compat.json'), 'utf8')), document);
+  assert.deepEqual(fs.readdirSync(directory), ['provider-compat.json'], 'I1 no parallel ledger');
+});
+
+test('evaluation retains its original prefix thresholds and artifact IO failure', t => {
+  const lines = []; t.mock.method(console, 'log', line => lines.push(line));
+  const good = makeEvaluation({ suite: 'fixture', subject: 'fixture', backend: 'fixture', model: 'fixture',
+    sampleSize: 1, metrics: { recall: 1 }, thresholds: { recall: { operator: 'gte', value: 1 } } });
+  reports.emitEvaluation(good, {});
+  assert.equal(lines[0], `AWAKEN_LLM_EVAL ${JSON.stringify(good)}`);
+  const bad = { ...good, pass: false, violations: [{ actual: 0 }] };
+  assert.throws(() => reports.emitEvaluation(bad, {}), /thresholds failed/u);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'report-io-refusal-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'not-a-directory'); fs.writeFileSync(file, 'owned');
+  assert.throws(() => reports.emitPublicReport('AWAKEN_PROVIDER_COMPAT', 'provider-compat', {},
+    { AWAKEN_EVAL_ARTIFACT_DIR: file }));
 });
