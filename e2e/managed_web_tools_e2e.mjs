@@ -22,7 +22,7 @@ async function startFetchFixture() {
     } else {
       response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
     }
-    response.end('abcdef');
+    response.end('abcdefghijklmnop');
   });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -233,13 +233,21 @@ async function main() {
       });
 
       // Fetch cause/effect graph:
-      // C1 published allow policy+cap3; C2 URL matches; C3 `.pdf` suffix;
+      // C1 published allow policy+estimated cap3 and 16 ASCII fixture scalars;
+      // C2 URL matches; C3 a `.PDF` URL returns the fixture's ASCII text;
       // C4 published block policy matches the combined domain policy. Effects: E1 physical HTTP once;
-      // E2 non-PDF text=`abc`; E3 `.PDF` legacy text=`abcdef`; E4 block is an
+      // E2 non-PDF text=`abcdefghijkl`; E3 PDF-URL text has the SAME prefix; E4 block is an
       // error result before HTTP; E7 each Run durably links one use/result/final/idle.
       // Constraints K1 one publication snapshot selects the sole configured
       // WebFetch plugin, K3 that plugin owns fetch policy while the direct
       // provider retains only GET/lossy UTF-8/1MiB, K7 reject has zero I/O.
+      // The existing owner estimates four ASCII scalars per token: cap3 allows
+      // exactly 12 here. The 16-scalar body exceeds it, so removing the cap or
+      // bypassing this text cap solely for a PDF URL fails exact literals, not
+      // a short unchanged body. The application/pdf response is still pure ASCII
+      // and the provider returns String. SDK binary-PDF exemption is separate:
+      // this case proves neither binary-document parsing nor its token budget.
+      // This is not a model-tokenizer or billing-count assertion.
       // Decision table: F1 C1+C2+!C3=>E1+E2+E7; F2 C1+C2+C3=>E1+E3+E7;
       // F3 C4=>E4+E7 with fixture request count unchanged.
       const beforeText = fixture.requests.length;
@@ -253,8 +261,8 @@ async function main() {
       assert.equal(fixture.requests.length, beforeText + 1, 'F1/E1 exact HTTP side effect');
       assert.equal(fixture.requests.at(-1), '/text', 'F1 allowed target reached');
       assert.equal(textFetch.result.is_error, false, 'F1 successful result');
-      assert.equal(eventText(textFetch.result), 'abc', 'F1/E2 cap applies to non-PDF text');
-      assert.equal(eventText(textFetch.message), 'web-result: abc', 'F1 model observes capped result');
+      assert.equal(eventText(textFetch.result), 'abcdefghijkl', 'F1/E2 cap applies to non-PDF text');
+      assert.equal(eventText(textFetch.message), 'web-result: abcdefghijkl', 'F1 model observes capped result');
 
       const beforePdf = fixture.requests.length;
       const pdfFetch = await runToolTurn(
@@ -265,8 +273,8 @@ async function main() {
       );
       assert.equal(fixture.requests.length, beforePdf + 1, 'F2/E1 exact HTTP side effect');
       assert.equal(fixture.requests.at(-1), '/doc.PDF', 'F2 uppercase PDF target reached');
-      assert.equal(eventText(pdfFetch.result), 'abcdef', 'F2/E3 PDF legacy text bypasses policy cap');
-      assert.equal(eventText(pdfFetch.message), 'web-result: abcdef', 'F2 model observes full PDF text');
+      assert.equal(eventText(pdfFetch.result), 'abcdefghijkl', 'F2/E3 PDF uses the same estimated budget');
+      assert.equal(eventText(pdfFetch.message), 'web-result: abcdefghijkl', 'F2 model observes the same capped PDF prefix');
 
       const beforeBlocked = fixture.requests.length;
       const blockedFetch = await runToolTurn(
