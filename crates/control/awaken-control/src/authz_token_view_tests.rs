@@ -14,6 +14,7 @@ async fn token_views_are_filtered_to_the_named_workspace() {
 
     let ids_a: Vec<String> = iam
         .token_views("wrkspc_a")
+        .unwrap()
         .iter()
         .map(|v| v["id"].as_str().unwrap().to_string())
         .collect();
@@ -25,6 +26,7 @@ async fn token_views_are_filtered_to_the_named_workspace() {
 
     let ids_b: Vec<String> = iam
         .token_views("wrkspc_b")
+        .unwrap()
         .iter()
         .map(|v| v["id"].as_str().unwrap().to_string())
         .collect();
@@ -39,10 +41,10 @@ async fn token_views_are_filtered_to_the_named_workspace() {
 /// | R1   | yes (`workspace_user`)           | yes (`admin`)     | `workspace_user` |
 /// | R2   | no                               | yes (`admin`)     | none             |
 ///
-/// R2 is the state a mint leaves behind when the token row commits and the
-/// role-binding write does not (they are two separate, non-transactional
-/// repository writes, and `principal_id` is caller-supplied so one principal
-/// can legitimately span workspaces). Positional fallback then labels the
+/// R2 represents a historical or externally restored token without its own
+/// binding. New mints commit the token and binding in one transaction;
+/// `principal_id` still permits one principal to span workspaces. Positional
+/// fallback would label the
 /// stranded token with the *other* workspace's role — here `admin` against a
 /// token that grants no such thing. The view is operator-facing only (both
 /// callers build JSON), so this is misinformation an operator acts on, not an
@@ -92,6 +94,7 @@ async fn a_token_never_displays_a_role_borrowed_from_another_workspace() {
 
     let role_at = |workspace: &str, token_id: &str| -> Option<String> {
         iam.token_views(workspace)
+            .unwrap()
             .into_iter()
             .find(|view| view["id"] == serde_json::json!(token_id))
             .map(|view| view["role"].as_str().map(str::to_string))

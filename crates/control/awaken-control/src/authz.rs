@@ -43,7 +43,10 @@
 //! `apikey.write`/`apikey.read` at the TARGET workspace — the workspace named
 //! in the body/query for mint/list, the token's own workspace for revoke — so
 //! the scope graph decides: a Global-bound admin passes for any workspace, a
-//! workspace-bound admin only for its own. The delegation is fail-closed: the
+//! workspace-bound admin only for its own. Selecting `principal_id` additionally
+//! requires `apikey.write` at the installation Org because that service identity
+//! may already carry other bindings; omitting it creates a distinct principal.
+//! The delegation is fail-closed: the
 //! handlers refuse (401) unless the guard stamped the authenticated principal
 //! on the request, and the routes are only mounted when the guard is enabled.
 //! Revoking your own current token is allowed — the request completes and
@@ -108,6 +111,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 pub mod roles;
 
+use awaken_iam_client::IamDecisionError;
 use awaken_iam_contract::{
     ActivateAuthorizationProfile, ApiToken, ApiTokenId, AuthorizationDecision,
     AuthorizationRequest, CreateAuthorizationProfile, OrgId, PolicySnapshot, PrincipalRef,
@@ -117,7 +121,7 @@ use awaken_iam_contract::{
 use awaken_iam_contract::{GrantEffect, GrantSubjectRef, ScopeKind};
 use awaken_iam_core::{
     ApiTokenDirectory, ApiTokenMinter, EntitlementEngine, EntitlementProvider, EntropySource,
-    IamError, IssuedApiToken, OsEntropy, RoleBinding, RoleId,
+    IamError, IssuedApiToken, OsEntropy, RepositoryError, RoleBinding, RoleId,
 };
 use awaken_iam_core::{ApiTokenRepository, RoleBindingRepository};
 #[cfg(test)]
@@ -330,8 +334,8 @@ impl ManagementIdentityMode {
     }
 }
 
-/// A mint request for a workspace-scoped service token (operator embeddings
-/// and tests; P1 exposes no HTTP mint surface).
+/// A mint request for a service token and its workspace role binding, shared
+/// by the management route, trusted operator embeddings, and tests.
 pub struct TokenSpec {
     /// Stable token row id (must be unique).
     pub token_id: String,
@@ -348,39 +352,58 @@ pub struct TokenSpec {
     pub expires_at: Option<String>,
 }
 
+/// Preserve the original token/store failure categories until the PEP maps them.
+/// No backend detail or secret is returned by the service-unavailable response.
+#[derive(Debug, thiserror::Error)]
+enum IamOperationError {
+    #[error("local IAM state is unavailable")]
+    StateUnavailable,
+    #[error(transparent)]
+    Token(#[from] IamError),
+    #[error(transparent)]
+    Store(#[from] RepositoryError),
+    #[error("bootstrap credential handoff failed: {0}")]
+    Handoff(#[from] std::io::Error),
+}
+
 impl ManagementAuthz {
-    /// The live IAM state. Its lock is the `std::sync::Mutex` that
-    /// `awaken_iam_host::IamGate::from_local_state` takes, so it cannot become
-    /// an `awaken_sync` lock until the awaken-iam API accepts one. Until then a
-    /// poisoned state still panics here, as every former call site did.
+    /// The gate and management mutations share this one state guard. Poison is
+    /// refused without clearing it or reading the possibly partial state.
     #[expect(
         clippy::disallowed_methods,
         reason = "IamGate::from_local_state fixes this lock as a std Mutex (awaken-iam API); remove when it accepts an InvariantLock"
     )]
-    fn iam_state(&self) -> MutexGuard<'_, LocalIamState> {
+    fn iam_state(&self) -> Result<MutexGuard<'_, LocalIamState>, IamOperationError> {
         self.state
             .lock()
-            .expect("the local IAM state lock is poisoned")
+            .map_err(|_| IamOperationError::StateUnavailable)
     }
 
-    /// Mint a token: engine write (directory + workspace role binding) and the
-    /// durable rows, atomically under the state lock. Returns the one-time
-    /// cleartext `sk-awaken-…` credential.
+    /// Mint through the canonical preparation and paired durable transaction,
+    /// then publish under the gate's same state guard.
     pub fn mint_service_token(&self, spec: TokenSpec) -> Result<String, String> {
-        self.mint_token(spec).map(|issued| issued.secret)
+        self.mint_token(spec)
+            .map(|issued| issued.secret)
+            .map_err(|error| error.to_string())
     }
 
-    /// [`ManagementAuthz::mint_service_token`], keeping the persisted row too:
-    /// the HTTP mint route returns the secret-free view alongside the one-time
-    /// cleartext.
-    fn mint_token(&self, spec: TokenSpec) -> Result<IssuedApiToken, String> {
-        let principal = PrincipalRef::Service {
-            service_id: spec.service_id,
-        };
+    fn mint_token(&self, spec: TokenSpec) -> Result<IssuedApiToken, IamOperationError> {
+        self.mint_token_with_handoff(spec, None)
+    }
+
+    /// Bootstrap selects only a durable handoff in the same mint algorithm.
+    /// Never remove the handoff after an uncertain SQL acknowledgement.
+    fn mint_token_with_handoff(
+        &self,
+        spec: TokenSpec,
+        handoff: Option<&Path>,
+    ) -> Result<IssuedApiToken, IamOperationError> {
         let request = awaken_iam_core::MintApiToken {
             id: ApiTokenId(spec.token_id),
-            principal: principal.clone(),
-            workspace: WorkspaceId(spec.workspace_id.clone()),
+            principal: PrincipalRef::Service {
+                service_id: spec.service_id,
+            },
+            workspace: WorkspaceId(spec.workspace_id),
             role: qualify_role(&spec.role),
             created_at: Timestamp(
                 spec.created_at
@@ -388,125 +411,81 @@ impl ManagementAuthz {
             ),
             expires_at: spec.expires_at.map(Timestamp),
         };
-        let mut guard = self.iam_state();
+        let mut guard = self.iam_state()?;
         let LocalIamState { authz, directory } = &mut *guard;
-        let issued = ApiTokenMinter::new(OsEntropy)
-            .mint(directory, authz.policy_mut(), request)
-            .map_err(|err| err.to_string())?;
-        // Persist through the SqlStore repositories, mirroring exactly what mint wrote
-        // into the live engine: the token row and the principal→role binding at
-        // the token's workspace scope.
-        ApiTokenRepository::create(&self.store, issued.token.clone())
-            .map_err(|err| format!("persist token row: {err}"))?;
-        RoleBindingRepository::add(
-            &self.store,
-            RoleBinding {
-                principal,
-                role: qualify_role(&spec.role),
-                scope: ScopeRef::Workspace {
-                    workspace_id: WorkspaceId(spec.workspace_id),
-                },
-            },
-        )
-        .map_err(|err| format!("persist role binding: {err}"))?;
-        Ok(issued)
+        let pending = ApiTokenMinter::new(OsEntropy).prepare(directory, request)?;
+        if let Some(path) = handoff {
+            awaken_fs_durability::publish_file_noreplace(path, pending.secret().as_bytes())?;
+        }
+        self.store
+            .commit_api_token_mint(pending.token(), pending.binding())?;
+        Ok(pending.publish(authz.policy_mut()))
     }
 
-    /// The live token row for `id`, if any (engine state, so a revocation done
-    /// this process is visible immediately).
-    fn token_by_id(&self, id: &str) -> Option<ApiToken> {
-        self.iam_state()
+    fn token_by_id(&self, id: &str) -> Result<Option<ApiToken>, IamOperationError> {
+        Ok(self
+            .iam_state()?
             .directory
-            .token(&ApiTokenId(id.to_string()))
-            .cloned()
+            .token(&ApiTokenId(id.to_owned()))
+            .cloned())
     }
 
-    /// Revoke `id` in the live engine AND the persisted row (the row carries
-    /// the full token serde, so rewriting it persists `revoked_at` across a
-    /// restart). Idempotent like the engine; unknown id fails closed.
-    fn revoke_token(&self, id: &str) -> Result<ApiToken, IamError> {
-        let token_id = ApiTokenId(id.to_string());
-        let mut guard = self.iam_state();
-        guard
-            .directory
-            .revoke(&token_id, Timestamp(rfc3339_at(self.clock.as_ref())))?;
-        let token = guard
-            .directory
-            .token(&token_id)
-            .expect("a just-revoked token is still stored")
-            .clone();
-        // The row carries the full token (incl. `revoked_at`), so updating it
-        // persists the revocation across a restart.
-        ApiTokenRepository::update(&self.store, token.clone()).expect("persist token revocation");
-        Ok(token)
+    /// Persist the first revocation stamp, then publish it without a fallible
+    /// post-commit lookup or overwriting a durable row with stale live fields.
+    fn revoke_token(&self, id: &str) -> Result<ApiToken, IamOperationError> {
+        let mut guard = self.iam_state()?;
+        let pending = guard.directory.prepare_revoke(&ApiTokenId(id.to_owned()))?;
+        let now = Timestamp(rfc3339_at(self.clock.as_ref()));
+        let stamp = self
+            .store
+            .commit_api_token_revocation(pending.token(), &now)?;
+        Ok(pending.publish(stamp))
     }
 
-    /// Every persisted token, ordered by id. The `ApiTokenRepository` contract has no
-    /// list-all by design, so the walk goes bindings → principals → each
-    /// principal's tokens (every mint writes a binding, so the walk is total).
-    fn all_tokens(&self) -> Vec<ApiToken> {
-        let mut principals: Vec<PrincipalRef> = Vec::new();
-        for binding in RoleBindingRepository::list(&self.store).expect("list role bindings") {
+    /// Walk the original bindings -> principals -> tokens repository contract.
+    /// A failed read is not an empty directory.
+    fn all_tokens(&self) -> Result<Vec<ApiToken>, IamOperationError> {
+        let mut principals = Vec::new();
+        for binding in RoleBindingRepository::list(&self.store)? {
             if !principals.contains(&binding.principal) {
                 principals.push(binding.principal);
             }
         }
-        let mut tokens: Vec<ApiToken> = principals
-            .iter()
-            .flat_map(|principal| {
-                ApiTokenRepository::list_for_principal(&self.store, principal)
-                    .expect("list principal tokens")
-            })
-            .collect();
+        let mut tokens = Vec::new();
+        for principal in &principals {
+            tokens.extend(ApiTokenRepository::list_for_principal(
+                &self.store,
+                principal,
+            )?);
+        }
         tokens.sort_by(|a, b| a.id.0.cmp(&b.id.0));
         tokens.dedup_by(|a, b| a.id == b.id);
-        tokens
+        Ok(tokens)
     }
 
-    /// Secret-free views of every persisted token bound to `workspace_id`,
-    /// ordered by id. Rows and engine are written together under the state
-    /// lock, so the rows are current.
-    fn token_views(&self, workspace_id: &str) -> Vec<serde_json::Value> {
-        self.all_tokens()
+    fn token_views(&self, workspace_id: &str) -> Result<Vec<serde_json::Value>, IamOperationError> {
+        self.all_tokens()?
             .into_iter()
             .filter(|token| token.workspace.0 == workspace_id)
-            .map(|token| {
-                let role = self.role_of(&token);
-                token_view(&token, role)
-            })
+            .map(|token| self.role_of(&token).map(|role| token_view(&token, role)))
             .collect()
     }
 
-    /// The mint-time role of `token`, derived from its principal's persisted
-    /// Workspace-profile binding **at the token's own workspace**.
-    ///
-    /// Scope is part of a binding's identity: one principal may hold different
-    /// Workspace profiles in different workspaces, so a binding in workspace B
-    /// is not evidence about a token minted in workspace A. There is
-    /// deliberately no fallback to "whichever other workspace binding exists" —
-    /// a token whose workspace carries no binding has no derivable role and the
-    /// view reports none, rather than displaying a role borrowed from elsewhere.
-    fn role_of(&self, token: &ApiToken) -> Option<String> {
-        RoleBindingRepository::list_for_principal(&self.store, &token.principal)
-            .expect("list principal bindings")
-            .into_iter()
-            .find(|binding| {
-                binding
-                    .role
-                    .0
-                    .starts_with(AWAKEN_WORKSPACE_POLICY_NAMESPACE)
-                    && matches!(
-                        &binding.scope,
-                        ScopeRef::Workspace { workspace_id } if *workspace_id == token.workspace
-                    )
-            })
-            .map(|binding| local_role(&binding.role.0).to_owned())
-    }
-
-    /// The persisted mint-time role of token `id`, when derivable.
-    fn token_role(&self, id: &str) -> Option<String> {
-        let token = self.token_by_id(id)?;
-        self.role_of(&token)
+    /// A binding at another Workspace never supplies this token's role.
+    fn role_of(&self, token: &ApiToken) -> Result<Option<String>, IamOperationError> {
+        Ok(
+            RoleBindingRepository::list_for_principal(&self.store, &token.principal)?
+                .into_iter()
+                .find(|binding| {
+                    binding
+                        .role
+                        .0
+                        .starts_with(AWAKEN_WORKSPACE_POLICY_NAMESPACE)
+                        && matches!(&binding.scope, ScopeRef::Workspace { workspace_id }
+                        if *workspace_id == token.workspace)
+                })
+                .map(|binding| local_role(&binding.role.0).to_owned()),
+        )
     }
 
     /// Authenticate a presented bearer credential through the gate, returning its
@@ -539,7 +518,7 @@ impl ManagementAuthz {
         principal: PrincipalRef,
         action: &str,
         scope: ScopeRef,
-    ) -> AuthorizationDecision {
+    ) -> Result<AuthorizationDecision, IamDecisionError> {
         self.authorize_action(principal, action, scope, ActionNamespace::Workspace)
     }
 
@@ -549,10 +528,10 @@ impl ManagementAuthz {
         action: &str,
         scope: ScopeRef,
         namespace: ActionNamespace,
-    ) -> AuthorizationDecision {
+    ) -> Result<AuthorizationDecision, IamDecisionError> {
         let request =
             AuthorizationRequest::direct(principal, qualified_action(namespace, action), scope);
-        self.gate.authorize(request)
+        self.gate.authorize_result(request)
     }
 
     /// Register a platform-owned workspace under this installation's hidden Org.
@@ -560,12 +539,14 @@ impl ManagementAuthz {
     /// roots call it only after the platform has created or resolved the workspace.
     /// Registering the hierarchy grants nothing by itself; the PDP still evaluates
     /// the caller's bindings and remains default-deny.
-    pub fn register_workspace(&self, workspace_id: &str) {
+    pub fn register_workspace(&self, workspace_id: &str) -> Result<(), String> {
         self.iam_state()
+            .map_err(|error| error.to_string())?
             .authz
             .policy_mut()
             .scope_graph_mut()
             .assign_workspace(WorkspaceId(workspace_id.to_owned()), self.org_id.clone());
+        Ok(())
     }
 }
 
@@ -575,10 +556,9 @@ impl ManagementAuthz {
 /// directory is empty — mint the bootstrap admin token into `<dir>/admin-token`
 /// and emit only a secret-free operator notice on stderr.
 ///
-/// Panics on open/migrate failure, like the durable-store boot path: a
-/// management server that silently came up open would be worse than one that
-/// refuses to start.
-pub fn embedded_iam(dir: &Path, clock: Arc<dyn WallClock>) -> Arc<ManagementAuthz> {
+/// Opening, migration, or bootstrap failure refuses startup; callers must not
+/// fall back to an unguarded management server.
+pub fn embedded_iam(dir: &Path, clock: Arc<dyn WallClock>) -> Result<Arc<ManagementAuthz>, String> {
     embedded_iam_for_tenant(dir, DEFAULT_ORG_ID, BOOTSTRAP_WORKSPACE, clock)
 }
 
@@ -589,7 +569,7 @@ pub fn embedded_iam_for_workspace(
     dir: &Path,
     workspace_id: &str,
     clock: Arc<dyn WallClock>,
-) -> Arc<ManagementAuthz> {
+) -> Result<Arc<ManagementAuthz>, String> {
     embedded_iam_for_tenant(dir, DEFAULT_ORG_ID, workspace_id, clock)
 }
 
@@ -601,33 +581,34 @@ fn reconcile_builtin_profile(
     profiles: &AuthorizationProfileAdmin,
     engine: &mut AuthzApi,
     request: CreateAuthorizationProfile,
-) {
+) -> Result<(), String> {
     let namespace = request.namespace.clone();
     let active = profiles
         .active(&namespace)
-        .expect("read active built-in authorization profile");
+        .map_err(|error| format!("read active built-in authorization profile: {error}"))?;
     if active
         .as_ref()
         .is_some_and(|profile| profile.document == request.document)
     {
         profiles
             .hydrate(engine, &PolicySnapshot::default(), &namespace)
-            .expect("hydrate active built-in authorization profile");
-        return;
+            .map_err(|error| format!("hydrate active built-in authorization profile: {error}"))?;
+        return Ok(());
     }
 
     let expected_active_revision = active.map(|profile| profile.revision);
     let draft = profiles
         .create_draft(request)
-        .expect("create built-in authorization profile revision");
+        .map_err(|error| format!("create built-in authorization profile revision: {error}"))?;
     let validation = profiles
         .validate(&namespace, draft.revision)
-        .expect("validate built-in authorization profile revision");
-    assert!(
-        validation.valid,
-        "invalid built-in authorization profile: {:?}",
-        validation.errors
-    );
+        .map_err(|error| format!("validate built-in authorization profile revision: {error}"))?;
+    if !validation.valid {
+        return Err(format!(
+            "invalid built-in authorization profile: {:?}",
+            validation.errors
+        ));
+    }
     profiles
         .activate(
             engine,
@@ -638,7 +619,8 @@ fn reconcile_builtin_profile(
                 expected_active_revision,
             },
         )
-        .expect("activate built-in authorization profile revision");
+        .map_err(|error| format!("activate built-in authorization profile revision: {error}"))?;
+    Ok(())
 }
 
 /// Remove one superseded active profile head after the canonical Workspace
@@ -647,13 +629,13 @@ fn retire_legacy_profile(
     profiles: &AuthorizationProfileAdmin,
     engine: &mut AuthzApi,
     namespace: &str,
-) {
+) -> Result<(), String> {
     let namespace = awaken_iam_contract::NamespaceId(namespace.to_owned());
     let Some(active) = profiles
         .active(&namespace)
-        .expect("read legacy built-in authorization profile")
+        .map_err(|error| format!("read legacy built-in authorization profile: {error}"))?
     else {
-        return;
+        return Ok(());
     };
     profiles
         .retire(
@@ -662,7 +644,8 @@ fn retire_legacy_profile(
             &namespace,
             active.revision,
         )
-        .expect("retire legacy built-in authorization profile");
+        .map_err(|error| format!("retire legacy built-in authorization profile: {error}"))?;
+    Ok(())
 }
 
 /// Consolidate durable local bindings before live-PDP hydration. The old two
@@ -672,7 +655,8 @@ fn retire_legacy_profile(
 /// the store before the process refuses startup. A canonical binding left by a
 /// prior interrupted migration authorizes removal of its remaining legacy rows.
 fn migrate_legacy_workspace_bindings(store: &SqlStore<SqliteBackend>) -> Result<(), String> {
-    let bindings = RoleBindingRepository::list(store).expect("list legacy role bindings");
+    let bindings = RoleBindingRepository::list(store)
+        .map_err(|error| format!("list legacy role bindings: {error}"))?;
     let mut migration = Vec::new();
     for legacy in &bindings {
         if !is_legacy_workspace_role(&legacy.role.0) {
@@ -716,12 +700,13 @@ fn migrate_legacy_workspace_bindings(store: &SqlStore<SqliteBackend>) -> Result<
         migration.push((canonical, legacy.clone()));
     }
     for (canonical, legacy) in migration {
-        RoleBindingRepository::add(store, canonical).expect("add canonical Workspace role binding");
+        RoleBindingRepository::add(store, canonical)
+            .map_err(|error| format!("add canonical Workspace role binding: {error}"))?;
         RoleBindingRepository::remove(store, &legacy)
-            .expect("remove legacy Workspace role binding");
+            .map_err(|error| format!("remove legacy Workspace role binding: {error}"))?;
     }
     if let Some(remaining) = RoleBindingRepository::list(store)
-        .expect("list remaining legacy role bindings")
+        .map_err(|error| format!("list remaining legacy role bindings: {error}"))?
         .into_iter()
         .find(|binding| is_legacy_workspace_role(&binding.role.0))
     {
@@ -740,7 +725,7 @@ pub fn embedded_iam_for_tenant(
     org_id: &str,
     workspace_id: &str,
     clock: Arc<dyn WallClock>,
-) -> Arc<ManagementAuthz> {
+) -> Result<Arc<ManagementAuthz>, String> {
     embedded_iam_for_tenant_with_entitlements(
         dir,
         org_id,
@@ -758,20 +743,22 @@ pub fn embedded_iam_for_tenant_with_entitlements(
     workspace_id: &str,
     entitlements: Box<dyn EntitlementProvider>,
     clock: Arc<dyn WallClock>,
-) -> Arc<ManagementAuthz> {
-    std::fs::create_dir_all(dir).expect("create typed data_dir for embedded IAM");
+) -> Result<Arc<ManagementAuthz>, String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("create typed data_dir for embedded IAM: {error}"))?;
     let db_path = dir.join("iam.sqlite");
-    let backend = SqliteBackend::open_path(&db_path).expect("open iam.sqlite under typed data_dir");
-    let store = sqlite_migrated_store(backend, "iam").expect("migrate iam.sqlite");
+    let backend = SqliteBackend::open_path(&db_path)
+        .map_err(|error| format!("open iam.sqlite under typed data_dir: {error}"))?;
+    let store = sqlite_migrated_store(backend, "iam")
+        .map_err(|error| format!("migrate iam.sqlite: {error}"))?;
 
     // Durable role catalog (idempotent upsert of the preset roles) — the PAP
     // and any external reader see the same catalog the evaluator derives from.
     let now = Timestamp(rfc3339_at(clock.as_ref()));
-    seed_named_roles(&store, &now).expect("seed the preset role catalog");
-    reconcile_agents_directory(&store, org_id, workspace_id, &now);
-    migrate_legacy_workspace_bindings(&store).unwrap_or_else(|error| {
-        panic!("legacy Workspace binding migration requires operator repair: {error}")
-    });
+    seed_named_roles(&store, &now)
+        .map_err(|error| format!("seed the preset role catalog: {error}"))?;
+    reconcile_agents_directory(&store, org_id, workspace_id, &now)?;
+    migrate_legacy_workspace_bindings(&store)?;
 
     // Single-machine Runtime has one hidden Org and one platform-provisioned
     // Workspace. Bind bootstrap authority at the Org (never Global) so it can
@@ -784,11 +771,11 @@ pub fn embedded_iam_for_tenant_with_entitlements(
         scope: ScopeRef::Global,
     };
     if RoleBindingRepository::list(&store)
-        .expect("list bindings before bootstrap scope migration")
+        .map_err(|error| format!("list bindings before bootstrap scope migration: {error}"))?
         .contains(&legacy_global_bootstrap)
     {
         RoleBindingRepository::remove(&store, &legacy_global_bootstrap)
-            .expect("remove legacy global bootstrap binding");
+            .map_err(|error| format!("remove legacy global bootstrap binding: {error}"))?;
     }
     RoleBindingRepository::add(
         &store,
@@ -802,19 +789,20 @@ pub fn embedded_iam_for_tenant_with_entitlements(
             },
         },
     )
-    .expect("ensure the bootstrap principal's org admin binding");
+    .map_err(|error| format!("ensure the bootstrap principal's org admin binding: {error}"))?;
     let mut directory = ApiTokenDirectory::new();
     let mut engine = AuthzApi::with_entitlements(entitlements);
 
     let profile_store = sqlite_migrated_store(
-        SqliteBackend::open_path(&db_path).expect("reopen iam.sqlite for profile PAP"),
+        SqliteBackend::open_path(&db_path)
+            .map_err(|error| format!("reopen iam.sqlite for profile PAP: {error}"))?,
         "iam",
     )
-    .expect("migrate authorization profile store");
+    .map_err(|error| format!("migrate authorization profile store: {error}"))?;
     let profiles = AuthorizationProfileAdmin::new(Arc::new(profile_store));
-    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
-    retire_legacy_profile(&profiles, &mut engine, LEGACY_MANAGEMENT_POLICY_NAMESPACE);
-    retire_legacy_profile(&profiles, &mut engine, LEGACY_RESOURCE_POLICY_NAMESPACE);
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile())?;
+    retire_legacy_profile(&profiles, &mut engine, LEGACY_MANAGEMENT_POLICY_NAMESPACE)?;
+    retire_legacy_profile(&profiles, &mut engine, LEGACY_RESOURCE_POLICY_NAMESPACE)?;
 
     engine.policy_mut().scope_graph_mut().assign_workspace(
         WorkspaceId(workspace_id.to_owned()),
@@ -825,10 +813,12 @@ pub fn embedded_iam_for_tenant_with_entitlements(
     // auto-hydrated): bindings into the policy, and — since `ApiTokenRepository` has
     // no list-all by design — each binding principal's tokens into the
     // directory. Every mint writes a binding, so the walk is total. Failing
-    // closed on a corrupt row (panic) beats dropping a token silently.
+    // closed on a corrupt row refuses startup rather than dropping a token silently.
     let mut hydrated_tokens = 0usize;
     let mut seen_principals: Vec<PrincipalRef> = Vec::new();
-    for binding in RoleBindingRepository::list(&store).expect("list role bindings") {
+    for binding in RoleBindingRepository::list(&store)
+        .map_err(|error| format!("list role bindings: {error}"))?
+    {
         if let ScopeRef::Workspace { workspace_id } = &binding.scope {
             engine
                 .policy_mut()
@@ -838,9 +828,11 @@ pub fn embedded_iam_for_tenant_with_entitlements(
         if !seen_principals.contains(&binding.principal) {
             seen_principals.push(binding.principal.clone());
             for token in ApiTokenRepository::list_for_principal(&store, &binding.principal)
-                .expect("list principal tokens")
+                .map_err(|error| format!("list principal tokens: {error}"))?
             {
-                directory.create(token).expect("hydrate unique token row");
+                directory
+                    .create(token)
+                    .map_err(|error| format!("hydrate unique token row: {error}"))?;
                 hydrated_tokens += 1;
             }
         }
@@ -869,9 +861,9 @@ pub fn embedded_iam_for_tenant_with_entitlements(
     });
 
     if hydrated_tokens == 0 {
-        bootstrap_admin_token(&authz, dir, workspace_id);
+        bootstrap_admin_token(&authz, dir, workspace_id)?;
     }
-    authz
+    Ok(authz)
 }
 
 // ---- Middleware --------------------------------------------------------------
@@ -1051,7 +1043,7 @@ pub async fn management_guard(
             move || authz.authenticate(&presented)
         })
         .await
-        .unwrap_or(Err(AuthReject::Invalid)),
+        .unwrap_or(Err(AuthReject::Unavailable)),
         None if legacy_tunnel_route => Err(AuthReject::Invalid),
         None => authz.authenticate_browser(req.headers()),
     };
@@ -1060,6 +1052,7 @@ pub async fn management_guard(
         Err(AuthReject::Expired) => return unauthenticated("API token is expired"),
         Err(AuthReject::Revoked) => return unauthenticated("API token is revoked"),
         Err(AuthReject::Invalid) => return unauthenticated("invalid API token"),
+        Err(AuthReject::Unavailable) => return iam_unavailable(),
     };
 
     let (action, scope_class, action_namespace) = match route {
@@ -1087,18 +1080,27 @@ pub async fn management_guard(
                     workspace_id: workspace.clone(),
                 };
                 let allows = |action| {
-                    authz.authorize_action(
-                        principal.clone(),
-                        action,
-                        scope.clone(),
-                        ActionNamespace::Workspace,
-                    ) == AuthorizationDecision::Allow
+                    authz
+                        .authorize_action(
+                            principal.clone(),
+                            action,
+                            scope.clone(),
+                            ActionNamespace::Workspace,
+                        )
+                        .map(|decision| decision == AuthorizationDecision::Allow)
                 };
-                req.extensions_mut()
-                    .insert(awaken_admin_config_api::ModelSupplyAuthorization {
-                        connect: allows(MODEL_SUPPLY_CONNECT),
-                        write: allows(MODEL_SUPPLY_WRITE),
-                    });
+                let projection = match (allows(MODEL_SUPPLY_CONNECT), allows(MODEL_SUPPLY_WRITE)) {
+                    (Ok(connect), Ok(write)) => {
+                        awaken_admin_config_api::ModelSupplyAuthorization { connect, write }
+                    }
+                    _ => {
+                        return awaken_protocol_managed::with_managed_workspace_header(
+                            iam_unavailable(),
+                            &workspace.0,
+                        );
+                    }
+                };
+                req.extensions_mut().insert(projection);
             }
             req.extensions_mut().insert(memory_actor(&principal));
             req.extensions_mut().insert(AuthedPrincipal(principal));
@@ -1177,7 +1179,15 @@ pub async fn management_guard(
     };
 
     let decision =
-        authz.authorize_action(principal.clone(), action, target_scope, action_namespace);
+        match authz.authorize_action(principal.clone(), action, target_scope, action_namespace) {
+            Ok(decision) => decision,
+            Err(_) => {
+                return awaken_protocol_managed::with_managed_workspace_header(
+                    iam_unavailable(),
+                    &workspace.0,
+                );
+            }
+        };
     match decision {
         AuthorizationDecision::Allow => {
             req.extensions_mut().insert(memory_actor(&principal));
@@ -1257,7 +1267,7 @@ pub async fn cloud_management_guard(
             return unauthenticated("invalid cloud access token");
         }
         Err(RemoteAuthenticationFailure::Transport) => {
-            return unauthenticated("cloud authentication transport failed");
+            return iam_unavailable();
         }
     };
     if tunnel_route && !authenticated.is_managed_tunnel_workload() {
@@ -1299,10 +1309,10 @@ pub async fn cloud_management_guard(
     })
     .await
     {
-        Ok(decision) => decision,
-        Err(_) => {
+        Ok(Ok(decision)) => decision,
+        Ok(Err(_)) | Err(_) => {
             return awaken_protocol_managed::with_managed_workspace_header(
-                forbidden("cloud IAM authorization transport failed"),
+                iam_unavailable(),
                 &workspace,
             );
         }
@@ -1317,23 +1327,30 @@ pub async fn cloud_management_guard(
                 };
                 let projection = tokio::task::spawn_blocking(move || {
                     let allows = |action| {
-                        authz.authorize_action(
-                            principal.clone(),
-                            action,
-                            scope.clone(),
-                            ActionNamespace::Workspace,
-                        ) == AuthorizationDecision::Allow
+                        authz
+                            .authorize_action(
+                                principal.clone(),
+                                action,
+                                scope.clone(),
+                                ActionNamespace::Workspace,
+                            )
+                            .map(|decision| decision == AuthorizationDecision::Allow)
                     };
-                    awaken_admin_config_api::ModelSupplyAuthorization {
-                        connect: allows(MODEL_SUPPLY_CONNECT),
-                        write: allows(MODEL_SUPPLY_WRITE),
-                    }
+                    Ok::<_, IamDecisionError>(awaken_admin_config_api::ModelSupplyAuthorization {
+                        connect: allows(MODEL_SUPPLY_CONNECT)?,
+                        write: allows(MODEL_SUPPLY_WRITE)?,
+                    })
                 })
-                .await
-                .unwrap_or(awaken_admin_config_api::ModelSupplyAuthorization {
-                    connect: false,
-                    write: false,
-                });
+                .await;
+                let projection = match projection {
+                    Ok(Ok(projection)) => projection,
+                    Ok(Err(_)) | Err(_) => {
+                        return awaken_protocol_managed::with_managed_workspace_header(
+                            iam_unavailable(),
+                            &workspace,
+                        );
+                    }
+                };
                 req.extensions_mut().insert(projection);
             }
             req.extensions_mut().insert(memory_actor(&principal));
@@ -1472,6 +1489,20 @@ fn unauthorized(message: &str) -> Response {
         Json(ErrorResponse::new("authentication_error", message)),
     )
         .into_response()
+}
+
+/// The Managed PEP projects dependency failure once, without backend details.
+fn iam_unavailable() -> Response {
+    awaken_protocol_managed::with_unscoped_managed_response_context(
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new(
+                "api_error",
+                "IAM is temporarily unavailable",
+            )),
+        )
+            .into_response(),
+    )
 }
 
 fn forbidden(message: &str) -> Response {
@@ -1616,35 +1647,71 @@ fn missing_guard_stamp() -> Response {
     unauthenticated("token management requires the embedded IAM guard")
 }
 
-/// Authorize `principal` for `action` at the TARGET workspace: `None` on
-/// allow, `Some(refusal)` mapping a non-allow decision to the guard's 403
-/// shapes.
+/// Authorize `principal` for `action` at the target scope: `None` on allow,
+/// `Some(refusal)` for the guard's shared 403/503 response shapes.
 fn authorize_at_target(
     authz: &ManagementAuthz,
     principal: PrincipalRef,
     action: &str,
-    workspace_id: &str,
+    scope: ScopeRef,
 ) -> Option<Response> {
-    match authz.authorize(
-        principal,
-        action,
-        ScopeRef::Workspace {
-            workspace_id: WorkspaceId(workspace_id.to_string()),
-        },
-    ) {
-        AuthorizationDecision::Allow => None,
-        AuthorizationDecision::RequireApproval => Some(forbidden(
+    let denied = if matches!(&scope, ScopeRef::Org { .. }) {
+        "organization-level credential management is required to select a service principal"
+    } else {
+        "the API token's role does not authorize token management for this workspace"
+    };
+    match authz.authorize(principal, action, scope) {
+        Ok(AuthorizationDecision::Allow) => None,
+        Ok(AuthorizationDecision::RequireApproval) => Some(forbidden(
             "this action requires approval, which the embedded P1 plane cannot grant",
         )),
-        AuthorizationDecision::Deny => Some(forbidden(
-            "the API token's role does not authorize token management for this workspace",
-        )),
+        Ok(AuthorizationDecision::Deny) => Some(forbidden(denied)),
+        Err(_) => Some(iam_unavailable()),
+    }
+}
+
+/// Preserve domain conflicts and missing tokens; never expose SQL internals
+/// or classify a backend outage as an invalid token specification.
+fn token_operation_refusal(error: IamOperationError, headers: &HeaderMap) -> Response {
+    match error {
+        IamOperationError::StateUnavailable
+        | IamOperationError::Store(RepositoryError::Backend(_))
+        | IamOperationError::Handoff(_) => iam_unavailable(),
+        IamOperationError::Store(RepositoryError::Conflict(_)) => problem(
+            StatusCode::CONFLICT,
+            "token_conflict",
+            "token state conflicts with the request".to_owned(),
+            headers,
+        ),
+        IamOperationError::Store(RepositoryError::NotFound(_))
+        | IamOperationError::Token(IamError::ApiTokenNotFound { .. }) => problem(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "API token was not found".to_owned(),
+            headers,
+        ),
+        IamOperationError::Token(error @ IamError::InvalidApiTokenWindow { .. }) => problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_token_spec",
+            format!("mint refused: {error}"),
+            headers,
+        ),
+        IamOperationError::Token(
+            IamError::DuplicateApiToken { .. } | IamError::DuplicateApiTokenPrefix { .. },
+        ) => problem(
+            StatusCode::CONFLICT,
+            "token_conflict",
+            "token state conflicts with the request".to_owned(),
+            headers,
+        ),
+        IamOperationError::Token(_) => iam_unavailable(),
     }
 }
 
 /// `POST /v1/config/iam/tokens` — mint a workspace token. Requires
 /// `apikey.write` at the workspace named in the body (the scope graph decides
-/// cross-workspace reach). The cleartext credential is returned exactly once,
+/// cross-workspace reach). Selecting `principal_id` also requires the same
+/// action at the installation Org. The cleartext credential is returned once,
 /// alongside the secret-free view; only the argon2id hash persists.
 async fn mint_token_route(
     State(authz): State<Arc<ManagementAuthz>>,
@@ -1711,14 +1778,35 @@ async fn mint_token_route(
 
     // The TARGET-workspace authorization: a Global-bound admin passes for any
     // workspace, a workspace-bound admin only for its own.
-    if let Some(refusal) = authorize_at_target(&authz, principal, APIKEY_WRITE, &workspace_id) {
+    if let Some(refusal) = authorize_at_target(
+        &authz,
+        principal.clone(),
+        APIKEY_WRITE,
+        ScopeRef::Workspace {
+            workspace_id: WorkspaceId(workspace_id.clone()),
+        },
+    ) {
         return refusal;
     }
 
+    let requested_principal = field("principal_id");
+    if requested_principal.is_some()
+        && let Some(refusal) = authorize_at_target(
+            &authz,
+            principal,
+            APIKEY_WRITE,
+            ScopeRef::Org {
+                org_id: authz.org_id.clone(),
+            },
+        )
+    {
+        return refusal;
+    }
     let token_id = fresh_token_id();
-    // Default to a per-token service principal so tokens do not silently share
-    // (and thereby aggregate) role bindings unless the operator asks for it.
-    let service_id = field("principal_id").unwrap_or_else(|| format!("mgmt-{token_id}"));
+    // A selected service identity can carry other scopes' bindings. The same
+    // canonical PDP must authorize that installation-wide identity choice;
+    // workspace writers otherwise receive a distinct server-owned principal.
+    let service_id = requested_principal.unwrap_or_else(|| format!("mgmt-{token_id}"));
     let issued = match authz.mint_token(TokenSpec {
         token_id,
         service_id,
@@ -1728,7 +1816,7 @@ async fn mint_token_route(
         expires_at,
     }) {
         Ok(issued) => issued,
-        Err(err) => return invalid(format!("mint refused: {err}")),
+        Err(error) => return token_operation_refusal(error, &headers),
     };
     (
         StatusCode::CREATED,
@@ -1760,10 +1848,20 @@ async fn list_tokens_route(
             &headers,
         );
     };
-    if let Some(refusal) = authorize_at_target(&authz, principal, APIKEY_READ, workspace_id) {
+    if let Some(refusal) = authorize_at_target(
+        &authz,
+        principal,
+        APIKEY_READ,
+        ScopeRef::Workspace {
+            workspace_id: WorkspaceId(workspace_id.clone()),
+        },
+    ) {
         return refusal;
     }
-    Json(authz.token_views(workspace_id)).into_response()
+    match authz.token_views(workspace_id) {
+        Ok(views) => Json(views).into_response(),
+        Err(error) => token_operation_refusal(error, &headers),
+    }
 }
 
 /// `DELETE /v1/config/iam/tokens/{id}` — revoke. Requires `apikey.write` at
@@ -1779,32 +1877,35 @@ async fn revoke_token_route(
     let Some(principal) = stamped_principal(req.extensions().get::<AuthedPrincipal>()) else {
         return missing_guard_stamp();
     };
-    let Some(token) = authz.token_by_id(&id) else {
-        return problem(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            format!("no API token with id `{id}`"),
-            &headers,
-        );
+    let token = match authz.token_by_id(&id) {
+        Ok(Some(token)) => token,
+        Ok(None) => {
+            return token_operation_refusal(
+                IamOperationError::Token(IamError::ApiTokenNotFound { id: ApiTokenId(id) }),
+                &headers,
+            );
+        }
+        Err(error) => return token_operation_refusal(error, &headers),
     };
-    if let Some(refusal) = authorize_at_target(&authz, principal, APIKEY_WRITE, &token.workspace.0)
-    {
+    if let Some(refusal) = authorize_at_target(
+        &authz,
+        principal,
+        APIKEY_WRITE,
+        ScopeRef::Workspace {
+            workspace_id: token.workspace.clone(),
+        },
+    ) {
         return refusal;
     }
+    // Resolve display metadata before committing. A failed read must not turn
+    // a successful durable revocation into an apparent retryable failure.
+    let role = match authz.role_of(&token) {
+        Ok(role) => role,
+        Err(error) => return token_operation_refusal(error, &headers),
+    };
     match authz.revoke_token(&id) {
-        Ok(revoked) => Json(token_view(&revoked, authz.token_role(&id))).into_response(),
-        Err(IamError::ApiTokenNotFound { .. }) => problem(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            format!("no API token with id `{id}`"),
-            &headers,
-        ),
-        Err(err) => problem(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "revoke_failed",
-            format!("revocation failed: {err}"),
-            &headers,
-        ),
+        Ok(revoked) => Json(token_view(&revoked, role)).into_response(),
+        Err(error) => token_operation_refusal(error, &headers),
     }
 }
 

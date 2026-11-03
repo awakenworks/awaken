@@ -21,7 +21,7 @@ function roleLabel(role: string | undefined, t: (en: string, zh: string) => stri
   switch (role) {
     case "workspace_restricted_developer": return t("Read-only developer", "只读开发者");
     case "workspace_admin": return t("Workspace administrator", "工作区管理员");
-    case "admin": return t("Platform administrator", "平台管理员");
+    case "admin": return t("Administrator", "管理员");
     default: return role ?? t("Unknown role", "未知角色");
   }
 }
@@ -34,7 +34,7 @@ export function serviceKeyRoleGuidance(role: string, locale: "en" | "zh") {
     case "workspace_admin":
       return zh ? "可创建 Session，也可修改工作区配置；SDK 快速开始当前需要此角色。" : "Can create Sessions and change Workspace configuration; the SDK quickstart currently requires this role.";
     case "admin":
-      return zh ? "可管理整个平台；仅用于确实需要跨工作区管理的服务。" : "Can administer the platform; use only for services that truly need cross-Workspace control.";
+      return zh ? "此角色授予当前工作区的完整权限，本身不会授予跨工作区或组织级权限。" : "Full administration in this Workspace; this role alone does not grant cross-Workspace or organization-level access.";
     default:
       return zh ? "请按服务实际工作选择最小权限角色。" : "Choose the least-privileged role that can complete the service's work.";
   }
@@ -60,7 +60,7 @@ export default function AccessSurface() {
     retry: false,
   });
   const [form, setForm] = useState({
-    principalId: "service-console",
+    principalId: "",
     role: "workspace_restricted_developer",
     expiresAt: "",
   });
@@ -69,7 +69,7 @@ export default function AccessSurface() {
     mutationFn: async () => {
       const response = await api.post<IamTokenMintResponse>(ws("/v1/config/iam/tokens"), {
         ...workspaceFields(workspace),
-        principal_id: form.principalId.trim(),
+        ...(form.principalId.trim() ? { principal_id: form.principalId.trim() } : {}),
         role: form.role,
         ...(form.expiresAt ? { expires_at: form.expiresAt } : {}),
       });
@@ -189,18 +189,19 @@ export default function AccessSurface() {
       <Card>
         <h2>{app.t("Create service API key", "创建 Service API Key")}</h2>
         <div className="row">
-          <TextField label={app.t("Service principal", "服务主体")} value={form.principalId} onChange={(e) => setForm({ ...form, principalId: e.target.value })} placeholder="billing-backend" />
+          <TextField label={app.t("Service principal · optional", "服务主体 · 可选")} value={form.principalId} onChange={(e) => setForm({ ...form, principalId: e.target.value })} placeholder={app.t("Automatically assigned", "自动分配")} />
           <SelectField label={app.t("Role", "角色")} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
             <option value="workspace_restricted_developer">{app.t("Read-only developer", "只读开发者")}</option>
             <option value="workspace_admin">{app.t("Workspace administrator", "工作区管理员")}</option>
-            <option value="admin">{app.t("Platform administrator", "平台管理员")}</option>
+            <option value="admin">{app.t("Administrator", "管理员")}</option>
           </SelectField>
           <TextField label={app.t("Expires at · optional", "到期时间 · 可选")} mono value={form.expiresAt} onChange={(e) => setForm({ ...form, expiresAt: e.target.value })} placeholder="2027-01-01T00:00:00Z" />
-          <Button variant="primary" style={{ alignSelf: "flex-end" }} disabled={mint.isPending || !form.principalId.trim()} onClick={() => mint.mutate()}>
+          <Button variant="primary" style={{ alignSelf: "flex-end" }} disabled={mint.isPending} onClick={() => mint.mutate()}>
             {app.t("Create key", "创建 Key")}
           </Button>
         </div>
         <p className="hint">{serviceKeyRoleGuidance(form.role, app.locale)}</p>
+        <p className="hint">{app.t("Leave the principal blank for a dedicated identity. Selecting a principal requires organization-level credential management permission.", "留空会自动分配专用主体。指定主体需要组织级凭据管理权限。")}</p>
         {mint.error instanceof Error && <div className="err">{mint.error.message}</div>}
         <p className="mut" style={{ marginBottom: 0 }}>
           {app.t(

@@ -1,4 +1,5 @@
 use std::net::TcpListener as StdListener;
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ use awaken_iam_host::{AccessTokenAuthority, AccessTokenClaims, LocalSeedSigner};
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse as _, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use tower::ServiceExt as _;
@@ -42,6 +44,7 @@ fn cloud_denial_names_the_qualified_action_and_workspace_scope() {
 struct CloudIamState {
     jwks: Jwks,
     authorization_bearers: Arc<Mutex<Vec<String>>>,
+    authorization_status: Arc<AtomicU16>,
 }
 
 async fn jwks(State(state): State<CloudIamState>) -> Json<Jwks> {
@@ -52,7 +55,7 @@ async fn authorize(
     State(state): State<CloudIamState>,
     headers: HeaderMap,
     Json(_request): Json<AuthorizationRequest>,
-) -> Json<AuthorizationOutcome> {
+) -> Response {
     state.authorization_bearers.lock().unwrap().push(
         headers
             .get("authorization")
@@ -61,6 +64,10 @@ async fn authorize(
             .trim_start_matches("Bearer ")
             .to_owned(),
     );
+    let status = StatusCode::from_u16(state.authorization_status.load(Ordering::SeqCst)).unwrap();
+    if status != StatusCode::OK {
+        return status.into_response();
+    }
     Json(AuthorizationOutcome {
         decision: AuthorizationDecision::Allow,
         reason: "test-policy".into(),
@@ -68,6 +75,7 @@ async fn authorize(
         matched_roles: Vec::new(),
         obligation: None,
     })
+    .into_response()
 }
 
 #[test]
@@ -87,6 +95,8 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
     let (ready_tx, ready_rx) = mpsc::channel();
     let authorization_bearers = Arc::new(Mutex::new(Vec::new()));
     let server_bearers = Arc::clone(&authorization_bearers);
+    let authorization_status = Arc::new(AtomicU16::new(200));
+    let server_status = Arc::clone(&authorization_status);
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -96,6 +106,7 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
             let state = CloudIamState {
                 jwks: AccessTokenAuthority::new(LocalSeedSigner::new(KID, SEED)).jwks(),
                 authorization_bearers: server_bearers,
+                authorization_status: server_status,
             };
             let app = Router::new()
                 .route("/.well-known/jwks.json", get(jwks))
@@ -176,9 +187,23 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
     async fn ok() -> StatusCode {
         StatusCode::OK
     }
-    let app = Router::new().route("/v1/config/catalog", get(ok)).layer(
-        axum::middleware::from_fn_with_state(authz, cloud_management_guard),
-    );
+    let handlers = Arc::new(AtomicUsize::new(0));
+    let handler_calls = Arc::clone(&handlers);
+    let app = Router::new()
+        .route(
+            "/v1/config/catalog",
+            get(move || {
+                let calls = Arc::clone(&handler_calls);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::OK
+                }
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            authz,
+            cloud_management_guard,
+        ));
     runtime.block_on(async {
         let request = |bearer: Option<&str>| {
             let mut builder = Request::builder().uri("/v1/config/catalog");
@@ -221,6 +246,37 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
         authorization_bearers.lock().unwrap().as_slice(),
         [token.as_str(), token.as_str(), rotated_token.as_str()]
     );
+
+    // R6 valid immutable-JWKS authentication + a real HTTP PDP 503 ->
+    // Managed 503 with zero protected-handler effects (not a credential 401 or
+    // policy 403). R7 the original PDP recovers -> the same token reaches the
+    // same handler. Original transport retry owns retries, no adapter classifier.
+    runtime.block_on(async {
+        let request = || {
+            let mut request = Request::builder()
+                .uri("/v1/config/catalog")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(awaken_tenancy::WorkspaceScope("ws_cloud".into()));
+            request
+        };
+        let before = handlers.load(Ordering::SeqCst);
+        authorization_status.store(503, Ordering::SeqCst);
+        assert_eq!(
+            app.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(handlers.load(Ordering::SeqCst), before);
+        authorization_status.store(200, Ordering::SeqCst);
+        assert_eq!(
+            app.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(handlers.load(Ordering::SeqCst), before + 1);
+    });
 
     let projected_dir = tempfile::tempdir().unwrap();
     let projected_token = projected_dir.path().join("management-token");
@@ -331,6 +387,7 @@ fn cloud_tunnel_guard_requires_wif_service_bearer_and_scope() {
             let state = CloudIamState {
                 jwks: AccessTokenAuthority::new(LocalSeedSigner::new(KID, SEED)).jwks(),
                 authorization_bearers: Arc::new(Mutex::new(Vec::new())),
+                authorization_status: Arc::new(AtomicU16::new(200)),
             };
             let app = Router::new()
                 .route("/.well-known/jwks.json", get(jwks))

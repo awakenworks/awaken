@@ -97,10 +97,12 @@ replace two semantic spellings: an `InvariantLock` refusal unwrapped with
 expected away with a poison-naming message (L2). Clippy cannot tell those
 apart from a legitimate `Result::expect`, so the guard stays, now as a
 no-baseline deny over all production code except `awaken-sync`, naming
-`InvariantLock` in its messages. The one exemption is an item carrying the
-reviewed `#[expect(clippy::disallowed_methods)]` of a lock still on `std`
-(below), so a reviewed site is not counted twice. It retires when an
-invariant refusal can be unwrapped only through a typed route.
+`InvariantLock` in its messages. A Clippy annotation may permit a foreign
+API's required `std` lock representation; it never exempts the item's poison
+handling from L1 or L2. A direct poison expect matching both rules produces
+one L1 diagnostic. An independent or indirect poison expect still produces
+L2, including on the same line. The guard retires when an invariant refusal
+can be unwrapped only through a typed route.
 
 ## Classification
 
@@ -135,6 +137,6 @@ decided:
 | Lock | Decision |
 |---|---|
 | `LiveInbox` state | `InvariantLock` (package L): a poisoned inbox admits nothing and reads as closed and empty, `version()` returns `Option<u64>`, edits and waits report `Unavailable`; an SDK break inside the pending `2.0.0` ([SDK versioning](sdk-versioning.md)) |
-| `ManagementAuthz.state` | stays on `std` because `IamGate::from_local_state` takes that type; every read goes through one `iam_state()` accessor with a reviewed `#[expect]`; changes with the awaken-iam API |
+| `ManagementAuthz.state` | the foreign IAM API's required `std` representation may carry a Clippy `#[expect]`; the single `iam_state()` accessor must propagate poison through the owning typed error. The annotation does not authorize a panic; a pending typed-path migration remains a guard violation |
 | `SandboxControlPublicationSlot.state` | `LeafLock` (integrator decision): every critical section reads the slot state or replaces it whole, so disposal stays absorbing without a special route; test PS6 pins that a panic under an open slot keeps its exact owner |
 | `NamespaceSandbox.memory_materializations` | `LeafLock` (integrator decision): every critical section reads the list or appends one independent entry, and `Sandbox::handle()` keeps its evidence |

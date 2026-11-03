@@ -27,6 +27,8 @@ const baseURL = process.env.AWAKEN_LAZY_TEST_URL;
 const context = process.env.AWAKEN_LAZY_KUBE_CONTEXT;
 const namespace = process.env.AWAKEN_LAZY_KUBE_NAMESPACE ?? 'awaken-system';
 const serviceContainer = process.env.AWAKEN_LAZY_SERVICE_CONTAINER;
+const initialServiceContainerId = process.env.AWAKEN_LAZY_SERVICE_CONTAINER_ID;
+let serviceContainerId = initialServiceContainerId;
 const output = path.resolve(process.env.AWAKEN_EVAL_ARTIFACT_DIR ?? 'target/test-evidence/skill-lazy-live');
 const replyBudget = Number(process.env.AWAKEN_LAZY_REPLY_BUDGET_MS ?? 30_000);
 const startupSamples = Number(process.env.AWAKEN_LAZY_STARTUP_SAMPLES ?? 0);
@@ -36,7 +38,7 @@ const upgradeImage = process.env.AWAKEN_LAZY_UPGRADE_RUNTIME_IMAGE;
 assert.ok(Number.isSafeInteger(startupSamples) && startupSamples >= 0 && startupSamples <= 20, 'startup samples 0..20');
 const key = process.env.DEEPSEEK_API_KEY || (process.env.DEEPSEEK_API_KEY_FILE
   ? fs.readFileSync(process.env.DEEPSEEK_API_KEY_FILE, 'utf8').trim() : null);
-assert.ok(baseURL && context && serviceContainer?.startsWith('awaken-skill-lazy-') && key, 'explicit owned service, Kubernetes context and DeepSeek key required');
+assert.ok(baseURL && context && serviceContainer?.startsWith('awaken-skill-lazy-') && /^[0-9a-f]{64}$/.test(initialServiceContainerId ?? '') && key, 'explicit owned service CID/name, Kubernetes context and DeepSeek key required');
 assert.ok(Number.isSafeInteger(replyBudget) && replyBudget > 0);
 const betas = ['managed-agents-2026-04-01'];
 const client = new Anthropic({ baseURL, apiKey: 'e2e-local', maxRetries: 0 }); // awaken-allow(secret): (no-login test deployment)
@@ -44,7 +46,7 @@ const tag = randomBytes(6).toString('hex');
 const referenceMarker = `REFERENCE_${tag}`;
 const executionMarker = `EXECUTION_${tag}`;
 const recoveryMarker = `RECOVERY_${tag}`;
-const evidence = { model_source: 'live-deepseek', context, namespace, service_container: serviceContainer,
+const evidence = { model_source: 'live-deepseek', context, namespace, service_container: serviceContainer, service_container_id: serviceContainerId,
   runtime_placement: 'production-cli-and-worker-in-host-network-container', sandbox_placement: 'k3d-pod',
   source_commit: process.env.AWAKEN_LAZY_SOURCE_COMMIT, reply_budget_ms: replyBudget,
   image_prewarm: imagePrewarm, startup_samples: startupSamples, observations: [], passed: false };
@@ -296,6 +298,58 @@ async function bashTurn(sessionId, failure = false) {
   }
 }
 
+// Runtime creation C/E: the input CID is the shell's actual creation receipt;
+// the name is ONLY the original --name contract for a replacement. Restart
+// keeps the CID. Upgrade retains Docker's --cidfile even when start fails,
+// while a missing/malformed receipt never grants a replacement by name.
+async function restoreServiceContainer() {
+  const inspection = '[{"Id":{{json .Id}},"Config":{"Labels":{"awaken.test.case":{{json (index .Config.Labels "awaken.test.case")}},"awaken.e2e.owner":{{json (index .Config.Labels "awaken.e2e.owner")}},"awaken.e2e.run":{{json (index .Config.Labels "awaken.e2e.run")}}},"Entrypoint":{{json .Config.Entrypoint}},"Cmd":{{json .Config.Cmd}}},"HostConfig":{"NetworkMode":{{json .HostConfig.NetworkMode}},"Binds":{{json .HostConfig.Binds}}}}]';
+  const before = JSON.parse((await execute('docker', ['inspect', '--format', inspection, serviceContainerId], { timeout: 15_000 })).stdout)[0];
+  assert.equal(before.Id, serviceContainerId, 'inspect resolves the retained service CID');
+  assert.equal(before.Config.Labels?.['awaken.test.case'], 'skill-lazy-real', 'restart only owned fixture');
+  if (upgradeImage) {
+    assert.equal(before.HostConfig.NetworkMode, 'host');
+    assert.deepEqual(before.Config.Entrypoint, ['/usr/local/bin/awaken']);
+    assert.equal(before.Config.Cmd[0], 'all-in-one');
+    const replacementCidFile = path.join(output, `runtime-replacement-${initialServiceContainerId}.cid`);
+    assert.equal(fs.lstatSync(replacementCidFile, { throwIfNoEntry: false }), undefined, 'replacement creation receipt is fresh');
+    for (const label of ['awaken.e2e.owner', 'awaken.e2e.run']) {
+      assert.ok(typeof before.Config.Labels?.[label] === 'string' && before.Config.Labels[label], 'retain original runtime ownership labels');
+    }
+    await execute('docker', ['stop', '--time', '15', before.Id], { timeout: 45_000 });
+    await execute('docker', ['rm', '-v', before.Id], { timeout: 15_000 });
+    let creationResult;
+    let creationError;
+    try {
+      creationResult = await execute('docker', ['run', '-d', '--cidfile', replacementCidFile, '--network', 'host', '--name', serviceContainer,
+        '--label', 'awaken.test.case=skill-lazy-real',
+        ...['awaken.e2e.owner', 'awaken.e2e.run'].flatMap(label => ['--label', `${label}=${before.Config.Labels[label]}`]),
+        '-e', 'KUBECONFIG=/etc/awaken/kubeconfig',
+        ...before.HostConfig.Binds.flatMap((binding) => ['-v', binding]),
+        '--entrypoint', '/usr/local/bin/awaken', upgradeImage, ...before.Config.Cmd], { timeout: 30_000 });
+    } catch (error) { creationError = error; }
+    let receiptError;
+    try {
+      const metadata = fs.lstatSync(replacementCidFile, { throwIfNoEntry: false });
+      if (metadata) {
+        assert.ok(metadata.isFile() && !metadata.isSymbolicLink(), 'Docker CID receipt is a regular owned file');
+        const created = fs.readFileSync(replacementCidFile, 'utf8').trim();
+        assert.match(created, /^[0-9a-f]{64}$/, 'actual replacement creation CID');
+        serviceContainerId = created;
+        evidence.service_container_id = created;
+        record({ label: 'service-container-created', previous_container_id: before.Id, container_id: created, image: upgradeImage });
+      } else assert.ok(creationError, 'successful creation requires the actual Docker CID receipt');
+    } catch (error) { receiptError = error; }
+    if (creationError) {
+      if (receiptError) evidence.service_container_receipt_error = String(receiptError);
+      throw creationError;
+    }
+    if (receiptError) throw receiptError;
+    assert.equal(creationResult.stdout.trim(), serviceContainerId, 'Docker reply and creation receipt identify the same object');
+    directoryInit = false;
+  } else await execute('docker', ['restart', '--time', '15', before.Id], { timeout: 45_000 });
+}
+
 async function main() {
   fs.mkdirSync(output, { recursive: true, mode: 0o700 });
   await waitForPort(Number(new URL(baseURL).port), 15_000);
@@ -385,20 +439,7 @@ async function main() {
     assert.ok(pods[0].init_containers?.some((item) => item.name === 'continuation-init'));
     historical = { id, uid: pods[0].uid }; record({ label: 'historical-before-upgrade', ...historical });
   }
-  const before = JSON.parse((await execute('docker', ['inspect', serviceContainer], { timeout: 15_000 })).stdout)[0];
-  assert.equal(before.Config.Labels?.['awaken.test.case'], 'skill-lazy-real', 'restart only owned fixture');
-  if (upgradeImage) {
-    assert.equal(before.HostConfig.NetworkMode, 'host');
-    assert.deepEqual(before.Config.Entrypoint, ['/usr/local/bin/awaken']);
-    assert.equal(before.Config.Cmd[0], 'all-in-one');
-    await execute('docker', ['stop', '--time', '15', before.Id], { timeout: 45_000 });
-    await execute('docker', ['rm', before.Id], { timeout: 15_000 });
-    await execute('docker', ['run', '-d', '--network', 'host', '--name', serviceContainer,
-      '--label', 'awaken.test.case=skill-lazy-real', '-e', 'KUBECONFIG=/etc/awaken/kubeconfig',
-      ...before.HostConfig.Binds.flatMap((binding) => ['-v', binding]),
-      '--entrypoint', '/usr/local/bin/awaken', upgradeImage, ...before.Config.Cmd], { timeout: 30_000 });
-    directoryInit = false;
-  } else await execute('docker', ['restart', '--time', '15', before.Id], { timeout: 45_000 });
+  await restoreServiceContainer();
   await waitForValue(async () => {
     try { return (await fetch(`${baseURL}/v1/config/workspace-context`)).ok; }
     catch { return false; }

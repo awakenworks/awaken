@@ -17,10 +17,11 @@ stay here:
 
 Scope: every production module of every workspace crate (the module closure
 Cargo compiles without `cfg(test)`, test-support and testkit code included),
-except `awaken-sync`, the one crate that reads a `std` lock. A site inside an
-item carrying the reviewed `#[expect(clippy::disallowed_methods, reason = ..)]`
-for a lock still on `std` is that lock's one recorded exemption and is not
-counted twice. The count is held at zero: there is no baseline.
+except `awaken-sync`, the one crate that reads a `std` lock. A Clippy
+annotation may permit a foreign API's required `std` representation, never
+an unwrapped poison refusal. A direct site matching both rules is reported
+once as L1; independent or indirect poison expects remain L2. The count is
+held at zero: there is no baseline.
 
 Retires when an invariant refusal can be unwrapped only through a typed route
 (for example a `LockPoisoned` that is not `Debug`), so the compiler refuses
@@ -38,8 +39,6 @@ import _crate_boundary_workspace
 SYNC_CRATE = "awaken-sync"
 LOCK_PANIC = re.compile(r"\.\s*(?:lock|read|write)\s*\(\s*\)\s*\.\s*(?:expect|unwrap)\s*\(")
 POISON_EXPECT = re.compile(r"\.\s*expect\s*\(\s*\"[^\"]*poison[^\"]*\"", re.IGNORECASE)
-REVIEWED_STD_LOCK = re.compile(r"#\[\s*(?:cfg_attr\s*\([^\]]*?,\s*)?expect\s*\(\s*clippy\s*::\s*disallowed_methods\b")
-FN_ITEM = re.compile(r"\bfn\s+[A-Za-z_]\w*")
 
 
 def scanned_manifests(repo_root: Path) -> list[Path]:
@@ -52,65 +51,35 @@ def scanned_manifests(repo_root: Path) -> list[Path]:
     ]
 
 
-def _reviewed_ranges(syntax: str) -> list[tuple[int, int]]:
-    """Body spans of the fn items annotated with the reviewed std-lock expect."""
-    ranges: list[tuple[int, int]] = []
-    for attribute in REVIEWED_STD_LOCK.finditer(syntax):
-        cursor = _crate_boundary_workspace._outer_attribute_end(syntax, attribute.start())
-        if cursor is None:
-            continue
-        # Attributes belong to the immediately following item. Keep stacked
-        # attributes, but never search past a const or bodyless declaration.
-        while cursor < len(syntax):
-            if syntax[cursor].isspace():
-                cursor += 1
-            elif syntax[cursor] == "#":
-                following = _crate_boundary_workspace._outer_attribute_end(syntax, cursor)
-                if following is None:
-                    break
-                cursor = following
-            else:
-                break
-        end = _crate_boundary_workspace._rust_item_end(syntax, cursor)
-        if end is None or syntax[end - 1] != "}":
-            continue
-        item = FN_ITEM.search(syntax, cursor, end)
-        if item is not None and _crate_boundary_workspace._rust_item_end(syntax, item.start()) == end:
-            ranges.append((attribute.start(), end))
-    return ranges
-
-
 def poisoned_lock_violations(sources: dict[str, str]) -> list[str]:
     """Rule violations in production sources, keyed by repository path.
 
     Cause/effect graph: C1 the source is production code outside the sync
     crate; C2 it unwraps a lock acquisition (L1); C3 it unwraps with a
-    poison-naming `.expect` (L2); C4 the site is inside an item carrying the
-    reviewed std-lock `#[expect(clippy::disallowed_methods)]`. E1 accept when
-    C1 is false, C4 holds, or neither C2 nor C3 holds; E2 reject and name the
-    file, line and rule.
+    poison-naming `.expect` (L2); C4 that expect starts within the same reported
+    L1 match. E1 accept when C1 is false or neither C2 nor C3 holds; E2 reject
+    each C2 once as L1 and each C3 outside C4 as L2. An annotation does not
+    change either rule. The original projections preserve these offsets.
     """
     errors: list[str] = []
     for relative, source in sorted(sources.items()):
         production = _crate_boundary_workspace.production_rust(source)
         syntax = _crate_boundary_workspace.rust_syntax(production)
-        reviewed = _reviewed_ranges(syntax)
-
-        def exempt(offset: int) -> bool:
-            return any(start <= offset < end for start, end in reviewed)
+        direct_ranges: list[tuple[int, int]] = []
 
         for match in LOCK_PANIC.finditer(syntax):
             # The blanked projection turns `read("path")` into `read(      )`;
             # a call with an argument is not a lock acquisition.
-            if '"' in production[match.start():match.end()] or exempt(match.start()):
+            if '"' in production[match.start():match.end()]:
                 continue
+            direct_ranges.append(match.span())
             line = syntax.count("\n", 0, match.start()) + 1
             errors.append(
                 f"{relative}:{line}: an InvariantLock refuses poison with LockPoisoned; "
                 "propagate it through the crate's typed error instead of unwrapping it (L1)"
             )
         for match in POISON_EXPECT.finditer(production):
-            if exempt(match.start()):
+            if any(start <= match.start() < end for start, end in direct_ranges):
                 continue
             line = production.count("\n", 0, match.start()) + 1
             errors.append(
@@ -135,8 +104,13 @@ def selftest() -> None:
     | P8 | tokio `.lock().await`, a leaf `.lock().push(..)`                 | accept (cannot poison / recovers) |
     | P9 | any production crate other than the sync crate                   | scanned |
     | P10 | `store.read("path").unwrap()`, a call with a string argument    | accept (not a lock read) |
-    | P11 | L1/L2 inside a fn carrying the reviewed std-lock `#[expect]`    | accept (one recorded exemption) |
-    | P12 | the same spelling in the next fn, outside that item             | reject |
+    | P11 | L1/L2 inside a fn carrying a std-lock `#[expect]`                | reject; annotations grant no exemption |
+    | P12 | annotated and adjacent forbidden bodies                         | reject each independent site |
+    | P13-P17 | bodyless, const-header and stacked-attribute syntax          | reject every L1 site; no item exemption |
+    | P18 | an annotated acquisition with typed `map_err` propagation       | accept |
+    | P19 | a direct poison expect matching L1 and L2                       | one L1 diagnostic |
+    | P20 | direct and indirect poison expects on the same line             | one L1 and one L2 diagnostic |
+    | P21 | a poison expect after a string-argument read                     | one L2 diagnostic (no L1 suppression) |
     """
     path = "crates/server/awaken-any/src/lib.rs"
     clean = (
@@ -170,18 +144,22 @@ def selftest() -> None:
         "#[expect(\n    clippy::disallowed_methods,\n    reason = \"the IAM API fixes this std lock\"\n)]\n"
         "fn state(&self) -> G { self.state.lock().expect(\"state lock poisoned\") }\n"
     )
-    assert poisoned_lock_violations({path: reviewed}) == [], "P11"
-    assert len(poisoned_lock_violations({path: reviewed + forbidden})) == 2, "P12"
+    assert len(poisoned_lock_violations({path: reviewed})) == 1, "P11 annotation does not exempt L1/L2"
+    assert len(poisoned_lock_violations({path: reviewed + forbidden})) == 3, "P12"
 
-    # P13-P17 item-ownership causes/effects: a reviewed bodyless trait fn (P13)
-    # or an attribute on a const (P14) cannot lend its exemption to the next fn.
-    # P15 real function header const-expression braces are not its body end;
-    # P16 stacked attributes/modifiers keep the SAME reviewed function, while
-    # P17 unclosed/bodyless items never authorize a following lock unwrap.
-    # Reuse the original L1/L2 oracle and reviewed attribute, not a second lexer
-    # or a spelling-only assertion. Each unreviewed body below has one L1 site.
+    # P13-P17 retain the bodyless/const-header/stacked-attribute inputs. Neither
+    # the annotated item nor its neighbor gains an L1/L2 exemption: every actual
+    # acquisition panic is rejected. Reuse the canonical Rust projections and
+    # the original violation oracle rather than parsing item ranges again.
     attribute = reviewed[:reviewed.index("fn state")]
     adjacent = "fn next(lock: &awaken_sync::InvariantLock<()>) { let _guard = lock.lock().unwrap(); }"
+    for annotation in (
+        attribute,
+        "#[allow(clippy::disallowed_methods)]\n",
+        "#[cfg_attr(not(test), expect(clippy::disallowed_methods))]\n",
+    ):
+        indirect_errors = poisoned_lock_violations({path: annotation + rejected["P5"]})
+        assert len(indirect_errors) == 1 and indirect_errors[0].endswith("(L2)"), "P11 annotations do not exempt indirect L2"
     for rule, source in (
         ("P13 trait declaration", "trait T { " + attribute + "fn state(&self); " + adjacent + " }"),
         ("P14 const owns no following fn", attribute + "const MARKER: usize = 1; " + adjacent),
@@ -192,8 +170,26 @@ def selftest() -> None:
         ("P15 const header body", attribute + "fn state<const N: usize>(&self, _: [u8; { 1 }]) -> G { self.state.lock().expect(\"state lock poisoned\") }"),
         ("P16 stacked attributes", attribute + "#[inline] pub(crate) async unsafe fn state(&self) -> G { self.state.lock().expect(\"state lock poisoned\") }"),
     ):
-        assert poisoned_lock_violations({path: source}) == [], rule
-        assert len(poisoned_lock_violations({path: source + adjacent})) == 1, rule + " exact item only"
+        assert len(poisoned_lock_violations({path: source})) == 1, rule
+        assert len(poisoned_lock_violations({path: source + adjacent})) == 2, rule + " both bodies"
+
+    # P18: a std-representation annotation is harmless when the refusal is
+    # propagated. P19-P21 deduplicate only overlapping diagnostics for the SAME
+    # reported L1 match, never a whole line or a read that L1 already excluded.
+    assert poisoned_lock_violations(
+        {path: attribute + "fn state(&self) -> Result<G, E> { self.state.lock().map_err(E::from) }"}
+    ) == [], "P18 annotated typed propagation"
+    direct = 'fn f() { m.lock().expect("state poisoned"); }'
+    direct_errors = poisoned_lock_violations({path: direct})
+    assert len(direct_errors) == 1 and direct_errors[0].endswith("(L1)"), "P19 same site"
+    independent = 'fn f() { m.lock().expect("state poisoned"); r.frozen(t).expect("slots poisoned"); }'
+    independent_errors = poisoned_lock_violations({path: independent})
+    assert len(independent_errors) == 2, "P20 same line, independent sites"
+    assert independent_errors[0].endswith("(L1)") and independent_errors[1].endswith("(L2)"), "P20 rule identities"
+    read_errors = poisoned_lock_violations(
+        {path: 'fn f() { store.read("path").expect("io poisoned"); }'}
+    )
+    assert len(read_errors) == 1 and read_errors[0].endswith("(L2)"), "P21 excluded L1 cannot suppress L2"
 
     # P3/P9: discovery follows Cargo manifests; only the sync crate is outside.
     import tempfile

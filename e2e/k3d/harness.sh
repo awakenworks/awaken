@@ -17,6 +17,20 @@ K3D_EXIT_CLEANUP_FUNCTION=""
 K3D_BUILD_TIMEOUT_SECONDS="${AWAKEN_K3D_BUILD_TIMEOUT_SECONDS:-1800}"
 K3D_DIAGNOSTIC_TIMEOUT_SECONDS="${AWAKEN_K3D_DIAGNOSTIC_TIMEOUT_SECONDS:-20}"
 
+# One process-local creation receipt, not an inventory of other runs. Every
+# actual scenario creates one cluster; a completed teardown releases the slot.
+K3D_CREATED_CLUSTER=""
+K3D_CREATED_OWNER=""
+K3D_CREATED_RUN=""
+K3D_CREATED_CONTAINER_IDS=()
+K3D_CREATED_NETWORK_ID=""
+K3D_CREATED_VOLUME_IDENTITIES=()
+K3D_CREATED_SHARED_VOLUME=""
+K3D_CREATED_IMAGE_VOLUME=""
+K3D_CREATED_REGISTRY_ID=""
+K3D_CURRENT_REGISTRY_ATTACHED=0
+K3D_CREATION_CONFIRMED=0
+
 k3d_validate_deadline() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
@@ -429,38 +443,197 @@ k3d_admit_or_exit() {
   exit 0
 }
 
+# Read only the selected cluster's immutable IDs and the three ownership labels.
+# Any IO or malformed identity is unknown, never an empty/absent observation.
+_k3d_cluster_members() {
+  local cluster="$1" ids id observed
+  local records=()
+  ids=$(docker ps -aq --no-trunc --filter "label=k3d.cluster=$cluster") || return "$?"
+  for id in $ids; do
+    [[ "$id" =~ ^[0-9a-f]{64}$ ]] || return 2
+    observed=$(docker inspect --format \
+      '{{.Id}}|{{index .Config.Labels "awaken.e2e.owner"}}|{{index .Config.Labels "awaken.e2e.run"}}|{{index .Config.Labels "k3d.cluster"}}|{{index .Config.Labels "k3d.cluster.network.id"}}|{{index .Config.Labels "k3d.cluster.network.external"}}|{{with index .Config.Labels "k3d.cluster.imageVolume"}}{{.}}{{end}}' \
+      -- "$id") || return "$?"
+    [[ "$observed" = "$id|"* && "$observed" != *$'\n'* ]] || return 2
+    records+=("$observed")
+  done
+  (( ${#records[@]} == 0 )) || printf '%s\n' "${records[@]}" | sort -u
+}
+
+_k3d_capture_creation() {
+  local members id owner run cluster network external image extra observed names name identity retained found managed
+  members=$(_k3d_cluster_members "$K3D_CREATED_CLUSTER") || return "$?"
+  [[ -n "$members" ]] || return 2
+  K3D_CREATED_CONTAINER_IDS=()
+  K3D_CREATED_VOLUME_IDENTITIES=()
+  while IFS='|' read -r id owner run cluster network external image extra; do
+    [[ -z "$K3D_CREATED_REGISTRY_ID" || "$id" != "$K3D_CREATED_REGISTRY_ID" ]] || continue
+    [[ "$owner" = "$K3D_CREATED_OWNER" && "$run" = "$K3D_CREATED_RUN" \
+      && "$cluster" = "$K3D_CREATED_CLUSTER" && "$network" =~ ^[0-9a-f]{64}$ \
+      && "$external" = false && "$image" = "$K3D_CREATED_IMAGE_VOLUME" && -z "$extra" ]] || return 2
+    if [[ -z "$K3D_CREATED_NETWORK_ID" ]]; then K3D_CREATED_NETWORK_ID="$network"; fi
+    [[ "$network" = "$K3D_CREATED_NETWORK_ID" ]] || return 2
+    K3D_CREATED_CONTAINER_IDS+=("$id")
+  done <<<"$members"
+  (( ${#K3D_CREATED_CONTAINER_IDS[@]} > 0 )) || return 2
+  # The pinned K3D creator records both the actual network ID and whether it
+  # created or reused it in node labels. Only its external=false creation fact can
+  # authorize this network; a later name lookup is not creation evidence.
+  observed=$(docker network inspect --format '{{.Id}}|{{.Name}}' -- "$K3D_CREATED_NETWORK_ID") || return "$?"
+  [[ "$observed" = "$K3D_CREATED_NETWORK_ID|k3d-$K3D_CREATED_CLUSTER" ]] || return 2
+  observed=$(_e2e_docker_owned_volume "$K3D_CREATED_IMAGE_VOLUME") || return "$?"
+  [[ -n "$observed" ]] || return 2
+  K3D_CREATED_VOLUME_IDENTITIES=("$observed")
+  for id in "${K3D_CREATED_CONTAINER_IDS[@]}"; do
+    names=$(docker inspect --format '{{range .Mounts}}{{if eq .Type "volume"}}{{println .Name}}{{end}}{{end}}' -- "$id") || return "$?"
+    for name in $names; do
+      # The closed creator passes only its checked shared volume. The other
+      # volume mounts are Docker-generated anonymous volumes of these new CIDs.
+      [[ "$name" = "$K3D_CREATED_IMAGE_VOLUME" || "$name" =~ ^[0-9a-f]{64}$ ]] || return 2
+      identity=$(docker volume inspect --format \
+        '{{.Name}}|{{.CreatedAt}}|{{with index .Labels "awaken.e2e.owner"}}{{.}}{{end}}|{{with index .Labels "awaken.e2e.run"}}{{.}}{{end}}|{{with index .Labels "awaken.e2e.creation"}}{{.}}{{end}}' "$name") || return "$?"
+      if [[ "$name" = "$K3D_CREATED_IMAGE_VOLUME" || "$name" = "$K3D_CREATED_SHARED_VOLUME" ]]; then
+        observed=$(_e2e_docker_owned_volume "$name") || return "$?"
+        [[ "$observed" = "$identity" ]] || return 2
+      fi
+      [[ "$identity" = "$name|"?* && "$identity" != *$'\n'* ]] || return 2
+      found=0
+      for retained in "${K3D_CREATED_VOLUME_IDENTITIES[@]}"; do [[ "$identity" != "$retained" ]] || found=1; done
+      [[ "$found" = 1 ]] || K3D_CREATED_VOLUME_IDENTITIES+=("$identity")
+    done
+  done
+  _k3d_check_creation || return "$?"
+  K3D_CREATION_CONFIRMED=1
+}
+
+# Validate the retained creation receipt before the existing K3D teardown. No
+# replacement/unlabelled/foreign member or foreign volume borrower is removed,
+# even if some other members are ours. The whole mixed group stays for diagnosis.
+_k3d_check_creation() {
+  local members id owner run cluster creator_network external image extra retained found network volume borrowers borrower present observed managed
+  K3D_CURRENT_REGISTRY_ATTACHED=0
+  members=$(_k3d_cluster_members "$K3D_CREATED_CLUSTER") || return "$?"
+  if [[ -n "$members" ]]; then
+    while IFS='|' read -r id owner run cluster creator_network external image extra; do
+      [[ -z "$K3D_CREATED_REGISTRY_ID" || "$id" != "$K3D_CREATED_REGISTRY_ID" ]] || continue
+      [[ "$owner" = "$K3D_CREATED_OWNER" && "$run" = "$K3D_CREATED_RUN" \
+        && "$cluster" = "$K3D_CREATED_CLUSTER" && "$creator_network" = "$K3D_CREATED_NETWORK_ID" \
+        && "$external" = false && "$image" = "$K3D_CREATED_IMAGE_VOLUME" && -z "$extra" ]] || return 2
+      found=0
+      for retained in "${K3D_CREATED_CONTAINER_IDS[@]}"; do [[ "$id" != "$retained" ]] || found=1; done
+      [[ "$found" = 1 ]] || return 2
+    done <<<"$members"
+  fi
+  network=$(docker network ls --no-trunc --filter "name=^k3d-${K3D_CREATED_CLUSTER}$" --format '{{.ID}}') || return "$?"
+  [[ -z "$network" || "$network" = "$K3D_CREATED_NETWORK_ID" ]] || return 2
+  if [[ -n "$network" ]]; then
+    borrowers=$(docker network inspect --format '{{range $id, $member := .Containers}}{{println $id}}{{end}}' \
+      -- "$network") || return "$?"
+    for borrower in $borrowers; do
+      if [[ -n "$K3D_CREATED_REGISTRY_ID" && "$borrower" = "$K3D_CREATED_REGISTRY_ID" ]]; then
+        K3D_CURRENT_REGISTRY_ATTACHED=1
+        continue
+      fi
+      found=0
+      for retained in "${K3D_CREATED_CONTAINER_IDS[@]}"; do [[ "$borrower" != "$retained" ]] || found=1; done
+      [[ "$found" = 1 ]] || return 2
+    done
+  fi
+  # Labels cannot authorize a managed volume. An unexpected object in the
+  # old K3D deletion domain is retained; no domain enumeration feeds deletion.
+  managed=$(docker volume ls --filter label=app=k3d --filter "label=k3d.cluster=$K3D_CREATED_CLUSTER" --format '{{.Name}}') || return "$?"
+  for volume in $managed; do
+    found=0
+    for retained in "${K3D_CREATED_VOLUME_IDENTITIES[@]}"; do [[ "${retained%%|*}" != "$volume" ]] || found=1; done
+    [[ "$found" = 1 ]] || return 2
+  done
+  # These creation-time identities survive partial removal of the node that
+  # mounted them. Missing nodes cannot erase a foreign borrower's evidence.
+  for retained in "${K3D_CREATED_VOLUME_IDENTITIES[@]}"; do
+    observed=$(_e2e_docker_check_created_volume "$retained") || return "$?"
+    [[ -n "$observed" ]] || continue
+    volume=${retained%%|*}
+    _e2e_docker_check_volume_mounts "$volume" "${K3D_CREATED_CONTAINER_IDS[@]}" || return "$?"
+  done
+
+}
+
+# Resolve the existing storage-cleanup node to a retained immutable container,
+# never execute a cleanup command against an unverified replacement by name.
+_k3d_created_node_id() {
+  local node="$1" id retained
+  [[ "$K3D_CREATION_CONFIRMED" = 1 \
+    && "$node" =~ ^k3d-${K3D_CREATED_CLUSTER}-(server|agent)-[0-9]+$ ]] || return 2
+  id=$(docker inspect --format '{{.Id}}' -- "$node") || return "$?"
+  for retained in "${K3D_CREATED_CONTAINER_IDS[@]}"; do
+    if [[ "$id" = "$retained" ]]; then printf '%s\n' "$id"; return 0; fi
+  done
+  return 2
+}
+
 k3d_delete_cluster() {
   local cluster="$1"
   k3d_validate_name "$cluster" || {
     echo "invalid k3d cluster name: $cluster" >&2
     return 2
   }
-  command -v k3d >/dev/null 2>&1 || {
-    echo "cannot delete or verify k3d cluster $cluster: k3d is unavailable" >&2
-    return 1
+  # An uncertain volume-create response is retained as an incomplete creation,
+  # not a successful empty cleanup. No object is deleted on that evidence.
+  [[ -z "$E2E_UNCONFIRMED_VOLUME" ]] || {
+    echo "unconfirmed volume creation retained: $E2E_UNCONFIRMED_VOLUME" >&2
+    return 2
   }
-  local delete_status=0 node_volumes
-  # `k3d cluster delete` removes the node volumes it created; capturing them
-  # first lets an interrupted or partial delete still be reclaimed below.
-  node_volumes="$(e2e_k3d_node_volumes "$cluster")"
-  k3d cluster delete "$cluster" >/dev/null 2>&1 || delete_status=$?
-  # shellcheck disable=SC2086 # volume names never contain whitespace
-  e2e_docker_rm_volumes $node_volumes
+  # An early EXIT trap owns no cluster merely because it knows its name.
+  [[ "$cluster" = "$K3D_CREATED_CLUSTER" ]] || return 0
+  [[ "$K3D_CREATION_CONFIRMED" = 1 ]] || {
+    echo "unconfirmed cluster creation retained: $cluster" >&2
+    return 2
+  }
+  _k3d_check_creation || return "$?"
+  if [[ "$K3D_CURRENT_REGISTRY_ATTACHED" = 1 ]]; then
+    # Undo this creator's exact attachment only. The external Registry itself
+    # belongs to its existing owner and is never removed by cluster cleanup.
+    docker network disconnect "$K3D_CREATED_NETWORK_ID" "$K3D_CREATED_REGISTRY_ID" || return "$?"
+    _k3d_check_creation || return "$?"
+    [[ "$K3D_CURRENT_REGISTRY_ATTACHED" = 0 ]] || return 2
+  fi
+  local id present retained volume observed
+  # Do not hand a validated name back to K3D for a SECOND selection. Docker's
+  # immutable IDs cannot redirect these effects onto a replacement incarnation.
+  for id in "${K3D_CREATED_CONTAINER_IDS[@]}"; do
+    present=$(docker ps -aq --no-trunc --filter "id=$id") || return "$?"
+    [[ -n "$present" ]] || continue
+    [[ "$present" = "$id" ]] || return 2
+    docker rm -f -v -- "$id" >/dev/null || return "$?"
+  done
+  for retained in "${K3D_CREATED_VOLUME_IDENTITIES[@]}"; do
+    observed=$(_e2e_docker_check_created_volume "$retained") || return "$?"
+    [[ -n "$observed" ]] || continue
+    volume=${retained%%|*}
+    # The caller retains its explicitly supplied shared data. This lifecycle
+    # owns its selected images volume and anonymous volumes created with nodes.
+    if [[ "$volume" = "$K3D_CREATED_SHARED_VOLUME" ]]; then
+      _e2e_docker_check_volume_mounts "$volume" || return "$?"
+      continue
+    fi
+    _e2e_docker_remove_created_volume "$observed" || return "$?"
+  done
+  present=$(docker network ls --no-trunc --filter "id=$K3D_CREATED_NETWORK_ID" --format '{{.ID}}') || return "$?"
+  if [[ -n "$present" ]]; then
+    [[ "$present" = "$K3D_CREATED_NETWORK_ID" ]] || return 2
+    # A late foreign endpoint makes this non-force operation fail. It is never
+    # removed/disconnected merely to make our network removable.
+    docker network rm -- "$K3D_CREATED_NETWORK_ID" >/dev/null || return "$?"
+  fi
   local observation_status=0
-  k3d_cluster_residue "$cluster" || observation_status=$?
+  _k3d_docker_residue "$cluster" || observation_status=$?
   case "$observation_status" in
-    0)
-      echo "k3d cluster cleanup left exact residue for $cluster (delete status $delete_status)" >&2
-      return 1
-      ;;
+    0) echo "cluster coordinate still has Docker residue: $cluster" >&2; return 1 ;;
     1) ;;
-    *)
-      echo "cannot verify k3d cluster cleanup for $cluster (delete status $delete_status)" >&2
-      return 1
-      ;;
+    *) echo "cannot verify Docker cleanup: $cluster" >&2; return "$observation_status" ;;
   esac
-  # `cluster delete` is not uniformly idempotent across k3d versions. Durable
-  # absence, not an error emitted for an already-absent cluster, is authoritative.
+  K3D_CREATED_CLUSTER=""
+  K3D_CREATION_CONFIRMED=0
   return 0
 }
 
@@ -471,15 +644,23 @@ k3d_delete_cluster() {
 k3d_delete_cluster_and_remove() {
   local cluster="$1"
   shift
-  local cluster_status=0 remove_status=0
+  local cluster_status=0 remove_status=0 held_receipt=0 observation_status=0
+  [[ "$K3D_CREATED_CLUSTER" != "$cluster" ]] || held_receipt=1
   k3d_delete_cluster "$cluster" || cluster_status=$?
   if (( $# > 0 )); then
     rm -f -- "$@" || remove_status=$?
   fi
-  if (( cluster_status != 0 )); then
-    return "$cluster_status"
-  fi
-  return "$remove_status"
+  [[ "$cluster_status" = 0 ]] || return "$cluster_status"
+  [[ "$remove_status" = 0 ]] || return "$remove_status"
+  # A private kubeconfig is a caller artifact, not a Docker resource. Observe
+  # the complete coordinate only AFTER that existing owner removes its files.
+  [[ "$held_receipt" = 1 ]] || return 0
+  k3d_cluster_residue "$cluster" || observation_status=$?
+  case "$observation_status" in
+    1) return 0 ;;
+    0) return 1 ;;
+    *) return "$observation_status" ;;
+  esac
 }
 
 # Install one process-level EXIT owner around a scenario cleanup function. Bash
@@ -511,16 +692,16 @@ k3d_run_exit_cleanup() {
   exit "$body_status"
 }
 
-# Observe only exact resources owned by one validated cluster name. This is the
-# postcondition for both pre-create cleanup and trap cleanup; it never prunes or
-# mutates unrelated Docker/Kubernetes state. Return 0 when any residue exists,
+# Observe a validated coordinate without authorizing deletion: residue can be
+# an unrelated collision. The Docker part serves its teardown; the complete
+# observer includes the caller's private context after artifact cleanup. It
+# never prunes or mutates unrelated state. Return 0 when any residue exists,
 # 1 only when every owner confirms absence, and 2 when an owner cannot be read.
-k3d_cluster_residue() {
-  local cluster="$1" context="k3d-$1" network="k3d-$1"
+_k3d_docker_residue() {
+  local cluster="$1" network="k3d-$1"
   local images_volume="k3d-$1-images" observed
   command -v k3d >/dev/null 2>&1 \
-    && command -v docker >/dev/null 2>&1 \
-    && command -v kubectl >/dev/null 2>&1 || return 2
+    && command -v docker >/dev/null 2>&1 || return 2
 
   # Exact-name queries use a non-zero exit both for "absent" and for observer
   # failure in k3d/kubectl. Read each owner once without a name filter, then
@@ -557,6 +738,18 @@ k3d_cluster_residue() {
     return 0
   fi
 
+  if ! observed=$(docker volume ls --filter label=app=k3d --filter "label=k3d.cluster=$cluster" --format '{{.Name}}' 2>/dev/null); then
+    return 2
+  fi
+  [[ -z "$observed" ]] || return 0
+  return 1
+}
+
+k3d_cluster_residue() {
+  local cluster="$1" context="k3d-$1" observed status=0
+  _k3d_docker_residue "$cluster" || status=$?
+  [[ "$status" = 1 ]] || return "$status"
+  command -v kubectl >/dev/null 2>&1 || return 2
   if ! observed=$(kubectl config get-contexts --no-headers 2>/dev/null); then
     return 2
   fi
@@ -595,19 +788,50 @@ k3d_create_cluster() {
   local images=("${@:5}") shared_volume=""
   if [[ "${images[0]:-}" = "--shared-volume" ]]; then
     shared_volume="${images[1]:-}"
-    # Only an already-owned volume is accepted: a Docker-generated ID or the
-    # run-scoped awaken-e2e-<cluster>-continuation name. Never let a missing
-    # source silently create a bind directory or another named volume.
-    [[ "$shared_volume" =~ ^([0-9a-f]{64}|awaken-e2e-[a-z0-9-]+-continuation)$ ]] \
-      && docker volume inspect "$shared_volume" >/dev/null 2>&1 || {
-      echo "invalid or missing shared continuation volume" >&2
+    # Only this invocation's checked, Docker-generated volume is accepted.
+    # A missing source cannot silently create a bind directory or named volume.
+    local shared_identity
+    [[ "$shared_volume" =~ ^[0-9a-f]{64}$ ]] || return 2
+    shared_identity=$(_e2e_docker_owned_volume "$shared_volume") || return "$?"
+    [[ -n "$shared_identity" ]] || {
+      echo "missing shared continuation volume" >&2
       return 2
     }
     images=("${images[@]:2}")
   fi
   k3d_capacity_preflight "$((agents + 1))" \
     --eviction-threshold "$eviction" "${images[@]}" || return "$?"
-  k3d_delete_cluster "$cluster" || return "$?"
+  local collision=0
+  k3d_cluster_residue "$cluster" || collision=$?
+  [[ "$collision" = 1 ]] || {
+    echo "existing or unobservable cluster coordinate; refusing replacement: $cluster" >&2
+    return 2
+  }
+  if [[ -n "$K3D_CREATED_CLUSTER" ]]; then
+    echo "a previous cluster creation receipt is still held: $K3D_CREATED_CLUSTER" >&2
+    return 2
+  fi
+  local registry_id=""
+  if [[ -n "$registry" ]]; then
+    registry_id=$(docker inspect --format '{{.Id}}' -- "${registry%:*}") || return "$?"
+    [[ "$registry_id" =~ ^[0-9a-f]{64}$ ]] || return 2
+  fi
+  [[ -n "${E2E_RUN_ID:-}" ]] || e2e_docker_init k3d || return "$?"
+  # Pinned K3D requires this empty volume while ensuring its tools node, even
+  # when image import itself streams directly. Select it through the SAME
+  # checked creator; K3D's subsequent ensure must consume this exact receipt.
+  e2e_docker_create_volume --name "k3d-$cluster-images" "awaken.e2e.cluster=$cluster" || return "$?"
+  local image_volume="$E2E_CREATED_VOLUME"
+  K3D_CREATED_CLUSTER="$cluster"
+  K3D_CREATED_OWNER="$E2E_OWNER"
+  K3D_CREATED_RUN="$E2E_RUN_ID"
+  K3D_CREATED_CONTAINER_IDS=()
+  K3D_CREATED_NETWORK_ID=""
+  K3D_CREATED_VOLUME_IDENTITIES=()
+  K3D_CREATED_SHARED_VOLUME="$shared_volume"
+  K3D_CREATED_IMAGE_VOLUME="$image_volume"
+  K3D_CREATED_REGISTRY_ID="$registry_id"
+  K3D_CREATION_CONFIRMED=0
   local args=(
     # Lifecycle decision table: C1 create succeeds -> the scenario cleanup owns
     # normal teardown; C2 create fails + caller keeps failures -> retain the
@@ -615,6 +839,8 @@ k3d_create_cluster() {
     # the same cleanup owner deletes every exact residue.  K3D auto-rollback
     # would race C2/C3 and erase node logs before either policy can observe them.
     cluster create "$cluster" --agents "$agents" --wait --timeout 180s --no-rollback
+    --runtime-label "$E2E_OWNER_LABEL=$E2E_OWNER@all"
+    --runtime-label "$E2E_RUN_LABEL=$E2E_RUN_ID@all"
     --runtime-ulimit "nofile=65536:65536"
     # Repository scenarios install and import every component they exercise.
     # Disable the unused bundled controllers so an offline proof run cannot
@@ -633,7 +859,11 @@ k3d_create_cluster() {
   fi
   [[ -z "$registry" ]] || args+=(--registry-use "$registry")
   [[ -z "$shared_volume" ]] || args+=(--volume "$shared_volume:/var/lib/awaken-continuation@all")
-  k3d "${args[@]}" >/dev/null
+  local create_status=0 receipt_status=0
+  k3d "${args[@]}" || create_status=$?
+  _k3d_capture_creation || receipt_status=$?
+  [[ "$create_status" = 0 ]] || return "$create_status"
+  return "$receipt_status"
 }
 
 # Load the installed provisioner's exact dependency images through the one
@@ -849,17 +1079,12 @@ k3d_import_images() {
     archives+=("$archive")
   done
   if (( status == 0 )); then
-    k3d image import "${archives[@]}" -c "$cluster" >/dev/null || status=$?
+    k3d image import "${archives[@]}" -c "$cluster" --mode direct >/dev/null || status=$?
   fi
-  rm -rf "$archive_dir"
-  # k3d copies every imported archive into its shared /k3d/images transport
-  # volume. The node has already consumed those archives when `image import`
-  # returns, so retaining them only creates a second, unbounded image store.
-  # Clean the transport files on both success and failure; containerd remains
-  # the authoritative runtime image store.
   local cleanup_status=0
-  docker exec "$node" find /k3d/images -mindepth 1 -maxdepth 1 -type f -delete \
-    >/dev/null 2>&1 || cleanup_status=$?
+  rm -rf -- "$archive_dir" || cleanup_status=$?
+  # The same canonical archive owner feeds K3D's direct stream importer.
+  # There is no second images-volume store or transport-file cleanup path.
   (( status == 0 )) || return "$status"
   (( cleanup_status == 0 )) || return "$cleanup_status"
   kubectl --context "$context" -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
@@ -915,6 +1140,74 @@ PYTEST
 
 k3d_harness_selftest() (
   k3d_delete_exact_pod_selftest
+  # One IO fixture records the actual volume-create labels and models Docker's
+  # existing-name reuse. All ownership tables below reuse this backend; none
+  # reconstruct the production ownership predicate or a second volume matcher.
+  local volume_fixture_root volume_fixture_dir
+  volume_fixture_root=$(mktemp -d)
+  volume_fixture_dir="$volume_fixture_root/original"
+  mkdir -p "$volume_fixture_dir"
+  trap 'command rm -rf -- "$volume_fixture_root"' EXIT
+  local volume_fixture_managed="" volume_fixture_missing_name="" volume_fixture_inspection_error=0
+  local volume_fixture_mutations="" volume_fixture_remove_error=0 volume_fixture_creation_error=0 volume_fixture_empty_reply=0 volume_fixture_race_name=""
+  volume_fixture() {
+    local verb="$2" value name="" label fixture_owner="" fixture_run="" fixture_nonce="" count=0 record format=""
+    shift 2
+    case "$verb" in
+      create)
+        while (( $# > 0 )); do
+          if [[ "$1" = --label ]]; then
+            label="$2"; shift 2
+            case "$label" in
+              awaken.e2e.owner=*) fixture_owner=${label#*=} ;;
+              awaken.e2e.run=*) fixture_run=${label#*=} ;;
+              awaken.e2e.creation=*) fixture_nonce=${label#*=} ;;
+            esac
+          else name="$1"; shift; fi
+        done
+        if [[ -z "$name" ]]; then
+          [[ ! -f "$volume_fixture_dir/counter" ]] || read -r count <"$volume_fixture_dir/counter"
+          count=$((count + 1)); printf '%s\n' "$count" >"$volume_fixture_dir/counter"
+          printf -v name '%064x' "$count"
+        fi
+        if [[ "$name" = "$volume_fixture_race_name" && ! -f "$volume_fixture_dir/$name" ]]; then
+          printf '%s|fixture-created|%s|%s|foreign-request\n' "$name" "$fixture_owner" "$fixture_run" >"$volume_fixture_dir/$name"
+        fi
+        if [[ ! -f "$volume_fixture_dir/$name" ]]; then
+          printf '%s|fixture-created|%s|%s|%s\n' "$name" "$fixture_owner" "$fixture_run" "$fixture_nonce" >"$volume_fixture_dir/$name"
+        fi
+        printf '%s\n' "$name" >"$volume_fixture_dir/.last-created"
+        [[ "$volume_fixture_empty_reply" = 1 ]] || printf '%s\n' "$name"
+        return "$volume_fixture_creation_error" ;;
+      inspect)
+        [[ "$1" = --format ]] || return 99
+        format="$2"; name="${@: -1}"
+        [[ -f "$volume_fixture_dir/$name" && "$name" != "$volume_fixture_missing_name" ]] || return 1
+        record=$(cat "$volume_fixture_dir/$name")
+        if [[ "$format" = '{{.Name}}|{{.CreatedAt}}' ]]; then
+          IFS='|' read -r name value fixture_owner fixture_run fixture_nonce <<<"$record"
+          printf '%s|%s\n' "$name" "$value"
+        else printf '%s\n' "$record"; fi
+        return "$volume_fixture_inspection_error" ;;
+      ls)
+        for value in "$@"; do
+          if [[ "$value" = label=app=k3d ]]; then
+            [[ -z "$volume_fixture_managed" ]] || printf '%s\n' "$volume_fixture_managed"
+            return 0
+          elif [[ "$value" = name=^* ]]; then name=${value#name=^}; name=${name%\$}; fi
+        done
+        [[ -n "$name" ]] || return 99
+        if [[ -f "$volume_fixture_dir/$name" && "$name" != "$volume_fixture_missing_name" ]]; then printf '%s\n' "$name"; fi ;;
+      rm)
+        [[ "$volume_fixture_remove_error" = 0 ]] || return "$volume_fixture_remove_error"
+        name="${@: -1}"
+        [[ "$*" != *'--force'* && "$1" != -f ]] || return 99
+        volume_fixture_mutations+=" remove:$name"
+        command rm -f -- "$volume_fixture_dir/$name" ;;
+      *) return 99 ;;
+    esac
+    return 0
+  }
   python3 "$(dirname "${BASH_SOURCE[0]}")/capacity.py" --self-test
   python3 "$(dirname "${BASH_SOURCE[0]}")/test_image_archive.py"
   # Private-context decision table: P1 valid caller-owned path before create
@@ -1028,12 +1321,12 @@ k3d_harness_selftest() (
     ! k3d_render_sandbox_image fixture "$digest" >/dev/null 2>&1
   )
   # Cause/effect decision table:
-  # H1 canonical name/count/quantity -> one delete + create with server and agent
+  # H1 canonical name/count/quantity + absent coordinate -> one create with server and agent
   # thresholds; H2 zero agents -> no agent threshold; H3 option-shaped name or
   # non-numeric count/percentage -> rejected before any k3d effect; H4 duplicate
-  # image coordinates -> one single-platform archive per unique image plus the
-  # canonical Pause/CoreDNS prerequisites, then delete k3d's redundant transport
-  # copies; H5 malformed port-forward identity ->
+  # image coordinates -> one canonical single-platform archive per unique image
+  # plus Pause/CoreDNS prerequisites, direct stream import and local archive
+  # cleanup; H5 malformed port-forward identity ->
   # rejection before kubectl; H6 valid preferred port -> an available IPv4 port;
   # H7 malformed preferred port -> rejection before a socket probe; H8 an exact
   # Registry coordinate is attached once and malformed input is rejected before
@@ -1043,8 +1336,8 @@ k3d_harness_selftest() (
   # failure; H13 no build-network override -> Docker's default build network;
   # H14 explicit override -> exactly one typed Docker build network option;
   # H15 each cluster-owned resource independently makes deletion fail until it
-  # is absent; H16 an already-absent cluster remains idempotent even when that
-  # k3d version returns a non-zero delete status; H17 an observation error is
+  # is absent; H16 already-absent retained resources remain idempotent, while
+  # Docker failures keep their raw nonzero status; H17 an observation error is
   # never interpreted as absence; H18 cluster cleanup failure still removes
   # caller-owned local artifacts while preserving the failure; H19-H22 compose
   # body and cleanup status through a real EXIT trap as follows.
@@ -1140,40 +1433,425 @@ print(json.dumps(value))
       done
     done
   )
+  # Cleanup ownership C/E table (actual helpers with IO fixtures, not source
+  # string checks): O1 no creation receipt or existing/unknown coordinate =>
+  # zero mutation; O2 successful creation freezes owner/run, actual CIDs,
+  # network ID and images-volume incarnation; O3 foreign/unlabelled/replaced
+  # node, extra network member or foreign volume borrower => retain the WHOLE
+  # group; O4 failed inspection remains its raw nonzero even with valid stdout;
+  # O5 network/volume incarnation drift => retain; O6 exact receipt => one
+  # canonical teardown; O7 failed create with complete owned receipt can clean;
+  # O8 empty/unconfirmed partial creation stays Unknown and is never name-deleted.
+  (
+    local volume_fixture_dir="$volume_fixture_root/ownership"
+    mkdir -p "$volume_fixture_dir"
+    local probe_cluster=awaken-owned node_present=0 network_present=0
+    local original_id="$(printf 'c%.0s' {1..64})" probe_id
+    local original_network="$(printf 'd%.0s' {1..64})" network_id
+    probe_id="$original_id"; network_id="$original_network"
+    local foreign_id="$(printf 'e%.0s' {1..64})" node_owner=fixture node_run=fixture-run
+    local images_created=original extra_network="" extra_borrower=""
+    local probe_volume="$(printf 'f%.0s' {1..64})" volume_present=0 probe_external=false volume_fixture_managed=""
+    local inspection_error=0 create_error=0 empty_create=0 no_network_create=0 mutations="" status observer_error=0
+    local registered_attached=0 disconnect_error=0 disconnect_effect=1 network_remove_error=0
+    local unknown_id="$(printf 'a%.0s' {1..64})"
+    K3D_CREATED_CLUSTER=""; K3D_CREATION_CONFIRMED=0
+    export AWAKEN_E2E_RUN_ID=fixture-run
+    e2e_docker_init fixture
+    k3d_capacity_preflight() { return 0; }
+    k3d() {
+      case "$1 $2" in
+        'cluster list')
+          [[ "$observer_error" = 0 ]] || return "$observer_error"
+          [[ "$node_present" = 0 ]] || printf '%s 1/1 0/0 true\n' "$probe_cluster" ;;
+        'cluster create')
+          [[ "$*" = *'--runtime-label awaken.e2e.owner=fixture@all'* \
+            && "$*" = *'--runtime-label awaken.e2e.run=fixture-run@all'* ]] || return 99
+          mutations+=" create"
+          [[ "$no_network_create" = 0 ]] || return "$create_error"
+          network_present=1; volume_present=1
+          registered_attached=0
+          [[ "$*" != *'--registry-use '* ]] || registered_attached=1
+          if [[ "$empty_create" != 1 ]]; then
+            node_present=1
+            printf '%s|fixture-created|||\n' "$probe_volume" >"$volume_fixture_dir/$probe_volume"
+          fi
+          return "$create_error" ;;
+        'cluster delete') return 99 ;;
+        *) return 99 ;;
+      esac
+      return 0
+    }
+    docker() {
+      if [[ "$1" = volume ]]; then volume_fixture "$@"; return "$?"; fi
+      case "$1 $2" in
+        'rm -f')
+          [[ "${@: -1}" = "$probe_id" ]] || return 99
+          mutations+=" cid-rm"; node_present=0
+          [[ -n "$extra_borrower" ]] || command rm -f -- "$volume_fixture_dir/$probe_volume" ;;
+        'ps -aq')
+          if [[ "$*" = *'volume='* ]]; then
+            [[ "$node_present" = 0 ]] || printf '%s\n' "$probe_id"
+            [[ -z "$extra_borrower" ]] || printf '%s\n' "$extra_borrower"
+          else [[ "$node_present" = 0 ]] || printf '%s\n' "$probe_id"; fi ;;
+        'inspect --format')
+          if [[ "${@: -1}" = k3d-fixture-registry.localhost ]]; then printf '%s\n' "$foreign_id"
+          elif [[ "$*" = *'{{.Id}}|{{index '* ]]; then
+            printf '%s|%s|%s|%s|%s|%s|%s\n' "$probe_id" "$node_owner" "$node_run" "$probe_cluster" "$network_id" "$probe_external" "$K3D_CREATED_IMAGE_VOLUME"
+          elif [[ "$*" = *'{{.Id}}'* ]]; then printf '%s\n' "$probe_id"
+          else printf '%s\n' "$K3D_CREATED_IMAGE_VOLUME" "$probe_volume"; fi
+          return "$inspection_error" ;;
+        'network inspect')
+          if [[ "$*" = *'{{.Id}}|{{.Name}}'* ]]; then printf '%s|k3d-%s\n' "$network_id" "$probe_cluster"
+          elif [[ "$*" = *'{{.Id}}'* ]]; then printf '%s\n' "$network_id"
+          else
+            [[ "$node_present" = 0 ]] || printf '%s\n' "$probe_id"
+            [[ "$registered_attached" = 0 ]] || printf '%s\n' "$foreign_id"
+            [[ -z "$extra_network" ]] || printf '%s\n' "$extra_network"
+          fi ;;
+        'network disconnect')
+          [[ "$3/$4" = "$network_id/$foreign_id" ]] || return 99
+          mutations+=" registry-disconnect"
+          [[ "$disconnect_effect" = 0 ]] || registered_attached=0
+          return "$disconnect_error" ;;
+        'network rm')
+          if [[ "$network_remove_error" != 0 ]]; then extra_network="$unknown_id"; return "$network_remove_error"; fi
+          mutations+=" network-rm"; network_present=0 ;;
+        'network ls')
+          if [[ "$network_present" = 1 ]]; then
+            if [[ "$*" = *'{{.ID}}'* ]]; then printf '%s\n' "$network_id"
+            else printf 'k3d-%s\n' "$probe_cluster"; fi
+          fi ;;
+        'ps -a') [[ "$node_present" = 0 ]] || printf 'k3d-%s-server-0\n' "$probe_cluster" ;;
+        *) return 99 ;;
+      esac
+      return 0
+    }
+    kubectl() { [[ "$*" = 'config get-contexts --no-headers' ]]; }
+    node_present=1
+    k3d_delete_cluster "$probe_cluster"
+    [[ -z "$mutations" && "$node_present" = 1 ]]
+    status=0; k3d_create_cluster "$probe_cluster" 0 || status=$?
+    [[ "$status" = 2 && -z "$mutations" && "$node_present" = 1 ]]
+    node_present=0; observer_error=37
+    status=0; k3d_create_cluster "$probe_cluster" 0 || status=$?
+    [[ "$status" = 2 && -z "$mutations" ]]
+    observer_error=0
+    k3d_create_cluster "$probe_cluster" 0
+    [[ "$K3D_CREATION_CONFIRMED" = 1 && "${K3D_CREATED_CONTAINER_IDS[0]}" = "$original_id" ]]
+    [[ "$(_k3d_created_node_id "k3d-$probe_cluster-server-0")" = "$original_id" ]]
+    local bad_node
+    for bad_node in --all k3d-other-server-0 "k3d-$probe_cluster-serverlb"; do
+      status=0; _k3d_created_node_id "$bad_node" || status=$?
+      [[ "$status" = 2 && "$mutations" = ' create' ]]
+    done
+    probe_id="$foreign_id"
+    status=0; _k3d_created_node_id "k3d-$probe_cluster-server-0" || status=$?
+    [[ "$status" = 2 ]]
+    probe_id="$original_id"
+    local fault original_volume_record
+    original_volume_record=$(cat "$volume_fixture_dir/$probe_volume")
+    for fault in foreign unlabelled replacement network-member volume-borrower inspection network-id volume-incarnation managed-volume reused-network; do
+      node_owner=fixture; node_run=fixture-run; probe_id="$original_id"; network_id="$original_network"
+      extra_network=""; extra_borrower=""; inspection_error=0; images_created=original; volume_fixture_managed=""; probe_external=false
+      printf '%s\n' "$original_volume_record" >"$volume_fixture_dir/$probe_volume"
+      case "$fault" in
+        foreign) node_run=other-run ;;
+        unlabelled) node_owner='<no value>'; node_run='<no value>' ;;
+        replacement) probe_id="$foreign_id" ;;
+        network-member) extra_network="$foreign_id" ;;
+        volume-borrower) extra_borrower="$foreign_id" ;;
+        inspection) inspection_error=37 ;;
+        network-id) network_id="$foreign_id" ;;
+        volume-incarnation) printf '%s|replacement|||\n' "$probe_volume" >"$volume_fixture_dir/$probe_volume" ;;
+        managed-volume) volume_fixture_managed=foreign-managed ;;
+        reused-network) probe_external=true ;;
+      esac
+      status=0; k3d_delete_cluster "$probe_cluster" || status=$?
+      if [[ "$fault" = inspection ]]; then
+        [[ "$status" = 37 ]] || { printf 'ownership rule %s returned %s, expected 37\n' "$fault" "$status" >&2; return 1; }
+      else
+        [[ "$status" = 2 ]] || { printf 'ownership rule %s returned %s, expected 2\n' "$fault" "$status" >&2; return 1; }
+      fi
+      [[ "$mutations" = ' create' && "$node_present" = 1 && "$network_present" = 1 ]]
+    done
+    node_owner=fixture; node_run=fixture-run; probe_id="$original_id"; network_id="$original_network"
+    extra_network=""; extra_borrower=""; inspection_error=0; images_created=original; volume_fixture_managed=""; probe_external=false
+    printf '%s\n' "$original_volume_record" >"$volume_fixture_dir/$probe_volume"
+    node_present=0; extra_borrower="$foreign_id"
+    status=0; k3d_delete_cluster "$probe_cluster" || status=$?
+    [[ "$status" = 2 && "$mutations" = ' create' && "$network_present" = 1 && "$volume_present" = 1 ]]
+    extra_borrower=""
+    k3d_delete_cluster "$probe_cluster"
+    [[ "$mutations" = ' create network-rm' && -z "$K3D_CREATED_CLUSTER" ]]
+    create_error=41
+    status=0; k3d_create_cluster "$probe_cluster" 0 || status=$?
+    [[ "$status" = 41 && "$K3D_CREATION_CONFIRMED" = 1 ]]
+    k3d_delete_cluster "$probe_cluster"
+    empty_create=1
+    status=0; k3d_create_cluster "$probe_cluster" 0 || status=$?
+    [[ "$status" = 41 && "$K3D_CREATION_CONFIRMED" = 0 && "$network_present" = 1 ]]
+    local before_mutations="$mutations"
+    status=0; k3d_delete_cluster "$probe_cluster" || status=$?
+    [[ "$status" = 2 && "$mutations" = "$before_mutations" && "$network_present" = 1 ]]
+    # The image volume was already selected/claimed before K3D failed. Its
+    # exact creation fact remains visible; Unknown is not an empty cleanup.
+    local held_image
+    held_image=$(_e2e_docker_owned_volume "$K3D_CREATED_IMAGE_VOLUME")
+    [[ -n "$held_image" && -f "$volume_fixture_dir/$K3D_CREATED_IMAGE_VOLUME" ]]
+    # O8b failure can occur even before the network exists: preserve the
+    # first K3D failure AND the previously created image receipt; refuse to
+    # turn that known allocation/unknown group into cleanup success.
+    (
+      local volume_fixture_dir="$volume_fixture_root/no-node-or-network"
+      mkdir -p "$volume_fixture_dir"
+      K3D_CREATED_CLUSTER=""; K3D_CREATION_CONFIRMED=0
+      node_present=0; network_present=0; mutations=""; create_error=41; no_network_create=1
+      status=0; k3d_create_cluster "$probe_cluster" 0 || status=$?
+      [[ "$status" = 41 && "$node_present" = 0 && "$network_present" = 0 ]]
+      held_image=$(_e2e_docker_owned_volume "$K3D_CREATED_IMAGE_VOLUME")
+      [[ -n "$held_image" ]]
+      status=0; k3d_delete_cluster "$probe_cluster" || status=$?
+      [[ "$status" = 2 && "$(_e2e_docker_owned_volume "$K3D_CREATED_IMAGE_VOLUME")" = "$held_image" ]]
+    )
+    # O11/O12 model the two after-preflight creation windows at their actual
+    # backend boundaries: K3D reports network reuse; Docker returns another
+    # request's existing named image volume. Neither post-query identity is
+    # creation authority. Unknown/mixed groups are never name-cleaned.
+    (
+      local volume_fixture_dir="$volume_fixture_root/network-window"
+      mkdir -p "$volume_fixture_dir"
+      K3D_CREATED_CLUSTER=""; K3D_CREATION_CONFIRMED=0
+      node_present=0; network_present=0; mutations=""; create_error=0; empty_create=0
+      extra_network=""; extra_borrower=""; probe_external=true
+      status=0; k3d_create_cluster "$probe_cluster" 0 || status=$?
+      [[ "$status" = 2 && "$K3D_CREATION_CONFIRMED" = 0 && "$node_present" = 1 && "$network_present" = 1 ]]
+      status=0; k3d_delete_cluster "$probe_cluster" || status=$?
+      [[ "$status" = 2 && "$mutations" = ' create' ]]
+    )
+    (
+      local volume_fixture_dir="$volume_fixture_root/image-window"
+      mkdir -p "$volume_fixture_dir"
+      K3D_CREATED_CLUSTER=""; K3D_CREATION_CONFIRMED=0
+      node_present=0; network_present=0; mutations=""; create_error=0; empty_create=0
+      extra_network=""; extra_borrower=""; probe_external=false
+      volume_fixture_race_name="k3d-$probe_cluster-images"
+      status=0; k3d_create_cluster "$probe_cluster" 0 || status=$?
+      [[ "$status" = 2 && -z "$K3D_CREATED_CLUSTER" && "$node_present" = 0 && -z "$mutations" ]]
+      [[ -f "$volume_fixture_dir/$volume_fixture_race_name" && -z "$E2E_CREATED_VOLUME" ]]
+      k3d_delete_cluster "$probe_cluster"
+      [[ -f "$volume_fixture_dir/$volume_fixture_race_name" && -z "$mutations" ]]
+    )
+    # O9 the selected pre-existing Registry is a retained attachment only.
+    # An extra member blocks BEFORE disconnect; a failed/lost disconnect ACK
+    # or unchanged post-state blocks before any node deletion; exact detach
+    # permits cleanup but never removes that external Registry container.
+    (
+      local volume_fixture_dir="$volume_fixture_root/registry"
+      mkdir -p "$volume_fixture_dir"
+      K3D_CREATED_CLUSTER=""; K3D_CREATION_CONFIRMED=0
+      node_present=0; network_present=0; mutations=""; create_error=0; empty_create=0
+      extra_network=""; extra_borrower=""; registered_attached=0
+      k3d_create_cluster "$probe_cluster" 0 128Mi k3d-fixture-registry.localhost:5000
+      [[ "$K3D_CREATED_REGISTRY_ID" = "$foreign_id" && "$registered_attached" = 1 ]]
+      extra_network="$unknown_id"
+      status=0; k3d_delete_cluster "$probe_cluster" || status=$?
+      [[ "$status" = 2 && "$mutations" = ' create' && "$registered_attached" = 1 ]]
+      extra_network=""; disconnect_error=37; disconnect_effect=0
+      status=0; k3d_delete_cluster "$probe_cluster" || status=$?
+      [[ "$status" = 37 && "$node_present" = 1 && "$registered_attached" = 1 ]]
+      disconnect_effect=1
+      status=0; k3d_delete_cluster "$probe_cluster" || status=$?
+      [[ "$status" = 37 && "$node_present" = 1 && "$registered_attached" = 0 ]]
+      # Restore only the fixture's originally selected attachment for the
+      # independent successful-ACK/no-effect row; production never reconnects.
+      registered_attached=1; disconnect_effect=0; disconnect_error=0
+      status=0; k3d_delete_cluster "$probe_cluster" || status=$?
+      [[ "$status" = 2 && "$node_present" = 1 && "$registered_attached" = 1 ]]
+      disconnect_effect=1
+      k3d_delete_cluster "$probe_cluster"
+      [[ "$node_present" = 0 && "$network_present" = 0 && "$registered_attached" = 0 ]]
+      [[ "$mutations" = *' registry-disconnect cid-rm network-rm' ]]
+    )
+    # O10 a late endpoint makes the real non-force network operation fail.
+    # The exact-node effects may already be complete, but no foreign endpoint
+    # is removed or reported closed. Only fixture-owned removal enables retry.
+    (
+      local volume_fixture_dir="$volume_fixture_root/late-endpoint"
+      mkdir -p "$volume_fixture_dir"
+      K3D_CREATED_CLUSTER=""; K3D_CREATION_CONFIRMED=0
+      node_present=0; network_present=0; mutations=""; create_error=0; empty_create=0
+      extra_network=""; extra_borrower=""; registered_attached=0
+      k3d_create_cluster "$probe_cluster" 0
+      network_remove_error=37
+      status=0; k3d_delete_cluster "$probe_cluster" || status=$?
+      [[ "$status" = 37 && "$node_present" = 0 && "$network_present" = 1 && "$extra_network" = "$unknown_id" ]]
+      network_remove_error=0; extra_network=""
+      k3d_delete_cluster "$probe_cluster"
+      [[ "$network_present" = 0 ]]
+    )
+  )
+  # Explicit-volume C/E table: V1 a fresh generated name and matching checked
+  # identity => retained receipt; V2 absent owned volume => idempotent success;
+  # V3 foreign/unlabelled/recreated or unrecorded identity => zero deletion;
+  # V4 any own/foreign/mixed mount => keep, never delete its containers;
+  # V5 observation error with valid stdout => raw error, never "absent";
+  # V6 matching identity and no mounts => exactly one volume removal.
+  (
+    local volume_fixture_dir="$volume_fixture_root/explicit"
+    mkdir -p "$volume_fixture_dir"
+    local probe_volume original_record status
+    E2E_VOLUME_RECEIPTS=()
+    volume_fixture_mutations=""
+    export AWAKEN_E2E_RUN_ID=fixture-run
+    e2e_docker_init fixture
+    docker() {
+      if [[ "$1" = volume ]]; then volume_fixture "$@"; return "$?"; fi
+      [[ "$1 $2" = 'ps -aq' ]] || return 99
+      [[ -z "$probe_mounts" ]] || printf '%s\n' "$probe_mounts"
+    }
+    local probe_mounts=""
+    e2e_docker_create_volume
+    probe_volume="$E2E_CREATED_VOLUME"
+    original_record=$(cat "$volume_fixture_dir/$probe_volume")
+    [[ "${#E2E_VOLUME_RECEIPTS[@]}" = 1 ]]
+    local fault
+    for fault in other unlabelled recreated own-mount mixed-mount io; do
+      printf '%s\n' "$original_record" >"$volume_fixture_dir/$probe_volume"
+      probe_mounts=""; volume_fixture_inspection_error=0
+      case "$fault" in
+        other) printf '%s\n' "${original_record/|fixture-run|/|other-run|}" >"$volume_fixture_dir/$probe_volume" ;;
+        unlabelled) printf '%s\n' "${original_record/|fixture|/||}" >"$volume_fixture_dir/$probe_volume" ;;
+        recreated) printf '%s\n' "${original_record/|fixture-created|/|replacement|}" >"$volume_fixture_dir/$probe_volume" ;;
+        own-mount) probe_mounts=own-cid ;;
+        mixed-mount) probe_mounts=$'own-cid\nforeign-or-unlabelled-cid' ;;
+        io) volume_fixture_inspection_error=37 ;;
+      esac
+      status=0; e2e_docker_rm_volumes "$probe_volume" || status=$?
+      if [[ "$fault" = io ]]; then [[ "$status" = 37 ]]; else [[ "$status" = 2 ]]; fi
+      [[ -z "$volume_fixture_mutations" && -f "$volume_fixture_dir/$probe_volume" ]]
+    done
+    printf '%s\n' "$original_record" >"$volume_fixture_dir/$probe_volume"
+    probe_mounts=""; volume_fixture_inspection_error=0
+    status=0; e2e_docker_rm_volumes unrecorded || status=$?
+    [[ "$status" = 2 && -z "$volume_fixture_mutations" ]]
+    # V8 a borrower can arrive after the read: the removal boundary reports
+    # failure and the volume remains. Never normalize that refusal to success.
+    volume_fixture_remove_error=37
+    status=0; e2e_docker_rm_volumes "$probe_volume" || status=$?
+    [[ "$status" = 37 && -f "$volume_fixture_dir/$probe_volume" && -z "$volume_fixture_mutations" ]]
+    volume_fixture_remove_error=0
+    e2e_docker_rm_volumes "$probe_volume"
+    [[ "$volume_fixture_mutations" = " remove:$probe_volume" && ! -f "$volume_fixture_dir/$probe_volume" ]]
+    e2e_docker_rm_volumes "$probe_volume"
+    [[ "$volume_fixture_mutations" = " remove:$probe_volume" ]]
+    # V7 Docker returns an existing named volume unchanged: a NEW request
+    # nonce must reject it, even with identical owner/run and coarse timestamps.
+    e2e_docker_create_volume --name k3d-fixture-images
+    original_record=$(cat "$volume_fixture_dir/k3d-fixture-images")
+    status=0; e2e_docker_create_volume --name k3d-fixture-images || status=$?
+    [[ "$status" = 2 && -z "$E2E_CREATED_VOLUME" ]]
+    [[ "$(cat "$volume_fixture_dir/k3d-fixture-images")" = "$original_record" ]]
+    e2e_docker_rm_volumes k3d-fixture-images
+    e2e_docker_create_volume --name k3d-fixture-images
+    [[ "$E2E_CREATED_VOLUME" = k3d-fixture-images && "${#E2E_VOLUME_RECEIPTS[@]}" = 2 ]]
+    [[ "$(cat "$volume_fixture_dir/k3d-fixture-images")" != "$original_record" ]]
+    e2e_docker_rm_volumes k3d-fixture-images
+    # V9 partial create reply / successful create plus failed inspection:
+    # preserve raw 37, keep the pending fact, grant no receipt, and refuse a
+    # false successful empty cleanup. Only this fake daemon's explicit recovery
+    # below removes its known data; production has no late-install bypass.
+    local failure_phase before_receipts pending
+    for failure_phase in create-reply empty-create-reply inspection; do
+      before_receipts="${#E2E_VOLUME_RECEIPTS[@]}"
+      volume_fixture_creation_error=0; volume_fixture_inspection_error=0; volume_fixture_empty_reply=0
+      if [[ "$failure_phase" = inspection ]]; then volume_fixture_inspection_error=37
+      else
+        volume_fixture_creation_error=37
+        [[ "$failure_phase" != empty-create-reply ]] || volume_fixture_empty_reply=1
+      fi
+      status=0; e2e_docker_create_volume || status=$?
+      pending="$E2E_UNCONFIRMED_VOLUME"
+      [[ "$status" = 37 && -n "$pending" && -z "$E2E_CREATED_VOLUME" \
+        && "${#E2E_VOLUME_RECEIPTS[@]}" = "$before_receipts" ]]
+      status=0; k3d_delete_cluster awaken-unowned || status=$?
+      [[ "$status" = 2 ]]
+      if [[ "$failure_phase" = empty-create-reply ]]; then pending=$(cat "$volume_fixture_dir/.last-created"); fi
+      [[ -f "$volume_fixture_dir/$pending" ]]
+      command rm -f -- "$volume_fixture_dir/$pending"
+      E2E_UNCONFIRMED_VOLUME=""
+    done
+  )
   local k3d_calls=() docker_saves=() docker_execs=() docker_builds=() deadline_calls=()
-  local delete_fails=0 observation_error="" residue="" import_failure=0 transport_failure=0
-  local capacity_failure=0 capacity_calls=() volume_missing=0 eviction_observation_fault=""
+  local observation_error="" residue="" import_failure=0 archive_cleanup_failure=0
+  local capacity_failure=0 capacity_calls=() eviction_observation_fault=""
+  local fixture_cluster="" fixture_network_cluster="" fixture_shared=0
+  local fixture_cid="$(printf 'a%.0s' {1..64})" fixture_network="$(printf 'b%.0s' {1..64})"
+  local fixture_volume="$(printf '0%.0s' {1..63})1"
   k3d_capacity_preflight() {
     capacity_calls+=("$*")
     return "$capacity_failure"
   }
   k3d() {
     k3d_calls+=("$*")
-    if [[ "$1 $2" = "image import" ]]; then
-      return "$import_failure"
-    fi
-    if [[ "$1 $2" = "cluster delete" && "$delete_fails" = "1" ]]; then
-      return 1
-    fi
-    if [[ "$1 $2" = "cluster list" ]]; then
+    if [[ "$1 $2" = "image import" ]]; then return "$import_failure"; fi
+    if [[ "$1 $2" = "cluster create" ]]; then
+      fixture_cluster="$3"; fixture_network_cluster="$3"; fixture_shared=0
+      [[ "$*" != *'--volume '* ]] || fixture_shared=1
+    elif [[ "$1 $2" = "cluster delete" ]]; then
+      return 99
+    elif [[ "$1 $2" = "cluster list" ]]; then
       [[ "$observation_error" != "k3d" ]] || return 1
+      [[ -z "$fixture_cluster" ]] || printf '%s 1/1 0/0 true\n' "$fixture_cluster"
       [[ "$residue" != "cluster" ]] || printf '%s\n' 'awaken-test 1/1 0/0 true'
     fi
+    return 0
   }
   docker() {
-    if [[ "$1 $2" = "volume inspect" ]]; then
-      return "$volume_missing"
+    if [[ "$1" = volume ]]; then
+      [[ "$observation_error" != docker ]] || return 1
+      if [[ "$2" = ls && "$residue" = volume && "$*" = *'name=^k3d-awaken-test-images$'* ]]; then
+        printf '%s\n' k3d-awaken-test-images
+        return 0
+      fi
+      volume_fixture "$@"
+      return "$?"
+    elif [[ "$1 $2" = "network inspect" ]]; then
+      if [[ "$*" = *'{{.Id}}|{{.Name}}'* ]]; then printf '%s|k3d-%s\n' "$fixture_network" "$fixture_network_cluster"
+      elif [[ "$*" = *'{{.Id}}'* ]]; then printf '%s\n' "$fixture_network"
+      else [[ -z "$fixture_cluster" ]] || printf '%s\n' "$fixture_cid"; fi
     elif [[ "$1 $2" = "network ls" ]]; then
       [[ "$observation_error" != "docker" ]] || return 1
-      [[ "$residue" != "network" ]] || printf '%s\n' 'k3d-awaken-test'
+      if [[ "$*" = *'{{.ID}}'* ]]; then
+        [[ -z "$fixture_network_cluster" && "$residue" != network ]] || printf '%s\n' "$fixture_network"
+      elif [[ -n "$fixture_network_cluster" ]]; then printf 'k3d-%s\n' "$fixture_network_cluster"
+      else [[ "$residue" != "network" ]] || printf '%s\n' 'k3d-awaken-test'; fi
+    elif [[ "$1 $2" = "network rm" ]]; then
+      [[ "${@: -1}" = "$fixture_network" ]] || return 99
+      fixture_network_cluster=""
+    elif [[ "$1 $2" = 'rm -f' ]]; then
+      [[ "${@: -1}" = "$fixture_cid" ]] || return 99
+      fixture_cluster=""
+    elif [[ "$1" = "inspect" ]]; then
+      if [[ "$*" = *'{{.Id}} -- k3d-awaken-registry.localhost' ]]; then
+        printf '%064d\n' 2
+      elif [[ "$*" = *'{{.Id}}|{{index '* ]]; then
+        printf '%s|%s|%s|%s|%s|false|%s\n' "$fixture_cid" "$E2E_OWNER" "$E2E_RUN_ID" "$fixture_cluster" "$fixture_network" "$K3D_CREATED_IMAGE_VOLUME"
+      elif [[ "$*" = *'{{range .Mounts}}'* ]]; then
+        printf '%s\n' "$K3D_CREATED_IMAGE_VOLUME"
+        [[ "$fixture_shared" = 0 ]] || printf '%s\n' "$fixture_volume"
+      elif [[ "$*" = *'{{.Id}}'* ]]; then printf '%s\n' "$fixture_cid"
+      fi
     elif [[ "$1" = "ps" ]]; then
       [[ "$observation_error" != "docker" ]] || return 1
-      [[ "$residue" != "container" ]] || printf '%s\n' 'k3d-awaken-test-server-0'
-    elif [[ "$1 $2" = "volume ls" ]]; then
-      [[ "$observation_error" != "docker" ]] || return 1
-      [[ "$residue" != "volume" ]] || printf '%s\n' 'k3d-awaken-test-images'
+      if [[ "$*" = *'label=k3d.cluster='* || "$*" = *'volume='* || "$*" = *'id='* ]]; then
+        [[ -z "$fixture_cluster" ]] || printf '%s\n' "$fixture_cid"
+      elif [[ -n "$fixture_cluster" ]]; then printf 'k3d-%s-server-0\n' "$fixture_cluster"
+      else [[ "$residue" != "container" ]] || printf '%s\n' 'k3d-awaken-test-server-0'; fi
     fi
+    return 0
   }
+
   kubectl() {
     if [[ "$1 $2" = "config get-contexts" ]]; then
       [[ "$observation_error" != "kubectl" ]] || return 1
@@ -1503,20 +2181,20 @@ print(json.dumps(value))
     (( ${#deadline_calls[@]} == prior_deadlines ))
   done
   k3d_create_cluster "awaken-test-1" 2
-  [[ "${k3d_calls[0]}" = "cluster delete awaken-test-1" ]]
+  [[ "${k3d_calls[0]}" = "cluster create awaken-test-1 "* ]]
   [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = "3 --eviction-threshold 128Mi" ]]
-  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi@server:*"* ]]
-  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=128Mi,nodefs.available=128Mi@server:*"* ]]
-  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi@agent:*"* ]]
-  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=128Mi,nodefs.available=128Mi@agent:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi@server:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=128Mi,nodefs.available=128Mi@server:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi@agent:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=128Mi,nodefs.available=128Mi@agent:*"* ]]
   # IG1 admitted offline fixture + large host above kubelet's default 85%
   # image-GC threshold => retain imported images on BOTH node roles. The live
   # failure had 531GiB free at 86% usage: GC removed nginx/busybox and Never-pull
   # Pods could not restart/provision. IG2 server-only topology gets no agent
   # override (checked below); IG3 absolute eviction and capacity rejection stay
   # enforced by T1-T4/K2. This is not a production-cluster GC policy.
-  [[ "${k3d_calls[1]}" = *"--kubelet-arg=image-gc-high-threshold=100@server:*"* ]]
-  [[ "${k3d_calls[1]}" = *"--kubelet-arg=image-gc-high-threshold=100@agent:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--kubelet-arg=image-gc-high-threshold=100@server:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--kubelet-arg=image-gc-high-threshold=100@agent:*"* ]]
   # Cluster-fixture dependency rule. C1 repository scenarios import their
   # exact images; C2 bundled ingress/metrics are not scenario dependencies.
   # C1+C2 => E1 the canonical builder disables both controllers, preventing
@@ -1524,38 +2202,43 @@ print(json.dumps(value))
   # proofs. K3DH1 exercises the only cluster-construction owner. Lifecycle
   # rule L1 success or failure leaves teardown/retention to the scenario's one
   # installed cleanup owner; K3D must not run a competing automatic rollback.
-  [[ "${k3d_calls[1]}" = *"--k3s-arg --disable=traefik@server:*"* ]]
-  [[ "${k3d_calls[1]}" = *"--k3s-arg --disable=metrics-server@server:*"* ]]
-  [[ "${k3d_calls[1]}" = *"--no-rollback"* ]]
+  [[ "${k3d_calls[0]}" = *"--k3s-arg --disable=traefik@server:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--k3s-arg --disable=metrics-server@server:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--no-rollback"* ]]
 
+  [[ -z "$K3D_CREATED_CLUSTER" ]] || k3d_delete_cluster "$K3D_CREATED_CLUSTER"
   k3d_calls=()
   k3d_create_cluster "awaken-test-1" 0
-  [[ "${k3d_calls[1]}" != *"@agent:*"* ]]
-  [[ "${k3d_calls[1]}" = *"--kubelet-arg=image-gc-high-threshold=100@server:*"* ]]
+  [[ "${k3d_calls[0]}" != *"@agent:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--kubelet-arg=image-gc-high-threshold=100@server:*"* ]]
 
   # Shared-storage decision table: V1 absent option => no mount; V2 generated
   # ID + existing owned volume => one all-node mount, images alone reach capacity
   # planning; V3 missing/option-shaped/path-shaped/short ID => zero cluster effects;
   # V4 valid ID but absent Docker volume => zero cluster effects. This validates
   # argument admission; the distributed live case owns byte/UID continuity.
-  [[ "${k3d_calls[1]}" != *"--volume"* ]]
+  [[ "${k3d_calls[0]}" != *"--volume"* ]]
   local volume_id
   printf -v volume_id '%064d' 1
+  [[ -z "$K3D_CREATED_CLUSTER" ]] || k3d_delete_cluster "$K3D_CREATED_CLUSTER"
   k3d_calls=()
+  e2e_docker_create_volume
+  [[ "$E2E_CREATED_VOLUME" = "$volume_id" ]]
   k3d_create_cluster "awaken-test" 3 128Mi "" --shared-volume "$volume_id" roles:exact
-  [[ "${k3d_calls[1]}" = *"--volume $volume_id:/var/lib/awaken-continuation@all"* ]]
+  [[ "${k3d_calls[0]}" = *"--volume $volume_id:/var/lib/awaken-continuation@all"* ]]
   [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = \
     "4 --eviction-threshold 128Mi roles:exact" ]]
+  [[ -z "$K3D_CREATED_CLUSTER" ]] || k3d_delete_cluster "$K3D_CREATED_CLUSTER"
   k3d_calls=()
   local bad_volume
   for bad_volume in "" --all /tmp/foo abc; do
     ! k3d_create_cluster "awaken-test" 3 128Mi "" --shared-volume "$bad_volume"
     (( ${#k3d_calls[@]} == 0 ))
   done
-  volume_missing=1
+  volume_fixture_missing_name="$volume_id"
   ! k3d_create_cluster "awaken-test" 3 128Mi "" --shared-volume "$volume_id"
   (( ${#k3d_calls[@]} == 0 ))
-  volume_missing=0
+  volume_fixture_missing_name=""
 
   # Eviction cause/effect table: T1 absent override => one absolute trigger and
   # one absolute recovery margin on server and agent (checked above), independent
@@ -1571,14 +2254,16 @@ print(json.dumps(value))
   for invalid_eviction in "" 0Gi 2% low -1Gi; do
     ! k3d_eviction_policy "$invalid_eviction" >/dev/null 2>&1
   done
+  [[ -z "$K3D_CREATED_CLUSTER" ]] || k3d_delete_cluster "$K3D_CREATED_CLUSTER"
   k3d_calls=()
   k3d_create_cluster "awaken-test-1" 1 2Gi
   [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = "2 --eviction-threshold 2Gi" ]]
-  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@server:*"* ]]
-  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=2Gi,nodefs.available=2Gi@server:*"* ]]
-  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@agent:*"* ]]
-  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=2Gi,nodefs.available=2Gi@agent:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@server:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=2Gi,nodefs.available=2Gi@server:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@agent:*"* ]]
+  [[ "${k3d_calls[0]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=2Gi,nodefs.available=2Gi@agent:*"* ]]
 
+  [[ -z "$K3D_CREATED_CLUSTER" ]] || k3d_delete_cluster "$K3D_CREATED_CLUSTER"
   k3d_calls=()
   # K2: capacity rejection happens before deleting an existing cluster or
   # creating a new one. The planner's real arithmetic is checked above.
@@ -1600,32 +2285,45 @@ print(json.dumps(value))
   ! k3d_create_cluster "awaken-test" 1 '2%'
   (( ${#k3d_calls[@]} == 0 ))
   k3d_create_cluster "awaken-test" 1 "" "k3d-awaken-registry.localhost:5000"
-  [[ "${k3d_calls[1]}" = *"--registry-use k3d-awaken-registry.localhost:5000"* ]]
+  [[ "${k3d_calls[0]}" = *"--registry-use k3d-awaken-registry.localhost:5000"* ]]
+  [[ -z "$K3D_CREATED_CLUSTER" ]] || k3d_delete_cluster "$K3D_CREATED_CLUSTER"
   k3d_calls=()
   ! k3d_create_cluster "awaken-test" 1 "" "--all"
   (( ${#k3d_calls[@]} == 0 ))
+  k3d_create_cluster "awaken-test" 0
   for residue in cluster network container volume context; do
-    ! k3d_delete_cluster "awaken-test"
+    ! k3d_delete_cluster_and_remove "awaken-test"
   done
   residue=""
-  delete_fails=1
+  # H16 keeps already-absent idempotence. The retired name-based K3D delete
+  # error tolerance is gone: failed Docker effects preserve their raw status.
   k3d_delete_cluster "awaken-test"
-  delete_fails=0
-  for observation_error in k3d docker kubectl; do
-    ! k3d_delete_cluster "awaken-test"
+  local failing_observer
+  for failing_observer in k3d docker kubectl; do
+    (
+      local volume_fixture_dir="$volume_fixture_root/observer-$failing_observer"
+      mkdir -p "$volume_fixture_dir"
+      observation_error=""
+      k3d_create_cluster "awaken-test" 0
+      observation_error="$failing_observer"
+      ! k3d_delete_cluster_and_remove "awaken-test"
+    )
   done
   observation_error=""
+  k3d_create_cluster "awaken-test" 0
   local cleanup_artifact
   cleanup_artifact="$(mktemp)"
   residue="cluster"
   ! k3d_delete_cluster_and_remove "awaken-test" "$cleanup_artifact"
   [[ ! -e "$cleanup_artifact" ]]
   residue=""
+  k3d_delete_cluster "awaken-test"
 
   local exit_status
   set +e
   (
-    exit_cleanup() { k3d_delete_cluster "awaken-test"; }
+    k3d_create_cluster "awaken-test" 0
+    exit_cleanup() { k3d_delete_cluster_and_remove "awaken-test"; }
     residue="cluster"
     k3d_install_exit_cleanup exit_cleanup
     true
@@ -1636,7 +2334,8 @@ print(json.dumps(value))
 
   set +e
   (
-    exit_cleanup() { k3d_delete_cluster "awaken-test"; }
+    k3d_create_cluster "awaken-test" 0
+    exit_cleanup() { k3d_delete_cluster_and_remove "awaken-test"; }
     residue=""
     k3d_install_exit_cleanup exit_cleanup
     true
@@ -1647,7 +2346,8 @@ print(json.dumps(value))
 
   set +e
   (
-    exit_cleanup() { k3d_delete_cluster "awaken-test"; }
+    k3d_create_cluster "awaken-test" 0
+    exit_cleanup() { k3d_delete_cluster_and_remove "awaken-test"; }
     residue=""
     k3d_install_exit_cleanup exit_cleanup
     exit 23
@@ -1658,7 +2358,8 @@ print(json.dumps(value))
 
   set +e
   (
-    exit_cleanup() { k3d_delete_cluster "awaken-test"; }
+    k3d_create_cluster "awaken-test" 0
+    exit_cleanup() { k3d_delete_cluster_and_remove "awaken-test"; }
     residue="cluster"
     k3d_install_exit_cleanup exit_cleanup
     exit 23
@@ -1711,8 +2412,6 @@ print(json.dumps(value))
       docker_execs+=("$*")
       if [[ "$*" = *"sandbox_image"* ]]; then
         printf '%s' 'rancher/mirrored-pause:3.6'
-      elif [[ "$*" = *"find /k3d/images"* ]]; then
-        return "$transport_failure"
       fi
     elif [[ "$1" = ps ]]; then
       printf '%s\n' server agent
@@ -1775,7 +2474,8 @@ print(json.dumps(value))
   [[ "${k3d_calls[0]}" = image\ import* ]]
   [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = \
     "2 --eviction-threshold 128Mi rancher/mirrored-pause:3.6 rancher/mirrored-coredns-coredns:1.10.1 app:latest postgres:16" ]]
-  [[ "${docker_execs[${#docker_execs[@]} - 1]}" = "exec k3d-awaken-test-server-0 find /k3d/images -mindepth 1 -maxdepth 1 -type f -delete" ]]
+  [[ "${k3d_calls[0]}" = *'--mode direct' ]]
+  [[ "${docker_execs[*]}" != *'find /k3d/images'* ]]
 
   # Post-create capacity decision table: I1 the exact running hard and minimum
   # policies agree => import admission uses that quantity; I2 either setting is
@@ -1795,23 +2495,36 @@ print(json.dumps(value))
   eviction_observation_fault=""
 
   # K2/K3/K5/K6: capacity fails before archive/import; import failure and
-  # transport-cleanup failure each remain failures. A successful mock import
-  # cannot hide leftover archives; a failing import still attempts cleanup.
+  # local archive-cleanup failure each remain failures. The obsolete shared
+  # transport store is absent; a failing import still attempts local cleanup.
   capacity_failure=1
   docker_saves=() k3d_calls=()
   ! k3d_import_images "awaken-test" app:latest
   (( ${#docker_saves[@]} == 0 && ${#k3d_calls[@]} == 0 ))
   capacity_failure=0
-  local expected_status actual_status
+  local expected_status actual_status archive_cleanups=0 before_cleanups
+  # This IO stub removes the actual private directory, then can report the
+  # same lost-ACK failure as a filesystem boundary. The original status wins.
+  rm() {
+    local removal_status=0
+    command rm "$@" || removal_status=$?
+    if [[ "$1" = -rf && "${2:-}" = -- ]]; then
+      archive_cleanups=$((archive_cleanups + 1))
+      [[ "$removal_status" = 0 ]] || return "$removal_status"
+      return "$archive_cleanup_failure"
+    fi
+    return "$removal_status"
+  }
   for expected_status in 23 31; do
-    import_failure=0 transport_failure=0
-    if [[ "$expected_status" == 23 ]]; then import_failure=23; else transport_failure=31; fi
+    import_failure=0 archive_cleanup_failure=0
+    if [[ "$expected_status" == 23 ]]; then import_failure=23; else archive_cleanup_failure=31; fi
+    before_cleanups="$archive_cleanups"
     actual_status=0
     k3d_import_images "awaken-test" app:latest || actual_status=$?
     [[ "$actual_status" == "$expected_status" ]]
-    [[ "${docker_execs[${#docker_execs[@]} - 1]}" = *"find /k3d/images"* ]]
+    [[ "$archive_cleanups" = "$((before_cleanups + 1))" ]]
   done
-  import_failure=0 transport_failure=0
+  import_failure=0 archive_cleanup_failure=0
 
   # Build-transport decision table: B1 no override => one default Docker
   # build; B2 host network => only its network changes; B3 an existing CA file

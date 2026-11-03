@@ -73,8 +73,39 @@ grep -Fq 'KUBECONFIG_FILE=$(mktemp)' "$REPO_ROOT/e2e/k3d/distributed_control_e2e
 grep -Fq 'k3d_use_private_kubeconfig "$KUBECONFIG_FILE"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'k3d_bind_private_kubeconfig "$CLUSTER"' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -Fq '"$KUBECONFIG_FILE" || return "$?"' \
+grep -Fq '"$KUBECONFIG_FILE" || cleanup_status=$?' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+# Cleanup composition C/E: T1 early build/creation refusal + no receipt =>
+# original cleanup removes only caller-owned local artifacts, never a named
+# foreign cluster; T2 restore failure precedes a later teardown failure;
+# T3 successful restore + teardown failure => that raw failure. The actual
+# function is evaluated below; shared ownership/IO rules run in harness selftest.
+(
+  source "$REPO_ROOT/e2e/k3d/harness.sh"
+  eval "$(sed -n '/^cleanup() {/,/^}/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+  owned_local=$(mktemp -d)
+  trap 'rm -rf -- "$owned_local"' EXIT
+  DEPLOY_DIR="$owned_local"; KUBECONFIG_FILE="$owned_local/private-config"
+  touch "$owned_local/awaken-control" "$owned_local/awaken-coordinator" \
+    "$owned_local/awaken-server" "$owned_local/awaken-worker" "$KUBECONFIG_FILE"
+  CLUSTER=awaken-foreign; CAPACITY_SAMPLER=""; WORKER_TLS_DIR=""; ROLE_OVERLAY=""
+  PARTITIONED_NODE=""; STOPPED_CONTAINER=""; API_PF=""; PROVIDER_PF=""; CONTINUATION_VOLUME=""
+  K3D_CREATED_CLUSTER=""; mutations=""; restore_status=0
+  restore_coordinator_observation() { return "$restore_status"; }
+  log() { :; }
+  docker() { mutations+=" docker"; return 99; }
+  k3d() { mutations+=" k3d"; return 99; }
+  cleanup 0
+  [[ -z "$mutations" && ! -e "$KUBECONFIG_FILE" ]]
+  teardown_status=27
+  k3d_delete_cluster_and_remove() { return "$teardown_status"; }
+  restore_status=43
+  status=0; cleanup 0 || status=$?
+  [[ "$status" = 43 ]]
+  restore_status=0
+  status=0; cleanup 0 || status=$?
+  [[ "$status" = 27 ]]
+)
 RENDERED="$(mktemp)"
 CONTROL_RENDERED="$(mktemp)"
 trap 'rm -f "$RENDERED" "$CONTROL_RENDERED"' EXIT
