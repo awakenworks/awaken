@@ -774,10 +774,13 @@
       "tier": "L4",
       "priority": "P1",
       "conditions": [
-        "20,000 runnable 行；5,000 不兼容前缀；同数据库和 pool；1/8/32/128 个 barrier 后启动的持久 claimer；整个窗口 300s"
+        "20,000 runnable 行；5,000 不兼容前缀；同数据库和 pool；1/8/32/128 个 barrier 后启动的持久 claimer；整个窗口 300s",
+        "A high-priority prefix requires GPU capability; the measured worker lacks GPU and has independent legal lower-priority Runs.",
+        "同一并发用例分别覆盖 exhausted_epoch 默认前缀和 capability 前缀；不缩减默认数据量、claimer 集合或窗口。"
       ],
       "assertions": [
-        "每个 eligible Run 恰好一个当前 epoch winner；无重复和丢失；捕获 rows/n/pool/claimers/window/p50/p95/p99；不足样本明确标记"
+        "每个 eligible Run 恰好一个当前 epoch winner；无重复和丢失；捕获 rows/n/pool/claimers/window/p50/p95/p99；不足样本明确标记",
+        "Every capability-prefix claim reaches one distinct legal tail Run within the authored whole-loop300s budget; finite warm latency is an observation, not an optimization claim."
       ],
       "cases": [
         {
@@ -790,6 +793,12 @@
           "package": "awaken-dispatch",
           "target": "dispatch_claim_perf",
           "name": "incompatible_front_queue_claim_latency",
+          "source": "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs"
+        },
+        {
+          "package": "awaken-dispatch",
+          "target": "dispatch_claim_perf",
+          "name": "capability_incompatible_front_queue_claim_latency",
           "source": "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs"
         },
         {
@@ -819,7 +828,7 @@
       },
       "execution": "deferred",
       "remaining": [
-        "独立 ignored-only profile 尚未接入 native controller。默认广域选择必须仅排除这 3 个 exact ignored case；禁止吞掉其它私有见证。",
+        "独立 ignored-only profile 尚未接入 native controller。默认广域选择必须逐名排除全部 exact ignored case（当前 4 项）；禁止吞掉其它私有见证。",
         "固定验收清除以下 override；保留开发者可调入口。计时只作本机观察，不作为生产容量或优化收益证明。"
       ],
       "clear_environment": [
@@ -827,7 +836,32 @@
         "AWAKEN_DISPATCH_PERF_ROUNDS",
         "AWAKEN_DISPATCH_PERF_DEPTH_ROUNDS",
         "AWAKEN_DISPATCH_PERF_INCOMPATIBLE_ROWS",
-        "AWAKEN_DISPATCH_PERF_CONCURRENT_CLAIMS"
+        "AWAKEN_DISPATCH_PERF_CONCURRENT_CLAIMS",
+        "AWAKEN_DISPATCH_PERF_PREFIX_KIND"
+      ],
+      "parameter_runs": [
+        {
+          "environment": {
+            "AWAKEN_DISPATCH_PERF_PREFIX_KIND": "capability"
+          },
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "awaken-dispatch",
+            "--features",
+            "test-support",
+            "--test",
+            "dispatch_claim_perf",
+            "--",
+            "concurrent_incompatible_front_claim_throughput",
+            "--exact",
+            "--ignored",
+            "--test-threads=1",
+            "--show-output"
+          ]
+        }
       ]
     },
     {
@@ -1136,18 +1170,19 @@
     },
     {
       "id": "global",
-      "when": "manifest/lock/toolchain/Cargo 配置/feature profile/CI 或 hook 改动保留 whole Rust graph，并补冷缓存验证。",
+      "when": "manifest/lock/toolchain/Cargo 配置/feature profile/CI 或 hook 改动保留 whole Rust graph，并补冷缓存验证。 同时保留规模基准所属 crate 的消费者资格验证。",
       "required": [
         "L0",
         "L1",
         "L2",
         "L3",
-        "L4-cold"
+        "L4-cold",
+        "L4-scale"
       ]
     },
     {
       "id": "scale",
-      "when": "Ingress 候选查询、迁移或规模目标变化，额外运行三个 exact ignored scale case，单独资源预算与回执。",
+      "when": "实际 Cargo 所有者与反向消费者闭包抵达规模基准所属 crate；包括已迁移到 WorkStore 的实现、迁移、契约和测试依赖。额外执行四个 ignored 用例及 capability 并发参数分支。",
       "required": [
         "L4-scale"
       ]

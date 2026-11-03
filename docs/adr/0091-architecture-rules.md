@@ -449,6 +449,24 @@ count at zero.
    `{reason, approved_by, date, remove_when}` of D8, admitted by
    `scripts/ci/_architecture_ratchet.py` `baseline_cli`.
 
+### Qualification scope and reception (2026-11-03 amendment)
+
+The configured main writer receives a lane after its affected checks and normal
+commit hooks pass. Before replaying it, compare its base, changed owners and
+source delta with current main; retire already absorbed work while preserving
+its recoverable snapshot. Rebase the remaining delta, rerun affected checks for
+changed inputs, then fast-forward through the same writer and reference hook.
+
+`verified/<YYYYMMDD-HHMM>` is an annotated qualification checkpoint for one exact
+commit. Its annotation names the original commands, feature/platform subjects,
+passed and skipped cases, and the existing receipt identity. A V0 Linux Rust
+checkpoint covers the original complete Rust group; broader formal, full-gate,
+artifact, provider or native Windows claims need their own completed receipts.
+The [validation guide](../design/test-validation.md#qualification-checkpoints-and-cohorts)
+owns that interpretation; [ADR-0080](0080-full-gate-freshness-and-declared-tool-environment.md)
+continues to own the sole full-gate record. No additional qualification registry
+or executable suite is introduced.
+
 ### Control executable closure (2026-10-29 amendment)
 
 `awaken-control` follows the existing Coordinator executable pattern: its thin

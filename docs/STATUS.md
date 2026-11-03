@@ -39,7 +39,8 @@ consistent vocabulary. This affects the documentation layers differently:
 
 ## Architecture Execution
 
-Reviewed base `2d195c4174b7` (2026-11-02). This is the single progress record for the crate-boundary
+Reviewed main `9b341367046d` (2026-11-03), after the qualified `395303e5e3ab`
+checkpoint. This is the single progress record for the crate-boundary
 program; decisions remain in their ADRs and code, and executed results remain
 in the [qualification record](design/test-validation.md#integrated-source-qualification-record).
 Plan v5 is in force; the v4 slices below identify their existing owners.
@@ -48,9 +49,9 @@ Plan v5 is in force; the v4 slices below identify their existing owners.
   repair, G, nanos-image proof and BackgroundTask consolidation have normal
   commit and protected FF receipts; no push is claimed. Their distinct source
   subjects and executed scopes remain in the [qualification record](design/test-validation.md#integrated-source-qualification-record).
-- **Tags.** `verified/20261101-0249` peels to `f03c55823bbe` and
-  `verified/20261031-1847` to `af4d10ec22a1`; both are historical subjects.
-  Neither tag qualifies the later G source or closes V6, L or product acceptance.
+- **Tags.** `verified/20261102-1723` peels to `395303e5e3ab` and records the
+  original Linux Rust group only. Earlier tags retain their own subjects;
+  formal, full13, downstream, SDK release and product evidence stay separate.
 - **Source versus delivery.** G's runtime `2903a249449a` and normal delivery
   `a4402c05ca68`, nanos follow-up `fcf046d5150e` and BackgroundTask follow-up
   `2d195c4174b7` each retain their own evidence. Remaining formal, SDK release,
@@ -74,25 +75,25 @@ Plan v5 is in force; the v4 slices below identify their existing owners.
 | P6 Sandbox | One provider selected as provisioning/Session role handles ([provider boundary](design/sandbox-provider-contract.md#session-role-handles-2026-10-31)). | Final Linux/container/distributed acceptance and Windows evidence remain separate. |
 | P7 Application / protocol | Use-case components share `SessionMutations` CAS; protocols translate ([application status](design/session-aggregate-and-dispatch-capabilities.md#application-status-2026-10-31)). | Complete-admission and V4 caller migrations are delivered; downstream and product acceptance remain separate. |
 | Contract convergence | Canonical owners and imports follow [ADR-0090](adr/0090-session-state-model.md) and [ADR-0091](adr/0091-architecture-rules.md); distinct Dream/provider/transport contracts remain distinct. | V4 and G are delivered with source-bound check results; downstream callers still need their own cohort qualification. |
-| Formal | The proof owner records tools, domains and resource limits ([formal trust](design/formal-proof-trust.md)). | Two scoped V6 follow-ups are delivered in the [record](design/test-validation.md#integrated-source-qualification-record); Expiry Ord and full formal qualification remain open. |
+| Formal | The proof owner records tools, domains and resource limits ([formal trust](design/formal-proof-trust.md)). | The original observation mutant repair is delivered; fresh complete formal qualification remains open in the [record](design/test-validation.md#integrated-source-qualification-record). |
 | Integrated qualification | Original Rust/PG/API entrypoints, normal hooks and protected FF ([record](design/test-validation.md#integrated-source-qualification-record)). | Whole-SHA formal/release/live evidence remains open; G's delivered gates do not establish full13 or coverage. |
-| Downstream | V7 import/API migration packets exist for the locked Cloud/Flow sources. | Real pin/lock/BOM upgrade and build/runtime acceptance remain pending; source migration is not acceptance. |
+| Downstream | Cloud `4e0f228a` and Flow `02b81c1c` both resolve Native `395303e5` through their original locked compositions. | Their Linux source/integration gates, normal commits and local FF passed; a changed Native candidate and deployed product retain separate qualification. |
 
 ### Plan v5
 
 | Item | Scope | Status |
 |---|---|---|
-| V0 | Source-bound Rust, PG and cold recovery qualification | Memory, cold recovery, V4 and G are delivered; Rust/PG and delivery retain their source subjects in the [record](design/test-validation.md#integrated-source-qualification-record). |
+| V0 | Source-bound Rust, PG and cold recovery qualification | The original complete Linux Rust group passed on `395303e5e3ab`; later Memory Copy and native-fixture changes require qualification of the final source. PG/cold-recovery results retain their separate subjects in the [record](design/test-validation.md#integrated-source-qualification-record). |
 | V0b/V0c | Container-instance identity and same-Run/Session recovery | Host cold recovery passed; the joined real k3d recovery candidate is prepared but not executed. |
 | V1 | Prefer compiler/Cargo controls; consolidate actual duplicate guards | CrateSpec/lexer consolidation has pure self-test evidence; semantic guards remain, and numerical targets are not declared complete. |
-| V2 | Preserve lock-poisoning policy and typed failures | The remaining counted panic is a reviewed Control IAM std-lock exception; final combined-source validation remains required. |
+| V2 | Preserve lock-poisoning policy and typed failures | IAM decision Result repair `2ab430b4` is normally committed and tested but not consumed by Native. Credential/browser/management failure propagation and Control's remaining panic still require closure; the std-lock representation is not a waiver. |
 | V3 | Complete construction roles and typed boundary errors | App/SDK migrations and G are delivered; the remaining source-bound gates are in the [record](design/test-validation.md#integrated-source-qualification-record). |
 | V4 | Canonical bounded-context contracts and `RunIngress` naming | Delivered; the historical Baseline interpreter stays with its existing type owner without a new upward edge. Later G results retain their own source subject. |
 | V5 | Keep one short status record and linked design owners | This is the single progress owner; executed details stay in the existing qualification/M5 owners without a second status ledger. |
-| V6 | Every formal gate proof finishes within host resources | Nanos image and bounded BackgroundTask proof consolidation are delivered; Expiry Ord and the full formal gate remain open. The 65 rerun markers have not been cleared. |
-| V7 | Upgrade the real Cloud/Flow composition cohort | Source migration exists; final pins, locks and real downstream execution are pending. |
+| V6 | Every formal gate proof finishes within host resources | The `3eeb9532` full run completed Kani/vacuity and TLAPS before the observation-mutant failure repaired in `395303e5`; the later full attempt returned resource 75. Fresh complete qualification and the existing rerun markers remain open. |
+| V7 | Upgrade the real Cloud/Flow composition cohort | Cloud `4e0f228a` and Flow `02b81c1c` passed their complete Linux source/integration entrypoints with Native `395303e5`, then normal commits and local FF. Final deployment qualification must bind the final H/C/F and actual locks/artifacts. |
 | V8 | Linux, k3d and distributed product acceptance on one final BOM | Pending; source tests, PG recovery and image health are separate evidence. |
-| V9 | G private Task control and L SDK SemVer; retire LocalWorker after V8 | G and L's baseline qualifier repair are delivered; actual L release qualification remains open. LocalWorker retirement follows V8 acceptance. |
+| V9 | G private Task control and L SDK SemVer; retire LocalWorker after V8 | G is delivered; original package and artifact qualification passed on `395303e5`, while actual compiler SemVer exposed report-format/approval drift and an omitted McpWire major cohort. SemVer/release remain open; LocalWorker retirement follows V8 and requalifies its changed source. |
 
 ## Document Readiness
 

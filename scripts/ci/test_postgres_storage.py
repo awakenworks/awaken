@@ -103,19 +103,24 @@ pg_required_test() {
     def test_resource_refusal_stops_before_a_second_domain(self):
         code,rows=self.selection(75);self.assertEqual(code,75);self.assertEqual(len(rows),1)
 
-    def test_explicit_observations_require_both_domains_all_six_names_and_ignored_execution(self):
+    def test_explicit_observations_require_three_domains_all_seven_names_and_ignored_execution(self):
         code,rows=self.selection(0,"storage_observation_evidence");self.assertEqual(code,0)
-        self.assertEqual([row[row.index("-p")+1] for row in rows],["awaken-sql-storage","awaken-store-postgres"])
-        self.assertEqual([sum(x.startswith("--require-case=") for x in row) for row in rows],[1,5])
+        self.assertEqual([row[row.index("-p")+1] for row in rows],["awaken-session-store","awaken-sql-storage","awaken-store-postgres"])
+        self.assertEqual([sum(x.startswith("--require-case=") for x in row) for row in rows],[1,1,5])
         for row in rows:
             self.assertIn("--ignored",row);self.assertNotIn("--nocapture",row);self.assertIn("--locked",row)
             self.assertNotIn("--skip",row)
-        self.assertIn("--exact",rows[0])
-        self.assertEqual([x.removeprefix("--require-case=") for x in rows[1] if x.startswith("--require-case=")],['chunk_boundary_commit_throughput_observation', 'hot_thread_history_open_reports_its_scoped_cost', 'independent_thread_commit_throughput_observation', 'million_historical_facts_do_not_gate_startup_or_unrelated_thread_open', 'multi_fact_commit_throughput_observation'])
+        session=rows[0]
+        self.assertEqual(session[session.index("--features")+1],"test-support")
+        self.assertEqual(session[session.index("--test")+1],"session_repo_conformance")
+        self.assertIn("postgres_session_capacity_reference_and_indexed_observation",session)
+        self.assertEqual([x for x in session if x.startswith("--require-case=")],["--require-case=postgres_session_capacity_reference_and_indexed_observation"])
+        self.assertIn("--exact",session);self.assertIn("--exact",rows[1])
+        self.assertEqual([x.removeprefix("--require-case=") for x in rows[2] if x.startswith("--require-case=")],['chunk_boundary_commit_throughput_observation', 'hot_thread_history_open_reports_its_scoped_cost', 'independent_thread_commit_throughput_observation', 'million_historical_facts_do_not_gate_startup_or_unrelated_thread_open', 'multi_fact_commit_throughput_observation'])
         self.assertEqual(postgres_plan("storage-observations"),[("postgres-storage-observations","storage-observations.log",["scripts/ci/pg_tests.sh","--storage-observations"])])
 
     def test_observations_keep_failure_timeout_and_stop_on_resource_refusal(self):
-        for status,count in ((23,2),(124,2),(75,1)):
+        for status,count in ((23,3),(124,3),(75,1)):
             with self.subTest(status=status):
                 code,rows=self.selection(status,"storage_observation_evidence")
                 self.assertEqual(code,status);self.assertEqual(len(rows),count)

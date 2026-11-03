@@ -398,6 +398,42 @@ Current focused results, partial environments, per-crate counters and quick
 plans must retain their stated scope. See the existing
 [full-gate policy](../adr/0080-full-gate-freshness-and-declared-tool-environment.md).
 
+### Qualification checkpoints and cohorts
+
+The checkpoint named in ADR-0091 binds its exact candidate and stated execution
+scope. The original complete Rust group qualifies V0 only when both authored
+Clippy graphs, actual workspace execution and doctests pass on that source.
+Report skipped cases separately. The strict full-tier formal receipt retains
+its own source, derived plan and toolchain; a focused replay or historical
+function body cannot qualify a later complete source. Domain reduction requires
+an explicit refinement or complete equivalence-class argument for the legal
+production inputs, together with the existing reachability and mutation checks.
+
+For a composed release, retain Native commit H, Cloud commit C, Flow commit F,
+resolved dependency locks and the built artifact/image identities in the existing
+runtime BOM. Each composing repository must test the actual H it resolves;
+passing its old cohort remains useful evidence for that old cohort. A temporary
+registry or unpacked archive consumer qualifies only that artifact scenario;
+registry publication and native-platform execution keep their own evidence.
+
+V0-qualified H permits independent formal, downstream and SDK qualification
+through the existing entrypoints and host queue. Declare dependencies from the
+behavior each stage needs; use the host's existing resource policy rather than
+an additional hourly compile allowance. Duplicate completed work is checked
+before allocating another build. No stage changes another active lane's frozen
+source, cancels its jobs or reclassifies a resource refusal as a pass.
+
+The V8 record applies to the deployment architecture it ran. The user-selected
+LocalWorker retirement remains after V8; it reuses the registered co-located
+Worker and committed queue reads described in
+[remote Task control](remote-task-control.md#queue-only-session-application-family-a-remedy-a).
+Removing that callback path changes the candidate: rerun its affected matrices
+and produce the final required qualification for the new source/BOM. The
+Runtime SDK's independent execution boundary remains intact. Provider recovery,
+physical cleanup and native Windows results stay attached to their own actual
+substrates; an unavailable old environment is not a new prerequisite for every
+source-only change.
+
 ### Served-process E2E coverage
 
 `scripts/ci/e2e-coverage.sh` measures deterministic served-process API coverage
@@ -534,21 +570,67 @@ qualification are separate claims.
   468.252214448 seconds with exit 0, followed by protected FF of clean main
   and integration with no push at that checkpoint; the independent `fcf046d5150e`
   nanos history above is unchanged.
-- **Remaining V6 proof boundary.** The preceding Z3 comparison of the original
-  three selections used a requested 300-second limit: succession and nanos
-  completed, while independent Expiry Ord did not complete. That short
-  diagnostic is neither a complete three-harness PASS nor a 1,800-second
-  Expiry failure. Expiry Ord, the 65 unchanged rerun markers and the complete
-  formal gate remain open; the historical inventory stays with the existing
-  proof-trust owner.
-- **Open release/formal/product boundary.** Beyond these two scoped proof slices,
-  current-source formal qualification, actual L release
-  package/artifact/SemVer and registry/Windows evidence, V7 cohort execution
-  and V8 live acceptance remain open. No coverage baseline has been obtained;
-  the formal-coverage source check is not such a measurement. Historical tags
-  `verified/20261101-0249` (`f03c55823bbe`) and `verified/20261031-1847`
-  (`af4d10ec22a1`) retain only their own scope; G and these scoped proof
-  deliveries establish neither a new verified tag nor current-SHA full13.
+- **Historical short V6 diagnostics.** The earlier 300-second comparison
+  completed succession and nanos but not independent Expiry Ord. It established
+  neither a complete three-harness pass nor a failure of the original
+  1,800-second ceiling. The later formulations and their exact scopes remain
+  with the [proof-trust owner](formal-proof-trust.md); these short diagnostics
+  are not current open-failure counts.
+- **Linux Rust checkpoint `395303e5e3ab` (tree
+  `a3f64c408bfe87cc3332bd05996cb19231c0a433`).** The original
+  `bash scripts/ci/check-all.sh --group rust` exited 0 in 588.007369065 seconds:
+  both whole-workspace Clippy graphs and doctests passed, and nextest executed
+  10,511 cases successfully with 131 skipped separately. Annotated tag
+  `verified/20261102-1723` binds that V0 Linux Rust scope and its original
+  receipt identity; it is not a full13, Windows or release record.
+- **Observation mutation repair `395303e5e3ab`.** The preceding strict full run
+  on clean `3eeb9532` completed all 610 Kani harnesses, the original vacuity
+  check and its TLAPS groups, then failed because an equal-clock timestamp
+  mutation did not change the trace. The repair changes only the original
+  mutation selector to the existing legacy clock row. The original Python
+  owner passed 13 unit cases and all 21 metadata mutants; the original real
+  TLC trace-mutation entry passed all base and follow-up families against
+  preserved production observations. Models, schemas and producers are
+  unchanged. Normal hooks and protected fast-forward delivered the repair;
+  this scoped replay is not a completed fresh full-formal invocation.
+- **SDK package checkpoint `395303e5e3ab`.** The original
+  `check_sdk_consumer.py --qualify-package` ran its two Linux feature subjects
+  successfully: all 24 crates packaged with default and all features, producing
+  48 archives with the original normalized-manifest and VCS audits. This
+  records packaging only; unpacked artifact consumption, compiler SemVer,
+  registry publication and native Windows retain their own outcomes.
+- **SDK artifact checkpoint `395303e5e3ab`.** The original artifact qualifier
+  completed its 27-package archive closure, consumed 13 SDK packages from the
+  verified unpacked archives, and passed all eight task cases and the sample.
+  Both original major-consumer audits separately passed their 47 steps and 42
+  cases. The complete SemVer qualifier did not pass: the pinned tool emitted
+  unrecognized field/trait/constant rows, the approved findings predated G, and
+  the existing McpWire `0.2.0` major was absent from the forced-audit cohort.
+  Independent raw reports and pure parser tests do not constitute a successful
+  combined qualification of its proposed replacement.
+- **Native-395 downstream cohort (2026-11-03).** Flow `02b81c1c` passed the
+  original complete check including required PostgreSQL, all 39 public-API
+  comparisons without blessing, and the 15 critical cases without skips.
+  Cloud `4e0f228a` passed its original 30 commands, including required SQL
+  cases, both Phase1 history subjects and the eight selected Worker cases.
+  Both retained their original ignored/skipped cases, locks, normal-hook and
+  local fast-forward receipts. These are Linux source/integration results for
+  their actual Native-395 compositions, not qualification of later Native
+  source, production images, deployment, public release or Windows.
+- **Downstream component checkpoints.** Cloud `6fda36a9`, consuming Native
+  `e9773cf5` and IAM `dc0c68b4`, passed all eight selected Worker-access cases,
+  both owning Clippy checks, documentation checks, normal hooks and safe FF.
+  Flow `cf4e7b83`, consuming Native `bf3e1e04`, passed 15 critical cases and its
+  complete Runtime library (217 passed, three ignored separately), real
+  companion, Server library check, Runtime Clippy and source-unity checks.
+  The critical cases overlap that library and are not an added test total.
+  Both records retain their actual cohorts; neither qualifies a newer main,
+  a changed producer pin, or a deployed product.
+
+Current open scopes and the next qualified cohort are tracked only in
+[STATUS](../STATUS.md#architecture-execution). The executable full suite and
+its publication record remain owned by ADR-0080 and `check-all.sh`; these
+checkpoint notes do not introduce another acceptance manifest.
 
 The following records are history, not current open-failure counts.
 
