@@ -89,11 +89,13 @@ cleanup() {
 mkdir -p "$LAZY_OUTPUT"
 k3d_install_exit_cleanup cleanup
 if [[ -z "${AWAKEN_LAZY_RUNTIME_IMAGE:-}" ]]; then
-  cargo build --release -p awaken-cli --bins -p awaken-worker --features awaken-cli/container-k8s,awaken-worker/container-k8s
-  cp target/release/awaken "$LAZY_TEMP/awaken-server"
-  cp target/release/awaken "$LAZY_TEMP/awaken"
-  cp target/release/awaken-coordinator "$LAZY_TEMP/awaken-coordinator"
-  cp target/release/awaken-worker "$LAZY_TEMP/awaken-worker"
+  resolve_cargo_executable awaken-cli awaken --release --features container-k8s \
+    --snapshot-destination "$LAZY_TEMP/awaken" >/dev/null
+  cp "$LAZY_TEMP/awaken" "$LAZY_TEMP/awaken-server"
+  resolve_cargo_executable awaken-coordinator-process awaken-coordinator --release --features container-k8s \
+    --snapshot-destination "$LAZY_TEMP/awaken-coordinator" >/dev/null
+  resolve_cargo_executable awaken-worker awaken-worker --release --features container-k8s \
+    --snapshot-destination "$LAZY_TEMP/awaken-worker" >/dev/null
   k3d_docker_build --load -f deploy/k3d/Dockerfile --build-arg AUXILIARY_EXECUTABLE=awaken \
     --label "org.opencontainers.image.revision=$LAZY_COMMIT" -t "$LAZY_IMAGE" "$LAZY_TEMP"
 fi
