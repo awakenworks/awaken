@@ -1433,25 +1433,25 @@ async fn authenticate_ok_expired_and_invalid() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn authorize_at_target_allow_deny_and_require_approval() {
+    // C/E table: the existing PDP evaluates the explicit target scope. Allow
+    // -> no refusal; Deny -> 403; RequireApproval -> 403 with its existing
+    // approval message. The selected-principal test owns the added Org scope.
     let (dir, iam) = fresh_iam();
     let bootstrap = admin_token(dir.path());
     let (admin_principal, _) = iam.authenticate(&bootstrap).unwrap();
+    let target = ScopeRef::Workspace {
+        workspace_id: WorkspaceId(BOOTSTRAP_WORKSPACE.into()),
+    };
 
     // (a) Allow → None.
     assert!(
-        authorize_at_target(
-            &iam,
-            admin_principal.clone(),
-            APIKEY_WRITE,
-            BOOTSTRAP_WORKSPACE
-        )
-        .is_none()
+        authorize_at_target(&iam, admin_principal.clone(), APIKEY_WRITE, target.clone()).is_none()
     );
 
     // (c) Deny → 403.
     let user = mint(&iam, "tok_at_user", BOOTSTRAP_WORKSPACE, "workspace_user");
     let (user_principal, _) = iam.authenticate(&user).unwrap();
-    let refusal = authorize_at_target(&iam, user_principal, APIKEY_WRITE, BOOTSTRAP_WORKSPACE)
+    let refusal = authorize_at_target(&iam, user_principal, APIKEY_WRITE, target.clone())
         .expect("deny yields a refusal");
     assert_eq!(resp_parts(refusal).await.0, StatusCode::FORBIDDEN);
 
@@ -1468,7 +1468,7 @@ async fn authorize_at_target_allow_deny_and_require_approval() {
             scope: ScopeRef::Global,
             effect: Effect::RequireApproval,
         });
-    let refusal = authorize_at_target(&iam, admin_principal, APIKEY_WRITE, BOOTSTRAP_WORKSPACE)
+    let refusal = authorize_at_target(&iam, admin_principal, APIKEY_WRITE, target)
         .expect("require-approval yields a refusal");
     let (s, err) = resp_parts(refusal).await;
     assert_eq!(s, StatusCode::FORBIDDEN);

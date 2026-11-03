@@ -31,41 +31,63 @@ LAZY_OUTPUT="${AWAKEN_EVAL_ARTIFACT_DIR:-$LAZY_REPO_ROOT/target/test-evidence/sk
 LAZY_TEMP="$(mktemp -d)"
 LAZY_CREATED=0
 LAZY_RUNTIME_CREATED=0
+LAZY_RUNTIME_CONTAINER=""
+LAZY_REPLACEMENT_CID_FILE=""
+LAZY_REPLACEMENT_CONTAINER=""
+LAZY_MIGRATION_CONTAINER=""
 LAZY_DATA_VOLUME=""
-LAZY_PRIOR_CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
+k3d_use_private_kubeconfig "$LAZY_TEMP/control-kubeconfig"
 cleanup() {
-  local status=$?
+  local body_status="$1" status=0 step_status=0 observed node present cid
+  if [[ -e "$LAZY_TEMP/migration.cid" ]]; then
+    [[ -f "$LAZY_TEMP/migration.cid" && ! -L "$LAZY_TEMP/migration.cid" ]] || return 2
+    LAZY_MIGRATION_CONTAINER=$(cat "$LAZY_TEMP/migration.cid") || return "$?"
+    [[ "$LAZY_MIGRATION_CONTAINER" =~ ^[0-9a-f]{64}$ ]] || return 2
+  fi
+  if [[ -n "$LAZY_REPLACEMENT_CID_FILE" && ( -e "$LAZY_REPLACEMENT_CID_FILE" || -L "$LAZY_REPLACEMENT_CID_FILE" ) ]]; then
+    [[ -f "$LAZY_REPLACEMENT_CID_FILE" && ! -L "$LAZY_REPLACEMENT_CID_FILE" ]] || return 2
+    LAZY_REPLACEMENT_CONTAINER=$(cat "$LAZY_REPLACEMENT_CID_FILE") || return "$?"
+    [[ "$LAZY_REPLACEMENT_CONTAINER" =~ ^[0-9a-f]{64}$ ]] || return 2
+  fi
   if [[ "$LAZY_CREATED" = 1 ]]; then
-    if [[ "$LAZY_RUNTIME_CREATED" = 1 ]]; then docker logs "$LAZY_POD" > "$LAZY_OUTPUT/service.log" 2>&1 || true; fi
-    if [[ "$status" != 0 ]]; then
+    _k3d_check_creation || return "$?"
+    if [[ "$LAZY_RUNTIME_CREATED" = 1 ]]; then docker logs "$LAZY_RUNTIME_CONTAINER" > "$LAZY_OUTPUT/service.log" 2>&1 || true; fi
+    if [[ "$body_status" != 0 ]]; then
       kubectl --context "$LAZY_CONTEXT" get pods -A -o wide > "$LAZY_OUTPUT/pods.txt" 2>&1 || true
       kubectl --context "$LAZY_CONTEXT" -n awaken-system get events > "$LAZY_OUTPUT/kubernetes-events.txt" 2>&1 || true
     fi
   fi
-  [[ "$LAZY_RUNTIME_CREATED" = 0 ]] || docker rm -f -v "$LAZY_POD" >/dev/null || status=1
-  [[ -z "$LAZY_DATA_VOLUME" ]] || docker volume rm "$LAZY_DATA_VOLUME" >/dev/null || status=1
-  if [[ "$LAZY_CREATED" = 1 ]]; then
-    # Undo only this fixture's attachment to the pre-existing Registry. K3D
-    # leaves that external container on the otherwise empty network; deleting
-    # the Registry itself would affect other clusters. The shared deletion
-    # owner below still verifies complete absence and reports any real failure.
-    docker network disconnect "k3d-$LAZY_CLUSTER" k3d-awaken-registry.localhost 2>/dev/null || true
-    if [[ "$LAZY_STORAGE" = local-static ]]; then
-      kubectl --context "$LAZY_CONTEXT" delete namespace awaken-system awaken-storage --ignore-not-found --wait=true --timeout=90s >/dev/null 2>&1 || true
-      docker exec "k3d-$LAZY_CLUSTER-server-0" sh -ec 'for path in /mnt/awaken-local/volume-*; do test -d "$path" || continue; umount "$path"; done' >/dev/null 2>&1 || true
+  if [[ -n "$LAZY_DATA_VOLUME" ]]; then
+    observed=$(_e2e_docker_owned_volume "$LAZY_DATA_VOLUME") || return "$?"
+    if [[ -n "$observed" ]]; then
+      _e2e_docker_check_volume_mounts "$LAZY_DATA_VOLUME" "$LAZY_MIGRATION_CONTAINER" "$LAZY_RUNTIME_CONTAINER" "$LAZY_REPLACEMENT_CONTAINER" || return "$?"
     fi
-    k3d_delete_cluster "$LAZY_CLUSTER" || status=1
   fi
-  if [[ -n "$LAZY_PRIOR_CONTEXT" && "$(kubectl config current-context 2>/dev/null || true)" = "$LAZY_CONTEXT" ]]; then
-    kubectl config use-context "$LAZY_PRIOR_CONTEXT" >/dev/null || status=1
+  for cid in "$LAZY_MIGRATION_CONTAINER" "$LAZY_RUNTIME_CONTAINER" "$LAZY_REPLACEMENT_CONTAINER"; do
+    [[ -n "$cid" ]] || continue
+    present=$(docker ps -aq --no-trunc --filter "id=$cid") || return "$?"
+    [[ -n "$present" ]] || continue
+    [[ "$present" = "$cid" ]] || return 2
+    docker rm -f -v "$cid" >/dev/null || return "$?"
+  done
+  [[ -z "$LAZY_DATA_VOLUME" ]] || e2e_docker_rm_volumes "$LAZY_DATA_VOLUME" || status=$?
+  [[ "$status" = 0 ]] || return "$status"
+  if [[ "$LAZY_CREATED" = 1 && "$LAZY_STORAGE" = local-static ]]; then
+    node=$(_k3d_created_node_id "k3d-$LAZY_CLUSTER-server-0") || return "$?"
+    kubectl --context "$LAZY_CONTEXT" delete namespace awaken-system awaken-storage --ignore-not-found --wait=true --timeout=90s >/dev/null 2>&1 || status=$?
+    docker exec "$node" sh -ec 'for path in /mnt/awaken-local/volume-*; do test -d "$path" || continue; umount "$path"; done' >/dev/null 2>&1 || step_status=$?
+    [[ "$status" != 0 ]] || status="$step_status"
   fi
-  rm -rf "$LAZY_TEMP"
-  exit "$status"
+  step_status=0
+  # The creator owns undoing its exact --registry-use attachment too.
+  k3d_delete_cluster "$LAZY_CLUSTER" || step_status=$?
+  [[ "$status" != 0 ]] || status="$step_status"
+  [[ "$status" = 0 ]] || return "$status"
+  rm -rf -- "$LAZY_TEMP"
 }
+
 mkdir -p "$LAZY_OUTPUT"
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+k3d_install_exit_cleanup cleanup
 if [[ -z "${AWAKEN_LAZY_RUNTIME_IMAGE:-}" ]]; then
   cargo build --release -p awaken-cli --bins -p awaken-worker --features awaken-cli/container-k8s,awaken-worker/container-k8s
   cp target/release/awaken "$LAZY_TEMP/awaken-server"
@@ -79,13 +101,12 @@ fi
 if [[ -n "${AWAKEN_LAZY_UPGRADE_RUNTIME_IMAGE:-}" ]]; then
   [[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$AWAKEN_LAZY_UPGRADE_RUNTIME_IMAGE")" = "$LAZY_COMMIT" ]] || { echo 'upgrade image does not match fixture commit' >&2; exit 2; }
 fi
-# Unique PID name is still checked before calling the shared create owner,
-# whose normal scenario policy replaces its explicitly named previous fixture.
-if k3d cluster list -o json | python3 -c 'import json,sys; name=sys.argv[1]; sys.exit(0 if any(v["name"] == name for v in json.load(sys.stdin)) else 1)' "$LAZY_CLUSTER"; then
-  echo "unique test cluster already exists; refusing replacement" >&2; exit 2
-fi
-LAZY_CREATED=1
+# The shared creator alone refuses collisions and unknown observations.
+e2e_docker_init managed-skill-lazy-real
 k3d_create_cluster "$LAZY_CLUSTER" 0 128Mi k3d-awaken-registry.localhost:5000 "$LAZY_IMAGE"
+LAZY_CREATED=1
+k3d_bind_private_kubeconfig "$LAZY_CLUSTER"
+
 k3d_import_images "$LAZY_CLUSTER" "$LAZY_IMAGE"
 k3d_import_storage_images "$LAZY_CLUSTER"
 if [[ "$LAZY_STORAGE" = local-static ]]; then
@@ -123,18 +144,24 @@ kubectl --context "$LAZY_CONTEXT" apply -f "$LAZY_TEMP/fixture.json"
 # is isolated in this owned container. Only Sandbox execution runs in K3D.
 # This avoids inheriting a developer Docker bridge's DNS/egress failures while
 # preserving the same production runtime, official SDK and Kubernetes provider.
-LAZY_DATA_VOLUME="$(docker volume create --label awaken.test.case=skill-lazy-real --label awaken.e2e.owner=managed-skill-lazy-real "awaken-e2e-skill-lazy-$$")"
-docker run --rm --network host --name "$LAZY_POD" --label awaken.test.case=skill-lazy-real \
+e2e_docker_create_volume awaken.test.case=skill-lazy-real
+LAZY_DATA_VOLUME="$E2E_CREATED_VOLUME"
+docker run --rm --cidfile "$LAZY_TEMP/migration.cid" --network host --name "$LAZY_POD" "${E2E_LABELS[@]}" --label awaken.test.case=skill-lazy-real \
   -v "$LAZY_TEMP/config.toml:/etc/awaken/config.toml:ro" -v "$LAZY_DATA_VOLUME:/var/lib/awaken" \
   --entrypoint /usr/local/bin/awaken "$LAZY_IMAGE" database migrate --config /etc/awaken/config.toml \
   --initialize-installation --initialization-reference "$LAZY_POD"
-docker run -d --network host --name "$LAZY_POD" --label awaken.test.case=skill-lazy-real \
+LAZY_RUNTIME_CONTAINER=$(docker create --network host --name "$LAZY_POD" "${E2E_LABELS[@]}" --label awaken.test.case=skill-lazy-real \
   -e KUBECONFIG=/etc/awaken/kubeconfig -v "$LAZY_TEMP/kubeconfig:/etc/awaken/kubeconfig:ro" \
   -v "$LAZY_TEMP/config.toml:/etc/awaken/config.toml:ro" -v "$LAZY_DATA_VOLUME:/var/lib/awaken" \
-  --entrypoint /usr/local/bin/awaken "$LAZY_IMAGE" all-in-one --config /etc/awaken/config.toml >/dev/null
+  --entrypoint /usr/local/bin/awaken "$LAZY_IMAGE" all-in-one --config /etc/awaken/config.toml)
+[[ "$LAZY_RUNTIME_CONTAINER" =~ ^[0-9a-f]{64}$ ]] || exit 2
 LAZY_RUNTIME_CREATED=1
+docker start "$LAZY_RUNTIME_CONTAINER" >/dev/null
+replacement_receipt="$LAZY_OUTPUT/runtime-replacement-$LAZY_RUNTIME_CONTAINER.cid"
+[[ ! -e "$replacement_receipt" && ! -L "$replacement_receipt" ]] || { echo 'refusing an existing replacement receipt' >&2; exit 2; }
+LAZY_REPLACEMENT_CID_FILE="$replacement_receipt"
 AWAKEN_LAZY_TEST_URL="http://127.0.0.1:$LAZY_PORT" AWAKEN_LAZY_KUBE_CONTEXT="$LAZY_CONTEXT" \
-AWAKEN_LAZY_SERVICE_CONTAINER="$LAZY_POD" AWAKEN_LAZY_SOURCE_COMMIT="$LAZY_COMMIT" \
+AWAKEN_LAZY_SERVICE_CONTAINER="$LAZY_POD" AWAKEN_LAZY_SERVICE_CONTAINER_ID="$LAZY_RUNTIME_CONTAINER" AWAKEN_LAZY_SOURCE_COMMIT="$LAZY_COMMIT" \
 AWAKEN_LAZY_RUNTIME_SOURCE_COMMIT="$LAZY_RUNTIME_COMMIT" AWAKEN_LAZY_DIRECTORY_INIT="$LAZY_DIRECTORY_INIT" \
 AWAKEN_LAZY_STORAGE_PROFILE="$LAZY_STORAGE" \
 AWAKEN_EVAL_ARTIFACT_DIR="$LAZY_OUTPUT" npm --prefix e2e run test:real:skill-lazy:driver

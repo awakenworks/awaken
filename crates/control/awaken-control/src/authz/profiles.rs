@@ -15,6 +15,8 @@ use awaken_iam_contract::{
 use awaken_iam_core::RoleId;
 use awaken_iam_preset::named_role_catalog;
 
+use super::APIKEY_WRITE;
+
 pub const AWAKEN_WORKSPACE_POLICY_NAMESPACE: &str = "awaken.workspace";
 /// Qualified role for an external product that discovers executable model
 /// supply, materializes Skills, and publishes Agent configuration.
@@ -95,6 +97,10 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
         "file.*",
         "skill.*",
         "tunnel.manage",
+        // Selecting a service principal is installation credential management.
+        // Declare the existing write action exactly so only it can target Org;
+        // the original apikey.* rule keeps every other action Workspace-only.
+        APIKEY_WRITE,
     ];
     let mut grants = Vec::new();
     for role in named_role_catalog(&created_at) {
@@ -276,7 +282,11 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
                 .into_iter()
                 .map(|pattern| ActionScopeRule {
                     action_pattern: qualify_action(pattern).0,
-                    allowed_scope_kinds: vec![ScopeKind::Workspace],
+                    allowed_scope_kinds: if pattern == APIKEY_WRITE {
+                        vec![ScopeKind::Org, ScopeKind::Workspace]
+                    } else {
+                        vec![ScopeKind::Workspace]
+                    },
                 })
                 .collect(),
             grants,

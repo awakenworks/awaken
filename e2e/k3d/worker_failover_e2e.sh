@@ -44,6 +44,8 @@ LOCAL_PORT="${WFAILOVER_LOCAL_PORT:-38711}"
 DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
 BATCH="${WFAILOVER_BATCH:-12}"
 PF_PID=""
+KUBECONFIG_FILE="$(mktemp)"
+k3d_use_private_kubeconfig "$KUBECONFIG_FILE"
 
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
 ok()  { echo -e "\033[1;32m$*\033[0m"; }
@@ -52,7 +54,7 @@ err() { echo -e "\033[1;31m$*\033[0m"; }
 cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d_delete_cluster_and_remove "$CLUSTER" "$DEPLOY_DIR/awaken-server"
+  k3d_delete_cluster_and_remove "$CLUSTER" "$DEPLOY_DIR/awaken-server" "$KUBECONFIG_FILE"
 }
 
 k3d_admit_or_exit "worker-failover E2E"
@@ -105,6 +107,7 @@ log "3/6 create MULTI-node k3d cluster $CLUSTER (server + agent)"
 # avoids consuming a third k3s node's inotify/cAdvisor budget on shared CI hosts.
 # The shared harness owns nested-node reserve and actual capacity admission.
 k3d_create_cluster "$CLUSTER" 1
+k3d_bind_private_kubeconfig "$CLUSTER"
 
 log "4/6 side-load single-platform images into every node"
 k3d_import_images "$CLUSTER" "$IMAGE" postgres:16

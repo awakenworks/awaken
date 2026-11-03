@@ -43,7 +43,10 @@
 //! `apikey.write`/`apikey.read` at the TARGET workspace — the workspace named
 //! in the body/query for mint/list, the token's own workspace for revoke — so
 //! the scope graph decides: a Global-bound admin passes for any workspace, a
-//! workspace-bound admin only for its own. The delegation is fail-closed: the
+//! workspace-bound admin only for its own. Selecting `principal_id` additionally
+//! requires `apikey.write` at the installation Org because that service identity
+//! may already carry other bindings; omitting it creates a distinct principal.
+//! The delegation is fail-closed: the
 //! handlers refuse (401) unless the guard stamped the authenticated principal
 //! on the request, and the routes are only mounted when the guard is enabled.
 //! Revoking your own current token is allowed — the request completes and
@@ -331,8 +334,8 @@ impl ManagementIdentityMode {
     }
 }
 
-/// A mint request for a workspace-scoped service token (operator embeddings
-/// and tests; P1 exposes no HTTP mint surface).
+/// A mint request for a service token and its workspace role binding, shared
+/// by the management route, trusted operator embeddings, and tests.
 pub struct TokenSpec {
     /// Stable token row id (must be unique).
     pub token_id: String,
@@ -1644,29 +1647,25 @@ fn missing_guard_stamp() -> Response {
     unauthenticated("token management requires the embedded IAM guard")
 }
 
-/// Authorize `principal` for `action` at the TARGET workspace: `None` on
-/// allow, `Some(refusal)` mapping a non-allow decision to the guard's 403
-/// shapes.
+/// Authorize `principal` for `action` at the target scope: `None` on allow,
+/// `Some(refusal)` for the guard's shared 403/503 response shapes.
 fn authorize_at_target(
     authz: &ManagementAuthz,
     principal: PrincipalRef,
     action: &str,
-    workspace_id: &str,
+    scope: ScopeRef,
 ) -> Option<Response> {
-    match authz.authorize(
-        principal,
-        action,
-        ScopeRef::Workspace {
-            workspace_id: WorkspaceId(workspace_id.to_string()),
-        },
-    ) {
+    let denied = if matches!(&scope, ScopeRef::Org { .. }) {
+        "organization-level credential management is required to select a service principal"
+    } else {
+        "the API token's role does not authorize token management for this workspace"
+    };
+    match authz.authorize(principal, action, scope) {
         Ok(AuthorizationDecision::Allow) => None,
         Ok(AuthorizationDecision::RequireApproval) => Some(forbidden(
             "this action requires approval, which the embedded P1 plane cannot grant",
         )),
-        Ok(AuthorizationDecision::Deny) => Some(forbidden(
-            "the API token's role does not authorize token management for this workspace",
-        )),
+        Ok(AuthorizationDecision::Deny) => Some(forbidden(denied)),
         Err(_) => Some(iam_unavailable()),
     }
 }
@@ -1711,7 +1710,8 @@ fn token_operation_refusal(error: IamOperationError, headers: &HeaderMap) -> Res
 
 /// `POST /v1/config/iam/tokens` — mint a workspace token. Requires
 /// `apikey.write` at the workspace named in the body (the scope graph decides
-/// cross-workspace reach). The cleartext credential is returned exactly once,
+/// cross-workspace reach). Selecting `principal_id` also requires the same
+/// action at the installation Org. The cleartext credential is returned once,
 /// alongside the secret-free view; only the argon2id hash persists.
 async fn mint_token_route(
     State(authz): State<Arc<ManagementAuthz>>,
@@ -1778,14 +1778,35 @@ async fn mint_token_route(
 
     // The TARGET-workspace authorization: a Global-bound admin passes for any
     // workspace, a workspace-bound admin only for its own.
-    if let Some(refusal) = authorize_at_target(&authz, principal, APIKEY_WRITE, &workspace_id) {
+    if let Some(refusal) = authorize_at_target(
+        &authz,
+        principal.clone(),
+        APIKEY_WRITE,
+        ScopeRef::Workspace {
+            workspace_id: WorkspaceId(workspace_id.clone()),
+        },
+    ) {
         return refusal;
     }
 
+    let requested_principal = field("principal_id");
+    if requested_principal.is_some()
+        && let Some(refusal) = authorize_at_target(
+            &authz,
+            principal,
+            APIKEY_WRITE,
+            ScopeRef::Org {
+                org_id: authz.org_id.clone(),
+            },
+        )
+    {
+        return refusal;
+    }
     let token_id = fresh_token_id();
-    // Default to a per-token service principal so tokens do not silently share
-    // (and thereby aggregate) role bindings unless the operator asks for it.
-    let service_id = field("principal_id").unwrap_or_else(|| format!("mgmt-{token_id}"));
+    // A selected service identity can carry other scopes' bindings. The same
+    // canonical PDP must authorize that installation-wide identity choice;
+    // workspace writers otherwise receive a distinct server-owned principal.
+    let service_id = requested_principal.unwrap_or_else(|| format!("mgmt-{token_id}"));
     let issued = match authz.mint_token(TokenSpec {
         token_id,
         service_id,
@@ -1827,7 +1848,14 @@ async fn list_tokens_route(
             &headers,
         );
     };
-    if let Some(refusal) = authorize_at_target(&authz, principal, APIKEY_READ, workspace_id) {
+    if let Some(refusal) = authorize_at_target(
+        &authz,
+        principal,
+        APIKEY_READ,
+        ScopeRef::Workspace {
+            workspace_id: WorkspaceId(workspace_id.clone()),
+        },
+    ) {
         return refusal;
     }
     match authz.token_views(workspace_id) {
@@ -1859,8 +1887,14 @@ async fn revoke_token_route(
         }
         Err(error) => return token_operation_refusal(error, &headers),
     };
-    if let Some(refusal) = authorize_at_target(&authz, principal, APIKEY_WRITE, &token.workspace.0)
-    {
+    if let Some(refusal) = authorize_at_target(
+        &authz,
+        principal,
+        APIKEY_WRITE,
+        ScopeRef::Workspace {
+            workspace_id: token.workspace.clone(),
+        },
+    ) {
         return refusal;
     }
     // Resolve display metadata before committing. A failed read must not turn

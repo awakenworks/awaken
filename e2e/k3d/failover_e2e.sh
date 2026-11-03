@@ -30,6 +30,8 @@ LOCAL_PORT="${FAILOVER_LOCAL_PORT:-38611}"
 THREAD="failover-thread-1"
 DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
 PF_PID=""
+KUBECONFIG_FILE="$(mktemp)"
+k3d_use_private_kubeconfig "$KUBECONFIG_FILE"
 
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
 ok()  { echo -e "\033[1;32m$*\033[0m"; }
@@ -40,7 +42,7 @@ cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   [ -n "$CORDONED" ] && kubectl uncordon "$CORDONED" >/dev/null 2>&1 || true
   log "teardown: deleting k3d cluster $CLUSTER"
-  k3d_delete_cluster_and_remove "$CLUSTER" "$DEPLOY_DIR/awaken-server"
+  k3d_delete_cluster_and_remove "$CLUSTER" "$DEPLOY_DIR/awaken-server" "$KUBECONFIG_FILE"
 }
 k3d_install_exit_cleanup cleanup
 
@@ -85,6 +87,7 @@ k3d_docker_build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPL
 log "3/5 create MULTI-node k3d cluster $CLUSTER (server + 2 agents)"
 # 2 agents so the two anti-affinity'd brain replicas land on distinct nodes.
 k3d_create_cluster "$CLUSTER" 2
+k3d_bind_private_kubeconfig "$CLUSTER"
 
 log "4/5 side-load images into the cluster (k3d image import → all nodes)"
 k3d_import_images "$CLUSTER" "$IMAGE" postgres:16

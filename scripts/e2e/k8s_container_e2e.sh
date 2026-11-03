@@ -37,20 +37,25 @@ if [[ -n "$CONTROL_IMAGE" ]] && ! k3d_validate_image_digest "$CONTROL_IMAGE"; th
 fi
 export AWAKEN_K8S_CONTROL_IMAGE="$CONTROL_IMAGE"
 KUBECONFIG_FILE="$(mktemp)"
-export KUBECONFIG="$KUBECONFIG_FILE"
+k3d_use_private_kubeconfig "$KUBECONFIG_FILE"
 FIXTURE_CONTAINER="awaken-bb-tmp-$$"
+FIXTURE_CONTAINER_ID=""
 
 log() { printf '\n=== %s ===\n' "$*"; }
 
 cleanup() {
-  docker rm -f -v "$FIXTURE_CONTAINER" >/dev/null 2>&1 || true
+  local fixture_status=0 cluster_status=0
+  [[ -z "$FIXTURE_CONTAINER_ID" ]] || docker rm -f -v "$FIXTURE_CONTAINER_ID" >/dev/null 2>&1 || fixture_status=$?
   if [ "${AWAKEN_K8S_KEEP:-0}" = "1" ]; then
     log "retaining cluster ${CLUSTER} and kubeconfig ${KUBECONFIG_FILE}"
   else
     log "deleting cluster ${CLUSTER}"
-    k3d_delete_cluster_and_remove "$CLUSTER" "$KUBECONFIG_FILE"
+    k3d_delete_cluster_and_remove "$CLUSTER" "$KUBECONFIG_FILE" || cluster_status=$?
   fi
+  [[ "$fixture_status" = 0 ]] || return "$fixture_status"
+  return "$cluster_status"
 }
+
 k3d_install_exit_cleanup cleanup
 
 k3d_admit_or_exit "Kubernetes container E2E" 1
@@ -64,9 +69,12 @@ log "building offline fixture images"
 if ! docker image inspect busybox:1.36 >/dev/null 2>&1; then
   docker pull --platform "$K3D_PLATFORM" busybox:1.36 >/dev/null
 fi
-docker run --name "$FIXTURE_CONTAINER" --platform "$K3D_PLATFORM" busybox:1.36 true >/dev/null
-docker commit "$FIXTURE_CONTAINER" "$FIXTURE_IMAGE" >/dev/null
-docker rm -f -v "$FIXTURE_CONTAINER" >/dev/null
+FIXTURE_CONTAINER_ID=$(docker create --name "$FIXTURE_CONTAINER" --platform "$K3D_PLATFORM" busybox:1.36 true)
+[[ "$FIXTURE_CONTAINER_ID" =~ ^[0-9a-f]{64}$ ]] || exit 2
+docker start -a "$FIXTURE_CONTAINER_ID" >/dev/null
+docker commit "$FIXTURE_CONTAINER_ID" "$FIXTURE_IMAGE" >/dev/null
+docker rm -f -v "$FIXTURE_CONTAINER_ID" >/dev/null
+FIXTURE_CONTAINER_ID=""
 # KQ0 no operator override => use the existing image owner's current-input
 # admission, resolve its real manifest digest, then run the mandatory control test.
 # KQ1 an explicit digest remains supported; malformed input fails above.
@@ -82,7 +90,7 @@ export AWAKEN_K8S_CONTROL_IMAGE="$CONTROL_IMAGE"
 log "creating k3d cluster ${CLUSTER}"
 # The shared harness owns nested-node reserve and actual capacity admission.
 k3d_create_cluster "$CLUSTER" 0
-k3d kubeconfig merge "${CLUSTER}" --output "$KUBECONFIG_FILE" --overwrite >/dev/null
+k3d_bind_private_kubeconfig "$CLUSTER"
 if [ "$(uname -s)" = "Darwin" ]; then
   # k3d may emit host.docker.internal on Docker Desktop. That address is for
   # containers reaching the host and can time out when kubectl itself runs on

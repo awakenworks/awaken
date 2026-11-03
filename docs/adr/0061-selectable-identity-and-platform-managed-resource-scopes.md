@@ -799,3 +799,32 @@ scope plus the exact Workspace/Session coordinate. A missing scope disables draf
 retention. Actor changes remount the composer before restoring text. File bytes,
 credentials, and protocol request identities are excluded; normal Session read
 and command authorization remains unchanged.
+
+## Amendment (2026-11-03): selecting a service principal requires Org authority
+
+The embedded token-management command requires `apikey.write` at its target
+Workspace. Omitting `principal_id` allocates a distinct service identity;
+selecting an identity also requires that same action at the installation's Org,
+because the selected principal may already hold other bindings. Role selection
+still creates only a Workspace binding and does not grant Org authority.
+
+The existing `workspace_authorization_profile()` remains the sole producer. It
+retains the original family registrations and grants, explicitly registers the
+existing `awaken.workspace::apikey.write` action, and permits only that exact
+action at Org or Workspace. Other actions, including `apikey.read`, remain
+Workspace-only. IAM's original scope-kind check and PDP enforce both conditions;
+the handler does not inspect bindings or maintain another authorization path.
+
+| Caller authority | Request | Result |
+|---|---|---|
+| target Workspace write only | automatic principal | existing Workspace mint |
+| target Workspace write only | selected principal | 403 before token/binding mutation |
+| installation Org write | selected principal in a child Workspace | existing atomic mint |
+| one Org binding | write at another Org or Global | deny |
+| any existing local role | another action at Org | scope-kind deny |
+
+Embedded startup reconciles the changed document through the existing PAP
+validation and CAS activation, retaining immutable history. Equal restarts
+hydrate the active revision without appending; old profiles never remain as a
+request-time fallback. HTTP refusal precedes the existing paired SQL write and
+live publication, so no token or role binding is created by a denied selection.

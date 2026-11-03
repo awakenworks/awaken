@@ -13,6 +13,143 @@ fn spec(id: &str) -> TokenSpec {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn selected_service_principals_require_org_credential_management() {
+    // C/E table: C1=target Workspace credential write is allowed; C2=request
+    // selects a service identity; C3=the same PDP allows credential management
+    // at this installation's Org. R1(C1+C2+!C3)->403 and no token/policy write;
+    // R2(C1+!C2, omitted or empty)->201 with distinct server-owned identities;
+    // R3(C1+C2+C3)->201 with
+    // the requested identity. Org authority implies target authority for this
+    // registered child Workspace; absent target authority is covered by MT8.
+    // Existing PEP outage tests own Unavailable->503 and zero handler effects.
+    let (dir, iam) = fresh_iam();
+    let org_admin = admin_token(dir.path());
+    let workspace_admin = mint(
+        &iam,
+        "workspace-credential-manager",
+        BOOTSTRAP_WORKSPACE,
+        "workspace_admin",
+    );
+    // Scope-kind legality and role authority are independent causes. The
+    // canonical profile admits only exact apikey.write at Org; the same PDP
+    // then requires an actual binding covering this installation's Org.
+    // R4 Org actor + own Org write -> Allow; R5 Workspace actor + Org -> Deny;
+    // R6 Org actor + Global/foreign Org -> Deny; R7 all other action families
+    // at Org -> Deny. Existing Workspace route tests retain their whole matrix.
+    let org_actor = iam.authenticate(&org_admin).unwrap().0;
+    let workspace_actor = iam.authenticate(&workspace_admin).unwrap().0;
+    let org_scope = ScopeRef::Org {
+        org_id: iam.org_id.clone(),
+    };
+    assert_eq!(
+        iam.authorize(org_actor.clone(), APIKEY_WRITE, org_scope.clone())
+            .unwrap(),
+        AuthorizationDecision::Allow,
+        "R4 canonical profile and Org binding both permit credential write"
+    );
+    assert_eq!(
+        iam.authorize(workspace_actor, APIKEY_WRITE, org_scope.clone())
+            .unwrap(),
+        AuthorizationDecision::Deny,
+        "R5 scope declaration does not grant Org authority"
+    );
+    for scope in [
+        ScopeRef::Global,
+        ScopeRef::Org {
+            org_id: OrgId("foreign-org-fixture".to_owned()),
+        },
+    ] {
+        assert_eq!(
+            iam.authorize(org_actor.clone(), APIKEY_WRITE, scope)
+                .unwrap(),
+            AuthorizationDecision::Deny,
+            "R6 neither Global nor another Org is admitted"
+        );
+    }
+    for action in [
+        APIKEY_READ,
+        WORKSPACE_READ,
+        MODEL_SUPPLY_WRITE,
+        FILE_WRITE,
+        SKILL_WRITE,
+        TUNNEL_MANAGE,
+    ] {
+        assert_eq!(
+            iam.authorize(org_actor.clone(), action, org_scope.clone())
+                .unwrap(),
+            AuthorizationDecision::Deny,
+            "R7 {action} remains Workspace-only"
+        );
+    }
+    let before = iam.state.lock().unwrap().authz.snapshot();
+    let before_tokens = iam.all_tokens().unwrap();
+    let before_bindings = RoleBindingRepository::list(&iam.store).unwrap();
+    let app = guarded_app(iam.clone());
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&workspace_admin),
+        Some(json!({
+            "workspace_id": BOOTSTRAP_WORKSPACE,
+            "role": "workspace_user",
+            "principal_id": "selected-service-fixture"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "R1 requires Org authority");
+    assert_eq!(iam.state.lock().unwrap().authz.snapshot(), before);
+    assert_eq!(iam.all_tokens().unwrap(), before_tokens);
+    assert_eq!(
+        RoleBindingRepository::list(&iam.store).unwrap(),
+        before_bindings
+    );
+
+    let mut generated_principals = Vec::new();
+    for requested in [None, Some("")] {
+        let mut body = json!({
+            "workspace_id": BOOTSTRAP_WORKSPACE,
+            "role": "workspace_user"
+        });
+        if let Some(requested) = requested {
+            body["principal_id"] = json!(requested);
+        }
+        let (status, response) = call(
+            &app,
+            "POST",
+            "/v1/config/iam/tokens",
+            Some(&workspace_admin),
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "R2 normal Workspace issuance");
+        let generated = response["api_token"]["principal_id"].as_str().unwrap();
+        assert!(!generated.is_empty());
+        assert_ne!(generated, "selected-service-fixture");
+        generated_principals.push(generated.to_owned());
+    }
+    assert_ne!(generated_principals[0], generated_principals[1]);
+
+    let (status, response) = call(
+        &app,
+        "POST",
+        "/v1/config/iam/tokens",
+        Some(&org_admin),
+        Some(json!({
+            "workspace_id": BOOTSTRAP_WORKSPACE,
+            "role": "workspace_user",
+            "principal_id": "selected-service-fixture"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "R3 original Org administrator");
+    assert_eq!(
+        response["api_token"]["principal_id"],
+        "selected-service-fixture"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn poisoned_embedded_state_is_unavailable_without_handler_or_mutation() {
     // C1 authenticated token existed; C2 the shared Directory/PDP guard is
     // poisoned. E1 authn and the real management PEP return Unavailable/503,
