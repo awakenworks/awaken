@@ -304,12 +304,25 @@ impl SessionMutations {
         lifecycle_facts: Vec<ManagedLifecycleFact>,
         now: u64,
     ) -> Result<SessionMutationResult, SessionRepositoryError> {
-        repository
-            .commit(
-                owner_scope,
-                session.compile_mutation(owner_scope, idempotency, lifecycle_facts, now),
-            )
-            .await
+        Self::commit_candidate(
+            repository,
+            owner_scope,
+            session.compile_mutation(owner_scope, idempotency, lifecycle_facts, now),
+            now,
+        )
+        .await
+    }
+
+    async fn commit_candidate(
+        repository: &dyn SessionRepository,
+        owner_scope: &str,
+        mutation: SessionMutation,
+        now: u64,
+    ) -> Result<SessionMutationResult, SessionRepositoryError> {
+        let observation = crate::sandbox_observation::prepare(&mutation.payload, now);
+        let result = repository.commit(owner_scope, mutation).await;
+        crate::sandbox_observation::committed(observation, result.as_ref().ok());
+        result
     }
 
     /// Import one authoritative read into the controlled working candidate.
@@ -426,9 +439,12 @@ impl SessionMutations {
             .await
             .map_err(SessionCreationError::repository)?;
         match result {
-            awaken_session_contract::SessionCreateResult::Applied(session) => Ok(
-                CompleteSessionCreateResult::Applied(DurableSessionRoot::from_applied(session)?),
-            ),
+            awaken_session_contract::SessionCreateResult::Applied(session) => {
+                crate::sandbox_observation::created(&session, session.revision, now);
+                Ok(CompleteSessionCreateResult::Applied(
+                    DurableSessionRoot::from_applied(session)?,
+                ))
+            }
             awaken_session_contract::SessionCreateResult::Replayed(session) => {
                 Ok(CompleteSessionCreateResult::Replayed(
                     DurableSessionRoot::from_recovery(session)
@@ -564,10 +580,14 @@ impl SessionMutations {
         owner_scope: &str,
         mutation: SessionMutation,
     ) -> Result<SessionMutationResult, SessionMutationError> {
-        self.repository
-            .commit(owner_scope, mutation)
-            .await
-            .map_err(repository_failure)
+        Self::commit_candidate(
+            self.repository.as_ref(),
+            owner_scope,
+            mutation,
+            self.clock.now_ms(),
+        )
+        .await
+        .map_err(repository_failure)
     }
 }
 

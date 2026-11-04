@@ -128,6 +128,10 @@ fn observed_commit_future_cause_effect_decision_table() {
     // R2 all C3-C5 => exactly one commit receives the full replacement, original
     // revision/owner/key/hash/facts; Pending cannot resubmit or lose arguments.
     // R3 all C5 => return the exact port result, without repository reads.
+    // R4 diagnostics enabled: Pending -> no observation; only a fresh Applied
+    // receipt -> exactly one observation with its committed revision. Every
+    // other receipt/error -> no observation. This executes the real commit
+    // future, so removing its diagnostic binding cannot leave the test green.
     // Failure changes the LOCAL candidate's observation too; only the durable
     // repository owns rejection/stutter. This test does not implement that CAS.
     // The product below crosses all causes; whole-value equality covers fields
@@ -215,32 +219,42 @@ fn check_observed_commit(old: Option<u64>, now: u64, has_fact: bool, pending_onc
     };
     let mut session = awaken_session_contract::SessionAggregate::try_from(session)
         .expect("valid observed candidate");
-    {
-        let mut future = std::pin::pin!(SessionMutations::commit_observed_snapshot(
-            &port,
-            "workspace",
-            &mut session,
-            idempotency,
-            facts,
-            now
-        ));
-        let mut context = Context::from_waker(Waker::noop());
-        if pending_once {
+    let events = std::sync::Arc::new(awaken_sync::LeafLock::new(Vec::new()));
+    tracing::subscriber::with_default(
+        crate::sandbox_observation::tests::Capture(events.clone()),
+        || {
+            let mut future = std::pin::pin!(SessionMutations::commit_observed_snapshot(
+                &port,
+                "workspace",
+                &mut session,
+                idempotency,
+                facts,
+                now
+            ));
+            let mut context = Context::from_waker(Waker::noop());
+            if pending_once {
+                assert_eq!(
+                    future.as_mut().poll(&mut context),
+                    Poll::Pending,
+                    "R2 delay witness"
+                );
+                assert_eq!(port.calls.load(Ordering::SeqCst), 1, "R2 before resume");
+                assert!(events.lock().is_empty(), "R4 before CAS receipt");
+            }
             assert_eq!(
                 future.as_mut().poll(&mut context),
-                Poll::Pending,
-                "R2 delay witness"
+                Poll::Ready(port.result.clone()),
+                "R3"
             );
-            assert_eq!(port.calls.load(Ordering::SeqCst), 1, "R2 before resume");
-        }
-        assert_eq!(
-            future.as_mut().poll(&mut context),
-            Poll::Ready(port.result.clone()),
-            "R3"
-        );
-    }
+        },
+    );
     assert_eq!(port.calls.load(Ordering::SeqCst), 1, "R2 after resume");
     assert_eq!(session.into_snapshot(), expected, "R1 full local candidate");
+    let events = events.lock();
+    assert_eq!(events.len(), usize::from(kind == 0), "R4 applied only");
+    if kind == 0 {
+        assert_eq!(events[0]["revision"], 7, "R4 committed revision");
+    }
 }
 
 #[tokio::test]
