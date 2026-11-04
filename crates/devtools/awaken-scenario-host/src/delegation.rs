@@ -23,8 +23,8 @@ use super::{DelegatingModel, FAKE_ACP_JSONRPC_SCRIPT, scenario_model, scenario_s
 
 /// A Native coordinator whose roster proves Native, recursive-self, and ACP
 /// delegated attempts use one parent-mediated child-Run path.
-pub async fn build_delegation_router() -> Router {
-    build_delegation_router_with_deployment(scenario_deployment()).await
+pub async fn build_delegation_router(trace_file_present: bool) -> Router {
+    build_delegation_router_with_deployment(scenario_deployment(), trace_file_present).await
 }
 
 /// Build the delegation scenario against one explicit typed deployment.
@@ -32,6 +32,7 @@ pub async fn build_delegation_router() -> Router {
 /// [`build_delegation_router`] and exercise their configured sandbox tier.
 pub async fn build_delegation_router_with_deployment(
     deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
 ) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate");
     let metadata = |owner_id: &str| AgentSnapshotMetadata {
@@ -174,7 +175,7 @@ pub async fn build_delegation_router_with_deployment(
         vec![],
     );
     let platform = crate::acp_scenarios::bind_acp_session_environment(
-        resource_host_with_deployment(model, model_ref, deployment).await,
+        resource_host_with_deployment(model, model_ref, deployment, trace_file_present).await,
         awaken_execution_composition::LaunchSource::FixedAcp(Box::new(launch)),
         None,
     )

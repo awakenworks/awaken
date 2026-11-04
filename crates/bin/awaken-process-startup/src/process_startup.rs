@@ -22,6 +22,8 @@ pub(super) struct ProcessStartup {
     /// whose Sessions run on registered Workers, supplies none.
     pub(super) colocated_execution: Option<Box<dyn crate::ColocatedExecution>>,
     pub(super) content_capture_ceiling: awaken_runtime_contract::ContentCapture,
+    /// The actual process-selected append-only trace sink, shared with execution.
+    pub(super) trace_file_present: bool,
     pub(super) org_id: Option<String>,
     /// Domain-separated from the durable Control seal key by the Data Subject
     /// application. Required by every production role that owns Control.

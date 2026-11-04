@@ -42,7 +42,8 @@ async fn live_platform() -> Option<(
     )
     .expect("explicit client construction");
     let (dependencies, resources) =
-        awaken_scenario_host::build_unmounted_platform(Arc::new(executor), model.clone()).await;
+        awaken_scenario_host::build_unmounted_platform(Arc::new(executor), model.clone(), false)
+            .await;
     Some((dependencies, resources, model))
 }
 

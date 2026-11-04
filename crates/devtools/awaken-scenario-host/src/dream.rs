@@ -18,8 +18,8 @@ use awaken_dream_application::{
 };
 
 /// Build the one Dream scenario router used by process-level SDK E2E.
-pub async fn build_dream_router() -> Router {
-    build_dream_router_and_host().await.0
+pub async fn build_dream_router(trace_file_present: bool) -> Router {
+    build_dream_router_and_host(trace_file_present).await.0
 }
 
 /// Process-level Dream route. Unlike the pure in-process fixture above, this
@@ -29,7 +29,7 @@ pub async fn build_dream_router() -> Router {
     clippy::disallowed_methods,
     reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
 )]
-pub async fn build_dream_runtime_router() -> Router {
+pub async fn build_dream_runtime_router(trace_file_present: bool) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(DreamScenarioModel), "claude-sonnet-5");
     let resolver = Arc::new(DreamScenarioModelResolver {
         model_ref: model_ref.clone(),
@@ -38,6 +38,7 @@ pub async fn build_dream_runtime_router() -> Router {
         model,
         model_ref,
         crate::scenario_deployment(),
+        trace_file_present,
     )
     .await;
     let (host, resources) = platform.into_dependencies();
@@ -150,7 +151,9 @@ impl DreamExecutor for PreparedDreamBarrier {
 }
 
 /// Return the same router plus its Host for focused cross-module assertions.
-pub async fn build_dream_router_and_host() -> (Router, Arc<ExecutorComponents>) {
+pub async fn build_dream_router_and_host(
+    trace_file_present: bool,
+) -> (Router, Arc<ExecutorComponents>) {
     // Keep the Dream lifecycle fixture deterministic by default, but route an
     // explicitly requested HTTP model through the same production provider
     // adapter as every other scenario. Dream used to bypass `scenario_model`,
@@ -159,8 +162,13 @@ pub async fn build_dream_router_and_host() -> (Router, Arc<ExecutorComponents>) 
     let resolver = Arc::new(DreamScenarioModelResolver {
         model_ref: model_ref.clone(),
     });
-    let (router, host) =
-        build_router_and_host_with_model_publication_resolver(model, model_ref, resolver).await;
+    let (router, host) = build_router_and_host_with_model_publication_resolver(
+        model,
+        model_ref,
+        resolver,
+        trace_file_present,
+    )
+    .await;
     (router.merge(dream_auxiliary_routes()), host)
 }
 

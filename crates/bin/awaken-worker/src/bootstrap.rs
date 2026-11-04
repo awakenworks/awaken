@@ -433,7 +433,7 @@ impl WorkerDaemonConfig {
             }
         }
         builder = builder
-            .with_deployment_config(runtime)
+            .with_deployment_config(runtime, self.observability.trace_file.is_some())
             .with_standard_manifest_config(manifest)
             .with_inference_materializer(Arc::new(inference))
             .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())

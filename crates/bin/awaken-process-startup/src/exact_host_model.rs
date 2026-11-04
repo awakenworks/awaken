@@ -44,6 +44,10 @@ pub(super) fn local_test_process_options(
         .clone();
     let worker_directory = awaken_coordinator::test_worker_directory();
     super::ProcessStartup {
+        // This fixed in-process fixture installs no exporter. Custom deployment
+        // seams replace both values together before constructing either role.
+        content_capture_ceiling: deployment.content_capture.level,
+        trace_file_present: false,
         deployment: Some(deployment),
         namespace_hand_path: cargo_test_namespace_hand_path(),
         colocated_execution: Some(execution),

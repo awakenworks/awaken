@@ -496,7 +496,7 @@ mod capacity_tests {
                 awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
                 awaken_time::system_clock(),
             )
-            .with_deployment_config(deployment.clone())
+            .with_deployment_config(deployment.clone(), false)
             .with_standard_manifest(Default::default())
         };
         let prepared = builder()

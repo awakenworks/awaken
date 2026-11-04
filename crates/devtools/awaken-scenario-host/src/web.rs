@@ -85,7 +85,7 @@ impl WebSearchProvider for ScenarioWebSearchProvider {
 
 /// Build the one AllInOne Web scenario. The registry enters `ProcessStartup`
 /// before router assembly, so Control validation and Host dispatch share it.
-pub async fn build_management_web_router() -> Router {
+pub async fn build_management_web_router(trace_file_present: bool) -> Router {
     // The scenario extends the production provider catalog instead of replacing
     // it: configured WebFetch must resolve the canonical direct provider, while
     // WebSearch selects the deterministic paid fixture below. The end-to-end
@@ -101,6 +101,7 @@ pub async fn build_management_web_router() -> Router {
         crate::scenario_deployment(),
         Some(registry),
         |host| host,
+        trace_file_present,
     )
     .await
 }

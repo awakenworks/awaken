@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
+use awaken_data_governance_contract::clamp_for_trace_file;
 use awaken_observability::PiiRedactor;
-use awaken_runtime_contract::{CaptureDecision, ContentCapture, ContentRedactor, NoopRedactor};
+use awaken_runtime_contract::{CaptureDecision, ContentRedactor, NoopRedactor};
 
 /// Project the typed deployment ceiling into the runtime's opaque decision.
 pub(crate) fn capture_decision(
@@ -21,16 +22,6 @@ pub(crate) fn capture_decision(
     };
     let level = clamp_for_trace_file(settings.level, trace_file_present);
     CaptureDecision::with_redactor(level, redactor)
-}
-
-/// Clamp the level for the active sink (ADR-0050 D7): the append-only trace file
-/// has no subject key and no TTL, so it cannot honor erasure — it must never hold
-/// `Full` content. When it is the sink, cap at `Structured`.
-const fn clamp_for_trace_file(level: ContentCapture, trace_file_present: bool) -> ContentCapture {
-    match (trace_file_present, level) {
-        (true, ContentCapture::Full) => ContentCapture::Structured,
-        _ => level,
-    }
 }
 
 /// The supported persistence choice used by the actual redactor constructor.

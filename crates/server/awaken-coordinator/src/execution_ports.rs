@@ -127,6 +127,8 @@ impl InferenceSelection {
 /// They are original ports/values, not another Resource or credential owner.
 pub struct ColocatedExecutionInputs {
     pub deployment: awaken_deployment_config::DeploymentConfig,
+    /// The append-only trace sink actually selected by this process.
+    pub trace_file_present: bool,
     pub local_workspace: String,
     pub clock: Arc<dyn awaken_time::WallClock>,
     pub namespace_hand_path: Option<std::path::PathBuf>,

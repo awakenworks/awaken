@@ -24,11 +24,17 @@ pub async fn build_all_in_one_router_with_host_customizer(
     deployment: awaken_deployment_config::DeploymentConfig,
     web_search: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
     customize: impl FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send + 'static,
+    trace_file_present: bool,
 ) -> axum::Router {
     let execution = customized_execution(&deployment, customize)
         .expect("prepare test-support customized execution");
     awaken_process_startup::build_all_in_one_router_with_execution_inputs(
-        model, binding, deployment, web_search, execution,
+        model,
+        binding,
+        deployment,
+        web_search,
+        execution,
+        trace_file_present,
     )
     .await
 }

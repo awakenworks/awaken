@@ -124,10 +124,11 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         ),
         None,
     );
-    let host = (awaken_scenario_host::build_unmounted_dependencies(Arc::new(DeadModel), "test")
-        .await)
-        .build()
-        .expect("validated Host dependencies");
+    let host =
+        (awaken_scenario_host::build_unmounted_dependencies(Arc::new(DeadModel), "test", false)
+            .await)
+            .build()
+            .expect("validated Host dependencies");
     // Constructor C1 exact real Host roles; C2 original App-only Clock and
     // Environment; C3 early selected Store => E1 one App/Core and the same
     // outbox Store, E2 no Fake or extra sink installed into the existing Host.

@@ -137,6 +137,7 @@ async fn durable_child_run_scenario() {
                 child_calls: AtomicUsize::new(0),
             }),
             "stub",
+            false,
         )
         .await
         .with_ephemeral_dispatch(dispatch),

@@ -85,7 +85,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // single-machine all-in-one, or a coordinator when the local pool is disabled.
     // The hand is the separate `awaken-sandbox hand` execution-plane binary.
     if std::env::var("AWAKEN_SCENARIO_ROLE").as_deref() == Ok("worker") {
-        awaken_observability::init(&scenario_observability());
+        let observability = scenario_observability();
+        awaken_observability::init(&observability);
+        let trace_file_present = observability.trace_file.is_some();
         let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
         let worker_id = std::env::var("AWAKEN_WORKER_ID")
             .unwrap_or_else(|_| "awaken-scenario-worker".to_string());
@@ -113,6 +115,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             admin_listen.as_deref(),
             request_authorizer,
             clock,
+            trace_file_present,
         )
         .await;
     }
@@ -129,6 +132,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_scenario_host::realization_observation::install_from_environment();
     let observability = scenario_observability();
     awaken_observability::init(&observability);
+    let trace_file_present = observability.trace_file.is_some();
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
     if mode_uses_shared_scenario_runtime(model_mode.as_deref().ok()) {
         // Durability guard: refuse to boot a `typed durable ingress` ingress that would
@@ -151,20 +155,27 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     let mut scenario_lifecycle = None;
     let app = match model_mode.as_deref() {
-        Ok("probe") => awaken_scenario_host::build_probe_router().await,
+        Ok("probe") => awaken_scenario_host::build_probe_router(trace_file_present).await,
         Ok("revise") => {
             awaken_scenario_host::build_router(
                 Arc::new(awaken_scenario_host::ReviseModel),
                 "revise",
+                trace_file_present,
             )
             .await
         }
-        Ok("outcome-matrix") => awaken_scenario_host::build_outcome_matrix_router().await,
-        Ok("custom") => awaken_scenario_host::build_custom_router().await,
-        Ok("delegate") => awaken_scenario_host::build_delegation_router().await,
-        Ok("statemachine") => awaken_scenario_host::build_statemachine_router().await,
-        Ok("statemachine-rich") => awaken_scenario_host::build_statemachine_rich_router().await,
-        Ok("config") => awaken_scenario_host::build_config_router().await,
+        Ok("outcome-matrix") => {
+            awaken_scenario_host::build_outcome_matrix_router(trace_file_present).await
+        }
+        Ok("custom") => awaken_scenario_host::build_custom_router(trace_file_present).await,
+        Ok("delegate") => awaken_scenario_host::build_delegation_router(trace_file_present).await,
+        Ok("statemachine") => {
+            awaken_scenario_host::build_statemachine_router(trace_file_present).await
+        }
+        Ok("statemachine-rich") => {
+            awaken_scenario_host::build_statemachine_rich_router(trace_file_present).await
+        }
+        Ok("config") => awaken_scenario_host::build_config_router(trace_file_present).await,
         // The management scenario drives the REAL management router but with the
         // deterministic MCP scenario model as an explicit HostExecutor selection;
         // env-driven store selection + IAM are identical to production.
@@ -178,6 +189,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 model_ref,
                 management_scenario_adapters(mode == "management-rate-limit"),
                 Box::new(awaken_cli::LocalExecution::default()),
+                &observability,
             )
             .await
         }
@@ -187,6 +199,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "management-agents".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
                 Box::new(awaken_cli::LocalExecution::default()),
+                &observability,
             )
             .await
         }
@@ -199,19 +212,23 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "management-probe".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
                 Box::new(awaken_cli::LocalExecution::default()),
+                &observability,
             )
             .await
         }
         // Deterministic paid Web provider selected before AllInOne assembly, so
         // Control publication and Host dispatch consume one registry instance.
-        Ok("management-web") => awaken_scenario_host::build_management_web_router().await,
+        Ok("management-web") => {
+            awaken_scenario_host::build_management_web_router(trace_file_present).await
+        }
         // Production model supply for provider/BYOK/brokered e2e: no
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.
         Ok("management-providers") => {
-            awaken_process_startup::build_all_in_one_router(Box::new(
-                awaken_cli::LocalExecution::default(),
-            ))
+            awaken_process_startup::build_all_in_one_router(
+                Box::new(awaken_cli::LocalExecution::default()),
+                &observability,
+            )
             .await
         }
         Ok("distributed-provider") => awaken_scenario_host::build_distributed_provider_router(),
@@ -224,60 +241,102 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "management-skills".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
                 Box::new(awaken_cli::LocalExecution::default()),
+                &observability,
             )
             .await
         }
         Ok("real") => {
-            let (router, lifecycle) = awaken_scenario_host::build_real_service().await;
+            let (router, lifecycle) =
+                awaken_scenario_host::build_real_service(trace_file_present).await;
             scenario_lifecycle = Some(lifecycle);
             router
         }
-        Ok("real-gemini") => awaken_scenario_host::build_real_gemini_router().await,
-        Ok("real-resolved") => awaken_scenario_host::build_resolved_real_router().await,
-        Ok("oauth-resolved") => awaken_scenario_host::build_oauth_resolved_router().await,
-        Ok("schedule") => awaken_scenario_host::build_schedule_router().await,
-        Ok("skills") => awaken_scenario_host::build_skills_router().await,
-        Ok("skills-durable") => awaken_scenario_host::build_skills_durable_router().await,
-        Ok("delegate-remote") => awaken_scenario_host::build_remote_delegation_router().await,
-        Ok("vision") => awaken_scenario_host::build_vision_router().await,
-        Ok("model-route") => awaken_scenario_host::build_model_route_router().await,
+        Ok("real-gemini") => {
+            awaken_scenario_host::build_real_gemini_router(trace_file_present).await
+        }
+        Ok("real-resolved") => {
+            awaken_scenario_host::build_resolved_real_router(trace_file_present).await
+        }
+        Ok("oauth-resolved") => {
+            awaken_scenario_host::build_oauth_resolved_router(trace_file_present).await
+        }
+        Ok("schedule") => awaken_scenario_host::build_schedule_router(trace_file_present).await,
+        Ok("skills") => awaken_scenario_host::build_skills_router(trace_file_present).await,
+        Ok("skills-durable") => {
+            awaken_scenario_host::build_skills_durable_router(trace_file_present).await
+        }
+        Ok("delegate-remote") => {
+            awaken_scenario_host::build_remote_delegation_router(trace_file_present).await
+        }
+        Ok("vision") => awaken_scenario_host::build_vision_router(trace_file_present).await,
+        Ok("model-route") => {
+            awaken_scenario_host::build_model_route_router(trace_file_present).await
+        }
         // Compatibility name only: both `acp` and `acp-sandboxed` resolve to
         // the one SessionEnvironment-owned ACP fixture. Keeping a direct Host
         // subprocess here would reopen the placement authority ADR-0073 removed.
-        Ok("acp") => awaken_scenario_host::build_acp_sandboxed_router().await,
-        Ok("acp-jsonrpc") => awaken_scenario_host::build_acp_jsonrpc_router().await,
-        Ok("acp-permission") => awaken_scenario_host::build_acp_permission_router().await,
-        Ok("acp-tool-bridge") => awaken_scenario_host::build_acp_tool_bridge_router().await,
-        Ok("acp-control") => awaken_scenario_host::build_acp_control_router().await,
-        Ok("acp-relaunch-failure") => {
-            awaken_scenario_host::build_acp_relaunch_failure_router().await
+        Ok("acp") => awaken_scenario_host::build_acp_sandboxed_router(trace_file_present).await,
+        Ok("acp-jsonrpc") => {
+            awaken_scenario_host::build_acp_jsonrpc_router(trace_file_present).await
         }
-        Ok("acp-sandboxed") => awaken_scenario_host::build_acp_sandboxed_router().await,
-        Ok("acp-container") => awaken_scenario_host::build_acp_container_router().await,
-        Ok("acp-gateway") => awaken_scenario_host::build_acp_gateway_router().await,
-        Ok("acp-managed-mcp") => awaken_scenario_host::build_acp_managed_mcp_router().await,
-        Ok("acp-real-mcp") => awaken_scenario_host::build_acp_real_mcp_router().await,
+        Ok("acp-permission") => {
+            awaken_scenario_host::build_acp_permission_router(trace_file_present).await
+        }
+        Ok("acp-tool-bridge") => {
+            awaken_scenario_host::build_acp_tool_bridge_router(trace_file_present).await
+        }
+        Ok("acp-control") => {
+            awaken_scenario_host::build_acp_control_router(trace_file_present).await
+        }
+        Ok("acp-relaunch-failure") => {
+            awaken_scenario_host::build_acp_relaunch_failure_router(trace_file_present).await
+        }
+        Ok("acp-sandboxed") => {
+            awaken_scenario_host::build_acp_sandboxed_router(trace_file_present).await
+        }
+        Ok("acp-container") => {
+            awaken_scenario_host::build_acp_container_router(trace_file_present).await
+        }
+        Ok("acp-gateway") => {
+            awaken_scenario_host::build_acp_gateway_router(trace_file_present).await
+        }
+        Ok("acp-managed-mcp") => {
+            awaken_scenario_host::build_acp_managed_mcp_router(trace_file_present).await
+        }
+        Ok("acp-real-mcp") => {
+            awaken_scenario_host::build_acp_real_mcp_router(trace_file_present).await
+        }
         Ok("memory") => {
-            let (router, lifecycle) = awaken_scenario_host::build_memory_service().await;
+            let (router, lifecycle) =
+                awaken_scenario_host::build_memory_service(trace_file_present).await;
             scenario_lifecycle = Some(lifecycle);
             router
         }
-        Ok("memory-resource") => awaken_scenario_host::build_memory_resource_router().await,
-        Ok("dream") => awaken_scenario_host::build_dream_runtime_router().await,
+        Ok("memory-resource") => {
+            awaken_scenario_host::build_memory_resource_router(trace_file_present).await
+        }
+        Ok("dream") => awaken_scenario_host::build_dream_runtime_router(trace_file_present).await,
         Ok("resource-scope-boundary") => {
-            awaken_scenario_host::build_unscoped_resource_router().await
+            awaken_scenario_host::build_unscoped_resource_router(trace_file_present).await
         }
-        Ok("resource-ephemeral") => awaken_scenario_host::build_ephemeral_resource_router().await,
+        Ok("resource-ephemeral") => {
+            awaken_scenario_host::build_ephemeral_resource_router(trace_file_present).await
+        }
         Ok("git-repo") => {
-            awaken_scenario_host::build_git_repo_router(awaken_scenario_host::scenario_deployment())
-                .await
+            awaken_scenario_host::build_git_repo_router(
+                awaken_scenario_host::scenario_deployment(),
+                trace_file_present,
+            )
+            .await
         }
-        Ok("compaction") => awaken_scenario_host::build_compaction_router().await,
-        Ok("error") => awaken_scenario_host::build_error_router().await,
-        Ok("worker") => awaken_scenario_host::build_worker_router().await,
-        Ok("environment-matrix") => awaken_scenario_host::build_environment_matrix_router().await,
-        Ok("full-chain") => awaken_scenario_host::build_full_chain_router().await,
-        _ => awaken_scenario_host::build_echo_router().await,
+        Ok("compaction") => awaken_scenario_host::build_compaction_router(trace_file_present).await,
+        Ok("error") => awaken_scenario_host::build_error_router(trace_file_present).await,
+        Ok("worker") => awaken_scenario_host::build_worker_router(trace_file_present).await,
+        Ok("environment-matrix") => {
+            awaken_scenario_host::build_environment_matrix_router(trace_file_present).await
+        }
+        Ok("full-chain") => awaken_scenario_host::build_full_chain_router(trace_file_present).await,
+        _ => awaken_scenario_host::build_echo_router(trace_file_present).await,
     };
     // Brain admin surface (ADR-0022 D7): the connection-count metric that KEDA
     // autoscales on, plus /admin/drain + /readyz for graceful, stream-preserving
@@ -520,46 +579,49 @@ mod dispatch_tests {
         let mut local_test_deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
         local_test_deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
         let dispatch: Vec<(&str, axum::Router)> = vec![
-            ("probe", Box::pin(sh::build_probe_router()).await),
+            ("probe", Box::pin(sh::build_probe_router(false)).await),
             (
                 "revise",
                 Box::pin(sh::build_router(
                     std::sync::Arc::new(sh::ReviseModel),
                     "revise",
+                    false,
                 ))
                 .await,
             ),
-            ("custom", Box::pin(sh::build_custom_router()).await),
+            ("custom", Box::pin(sh::build_custom_router(false)).await),
             (
                 "delegate",
                 Box::pin(sh::build_delegation_router_with_deployment(
                     local_test_deployment.clone(),
+                    false,
                 ))
                 .await,
             ),
             (
                 "statemachine",
-                Box::pin(sh::build_statemachine_router()).await,
+                Box::pin(sh::build_statemachine_router(false)).await,
             ),
             (
                 "statemachine-rich",
-                Box::pin(sh::build_statemachine_rich_router()).await,
+                Box::pin(sh::build_statemachine_rich_router(false)).await,
             ),
-            ("schedule", Box::pin(sh::build_schedule_router()).await),
-            ("skills", Box::pin(sh::build_skills_router()).await),
+            ("schedule", Box::pin(sh::build_schedule_router(false)).await),
+            ("skills", Box::pin(sh::build_skills_router(false)).await),
             (
                 "skills-durable",
-                Box::pin(sh::build_skills_durable_router()).await,
+                Box::pin(sh::build_skills_durable_router(false)).await,
             ),
-            ("vision", Box::pin(sh::build_vision_router()).await),
+            ("vision", Box::pin(sh::build_vision_router(false)).await),
             (
                 "model-route",
-                Box::pin(sh::build_model_route_router()).await,
+                Box::pin(sh::build_model_route_router(false)).await,
             ),
             (
                 "acp",
                 Box::pin(sh::build_acp_sandboxed_router_with_deployment(
                     local_test_deployment.clone(),
+                    false,
                 ))
                 .await,
             ),
@@ -567,6 +629,7 @@ mod dispatch_tests {
                 "acp-jsonrpc",
                 Box::pin(sh::build_acp_jsonrpc_router_with_deployment(
                     local_test_deployment.clone(),
+                    false,
                 ))
                 .await,
             ),
@@ -574,6 +637,7 @@ mod dispatch_tests {
                 "acp-permission",
                 Box::pin(sh::build_acp_permission_router_with_deployment(
                     local_test_deployment.clone(),
+                    false,
                 ))
                 .await,
             ),
@@ -581,6 +645,7 @@ mod dispatch_tests {
                 "acp-sandboxed",
                 Box::pin(sh::build_acp_sandboxed_router_with_deployment(
                     local_test_deployment.clone(),
+                    false,
                 ))
                 .await,
             ),
@@ -588,34 +653,46 @@ mod dispatch_tests {
                 "acp-gateway",
                 Box::pin(sh::build_acp_gateway_router_with_deployment(
                     local_test_deployment.clone(),
+                    false,
                 ))
                 .await,
             ),
-            ("memory", Box::pin(sh::build_memory_router()).await),
+            ("memory", Box::pin(sh::build_memory_router(false)).await),
             (
                 "memory-resource",
-                Box::pin(sh::build_memory_resource_router()).await,
+                Box::pin(sh::build_memory_resource_router(false)).await,
             ),
             (
                 "git-repo",
-                Box::pin(sh::build_git_repo_router(local_test_deployment.clone())).await,
+                Box::pin(sh::build_git_repo_router(
+                    local_test_deployment.clone(),
+                    false,
+                ))
+                .await,
             ),
-            ("compaction", Box::pin(sh::build_compaction_router()).await),
-            ("error", Box::pin(sh::build_error_router()).await),
-            ("worker", Box::pin(sh::build_worker_router()).await),
+            (
+                "compaction",
+                Box::pin(sh::build_compaction_router(false)).await,
+            ),
+            ("error", Box::pin(sh::build_error_router(false)).await),
+            ("worker", Box::pin(sh::build_worker_router(false)).await),
             (
                 "environment-matrix",
-                Box::pin(sh::build_environment_matrix_router()).await,
+                Box::pin(sh::build_environment_matrix_router(false)).await,
             ),
             (
                 "full-chain",
                 Box::pin(sh::build_full_chain_router_with_deployment(
                     local_test_deployment,
+                    false,
                 ))
                 .await,
             ),
             // The `_ =>` fallback: any unrecognized mode routes to the echo router.
-            ("<default/unknown>", Box::pin(sh::build_echo_router()).await),
+            (
+                "<default/unknown>",
+                Box::pin(sh::build_echo_router(false)).await,
+            ),
         ];
         for (mode, app) in dispatch {
             assert!(
@@ -627,7 +704,7 @@ mod dispatch_tests {
 
     #[tokio::test]
     async fn resource_scope_boundary_mode_intentionally_mounts_only_raw_resource_routes() {
-        let response = sh::build_unscoped_resource_router()
+        let response = sh::build_unscoped_resource_router(false)
             .await
             .oneshot(
                 Request::builder()
@@ -646,7 +723,7 @@ mod dispatch_tests {
     async fn the_config_mode_maps_to_the_config_factory() {
         // `config` is async but environment-free (in-memory SQLite); assert it too.
         assert!(
-            mounts_shared_surface(sh::build_config_router().await).await,
+            mounts_shared_surface(sh::build_config_router(false).await).await,
             "AWAKEN_MODEL_MODE=config must map to a mounted config factory"
         );
     }

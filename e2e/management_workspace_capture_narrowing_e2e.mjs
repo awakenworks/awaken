@@ -40,6 +40,7 @@ import {
   pass,
 } from './harness.mjs';
 import { sqliteRows } from './sqlite.mjs';
+import { readSpans } from './trace_validate.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const SUBJECT = 'dsub_ws_narrowing';
@@ -82,7 +83,64 @@ async function readDecisions(base, sessionId) {
   return fromProfile;
 }
 
+async function fileSinkCeiling() {
+  // D7 cause/effect table: F1 the actual process selects the file sink;
+  // F2 deployment asks Full and the attributed subject grants Full; F3 a
+  // synthetic turn reaches its exact committed reply. F1+F2 must report the
+  // same Structured upper ceiling through Control and Session before F3.
+  // With F3, the Run must emit structural spans but no captured content.
+  // The first decision assertion precedes every turn: the old wiring's red
+  // result therefore records no Full prompt/output. No real provider is used.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-file-capture-'));
+  const traceFile = path.join(directory, 'structured.jsonl');
+  const env = deploymentEnv(directory, {
+    identityMode: 'no-login',
+    fields: { content_capture: 'full', content_redaction: 'regex' },
+  });
+  try {
+    await withRealServer('echo', Number(process.env.E2E_PORT), async (base) => {
+      const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+      const consent = await fetch(`${base}/v1/user_profiles/${SUBJECT}/consent`, {
+        method: 'POST',
+        headers: { ...PROFILE_HEADERS, 'content-type': 'application/json' },
+        body: JSON.stringify({ purpose: 'telemetry_content', version: 'v1' }),
+      });
+      assert.equal(consent.status, 200, 'F2 synthetic subject consent');
+      const session = await client.beta.sessions.create({
+        agent: 'assistant', environment_id: 'env_local', betas: BETAS,
+      });
+      const decision = await readDecisions(base, session.id);
+      assert.deepEqual(decision, {
+        requested: 'full', ceiling: 'structured', consent: 'full',
+        effective: 'structured', reason: 'clamped_by_ceiling',
+      }, 'D7 actual file selection bounds both read projections before any turn');
+      const receipt = await client.beta.sessions.events.send(session.id, {
+        betas: BETAS,
+        events: [{ type: 'user.message', content: [{ type: 'text', text: 'synthetic file ceiling probe' }] }],
+      }, { headers: { 'anthropic-user-profile-id': SUBJECT } });
+      await waitForSessionEventReceipt(client, session.id, receipt.data[0]?.id, BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'),
+        'F3 synthetic file-ceiling turn commits its reply');
+      assert.equal(sqliteRows(path.join(directory, 'captured_content.db'),
+        'SELECT content FROM coordinator_data_capture_captured WHERE subject = ?', SUBJECT).length,
+      0, 'D7 Run has the same Structured ceiling as both reads');
+    }, { mode: 'management', extraEnv: { ...env, AWAKEN_TRACE_FILE: traceFile } });
+    const spans = readSpans(traceFile);
+    assert.ok(spans.some((span) => span.attributes?.['gen_ai.operation.name'] === 'chat'),
+      'F3 the actual model invocation produced a structural span');
+    for (const span of spans) {
+      assert.equal(span.attributes?.['gen_ai.input.messages'], undefined, 'D7 no file prompt content');
+      assert.equal(span.attributes?.['gen_ai.output.messages'], undefined, 'D7 no file output content');
+    }
+    pass('D7 actual file sink gives Control, Session and Run one Structured ceiling');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 async function main() {
+  await fileSinkCeiling();
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-ws-capture-'));
   const env = deploymentEnv(directory, {
     identityMode: 'no-login',

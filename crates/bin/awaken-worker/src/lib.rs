@@ -146,6 +146,7 @@ pub struct WorkerNodeBuilder {
     preselected_incarnation_id: Option<String>,
     manifest: ManifestSelection,
     deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
     standard_manifest_config: StandardManifestConfig,
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
@@ -284,6 +285,9 @@ impl WorkerNodeBuilder {
             preselected_incarnation_id: None,
             manifest: ManifestSelection::Unset,
             deployment: awaken_deployment_config::DeploymentConfig::ephemeral(),
+            // This constructor's fixed Structured deployment records no content.
+            // Replacing it requires the actual sink fact in the same setter.
+            trace_file_present: false,
             standard_manifest_config: StandardManifestConfig::default(),
             application: WorkerApplicationSource::default(),
             tool_gate: None,
@@ -372,13 +376,17 @@ impl WorkerNodeBuilder {
     }
 
     /// Install the same typed deployment value used to derive this Worker's
-    /// manifest and to assemble its runtime Host.
+    /// manifest and to assemble its runtime Host. The composition must supply
+    /// its actual file-sink selection together with that deployment; a runtime
+    /// configuration file is not a substitute for the initialized exporter.
     #[must_use]
     pub fn with_deployment_config(
         mut self,
         deployment: awaken_deployment_config::DeploymentConfig,
+        trace_file_present: bool,
     ) -> Self {
         self.deployment = deployment;
+        self.trace_file_present = trace_file_present;
         self.prepared_local_sandbox = None;
         self
     }
@@ -984,6 +992,7 @@ impl WorkerNodeBuilder {
             preselected_incarnation_id: self.preselected_incarnation_id,
             manifest,
             deployment: self.deployment,
+            trace_file_present: self.trace_file_present,
             application: self.application,
             tool_gate: self.tool_gate,
             credential_materializer: self.credential_materializer,
@@ -1081,6 +1090,7 @@ pub struct WorkerNode {
     preselected_incarnation_id: Option<String>,
     manifest: WorkerManifest,
     deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
@@ -1571,7 +1581,7 @@ impl WorkerNode {
             Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             "worker",
             remote_content,
-            awaken_session_executor::SessionExecutionProcess::from_deployment(&deployment, local_workspace, self.clock.clone())
+            awaken_session_executor::SessionExecutionProcess::from_deployment(&deployment, local_workspace, self.clock.clone(), self.trace_file_present)
                 .map_err(std::io::Error::other)?,
             authority,
             registered_capacity,

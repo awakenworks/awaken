@@ -245,6 +245,7 @@ async fn worker_host(
         &awaken_deployment_config::DeploymentConfig::ephemeral(),
         awaken_deployment_config::mint_local_workspace(),
         clock,
+        false,
     )
     .unwrap();
     let builder = crate::SessionExecutorBuilder::for_worker(

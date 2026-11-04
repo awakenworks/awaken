@@ -362,6 +362,7 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
                 Arc::new(UnusedHandFactory),
             )
         },
+        false,
     )
     .await;
 

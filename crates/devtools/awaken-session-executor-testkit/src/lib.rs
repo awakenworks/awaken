@@ -184,6 +184,7 @@ pub async fn unconfigured_dependencies_with_deployment(
         &deployment,
         local_workspace,
         clock,
+        false, // This in-process fixture installs no trace exporter.
     )
     .expect("a local fixture selects a valid process");
     SessionExecutorBuilder::for_local_resources(

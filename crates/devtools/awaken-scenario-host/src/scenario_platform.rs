@@ -591,8 +591,9 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
 /// MemoryStore, and Skill routes fail closed instead of deriving a Workspace from
 /// the Host. Production always supplies either the local default-scope layer or an
 /// authenticated PEP before these routers.
-pub async fn build_unscoped_resource_router() -> Router {
-    let platform = resource_host(Arc::new(EchoModel), "unscoped-resource").await;
+pub async fn build_unscoped_resource_router(trace_file_present: bool) -> Router {
+    let platform =
+        resource_host(Arc::new(EchoModel), "unscoped-resource", trace_file_present).await;
     let (_host, resources) = platform.into_parts();
     awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput::new(
         &resources,

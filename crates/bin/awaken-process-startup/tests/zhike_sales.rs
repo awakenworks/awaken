@@ -486,6 +486,7 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
         },
         None,
         |host| host,
+        false,
     )
     .await;
     let config = json!({"id":"zhike","name":"知客","system":include_str!("fixtures/zhike-system.txt"),
