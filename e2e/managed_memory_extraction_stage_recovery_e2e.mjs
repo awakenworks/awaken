@@ -31,7 +31,7 @@ import {
 } from './harness.mjs';
 import { nativeProviderCandidateFixture } from './fixtures/provider_candidate_fixture.mjs';
 import { sqliteExec, sqliteRows } from './sqlite.mjs';
-import { extractionRows } from './fixtures/memory_extraction_fixture.mjs';
+import { extractionData, extractionRows } from './fixtures/memory_extraction_fixture.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38244);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -53,7 +53,10 @@ function sqlite(database, sql) {
 }
 
 function persistIntent(database, intent, insert) {
-  const data = JSON.stringify(intent);
+  // The retained snapshot may carry an explicit execution context. Keep the
+  // production v1 frame so stage/domain validation, rather than a bare-row
+  // downgrade refusal, decides the original recovery and corruption cases.
+  const data = extractionData(intent);
   if (insert) {
     sqlite(
       database,
@@ -298,9 +301,17 @@ async function main() {
       baseUrl: 'http://127.0.0.1:1/v1',
       upstreamModel: 'unavailable-extractor-model',
     });
+    // X4 starts new Pending inference, unlike the post-inference clones above.
+    // Reusing the interrupted source auxiliary Run selects the canonical unknown
+    // verdict before materialization, so it cannot exercise dependency retries.
+    // Match MemoryExtractionIntent::new_range/new_snapshot's new-intent ids;
+    // retain the original execution/partition facts and all expected effects.
+    const unavailableIntentId = `${source.intent_id}:unavailable-extractor`;
     const unavailableExtractor = {
       ...unclaimed,
-      intent_id: `${source.intent_id}:unavailable-extractor`,
+      intent_id: unavailableIntentId,
+      auxiliary_thread_id: `${unavailableIntentId}/agent`,
+      auxiliary_run_id: `${unavailableIntentId}/agent/run`,
       idempotency_key: `${source.idempotency_key}:unavailable-extractor`,
       terminal_commit_id: `${source.terminal_commit_id}:unavailable-extractor`,
       status: 'pending',
@@ -318,6 +329,10 @@ async function main() {
         },
       },
     };
+    assert.notEqual(unavailableExtractor.auxiliary_thread_id, source.auxiliary_thread_id,
+      'X4 new Pending dependency fault must not reuse the interrupted auxiliary Thread');
+    assert.notEqual(unavailableExtractor.auxiliary_run_id, source.auxiliary_run_id,
+      'X4 new Pending dependency fault must not reuse the interrupted auxiliary Run');
     persistIntent(database, unavailableExtractor, true);
 
     const second = spawnServer('memory', PORT, environment);
@@ -420,7 +435,7 @@ async function main() {
       },
     ];
     for (const corrupt of corruptions) {
-      const data = JSON.stringify(corrupt);
+      const data = extractionData(corrupt);
       persistRecoverableRaw(database, validCompleted.intent_id, data);
       await hardKill(servers.pop());
       const probe = spawnServer('memory', PORT, environment);
