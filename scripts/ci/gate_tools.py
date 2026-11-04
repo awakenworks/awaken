@@ -205,7 +205,7 @@ def _image_status(reference: str) -> Found:
         )
     try:
         result = subprocess.run(
-            [engine, "image", "inspect", reference],
+            [engine, "image", "inspect", "--format", "{{.Id}}", reference],
             capture_output=True,
             text=True,
             timeout=120,
@@ -239,6 +239,8 @@ def locate(tool: dict) -> Found:
     override = tool.get("env_override")
     if override and os.environ.get(override):
         candidate = expand(os.environ[override])
+        if kind == "container-image":
+            return _image_status(candidate)
         if Path(candidate).exists():
             return Found("present", candidate, f"selected by ${override}")
         return Found("absent", detail=f"${override} names {candidate}, which does not exist")
@@ -736,13 +738,27 @@ def _third_outcome_problems() -> list[str]:
     I2 is the only row a gate may skip on, and only when the row is optional:
     the engine looked and said no. I3 and I4 refuse whatever the requirement
     level, because nobody knows what the skip would have been skipping.
+
+    I5 applies to I1-I3: the probe needs only image existence, so every engine
+    fixture accepts exactly `image inspect --format {{.Id}} fixture:1`. Reading
+    the full image configuration would also read environment/label values that
+    do not affect admission. An expanded or missing projection returns 97;
+    I1/I2 then reject the drift instead of silently accepting a broader read.
+
+    I6 crosses I1-I4 with selection={default, different env override}: selection
+    changes only the reference passed to the same image probe, never its three
+    outcomes or the gate's admission. A real filesystem entry is not image
+    existence evidence. I7 keeps non-image file/tool overrides on their original
+    Path.exists branch, with no container query. These rows own the override
+    regression; they do not define another probe or fallback.
     """
 
     import tempfile  # noqa: PLC0415 - only the self-test writes fixtures
 
     problems: list[str] = []
     original_path = os.environ.get("PATH", "")
-    fixture_names = ("AWAKEN_FIXTURE_PROGRAM", "AWAKEN_FIXTURE_SCRIPT")
+    image_override = "AWAKEN_FIXTURE_IMAGE_REFERENCE"
+    fixture_names = ("AWAKEN_FIXTURE_PROGRAM", "AWAKEN_FIXTURE_SCRIPT", image_override)
     original_fixture_environment = {name: os.environ.get(name) for name in fixture_names}
     native_launcher = None
     native_shell = None
@@ -760,57 +776,111 @@ def _third_outcome_problems() -> list[str]:
             "exit 1\n"
         ),
     }
+    projection_guard = (
+        'if [ "$#" -ne 5 ] || [ "$1" != image ] || [ "$2" != inspect ] || '
+        '[ "$3" != --format ] || [ "$4" != "{{.Id}}" ] || [ "$5" != fixture:1 ]; then\n'
+        '  echo "image probe must request only Id" >&2\n'
+        '  exit 97\n'
+        'fi\n'
+    )
     row = {
         "name": "fixture:1",
         "locate": "container-image",
+        "env_override": image_override,
         "requirement": "optional",
         "skip": "the fixture substrate",
         "install": "docker pull fixture:1",
         "gates": ["postgres"],
     }
     manifest = {"tools": [row], "disk_minimums": [], "cleanup_suggestions": []}
+    selections = (("default", None, "fixture:1"),
+                  ("override", "fixture-override:2", "fixture-override:2"))
     with tempfile.TemporaryDirectory() as temporary:
         for expected, body in engines.items():
-            home = Path(temporary) / expected
-            home.mkdir()
-            executable = home / "docker"
-            executable.write_text(body, encoding="utf-8", newline="\n")
-            executable.chmod(0o755)
-            if native_launcher is not None:
-                shutil.copyfile(native_launcher, home / "docker.exe")
-                os.environ.update(AWAKEN_FIXTURE_PROGRAM=native_shell,
-                                  AWAKEN_FIXTURE_SCRIPT=str(executable))
-            os.environ["PATH"] = str(home)
-            try:
-                found = locate(row)
-                if found.status != expected:
-                    problems.append(
-                        f"M10 a container engine that reports {expected!r} was read as "
-                        f"{found.status!r}"
-                    )
-                started = _quiet(lambda: command_require(manifest, "postgres")) == 0
-                # An optional row may buy a skip only on a decided absence.
-                if started != (expected in ("present", "absent")):
-                    problems.append(
-                        f"M11 an {expected} probe {'started' if started else 'refused'} the gate"
-                    )
-            finally:
-                os.environ["PATH"] = original_path
-                for name, previous in original_fixture_environment.items():
-                    if previous is None:
-                        os.environ.pop(name, None)
-                    else:
-                        os.environ[name] = previous
+            for selection, override, reference in selections:
+                home = Path(temporary) / f"{selection}-{expected}"
+                home.mkdir()
+                executable = home / "docker"
+                executable.write_text(
+                    '#!/bin/sh\n' + projection_guard.replace('fixture:1', reference)
+                    + body.removeprefix('#!/bin/sh\n').replace('fixture:1', reference),
+                    encoding="utf-8", newline="\n",
+                )
+                executable.chmod(0o755)
+                if native_launcher is not None:
+                    shutil.copyfile(native_launcher, home / "docker.exe")
+                    os.environ.update(AWAKEN_FIXTURE_PROGRAM=native_shell,
+                                      AWAKEN_FIXTURE_SCRIPT=str(executable))
+                if override is None:
+                    os.environ.pop(image_override, None)
+                else:
+                    os.environ[image_override] = override
+                os.environ["PATH"] = str(home)
+                try:
+                    found = locate(row)
+                    if found.status != expected:
+                        problems.append(
+                            f"M10/{selection} a container engine that reports {expected!r} "
+                            f"was read as {found.status!r}"
+                        )
+                    if expected == "present" and found.where != reference:
+                        problems.append(f"M10/{selection} selected a different image reference")
+                    started = _quiet(lambda: command_require(manifest, "postgres")) == 0
+                    # An optional row may buy a skip only on a decided absence.
+                    if started != (expected in ("present", "absent")):
+                        problems.append(
+                            f"M11/{selection} an {expected} probe "
+                            f"{'started' if started else 'refused'} the gate"
+                        )
+                finally:
+                    os.environ["PATH"] = original_path
+                    for name, previous in original_fixture_environment.items():
+                        if previous is None:
+                            os.environ.pop(name, None)
+                        else:
+                            os.environ[name] = previous
         empty = Path(temporary) / "empty"
         empty.mkdir()
         os.environ["PATH"] = str(empty)
         try:
-            if locate(row).status != "undecidable":
-                problems.append("M10 no container engine at all was read as a decided absence")
-            if _quiet(lambda: command_require(manifest, "postgres")) == 0:
-                problems.append("M11 a gate started with nothing able to answer for its substrate")
+            # A selected existing file is also no substitute for an absent engine.
+            existing_file = empty / "image-reference-is-not-a-path"
+            existing_file.write_text("fixture", encoding="utf-8")
+            for selection, override in (("default", None),
+                                        ("override", "fixture-override:2"),
+                                        ("existing-file", str(existing_file))):
+                if override is None:
+                    os.environ.pop(image_override, None)
+                else:
+                    os.environ[image_override] = override
+                if locate(row).status != "undecidable":
+                    problems.append(
+                        f"M10/{selection} no container engine was read as a decided outcome"
+                    )
+                if _quiet(lambda: command_require(manifest, "postgres")) == 0:
+                    problems.append(
+                        f"M11/{selection} a gate started with no substrate observation"
+                    )
         finally:
             os.environ["PATH"] = original_path
+            for name, previous in original_fixture_environment.items():
+                if previous is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = previous
+
+        # File/tool overrides retain the same existing/missing path semantics;
+        # image selection is not allowed to take over another locate kind.
+        from unittest.mock import patch
+        for kind in LOCATE_KINDS - {"container-image"}:
+            for candidate, expected in ((str(existing_file), "present"),
+                                        (str(empty), "present"),
+                                        (str(empty / "missing"), "absent")):
+                with patch.dict(os.environ, {image_override: candidate}), \
+                        patch(__name__ + "._image_status") as image_probe:
+                    if locate({**row, "locate": kind}).status != expected:
+                        problems.append(f"M10/{kind} changed its path override semantics")
+                    image_probe.assert_not_called()
     return problems
 
 
