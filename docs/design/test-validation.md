@@ -585,11 +585,20 @@ exclusions.
 
 For the v5 comparison, the original `f03c55823bbe` sample failed before export:
 its exact JS response assertion omitted the SDK-required nullable `url_sources`
-member. The user approved a separate production-equivalent reference containing
-only the same assertion correction as `d99b2e526f35`; all other tracked blobs and
-modes, including production code, locks, sampling tools and waivers, must remain
-identical to f03. Bind sampling to the reference's actual commit/tree, use fresh
-profiles, and retain the original f03 failure with no measurement. Upstream,
+member. The user approved a separate production-equivalent reference using the
+same canonically validated test-fixture/oracle corrections on both sides.
+Production code, schemas, sampling tools and coverage waivers remain identical
+to f03. The only approved non-JS exceptions are the original writer's strict
+wait-baseline decreases and one `fuzz/Cargo.lock` package-version correction:
+`awaken-mcp-wire` 0.1.0 to its already-declared 0.2.0; other lock entries remain
+unchanged. Record the complete path/blob/mode allowlist and actual reference
+commit/tree, use fresh profiles per scope, and retain every historical failed
+sample without substituting a measurement. Reference `f27e1cb1db88` normally
+committed its eight allowed paths; its sample stopped at the extraction fixture
+after 53 successful commands, with no export or combined run. The three later
+canonical extraction-test corrections in `f5c7d3f91a07` passed their real process
+cases and may enter a new explicitly bound reference, not rewrite that failure.
+Upstream,
 shutdown, source-fence or export failure invalidates a measurement; an isolated
 terminal waiver refusal remains a failed gate even when independently valid
 counters can be reviewed. Compare like-for-like served and combined counts and
@@ -792,6 +801,37 @@ qualification are separate claims.
   history subjects and browser checks (94 passed, two original unconfigured
   deployment-OAuth cases skipped). Its normal commit and local FF passed;
   this does not qualify Flow, production images, deployment or Native coverage.
+- **Native-49d Rust / SDK checkpoint (2026-11-04).** Clean
+  `49d9790127bd` (tree `30271c0f05cf`) passed the original complete Linux
+  Rust group: 10,525 nextest cases passed and 129 were skipped separately;
+  both Clippy graphs, doctests, dependency checks and the original default-stack
+  two-Run MCP regression passed. Annotated `verified/20261104-0335` records
+  that Rust scope. The three original SDK qualifiers also passed on unchanged
+  source: default/all each packaged 24 crates, artifact consumption checked 27
+  archives plus eight tasks and the sample, and SemVer checked 22 historical
+  subjects plus two first releases. Each compiler profile ran all 45 cases / 50
+  steps and the 17-package forced audit; its raw nonzero major reports were
+  retained and accepted only by the original strict assessor. These results
+  do not qualify later source, full13, public publication or native Windows.
+- **Canonical extraction-fixture delivery (2026-11-05).** Normal commit
+  `dd03c06e247d` changed only the existing shared extraction fixture, stage
+  recovery fixture and SQLite unit tests. It reuses the production storage
+  frame and existing lossless JSON; the Pending dependency-fault case receives
+  its own auxiliary Run/Thread instead of the interrupted source Run.
+  The two unit cases and original prebuild/validator/crash/durable/stage process
+  commands passed. After receiving the conformance-stack and deadline fixes,
+  rebased `f5c7d3f91a07` retained those three blobs/modes, reran all six commands
+  successfully and passed the three changed CI control scopes (45 passed,
+  seven original skips) before protected FF. Whole Rust, SDK and full13 results
+  are not inherited by this later source.
+- **Cloud formal-tool delivery (2026-11-05).** Normal `c7b048c4` became
+  protected-FF `d068b71c` after retaining the incoming main and identical five
+  tool/test/document blobs. Eleven controlled launcher tests passed, including
+  changed-jar rejection between Kani and TLC; the official pinned jar passed
+  identity checks while its banner-probe exit 1 remained separately recorded.
+  Original Kani and TLC model-command blocks stayed byte-identical. This is
+  tool-selection regression evidence, not execution of the formal models or
+  acceptance of a newer Native composition.
 - **Downstream component checkpoints.** Cloud `6fda36a9`, consuming Native
   `e9773cf5` and IAM `dc0c68b4`, passed all eight selected Worker-access cases,
   both owning Clippy checks, documentation checks, normal hooks and safe FF.
