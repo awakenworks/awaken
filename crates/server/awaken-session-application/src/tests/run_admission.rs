@@ -1206,6 +1206,9 @@ async fn authenticated_protocol_scope_survives_a_cold_replica_and_replays_one_ac
     // | R3   | workspace     | wrong          | foreign       | replay    | E3     |
     // | R4   | workspace     | wrong          | absent        | replay    | E3     |
     // | R5   | workspace     | wrong          | foreign       | resume    | E3     |
+    // R6 correct authenticated owner + missing Session => existing-root role
+    // refuses before creation or reservation. Ordinary protocol first-Run
+    // creation is separate; streaming cannot widen the owner-scoped role.
     let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -1324,10 +1327,33 @@ async fn authenticated_protocol_scope_survives_a_cold_replica_and_replays_one_ac
         .is_err(),
         "R5/E3",
     );
+    assert!(
+        awaken_session_application_contract::OwnerScopedRunApplication::run_streaming_for_owner(
+            &protocol,
+            "workspace",
+            "unknown-owner-operation",
+            "unknown-owner-session",
+            None,
+            message(),
+            sink(),
+        )
+        .await
+        .is_err(),
+        "R6 unknown Session is not an owner-scoped creation grant",
+    );
+    assert!(
+        matches!(
+            repository
+                .get(&SessionId::from("unknown-owner-session"))
+                .await,
+            Err(SessionRepositoryError::NotFound)
+        ),
+        "R6 no fabricated root",
+    );
     assert_eq!(
         runtime.reservations.lock().unwrap().len(),
         reservations_before_rejection,
-        "R3-R5/E3 no reservation under a wrong owner",
+        "R3-R6/E3 no reservation under a wrong owner or unknown scoped root",
     );
 }
 

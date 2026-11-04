@@ -1092,15 +1092,19 @@ impl RunApplication for SessionRunApplication {
         messages: Vec<Message>,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.run_streaming_for_owner(
-            &(self.workspace)(thread)?,
+        // The ordinary port derives its Workspace and has the same first-Run
+        // creation semantics as `run`; the owner-scoped port below stays fenced
+        // to existing roots. Both use the original command/admission kernels.
+        let command = self.admission_command(
             operation_id,
             thread,
-            agent,
+            agent.as_deref(),
             messages,
-            sink,
-        )
-        .await
+            None,
+            awaken_session_types::SessionRunReplacement::PreservePrior,
+        )?;
+        self.run_admitted(&(self.workspace)(thread)?, command, Some(sink), true)
+            .await
     }
 
     async fn resume(
