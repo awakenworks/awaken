@@ -40,6 +40,10 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn a2a_message_send_over_a_live_kimi_model() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `a2a message send over a live kimi model` with the
     // concrete inputs, state, dependencies, and failure triggers used by this case.
     // Effects: the observable result `all output, state, side-effect, error, and terminal
@@ -62,7 +66,13 @@ async fn a2a_message_send_over_a_live_kimi_model() {
         key,
     )
     .expect("explicit client construction");
-    let app = build_router(Arc::new(executor), model, false).await;
+    let app = build_router(
+        Arc::new(executor),
+        model,
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
 
     // One A2A Run against the live model. The prompt steers a short, tool-free
     // reply so the assertion is stable across models.
@@ -98,4 +108,9 @@ async fn a2a_message_send_over_a_live_kimi_model() {
         "the model reply should contain PONG, got: {reply:?}"
     );
     eprintln!("live kimi reply: {reply:?}");
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }

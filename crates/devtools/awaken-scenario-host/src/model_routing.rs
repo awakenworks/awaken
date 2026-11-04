@@ -158,7 +158,10 @@ impl awaken_session_configuration_contract::SessionModelPublicationResolver
 /// A router whose Session-scoped selection routes to distinct labeled
 /// executors and whose Managed event schema remains strict (R1/R2/R5/R6).
 /// `AWAKEN_MODEL_MODE=model-route`.
-pub async fn build_model_route_router(trace_file_present: bool) -> Router {
+pub async fn build_model_route_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let (default_model, _) = scenario_model(Arc::new(LabelModel("default")), "default");
     // Literal-equivalent: the closure is only ever applied to the three
     // string literals below, never to operator or wire input.
@@ -185,6 +188,12 @@ pub async fn build_model_route_router(trace_file_present: bool) -> Router {
         Arc::new(RoutePublicationResolver),
     )
     .await;
-    awaken_coordinator::mount_with_managed_and_resource_registry(managed.state, resources.clone())
-        .await
+    awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
+        managed.state,
+        resources.clone(),
+        lifecycle,
+        None,
+    )
+    .await
+    .0
 }

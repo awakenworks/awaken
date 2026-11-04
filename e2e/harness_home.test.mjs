@@ -128,7 +128,7 @@ const wrapperAst = ts.createSourceFile('harness.mjs', wrapperSource, ts.ScriptTa
 const wrapperDeclaration = wrapperAst.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'withRealServer');
 assert.ok(wrapperDeclaration);
 
-async function exerciseWireWrapper(t, stage, cleanupMask = 0) {
+async function exerciseWireWrapper(t, stage, cleanupMask = 0, strict = false) {
   const { startFakeAnthropic } = await import('./fixtures/fake_anthropic_fixture.mjs');
   const { stopServer, runCleanupSteps } = await import('./harness.mjs');
   const primary = new Error(`controlled ${stage} failure`);
@@ -166,9 +166,10 @@ async function exerciseWireWrapper(t, stage, cleanupMask = 0) {
       return { server: child, baseUrl: 'http://127.0.0.1:1' };
     },
     waitForServer: async () => { await ready; if (stage === 'readiness') throw primary; },
-    stopServer: async server => {
+    stopServer: async (server, options) => {
       calls.push('stop');
-      await stopServer(server);
+      assert.equal(options?.requireCleanExit ?? false, strict, 'the wrapper forwards the selected existing shutdown contract');
+      await stopServer(server, options);
       if (cleanupMask & 1) throw stopError;
     },
   });
@@ -178,7 +179,7 @@ async function exerciseWireWrapper(t, stage, cleanupMask = 0) {
     assert.equal(peer.url, upstream.url);
     if (stage === 'body') throw primary;
     return value;
-  });
+  }, { requireCleanExit: strict });
   const expected = stage === 'success' ? [] : [primary];
   if (['readiness', 'body', 'success'].includes(stage) && (cleanupMask & 1)) expected.push(stopError);
   if (!['ensure', 'upstream'].includes(stage) && (cleanupMask & 2)) expected.push(closeError);
@@ -211,6 +212,10 @@ test('withRealServer preserves results and all cleanup outcomes', async t => {
   for (const stage of ['ensure', 'upstream', 'port', 'environment', 'readiness', 'body', 'success']) {
     await t.test(stage, child => exerciseWireWrapper(child, stage));
   }
+  // R4 strict acceptance uses the same real child's EOF -> exit -> stdio close;
+  // a wrapper must forward that choice, while ordinary cleanup keeps its original
+  // idempotent/non-strict behavior and original aggregated failures.
+  await t.test('strict successful shutdown', child => exerciseWireWrapper(child, 'success', 0, true));
   for (const stage of ['success', 'body']) {
     for (const mask of [1, 2, 3]) await t.test(`${stage} cleanup=${mask}`, child => exerciseWireWrapper(child, stage, mask));
   }

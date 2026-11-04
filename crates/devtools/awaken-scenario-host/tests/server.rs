@@ -32,15 +32,18 @@ use tower::ServiceExt;
 
 use support::wait_for_session_events;
 
-async fn build_local_delegation_router() -> Router {
+async fn build_local_delegation_router(
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
-    build_delegation_router_with_deployment(deployment, false).await
+    build_delegation_router_with_deployment(deployment, false, lifecycle.clone()).await
 }
 
 async fn build_write_confirmation_router(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
     let model_ref = model_ref.into();
     let publication = ExecutableAgentSnapshot::builder("assistant")
@@ -61,9 +64,15 @@ async fn build_write_confirmation_router(
             ..Default::default()
         })
         .build();
-    build_router_and_host_with_agent_publications(llm, model_ref, [publication], false)
-        .await
-        .0
+    build_router_and_host_with_agent_publications(
+        llm,
+        model_ref,
+        [publication],
+        false,
+        lifecycle.clone(),
+    )
+    .await
+    .0
 }
 
 async fn json_call(
@@ -210,6 +219,10 @@ async fn confirm(app: &Router, session: &str, tool_use_id: &str) -> serde_json::
 
 #[tokio::test]
 async fn echo_run_end_to_end() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `echo run end to end` with the concrete inputs, state,
     // dependencies, and failure triggers used by this case.
     // Effects: the observable result `all output, state, side-effect, error, and terminal
@@ -218,7 +231,13 @@ async fn echo_run_end_to_end() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_router(Arc::new(EchoModel), "echo-model", false).await;
+    let app = build_router(
+        Arc::new(EchoModel),
+        "echo-model",
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "hi there").await;
     // Cause/effect rule: accepting a user.message first persists that exact
@@ -245,6 +264,11 @@ async fn echo_run_end_to_end() {
         .find(|e| e["type"] == "agent.message")
         .unwrap();
     assert_eq!(msg["content"][0]["text"], "Echo: hi there");
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// Stateless probe: write the user's text to a relative `probe.txt`, read it back,
@@ -312,6 +336,10 @@ fn read_result_text(list: &serde_json::Value) -> String {
 
 #[tokio::test]
 async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: C0 the immutable Agent publication explicitly sets
     // `write=always_ask`; the fixtures below establish `hitl write awaits then confirms and reads
     // rooted` with the concrete inputs, state, dependencies, and failure triggers used by this case.
@@ -322,7 +350,12 @@ async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
     // Decision rule: a committed custom result on the default test stack must
     // traverse the one Host context-realization owner and reach end_turn; a
     // protocol-specific stack override or alternate resume path is forbidden.
-    let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted").await;
+    let app = build_write_confirmation_router(
+        Arc::new(WriteReadProbe),
+        "scripted",
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let id = create_session(&app).await;
 
     // The write is asked -> the Run awaits.
@@ -357,6 +390,11 @@ async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
     let last = last_event_of_type(list["data"].as_array().unwrap(), "session.status_idle");
     assert_eq!(last["stop_reason"]["type"], "end_turn");
     assert!(read_result_text(&list).contains("HELLO-SANDBOX"));
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 async fn define_outcome(app: &Router, session: &str, rubric: &str) -> serde_json::Value {
@@ -385,7 +423,17 @@ async fn define_outcome(app: &Router, session: &str, rubric: &str) -> serde_json
 
 #[tokio::test]
 async fn outcome_iterates_until_satisfied() {
-    let app = build_router(Arc::new(ReviseModel), "scripted", false).await;
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
+    let app = build_router(
+        Arc::new(ReviseModel),
+        "scripted",
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let id = create_session(&app).await;
 
     // A draft, then define an outcome the draft misses -> revise -> satisfied.
@@ -417,6 +465,11 @@ async fn outcome_iterates_until_satisfied() {
         messages.iter().any(|m| m.contains("FINAL")),
         "messages: {messages:?}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// Deterministic Outcome Worker/Judge pair: the Worker first crosses the
@@ -477,6 +530,10 @@ impl LlmExecutor for OutcomeHitlModel {
 
 #[tokio::test]
 async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: C0 the immutable Agent publication explicitly sets
     // `write=always_ask`; the fixtures below establish `outcome hitl awaits without failure then`
     // with the concrete inputs, state, dependencies, and failure triggers used by this case.
@@ -486,7 +543,12 @@ async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate()
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_write_confirmation_router(Arc::new(OutcomeHitlModel), "outcome-hitl").await;
+    let app = build_write_confirmation_router(
+        Arc::new(OutcomeHitlModel),
+        "outcome-hitl",
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let id = create_session(&app).await;
 
     // Cause/effect decision table for the changed Outcome/HITL boundary:
@@ -591,6 +653,11 @@ async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate()
     assert!(completed_events.iter().any(|event| {
         event["type"] == "agent.message" && event["content"][0]["text"] == "FINAL after permission"
     }));
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// A model serving both roles for the judge-graded outcome test: as a judge (it
@@ -643,10 +710,21 @@ impl LlmExecutor for GradedModel {
 
 #[tokio::test]
 async fn outcome_graded_by_a_judge_subagent() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // The rubric is prose, not a keyword — a keyword grader would never match it
     // and would exhaust the budget. The judge sub-agent grades it instead, so the
     // revision that adds the FINAL marker is accepted.
-    let app = build_graded_router(Arc::new(GradedModel), "scripted", "judge", false).await;
+    let app = build_graded_router(
+        Arc::new(GradedModel),
+        "scripted",
+        "judge",
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let id = create_session(&app).await;
 
     send_message(&app, &id, "write something").await;
@@ -665,10 +743,19 @@ async fn outcome_graded_by_a_judge_subagent() {
         "outcome evaluation events: {ends:?}"
     );
     assert_eq!(ends.last().unwrap()["result"], "satisfied");
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test]
 async fn custom_tool_use_through_real_kernel() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Cause/effect graph: C1 a published Agent declares one client-owned custom
     // tool; C2 the model calls it and reaches RequiresAction; C3 the client
     // submits the exact matching custom result; C4 Runtime commits the neutral
@@ -682,7 +769,7 @@ async fn custom_tool_use_through_real_kernel() {
     // Invariant: Runtime transcript truth and public Managed wire vocabulary have
     // one projection owner; the adapter never asks consumers to reconcile two
     // result families for one tool occurrence.
-    let app = build_custom_router(false).await;
+    let app = build_custom_router(false, fixture_lifecycle_1.clone()).await;
     let id = create_session(&app).await;
 
     // The model calls the client-executed tool `submit_answer` -> awaits as custom.
@@ -773,6 +860,11 @@ async fn custom_tool_use_through_real_kernel() {
             ["type"],
         "end_turn"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// A model that replies with every system message it can see, so a test can prove
@@ -810,6 +902,10 @@ impl LlmExecutor for SystemEchoModel {
 
 #[tokio::test]
 async fn system_message_reaches_accompanying_and_later_runs() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `system message` with the concrete inputs, state,
     // dependencies, and failure triggers used by this case.
     // Effects: the accompanying Run and every later Run observe the one committed System context.
@@ -817,7 +913,13 @@ async fn system_message_reaches_accompanying_and_later_runs() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_router(Arc::new(SystemEchoModel), "sys", false).await;
+    let app = build_router(
+        Arc::new(SystemEchoModel),
+        "sys",
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let id = create_session(&app).await;
 
     // Cause/effect graph: C1=one text System event; C2=it is final and follows
@@ -889,6 +991,11 @@ async fn system_message_reaches_accompanying_and_later_runs() {
         messages.iter().any(|m| m.contains("SECRET-DIRECTIVE")),
         "S1/E3 later Run input: {messages:?}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// POST an events batch and return the HTTP status (no success assertion).
@@ -904,6 +1011,10 @@ async fn post_status(app: &Router, uri: &str, body: serde_json::Value) -> Status
 
 #[tokio::test]
 async fn custom_result_fails_closed_on_mismatch() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: C0 the immutable Agent publication explicitly sets
     // `write=always_ask`; the fixtures below establish `custom result` with the concrete inputs,
     // state, dependencies, and failure triggers used by this case.
@@ -914,7 +1025,7 @@ async fn custom_result_fails_closed_on_mismatch() {
     // Coverage rationale: `custom result` is one independent branch selecting `fails closed on
     // mismatch`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
-    let app = build_custom_router(false).await;
+    let app = build_custom_router(false, fixture_lifecycle_1.clone()).await;
     let id = create_session(&app).await;
     let awaiting = send_message(&app, &id, "solve it").await;
     let tool_use_id = last_event_of_type(
@@ -986,10 +1097,19 @@ async fn custom_result_fails_closed_on_mismatch() {
         msgs.iter().any(|m| m.contains("got: 42")),
         "correct result resumes: {msgs:?}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test]
 async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `custom result` with the concrete inputs, state,
     // dependencies, and failure triggers used by this case.
     // Effects: the observable result `cannot fabricate a builtin tools output` and every asserted
@@ -1001,7 +1121,12 @@ async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
     // alternate causes.
     // A Run awaiting on the *built-in* `write` (HITL) must not be resumable with a
     // `user.custom_tool_result`: that would bypass execution and the approval gate.
-    let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted").await;
+    let app = build_write_confirmation_router(
+        Arc::new(WriteReadProbe),
+        "scripted",
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let id = create_session(&app).await;
     let awaiting = send_message(&app, &id, "HELLO").await;
     let tool_use_id =
@@ -1026,6 +1151,11 @@ async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
     let list = confirm(&app, &id, &tool_use_id).await;
     assert!(read_result_text(&list).contains("HELLO"));
     assert!(!read_result_text(&list).contains("forged"));
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// Every agent text a Run produced: assistant messages and tool results.
@@ -1042,6 +1172,10 @@ fn all_agent_text(list: &serde_json::Value) -> String {
 
 #[tokio::test]
 async fn delegation_runs_a_subagent_and_returns_its_result() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Publication/coordination cause-effect rule: C1 the Session freezes one
     // immutable root publication with a delegate; C2 Managed execution derives
     // a Run clone whose coordination tools and fingerprint differ; C3 the local
@@ -1054,7 +1188,7 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
     // the actual local Session application, which installs a frozen projection
     // before execution. On the default Tokio test stack, both admission and
     // execution must return the committed child report without overflow.
-    let app = build_local_delegation_router().await;
+    let app = build_local_delegation_router(fixture_lifecycle_1.clone()).await;
     let id = create_session(&app).await;
     send_message(&app, &id, "research the answer").await;
     let list = wait_for_session_events(
@@ -1130,16 +1264,25 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
             ["type"],
         "end_turn"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test]
 async fn delegation_fails_closed_on_unpublished_target() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Cause/effect rule: C1 the same immutable-publication/derived-Run boundary
     // reaches the managed coordination surface; C2 `ghost` is absent from C1's
     // frozen roster. E1 C1 remains accepted as publication truth; E2 the
     // Thread-owned `SEND_MESSAGE` command rejects C2 before a child Thread or
     // Run can be admitted.
-    let app = build_local_delegation_router().await;
+    let app = build_local_delegation_router(fixture_lifecycle_1.clone()).await;
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "use the ghost agent").await;
 
@@ -1152,6 +1295,11 @@ async fn delegation_fails_closed_on_unpublished_target() {
         !text.contains("researched: 42"),
         "no sub-run output leaked: {text}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// A model that reports the tool ids it was offered, so a test can assert the
@@ -1176,7 +1324,17 @@ impl LlmExecutor for ToolCatalogProbe {
 
 #[tokio::test]
 async fn advertises_only_runnable_tools() {
-    let app = build_router(Arc::new(ToolCatalogProbe), "probe", false).await;
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
+    let app = build_router(
+        Arc::new(ToolCatalogProbe),
+        "probe",
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "which tools do you have?").await;
     let offered = list["data"]
@@ -1207,6 +1365,11 @@ async fn advertises_only_runnable_tools() {
             "`{tool}` must not be advertised without a routed plugin: {offered:?}"
         );
     }
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// A model that never stops: it always calls an allowed tool, so the loop runs
@@ -1233,6 +1396,10 @@ impl LlmExecutor for LoopModel {
 
 #[tokio::test]
 async fn max_steps_maps_to_retries_exhausted() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: a model emits one executable `glob` call on every step until the
     // canonical loop ceiling ends the accepted user.message Run.
     // Effects: the committed aggregate terminal projection preserves
@@ -1241,7 +1408,13 @@ async fn max_steps_maps_to_retries_exhausted() {
     // supervisor's committed projection and never drives the Run itself.
     // Decision rule: M1=unbounded tool calls + reached step ceiling -> one
     // terminal `retries_exhausted`; ordinary natural-end coverage is `echo_run_end_to_end`.
-    let app = build_router(Arc::new(LoopModel), "loop", false).await;
+    let app = build_router(
+        Arc::new(LoopModel),
+        "loop",
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "loop forever").await;
     assert!(
@@ -1253,10 +1426,19 @@ async fn max_steps_maps_to_retries_exhausted() {
         "terminal projection must preserve retries_exhausted: {}",
         list["data"]
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test]
 async fn sessions_are_isolated() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Cause/effect design: C0 the immutable Agent publication explicitly sets
     // `write=always_ask`; C1 two distinct Session roots write different content;
     // C2 each exact confirmation resumes only its own pending write. Effects:
@@ -1266,7 +1448,12 @@ async fn sessions_are_isolated() {
     // Each Session publishes a distinct public tool Event id even when the
     // model reuses its private call-id `w`; confirmations therefore use the
     // public correlation id and cannot cross Session boundaries.
-    let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted").await;
+    let app = build_write_confirmation_router(
+        Arc::new(WriteReadProbe),
+        "scripted",
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let one = create_session(&app).await;
     let two = create_session(&app).await;
 
@@ -1293,6 +1480,11 @@ async fn sessions_are_isolated() {
         read_two.contains("SECRET-TWO") && !read_two.contains("SECRET-ONE"),
         "two: {read_two}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// A model that blocks on its second inference (the first grader run) so a
@@ -1345,6 +1537,10 @@ impl LlmExecutor for GatedReviseModel {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn managed_user_interrupt_reports_interrupted() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: C1 an accepted Outcome is blocked inside its active grading Run;
     // C2 a concurrent user.interrupt receipt addresses that same Session; C3 the
     // blocked model is then released so terminal reconciliation can settle.
@@ -1364,6 +1560,7 @@ async fn managed_user_interrupt_reports_interrupted() {
         }),
         "scripted",
         false,
+        fixture_lifecycle_1.clone(),
     )
     .await;
     let id = create_session(&app).await;
@@ -1428,4 +1625,9 @@ async fn managed_user_interrupt_reports_interrupted() {
         "interrupted",
         "user.interrupt must end the outcome as interrupted"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }

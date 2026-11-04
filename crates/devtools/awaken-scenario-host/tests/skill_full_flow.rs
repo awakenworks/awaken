@@ -263,6 +263,10 @@ fn tool(call_id: &str, tool_id: &str, arguments: serde_json::Value) -> Assistant
 
 #[tokio::test]
 async fn discover_read_author_and_use_authored_skill_end_to_end() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: C0 the Session override explicitly freezes `bash=always_ask`; C1 a
     // versioned Agent binding resolves to frozen Skill bytes; C2 the model follows
     // its prompt path; C3 authoring
@@ -279,9 +283,14 @@ async fn discover_read_author_and_use_authored_skill_end_to_end() {
     // Decision rules: F1=C1+C2 -> E1; F2=F1+C3 -> E2;
     // F3=F2+C4 -> E3+E4; F4=F3+C5 -> E5.
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING for $ARGUMENTS");
-    let app =
-        build_router_with_managed_skills(Arc::new(FullFlowModel), "scripted", vec![greet], false)
-            .await;
+    let app = build_router_with_managed_skills(
+        Arc::new(FullFlowModel),
+        "scripted",
+        vec![greet],
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let id = create_session(&app).await;
 
     // 1) discover and load the frozen Skill through its advertised path.
@@ -332,4 +341,9 @@ async fn discover_read_author_and_use_authored_skill_end_to_end() {
     .await
     .expect("the Skill Session retires its persistent shell before runtime shutdown");
     assert_eq!(archived["status"], "terminated");
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }

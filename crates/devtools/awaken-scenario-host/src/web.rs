@@ -85,7 +85,9 @@ impl WebSearchProvider for ScenarioWebSearchProvider {
 
 /// Build the one AllInOne Web scenario. The registry enters `ProcessStartup`
 /// before router assembly, so Control validation and Host dispatch share it.
-pub async fn build_management_web_router(trace_file_present: bool) -> Router {
+pub async fn build_management_web_service(
+    trace_file_present: bool,
+) -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
     // The scenario extends the production provider catalog instead of replacing
     // it: configured WebFetch must resolve the canonical direct provider, while
     // WebSearch selects the deterministic paid fixture below. The end-to-end
@@ -95,7 +97,7 @@ pub async fn build_management_web_router(trace_file_present: bool) -> Router {
     registry
         .register(Arc::new(ScenarioWebSearchProvider))
         .expect("the scenario Web provider descriptor is valid and unique");
-    awaken_cli::build_all_in_one_router_with_host_customizer(
+    awaken_cli::build_all_in_one_service_with_host_customizer(
         Arc::new(WebToolDrivingModel),
         ModelBinding::new("default", "management-web", "default"),
         crate::scenario_deployment(),

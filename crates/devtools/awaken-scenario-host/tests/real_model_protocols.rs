@@ -59,9 +59,9 @@ fn live_executor() -> (Arc<GenaiExecutor>, String) {
     )
 }
 
-async fn live_router() -> Router {
+async fn live_router(lifecycle: awaken_service_lifecycle::ServiceLifecycle) -> Router {
     let (executor, model) = live_executor();
-    build_router(executor, model, false).await
+    build_router(executor, model, false, lifecycle.clone()).await
 }
 
 /// Concatenate the `field` of every SSE `data:` event whose `type` matches.
@@ -166,6 +166,10 @@ async fn managed_run(app: &Router, session: &str, text: &str) -> String {
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn managed_multi_run_remembers_context() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `managed multi run remembers context` with the concrete
     // inputs, state, dependencies, and failure triggers used by this case.
     // Effects: the observable result `all output, state, side-effect, error, and terminal
@@ -174,7 +178,7 @@ async fn managed_multi_run_remembers_context() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = live_router().await;
+    let app = live_router(fixture_lifecycle_1.clone()).await;
     let (_, body) = call(
         &app,
         "POST",
@@ -196,6 +200,11 @@ async fn managed_multi_run_remembers_context() {
         recalled(&reply),
         "managed lost multi-Run context: {reply:?}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +227,10 @@ async fn ai_sdk_run(app: &Router, thread: &str, id: &str, text: &str) -> String 
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn ai_sdk_multi_run_remembers_context() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `ai sdk multi run remembers context` with the concrete
     // inputs, state, dependencies, and failure triggers used by this case.
     // Effects: the observable result `all output, state, side-effect, error, and terminal
@@ -227,11 +240,16 @@ async fn ai_sdk_multi_run_remembers_context() {
     // Coverage rationale: `ai sdk multi run remembers context` is one independent branch selecting
     // `all output, state, side-effect, error, and terminal assertions below hold together`; a
     // multi-row decision table is not applicable, and sibling tests own alternate causes.
-    let app = live_router().await;
+    let app = live_router(fixture_lifecycle_1.clone()).await;
     ai_sdk_run(&app, "sdk-mt", "u1", SET).await;
     let reply = ai_sdk_run(&app, "sdk-mt", "u2", ASK).await;
     eprintln!("[ai-sdk] reply: {reply:?}");
     assert!(recalled(&reply), "ai-sdk lost multi-Run context: {reply:?}");
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +272,10 @@ async fn ag_ui_run(app: &Router, thread: &str, run: &str, text: &str) -> String 
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn ag_ui_multi_run_remembers_context() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `ag ui multi run remembers context` with the concrete
     // inputs, state, dependencies, and failure triggers used by this case.
     // Effects: the observable result `all output, state, side-effect, error, and terminal
@@ -263,11 +285,16 @@ async fn ag_ui_multi_run_remembers_context() {
     // Coverage rationale: `ag ui multi run remembers context` is one independent branch selecting
     // `all output, state, side-effect, error, and terminal assertions below hold together`; a
     // multi-row decision table is not applicable, and sibling tests own alternate causes.
-    let app = live_router().await;
+    let app = live_router(fixture_lifecycle_1.clone()).await;
     ag_ui_run(&app, "ag-mt", "r1", SET).await;
     let reply = ag_ui_run(&app, "ag-mt", "r2", ASK).await;
     eprintln!("[ag-ui] reply: {reply:?}");
     assert!(recalled(&reply), "ag-ui lost multi-Run context: {reply:?}");
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +322,10 @@ async fn a2a_run(app: &Router, context: &str, id: &str, text: &str) -> String {
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn a2a_multi_run_remembers_context() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `a2a multi run remembers context` with the concrete
     // inputs, state, dependencies, and failure triggers used by this case.
     // Effects: the observable result `all output, state, side-effect, error, and terminal
@@ -304,11 +335,16 @@ async fn a2a_multi_run_remembers_context() {
     // Coverage rationale: `a2a multi run remembers context` is one independent branch selecting
     // `all output, state, side-effect, error, and terminal assertions below hold together`; a
     // multi-row decision table is not applicable, and sibling tests own alternate causes.
-    let app = live_router().await;
+    let app = live_router(fixture_lifecycle_1.clone()).await;
     a2a_run(&app, "a2a-mt", "m1", SET).await;
     let reply = a2a_run(&app, "a2a-mt", "m2", ASK).await;
     eprintln!("[a2a] reply: {reply:?}");
     assert!(recalled(&reply), "a2a lost multi-Run context: {reply:?}");
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 // ---------------------------------------------------------------------------
@@ -318,6 +354,10 @@ async fn a2a_multi_run_remembers_context() {
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn multi_agent_graded_outcome_runs_a_judge_subagent() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `multi agent graded outcome runs a judge subagent` with
     // the concrete inputs, state, dependencies, and failure triggers used by this case.
     // Effects: the observable result `all output, state, side-effect, error, and terminal
@@ -331,7 +371,14 @@ async fn multi_agent_graded_outcome_runs_a_judge_subagent() {
     let (executor, model) = live_executor();
     // Outcomes are graded by a judge sub-agent (a second run) driven by the same
     // live model — a genuine multi-agent flow: a worker run plus a judge sub-run.
-    let app = build_graded_router(executor, model, "assistant", false).await;
+    let app = build_graded_router(
+        executor,
+        model,
+        "assistant",
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
 
     let (_, body) = call(
         &app,
@@ -403,4 +450,9 @@ async fn multi_agent_graded_outcome_runs_a_judge_subagent() {
         types.iter().any(|t| t.contains("outcome")),
         "a judge sub-agent should have evaluated the outcome: {types:?}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }

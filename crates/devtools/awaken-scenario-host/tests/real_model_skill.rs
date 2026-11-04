@@ -124,6 +124,10 @@ fn events_text(
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn kimi_discovers_reads_and_follows_a_skill() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Cause/effect rule K1: C1 a versioned Agent binding freezes the codeword
     // Skill, C2 the live model follows progressive-disclosure metadata => E1 it
     // calls ordinary `read`, E2 neither semantic Skill tool appears, E3 the
@@ -152,8 +156,14 @@ async fn kimi_discovers_reads_and_follows_a_skill() {
         key,
     )
     .expect("explicit client construction");
-    let app =
-        build_router_with_managed_skills(Arc::new(executor), model, vec![codeword], false).await;
+    let app = build_router_with_managed_skills(
+        Arc::new(executor),
+        model,
+        vec![codeword],
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let id = create_session(&app).await;
 
     let list = send_message(
@@ -189,4 +199,9 @@ async fn kimi_discovers_reads_and_follows_a_skill() {
         messages.iter().any(|m| m.contains(SECRET)) || all_text.contains(SECRET),
         "the activated skill's instruction reached the model (it echoed the secret): {messages:?}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }

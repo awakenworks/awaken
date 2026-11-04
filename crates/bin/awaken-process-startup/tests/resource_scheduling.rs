@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_cli::build_all_in_one_router_with_host_customizer;
+use awaken_cli::build_all_in_one_service_with_host_customizer;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::ModelBinding;
 
@@ -348,7 +348,7 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
     let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
     let installed = deployment.clone();
-    let app = build_all_in_one_router_with_host_customizer(
+    let (app, lifecycle) = build_all_in_one_service_with_host_customizer(
         Arc::new(EchoModel),
         ModelBinding::new("host", "echo", "genai"),
         deployment,
@@ -464,4 +464,8 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
         ("900m".into(), "268435456".into(), "536870912".into()),
         "R2 exact v2"
     );
+    lifecycle
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .unwrap();
 }
