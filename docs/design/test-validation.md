@@ -864,6 +864,38 @@ qualification are separate claims.
   unrun, no export and no combined measurement. Captured shutdown panic
   markers are retained independently; this is neither coverage qualification
   nor a successful original f03 sample.
+- **Native-b876 lifecycle / Rust / SDK checkpoint (2026-11-05).** Normal
+  `b876b2f19acf` (tree `188d19b382c9`) retains the existing prepared or mounted
+  service owner through the Scenario process root, including bind failures,
+  before exporter/runtime shutdown. It introduces no second lifecycle or
+  constructor. Owning tests passed 557 cases with 25 original skips, six mount
+  controls reached the exact existing closed-owner refusal, and the original
+  default-stack 25-mode table, independent-factory model path, named Unknown
+  timeout/facts and held-outbox ACK/join assertions passed. A three-blank-line
+  documentation correction retained the original runtime subject through a
+  canonical token-equivalence bridge; both original Clippy graphs and the fresh
+  four-binary/manifest strict MCP case then passed before normal hooks and
+  protected FF. The later original complete Linux Rust group passed on the clean
+  committed SHA: 10,536 nextest cases passed and 129 original skips remained
+  separate; both workspace Clippy graphs, doctests, dependency checks and the
+  original two-Run/default-stack MCP case passed. All 70 retained owner files and
+  source observations matched; annotated `verified/20261104-2106` binds this V0
+  scope.
+- **SDK and live evidence on b876 (2026-11-05).** A package attempt failed on
+  crates.io HTTP/2 transport and remains recorded; a fresh complete package
+  retry passed both profiles with 24 verified archives each. Artifact consumption
+  passed 27 archives, 13 consumed packages, eight tasks without skips and the
+  sample. The original SemVer qualifier completed both 45-case/50-step consumer
+  profiles, 22 historical subjects, two first-release classifications and the
+  strict 17-package forced-major audits; all three owner and outer-wrapper
+  results were 0, with unchanged source, locks and tag. This does not repair
+  the older 42e collector gap. The independent original required Managed
+  Provider entry returned 1: its single Run passed, while all three exact
+  child-reply attempts failed; actual coordinator/child model-target assertions
+  and strict cleanup passed. Public event identity/text agree between child
+  send and parent receipt, but raw provider output remains unavailable, so
+  provider/adapter/Kernel attribution is unproven. No prompt, model, assertion,
+  retry count or Raw/Full capture was changed to obtain a result.
 - **Downstream component checkpoints.** Cloud `6fda36a9`, consuming Native
   `e9773cf5` and IAM `dc0c68b4`, passed all eight selected Worker-access cases,
   both owning Clippy checks, documentation checks, normal hooks and safe FF.
