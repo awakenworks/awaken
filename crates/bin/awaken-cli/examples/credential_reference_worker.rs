@@ -246,7 +246,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 awaken_worker_transport_security::WorkerUpstream::new(upstream),
                 clock,
             )
-            .with_deployment_config(deployment)
+            .with_deployment_config(deployment, false)
             .with_standard_manifest_config(
                 awaken_worker::StandardManifestConfig::default().with_max_concurrent(3),
             )
@@ -284,7 +284,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 upstream = upstream.with_worker_id(worker_id);
             }
             let mut builder = awaken_worker::WorkerNodeBuilder::new(upstream, clock)
-                .with_deployment_config(deployment)
+                .with_deployment_config(deployment, false)
                 .with_standard_manifest_config(
                     awaken_worker::StandardManifestConfig::default().with_max_concurrent(3),
                 )

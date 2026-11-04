@@ -57,7 +57,8 @@ async fn harness() -> Harness {
         started: started_tx,
         permits: Mutex::new(permit_rx),
     };
-    let host = (awaken_scenario_host::build_unmounted_dependencies(Arc::new(llm), "gated").await)
+    let host = (awaken_scenario_host::build_unmounted_dependencies(Arc::new(llm), "gated", false)
+        .await)
         .build()
         .expect("validated Host dependencies");
     Harness {

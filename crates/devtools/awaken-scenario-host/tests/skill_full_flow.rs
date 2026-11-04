@@ -280,7 +280,8 @@ async fn discover_read_author_and_use_authored_skill_end_to_end() {
     // F3=F2+C4 -> E3+E4; F4=F3+C5 -> E5.
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING for $ARGUMENTS");
     let app =
-        build_router_with_managed_skills(Arc::new(FullFlowModel), "scripted", vec![greet]).await;
+        build_router_with_managed_skills(Arc::new(FullFlowModel), "scripted", vec![greet], false)
+            .await;
     let id = create_session(&app).await;
 
     // 1) discover and load the frozen Skill through its advertised path.

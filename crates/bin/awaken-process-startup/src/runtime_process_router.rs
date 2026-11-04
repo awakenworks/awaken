@@ -589,6 +589,7 @@ async fn assemble_execution_host(
     let selected = constructor
         .prepare(crate::ColocatedExecutionInputs {
             deployment,
+            trace_file_present: base.process.trace_file_present,
             local_workspace: base.stores.platform_workspace.clone(),
             clock,
             namespace_hand_path: base.process.namespace_hand_path.take(),

@@ -1316,6 +1316,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
             &awaken_deployment_config::DeploymentConfig::ephemeral(),
             awaken_deployment_config::mint_local_workspace(),
             awaken_time::system_clock(),
+            false,
         )
         .expect("ephemeral process"),
         crate::host::test_upstream_authority(),

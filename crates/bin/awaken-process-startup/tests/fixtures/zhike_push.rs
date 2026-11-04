@@ -490,6 +490,7 @@ async fn scenario(
         },
         None,
         |host| host,
+        false,
     )
     .await;
     let config = json!({"id":"zhike-push","name":"知客","system":include_str!("zhike-sales-system.txt"),

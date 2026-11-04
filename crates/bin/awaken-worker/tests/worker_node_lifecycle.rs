@@ -484,7 +484,7 @@ fn standard_manifest_is_derived_from_builder_topology() {
         WorkerUpstream::new("http://control"),
         awaken_time::system_clock(),
     )
-    .with_deployment_config(deployment)
+    .with_deployment_config(deployment, false)
     .with_standard_manifest(std::collections::BTreeSet::from([
         "application:test/v1".to_string()
     ]))
@@ -593,7 +593,7 @@ fn container_deployment_cannot_bypass_canonical_provider_preparation() {
         WorkerUpstream::new("http://control"),
         awaken_time::system_clock(),
     )
-    .with_deployment_config(deployment)
+    .with_deployment_config(deployment, false)
     .with_standard_manifest(Default::default())
     .build()
     .err()
@@ -658,7 +658,7 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     )
     .with_preselected_incarnation_id(preselected)
     .expect("trusted launcher supplied a valid incarnation")
-    .with_deployment_config(coordinator_defaults)
+    .with_deployment_config(coordinator_defaults, false)
     .with_manifest(manifest())
     .with_attempt_decorator_factory(Arc::new(move |context| {
         *observed.lock().expect("identity observation mutex") = Some(context.identity().clone());
@@ -899,7 +899,7 @@ async fn startup_transport_gap_retries_the_same_incarnation_until_coordinator_is
     let admin_addr = format!("127.0.0.1:{}", free_port());
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let worker = lifecycle_worker(WorkerUpstream::new(url).with_worker_id("worker-delayed-start"))
-        .with_deployment_config(local_coordinator_deployment())
+        .with_deployment_config(local_coordinator_deployment(), false)
         .with_manifest(manifest())
         .with_admin_listen(&admin_addr)
         .build()
@@ -985,7 +985,7 @@ async fn registration_pending_shutdown_closes_the_original_admin_listener() {
         WorkerUpstream::new(format!("http://{upstream_address}"))
             .with_worker_id("pending-shutdown"),
     )
-    .with_deployment_config(local_coordinator_deployment())
+    .with_deployment_config(local_coordinator_deployment(), false)
     .with_manifest(manifest())
     .with_admin_listen(&admin_addr)
     .build()
@@ -1033,7 +1033,7 @@ async fn worker_publishes_ready_then_warms_and_drains_capacity_on_shutdown() {
     lifecycle_worker(
         WorkerUpstream::new(upstream.url()).with_worker_id("worker-warmup-lifecycle-test"),
     )
-    .with_deployment_config(deployment)
+    .with_deployment_config(deployment, false)
     .with_session_container_provider_and_capacity(
         "external-secure",
         Arc::new(ExternalSessionProvider::default()),
@@ -1142,7 +1142,7 @@ async fn worker_reconciles_current_environment_shape_after_ready() {
     lifecycle_worker(
         WorkerUpstream::new(upstream.url()).with_worker_id("worker-current-environment-test"),
     )
-    .with_deployment_config(deployment)
+    .with_deployment_config(deployment, false)
     .with_session_container_provider_and_capacity(
         "external-secure",
         Arc::new(ExternalSessionProvider::default()),
@@ -1218,7 +1218,7 @@ async fn warmup_failure_retains_cold_path_and_still_closes_capacity() {
     lifecycle_worker(
         WorkerUpstream::new(upstream.url()).with_worker_id("worker-warmup-failure-test"),
     )
-    .with_deployment_config(deployment)
+    .with_deployment_config(deployment, false)
     .with_session_container_provider_and_capacity(
         "external-secure",
         Arc::new(ExternalSessionProvider::default()),
@@ -1266,7 +1266,7 @@ async fn provider_evidence_drift_drains_the_incarnation() {
         lifecycle_worker(
             WorkerUpstream::new(upstream.url()).with_worker_id("worker-provider-drift-test"),
         )
-        .with_deployment_config(local_coordinator_deployment())
+        .with_deployment_config(local_coordinator_deployment(), false)
         .with_session_container_provider(
             "external-secure",
             Arc::new(ExternalSessionProvider::with_readiness(ready.clone())),
@@ -1366,7 +1366,7 @@ async fn incompatible_control_registration_withdraws_before_runtime_startup() {
             let worker = lifecycle_worker(
                 WorkerUpstream::new(upstream.url()).with_worker_id("protocol-test"),
             )
-            .with_deployment_config(local_coordinator_deployment())
+            .with_deployment_config(local_coordinator_deployment(), false)
             .with_session_container_provider("external-secure", provider.clone())
             .with_attempt_decorator_factory(Arc::new(move |_| {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -1415,7 +1415,7 @@ async fn closed_registration_receipt_withdraws_before_application_factories() {
         let calls = factories.clone();
         let worker =
             lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id("closed-receipt"))
-                .with_deployment_config(local_coordinator_deployment())
+                .with_deployment_config(local_coordinator_deployment(), false)
                 .with_attempt_decorator_factory(Arc::new(move |_| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Err("closed receipt must precede factory".into())
@@ -1489,7 +1489,7 @@ async fn startup_failure_and_cancellation_share_one_registration_exit() {
         }
         let mut builder =
             lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id(fault))
-                .with_deployment_config(deployment)
+                .with_deployment_config(deployment, false)
                 .with_session_container_provider("external-secure", provider.clone())
                 .with_manifest(manifest())
                 .without_admin_surface();
@@ -1575,7 +1575,7 @@ async fn registration_withdrawal_receipts_are_exact_bounded_and_preserve_primary
             });
             let mut builder =
                 lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id("withdrawal"))
-                    .with_deployment_config(local_coordinator_deployment())
+                    .with_deployment_config(local_coordinator_deployment(), false)
                     .with_session_container_provider("external-secure", provider.clone())
                     .with_manifest(manifest())
                     .without_admin_surface();
@@ -1644,7 +1644,7 @@ async fn expired_initial_heartbeat_cannot_start_dispatch() {
             lifecycle_worker(
                 WorkerUpstream::new(upstream.url()).with_worker_id("expired-initial-receipt"),
             )
-            .with_deployment_config(local_coordinator_deployment())
+            .with_deployment_config(local_coordinator_deployment(), false)
             .with_manifest(manifest())
             .without_admin_surface()
             .build()
@@ -1712,7 +1712,7 @@ async fn stalled_provider_probe_does_not_block_renewal_but_expires() {
         lifecycle_worker(
             WorkerUpstream::new(upstream.url()).with_worker_id("worker-provider-stall-test"),
         )
-        .with_deployment_config(local_coordinator_deployment())
+        .with_deployment_config(local_coordinator_deployment(), false)
         .with_session_container_provider(
             "external-secure",
             Arc::new(ExternalSessionProvider::stalling_after_startup()),
@@ -1754,7 +1754,7 @@ async fn transient_provider_timeout_recovers_without_incarnation_restart() {
             WorkerUpstream::new(upstream.url()).with_worker_id("worker-provider-recovery-test"),
             awaken_time::system_clock(),
         )
-        .with_deployment_config(local_coordinator_deployment())
+        .with_deployment_config(local_coordinator_deployment(), false)
         .with_session_container_provider("external-secure", provider.clone())
         .with_hand_executor_factory(Arc::new(NoHandFactory))
         .with_manifest(manifest())
@@ -1789,7 +1789,7 @@ async fn stalled_initial_provider_probe_never_publishes_ready() {
             WorkerUpstream::new(upstream.url()).with_worker_id("worker-provider-startup-stall"),
             awaken_time::system_clock(),
         )
-        .with_deployment_config(local_coordinator_deployment())
+        .with_deployment_config(local_coordinator_deployment(), false)
         .with_session_container_provider(
             "external-secure",
             Arc::new(ExternalSessionProvider {
@@ -1824,7 +1824,7 @@ async fn panicking_heartbeat_probe_uses_authority_loss_and_requires_replacement(
     let result = tokio::time::timeout(
         Duration::from_secs(5),
         lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id("worker-probe-panic"))
-            .with_deployment_config(local_coordinator_deployment())
+            .with_deployment_config(local_coordinator_deployment(), false)
             .with_session_container_provider(
                 "external-secure",
                 Arc::new(ExternalSessionProvider {
@@ -1878,7 +1878,7 @@ async fn authority_loss_terminates_the_incarnation_for_supervisor_restart() {
         lifecycle_worker(
             WorkerUpstream::new(upstream.url()).with_worker_id("worker-authority-loss-test"),
         )
-        .with_deployment_config(coordinator_defaults)
+        .with_deployment_config(coordinator_defaults, false)
         .with_manifest(manifest())
         .with_graceful_drain(Duration::ZERO)
         .without_admin_surface()
@@ -1923,7 +1923,7 @@ async fn transient_heartbeat_failure_pauses_then_resumes_claim_admission() {
     lifecycle_worker(
         WorkerUpstream::new(upstream.url()).with_worker_id("worker-transient-heartbeat-test"),
     )
-    .with_deployment_config(local_coordinator_deployment())
+    .with_deployment_config(local_coordinator_deployment(), false)
     .with_manifest(manifest())
     .with_admin_listen(&admin_addr)
     .build()
@@ -1964,7 +1964,7 @@ async fn lost_applied_heartbeat_response_retries_with_a_higher_sequence() {
     lifecycle_worker(
         WorkerUpstream::new(upstream.url()).with_worker_id("worker-lost-heartbeat-response-test"),
     )
-    .with_deployment_config(local_coordinator_deployment())
+    .with_deployment_config(local_coordinator_deployment(), false)
     .with_manifest(manifest())
     .without_admin_surface()
     .build()
@@ -2000,7 +2000,7 @@ async fn repeated_transport_failure_drains_only_after_the_proof_deadline() {
         lifecycle_worker(
             WorkerUpstream::new(upstream.url()).with_worker_id("worker-proof-deadline-test"),
         )
-        .with_deployment_config(local_coordinator_deployment())
+        .with_deployment_config(local_coordinator_deployment(), false)
         .with_manifest(manifest())
         .without_admin_surface()
         .build()
@@ -2038,7 +2038,7 @@ async fn drain_closes_local_admission_before_control_acknowledges() {
     let coordinator_defaults = local_coordinator_deployment();
 
     lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id("worker-drain-order-test"))
-        .with_deployment_config(coordinator_defaults)
+        .with_deployment_config(coordinator_defaults, false)
         .with_manifest(manifest())
         .with_admin_listen(&admin_addr)
         .build()
@@ -2118,7 +2118,7 @@ async fn incompatible_observation_publication_budget_withdraws_or_drains() {
         }
         let worker = lifecycle_worker(WorkerUpstream::new(upstream.url()))
             .with_manifest(manifest())
-            .with_deployment_config(local_coordinator_deployment())
+            .with_deployment_config(local_coordinator_deployment(), false)
             .with_credential_observation_window(
                 Duration::from_millis(10),
                 Duration::from_millis(400),

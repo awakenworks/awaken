@@ -585,22 +585,28 @@ exclusions.
 
 For the v5 comparison, the original `f03c55823bbe` sample failed before export:
 its exact JS response assertion omitted the SDK-required nullable `url_sources`
-member. The user approved a separate production-equivalent reference using the
+member. The user approved separate production-equivalent references using the
 same canonically validated test-fixture/oracle corrections on both sides.
-Production code, schemas, sampling tools and coverage waivers remain identical
-to f03. The only approved non-JS exceptions are the original writer's strict
-wait-baseline decreases and one `fuzz/Cargo.lock` package-version correction:
+Those references keep production code, schemas, sampling tools and coverage
+waivers identical to f03. Their approved non-JS exceptions are the original
+writer's strict wait-baseline decreases and one `fuzz/Cargo.lock` correction:
 `awaken-mcp-wire` 0.1.0 to its already-declared 0.2.0; other lock entries remain
-unchanged. Record the complete path/blob/mode allowlist and actual reference
-commit/tree, use fresh profiles per scope, and retain every historical failed
-sample without substituting a measurement. Reference `f27e1cb1db88` normally
-committed its eight allowed paths; its sample stopped at the extraction fixture
-after 53 successful commands, with no export or combined run. The three later
-canonical extraction-test corrections in `f5c7d3f91a07` passed their real process
-cases and may enter a new explicitly bound reference, not rewrite that failure.
-Upstream,
-shutdown, source-fence or export failure invalidates a measurement; an isolated
-terminal waiver refusal remains a failed gate even when independently valid
+unchanged.
+
+The later, explicitly approved **repaired historical reference** additionally
+applies only the exact three-file A2A fix normally committed and fast-forwarded
+as `8e7f7d980b31`: one production Rust file, its existing regression file and
+the existing JS case. It preserves ordinary first-Run streaming admission and
+the existing owner-scoped refusal. This is a changed reference definition,
+not an untouched-production f03 result; it does not authorize other production
+fixes. Schemas, sampling tools, waivers and other approved lock differences
+remain unchanged.
+
+Record the complete path/blob/mode allowlist and actual reference commit/tree,
+use fresh profiles per scope, and retain every historical failed sample without
+substituting a measurement. Upstream, shutdown, source-fence or export failure
+invalidates a measurement; a process exit 0 does not erase a captured panic.
+An isolated terminal waiver refusal remains a failed gate even when independently valid
 counters can be reviewed. Compare like-for-like served and combined counts and
 ownership separately, not percentages with different changed-line denominators.
 
@@ -832,6 +838,32 @@ qualification are separate claims.
   Original Kani and TLC model-command blocks stayed byte-identical. This is
   tool-selection regression evidence, not execution of the formal models or
   acceptance of a newer Native composition.
+- **Native-42e Rust / SDK checkpoint (2026-11-05).** Clean
+  `42e30edac45f` (tree `4a5aa1c80e1e`) passed the original complete Linux
+  Rust group: 10,529 nextest cases passed, 129 original skips were reported
+  separately, and both Clippy graphs, doctests, dependency checks and the
+  original default-stack two-Run MCP case passed. Annotated
+  `verified/20261104-1850` records that Rust scope. Fresh SDK package and artifact
+  qualification passed on this source: 24 archives per profile, a 27-archive
+  consumption union and eight real tasks plus the sample. Original SemVer
+  records and validators completed both 45-case/50-step profiles, both
+  17-package forced-major audits and both 22-package historical checks; two
+  first releases remained separate. Its external collector returned 143 and
+  no outer exit file survived, so the original owner-recorded exit 0 and
+  byte-identical retained evidence are not relabelled as an observed outer 0.
+  All three source windows closed unchanged; broader full13/live/Windows
+  qualification remains separate.
+- **Repaired historical reference (2026-11-05).** Normal
+  `8c20deafc078` (tree `607f4b1b8940`, parent `ba8bcb492340`) adds only the
+  approved A2A three-file patch to R5's eleven exceptions; all other f03
+  inputs and every tracked mode were checked. Original related cases and both
+  workspace Clippy graphs passed. The normal commit itself recorded exit 0;
+  its external collector 143 and missing post-return record remain separately
+  retained. Fresh served-process sampling passed 124 commands, then failed
+  command 125's repeated Work-stop rejection assertion, leaving 89 commands
+  unrun, no export and no combined measurement. Captured shutdown panic
+  markers are retained independently; this is neither coverage qualification
+  nor a successful original f03 sample.
 - **Downstream component checkpoints.** Cloud `6fda36a9`, consuming Native
   `e9773cf5` and IAM `dc0c68b4`, passed all eight selected Worker-access cases,
   both owning Clippy checks, documentation checks, normal hooks and safe FF.

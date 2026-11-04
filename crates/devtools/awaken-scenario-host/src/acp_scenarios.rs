@@ -37,7 +37,7 @@ const SLOW_FAKE_ACP_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
   done";
 
 /// Slow newline ACP process used to exercise live pause and safe-boundary resume.
-pub async fn build_acp_control_router() -> Router {
+pub async fn build_acp_control_router(trace_file_present: bool) -> Router {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
         scenario_shell_argv(SLOW_FAKE_ACP_SCRIPT),
         vec![],
@@ -46,6 +46,7 @@ pub async fn build_acp_control_router() -> Router {
         scenario_deployment(),
         awaken_execution_composition::LaunchSource::Fixed(Box::new(launch)),
         None,
+        trace_file_present,
     )
     .await
 }
@@ -82,7 +83,7 @@ impl awaken_run_executor_acp::LaunchResolver for FailSecondAcpResolver {
 /// First ACP Run starts normally; a live-inbox continuation reaches the normal
 /// relaunch seam, where the deterministic source fails. Production error handling
 /// is exercised without adding a diagnostic endpoint to the server.
-pub async fn build_acp_relaunch_failure_router() -> Router {
+pub async fn build_acp_relaunch_failure_router(trace_file_present: bool) -> Router {
     let cli = scenario_host_acp_cli(canonical_claude_fixture(
         awaken_run_executor_acp::AcpAcquisition::Direct {
             executable: "/bin/sh",
@@ -100,6 +101,7 @@ pub async fn build_acp_relaunch_failure_router() -> Router {
         scenario_deployment(),
         awaken_execution_composition::LaunchSource::Projected(registry),
         None,
+        trace_file_present,
     )
     .await
 }
@@ -107,8 +109,8 @@ pub async fn build_acp_relaunch_failure_router() -> Router {
 /// [`build_acp_router`]'s official-wire twin: `acp:*` sessions drive the fake agent
 /// over real ACP JSON-RPC (the [`awaken_run_executor_acp::Codec::Acp`] driver),
 /// proving the production codec end-to-end. `AWAKEN_MODEL_MODE=acp-jsonrpc`.
-pub async fn build_acp_jsonrpc_router() -> Router {
-    build_acp_jsonrpc_router_with_deployment(scenario_deployment()).await
+pub async fn build_acp_jsonrpc_router(trace_file_present: bool) -> Router {
+    build_acp_jsonrpc_router_with_deployment(scenario_deployment(), trace_file_present).await
 }
 
 /// Typed-deployment variant used by hermetic dispatch tests. The ordinary
@@ -116,6 +118,7 @@ pub async fn build_acp_jsonrpc_router() -> Router {
 /// delegates here, matching the sandboxed and gateway ACP fixtures.
 pub async fn build_acp_jsonrpc_router_with_deployment(
     deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
 ) -> Router {
     // One catalog-driven route set owns every production ACP identity. Only the
     // acquisition command is replaced by the canonical deterministic fixture;
@@ -181,32 +184,37 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
     // incompatible substrate decision after the process boundary had selected
     // Namespace/Container.
     let host_publication = publication.clone();
-    let platform =
-        resource_host_with_deployment(Arc::new(OversizedToolModel), "awaken", deployment.clone())
-            .await
-            .map_dependencies_async(|host| async move {
-                awaken_execution_composition::with_acp_launch_source(
-                    host.with_agent_publications(host_publication),
-                    &deployment,
-                    awaken_tool_relay::relay_hand_executor_factory(),
-                    launch,
-                )
-                .await
-                .expect("scenario Session environment must be available")
-            })
-            .await;
+    let platform = resource_host_with_deployment(
+        Arc::new(OversizedToolModel),
+        "awaken",
+        deployment.clone(),
+        trace_file_present,
+    )
+    .await
+    .map_dependencies_async(|host| async move {
+        awaken_execution_composition::with_acp_launch_source(
+            host.with_agent_publications(host_publication),
+            &deployment,
+            awaken_tool_relay::relay_hand_executor_factory(),
+            launch,
+        )
+        .await
+        .expect("scenario Session environment must be available")
+    })
+    .await;
     mount_with_agent_source(platform, publication).await
 }
 
 /// Durable allow/deny coverage for ACP `session/request_permission`, through the
 /// same per-Session policy and Managed resume API used by native execution.
-pub async fn build_acp_permission_router() -> Router {
-    build_acp_permission_router_with_deployment(scenario_deployment()).await
+pub async fn build_acp_permission_router(trace_file_present: bool) -> Router {
+    build_acp_permission_router_with_deployment(scenario_deployment(), trace_file_present).await
 }
 
 /// Build the permission scenario against one explicit typed deployment.
 pub async fn build_acp_permission_router_with_deployment(
     deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
 ) -> Router {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
         scenario_shell_argv(FAKE_ACP_PERMISSION_SCRIPT),
@@ -216,6 +224,7 @@ pub async fn build_acp_permission_router_with_deployment(
         deployment,
         awaken_execution_composition::LaunchSource::FixedAcp(Box::new(launch)),
         None,
+        trace_file_present,
     )
     .await
 }
@@ -262,7 +271,7 @@ fn node_module_without_shebang(source: &str) -> &str {
 /// rooted write/read after Awaken resumes the durable permission ticket. The
 /// process is installed through the same SessionEnvironment owner as every
 /// other ACP fixture; the bridge only adds its immutable Hand publication.
-pub async fn build_acp_tool_bridge_router() -> Router {
+pub async fn build_acp_tool_bridge_router(trace_file_present: bool) -> Router {
     let deployment = scenario_deployment();
     let mut launch = awaken_run_executor_acp::AcpLaunch::custom(
         vec![
@@ -308,7 +317,13 @@ pub async fn build_acp_tool_bridge_router() -> Router {
     let publication = fixed_agent_publication([snapshot]);
     let host_publication = publication.clone();
     let platform = bind_acp_session_environment(
-        runtime_resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment).await,
+        runtime_resource_host_with_deployment(
+            Arc::new(EchoModel),
+            "awaken",
+            deployment,
+            trace_file_present,
+        )
+        .await,
         awaken_execution_composition::LaunchSource::FixedAcp(Box::new(launch)),
         None,
     )
@@ -318,8 +333,8 @@ pub async fn build_acp_tool_bridge_router() -> Router {
 }
 
 /// Compatibility entry point for the one SessionEnvironment-owned ACP fixture.
-pub async fn build_acp_router() -> Router {
-    build_acp_sandboxed_router().await
+pub async fn build_acp_router(trace_file_present: bool) -> Router {
+    build_acp_sandboxed_router(trace_file_present).await
 }
 
 /// A JSON-RPC fake agent (the codec [`ProjectingChannelSource`] speaks) that echoes
@@ -478,7 +493,7 @@ impl awaken_run_executor_acp::LaunchResolver for FixedAcpModel {
 /// declares `mcp_servers` (bound to a vault credential) has its staged servers projected
 /// α-secretless into the fake CLI's `session/new`. Proves the D6→D5 chain end to end
 /// through the HTTP managed API. `AWAKEN_MODEL_MODE=acp-managed-mcp`.
-pub async fn build_acp_managed_mcp_router() -> Router {
+pub async fn build_acp_managed_mcp_router(trace_file_present: bool) -> Router {
     let fixture_cli = fake_acp_mcp_cli();
     let deployment = scenario_deployment();
     let store_dir = deployment.storage_dir.clone();
@@ -501,6 +516,7 @@ pub async fn build_acp_managed_mcp_router() -> Router {
                 store_dir,
             )
         },
+        trace_file_present,
     )
     .await
 }
@@ -518,7 +534,7 @@ pub async fn build_acp_managed_mcp_router() -> Router {
     clippy::disallowed_methods,
     reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
 )]
-pub async fn build_acp_real_mcp_router() -> Router {
+pub async fn build_acp_real_mcp_router(trace_file_present: bool) -> Router {
     let deployment = scenario_deployment();
     let store_dir = deployment.storage_dir.clone();
     let installed = deployment.clone();
@@ -564,6 +580,7 @@ pub async fn build_acp_real_mcp_router() -> Router {
                 launch_argv,
             )
         },
+        trace_file_present,
     )
     .await
 }
@@ -595,21 +612,22 @@ const SANDBOXED_FAKE_ACP_SCRIPT: &str = "read _p; net=''; \
 /// session's CLI runs under `--unshare-net`.
 /// `AWAKEN_MODEL_MODE=acp-sandboxed`; the sandbox roots come from the same typed
 /// Scenario deployment as every other mode (a process temp root when unset).
-pub async fn build_acp_sandboxed_router() -> Router {
-    build_acp_sandboxed_router_with_deployment(scenario_deployment()).await
+pub async fn build_acp_sandboxed_router(trace_file_present: bool) -> Router {
+    build_acp_sandboxed_router_with_deployment(scenario_deployment(), trace_file_present).await
 }
 
 /// Drive the gateway fixture through the same Deployment-owned Session
 /// environment and immutable Agent publication as every other sandboxed ACP
 /// scenario. Only the projected launch facts differ.
-pub async fn build_acp_gateway_router() -> Router {
-    build_acp_gateway_router_with_deployment(scenario_deployment()).await
+pub async fn build_acp_gateway_router(trace_file_present: bool) -> Router {
+    build_acp_gateway_router_with_deployment(scenario_deployment(), trace_file_present).await
 }
 
 /// Typed-deployment gateway variant used by topology tests. Keeping this seam
 /// beside the sandboxed variant prevents a second backend-owned workdir path.
 pub async fn build_acp_gateway_router_with_deployment(
     deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
 ) -> Router {
     let resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver> =
         Arc::new(acp_gateway::ScenarioEnvAcpModel);
@@ -622,6 +640,7 @@ pub async fn build_acp_gateway_router_with_deployment(
         deployment,
         awaken_execution_composition::LaunchSource::Projected(registry),
         broker,
+        trace_file_present,
     )
     .await
 }
@@ -635,6 +654,7 @@ pub async fn build_acp_gateway_router_with_deployment(
 )]
 pub async fn build_acp_sandboxed_router_with_deployment(
     deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
 ) -> Router {
     // The launch env is the ONLY env projected into the agent command; the probe
     // port (when the e2e sets one) must cross into the sandbox explicitly.
@@ -654,6 +674,7 @@ pub async fn build_acp_sandboxed_router_with_deployment(
         deployment,
         awaken_execution_composition::LaunchSource::Fixed(Box::new(launch)),
         None,
+        trace_file_present,
     )
     .await
 }
@@ -667,6 +688,7 @@ async fn build_acp_session_environment_router(
     mut deployment: awaken_deployment_config::DeploymentConfig,
     source: awaken_execution_composition::LaunchSource,
     secret_broker: Option<Arc<dyn awaken_run_executor_acp::SecretBroker>>,
+    trace_file_present: bool,
 ) -> Router {
     // One typed owner for both roots. Explicit storage/sandbox coordinates are
     // preserved independently; the scenario-only fallback colocates them under
@@ -684,7 +706,13 @@ async fn build_acp_session_environment_router(
         .sandbox_dir
         .get_or_insert_with(|| storage_dir.join("sandboxes"));
     let platform = bind_acp_session_environment(
-        resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment).await,
+        resource_host_with_deployment(
+            Arc::new(EchoModel),
+            "awaken",
+            deployment,
+            trace_file_present,
+        )
+        .await,
         source,
         secret_broker,
     )
@@ -759,7 +787,7 @@ pub(crate) async fn bind_acp_session_environment(
     clippy::disallowed_methods,
     reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
 )]
-pub async fn build_acp_container_router() -> Router {
+pub async fn build_acp_container_router(trace_file_present: bool) -> Router {
     let mut deployment = scenario_deployment();
     let storage_dir = deployment.storage_dir.clone().unwrap_or_else(|| {
         std::env::temp_dir().join(format!("awaken-acp-container-{}", std::process::id()))
@@ -876,19 +904,20 @@ pub async fn build_acp_container_router() -> Router {
         (publication, launch, Arc::new(EchoModel))
     };
     let host_publication = publication.clone();
-    let platform = resource_host_with_deployment(model, "awaken", deployment.clone())
-        .await
-        .map_dependencies_async(|host| async move {
-            awaken_execution_composition::with_acp_launch_source(
-                host.with_agent_publications(host_publication),
-                &deployment,
-                awaken_tool_relay::relay_hand_executor_factory(),
-                launch,
-            )
+    let platform =
+        resource_host_with_deployment(model, "awaken", deployment.clone(), trace_file_present)
             .await
-            .expect("scenario Session environment must be available")
-        })
-        .await;
+            .map_dependencies_async(|host| async move {
+                awaken_execution_composition::with_acp_launch_source(
+                    host.with_agent_publications(host_publication),
+                    &deployment,
+                    awaken_tool_relay::relay_hand_executor_factory(),
+                    launch,
+                )
+                .await
+                .expect("scenario Session environment must be available")
+            })
+            .await;
     // Use the same shared Resource Registry + Managed ACL assembly as every other
     // scenario, with the exact Environment Execution application mounted by the API.
     mount_with_environments_and_agent_source(platform, Some(publication)).await

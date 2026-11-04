@@ -213,7 +213,11 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
             deployment: Some(deployment.runtime.clone()),
             namespace_hand_path: None,
             colocated_execution: coordinator_services.colocated_execution,
-            content_capture_ceiling: deployment.runtime.content_capture.level,
+            content_capture_ceiling: awaken_data_governance_contract::clamp_for_trace_file(
+                deployment.runtime.content_capture.level,
+                deployment.observability.trace_file.is_some(),
+            ),
+            trace_file_present: deployment.observability.trace_file.is_some(),
             org_id: Some(deployment.org_id.clone()),
             enrollment_signing_key: key
                 .map(awaken_data_subject_application::derive_enrollment_signing_key),

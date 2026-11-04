@@ -92,7 +92,7 @@ fn select(
     let SessionExecutionProcess {
         local_workspace,
         execution,
-        content_capture,
+        capture_decision,
         storage_dir: store_dir,
         sandbox_root,
         trusted_host,
@@ -137,7 +137,7 @@ fn select(
         resources,
         mcp: awaken_session_mcp::McpSessions::new(mcp_relay, clock.clone()),
         execution,
-        capture: capability::ContentCaptureCapability::new(content_capture),
+        capture: capability::ContentCaptureCapability::new(capture_decision),
         session_execution: SessionExecutionDependencies::default(),
         skill_bundle_source,
         local_workspace,
@@ -290,6 +290,7 @@ impl SessionExecutorBuilder {
                 &deployment,
                 awaken_deployment_config::mint_local_workspace(),
                 clock.clone(),
+                false,
             )
             .expect("a unit-test fixture selects a valid process"),
             Arc::new(crate::LocalAuthority::new(Arc::new(

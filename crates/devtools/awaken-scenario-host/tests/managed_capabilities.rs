@@ -77,7 +77,7 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
         "Deploy checklist",
         "STEP: migrate first.",
     );
-    let app = build_router_with_skills(Arc::new(EchoModel), "echo-model", vec![skill]).await;
+    let app = build_router_with_skills(Arc::new(EchoModel), "echo-model", vec![skill], false).await;
 
     let session = create_session(&app).await;
 
@@ -110,7 +110,7 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
 /// built-in toolset reference.
 #[tokio::test]
 async fn managed_session_advertises_custom_tools() {
-    let app = build_custom_router().await;
+    let app = build_custom_router(false).await;
     let session = create_session(&app).await;
 
     let tools = session["agent"]["tools"].as_array().unwrap();
@@ -138,7 +138,7 @@ async fn managed_session_advertises_custom_tools() {
 async fn managed_session_advertises_multiagent_roster() {
     let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
-    let app = build_delegation_router_with_deployment(deployment).await;
+    let app = build_delegation_router_with_deployment(deployment, false).await;
     let session = create_session(&app).await;
 
     assert_eq!(session["agent"]["multiagent"]["type"], "coordinator");

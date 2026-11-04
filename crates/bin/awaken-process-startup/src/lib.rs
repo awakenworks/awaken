@@ -175,11 +175,15 @@ pub use prepared_process::{CoordinatorAuthorityHandles, PreparedProcess};
 
 /// Build all-in-one from the standard typed deployment configuration, its
 /// local claim pool running Sessions through `execution`.
-pub async fn build_all_in_one_router(execution: Box<dyn ColocatedExecution>) -> Router {
+pub async fn build_all_in_one_router(
+    execution: Box<dyn ColocatedExecution>,
+    observability: &awaken_observability::ObservabilityConfig,
+) -> Router {
     build_all_in_one_router_with_model_supply(
         PublicationModelSupply::PublishedProviders,
         ManagedServiceAdapters::default(),
         execution,
+        observability,
     )
     .await
 }
@@ -319,6 +323,7 @@ pub async fn build_all_in_one_router_with_scenario_model(
     model_ref: String,
     managed_services: ManagedServiceAdapters,
     execution: Box<dyn ColocatedExecution>,
+    observability: &awaken_observability::ObservabilityConfig,
 ) -> Router {
     build_all_in_one_router_with_model_supply(
         PublicationModelSupply::Host {
@@ -329,6 +334,7 @@ pub async fn build_all_in_one_router_with_scenario_model(
         },
         managed_services,
         execution,
+        observability,
     )
     .await
 }
@@ -337,12 +343,16 @@ async fn build_all_in_one_router_with_model_supply(
     model_supply: PublicationModelSupply,
     managed_services: ManagedServiceAdapters,
     execution: Box<dyn ColocatedExecution>,
+    observability: &awaken_observability::ObservabilityConfig,
 ) -> Router {
-    let deployment = config::ResolvedDeployment::load(
+    let mut deployment = config::ResolvedDeployment::load(
         config::ConfigOverrides::default(),
         deployment_process::process_clock_for(None),
     )
     .unwrap_or_else(|error| panic!("deployment configuration: {error}"));
+    // This caller already selected and initialized its exporter. Scenario roots
+    // can override the file input; a second config load cannot replace that fact.
+    deployment.observability = observability.clone();
     let key = deployment
         .seal_key
         .load_or_create()
@@ -375,9 +385,15 @@ pub async fn build_all_in_one_router_with_execution_inputs(
     deployment: awaken_deployment_config::DeploymentConfig,
     web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
     execution: Box<dyn ColocatedExecution>,
+    trace_file_present: bool,
 ) -> Router {
     let stores = in_memory_process_stores().await;
     let mut options = exact_host_model::local_test_process_options(&stores, execution);
+    options.content_capture_ceiling = awaken_data_governance_contract::clamp_for_trace_file(
+        deployment.content_capture.level,
+        trace_file_present,
+    );
+    options.trace_file_present = trace_file_present;
     options.deployment = Some(deployment);
     options.web_search_providers = web_search_providers;
     prepare_runtime_routers(

@@ -182,6 +182,7 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
         Arc::new(EchoModel),
         "claude-sonnet-5",
         runtime_publications.clone(),
+        false,
     )
     .await;
     let workspace_id = host.local_workspace().to_string();
@@ -342,6 +343,7 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
         Arc::new(EchoModel),
         "claude-sonnet-5",
         catalog.clone(),
+        false,
     )
     .await;
     let workspace_id = host.local_workspace().to_string();
@@ -468,6 +470,7 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
         Arc::new(EchoModel),
         "claude-sonnet-5",
         catalog.clone(),
+        false,
     )
     .await;
     let workspace_id = host.local_workspace().to_string();

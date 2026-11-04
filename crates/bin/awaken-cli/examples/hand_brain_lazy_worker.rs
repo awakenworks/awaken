@@ -124,7 +124,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     awaken_worker::WorkerNodeBuilder::new(upstream, awaken_time::system_clock())
         .with_inference_materializer(Arc::new(HostMaterializer))
-        .with_deployment_config(deployment)
+        .with_deployment_config(deployment, false)
         // Reuse the production CLI's one container Hand relay boundary. Container
         // providers fail closed without it; local providers accept the same factory
         // without creating a second execution path.

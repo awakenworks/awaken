@@ -109,7 +109,7 @@ fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane(
     // Runtime authority.
     // Route/unit suites own invalid, default-basic, and nonterminal alternatives.
     run_composed_async_test(|| async {
-        let (app, host) = build_dream_router_and_host().await;
+        let (app, host) = build_dream_router_and_host(false).await;
 
         let session = ok(
             &app,

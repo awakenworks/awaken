@@ -55,6 +55,7 @@ async fn host_over(dir: &std::path::Path, process: &str) -> Arc<ExecutorComponen
             Arc::new(CustomToolModel),
             "custom",
             worker_deployment,
+            false,
         )
         .await
         .with_runtime_authority(authority)
@@ -183,7 +184,7 @@ async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
 
     {
         let host = host_with_client_tool(
-            build_unmounted_dependencies(Arc::new(CustomToolModel), "custom").await,
+            build_unmounted_dependencies(Arc::new(CustomToolModel), "custom", false).await,
         );
         host.session_runs()
             .run(None, thread, vec![user("u1", "hi")])
@@ -193,7 +194,7 @@ async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
     }
 
     let host = host_with_client_tool(
-        build_unmounted_dependencies(Arc::new(CustomToolModel), "custom").await,
+        build_unmounted_dependencies(Arc::new(CustomToolModel), "custom", false).await,
     );
     assert!(
         !host.thread_reads().is_awaiting(thread).await,

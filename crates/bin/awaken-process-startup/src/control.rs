@@ -360,7 +360,11 @@ async fn prepare_control_process_with_model_supply_and_installations(
             deployment: None,
             namespace_hand_path: None,
             colocated_execution: None,
-            content_capture_ceiling: deployment.runtime.content_capture.level,
+            content_capture_ceiling: awaken_data_governance_contract::clamp_for_trace_file(
+                deployment.runtime.content_capture.level,
+                deployment.observability.trace_file.is_some(),
+            ),
+            trace_file_present: deployment.observability.trace_file.is_some(),
             org_id: Some(deployment.org_id.clone()),
             enrollment_signing_key: Some(
                 awaken_data_subject_application::derive_enrollment_signing_key(key),

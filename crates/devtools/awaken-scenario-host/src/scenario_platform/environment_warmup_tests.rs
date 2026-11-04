@@ -67,6 +67,7 @@ async fn authoring_and_worker_warmup_http_share_live_environment_revisions() {
         Arc::new(crate::EchoModel),
         "warmup-catalog",
         deployment,
+        false,
     )
     .await;
     let app = super::mount_with_environments(platform).await;

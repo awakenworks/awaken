@@ -194,9 +194,13 @@ async fn offered_skill_is_discovered_activated_and_used() {
     // the same Run. Effects: E1 only `read` is invoked; E2 prompt contains
     // metadata/path but not body; E3 read returns the exact body; E4 the Run
     // commits `USED_SKILL`. Rule L1=C1+C2 -> E1+E2; L2=L1+C3+C4 -> E3+E4.
-    let app =
-        build_router_with_managed_skills(Arc::new(SkillUserModel), "scripted", vec![skill_spec()])
-            .await;
+    let app = build_router_with_managed_skills(
+        Arc::new(SkillUserModel),
+        "scripted",
+        vec![skill_spec()],
+        false,
+    )
+    .await;
     let id = create_session(&app).await;
 
     let list = send_message(&app, &id, "please deploy").await;
@@ -245,7 +249,7 @@ async fn skill_tools_are_not_ambient_without_offering_a_skill() {
     // Constraints/invariants: store availability alone is never a capability
     // grant, and completion is observed only after the accepted receipt.
     // Decision rule: N1=C1+!C2 -> E1+E2.
-    let app = build_router(Arc::new(SkillUserModel), "scripted").await;
+    let app = build_router(Arc::new(SkillUserModel), "scripted", false).await;
     let id = create_session(&app).await;
 
     let list = send_message(&app, &id, "please deploy").await;

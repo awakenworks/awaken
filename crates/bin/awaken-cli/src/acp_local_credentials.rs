@@ -268,7 +268,10 @@ fn configured_worker_builder(
     }
 
     let mut builder = awaken_worker::WorkerNodeBuilder::new(upstream, clock)
-        .with_deployment_config(deployment.runtime.clone())
+        .with_deployment_config(
+            deployment.runtime.clone(),
+            deployment.observability.trace_file.is_some(),
+        )
         .with_standard_manifest_config(manifest)
         .with_inference_materializer(inference_override.unwrap_or_else(|| {
             Arc::new(

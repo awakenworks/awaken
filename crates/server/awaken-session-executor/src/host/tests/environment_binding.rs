@@ -774,6 +774,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
                 &awaken_deployment_config::DeploymentConfig::ephemeral(),
                 awaken_deployment_config::mint_local_workspace(),
                 system_clock(),
+                false,
             )
             .expect("ephemeral process")
         };

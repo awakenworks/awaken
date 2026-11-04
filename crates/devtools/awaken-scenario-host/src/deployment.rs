@@ -246,20 +246,23 @@ pub(crate) fn installation_workspace(
 pub(crate) async fn resource_host(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
+    trace_file_present: bool,
 ) -> ScenarioPlatform {
-    resource_host_with_deployment(llm, model_ref, scenario_deployment()).await
+    resource_host_with_deployment(llm, model_ref, scenario_deployment(), trace_file_present).await
 }
 
 pub(crate) async fn resource_host_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
 ) -> ScenarioPlatform {
     resource_host_with_selected_runtime(
         llm,
         model_ref,
         deployment,
         SCENARIO_RUNTIME_AUTHORITY.get(),
+        trace_file_present,
     )
     .await
 }
@@ -276,6 +279,7 @@ async fn resource_host_with_selected_runtime(
     model_ref: impl Into<String>,
     deployment: awaken_deployment_config::DeploymentConfig,
     selected: Option<&Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>>,
+    trace_file_present: bool,
 ) -> ScenarioPlatform {
     // The Scenario process's Resources clock.
     let clock = awaken_time::system_clock();
@@ -316,6 +320,7 @@ async fn resource_host_with_selected_runtime(
         &deployment,
         local_workspace,
         clock,
+        trace_file_present,
     )
     .expect("a local fixture selects a valid process");
     let dependencies = SessionExecutorBuilder::for_local_resources(
@@ -379,8 +384,10 @@ pub(crate) async fn runtime_resource_host_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
 ) -> ScenarioPlatform {
-    let platform = resource_host_with_deployment(llm, model_ref, deployment).await;
+    let platform =
+        resource_host_with_deployment(llm, model_ref, deployment, trace_file_present).await;
     let deployment = platform.deployment().clone();
     platform
         .map_dependencies_async(|dependencies| async move {
@@ -431,6 +438,7 @@ mod tests {
             "installed-runtime-authority",
             deployment,
             Some(&selected),
+            false,
         )
         .await
         .into_parts();
@@ -538,6 +546,7 @@ mod tests {
             Arc::new(crate::EchoModel),
             "resource-authority-test",
             deployment,
+            false,
         )
         .await;
         let (host, resources) = platform.into_parts();
@@ -585,6 +594,7 @@ mod tests {
             Arc::new(crate::EchoModel),
             "no-silent-volatile-fallback",
             deployment,
+            false,
         )
         .await;
     }
