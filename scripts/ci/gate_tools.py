@@ -205,7 +205,7 @@ def _image_status(reference: str) -> Found:
         )
     try:
         result = subprocess.run(
-            [engine, "image", "inspect", reference],
+            [engine, "image", "inspect", "--format", "{{.Id}}", reference],
             capture_output=True,
             text=True,
             timeout=120,
@@ -736,6 +736,12 @@ def _third_outcome_problems() -> list[str]:
     I2 is the only row a gate may skip on, and only when the row is optional:
     the engine looked and said no. I3 and I4 refuse whatever the requirement
     level, because nobody knows what the skip would have been skipping.
+
+    I5 applies to I1-I3: the probe needs only image existence, so every engine
+    fixture accepts exactly `image inspect --format {{.Id}} fixture:1`. Reading
+    the full image configuration would also read environment/label values that
+    do not affect admission. An expanded or missing projection returns 97;
+    I1/I2 then reject the drift instead of silently accepting a broader read.
     """
 
     import tempfile  # noqa: PLC0415 - only the self-test writes fixtures
@@ -760,6 +766,13 @@ def _third_outcome_problems() -> list[str]:
             "exit 1\n"
         ),
     }
+    projection_guard = (
+        'if [ "$#" -ne 5 ] || [ "$1" != image ] || [ "$2" != inspect ] || '
+        '[ "$3" != --format ] || [ "$4" != "{{.Id}}" ] || [ "$5" != fixture:1 ]; then\n'
+        '  echo "image probe must request only Id" >&2\n'
+        '  exit 97\n'
+        'fi\n'
+    )
     row = {
         "name": "fixture:1",
         "locate": "container-image",
@@ -774,7 +787,10 @@ def _third_outcome_problems() -> list[str]:
             home = Path(temporary) / expected
             home.mkdir()
             executable = home / "docker"
-            executable.write_text(body, encoding="utf-8", newline="\n")
+            executable.write_text(
+                '#!/bin/sh\n' + projection_guard + body.removeprefix('#!/bin/sh\n'),
+                encoding="utf-8", newline="\n",
+            )
             executable.chmod(0o755)
             if native_launcher is not None:
                 shutil.copyfile(native_launcher, home / "docker.exe")
