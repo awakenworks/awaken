@@ -24,7 +24,7 @@ async fn ai_sdk_input_and_client_answer_remain_one_managed_history_each() {
     // assertions. The SDK stream itself must already expose submit_answer.
     // No Managed command receipt exists for these SDK inputs; this fresh
     // Session has only this command, and the refinements name its exact content.
-    let app = build_custom_router().await;
+    let app = build_custom_router(false).await;
     let session = create_session(&app).await;
     let customer = "服务费金额本次没提供，收款时间还没定。";
     let mut payloads = vec![serde_json::json!({

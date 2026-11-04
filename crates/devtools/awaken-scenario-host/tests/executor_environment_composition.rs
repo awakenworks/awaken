@@ -139,6 +139,7 @@ mod testkit_host {
             &DeploymentConfig::ephemeral(),
             awaken_deployment_config::mint_local_workspace(),
             authorities.clock(),
+            false,
         )
         .expect("a local fixture selects a valid process");
         let dependencies = SessionExecutorBuilder::for_local_resources(

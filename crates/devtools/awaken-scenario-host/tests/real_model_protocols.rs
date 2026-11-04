@@ -61,7 +61,7 @@ fn live_executor() -> (Arc<GenaiExecutor>, String) {
 
 async fn live_router() -> Router {
     let (executor, model) = live_executor();
-    build_router(executor, model).await
+    build_router(executor, model, false).await
 }
 
 /// Concatenate the `field` of every SSE `data:` event whose `type` matches.
@@ -331,7 +331,7 @@ async fn multi_agent_graded_outcome_runs_a_judge_subagent() {
     let (executor, model) = live_executor();
     // Outcomes are graded by a judge sub-agent (a second run) driven by the same
     // live model — a genuine multi-agent flow: a worker run plus a judge sub-run.
-    let app = build_graded_router(executor, model, "assistant").await;
+    let app = build_graded_router(executor, model, "assistant", false).await;
 
     let (_, body) = call(
         &app,

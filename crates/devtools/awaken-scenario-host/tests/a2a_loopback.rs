@@ -263,6 +263,7 @@ async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<ExecutorComponent
         Arc::new(NativeDelegatingModel),
         "parent",
         Arc::new(publications),
+        false,
     )
     .await
     .with_remote_attempt_executor(awaken_session_executor::RemoteAttemptInstallation {
@@ -310,6 +311,7 @@ async fn published_delegating_host(
         Arc::new(NativeDelegatingModel),
         "parent",
         Arc::new(publications),
+        false,
     )
     .await
     .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(Some(materializer))))
@@ -345,7 +347,7 @@ async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
     // resolver tests in awaken-session-executor.
     run_composed_async_test(|| async {
         let transport = Arc::new(RouterTransport {
-            app: build_router(Arc::new(EchoModel), "remote").await,
+            app: build_router(Arc::new(EchoModel), "remote", false).await,
         });
         let host = delegating_host(transport).await;
 
@@ -382,7 +384,7 @@ async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
     // `PinnedA2aTransportResolver`; anonymous U1/U2 are covered above.
     run_composed_async_test(|| async {
         let peer = authenticated::AuthenticatedPeer::start(
-            build_router(Arc::new(EchoModel), "remote").await,
+            build_router(Arc::new(EchoModel), "remote", false).await,
         )
         .await;
         let host = published_delegating_host(

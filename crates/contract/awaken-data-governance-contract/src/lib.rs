@@ -28,7 +28,9 @@ use serde::{Deserialize, Serialize};
 
 mod decision;
 mod telemetry;
-pub use decision::{CapturePolicyDecision, CapturePolicyInputs, CaptureReason, decide_capture};
+pub use decision::{
+    CapturePolicyDecision, CapturePolicyInputs, CaptureReason, clamp_for_trace_file, decide_capture,
+};
 pub use telemetry::{
     CapturePolicy, CapturePolicySources, RedactionMode, TelemetryCeiling, TelemetryNarrowing,
     TelemetryNarrowingSource, TelemetryPolicyError, WorkspaceCapturePolicy,

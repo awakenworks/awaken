@@ -137,6 +137,7 @@ async fn nonlocal_environment_refusals_precede_agent_reads_and_session_creation(
             Arc::new(EchoModel),
             "claude-sonnet-5",
             catalog,
+            false,
         )
         .await;
         let clock = host.clock();

@@ -1,4 +1,5 @@
 // @formal entrypoint capture.policy_meet_and_projection_are_exact_non_widening_and_fail_closed
+// @formal entrypoint capture.persistence_redaction_selection_is_total_exact_and_non_widening
 //! The one content-capture decision (ADR-0050 D2/D3/D8).
 //!
 //! Every place that answers "how much content does this Run record?" calls
@@ -12,6 +13,21 @@ use awaken_runtime_contract::ContentCapture;
 use serde::Serialize;
 
 use crate::{TelemetryCeiling, TelemetryNarrowing, TelemetryPolicyError};
+
+/// Bound a deployment ceiling by the sink selected by this process (ADR-0050
+/// D7). The append-only file has neither subject erasure nor a TTL, so it may
+/// record Structured spans but never Full content. Control and execution use
+/// this same projection before applying Workspace policy and subject consent.
+#[must_use]
+pub const fn clamp_for_trace_file(
+    level: ContentCapture,
+    trace_file_present: bool,
+) -> ContentCapture {
+    match (trace_file_present, level) {
+        (true, ContentCapture::Full) => ContentCapture::Structured,
+        _ => level,
+    }
+}
 
 /// Why the effective level is what it is: the `reason` of ADR-0050 D8.
 ///

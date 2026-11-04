@@ -15,6 +15,7 @@ pub async fn run_echo_worker(
     admin_listen: Option<&str>,
     request_authorizer: Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>>,
     clock: Arc<dyn awaken_time::WallClock>,
+    trace_file_present: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     struct EchoWorkerProvider;
 
@@ -43,7 +44,12 @@ pub async fn run_echo_worker(
     if let Some(authorizer) = request_authorizer {
         worker_upstream = worker_upstream.with_request_authorizer(authorizer);
     }
-    let mut builder = echo_worker_builder(worker_upstream, Arc::new(EchoWorkerProvider), clock);
+    let mut builder = echo_worker_builder(
+        worker_upstream,
+        Arc::new(EchoWorkerProvider),
+        clock,
+        trace_file_present,
+    );
     builder = match admin_listen {
         Some(address) => builder.with_admin_listen(address),
         None => builder.without_admin_surface(),
@@ -55,6 +61,7 @@ fn echo_worker_builder(
     upstream: awaken_worker_transport_security::WorkerUpstream,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     clock: Arc<dyn awaken_time::WallClock>,
+    trace_file_present: bool,
 ) -> awaken_worker::WorkerNodeBuilder {
     // The scenario image intentionally does not install bwrap: this test isolates
     // remote claim/commit recovery, while sandbox-tier tests own OS isolation.
@@ -63,7 +70,7 @@ fn echo_worker_builder(
     let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
     awaken_worker::WorkerNodeBuilder::new(upstream, clock)
-        .with_deployment_config(deployment)
+        .with_deployment_config(deployment, trace_file_present)
         // Local is an explicit TrustedHost profile. Its Native capability must
         // have the same Hand factory as the production standalone Worker;
         // manifest construction alone does not exercise runtime preparation.
@@ -122,6 +129,7 @@ mod tests {
                 .with_worker_id("worker-a"),
             Arc::new(HostMaterializer),
             awaken_time::system_clock(),
+            false,
         )
         .build()
         .expect("canonical scenario Worker topology");

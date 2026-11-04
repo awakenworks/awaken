@@ -423,6 +423,7 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
             &awaken_deployment_config::DeploymentConfig::ephemeral(),
             awaken_deployment_config::mint_local_workspace(),
             system_clock(),
+            false,
         )
         .expect("ephemeral process"),
         Arc::new(awaken_session_executor_testkit::volatile_reference_authority(system_clock())),

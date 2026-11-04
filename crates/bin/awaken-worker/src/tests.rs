@@ -888,7 +888,7 @@ async fn namespace_fallback_manifest_participant() {
             awaken_worker_transport_security::WorkerUpstream::new("http://control"),
             awaken_time::system_clock(),
         )
-        .with_deployment_config(deployment.clone())
+        .with_deployment_config(deployment.clone(), false)
     };
 
     assert!(
@@ -988,7 +988,7 @@ async fn container_preparation_preserves_existing_provider_and_refuses_foreign_c
             awaken_worker_transport_security::WorkerUpstream::new("http://control"),
             awaken_time::system_clock(),
         )
-        .with_deployment_config(configuration);
+        .with_deployment_config(configuration, false);
         let provider: Arc<
             dyn awaken_provisioning_contract::SandboxProvider<
                     Environment = dyn awaken_provisioning_contract::SessionSandbox,
@@ -1046,7 +1046,7 @@ fn worker_builder_rejects_scoped_execution_without_platform_or_host_consent() {
                 awaken_worker_transport_security::WorkerUpstream::new("http://control"),
                 awaken_time::system_clock(),
             )
-            .with_deployment_config(deployment)
+            .with_deployment_config(deployment, false)
             .with_standard_manifest(Default::default())
             .build();
             let allowed = !scoped || (cfg!(target_os = "linux") && trusted);

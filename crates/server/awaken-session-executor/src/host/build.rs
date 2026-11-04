@@ -21,7 +21,7 @@ pub struct SessionExecutionProcess {
     pub execution: crate::ExecutionTopology,
     /// The process content-capture ceiling and redactor. Per-request consent
     /// and the Workspace policy may only narrow it.
-    pub content_capture: awaken_deployment_config::ContentCaptureSettings,
+    pub(super) capture_decision: awaken_runtime_contract::CaptureDecision,
     /// The durable storage root: set selects durable SQLite commit and
     /// Resource adapters that survive a restart; `None` selects ephemeral ones.
     pub storage_dir: Option<PathBuf>,
@@ -44,15 +44,22 @@ impl SessionExecutionProcess {
     /// The process a Host is constructed in, projected from the typed
     /// Deployment configuration by the composition root. Consumer: every
     /// `SessionExecutorBuilder` constructor.
+    /// `trace_file_present` is the sink already selected by this same process;
+    /// construction freezes its effective ceiling and redactor once. Neither a
+    /// later Deployment edit nor a caller-supplied decision can widen it.
     pub fn from_deployment(
         deployment: &awaken_deployment_config::DeploymentConfig,
         local_workspace: String,
         clock: Arc<dyn awaken_time::WallClock>,
+        trace_file_present: bool,
     ) -> Result<Self, String> {
         Ok(Self {
             local_workspace,
             execution: deployment.execution_topology()?,
-            content_capture: deployment.content_capture,
+            capture_decision: crate::redact::capture_decision(
+                deployment.content_capture,
+                trace_file_present,
+            ),
             storage_dir: deployment.storage_dir.clone(),
             sandbox_root: awaken_deployment_config::session_sandbox_base(deployment),
             trusted_host: if deployment.trusted_host_enabled() {
@@ -645,6 +652,7 @@ mod startup_tests {
                 &awaken_deployment_config::DeploymentConfig::ephemeral(),
                 awaken_deployment_config::mint_local_workspace(),
                 awaken_time::system_clock(),
+                false,
             )
             .expect("ephemeral process"),
             Arc::new(
@@ -688,6 +696,7 @@ mod startup_tests {
                 &awaken_deployment_config::DeploymentConfig::ephemeral(),
                 awaken_deployment_config::mint_local_workspace(),
                 awaken_time::system_clock(),
+                false,
             )
             .expect("ephemeral process")
         };

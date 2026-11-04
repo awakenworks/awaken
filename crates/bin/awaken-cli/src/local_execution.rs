@@ -159,6 +159,7 @@ fn execution_builder(
             &inputs.deployment,
             inputs.local_workspace.clone(),
             inputs.clock.clone(),
+            inputs.trace_file_present,
         )?,
         inputs.runtime_authority.clone(),
     )
