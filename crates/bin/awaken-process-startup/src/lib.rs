@@ -175,11 +175,11 @@ pub use prepared_process::{CoordinatorAuthorityHandles, PreparedProcess};
 
 /// Build all-in-one from the standard typed deployment configuration, its
 /// local claim pool running Sessions through `execution`.
-pub async fn build_all_in_one_router(
+pub async fn prepare_all_in_one_process_with_execution(
     execution: Box<dyn ColocatedExecution>,
     observability: &awaken_observability::ObservabilityConfig,
-) -> Router {
-    build_all_in_one_router_with_model_supply(
+) -> PreparedProcess {
+    prepare_all_in_one_process_with_model_supply(
         PublicationModelSupply::PublishedProviders,
         ManagedServiceAdapters::default(),
         execution,
@@ -231,15 +231,6 @@ async fn prepare_ephemeral_all_in_one_process(
 }
 
 /// Canonical product process from the command's one resolved configuration.
-pub async fn build_all_in_one_router_with_deployment(
-    deployment: &config::ResolvedDeployment,
-    key: &[u8; 32],
-) -> Result<Router, String> {
-    prepare_all_in_one_process(deployment, key)
-        .await
-        .map(|process| process.public_router)
-}
-
 pub async fn prepare_all_in_one_process(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
@@ -318,14 +309,14 @@ pub async fn prepare_coordinator_process_with_services(
 /// its exact host candidate is published by a dedicated resolver and no
 /// credential/provider materializer is installed.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn build_all_in_one_router_with_scenario_model(
+pub async fn prepare_all_in_one_process_with_scenario_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: String,
     managed_services: ManagedServiceAdapters,
     execution: Box<dyn ColocatedExecution>,
     observability: &awaken_observability::ObservabilityConfig,
-) -> Router {
-    build_all_in_one_router_with_model_supply(
+) -> PreparedProcess {
+    prepare_all_in_one_process_with_model_supply(
         PublicationModelSupply::Host {
             executor: model,
             binding: awaken_runtime_contract::resolved::ModelBinding::new(
@@ -339,12 +330,12 @@ pub async fn build_all_in_one_router_with_scenario_model(
     .await
 }
 
-async fn build_all_in_one_router_with_model_supply(
+async fn prepare_all_in_one_process_with_model_supply(
     model_supply: PublicationModelSupply,
     managed_services: ManagedServiceAdapters,
     execution: Box<dyn ColocatedExecution>,
     observability: &awaken_observability::ObservabilityConfig,
-) -> Router {
+) -> PreparedProcess {
     let mut deployment = config::ResolvedDeployment::load(
         config::ConfigOverrides::default(),
         deployment_process::process_clock_for(None),
@@ -367,7 +358,6 @@ async fn build_all_in_one_router_with_model_supply(
     )
     .await
     .unwrap_or_else(|error| panic!("prepare all-in-one process: {error}"))
-    .public_router
 }
 
 /// [`build_all_in_one_router_with_model`] plus explicit test-only process inputs.
@@ -379,14 +369,14 @@ async fn build_all_in_one_router_with_model_supply(
 /// The supplied constructor owns every execution-specific selection, including
 /// any scenario backend customization, before shared startup receives its roles.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn build_all_in_one_router_with_execution_inputs(
+pub async fn build_all_in_one_service_with_execution_inputs(
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
     deployment: awaken_deployment_config::DeploymentConfig,
     web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
     execution: Box<dyn ColocatedExecution>,
     trace_file_present: bool,
-) -> Router {
+) -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
     let stores = in_memory_process_stores().await;
     let mut options = exact_host_model::local_test_process_options(&stores, execution);
     options.content_capture_ceiling = awaken_data_governance_contract::clamp_for_trace_file(
@@ -396,7 +386,7 @@ pub async fn build_all_in_one_router_with_execution_inputs(
     options.trace_file_present = trace_file_present;
     options.deployment = Some(deployment);
     options.web_search_providers = web_search_providers;
-    prepare_runtime_routers(
+    let prepared = prepare_runtime_routers(
         stores,
         None,
         None,
@@ -408,42 +398,8 @@ pub async fn build_all_in_one_router_with_execution_inputs(
         options,
     )
     .await
-    .expect("prepare test-support customized all-in-one process")
-    .public_router
-}
-
-/// Durable counterpart of [`build_all_in_one_router_with_execution_inputs`].
-///
-/// This is an explicit-input startup seam for restart tests and embeddings
-/// that need a real external runtime while retaining the same management and
-/// resource-plane state across host lifetimes. The sealing key and storage root
-/// are supplied by the caller, avoiding process-global environment races.
-#[cfg(any(test, feature = "test-support"))]
-pub async fn build_durable_all_in_one_router_with_execution_inputs(
-    dir: &std::path::Path,
-    key: &[u8; 32],
-    model: Arc<dyn LlmExecutor>,
-    binding: awaken_runtime_contract::resolved::ModelBinding,
-    execution: Box<dyn ColocatedExecution>,
-) -> Router {
-    let stores = open_local_process_stores(dir, key)
-        .await
-        .unwrap_or_else(|error| panic!("open local deployment stores: {error}"));
-    let options = exact_host_model::local_test_process_options(&stores, execution);
-    prepare_runtime_routers(
-        stores,
-        None,
-        None,
-        None,
-        PublicationModelSupply::Host {
-            executor: model,
-            binding,
-        },
-        options,
-    )
-    .await
-    .expect("prepare durable customized all-in-one process")
-    .public_router
+    .expect("prepare test-support customized all-in-one process");
+    (prepared.public_router, prepared.service_lifecycle)
 }
 
 /// Build the management router over in-memory stores with an explicit host default
@@ -476,7 +432,7 @@ pub async fn build_all_in_one_router_with_model(
     .public_router
 }
 
-/// [`build_all_in_one_router`] with explicit persistence inputs (no environment
+/// [`prepare_all_in_one_process_with_execution`] with explicit persistence inputs (no environment
 /// read): durable all-in-one over `dir`, sealing secrets under `key`.
 /// Exposed so a restart test can rebuild a router over one directory across
 /// simulated process lifetimes without racing on process-global env vars.

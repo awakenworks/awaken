@@ -204,7 +204,7 @@ NON_PRODUCT_APIS = (
         )
         for name in (
             "build_ephemeral_all_in_one_router",
-            "build_all_in_one_router_with_scenario_model",
+            "prepare_all_in_one_process_with_scenario_model",
             "build_all_in_one_router_with_model",
             "build_durable_all_in_one_router",
             "build_secured_all_in_one_router",
@@ -224,8 +224,7 @@ NON_PRODUCT_APIS = (
             FEATURE_TEST_SUPPORT_GATE,
         )
         for name in (
-            "build_all_in_one_router_with_host_customizer",
-            "build_durable_all_in_one_router_with_host_customizer",
+            "build_all_in_one_service_with_host_customizer",
         )
     ),
     (

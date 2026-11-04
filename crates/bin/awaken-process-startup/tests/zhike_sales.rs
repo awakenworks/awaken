@@ -476,7 +476,7 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
     });
     // This scenario uses only network MCP tools. Select the documented local
     // fixture substrate explicitly; it does not exercise namespace Hand tools.
-    let app = awaken_cli::build_all_in_one_router_with_host_customizer(
+    let (app, lifecycle) = awaken_cli::build_all_in_one_service_with_host_customizer(
         model.clone(),
         awaken_runtime_contract::resolved::ModelBinding::parse("default", model_name, "genai")
             .expect("complete fixture model binding"),
@@ -613,62 +613,65 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
     let events=send_and_wait_until(&app,session,&format!("<channel-event>{joined_event}</channel-event>\n<customer-input channel=\"mock-official-chat\">我是刚才电话里的林先生，想约人工演示。请按之前的需求和预算提交评估。</customer-input>"), |events| {
         !phone.lock().unwrap().chat_messages.is_empty() && events.iter().any(|e| e["type"] == "session.status_idle")
     }).await;
-    let state = phone.lock().unwrap();
-    assert_eq!(state.starts, 1, "one physical dial");
-    assert_eq!(state.ends, 1, "one explicit hangup");
-    assert!(
-        state.events.iter().any(|event| event == "call.connected")
-            && state.events.iter().any(|event| event == "call.ended"),
-        "both lifecycle results were retrieved"
-    );
-    assert!(
-        state.polls > 0 && state.result_reads > 0,
-        "real MCP Task protocol"
-    );
-    let assessment = state
-        .assessment
-        .as_ref()
-        .expect("assessment submitted through MCP");
-    assert_eq!(assessment["intent"], "high");
-    assert_eq!(assessment["budget"], 50000);
-    assert!(assessment["score"].as_f64().unwrap() > 0.75);
-    assert!(
-        !state.chat_messages.is_empty(),
-        "a reply crossed the second platform's actual MCP tool; attempts={:?}, calls={:?}, idle={:?}",
-        state.chat_attempts,
-        model.calls.lock().unwrap(),
-        events
-            .iter()
-            .rev()
-            .find(|e| e["type"] == "session.status_idle")
-    );
-    assert!(
-        state
-            .chat_messages
-            .iter()
-            .all(|message| !message.contains("已成交")),
-        "handoff is not sale completion"
-    );
-    assert!(
-        model.connected_inputs.load(Ordering::SeqCst) > 0,
-        "connected result reached inference"
-    );
-    assert_eq!(
-        model.result_lookups.load(Ordering::SeqCst),
-        0,
-        "no redundant result tool round"
-    );
-    assert!(
-        model.text_chunks.load(Ordering::SeqCst) > 1
-            && model.tool_chunks.load(Ordering::SeqCst) > 1,
-        "text and tool arguments stream"
-    );
-    assert!(events.iter().any(|e| e["type"] == "agent.message"));
-    eprintln!(
-        "Zhike passed: text_chunks={} tool_chunks={} dial_count=1",
-        model.text_chunks.load(Ordering::SeqCst),
-        model.tool_chunks.load(Ordering::SeqCst)
-    );
+    {
+        let state = phone.lock().unwrap();
+        assert_eq!(state.starts, 1, "one physical dial");
+        assert_eq!(state.ends, 1, "one explicit hangup");
+        assert!(
+            state.events.iter().any(|event| event == "call.connected")
+                && state.events.iter().any(|event| event == "call.ended"),
+            "both lifecycle results were retrieved"
+        );
+        assert!(
+            state.polls > 0 && state.result_reads > 0,
+            "real MCP Task protocol"
+        );
+        let assessment = state
+            .assessment
+            .as_ref()
+            .expect("assessment submitted through MCP");
+        assert_eq!(assessment["intent"], "high");
+        assert_eq!(assessment["budget"], 50000);
+        assert!(assessment["score"].as_f64().unwrap() > 0.75);
+        assert!(
+            !state.chat_messages.is_empty(),
+            "a reply crossed the second platform's actual MCP tool; attempts={:?}, calls={:?}, idle={:?}",
+            state.chat_attempts,
+            model.calls.lock().unwrap(),
+            events
+                .iter()
+                .rev()
+                .find(|e| e["type"] == "session.status_idle")
+        );
+        assert!(
+            state
+                .chat_messages
+                .iter()
+                .all(|message| !message.contains("已成交")),
+            "handoff is not sale completion"
+        );
+        assert!(
+            model.connected_inputs.load(Ordering::SeqCst) > 0,
+            "connected result reached inference"
+        );
+        assert_eq!(
+            model.result_lookups.load(Ordering::SeqCst),
+            0,
+            "no redundant result tool round"
+        );
+        assert!(
+            model.text_chunks.load(Ordering::SeqCst) > 1
+                && model.tool_chunks.load(Ordering::SeqCst) > 1,
+            "text and tool arguments stream"
+        );
+        assert!(events.iter().any(|e| e["type"] == "agent.message"));
+        eprintln!(
+            "Zhike passed: text_chunks={} tool_chunks={} dial_count=1",
+            model.text_chunks.load(Ordering::SeqCst),
+            model.tool_chunks.load(Ordering::SeqCst)
+        );
+    }
+    lifecycle.shutdown(Duration::from_secs(10)).await.unwrap();
     server.abort();
 }
 

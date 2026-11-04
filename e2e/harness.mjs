@@ -1564,7 +1564,7 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
   }
   try {
     await runCleanupSteps([
-      async () => { if (server) await stopServer(server); },
+      async () => { if (server) await stopServer(server, { requireCleanExit: opts.requireCleanExit === true }); },
       () => upstream.close(),
     ], failures);
   } catch (error) {

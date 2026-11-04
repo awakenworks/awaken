@@ -57,6 +57,9 @@ async fn warmups(
 
 #[tokio::test]
 async fn authoring_and_worker_warmup_http_share_live_environment_revisions() {
+    // O1: this fixture retains its exact Environment/Coordinator lifecycle until all original Work/catalog assertions complete.
+    let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // W1 before publication -> no warm demand. W2 cloud creation -> exact id.
     // W3 updated definition -> same id and newer revision. W4 archive -> gone.
     // Use the real mount and handlers, not a separately assembled read adapter.
@@ -70,7 +73,8 @@ async fn authoring_and_worker_warmup_http_share_live_environment_revisions() {
         false,
     )
     .await;
-    let app = super::mount_with_environments(platform).await;
+    let app =
+        super::mount_with_environments_and_agent_source(platform, None, lifecycle.clone()).await;
     let version = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     let mut manifest = awaken_dispatch::WorkerManifest::default();
     manifest.runtime_protocol.min = version;
@@ -121,4 +125,9 @@ async fn authoring_and_worker_warmup_http_share_live_environment_revisions() {
     )
     .await;
     assert!(warmups(&app, identity).await.is_empty(), "W4");
+
+    lifecycle
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 Environment fixture joins the same mounted owner");
 }

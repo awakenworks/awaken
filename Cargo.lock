@@ -489,6 +489,7 @@ dependencies = [
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
  "awaken-sandbox-memoryd",
+ "awaken-service-lifecycle",
  "awaken-session-application",
  "awaken-session-application-contract",
  "awaken-session-execution-contract",

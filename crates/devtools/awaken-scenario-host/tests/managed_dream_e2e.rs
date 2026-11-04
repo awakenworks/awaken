@@ -109,7 +109,11 @@ fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane(
     // Runtime authority.
     // Route/unit suites own invalid, default-basic, and nonterminal alternatives.
     run_composed_async_test(|| async {
-        let (app, host) = build_dream_router_and_host(false).await;
+        // O1/O7: keep each selected fixture owner through the original assertions;
+        // protocol clones share it, while independent constructors retain separate owners.
+        let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
+        let (app, host) = build_dream_router_and_host(false, fixture_lifecycle_1.clone()).await;
 
         let session = ok(
             &app,
@@ -324,5 +328,10 @@ fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane(
                     && file.filename != format!("{session_id}.jsonl")),
             "Dream must not create a duplicate transcript File, even if later deleted"
         );
+
+        fixture_lifecycle_1
+            .shutdown(std::time::Duration::from_secs(10))
+            .await
+            .expect("O1 selected fixture joins its registered work");
     });
 }

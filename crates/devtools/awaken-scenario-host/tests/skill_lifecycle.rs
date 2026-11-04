@@ -188,6 +188,10 @@ impl LlmExecutor for SkillUserModel {
 
 #[tokio::test]
 async fn offered_skill_is_discovered_activated_and_used() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: C1 a versioned Agent binding freezes one Skill into the Session;
     // C2 the model requests the
     // prompt path; C3 it reads the advertised `SKILL.md`; C4 the instructions return to
@@ -199,6 +203,7 @@ async fn offered_skill_is_discovered_activated_and_used() {
         "scripted",
         vec![skill_spec()],
         false,
+        fixture_lifecycle_1.clone(),
     )
     .await;
     let id = create_session(&app).await;
@@ -238,10 +243,19 @@ async fn offered_skill_is_discovered_activated_and_used() {
         .find(|event| event["type"] == "session.status_idle")
         .expect("session.status_idle event");
     assert_eq!(idle["stop_reason"]["type"], "end_turn");
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test]
 async fn skill_tools_are_not_ambient_without_offering_a_skill() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the canonical Resources component installs an empty SkillStore
     // (C1), while the Agent/Session offers no static, external, or pinned Skill
     // (C2=false). Effects: E1 no `list_skills`/`Skill` descriptor or invocation;
@@ -249,7 +263,13 @@ async fn skill_tools_are_not_ambient_without_offering_a_skill() {
     // Constraints/invariants: store availability alone is never a capability
     // grant, and completion is observed only after the accepted receipt.
     // Decision rule: N1=C1+!C2 -> E1+E2.
-    let app = build_router(Arc::new(SkillUserModel), "scripted", false).await;
+    let app = build_router(
+        Arc::new(SkillUserModel),
+        "scripted",
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let id = create_session(&app).await;
 
     let list = send_message(&app, &id, "please deploy").await;
@@ -262,4 +282,9 @@ async fn skill_tools_are_not_ambient_without_offering_a_skill() {
         message_texts(&list).contains(&"NO_SKILL_ADVERTISED".to_string()),
         "the skill tools appear only because a skill was offered (not ambient)"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }

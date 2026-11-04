@@ -18,13 +18,21 @@ use awaken_runtime_contract::snapshot::{
 use axum::Router;
 
 use super::deployment::{resource_host_with_deployment, scenario_deployment};
-use super::scenario_platform::{fixed_agent_publication, mount_with_agent_source};
+use super::scenario_platform::{fixed_agent_publication, mount_with_agent_source_on_lifecycle};
 use super::{DelegatingModel, FAKE_ACP_JSONRPC_SCRIPT, scenario_model, scenario_shell_argv};
 
 /// A Native coordinator whose roster proves Native, recursive-self, and ACP
 /// delegated attempts use one parent-mediated child-Run path.
-pub async fn build_delegation_router(trace_file_present: bool) -> Router {
-    build_delegation_router_with_deployment(scenario_deployment(), trace_file_present).await
+pub async fn build_delegation_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
+    build_delegation_router_with_deployment(
+        scenario_deployment(),
+        trace_file_present,
+        lifecycle.clone(),
+    )
+    .await
 }
 
 /// Build the delegation scenario against one explicit typed deployment.
@@ -33,6 +41,8 @@ pub async fn build_delegation_router(trace_file_present: bool) -> Router {
 pub async fn build_delegation_router_with_deployment(
     deployment: awaken_deployment_config::DeploymentConfig,
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate");
     let metadata = |owner_id: &str| AgentSnapshotMetadata {
@@ -181,5 +191,5 @@ pub async fn build_delegation_router_with_deployment(
     )
     .await
     .map_dependencies(|host| host.with_agent_publications(publication.clone()));
-    mount_with_agent_source(platform, publication).await
+    mount_with_agent_source_on_lifecycle(platform, publication, lifecycle.clone()).await
 }

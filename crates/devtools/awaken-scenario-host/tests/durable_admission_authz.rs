@@ -49,7 +49,7 @@ use tower::ServiceExt;
 static GATE: Mutex<()> = Mutex::const_new(());
 static AUTHORITY_INSTALLED: OnceCell<()> = OnceCell::const_new();
 
-async fn app() -> Router {
+async fn app(lifecycle: awaken_service_lifecycle::ServiceLifecycle) -> Router {
     // Fixture cause/effect table: C1 the typed deployment is durable; C2 the
     // Coordinator-selected authority is installed once before router assembly;
     // C3 a later test shares the same process authority. E1 C1+C2 reaches the
@@ -74,7 +74,14 @@ async fn app() -> Router {
                 .expect("install the single Scenario Runtime authority");
         })
         .await;
-    build_router_with_deployment(Arc::new(EchoModel), "echo", deployment, false).await
+    build_router_with_deployment(
+        Arc::new(EchoModel),
+        "echo",
+        deployment,
+        false,
+        lifecycle.clone(),
+    )
+    .await
 }
 
 /// Send a request with an explicit raw body + optional Authorization header and
@@ -151,8 +158,12 @@ async fn dispatch_count(app: &Router, thread: &str) -> usize {
 /// dispatch row — the run never reaches the queue to fail later at drive time.
 #[tokio::test(flavor = "multi_thread")]
 async fn malformed_durable_submit_is_rejected_4xx_and_enqueues_nothing() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     let _gate = GATE.lock().await;
-    let app = app().await;
+    let app = app(fixture_lifecycle_1.clone()).await;
     let thread = "admission-malformed-submit";
     let uri = format!("/v1/durable/threads/{thread}/submit_background");
 
@@ -200,6 +211,11 @@ async fn malformed_durable_submit_is_rejected_4xx_and_enqueues_nothing() {
         after <= before,
         "a rejected malformed submit must NOT create a dispatch row (before={before}, after={after})"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// Concern 1 (cancel verb): a poison durable `cancel` is likewise a clean 4xx —
@@ -207,8 +223,12 @@ async fn malformed_durable_submit_is_rejected_4xx_and_enqueues_nothing() {
 /// never a 5xx/panic and never a silent success.
 #[tokio::test(flavor = "multi_thread")]
 async fn malformed_durable_cancel_is_rejected_4xx() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     let _gate = GATE.lock().await;
-    let app = app().await;
+    let app = app(fixture_lifecycle_1.clone()).await;
     let thread = "admission-malformed-cancel";
     let uri = format!("/v1/durable/threads/{thread}/cancel");
 
@@ -231,6 +251,11 @@ async fn malformed_durable_cancel_is_rejected_4xx() {
         status.is_client_error() && !status.is_server_error(),
         "unknown run_id must fail closed with a 4xx, got {status}: {body}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// Concern 2: the run-serving router carries axum's default 2 MiB body limit — an
@@ -238,8 +263,12 @@ async fn malformed_durable_cancel_is_rejected_4xx() {
 /// (no OOM, no 5xx). This pins that a size guard EXISTS on the durable path.
 #[tokio::test(flavor = "multi_thread")]
 async fn oversized_durable_submit_is_rejected_by_the_body_limit() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     let _gate = GATE.lock().await;
-    let app = app().await;
+    let app = app(fixture_lifecycle_1.clone()).await;
     let thread = "admission-oversized";
     let uri = format!("/v1/durable/threads/{thread}/submit_background");
 
@@ -261,6 +290,11 @@ async fn oversized_durable_submit_is_rejected_by_the_body_limit() {
         after <= before,
         "an over-limit submit must NOT create a dispatch row (before={before}, after={after})"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// Concern 3 (trust boundary): the durable-ingress plane carries NO bearer auth —
@@ -271,8 +305,12 @@ async fn oversized_durable_submit_is_rejected_by_the_body_limit() {
 /// judged purely on payload — never answered with 401/403.
 #[tokio::test(flavor = "multi_thread")]
 async fn durable_plane_shares_its_managed_siblings_open_local_trust_posture() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     let _gate = GATE.lock().await;
-    let app = app().await;
+    let app = app(fixture_lifecycle_1.clone()).await;
 
     // Sibling baseline: an unauthenticated managed session create is admitted
     // (this plane is open by design — IAM is the separate management router).
@@ -351,4 +389,9 @@ async fn durable_plane_shares_its_managed_siblings_open_local_trust_posture() {
     .await;
     assert_ne!(status, StatusCode::UNAUTHORIZED);
     assert_ne!(status, StatusCode::FORBIDDEN);
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }

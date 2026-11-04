@@ -23,6 +23,11 @@ async fn serve(app: axum::Router) -> (std::net::SocketAddr, tokio::task::JoinHan
 
 #[tokio::test]
 async fn scenario_worker_warmup_matches_private_transport_topology_and_identity_fence() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+    let fixture_lifecycle_2 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
@@ -51,8 +56,14 @@ async fn scenario_worker_warmup_matches_private_transport_topology_and_identity_
     // | W4   | no          | any                      | E5 (404) |
     let mut remote = awaken_deployment_config::DeploymentConfig::ephemeral();
     remote.disable_local_pool = true;
-    let remote =
-        build_router_with_deployment(Arc::new(EchoModel), "warmup-parity", remote, false).await;
+    let remote = build_router_with_deployment(
+        Arc::new(EchoModel),
+        "warmup-parity",
+        remote,
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let (address, server) = serve(remote).await;
 
     let exact = WorkerControlClient::new(
@@ -108,6 +119,7 @@ async fn scenario_worker_warmup_matches_private_transport_topology_and_identity_
         "warmup-parity",
         awaken_deployment_config::DeploymentConfig::ephemeral(),
         false,
+        fixture_lifecycle_2.clone(),
     )
     .await;
     let response = local
@@ -121,4 +133,13 @@ async fn scenario_worker_warmup_matches_private_transport_topology_and_identity_
         .await
         .expect("W4 response");
     assert_eq!(response.status(), StatusCode::NOT_FOUND, "W4");
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
+    fixture_lifecycle_2
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }

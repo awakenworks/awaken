@@ -18,41 +18,23 @@ fn customized_execution(
 }
 
 #[cfg(feature = "test-support")]
-pub async fn build_all_in_one_router_with_host_customizer(
+pub async fn build_all_in_one_service_with_host_customizer(
     model: Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
     deployment: awaken_deployment_config::DeploymentConfig,
     web_search: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
     customize: impl FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send + 'static,
     trace_file_present: bool,
-) -> axum::Router {
+) -> (axum::Router, awaken_service_lifecycle::ServiceLifecycle) {
     let execution = customized_execution(&deployment, customize)
         .expect("prepare test-support customized execution");
-    awaken_process_startup::build_all_in_one_router_with_execution_inputs(
+    awaken_process_startup::build_all_in_one_service_with_execution_inputs(
         model,
         binding,
         deployment,
         web_search,
         execution,
         trace_file_present,
-    )
-    .await
-}
-
-#[cfg(feature = "test-support")]
-pub async fn build_durable_all_in_one_router_with_host_customizer(
-    dir: &std::path::Path,
-    key: &[u8; 32],
-    model: Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
-    binding: awaken_runtime_contract::resolved::ModelBinding,
-    customize: impl FnOnce(SessionExecutorBuilder) -> SessionExecutorBuilder + Send + 'static,
-) -> axum::Router {
-    awaken_process_startup::build_durable_all_in_one_router_with_execution_inputs(
-        dir,
-        key,
-        model,
-        binding,
-        Box::new(crate::LocalExecution::default().with_host_customizer(customize)),
     )
     .await
 }
