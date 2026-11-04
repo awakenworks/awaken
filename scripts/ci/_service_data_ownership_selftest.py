@@ -392,7 +392,7 @@ def selftest() -> None:
             any_gate + f"pub async fn {name}() {{}}"
             for name in (
                 "build_ephemeral_all_in_one_router",
-                "build_all_in_one_router_with_scenario_model",
+                "prepare_all_in_one_process_with_scenario_model",
                 "build_all_in_one_router_with_model",
                 "build_durable_all_in_one_router",
                 "build_secured_all_in_one_router",
@@ -404,8 +404,7 @@ def selftest() -> None:
         SCENARIO_PROCESS_SOURCE: "\n".join(
             feature_gate + f"pub async fn {name}() {{}}"
             for name in (
-                "build_all_in_one_router_with_host_customizer",
-                "build_durable_all_in_one_router_with_host_customizer",
+                "build_all_in_one_service_with_host_customizer",
             )
         ),
         FILE_STORE_SOURCE: any_gate + "pub struct InMemoryFileStore {}",

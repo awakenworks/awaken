@@ -41,6 +41,8 @@ awaken-inference-endpoint = { workspace = true, features = ["brokered"] }
 thiserror.workspace = true
 
 awaken-process-startup.workspace = true
+# The scenario root must join the selected startup lifecycle explicitly.
+awaken-service-lifecycle = { workspace = true, optional = true }
 # The co-located Worker of an AllInOne process.
 awaken-worker = { workspace = true }
 awaken-worker-contract.workspace = true
@@ -73,7 +75,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "pro
 
 [features]
 # Volatile startup helpers used by integration/scenario harnesses.
-test-support = ["awaken-process-startup/test-support"]
+test-support = ["awaken-process-startup/test-support", "dep:awaken-service-lifecycle"]
 # Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
 # deployment runs its agents on. Off by default — the namespace tier needs no feature.
 container-docker = ["awaken-process-startup/container-docker", "awaken-execution-composition/docker"]

@@ -480,7 +480,7 @@ async fn scenario(
             }
         })
     });
-    let app = awaken_cli::build_all_in_one_router_with_host_customizer(
+    let (app, lifecycle) = awaken_cli::build_all_in_one_service_with_host_customizer(
         executor,
         awaken_runtime_contract::resolved::ModelBinding::parse("default", model_name, "genai")
             .unwrap(),
@@ -586,6 +586,7 @@ async fn scenario(
             Err(error) => verdict.push(format!("grounding_evaluation_unavailable: {error}")),
         }
         eprintln!("ZHike overall {:?}: {}", case, json!({"failures":verdict}));
+        lifecycle.shutdown(Duration::from_secs(10)).await.unwrap();
         server.abort();
         assert!(verdict.is_empty(), "{case:?}: {}", verdict.join("; "));
         return;
@@ -609,6 +610,39 @@ async fn scenario(
         );
         if let Some(driver) = interrupt_driver {
             driver.await.unwrap();
+        }
+        // I4 has no physical terminal receipt. The original drain cannot claim
+        // quiescence; it must report exactly that registered task at the same
+        // deadline, while the committed Unknown and physical facts stay intact.
+        let shutdown = lifecycle
+            .shutdown(Duration::from_secs(10))
+            .await
+            .expect_err("I4 unknown physical execution cannot become clean drain");
+        assert_eq!(shutdown.timed_out, ["coordinator-runtime-background-drain"]);
+        let (status, history) = api(
+            &app,
+            "GET",
+            &format!("/v1/sessions/{session_id}/events?limit=500"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "I4 original committed history remains readable"
+        );
+        assert!(
+            history["data"].as_array().unwrap().iter().any(|event| {
+                event["type"] == "session.error"
+                    && event.to_string().contains("execution result is unknown")
+            }),
+            "I4 shutdown does not synthesize terminal success"
+        );
+        {
+            let state = provider.state.lock().unwrap();
+            assert_eq!(state.voices.len(), 2, "I4 no replacement speech");
+            assert_eq!(state.ended, 0, "I4 no invented physical hangup");
+            assert!(state.assessment.is_none(), "I4 no post-shutdown assessment");
         }
         server.abort();
         return;
@@ -646,6 +680,7 @@ async fn scenario(
     if let Some(driver) = interrupt_driver {
         driver.await.unwrap();
     }
+    lifecycle.shutdown(Duration::from_secs(10)).await.unwrap();
     server.abort();
 }
 
@@ -695,6 +730,9 @@ async fn mcp_hard_cancel_without_provider_terminal_receipt_remains_indeterminate
     // I4 explicit exact cancellation during inference with no terminal receipt
     // -> unknown execution and no automatic redial/speech/assessment. This is
     // deliberately separate from the successful turn-supersession acceptance.
+    // With explicit lifecycle teardown, that same unresolved physical work must
+    // report only its named drain timeout, never become a clean terminal result;
+    // the original history and provider facts are checked again after teardown.
     let gate = Arc::new(InferenceGate {
         hard_cancel: true,
         ..Default::default()

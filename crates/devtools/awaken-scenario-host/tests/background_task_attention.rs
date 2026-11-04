@@ -279,12 +279,14 @@ async fn exercise_background_attention(
     model: Arc<dyn LlmExecutor>,
     model_ref: &str,
     timeout: Duration,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Value {
     let (app, host) = build_router_and_host_with_agent_publications(
         model,
         model_ref,
         [background_snapshot(model_ref)],
         false,
+        lifecycle.clone(),
     )
     .await;
     let session = ok(
@@ -352,6 +354,10 @@ fn assert_completion_chain(events: &Value) {
 
 #[tokio::test]
 async fn background_completion_folds_before_inference_and_commits_before_next_effect() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Cause/effect decision table:
     // R1 foreground committed Running task -> post-commit target executes once;
     // R2 fenced process completion -> deterministic System attention Run enters
@@ -367,14 +373,24 @@ async fn background_completion_folds_before_inference_and_commits_before_next_ef
         Arc::new(DeterministicBackgroundAttentionModel),
         "background-scripted",
         Duration::from_secs(10),
+        fixture_lifecycle_1.clone(),
     )
     .await;
     assert_completion_chain(&events);
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY, DEEPSEEK_API_KEY, or ANTHROPIC_API_KEY and --ignored"]
 async fn live_model_observes_background_completion_through_the_system_attention_run() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Live rule L1: the same R1-R4 chain above is driven by an external model
     // that must select both typed tools from their schemas. Constraint L0: the
     // frozen publication exposes only the BackgroundTask lifecycle tools; bash
@@ -415,6 +431,17 @@ async fn live_model_observes_background_completion_through_the_system_attention_
         awaken_provider_genai::GenaiExecutor::from_materialized_endpoint(adapter, base, key)
             .expect("explicit client construction"),
     );
-    let events = exercise_background_attention(model, &model_ref, Duration::from_secs(90)).await;
+    let events = exercise_background_attention(
+        model,
+        &model_ref,
+        Duration::from_secs(90),
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     assert_completion_chain(&events);
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }

@@ -346,8 +346,18 @@ async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
     // resolved-tool and target gates; missing C2/C3 is covered by fail-closed
     // resolver tests in awaken-session-executor.
     run_composed_async_test(|| async {
+        // O1/O7: keep each selected fixture owner through the original assertions;
+        // protocol clones share it, while independent constructors retain separate owners.
+        let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
         let transport = Arc::new(RouterTransport {
-            app: build_router(Arc::new(EchoModel), "remote", false).await,
+            app: build_router(
+                Arc::new(EchoModel),
+                "remote",
+                false,
+                fixture_lifecycle_1.clone(),
+            )
+            .await,
         });
         let host = delegating_host(transport).await;
 
@@ -357,6 +367,11 @@ async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
             .expect("delegated A2A child settles through the ordinary Run path");
 
         assert_committed_child_report(&host, "thread").await;
+
+        fixture_lifecycle_1
+            .shutdown(std::time::Duration::from_secs(10))
+            .await
+            .expect("O1 selected fixture joins its registered work");
     });
 }
 
@@ -383,8 +398,18 @@ async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
     // fingerprint drift are the fail-closed rules in `a2a_remote` and
     // `PinnedA2aTransportResolver`; anonymous U1/U2 are covered above.
     run_composed_async_test(|| async {
+        // O1/O7: keep each selected fixture owner through the original assertions;
+        // protocol clones share it, while independent constructors retain separate owners.
+        let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
         let peer = authenticated::AuthenticatedPeer::start(
-            build_router(Arc::new(EchoModel), "remote", false).await,
+            build_router(
+                Arc::new(EchoModel),
+                "remote",
+                false,
+                fixture_lifecycle_1.clone(),
+            )
+            .await,
         )
         .await;
         let host = published_delegating_host(
@@ -411,5 +436,10 @@ async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
                 .iter()
                 .all(|(_, _, authorized)| *authorized)
         );
+
+        fixture_lifecycle_1
+            .shutdown(std::time::Duration::from_secs(10))
+            .await
+            .expect("O1 selected fixture joins its registered work");
     });
 }

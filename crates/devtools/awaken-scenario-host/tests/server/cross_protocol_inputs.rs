@@ -7,6 +7,10 @@ use super::{
 
 #[tokio::test]
 async fn ai_sdk_input_and_client_answer_remain_one_managed_history_each() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Graph: C1 a Managed-created Session; C2 AI SDK submits a new customer
     // message; C3 the real kernel awaits a declared client tool; C4 AI SDK
     // supplies its answer; C5 the same Managed history is read again.
@@ -24,7 +28,7 @@ async fn ai_sdk_input_and_client_answer_remain_one_managed_history_each() {
     // assertions. The SDK stream itself must already expose submit_answer.
     // No Managed command receipt exists for these SDK inputs; this fresh
     // Session has only this command, and the refinements name its exact content.
-    let app = build_custom_router(false).await;
+    let app = build_custom_router(false, fixture_lifecycle_1.clone()).await;
     let session = create_session(&app).await;
     let customer = "服务费金额本次没提供，收款时间还没定。";
     let mut payloads = vec![serde_json::json!({
@@ -176,4 +180,9 @@ async fn ai_sdk_input_and_client_answer_remain_one_managed_history_each() {
         .await,
         "R3 stable warm read"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }

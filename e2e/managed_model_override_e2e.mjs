@@ -22,7 +22,13 @@ const ENVIRONMENT_ID = 'env_local';
 async function main() {
   const fixture = await startCalcFixture('unused-anonymous-token', { allowAnonymous: true }); // awaken-allow(secret):
   try {
-    await withScenarioServer('management', 'mcp', PORT, async (base) => {
+    let diagnostics;
+    // Shutdown C/E: committed management/MCP facts may still be in the original
+    // SQL-backed outbox delivery at EOF. The same process lifecycle must join
+    // before Tokio teardown (exit0 alone can hide a background-thread panic).
+    // Strict stop waits for original stdio closure; only then inspect capture.
+    await withScenarioServer('management', 'mcp', PORT, async (base, _upstream, capture) => {
+    diagnostics = capture;
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
     // ── plain reference: the session echoes the host default model, version 1 ────
@@ -154,7 +160,10 @@ async function main() {
     assert.equal(body.type, 'error', 'error envelope shape');
     assert.equal(body.error.type, 'invalid_request_error', 'invalid_request_error type');
     pass('model: null (clear) is rejected 400 — a session always needs a model');
-    });
+    }, {}, { capture: true, requireCleanExit: true });
+    assert.ok(diagnostics, 'the actual Native child diagnostics were captured');
+    assert.doesNotMatch(diagnostics.text(), /\bpanicked at\b/u,
+      'joined lifecycle shutdown must not panic after the successful HTTP body');
   } finally {
     await fixture.close();
   }

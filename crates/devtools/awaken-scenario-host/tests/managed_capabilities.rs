@@ -71,13 +71,24 @@ async fn create_session(app: &Router) -> serde_json::Value {
 /// overrides are covered by the neutral-policy and runtime-gate decision tables.
 #[tokio::test]
 async fn managed_session_folds_builtins_into_the_agent_toolset() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     let skill = SkillSpec::new(
         "deploy",
         "Deploy",
         "Deploy checklist",
         "STEP: migrate first.",
     );
-    let app = build_router_with_skills(Arc::new(EchoModel), "echo-model", vec![skill], false).await;
+    let app = build_router_with_skills(
+        Arc::new(EchoModel),
+        "echo-model",
+        vec![skill],
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
 
     let session = create_session(&app).await;
 
@@ -104,13 +115,22 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
     assert_eq!(session["agent"]["skills"], serde_json::json!([]));
     assert!(session["agent"]["multiagent"].is_null());
     assert!(session["resources"].as_array().unwrap().is_empty());
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// A client-executed tool is advertised as a `custom` tool definition alongside the
 /// built-in toolset reference.
 #[tokio::test]
 async fn managed_session_advertises_custom_tools() {
-    let app = build_custom_router(false).await;
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
+    let app = build_custom_router(false, fixture_lifecycle_1.clone()).await;
     let session = create_session(&app).await;
 
     let tools = session["agent"]["tools"].as_array().unwrap();
@@ -121,6 +141,11 @@ async fn managed_session_advertises_custom_tools() {
         .expect("a custom tool is advertised");
     assert_eq!(custom["name"], "submit_answer");
     assert!(custom["input_schema"].is_object());
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// A delegate roster is advertised as a `coordinator` multiagent object containing
@@ -136,9 +161,15 @@ async fn managed_session_advertises_custom_tools() {
 /// detects that high-severity compatibility regression.
 #[tokio::test]
 async fn managed_session_advertises_multiagent_roster() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
-    let app = build_delegation_router_with_deployment(deployment, false).await;
+    let app =
+        build_delegation_router_with_deployment(deployment, false, fixture_lifecycle_1.clone())
+            .await;
     let session = create_session(&app).await;
 
     assert_eq!(session["agent"]["multiagent"]["type"], "coordinator");
@@ -150,4 +181,9 @@ async fn managed_session_advertises_multiagent_roster() {
     assert_eq!(researcher["name"], "researcher");
     assert_eq!(researcher["type"], "agent");
     assert_eq!(researcher["version"], 1);
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }

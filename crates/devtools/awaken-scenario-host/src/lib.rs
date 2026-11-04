@@ -23,9 +23,9 @@ pub use crate::models::*;
 pub use acp_scenarios::{
     build_acp_container_router, build_acp_control_router, build_acp_gateway_router,
     build_acp_gateway_router_with_deployment, build_acp_jsonrpc_router,
-    build_acp_jsonrpc_router_with_deployment, build_acp_managed_mcp_router,
+    build_acp_jsonrpc_router_with_deployment, build_acp_managed_mcp_service,
     build_acp_permission_router, build_acp_permission_router_with_deployment,
-    build_acp_real_mcp_router, build_acp_relaunch_failure_router, build_acp_router,
+    build_acp_real_mcp_service, build_acp_relaunch_failure_router, build_acp_router,
     build_acp_sandboxed_router, build_acp_sandboxed_router_with_deployment,
     build_acp_tool_bridge_router,
 };
@@ -43,7 +43,7 @@ pub use managed_state::{
 };
 pub use model_routing::{build_model_route_router, scenario_model};
 pub use scenario_platform::build_unscoped_resource_router;
-pub use web::build_management_web_router;
+pub use web::build_management_web_service;
 pub use worker::run_echo_worker;
 
 mod scenario_shell;
@@ -54,8 +54,8 @@ use deployment::{
 use scenario_platform::{
     fixed_agent_publication, fixed_host_backend_publication,
     fixed_host_backend_publication_with_acp_mcp, fixed_host_backend_publication_with_mcp,
-    mount_platform, mount_with_agent_source, mount_with_environments,
-    mount_with_environments_and_agent_source, mount_with_memory_publication,
+    mount_on_lifecycle, mount_with_agent_source_on_lifecycle,
+    mount_with_environments_and_agent_source, mount_with_memory_publication_on_lifecycle,
 };
 use scenario_shell::{scenario_argv, scenario_host_acp_cli, scenario_shell_argv};
 
@@ -116,7 +116,10 @@ const FAKE_OUTCOME_ACP_SCRIPT: &str = "read _p; \
     clippy::disallowed_methods,
     reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
 )]
-pub async fn build_outcome_matrix_router(trace_file_present: bool) -> Router {
+pub async fn build_outcome_matrix_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let launch = awaken_run_executor_acp::AcpLaunch::custom(
         scenario_shell_argv(FAKE_OUTCOME_ACP_SCRIPT),
         vec![],
@@ -146,7 +149,7 @@ pub async fn build_outcome_matrix_router(trace_file_present: bool) -> Router {
         host.with_agent_publications(publication.clone())
             .with_judge_snapshot(judge)
     });
-    mount_with_agent_source(platform, publication).await
+    mount_with_agent_source_on_lifecycle(platform, publication, lifecycle.clone()).await
 }
 
 /// A router with out-of-band memory extraction + bounded recall (the memory
@@ -154,27 +157,19 @@ pub async fn build_outcome_matrix_router(trace_file_present: bool) -> Router {
 /// sessions see it injected request-only by the recall plugin.
 /// `AWAKEN_MODEL_MODE=memory`; the scenario seeds one governed MemoryStore and
 /// callers attach that exact resource to each participating Session.
-pub async fn build_memory_router(trace_file_present: bool) -> Router {
-    build_memory_service(trace_file_present).await.0
-}
-
-/// The Memory Scenario's one mounted Router and outer-owned service lifecycle.
-/// The process entrypoint retains the lifecycle so graceful shutdown drains the
-/// exact auxiliary Runtime work whose spans and durable effects it serves.
-pub async fn build_memory_service(
+pub async fn build_memory_router(
     trace_file_present: bool,
-) -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(MemoryProbeModel), "memory");
     let host = resource_host(model, model_ref, trace_file_present).await;
-    let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
-    let router = scenario_platform::mount_with_memory_publication_on_lifecycle(
+    scenario_platform::mount_with_memory_publication_on_lifecycle(
         host,
         "memory",
         Vec::new(),
         lifecycle.clone(),
     )
-    .await;
-    (router, lifecycle)
+    .await
 }
 
 /// A router for the memory_store RESOURCE durability e2e (ADR-0038 MemoryStore
@@ -183,13 +178,16 @@ pub async fn build_memory_service(
 /// [`build_memory_router`]'s cross-session *extraction* memory — this exercises the
 /// `resources[{type:"memory_store"}]` mount + write-back + `/v1/memory_stores` API.
 /// `AWAKEN_MODEL_MODE=memory-resource`.
-pub async fn build_memory_resource_router(trace_file_present: bool) -> Router {
+pub async fn build_memory_resource_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let (model, model_ref) = scenario_model(
         Arc::new(crate::models::MemoryResourceModel),
         "memory-resource",
     );
     let host = resource_host(model, model_ref, trace_file_present).await;
-    mount_platform(host).await
+    mount_on_lifecycle(host, lifecycle.clone()).await
 }
 
 /// A router for the github_repository RESOURCE e2e (ADR-0038): a deterministic model
@@ -201,11 +199,14 @@ pub async fn build_memory_resource_router(trace_file_present: bool) -> Router {
 pub async fn build_git_repo_router(
     deployment: awaken_deployment_config::DeploymentConfig,
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::GitRepoModel), "git-repo");
-    mount_platform(
+    mount_on_lifecycle(
         runtime_resource_host_with_deployment(model, model_ref, deployment, trace_file_present)
             .await,
+        lifecycle.clone(),
     )
     .await
 }
@@ -217,8 +218,16 @@ pub async fn build_git_repo_router(
 /// backend. Driven over the real wire by the `fullChain` behavior (this in-process
 /// `EchoModel` is only the non-http fallback, never run by the e2e).
 /// `AWAKEN_MODEL_MODE=full-chain` with `AWAKEN_MODEL_SOURCE=http`.
-pub async fn build_full_chain_router(trace_file_present: bool) -> Router {
-    build_full_chain_router_with_deployment(scenario_deployment(), trace_file_present).await
+pub async fn build_full_chain_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
+    build_full_chain_router_with_deployment(
+        scenario_deployment(),
+        trace_file_present,
+        lifecycle.clone(),
+    )
+    .await
 }
 
 /// The full-chain assembly with an explicit deployment snapshot. Tests use the
@@ -227,17 +236,20 @@ pub async fn build_full_chain_router(trace_file_present: bool) -> Router {
 pub async fn build_full_chain_router_with_deployment(
     deployment: awaken_deployment_config::DeploymentConfig,
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "full-chain");
     let host =
         runtime_resource_host_with_deployment(model, model_ref, deployment, trace_file_present)
             .await;
-    mount_with_memory_publication(
+    mount_with_memory_publication_on_lifecycle(
         host,
         "full-chain",
         vec![awaken_agent_contract::AgentSkillBinding::custom(
             awaken_resource_contract::skill_catalog_id("greet"),
         )],
+        lifecycle.clone(),
     )
     .await
 }
@@ -251,7 +263,10 @@ pub async fn build_full_chain_router_with_deployment(
     clippy::disallowed_methods,
     reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
 )]
-pub async fn build_compaction_router(trace_file_present: bool) -> Router {
+pub async fn build_compaction_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::CompactionModel), "compaction");
     // Compaction changes run behavior, not deployment ownership. Reuse the
     // canonical Scenario platform so durable Session/resource identity is
@@ -272,17 +287,20 @@ pub async fn build_compaction_router(trace_file_present: bool) -> Router {
         .unwrap_or(1);
     let keep_last = env_u("AWAKEN_COMPACT_KEEP_LAST").unwrap_or(2) as usize;
     let host = host.map_dependencies(|host| host.with_compaction_tokens(window, keep_last));
-    mount_platform(host).await
+    mount_on_lifecycle(host, lifecycle.clone()).await
 }
 
 /// A router whose model fails a Run on the `BOOM` trigger (the session-error
 /// e2e): the failed Run surfaces an internal `RunError` (HTTP `api_error`) and
 /// commits a `session.error` event, while other Runs echo — proving the Session
 /// stays usable after a failure. `AWAKEN_MODEL_MODE=error`.
-pub async fn build_error_router(trace_file_present: bool) -> Router {
+pub async fn build_error_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::ErrorModel), "error");
     let host = resource_host(model, model_ref, trace_file_present).await;
-    mount_platform(host).await
+    mount_on_lifecycle(host, lifecycle.clone()).await
 }
 
 /// A router that mounts `/v1/environments` and shares its state with the session
@@ -292,22 +310,33 @@ pub async fn build_error_router(trace_file_present: bool) -> Router {
 /// `submit_answer` tool — by **running the tool and posting the result back**, the
 /// way a self-hosted worker executes the session's tool calls. Heartbeats the lease
 /// and stops the work on completion. `AWAKEN_MODEL_MODE=worker`.
-pub async fn build_worker_router(trace_file_present: bool) -> Router {
+pub async fn build_worker_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "worker");
     let host = resource_host(model, model_ref, trace_file_present)
         .await
         .map_dependencies(|host| host.with_client_tools(client_tools));
-    mount_with_environments(host).await
+    mount_with_environments_and_agent_source(host, None, lifecycle.clone()).await
 }
 
 /// Echo-model Scenario platform with the official Environment API, exact sandbox-policy
 /// store, Resource Registry, Managed Sessions, and all protocol adapters. It exists
 /// solely to drive the orthogonal configuration matrix without application-auth
 /// concerns obscuring the baseline/provisioning behavior under test.
-pub async fn build_environment_matrix_router(trace_file_present: bool) -> Router {
+pub async fn build_environment_matrix_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "environment-matrix");
-    mount_with_environments(resource_host(model, model_ref, trace_file_present).await).await
+    mount_with_environments_and_agent_source(
+        resource_host(model, model_ref, trace_file_present).await,
+        None,
+        lifecycle.clone(),
+    )
+    .await
 }
 
 fn ask_tool_bindings(tool_name: &str) -> AgentBindings {
@@ -331,7 +360,10 @@ fn ask_tool_bindings(tool_name: &str) -> AgentBindings {
 /// model's `write` call is the mutating edge used by Managed, A2A, and
 /// cross-protocol HITL tests; leaving its policy implicit would make those tests
 /// follow whichever neutral default the runtime currently uses.
-pub async fn build_probe_router(trace_file_present: bool) -> Router {
+pub async fn build_probe_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(ProbeModel), "probe");
     let binding = ModelBinding::parse("scenario", &model_ref, "native")
         .unwrap_or_else(|error| panic!("scenario model `{model_ref}`: {error}"));
@@ -350,7 +382,7 @@ pub async fn build_probe_router(trace_file_present: bool) -> Router {
     let platform = resource_host(model, model_ref, trace_file_present)
         .await
         .map_dependencies(|host| host.with_agent_publications(publication.clone()));
-    mount_with_agent_source(platform, publication).await
+    mount_with_agent_source_on_lifecycle(platform, publication, lifecycle.clone()).await
 }
 
 /// The one deterministic ACP JSON-RPC fixture. It exercises the canonical codec
@@ -429,8 +461,10 @@ pub async fn build_router(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
-    build_router_and_host(llm, model_ref, trace_file_present)
+    build_router_and_host(llm, model_ref, trace_file_present, lifecycle.clone())
         .await
         .0
 }
@@ -443,8 +477,14 @@ pub async fn build_router_and_host(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
-    build_router_and_host_from(resource_host(llm, model_ref, trace_file_present).await).await
+    build_router_and_host_from(
+        resource_host(llm, model_ref, trace_file_present).await,
+        lifecycle.clone(),
+    )
+    .await
 }
 
 /// The dependencies of an unmounted Host for a test that owns the outer
@@ -502,6 +542,8 @@ pub async fn build_router_and_host_with_agent_publications(
     model_ref: impl Into<String>,
     publications: impl IntoIterator<Item = awaken_runtime_contract::ExecutableAgentSnapshot>,
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
     let publication = scenario_platform::fixed_agent_publication(publications);
     let (host, resources) = resource_host(llm, model_ref, trace_file_present)
@@ -512,7 +554,7 @@ pub async fn build_router_and_host_with_agent_publications(
         host,
         resources,
         publication,
-        awaken_service_lifecycle::ServiceLifecycle::new(),
+        lifecycle.clone(),
     )
     .await
 }
@@ -558,9 +600,11 @@ pub async fn build_unmounted_platform_with_agent_publications(
 
 async fn build_router_and_host_from(
     platform: deployment::ScenarioPlatform,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
     let (host, resources) = platform.into_dependencies();
-    scenario_platform::mount_parts(host, resources).await
+    scenario_platform::mount_parts_on_lifecycle(host, resources, lifecycle.clone()).await
 }
 
 pub(crate) async fn build_router_and_host_with_model_publication_resolver(
@@ -568,11 +612,19 @@ pub(crate) async fn build_router_and_host_with_model_publication_resolver(
     model_ref: impl Into<String>,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
     let platform = resource_host(llm, model_ref, trace_file_present).await;
     let (host, resources) = platform.into_dependencies();
-    scenario_platform::mount_parts_with_model_publication_resolver(host, resources, resolver, None)
-        .await
+    scenario_platform::mount_parts_with_model_publication_resolver(
+        host,
+        resources,
+        resolver,
+        None,
+        lifecycle.clone(),
+    )
+    .await
 }
 
 /// Test/embedder platform with one explicitly resolved deployment snapshot.
@@ -583,9 +635,11 @@ pub async fn build_router_with_deployment(
     model_ref: impl Into<String>,
     deployment: awaken_deployment_config::DeploymentConfig,
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
     let host = resource_host_with_deployment(llm, model_ref, deployment, trace_file_present).await;
-    mount_platform(host).await
+    mount_on_lifecycle(host, lifecycle.clone()).await
 }
 
 /// Choose a usable model only when an operator omitted the explicit model. Kimi
@@ -656,22 +710,11 @@ async fn real_platform(trace_file_present: bool) -> deployment::ScenarioPlatform
     .await
 }
 
-pub async fn build_real_router(trace_file_present: bool) -> Router {
-    mount_platform(real_platform(trace_file_present).await).await
-}
-
-/// Real-model scenario with an outer-owned lifecycle, matching production's
-/// graceful Runtime drain before the process flushes its trace provider.
-pub async fn build_real_service(
+pub async fn build_real_router(
     trace_file_present: bool,
-) -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
-    let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
-    let router = scenario_platform::mount_on_lifecycle(
-        real_platform(trace_file_present).await,
-        lifecycle.clone(),
-    )
-    .await;
-    (router, lifecycle)
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
+    mount_on_lifecycle(real_platform(trace_file_present).await, lifecycle.clone()).await
 }
 
 /// A server backed by **Gemini on Vertex AI**, authenticated by an OAuth2 Bearer
@@ -686,7 +729,10 @@ pub async fn build_real_service(
     clippy::disallowed_methods,
     reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
 )]
-pub async fn build_real_gemini_router(trace_file_present: bool) -> Router {
+pub async fn build_real_gemini_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     use awaken_credential_vault::{CommandTokenSource, TokenSource};
 
     let project = std::env::var("GEMINI_PROJECT")
@@ -714,7 +760,7 @@ pub async fn build_real_gemini_router(trace_file_present: bool) -> Router {
         token,
     )
     .expect("explicit Vertex client construction");
-    mount_platform(
+    mount_on_lifecycle(
         runtime_resource_host_with_deployment(
             Arc::new(executor),
             model,
@@ -722,6 +768,7 @@ pub async fn build_real_gemini_router(trace_file_present: bool) -> Router {
             trace_file_present,
         )
         .await,
+        lifecycle.clone(),
     )
     .await
 }
@@ -735,7 +782,10 @@ pub async fn build_real_gemini_router(trace_file_present: bool) -> Router {
     clippy::disallowed_methods,
     reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
 )]
-pub async fn build_resolved_real_router(trace_file_present: bool) -> Router {
+pub async fn build_resolved_real_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     use awaken_agent_config::ModelSelection;
     use awaken_agent_contract::RedactedString;
     use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
@@ -844,7 +894,7 @@ pub async fn build_resolved_real_router(trace_file_present: bool) -> Router {
         .materialize_candidate(&published.primary, &context)
         .await
         .expect("materialize published model candidate");
-    mount_platform(
+    mount_on_lifecycle(
         runtime_resource_host_with_deployment(
             executor,
             published.primary.binding().identity().1.to_owned(),
@@ -852,6 +902,7 @@ pub async fn build_resolved_real_router(trace_file_present: bool) -> Router {
             trace_file_present,
         )
         .await,
+        lifecycle.clone(),
     )
     .await
 }
@@ -866,7 +917,10 @@ pub async fn build_resolved_real_router(trace_file_present: bool) -> Router {
     clippy::disallowed_methods,
     reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
 )]
-pub async fn build_oauth_resolved_router(trace_file_present: bool) -> Router {
+pub async fn build_oauth_resolved_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     use awaken_agent_config::ModelSelection;
     use awaken_credential_contract::CredentialSourceId;
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
@@ -991,7 +1045,7 @@ pub async fn build_oauth_resolved_router(trace_file_present: bool) -> Router {
         .materialize_candidate(&published.primary, &context)
         .await
         .expect("materialize published OAuth candidate");
-    mount_platform(
+    mount_on_lifecycle(
         runtime_resource_host_with_deployment(
             executor,
             published.primary.binding().identity().1.to_owned(),
@@ -999,6 +1053,7 @@ pub async fn build_oauth_resolved_router(trace_file_present: bool) -> Router {
             trace_file_present,
         )
         .await,
+        lifecycle.clone(),
     )
     .await
 }
@@ -1011,11 +1066,14 @@ pub async fn build_router_with_skills(
     model_ref: impl Into<String>,
     skills: Vec<SkillSpec>,
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
-    mount_platform(
+    mount_on_lifecycle(
         resource_host(llm, model_ref, trace_file_present)
             .await
             .map_dependencies(|host| host.with_skills(skills)),
+        lifecycle.clone(),
     )
     .await
 }
@@ -1029,6 +1087,8 @@ pub async fn build_router_with_managed_skills(
     model_ref: impl Into<String>,
     skills: Vec<SkillSpec>,
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
     let model_ref = model_ref.into();
     let platform = resource_host(llm, model_ref.clone(), trace_file_present).await;
@@ -1036,7 +1096,7 @@ pub async fn build_router_with_managed_skills(
     let publication = fixed_host_backend_publication("assistant", &model_ref, bindings);
     let platform =
         platform.map_dependencies(|host| host.with_agent_publications(publication.clone()));
-    mount_with_agent_source(platform, publication).await
+    mount_with_agent_source_on_lifecycle(platform, publication, lifecycle.clone()).await
 }
 
 /// A router whose Outcomes are graded by the named Judge Agent through the
@@ -1046,67 +1106,98 @@ pub async fn build_graded_router(
     model_ref: impl Into<String>,
     judge_agent_id: impl Into<String>,
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
-    mount_platform(
+    mount_on_lifecycle(
         resource_host(llm, model_ref, trace_file_present)
             .await
             .map_dependencies(|host| {
                 host.with_judge(judge_agent_id)
                     .unwrap_or_else(|error| panic!("scenario host model reference: {error}"))
             }),
+        lifecycle.clone(),
     )
     .await
 }
 
 /// The default deterministic router (echo model) — the CI / e2e server.
-pub async fn build_echo_router(trace_file_present: bool) -> Router {
-    build_router(Arc::new(EchoModel), "echo-model", trace_file_present).await
+pub async fn build_echo_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
+    build_router(
+        Arc::new(EchoModel),
+        "echo-model",
+        trace_file_present,
+        lifecycle.clone(),
+    )
+    .await
 }
 
 /// Ephemeral Resource authorities behind the production workspace-path adapter. This
 /// is the sole multi-workspace process fixture for volatile resource semantics;
 /// it decorates the canonical scenario Host instead of defining another store.
-pub async fn build_ephemeral_resource_router(trace_file_present: bool) -> Router {
-    let flat =
-        mount_platform(resource_host(Arc::new(EchoModel), "echo-model", trace_file_present).await)
-            .await;
+pub async fn build_ephemeral_resource_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
+    let flat = mount_on_lifecycle(
+        resource_host(Arc::new(EchoModel), "echo-model", trace_file_present).await,
+        lifecycle.clone(),
+    )
+    .await;
     awaken_coordinator::workspace_path::with_workspace_path_addressing(flat)
 }
 
 /// A router whose model reports the media it received (the multimodal e2e): every
 /// protocol adapter must carry an image block through to the model for the probe
 /// reply to name its media type.
-pub async fn build_vision_router(trace_file_present: bool) -> Router {
+pub async fn build_vision_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     build_router(
         Arc::new(VisionProbeModel),
         "vision-probe",
         trace_file_present,
+        lifecycle.clone(),
     )
     .await
 }
 
 /// A router with a client-executed tool `submit_answer` (the custom-tool e2e).
-pub async fn build_custom_router(trace_file_present: bool) -> Router {
-    build_custom_router_and_host(trace_file_present).await.0
+pub async fn build_custom_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
+    build_custom_router_and_host(trace_file_present, lifecycle.clone())
+        .await
+        .0
 }
 
 /// The same custom-tool scenario with its owning Host for scope-aware tests.
 pub async fn build_custom_router_and_host(
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "custom");
     let host = resource_host(model, model_ref, trace_file_present)
         .await
         .map_dependencies(|host| host.with_client_tools(client_tools));
-    build_router_and_host_from(host).await
+    build_router_and_host_from(host, lifecycle.clone()).await
 }
 
 /// A router whose agent activates the tool state machine (the state-machine e2e).
 /// The machine defines `glob` as a single transition out of the initial state, so
 /// the driving model's first `glob` advances it (emitting a context message) and
 /// the second is a precondition violation the gate denies.
-pub async fn build_statemachine_router(trace_file_present: bool) -> Router {
+pub async fn build_statemachine_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let machine = serde_json::json!({
         "machines": [{
             "name": "walk",
@@ -1125,7 +1216,7 @@ pub async fn build_statemachine_router(trace_file_present: bool) -> Router {
     let host = resource_host(model, model_ref, trace_file_present)
         .await
         .map_dependencies(|host| host.with_state_machine(machine));
-    mount_platform(host).await
+    mount_on_lifecycle(host, lifecycle.clone()).await
 }
 
 /// A richer tool state machine (coverage): a per-key machine (`key`/`key_normalizer`)
@@ -1134,7 +1225,10 @@ pub async fn build_statemachine_router(trace_file_present: bool) -> Router {
 /// driving model calls `glob` twice with the same pattern: the first advances
 /// `s0 -> s1` on a `success` result (its emit fires), the second advances `s1 -> s2`
 /// (terminal) on `any` result (a second emit). No violation — both calls advance.
-pub async fn build_statemachine_rich_router(trace_file_present: bool) -> Router {
+pub async fn build_statemachine_rich_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let machine = serde_json::json!({
         "machines": [{
             "name": "keyed",
@@ -1264,7 +1358,7 @@ pub async fn build_statemachine_rich_router(trace_file_present: bool) -> Router 
     let host = resource_host(model, model_ref, trace_file_present)
         .await
         .map_dependencies(|host| host.with_state_machine(machine));
-    mount_platform(host).await
+    mount_on_lifecycle(host, lifecycle.clone()).await
 }
 
 /// A router with the config data plane (`/v1/config/agents/*`) over an in-memory
@@ -1294,13 +1388,16 @@ impl awaken_runtime_contract::permission::ToolGateHook for ScheduleGate {
 /// worker performs the deferred actions out of band: the probe model's
 /// write→read tool calls are each scheduled and auto-performed, so the run
 /// completes without any human confirmation.
-pub async fn build_schedule_router(trace_file_present: bool) -> Router {
+pub async fn build_schedule_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(ProbeModel), "schedule");
     let host =
         resource_host_with_deployment(model, model_ref, scenario_deployment(), trace_file_present)
             .await
             .map_dependencies(|host| host.with_gate_override(Arc::new(ScheduleGate)));
-    mount_platform(host).await
+    mount_on_lifecycle(host, lifecycle.clone()).await
 }
 
 /// A router that routes a fixed Managed `send_message` command for `researcher`
@@ -1311,7 +1408,10 @@ pub async fn build_schedule_router(trace_file_present: bool) -> Router {
     clippy::disallowed_methods,
     reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
 )]
-pub async fn build_remote_delegation_router(trace_file_present: bool) -> Router {
+pub async fn build_remote_delegation_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let url = std::env::var("AWAKEN_REMOTE_AGENT_URL")
         .expect("AWAKEN_REMOTE_AGENT_URL must be set for delegate-remote mode");
     let security_fingerprint = std::env::var("AWAKEN_REMOTE_AGENT_SECURITY_FINGERPRINT")
@@ -1371,7 +1471,7 @@ pub async fn build_remote_delegation_router(trace_file_present: bool) -> Router 
             host.with_agent_publications(publication.clone())
                 .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(None))
         });
-    mount_with_agent_source(host, publication).await
+    mount_with_agent_source_on_lifecycle(host, publication, lifecycle.clone()).await
 }
 
 /// A deterministic model for the skills e2e (ADR-0036). A Managed-filesystem
@@ -1481,12 +1581,21 @@ impl LlmExecutor for SkillDrivingModel {
 /// A router offering skills on every thread (ADR-0036), driven by a model that
 /// discovers, activates, and uses one. The whole skill set is fronted by the single
 /// `Skill` tool plus `list_skills`; activation returns the skill's instructions.
-pub async fn build_skills_router(trace_file_present: bool) -> Router {
+pub async fn build_skills_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
     let review = SkillSpec::new("review", "Review", "review code", "REVIEW-BODY");
     let (model, model_ref) = scenario_model(Arc::new(SkillDrivingModel), "skills");
-    build_router_with_managed_skills(model, model_ref, vec![greet, review], trace_file_present)
-        .await
+    build_router_with_managed_skills(
+        model,
+        model_ref,
+        vec![greet, review],
+        trace_file_present,
+        lifecycle.clone(),
+    )
+    .await
 }
 
 /// A router whose delivered skills come from a DURABLE catalog (`/v1/skills`) instead
@@ -1495,7 +1604,10 @@ pub async fn build_skills_router(trace_file_present: bool) -> Router {
 /// restart. The `SkillDrivingModel` discovers → activates `greet` → replies with its
 /// body, so an e2e proves a durably-configured skill reaches the model across a
 /// restart. `AWAKEN_MODEL_MODE=skills-durable`.
-pub async fn build_skills_durable_router(trace_file_present: bool) -> Router {
+pub async fn build_skills_durable_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(SkillDrivingModel), "skills-durable");
     let deployment = scenario_deployment();
     let skill_id = awaken_resource_contract::skill_catalog_id("greet");
@@ -1507,9 +1619,12 @@ pub async fn build_skills_durable_router(trace_file_present: bool) -> Router {
     let host = resource_host_with_deployment(model, model_ref, deployment, trace_file_present)
         .await
         .map_dependencies(|host| host.with_agent_publications(publication.clone()));
-    mount_with_agent_source(host, publication).await
+    mount_with_agent_source_on_lifecycle(host, publication, lifecycle.clone()).await
 }
-pub async fn build_config_router(trace_file_present: bool) -> Router {
+pub async fn build_config_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     // The MODEL is chosen by `scenario_model` (in-process echo, or the real provider
     // pointed at the fake upstream when `AWAKEN_MODEL_SOURCE=http`); the fake upstream
     // is what drives the seeded assistant through its admin tools in the run e2e.
@@ -1642,7 +1757,7 @@ pub async fn build_config_router(trace_file_present: bool) -> Router {
         host,
         resources,
         executable_agent_catalog,
-        awaken_service_lifecycle::ServiceLifecycle::new(),
+        lifecycle.clone(),
     )
     .await;
     let scenario_dispatch = host

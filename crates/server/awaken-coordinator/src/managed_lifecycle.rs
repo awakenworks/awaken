@@ -117,11 +117,19 @@ mod tests {
     use super::*;
 
     #[derive(Default)]
-    struct RecordingWebhook(Mutex<Vec<ManagedLifecycleFact>>);
+    struct RecordingWebhook(
+        Mutex<Vec<ManagedLifecycleFact>>,
+        Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+    );
 
     #[async_trait::async_trait]
     impl LifecycleFactDelivery for RecordingWebhook {
         async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String> {
+            let first_delivery = self.0.lock().unwrap().is_empty();
+            if let Some((entered, release)) = self.1.as_ref().filter(|_| first_delivery) {
+                entered.notify_one();
+                release.notified().await;
+            }
             self.0.lock().unwrap().push(fact.clone());
             Ok(())
         }
@@ -151,13 +159,24 @@ mod tests {
 
     #[tokio::test]
     async fn prepared_lifecycle_delivery_waits_for_explicit_service_start() {
+        use std::future::Future as _;
         // Causes: C1 one prepared Store-bound relay; C2 a committed Session
         // creation fact; C3 the prepared loop is started. R1 C1+C2+!C3 => durable
         // pending fact, zero deliveries. R2 C1+C2+C3 => that exact fact delivered
-        // and acknowledged by the existing consumer. No alternate drain exists.
+        // and acknowledged by the existing consumer. R3 C1+C2+C3 with delivery
+        // blocked + shutdown requested => shutdown remains Pending and the same
+        // fact is unacknowledged; R4 release that delivery => original fanout
+        // completes, ACKs and joins before the runtime can be destroyed. The
+        // Notify gates observe real consumer entry, not timing sleeps or a
+        // second drain; no test-side retry is a completion authority.
         let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()).await);
         let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
-        let webhook = Arc::new(RecordingWebhook::default());
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let webhook = Arc::new(RecordingWebhook(
+            Mutex::default(),
+            Some((entered.clone(), release.clone())),
+        ));
         let prepared = prepare_managed_lifecycle_delivery(
             &state,
             &state.session_application(),
@@ -193,6 +212,31 @@ mod tests {
             "R1 retained durable fact"
         );
         prepared.start(&lifecycle);
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .expect("R3 the original outbox consumer entered delivery");
+        let shutdown = lifecycle.shutdown(Duration::from_secs(2));
+        tokio::pin!(shutdown);
+        let first_poll =
+            std::future::poll_fn(|cx| std::task::Poll::Ready(shutdown.as_mut().poll(cx))).await;
+        assert!(
+            first_poll.is_pending(),
+            "R3 shutdown joins the active drain"
+        );
+        assert!(
+            webhook.0.lock().unwrap().is_empty(),
+            "R3 delivery not complete"
+        );
+        assert!(
+            outbox
+                .pending_lifecycle()
+                .await
+                .unwrap()
+                .iter()
+                .any(|fact| fact.id == fact_id),
+            "R3 no ACK before delivery completes"
+        );
+        release.notify_one();
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if webhook
@@ -210,7 +254,9 @@ mod tests {
         })
         .await
         .expect("R2 one existing outbox consumer delivers and acknowledges");
-        lifecycle.shutdown(Duration::from_secs(2)).await.unwrap();
+        shutdown
+            .await
+            .expect("R4 the same lifecycle joined the completed drain");
     }
 
     /// Lifecycle wake cause/effect graph: C1 the receiver/application and a

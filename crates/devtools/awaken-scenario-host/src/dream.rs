@@ -18,8 +18,13 @@ use awaken_dream_application::{
 };
 
 /// Build the one Dream scenario router used by process-level SDK E2E.
-pub async fn build_dream_router(trace_file_present: bool) -> Router {
-    build_dream_router_and_host(trace_file_present).await.0
+pub async fn build_dream_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
+    build_dream_router_and_host(trace_file_present, lifecycle.clone())
+        .await
+        .0
 }
 
 /// Process-level Dream route. Unlike the pure in-process fixture above, this
@@ -29,7 +34,10 @@ pub async fn build_dream_router(trace_file_present: bool) -> Router {
     clippy::disallowed_methods,
     reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
 )]
-pub async fn build_dream_runtime_router(trace_file_present: bool) -> Router {
+pub async fn build_dream_runtime_router(
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(DreamScenarioModel), "claude-sonnet-5");
     let resolver = Arc::new(DreamScenarioModelResolver {
         model_ref: model_ref.clone(),
@@ -51,7 +59,11 @@ pub async fn build_dream_runtime_router(trace_file_present: bool) -> Router {
         }) as awaken_coordinator::ScenarioDreamExecutorDecorator
     });
     let router = crate::scenario_platform::mount_parts_with_model_publication_resolver(
-        host, resources, resolver, barrier,
+        host,
+        resources,
+        resolver,
+        barrier,
+        lifecycle.clone(),
     )
     .await
     .0;
@@ -153,6 +165,8 @@ impl DreamExecutor for PreparedDreamBarrier {
 /// Return the same router plus its Host for focused cross-module assertions.
 pub async fn build_dream_router_and_host(
     trace_file_present: bool,
+
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
     // Keep the Dream lifecycle fixture deterministic by default, but route an
     // explicitly requested HTTP model through the same production provider
@@ -167,6 +181,7 @@ pub async fn build_dream_router_and_host(
         model_ref,
         resolver,
         trace_file_present,
+        lifecycle.clone(),
     )
     .await;
     (router.merge(dream_auxiliary_routes()), host)

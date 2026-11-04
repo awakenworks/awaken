@@ -134,7 +134,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_observability::init(&observability);
     let trace_file_present = observability.trace_file.is_some();
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
-    if mode_uses_shared_scenario_runtime(model_mode.as_deref().ok()) {
+    let uses_shared_runtime = mode_uses_shared_scenario_runtime(model_mode.as_deref().ok());
+    let mut scenario_lifecycle =
+        uses_shared_runtime.then(awaken_service_lifecycle::ServiceLifecycle::new);
+    if uses_shared_runtime {
         // Durability guard: refuse to boot a `typed durable ingress` ingress that would
         // resolve to a volatile in-memory queue (durable + default sqlite backend + no
         // DeploymentConfig::storage_dir) — such a queue silently drops every queued/crashed/scheduled
@@ -153,29 +156,89 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
         awaken_scenario_host::install_scenario_runtime_authority(runtime_authority)?;
     }
-    let mut scenario_lifecycle = None;
     let app = match model_mode.as_deref() {
-        Ok("probe") => awaken_scenario_host::build_probe_router(trace_file_present).await,
+        Ok("probe") => {
+            awaken_scenario_host::build_probe_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
         Ok("revise") => {
             awaken_scenario_host::build_router(
                 Arc::new(awaken_scenario_host::ReviseModel),
                 "revise",
                 trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
             )
             .await
         }
         Ok("outcome-matrix") => {
-            awaken_scenario_host::build_outcome_matrix_router(trace_file_present).await
+            awaken_scenario_host::build_outcome_matrix_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
-        Ok("custom") => awaken_scenario_host::build_custom_router(trace_file_present).await,
-        Ok("delegate") => awaken_scenario_host::build_delegation_router(trace_file_present).await,
+        Ok("custom") => {
+            awaken_scenario_host::build_custom_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
+        Ok("delegate") => {
+            awaken_scenario_host::build_delegation_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
         Ok("statemachine") => {
-            awaken_scenario_host::build_statemachine_router(trace_file_present).await
+            awaken_scenario_host::build_statemachine_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("statemachine-rich") => {
-            awaken_scenario_host::build_statemachine_rich_router(trace_file_present).await
+            awaken_scenario_host::build_statemachine_rich_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
-        Ok("config") => awaken_scenario_host::build_config_router(trace_file_present).await,
+        Ok("config") => {
+            awaken_scenario_host::build_config_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
         // The management scenario drives the REAL management router but with the
         // deterministic MCP scenario model as an explicit HostExecutor selection;
         // env-driven store selection + IAM are identical to production.
@@ -184,159 +247,399 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 std::sync::Arc::new(awaken_scenario_host::McpToolModel),
                 "management",
             );
-            awaken_process_startup::build_all_in_one_router_with_scenario_model(
+            let prepared = awaken_process_startup::prepare_all_in_one_process_with_scenario_model(
                 model,
                 model_ref,
                 management_scenario_adapters(mode == "management-rate-limit"),
                 Box::new(awaken_cli::LocalExecution::default()),
                 &observability,
             )
-            .await
+            .await;
+            scenario_lifecycle = Some(prepared.service_lifecycle);
+            prepared.public_router
         }
         Ok("management-agents") => {
-            awaken_process_startup::build_all_in_one_router_with_scenario_model(
+            let prepared = awaken_process_startup::prepare_all_in_one_process_with_scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::RegistryDelegatingModel),
                 "management-agents".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
                 Box::new(awaken_cli::LocalExecution::default()),
                 &observability,
             )
-            .await
+            .await;
+            scenario_lifecycle = Some(prepared.service_lifecycle);
+            prepared.public_router
         }
         // Generic durable-operation fixtures need the production Config plane to
         // publish explicit Agent policy while a deterministic probe model drives
         // the tool call. This reuses AllInOne; it owns no parallel Host/store.
         Ok("management-probe") => {
-            awaken_process_startup::build_all_in_one_router_with_scenario_model(
+            let prepared = awaken_process_startup::prepare_all_in_one_process_with_scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::ProbeModel),
                 "management-probe".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
                 Box::new(awaken_cli::LocalExecution::default()),
                 &observability,
             )
-            .await
+            .await;
+            scenario_lifecycle = Some(prepared.service_lifecycle);
+            prepared.public_router
         }
         // Deterministic paid Web provider selected before AllInOne assembly, so
         // Control publication and Host dispatch consume one registry instance.
         Ok("management-web") => {
-            awaken_scenario_host::build_management_web_router(trace_file_present).await
+            let (router, lifecycle) =
+                awaken_scenario_host::build_management_web_service(trace_file_present).await;
+            scenario_lifecycle = Some(lifecycle);
+            router
         }
         // Production model supply for provider/BYOK/brokered e2e: no
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.
         Ok("management-providers") => {
-            awaken_process_startup::build_all_in_one_router(
+            let prepared = awaken_process_startup::prepare_all_in_one_process_with_execution(
                 Box::new(awaken_cli::LocalExecution::default()),
                 &observability,
             )
-            .await
+            .await;
+            scenario_lifecycle = Some(prepared.service_lifecycle);
+            prepared.public_router
         }
         Ok("distributed-provider") => awaken_scenario_host::build_distributed_provider_router(),
         // The production management deployment (durable stores + config plane +
         // resource PEP) with only its deterministic fallback model replaced. Used
         // by the Skill pin/restart e2e; resource repositories remain auth-agnostic.
         Ok("management-skills") => {
-            awaken_process_startup::build_all_in_one_router_with_scenario_model(
+            let prepared = awaken_process_startup::prepare_all_in_one_process_with_scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::SkillDrivingModel),
                 "management-skills".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
                 Box::new(awaken_cli::LocalExecution::default()),
                 &observability,
             )
-            .await
+            .await;
+            scenario_lifecycle = Some(prepared.service_lifecycle);
+            prepared.public_router
         }
         Ok("real") => {
-            let (router, lifecycle) =
-                awaken_scenario_host::build_real_service(trace_file_present).await;
-            scenario_lifecycle = Some(lifecycle);
-            router
+            awaken_scenario_host::build_real_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("real-gemini") => {
-            awaken_scenario_host::build_real_gemini_router(trace_file_present).await
+            awaken_scenario_host::build_real_gemini_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("real-resolved") => {
-            awaken_scenario_host::build_resolved_real_router(trace_file_present).await
+            awaken_scenario_host::build_resolved_real_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("oauth-resolved") => {
-            awaken_scenario_host::build_oauth_resolved_router(trace_file_present).await
+            awaken_scenario_host::build_oauth_resolved_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
-        Ok("schedule") => awaken_scenario_host::build_schedule_router(trace_file_present).await,
-        Ok("skills") => awaken_scenario_host::build_skills_router(trace_file_present).await,
+        Ok("schedule") => {
+            awaken_scenario_host::build_schedule_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
+        Ok("skills") => {
+            awaken_scenario_host::build_skills_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
         Ok("skills-durable") => {
-            awaken_scenario_host::build_skills_durable_router(trace_file_present).await
+            awaken_scenario_host::build_skills_durable_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("delegate-remote") => {
-            awaken_scenario_host::build_remote_delegation_router(trace_file_present).await
+            awaken_scenario_host::build_remote_delegation_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
-        Ok("vision") => awaken_scenario_host::build_vision_router(trace_file_present).await,
+        Ok("vision") => {
+            awaken_scenario_host::build_vision_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
         Ok("model-route") => {
-            awaken_scenario_host::build_model_route_router(trace_file_present).await
+            awaken_scenario_host::build_model_route_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         // Compatibility name only: both `acp` and `acp-sandboxed` resolve to
         // the one SessionEnvironment-owned ACP fixture. Keeping a direct Host
         // subprocess here would reopen the placement authority ADR-0073 removed.
-        Ok("acp") => awaken_scenario_host::build_acp_sandboxed_router(trace_file_present).await,
+        Ok("acp") => {
+            awaken_scenario_host::build_acp_sandboxed_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
         Ok("acp-jsonrpc") => {
-            awaken_scenario_host::build_acp_jsonrpc_router(trace_file_present).await
+            awaken_scenario_host::build_acp_jsonrpc_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("acp-permission") => {
-            awaken_scenario_host::build_acp_permission_router(trace_file_present).await
+            awaken_scenario_host::build_acp_permission_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("acp-tool-bridge") => {
-            awaken_scenario_host::build_acp_tool_bridge_router(trace_file_present).await
+            awaken_scenario_host::build_acp_tool_bridge_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("acp-control") => {
-            awaken_scenario_host::build_acp_control_router(trace_file_present).await
+            awaken_scenario_host::build_acp_control_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("acp-relaunch-failure") => {
-            awaken_scenario_host::build_acp_relaunch_failure_router(trace_file_present).await
+            awaken_scenario_host::build_acp_relaunch_failure_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("acp-sandboxed") => {
-            awaken_scenario_host::build_acp_sandboxed_router(trace_file_present).await
+            awaken_scenario_host::build_acp_sandboxed_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("acp-container") => {
-            awaken_scenario_host::build_acp_container_router(trace_file_present).await
+            awaken_scenario_host::build_acp_container_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("acp-gateway") => {
-            awaken_scenario_host::build_acp_gateway_router(trace_file_present).await
+            awaken_scenario_host::build_acp_gateway_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("acp-managed-mcp") => {
-            awaken_scenario_host::build_acp_managed_mcp_router(trace_file_present).await
-        }
-        Ok("acp-real-mcp") => {
-            awaken_scenario_host::build_acp_real_mcp_router(trace_file_present).await
-        }
-        Ok("memory") => {
             let (router, lifecycle) =
-                awaken_scenario_host::build_memory_service(trace_file_present).await;
+                awaken_scenario_host::build_acp_managed_mcp_service(trace_file_present).await;
             scenario_lifecycle = Some(lifecycle);
             router
         }
-        Ok("memory-resource") => {
-            awaken_scenario_host::build_memory_resource_router(trace_file_present).await
+        Ok("acp-real-mcp") => {
+            let (router, lifecycle) =
+                awaken_scenario_host::build_acp_real_mcp_service(trace_file_present).await;
+            scenario_lifecycle = Some(lifecycle);
+            router
         }
-        Ok("dream") => awaken_scenario_host::build_dream_runtime_router(trace_file_present).await,
+        Ok("memory") => {
+            awaken_scenario_host::build_memory_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
+        Ok("memory-resource") => {
+            awaken_scenario_host::build_memory_resource_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
+        Ok("dream") => {
+            awaken_scenario_host::build_dream_runtime_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
         Ok("resource-scope-boundary") => {
             awaken_scenario_host::build_unscoped_resource_router(trace_file_present).await
         }
         Ok("resource-ephemeral") => {
-            awaken_scenario_host::build_ephemeral_resource_router(trace_file_present).await
+            awaken_scenario_host::build_ephemeral_resource_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
         Ok("git-repo") => {
             awaken_scenario_host::build_git_repo_router(
                 awaken_scenario_host::scenario_deployment(),
                 trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
             )
             .await
         }
-        Ok("compaction") => awaken_scenario_host::build_compaction_router(trace_file_present).await,
-        Ok("error") => awaken_scenario_host::build_error_router(trace_file_present).await,
-        Ok("worker") => awaken_scenario_host::build_worker_router(trace_file_present).await,
-        Ok("environment-matrix") => {
-            awaken_scenario_host::build_environment_matrix_router(trace_file_present).await
+        Ok("compaction") => {
+            awaken_scenario_host::build_compaction_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
         }
-        Ok("full-chain") => awaken_scenario_host::build_full_chain_router(trace_file_present).await,
-        _ => awaken_scenario_host::build_echo_router(trace_file_present).await,
+        Ok("error") => {
+            awaken_scenario_host::build_error_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
+        Ok("worker") => {
+            awaken_scenario_host::build_worker_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
+        Ok("environment-matrix") => {
+            awaken_scenario_host::build_environment_matrix_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
+        Ok("full-chain") => {
+            awaken_scenario_host::build_full_chain_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
+        _ => {
+            awaken_scenario_host::build_echo_router(
+                trace_file_present,
+                scenario_lifecycle
+                    .as_ref()
+                    .expect("Host-backed scenario retains its selected lifecycle")
+                    .clone(),
+            )
+            .await
+        }
     };
     // Brain admin surface (ADR-0022 D7): the connection-count metric that KEDA
     // autoscales on, plus /admin/drain + /readyz for graceful, stream-preserving
@@ -356,11 +659,29 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = app.layer(axum::middleware::from_fn(
         awaken_protocol_managed::enforce_managed_beta,
     ));
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    eprintln!("awaken-coordinator listening on http://{addr}");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let served = serve_scenario(app, &addr, scenario_lifecycle).await;
+    // The original selected exporter closes only after the registered tasks join,
+    // including bind/serve failures; preserve the original error after flushing.
+    awaken_observability::shutdown();
+    served
+}
+
+async fn serve_scenario(
+    app: axum::Router,
+    addr: &str,
+    scenario_lifecycle: Option<awaken_service_lifecycle::ServiceLifecycle>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // A listener/serve failure is still a shutdown trigger after assembly has
+    // registered background work. Preserve that result, drain the same owner,
+    // and only then propagate it; an early `?` would skip the join.
+    let served = async {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        eprintln!("awaken-coordinator listening on http://{addr}");
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+    }
+    .await;
     // Shutdown decision table: C1 no Runtime work => immediate join; C2 a durable
     // dispatch or MemoryStore extraction remains active => the registered Host
     // drain keeps waiting; C3 work completes => all child and aux.background spans
@@ -368,13 +689,20 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // deadline reports the named task. The one
     // ServiceLifecycle mounted with the Router owns every rule; Router drop and
     // a timing sleep are not completion authorities.
-    if let Some(lifecycle) = scenario_lifecycle {
-        lifecycle
-            .shutdown(std::time::Duration::from_secs(10))
-            .await?;
+    let shutdown = if let Some(lifecycle) = scenario_lifecycle {
+        lifecycle.shutdown(std::time::Duration::from_secs(10)).await
+    } else {
+        Ok(())
+    };
+    // Preserve a simultaneous drain failure even when the original serving
+    // error takes precedence. ShutdownError already names the timed-out tasks.
+    if served.is_err()
+        && let Err(error) = &shutdown
+    {
+        eprintln!("awaken-scenario-host: lifecycle shutdown after service failure: {error}");
     }
-    // Flush any buffered spans (OTLP batch / trace-file) before exit.
-    awaken_observability::shutdown();
+    served?;
+    shutdown?;
     Ok(())
 }
 
@@ -389,6 +717,8 @@ fn mode_uses_shared_scenario_runtime(mode: Option<&str>) -> bool {
                 | "management-web"
                 | "management-providers"
                 | "management-skills"
+                | "acp-managed-mcp"
+                | "acp-real-mcp"
                 | "distributed-control"
                 | "distributed-provider"
         )
@@ -513,6 +843,45 @@ mod dispatch_tests {
             == StatusCode::OK
     }
 
+    #[tokio::test]
+    async fn failed_listener_binding_joins_the_selected_lifecycle_before_returning() {
+        // C1 startup already registered a service task; C2 this test holds the
+        // exact listener address (no port-selection race); C3 bind fails. R1:
+        // the actual root serve path must cancel AND join that same task before
+        // returning the original AddrInUse. Success/EOF uses the same drain;
+        // a later OS serve error shares this Result path but is not fault-injected
+        // here. No Router-drop, retry, sleep or second lifecycle proves completion.
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = occupied.local_addr().unwrap().to_string();
+        let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+        let (entered, entering) = tokio::sync::oneshot::channel();
+        let (finished, mut completion) = tokio::sync::oneshot::channel();
+        lifecycle.spawn("bind-failure-owned-task", move |cancel| async move {
+            entered.send(()).unwrap();
+            cancel.cancelled().await;
+            finished.send(()).unwrap();
+            Ok(())
+        });
+        entering.await.unwrap();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            super::serve_scenario(axum::Router::new(), &addr, Some(lifecycle)),
+        )
+        .await
+        .expect("R1 the original failure path joins the selected task")
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::AddrInUse,
+            "R1 preserve the original bind failure"
+        );
+        assert_eq!(
+            completion.try_recv(),
+            Ok(()),
+            "R1 task completed before return"
+        );
+    }
+
     #[test]
     fn only_host_backed_modes_install_the_shared_scenario_runtime() {
         // Cause/effect decision table:
@@ -536,6 +905,8 @@ mod dispatch_tests {
             "management-web",
             "management-providers",
             "management-skills",
+            "acp-managed-mcp",
+            "acp-real-mcp",
         ] {
             assert!(
                 !super::mode_uses_shared_scenario_runtime(Some(mode)),
@@ -576,129 +947,277 @@ mod dispatch_tests {
         // main's inline mode selection still needs its own static/e2e evidence.
         // (AWAKEN_MODEL_MODE string, the router its `main()` arm builds). Kept in the
         // same order as the `match` in `main()` so drift is easy to spot.
+        // O1/O6: all25 pure Router fixtures retain independent lifecycles; each
+        // original route200 assertion precedes joining that fixture's actual
+        // registered work. Identical task names never select a global owner.
         let mut local_test_deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
         local_test_deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
-        let dispatch: Vec<(&str, axum::Router)> = vec![
-            ("probe", Box::pin(sh::build_probe_router(false)).await),
-            (
-                "revise",
-                Box::pin(sh::build_router(
-                    std::sync::Arc::new(sh::ReviseModel),
+        let dispatch: Vec<(
+            &str,
+            axum::Router,
+            awaken_service_lifecycle::ServiceLifecycle,
+        )> = vec![
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "probe",
+                    Box::pin(sh::build_probe_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
                     "revise",
-                    false,
-                ))
-                .await,
-            ),
-            ("custom", Box::pin(sh::build_custom_router(false)).await),
-            (
-                "delegate",
-                Box::pin(sh::build_delegation_router_with_deployment(
-                    local_test_deployment.clone(),
-                    false,
-                ))
-                .await,
-            ),
-            (
-                "statemachine",
-                Box::pin(sh::build_statemachine_router(false)).await,
-            ),
-            (
-                "statemachine-rich",
-                Box::pin(sh::build_statemachine_rich_router(false)).await,
-            ),
-            ("schedule", Box::pin(sh::build_schedule_router(false)).await),
-            ("skills", Box::pin(sh::build_skills_router(false)).await),
-            (
-                "skills-durable",
-                Box::pin(sh::build_skills_durable_router(false)).await,
-            ),
-            ("vision", Box::pin(sh::build_vision_router(false)).await),
-            (
-                "model-route",
-                Box::pin(sh::build_model_route_router(false)).await,
-            ),
-            (
-                "acp",
-                Box::pin(sh::build_acp_sandboxed_router_with_deployment(
-                    local_test_deployment.clone(),
-                    false,
-                ))
-                .await,
-            ),
-            (
-                "acp-jsonrpc",
-                Box::pin(sh::build_acp_jsonrpc_router_with_deployment(
-                    local_test_deployment.clone(),
-                    false,
-                ))
-                .await,
-            ),
-            (
-                "acp-permission",
-                Box::pin(sh::build_acp_permission_router_with_deployment(
-                    local_test_deployment.clone(),
-                    false,
-                ))
-                .await,
-            ),
-            (
-                "acp-sandboxed",
-                Box::pin(sh::build_acp_sandboxed_router_with_deployment(
-                    local_test_deployment.clone(),
-                    false,
-                ))
-                .await,
-            ),
-            (
-                "acp-gateway",
-                Box::pin(sh::build_acp_gateway_router_with_deployment(
-                    local_test_deployment.clone(),
-                    false,
-                ))
-                .await,
-            ),
-            ("memory", Box::pin(sh::build_memory_router(false)).await),
-            (
-                "memory-resource",
-                Box::pin(sh::build_memory_resource_router(false)).await,
-            ),
-            (
-                "git-repo",
-                Box::pin(sh::build_git_repo_router(
-                    local_test_deployment.clone(),
-                    false,
-                ))
-                .await,
-            ),
-            (
-                "compaction",
-                Box::pin(sh::build_compaction_router(false)).await,
-            ),
-            ("error", Box::pin(sh::build_error_router(false)).await),
-            ("worker", Box::pin(sh::build_worker_router(false)).await),
-            (
-                "environment-matrix",
-                Box::pin(sh::build_environment_matrix_router(false)).await,
-            ),
-            (
-                "full-chain",
-                Box::pin(sh::build_full_chain_router_with_deployment(
-                    local_test_deployment,
-                    false,
-                ))
-                .await,
-            ),
+                    Box::pin(sh::build_router(
+                        std::sync::Arc::new(sh::ReviseModel),
+                        "revise",
+                        false,
+                        lifecycle.clone(),
+                    ))
+                    .await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "custom",
+                    Box::pin(sh::build_custom_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "delegate",
+                    Box::pin(sh::build_delegation_router_with_deployment(
+                        local_test_deployment.clone(),
+                        false,
+                        lifecycle.clone(),
+                    ))
+                    .await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "statemachine",
+                    Box::pin(sh::build_statemachine_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "statemachine-rich",
+                    Box::pin(sh::build_statemachine_rich_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "schedule",
+                    Box::pin(sh::build_schedule_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "skills",
+                    Box::pin(sh::build_skills_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "skills-durable",
+                    Box::pin(sh::build_skills_durable_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "vision",
+                    Box::pin(sh::build_vision_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "model-route",
+                    Box::pin(sh::build_model_route_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "acp",
+                    Box::pin(sh::build_acp_sandboxed_router_with_deployment(
+                        local_test_deployment.clone(),
+                        false,
+                        lifecycle.clone(),
+                    ))
+                    .await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "acp-jsonrpc",
+                    Box::pin(sh::build_acp_jsonrpc_router_with_deployment(
+                        local_test_deployment.clone(),
+                        false,
+                        lifecycle.clone(),
+                    ))
+                    .await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "acp-permission",
+                    Box::pin(sh::build_acp_permission_router_with_deployment(
+                        local_test_deployment.clone(),
+                        false,
+                        lifecycle.clone(),
+                    ))
+                    .await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "acp-sandboxed",
+                    Box::pin(sh::build_acp_sandboxed_router_with_deployment(
+                        local_test_deployment.clone(),
+                        false,
+                        lifecycle.clone(),
+                    ))
+                    .await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "acp-gateway",
+                    Box::pin(sh::build_acp_gateway_router_with_deployment(
+                        local_test_deployment.clone(),
+                        false,
+                        lifecycle.clone(),
+                    ))
+                    .await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "memory",
+                    Box::pin(sh::build_memory_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "memory-resource",
+                    Box::pin(sh::build_memory_resource_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "git-repo",
+                    Box::pin(sh::build_git_repo_router(
+                        local_test_deployment.clone(),
+                        false,
+                        lifecycle.clone(),
+                    ))
+                    .await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "compaction",
+                    Box::pin(sh::build_compaction_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "error",
+                    Box::pin(sh::build_error_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "worker",
+                    Box::pin(sh::build_worker_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "environment-matrix",
+                    Box::pin(sh::build_environment_matrix_router(
+                        false,
+                        lifecycle.clone(),
+                    ))
+                    .await,
+                    lifecycle,
+                )
+            },
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "full-chain",
+                    Box::pin(sh::build_full_chain_router_with_deployment(
+                        local_test_deployment,
+                        false,
+                        lifecycle.clone(),
+                    ))
+                    .await,
+                    lifecycle,
+                )
+            },
             // The `_ =>` fallback: any unrecognized mode routes to the echo router.
-            (
-                "<default/unknown>",
-                Box::pin(sh::build_echo_router(false)).await,
-            ),
+            {
+                let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+                (
+                    "<default/unknown>",
+                    Box::pin(sh::build_echo_router(false, lifecycle.clone())).await,
+                    lifecycle,
+                )
+            },
         ];
-        for (mode, app) in dispatch {
+        for (mode, app, lifecycle) in dispatch {
             assert!(
                 mounts_shared_surface(app).await,
                 "AWAKEN_MODEL_MODE={mode} must map to a factory that mounts the shared surface"
             );
+            lifecycle
+                .shutdown(std::time::Duration::from_secs(10))
+                .await
+                .expect("O1 each independent route fixture drains its own owner");
         }
     }
 
@@ -721,10 +1240,17 @@ mod dispatch_tests {
     // through the scenario's async model-publication adapter.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_config_mode_maps_to_the_config_factory() {
+        let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+
         // `config` is async but environment-free (in-memory SQLite); assert it too.
         assert!(
-            mounts_shared_surface(sh::build_config_router(false).await).await,
+            mounts_shared_surface(sh::build_config_router(false, lifecycle.clone()).await).await,
             "AWAKEN_MODEL_MODE=config must map to a mounted config factory"
         );
+
+        lifecycle
+            .shutdown(std::time::Duration::from_secs(10))
+            .await
+            .expect("O1 config fixture drains its selected owner");
     }
 }

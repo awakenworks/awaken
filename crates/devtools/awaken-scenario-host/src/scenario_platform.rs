@@ -25,10 +25,7 @@ const SCENARIO_MEMORY_MOUNT_PATH: &str = "/mnt/memory/scenario-memory";
 /// activation. Authorization remains outside this helper. Named apart from
 /// the Memory participant `mount` effect: this composes routers and mounts
 /// nothing on the host.
-pub(super) async fn mount_platform(platform: ScenarioPlatform) -> Router {
-    mount_on_lifecycle(platform, awaken_service_lifecycle::ServiceLifecycle::new()).await
-}
-
+///
 /// Scenario composition whose process owner retains the exact lifecycle used
 /// by the Coordinator mount. Graceful shutdown can therefore drain durable
 /// claims and auxiliary Runtime work before flushing observability.
@@ -40,19 +37,7 @@ pub(super) async fn mount_on_lifecycle(
     mount_parts_on_lifecycle(host, resources, lifecycle).await.0
 }
 
-pub(super) async fn mount_parts(
-    host: SessionExecutorBuilder,
-    resources: awaken_resource_application::ResourcesApplication,
-) -> (Router, Arc<ExecutorComponents>) {
-    mount_parts_on_lifecycle(
-        host,
-        resources,
-        awaken_service_lifecycle::ServiceLifecycle::new(),
-    )
-    .await
-}
-
-async fn mount_parts_on_lifecycle(
+pub(super) async fn mount_parts_on_lifecycle(
     host: SessionExecutorBuilder,
     resources: awaken_resource_application::ResourcesApplication,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
@@ -77,6 +62,7 @@ pub(super) async fn mount_parts_with_model_publication_resolver(
     resources: awaken_resource_application::ResourcesApplication,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
     dream_executor_decorator: Option<awaken_coordinator::ScenarioDreamExecutorDecorator>,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
     let catalog = resources.authorities().resource_registry();
     let managed = crate::local_managed_state_with_model_publication_resolver(
@@ -86,12 +72,14 @@ pub(super) async fn mount_parts_with_model_publication_resolver(
     )
     .await;
     let host = managed.host.clone();
-    let (router, dreams) = awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams(
-        managed.state,
-        resources.clone(),
-        dream_executor_decorator,
-    )
-    .await;
+    let (router, dreams) =
+        awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
+            managed.state,
+            resources.clone(),
+            lifecycle,
+            dream_executor_decorator,
+        )
+        .await;
     dreams.bind_model_readiness(Arc::new(ScenarioDreamModelReadiness { resolver }));
     (router, host)
 }
@@ -121,18 +109,6 @@ impl awaken_dream_application::DreamModelReadiness for ScenarioDreamModelReadine
             awaken_runtime_contract::resolved::Backend::Remote(_)
         ))
     }
-}
-
-pub(super) async fn mount_with_agent_source(
-    platform: ScenarioPlatform,
-    agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
-) -> Router {
-    mount_with_agent_source_on_lifecycle(
-        platform,
-        agent_source,
-        awaken_service_lifecycle::ServiceLifecycle::new(),
-    )
-    .await
 }
 
 pub(super) async fn mount_with_agent_source_on_lifecycle(
@@ -169,14 +145,11 @@ pub(super) async fn mount_parts_with_agent_source_on_lifecycle(
 }
 
 /// Scenario platform with the Environment API and the same Resource Registry,
-/// credential plane, and Session repository used by [`mount_platform`].
-pub(super) async fn mount_with_environments(platform: ScenarioPlatform) -> Router {
-    mount_with_environments_and_agent_source(platform, None).await
-}
-
+/// credential plane, and Session repository used by [`mount_on_lifecycle`].
 pub(super) async fn mount_with_environments_and_agent_source(
     platform: ScenarioPlatform,
     agent_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
     let (host, resources) = platform.into_dependencies();
     let local_workspace = host.local_workspace().to_owned();
@@ -230,13 +203,19 @@ pub(super) async fn mount_with_environments_and_agent_source(
         environment_authoring.clone(),
         Some(sandbox_policies),
     ));
-    awaken_coordinator::mount_with_managed_and_resource_registry(managed.state, resources.clone())
-        .await
-        .merge(environments)
-        .layer(axum::middleware::from_fn_with_state(
-            work_session_access,
-            awaken_protocol_managed::work_session_guard,
-        ))
+    awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
+        managed.state,
+        resources.clone(),
+        lifecycle,
+        None,
+    )
+    .await
+    .0
+    .merge(environments)
+    .layer(axum::middleware::from_fn_with_state(
+        work_session_access,
+        awaken_protocol_managed::work_session_guard,
+    ))
 }
 
 pub(super) struct FixedAgentPublication {
@@ -362,20 +341,6 @@ fn fixture_backend_binding(backend_ref: &str) -> ModelBinding {
 /// frozen Agent binding share one real identity; an official id-only Session
 /// attachment can therefore replace the slot while retaining the binding id
 /// selected by the Memory plugin.
-pub(super) async fn mount_with_memory_publication(
-    platform: ScenarioPlatform,
-    model_ref: &str,
-    skills: Vec<awaken_agent_contract::AgentSkillBinding>,
-) -> Router {
-    mount_with_memory_publication_on_lifecycle(
-        platform,
-        model_ref,
-        skills,
-        awaken_service_lifecycle::ServiceLifecycle::new(),
-    )
-    .await
-}
-
 pub(super) async fn mount_with_memory_publication_on_lifecycle(
     platform: ScenarioPlatform,
     model_ref: &str,

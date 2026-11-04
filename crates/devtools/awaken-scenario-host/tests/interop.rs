@@ -200,13 +200,17 @@ fn assert_ai_sdk_result_precedes_answer(messages: &[Value], body: &str) {
 /// stream terminates with finish reason `stop`. Decision rule S1=C1=>E1+E2.
 #[tokio::test(flavor = "multi_thread")]
 async fn ai_sdk_echo_run_streams_text() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `ai sdk echo run streams text` with the concrete inputs,
     // state, dependencies, and failure triggers used by this case.
     // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_echo_router(false).await;
+    let app = build_echo_router(false, fixture_lifecycle_1.clone()).await;
     let (status, body) = call(
         &app,
         "POST",
@@ -229,6 +233,11 @@ async fn ai_sdk_echo_run_streams_text() {
             .any(|e| e["type"] == "finish" && e["finishReason"] == "stop"),
         "stream should finish with reason stop: {body}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// Cause/effect design: C1 an AI SDK Run commits user input and the echo reply on
@@ -236,6 +245,10 @@ async fn ai_sdk_echo_run_streams_text() {
 /// both committed roles and exact texts. Decision rule H1=C1+C2=>E1.
 #[tokio::test(flavor = "multi_thread")]
 async fn ai_sdk_history_reflects_committed_run() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `ai sdk history reflects committed run` with the
     // concrete inputs, state, dependencies, and failure triggers used by this case.
     // Effects: the observable result `all output, state, side-effect, error, and terminal
@@ -244,7 +257,7 @@ async fn ai_sdk_history_reflects_committed_run() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_echo_router(false).await;
+    let app = build_echo_router(false, fixture_lifecycle_1.clone()).await;
     call(
         &app,
         "POST",
@@ -276,6 +289,11 @@ async fn ai_sdk_history_reflects_committed_run() {
             .any(|m| m["role"] == "assistant" && m["parts"][0]["text"] == "Echo: remember me"),
         "history should include the assistant reply: {body}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// The headline cross-protocol case. A managed session fixes the shared thread id;
@@ -284,6 +302,10 @@ async fn ai_sdk_history_reflects_committed_run() {
 /// run resumes; the final answer is visible back through the AI SDK.
 #[tokio::test(flavor = "multi_thread")]
 async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: C1 AI SDK commits client tool call c1 on one Managed-created
     // Thread; C2 Managed accepts the exact c1=42 result receipt on that Thread.
     // Effects: the lifecycle supervisor commits the result, resumes the Run, and
@@ -292,7 +314,7 @@ async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
     // one Thread transcript is the authority shared by both protocol adapters.
     // Decision rule: X2=C1 without C2 -> awaiting; X3=C1+C2 -> committed result
     // precedes committed answer in the same Thread history.
-    let app = build_custom_router(false).await;
+    let app = build_custom_router(false, fixture_lifecycle_1.clone()).await;
 
     // 1. Managed creates the session; its id is the shared thread id.
     let (_, created) = call(
@@ -378,10 +400,19 @@ async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
     let payload: Value = serde_json::from_str(&body).unwrap();
     let messages = payload["items"].as_array().unwrap();
     assert_ai_sdk_result_precedes_answer(messages, &body);
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ag_ui_echo_run_streams_run_events() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `ag ui echo run streams run events` with the concrete
     // inputs, state, dependencies, and failure triggers used by this case.
     // Effects: the observable result `all output, state, side-effect, error, and terminal
@@ -391,7 +422,7 @@ async fn ag_ui_echo_run_streams_run_events() {
     // Coverage rationale: `ag ui echo run streams run events` is one independent branch selecting
     // `all output, state, side-effect, error, and terminal assertions below hold together`; a
     // multi-row decision table is not applicable, and sibling tests own alternate causes.
-    let app = build_echo_router(false).await;
+    let app = build_echo_router(false, fixture_lifecycle_1.clone()).await;
     let (status, body) = call(
         &app,
         "POST",
@@ -418,6 +449,11 @@ async fn ag_ui_echo_run_streams_run_events() {
         events.iter().any(|e| e["type"] == "RUN_FINISHED"),
         "stream should close with RUN_FINISHED: {body}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// Cause/effect decision table for the real application guard plus both protocol
@@ -430,7 +466,17 @@ async fn ag_ui_echo_run_streams_run_events() {
 /// effects: this test crosses the guard, adapters, and committed Runtime.
 #[tokio::test(flavor = "multi_thread")]
 async fn guarded_application_protocols_keep_the_external_thread_identity() {
-    let (app, host) = build_router_and_host(Arc::new(EchoModel), "echo-model", false).await;
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
+    let (app, host) = build_router_and_host(
+        Arc::new(EchoModel),
+        "echo-model",
+        false,
+        fixture_lifecycle_1.clone(),
+    )
+    .await;
     let (status, created) = call(
         &app,
         "POST",
@@ -540,6 +586,11 @@ async fn guarded_application_protocols_keep_the_external_thread_identity() {
         "R2 error: {body}"
     );
     assert!(!body.contains(&session_id), "R2 internal id reached AG-UI");
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// Cause/effect rules for the second AG-UI router branch: C1 an exact bound
@@ -552,7 +603,11 @@ async fn guarded_application_protocols_keep_the_external_thread_identity() {
 /// proves presentation aliasing cannot change canonical pending-tool lookup.
 #[tokio::test(flavor = "multi_thread")]
 async fn guarded_ag_ui_resume_keeps_the_external_thread_identity() {
-    let (app, host) = build_custom_router_and_host(false).await;
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
+    let (app, host) = build_custom_router_and_host(false, fixture_lifecycle_1.clone()).await;
     let (status, created) = call(
         &app,
         "POST",
@@ -642,6 +697,11 @@ async fn guarded_ag_ui_resume_keeps_the_external_thread_identity() {
         );
     }
     assert!(!body.contains(&session_id), "T1 internal id reached AG-UI");
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// The three-protocol case: AG-UI drives a Run that awaits on a client tool, the
@@ -649,6 +709,10 @@ async fn guarded_ag_ui_resume_keeps_the_external_thread_identity() {
 /// is visible back through the AI SDK — all three over one shared host/thread.
 #[tokio::test(flavor = "multi_thread")]
 async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: C1 AG-UI commits client tool call c1 on a Managed-created Thread;
     // C2 Managed accepts the exact c1=42 result receipt on that same Thread.
     // Effects: committed Managed projection reaches end_turn, then AI SDK history
@@ -659,7 +723,7 @@ async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
     // causality remains visible through the third protocol. X4=C1+C2 on the
     // default test stack -> the canonical Host context realization completes;
     // no adapter-specific stack override or resume path is permitted.
-    let app = build_custom_router(false).await;
+    let app = build_custom_router(false, fixture_lifecycle_1.clone()).await;
 
     let (_, created) = call(
         &app,
@@ -740,15 +804,24 @@ async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
     let payload: Value = serde_json::from_str(&body).unwrap();
     let messages = payload["items"].as_array().unwrap();
     assert_ai_sdk_result_precedes_answer(messages, &body);
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 // ── Category 4/5: errors convert to each protocol's wire format ──────────────
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ai_sdk_malformed_body_returns_stream_error() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // A body that fails to decode must surface as a UI Message Stream error frame
     // (status 200, error in-stream), not axum's plain-text 400.
-    let app = build_echo_router(false).await;
+    let app = build_echo_router(false, fixture_lifecycle_1.clone()).await;
     let (status, body) = call(
         &app,
         "POST",
@@ -770,16 +843,25 @@ async fn ai_sdk_malformed_body_returns_stream_error() {
             .any(|e| e["type"] == "finish" && e["finishReason"] == "error"),
         "error stream finishes with reason error: {body}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ai_sdk_driver_error_returns_stream_error() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // SSE failure FMECA/decision rule: C1 the driver cannot produce a committed
     // receipt; E1 emit an error frame, E2 emit finish(error), E3 never emit the
     // normal finish(stop), and E4 close with exactly one transport sentinel.
     // Empty messages on a fresh thread fault-injects C1 at the admission/driver
     // boundary without inventing a second protocol-only completion path.
-    let app = build_echo_router(false).await;
+    let app = build_echo_router(false, fixture_lifecycle_1.clone()).await;
     let (status, body) = call(
         &app,
         "POST",
@@ -806,12 +888,21 @@ async fn ai_sdk_driver_error_returns_stream_error() {
         "driver error must never report normal stop: {body}"
     );
     assert_eq!(body.matches("data: [DONE]").count(), 1, "one SSE sentinel");
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ag_ui_malformed_body_returns_run_error() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // A body that fails to decode must surface as a bare RUN_ERROR event.
-    let app = build_echo_router(false).await;
+    let app = build_echo_router(false, fixture_lifecycle_1.clone()).await;
     let (status, body) = call(&app, "POST", "/v1/ag-ui", json!({ "messages": 5 })).await;
     assert_eq!(status, StatusCode::OK, "AG-UI streams the error: {body}");
     assert!(
@@ -820,13 +911,22 @@ async fn ag_ui_malformed_body_returns_run_error() {
             .any(|e| e["type"] == "RUN_ERROR" && e["message"].is_string()),
         "malformed body → RUN_ERROR event: {body}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ag_ui_driver_error_returns_run_error() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // A resume with no awaiting run is a driver error → RUN_ERROR (bracketed by the
     // RUN_STARTED the run began with).
-    let app = build_echo_router(false).await;
+    let app = build_echo_router(false, fixture_lifecycle_1.clone()).await;
     let (status, body) = call(
         &app,
         "POST",
@@ -839,6 +939,11 @@ async fn ag_ui_driver_error_returns_run_error() {
         sse_events(&body).iter().any(|e| e["type"] == "RUN_ERROR"),
         "driver error → RUN_ERROR event: {body}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 // ── A2A adapter conformance (categories 1–3, 5) ─────────────────────────────
@@ -880,6 +985,10 @@ fn a2a_send(context: &str, msg_id: &str, text: &str) -> Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a2a_run_returns_completed_task() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `a2a run` with the concrete inputs, state, dependencies,
     // and failure triggers used by this case.
     // Effects: the observable result `returns completed task` and every asserted state transition
@@ -888,7 +997,7 @@ async fn a2a_run_returns_completed_task() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_echo_router(false).await;
+    let app = build_echo_router(false, fixture_lifecycle_1.clone()).await;
     let (status, body) = call(
         &app,
         "POST",
@@ -913,6 +1022,11 @@ async fn a2a_run_returns_completed_task() {
             .iter()
             .any(|m| m["role"] == "agent" && m["parts"][0]["text"] == "Echo: hi")
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 /// Cause/effect design: C1 two A2A sends use the same context id in sequence.
@@ -921,6 +1035,10 @@ async fn a2a_run_returns_completed_task() {
 /// membership assertions cover accumulation, not a separate ordering contract.
 #[tokio::test(flavor = "multi_thread")]
 async fn a2a_history_accumulates_across_runs() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // Causes: the fixtures below establish `a2a history` with the concrete inputs, state,
     // dependencies, and failure triggers used by this case.
     // Effects: the observable result `accumulates across runs` and every asserted state transition
@@ -929,7 +1047,7 @@ async fn a2a_history_accumulates_across_runs() {
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_echo_router(false).await;
+    let app = build_echo_router(false, fixture_lifecycle_1.clone()).await;
     call(
         &app,
         "POST",
@@ -955,11 +1073,20 @@ async fn a2a_history_accumulates_across_runs() {
     assert!(texts.contains(&"one".to_string()));
     assert!(texts.contains(&"Echo: one".to_string()));
     assert!(texts.contains(&"two".to_string()));
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a2a_awaits_input_required_then_resumes_completed() {
-    let app = build_custom_router(false).await;
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
+    let app = build_custom_router(false, fixture_lifecycle_1.clone()).await;
     // A managed session fixes the shared context id.
     let (_, created) = call(
         &app,
@@ -1012,13 +1139,22 @@ async fn a2a_awaits_input_required_then_resumes_completed() {
                 .unwrap_or(false)),
         "the resumed answer appears in the task history: {body}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a2a_malformed_body_returns_error_envelope() {
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
     // A2A is request/response, so a decode failure is an HTTP 400 + JSON error
     // envelope (like Managed), not an in-stream event.
-    let app = build_echo_router(false).await;
+    let app = build_echo_router(false, fixture_lifecycle_1.clone()).await;
     let (status, body) = call(
         &app,
         "POST",
@@ -1036,14 +1172,28 @@ async fn a2a_malformed_body_returns_error_envelope() {
         err["error"]["message"].is_string(),
         "error envelope has a message: {body}"
     );
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a2a_agent_card_advertises_the_protocol() {
-    let app = build_echo_router(false).await;
+    // O1/O7: keep each selected fixture owner through the original assertions;
+    // protocol clones share it, while independent constructors retain separate owners.
+    let fixture_lifecycle_1 = awaken_service_lifecycle::ServiceLifecycle::new();
+
+    let app = build_echo_router(false, fixture_lifecycle_1.clone()).await;
     let (status, body) = call(&app, "GET", "/v1/a2a/agent-card", Value::Null).await;
     assert_eq!(status, StatusCode::OK);
     let card = serde_json::from_str::<Value>(&body).unwrap();
     assert_eq!(card["protocolVersion"], "0.3.0");
     assert_eq!(card["capabilities"]["streaming"], true);
+
+    fixture_lifecycle_1
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("O1 selected fixture joins its registered work");
 }
