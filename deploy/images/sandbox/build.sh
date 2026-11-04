@@ -258,7 +258,7 @@ accept_managed_agents_base() {
 }
 
 image_exists() {
-  "$engine" image inspect "$image" >/dev/null 2>&1
+  "$engine" image inspect --format '{{.Id}}' "$image" >/dev/null 2>&1
 }
 
 # The configured runtime selection is part of image admission, including reuse.
