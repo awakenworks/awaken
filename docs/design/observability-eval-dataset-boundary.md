@@ -38,6 +38,18 @@ oversized files retained by an older exporter are truncated before new writes.
 Tests own the capacity decision table and drive the real SDK/exporter path.
 Long-term trace retention belongs in the configured OTLP collector.
 
+The Session application's existing repository commit boundary can emit an
+opt-in, structure-only `awaken::sandbox_observation` diagnostic after an applied
+root CAS. The observation carries the committed revision, logical execution,
+Environment phase, existing idle/operation clock edges and frozen environment
+and declared-package fingerprints. Replayed, rejected and failed commits emit
+no new applied observation. This is a lossy diagnostic projection, not a new
+lifecycle event, timer ledger, billing fact or public Managed DTO. Session ids
+are correlation fields in diagnostics only. Raw bindings, package names,
+prompts, metadata, filesystem paths and credentials are excluded. Capacity
+collectors join these observations to infrastructure counters by the existing
+Sandbox scope annotation and exact Pod UID; missing evidence stays unknown.
+
 ## Eval Rules
 
 Session renewal diagnostics reuse the existing observability SDK, HTTP root
