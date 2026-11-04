@@ -10,6 +10,7 @@ import {
   pass,
   scenarioMemoryStore,
   waitForSessionEventReceipt,
+  waitForValue,
   withScenarioServer,
 } from './harness.mjs';
 
@@ -42,9 +43,13 @@ async function turn(client, sessionId, text) {
 }
 
 async function main() {
-  await withScenarioServer('memory', 'memory', Number(process.env.E2E_PORT), async (baseUrl) => {
+  await withScenarioServer('memory', 'memory', Number(process.env.E2E_PORT), async (baseUrl, upstream) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
     const store = await scenarioMemoryStore(client, MEMORY_HEADERS);
+    // Read the canonical committed Memory content; HTTP/decode errors propagate.
+    const memories = async () => (await client.get(
+      `/v1/memory_stores/${store.id}/memories?view=full`, {headers:MEMORY_HEADERS},
+    )).data;
     const session = () => client.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',
@@ -59,10 +64,20 @@ async function main() {
     // bounds the recall; M3 a plain non-Memory mount without the published
     // binding -> mount only, no automatic memory effect (Host A1). This e2e
     // drives M1/M2 without creating a client-side path authority.
+    const extractionStart = upstream.requests.length;
     const a = await session();
     const first = await turn(client, a.id, 'remember the sky');
     assert.ok(first.includes('echo:remember the sky'), `probe echoes the turn: ${first}`);
-    pass('session A turn completed (extractor fired in the background)');
+    // M1 separates terminal parent reply from asynchronous extraction. The same
+    // provider ledger must observe an extractor role, and the canonical Store
+    // must acknowledge the fact before later-session recall is asserted.
+    const sky = await waitForValue(memories,
+      (entries) => entries.some((entry) => entry.content?.includes('sky is green')),
+      'M1 extractor content reaches the canonical MemoryStore', {timeoutMs:10_000,pollMs:100});
+    assert.ok(sky.some((entry) => entry.content?.includes('sky is green')), 'M1 committed extracted sky content');
+    assert.ok(upstream.requests.slice(extractionStart).some((request) => request.memoryExtractor),
+      'M1 the real extractor phase reached the shared provider fixture');
+    pass('session A terminal and extractor content acknowledged by the canonical Store');
 
     // Session B (later): the recall plugin injects the stored memory into the
     // request; the probe model surfaces it. The extractor is fire-and-forget,
@@ -87,6 +102,16 @@ async function main() {
       const s = await session();
       await turn(client, s.id, `remember fact-${n}`);
     }
+    // M2 grows actual Store facts, not just completed parent turns. Reuse the
+    // original request ledger to witness the selector phase and its >12-row
+    // native manifest; text containing fact- alone is not selector evidence.
+    const grown = await waitForValue(memories,
+      (entries) => entries.filter((entry) => entry.content?.includes('remember fact-')).length > 12,
+      'M2 more than twelve extracted facts are committed', {timeoutMs:10_000,pollMs:100});
+    assert.ok(grown.filter((entry) => entry.content?.includes('remember fact-')).length > 12,
+      'M2 canonical Store is beyond the selector threshold');
+    const selectionStart = upstream.requests.length;
+    const selectorPrefix = "You select which of a user's saved memories are relevant to their current message.";
     let selected = '';
     for (let i = 0; i < 20; i += 1) {
       await new Promise((r) => setTimeout(r, 500));
@@ -98,7 +123,12 @@ async function main() {
       selected.includes('fact-'),
       `the relevance selector injected a memory from the grown store: ${selected}`,
     );
-    pass('recall selector fires once the store passes its threshold (>12 memories)');
+    const selectorRequests = upstream.requests.slice(selectionStart)
+      .filter((request) => request.system.startsWith(selectorPrefix));
+    assert.ok(selectorRequests.length > 0, 'M2 the default selector phase was actually invoked');
+    assert.ok(selectorRequests.some((request) => request.lastUserText.includes('Saved memories:\n')
+      && request.lastUserText.includes('[12] ')), 'M2 selector received a native manifest beyond twelve entries');
+    pass('grown-store fact recalled after an observed selector request with >12 manifest entries');
   });
   console.log('E2E PASS: out-of-band memory extraction + bounded recall across sessions.');
 }

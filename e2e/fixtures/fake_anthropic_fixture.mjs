@@ -387,6 +387,9 @@ export const BEHAVIORS = {
   // with the system/context lines so recall injection is observable.
   memory(parsed) {
     const sys = systemLines(parsed);
+    // The default, tool-free selector has its own closed response protocol.
+    // Match its canonical instruction prefix, not a quote in parent recall.
+    if (sys.startsWith("You select which of a user's saved memories are relevant to their current message.")) return text('[0]');
     if (sys.includes('memory extraction Agent')) {
       if (toolResults(parsed).length > 0) return text('memory saved');
       const users = allUserText(parsed);
@@ -398,7 +401,7 @@ export const BEHAVIORS = {
         : tag
           ? [tag, `remember ${tag}`]
           : ['sky-color', 'the sky is green today'];
-      return tool('memwrite-1', 'write_memory', { name, kind: 'project', content });
+      return tool('memwrite-1', 'write_memory', { name, content });
     }
     if (lastUserText(parsed) === 'apply-memory-rule') {
       const rules = [...sys.matchAll(/memory-rule-format=([a-z0-9_-]+)/gi)];
