@@ -55,6 +55,10 @@ test('canonical image admission verifies selected ACP runtimes on reuse and afte
   // requires a real handshake. Real browser launch belongs to the live E2E.
   // This tests the actual shell admission owner with process-boundary fixtures;
   // real image/ACP acceptance remains the responsibility of the service E2E.
+  // I10: every image observation selects only its needed scalar: existence
+  // uses Id; contract checks use one named label. The complete I1-I9 matrix
+  // must retain its reuse/repair/refusal effects without reading Config/Env or
+  // all Labels, including the initial existence probe and post-build checks.
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sandbox-admission-'));
   const previous = { ...process.env };
   try {
@@ -87,10 +91,17 @@ if(baseProbe&&!args.at(-1).includes('test "$PLAYWRIGHT_BROWSERS_PATH" = 0'))proc
 if(baseProbe&&!repaired&&mode==='browser-assets')process.exit(1);
 if(args[0]==='build'){fs.writeFileSync(process.env.ADMISSION_STATE,'built');process.exit(0);}
 if(args[0]==='image'){
+ const assert=require('node:assert/strict'),format=args[3];
+ assert.deepEqual(args,['image','inspect','--format',format,args.at(-1)],'image observations require an explicit scalar projection');
+ assert.ok(['{{.Id}}',
+  '{{index .Config.Labels "org.awaken.environment-packages"}}',
+  '{{index .Config.Labels "org.awaken.managed-agents-base-contract"}}',
+  '{{index .Config.Labels "org.awaken.sandbox-role-contract"}}',
+  '{{index .Config.Labels "org.awaken.build-input-fingerprint"}}'].includes(format),'only Id or one existing contract label is read');
  if(!repaired&&mode==='absent')process.exit(1);
  if(args.includes('--format')){
-  const format=args[args.indexOf('--format')+1];
-  if(format.includes('build-input-fingerprint'))console.log(!repaired&&mode==='current'?'0'.repeat(64):process.env.ADMISSION_FINGERPRINT);
+  if(format==='{{.Id}}')console.log('sha256:'+'a'.repeat(64));
+  else if(format.includes('build-input-fingerprint'))console.log(!repaired&&mode==='current'?'0'.repeat(64):process.env.ADMISSION_FINGERPRINT);
   else if(!repaired&&mode==='label')console.log('old');
   else if(format.includes('environment-packages'))console.log('3');
   else if(format.includes('managed-agents-base-contract'))console.log('ubuntu-24.04-amd64-v1');
