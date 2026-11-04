@@ -275,6 +275,12 @@ async function main() {
   // Decision table:
   // | execution | first event | live output         | terminal event |
   // | succeeds  | working task| artifact-update(s)  | completed/final|
+  // C1 fresh ordinary protocol context; C2 send versus streaming transport.
+  // R1 C1+send is the first section; R2 C1+stream must use that same canonical
+  // first-Run admission and produce the requested output, not a working Task
+  // followed by Session-not-found before any model request. The existing
+  // application's owner-scope table separately refuses unknown/foreign roots;
+  // streaming is not an application grant. Keep every original union assertion.
   await withRealServer('echo', Number(process.env.E2E_PORT), async (base) => {
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
     const events = [];
@@ -288,11 +294,13 @@ async function main() {
     }
     assert.equal(events[0]?.kind, 'task', JSON.stringify(events));
     assert.equal(events[0]?.status?.state, 'working');
-    assert.ok(events.some((event) => event.kind === 'artifact-update'));
+    assert.ok(events.some((event) => event.kind === 'artifact-update'), JSON.stringify(events));
     const terminal = events.at(-1);
     assert.equal(terminal?.kind, 'status-update');
     assert.equal(terminal?.status?.state, 'completed');
     assert.equal(terminal?.final, true);
+    assert.ok(replyText({ result: terminal }).includes('stream-visible'),
+      `stream completed without its requested output: ${JSON.stringify(terminal)}`);
     pass('a2a official streaming union ordering and terminal state');
   });
 
