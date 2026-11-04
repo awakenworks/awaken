@@ -149,14 +149,17 @@ try {
     betas: BETAS,
   });
   assert.equal(stopped.state, 'stopped');
-  await assert.rejects(
-    () => worker.beta.environments.work.stop(work.id, {
-      environment_id: environment.id,
-      force: true,
-      betas: BETAS,
-    }),
-    status(409),
-    'the official EnvironmentWorker recognizes 409 as already stopped',
+  assert.ok(stopped.stop_requested_at, 'W3 records the original stop request time');
+  assert.ok(stopped.stopped_at, 'W3 records the original terminal time');
+  const replayedStop = await worker.beta.environments.work.stop(work.id, {
+    environment_id: environment.id,
+    force: true,
+    betas: BETAS,
+  });
+  assert.deepEqual(
+    replayedStop,
+    stopped,
+    'W4 same owner/generation replays the complete receipt, including original terminal times',
   );
 
   // Stop-mode causal graph: WorkPoller calls stop after its handler returns
@@ -165,9 +168,13 @@ try {
   // caller owns process cleanup, while the queue owns only the durable lease,
   // so all three causes must converge to one stopped item and release capacity.
   // Decision table: W0 null -> 400/no mutation, W1 omitted -> stopped, W2
-  // false -> stopped, W3 true above -> stopped, W4 repeat any terminal request
-  // -> 409. Leaving W1/W2 in `stopping` would retain the single-active lease
-  // and deadlock the official WorkPoller on its next poll.
+  // false -> stopped, W3 true above -> stopped, W4 same owner/generation retry
+  // -> the complete original receipt, without new terminal times or authority.
+  // The canonical work-store stop_replay matrix owns foreign/old-generation
+  // refusal and zero extra clock reads; the SDK helper tolerates 409 during
+  // cleanup but does not require a successful exact replay to fail. Leaving
+  // W1/W2 in `stopping` would retain the single-active lease and deadlock the
+  // official WorkPoller on its next poll.
   for (const [label, force] of [['omitted', undefined], ['false', false]]) {
     const stopEnvironment = await admin.beta.environments.create({
       name: `environment-work-stop-${label}`,
@@ -212,6 +219,11 @@ try {
     assert.equal(terminal.state, 'stopped', `W1/W2 ${label}`);
     assert.ok(terminal.stop_requested_at, `W1/W2 ${label} records request time`);
     assert.ok(terminal.stopped_at, `W1/W2 ${label} records terminal time`);
+    assert.deepEqual(
+      await worker.beta.environments.work.stop(stopWork.id, stopParams),
+      terminal,
+      `W4 ${label} retry retains the complete original terminal receipt`,
+    );
     assert.equal(
       (await admin.beta.environments.work.stats(stopEnvironment.id, { betas: BETAS })).pending,
       0,
