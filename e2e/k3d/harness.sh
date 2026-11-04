@@ -149,7 +149,7 @@ k3d_observed_eviction_threshold() {
 k3d_ensure_images() {
   local image
   for image in "$@"; do
-    docker image inspect "$image" >/dev/null 2>&1 \
+    docker image inspect --format '{{.Id}}' "$image" >/dev/null 2>&1 \
       || docker pull -q "$image" >/dev/null || return "$?"
   done
 }
@@ -1784,6 +1784,7 @@ print(json.dumps(value))
   )
   local k3d_calls=() docker_saves=() docker_execs=() docker_builds=() deadline_calls=()
   local observation_error="" residue="" import_failure=0 archive_cleanup_failure=0
+  local image_observation_status=0 image_pull_status=0 image_presence_calls=()
   local capacity_failure=0 capacity_calls=() eviction_observation_fault=""
   local fixture_cluster="" fixture_network_cluster="" fixture_shared=0
   local fixture_cid="$(printf 'a%.0s' {1..64})" fixture_network="$(printf 'b%.0s' {1..64})"
@@ -2416,7 +2417,13 @@ print(json.dumps(value))
     elif [[ "$1" = ps ]]; then
       printf '%s\n' server agent
     elif [[ "$1 $2" = "image inspect" ]]; then
-      return 0
+      image_presence_calls+=("$*")
+      [[ "$#" = 5 && "$3" = --format && "$4" = '{{.Id}}' ]] || return 99
+      return "$image_observation_status"
+    elif [[ "$1" = pull ]]; then
+      image_presence_calls+=("$*")
+      [[ "$#" = 3 && "$2" = -q ]] || return 99
+      return "$image_pull_status"
     elif [[ "$1" = inspect ]]; then
       case "$eviction_observation_fault" in
         gc-missing) ;;
@@ -2454,6 +2461,29 @@ print(json.dumps(value))
       docker_builds+=("$*")
     fi
   }
+  # Image-presence C/E table: P1 inspect succeeds => Id-only observation, no
+  # pull; P2 inspect returns absent(1) or an observation error(37) => preserve
+  # the existing pull path; P3 pull fails(41) => return that raw status and do
+  # not inspect a later image. No row reads Config/Env/all Labels, and these
+  # shell fixtures do not claim a real daemon/image admission result.
+  k3d_ensure_images exact:present
+  [[ "${image_presence_calls[*]}" = 'image inspect --format {{.Id}} exact:present' ]]
+  local presence_status
+  for image_observation_status in 1 37; do
+    for image_pull_status in 0 41; do
+      image_presence_calls=()
+      presence_status=0
+      k3d_ensure_images exact:missing || presence_status=$?
+      [[ "$presence_status" = "$image_pull_status" ]]
+      [[ "${image_presence_calls[*]}" = 'image inspect --format {{.Id}} exact:missing pull -q exact:missing' ]]
+    done
+  done
+  image_presence_calls=()
+  presence_status=0
+  k3d_ensure_images exact:first exact:unreached || presence_status=$?
+  [[ "$presence_status" = 41 && "${#image_presence_calls[@]}" = 2 ]]
+  [[ "${image_presence_calls[*]}" != *exact:unreached* ]]
+  image_observation_status=0 image_pull_status=0
   # The actual exporter subprocess matrix owns save flags and OCI preservation.
   # Here the real shared import function must route each image through that owner,
   # and all post-import Kubernetes effects must use the requested cluster context.
