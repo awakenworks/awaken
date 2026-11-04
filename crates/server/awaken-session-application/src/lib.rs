@@ -165,6 +165,7 @@ impl SessionRecoveryCandidates {
 mod mutation;
 mod participant_provenance;
 mod recovery_sweep;
+mod sandbox_observation;
 pub use mutation::{SessionMutationError, SessionMutations, SessionStateViolation, SnapshotCommit};
 pub use participant_provenance::SessionParticipantProvenance;
 mod event_batch_cutover_validation;
