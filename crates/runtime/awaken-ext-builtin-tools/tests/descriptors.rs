@@ -78,11 +78,40 @@ fn builtin_catalog_is_the_exact_non_overlapping_command_surface() {
     // | R1 | native delegation | exactly `agent_run` |
     // | R2 | Managed coordination | exactly list/send |
     // | R3 | legacy Task, Git, repository, move/delete commands | none |
+    // | R4 | generic Bash with any Skill delivery/context | no Skill-loading policy |
     //
     // This is a membership guard, not a string-only implementation test: the
     // preceding exhaustive Toolset match also proves there is no Task family
     // into which these ids could be registered.
-    let ids = builtin_tools()
+    // R4 is the model-facing responsibility boundary: this same closed catalog
+    // knows neither metadata-only versus full Skill instructions nor a frozen
+    // filesystem/semantic profile. Those causes cannot acquire an extra load
+    // precondition here. The existing profile guide owns missing-body/reference
+    // disclosure; semantic activation still owns its narrowing/fork effects.
+    // Bash retains dedicated-file-tool routing and the original permission
+    // boundary. This checks the public projection, not a second description copy
+    // or a claim that a model follows the guidance.
+    let catalog = builtin_tools();
+    let bash = catalog
+        .iter()
+        .find(|tool| tool.descriptor().id == "bash")
+        .expect("closed catalog contains Bash")
+        .descriptor();
+    assert!(
+        !bash.description.to_ascii_lowercase().contains("skill"),
+        "R4 generic Bash must not decide when Skill instructions are loaded"
+    );
+    assert!(
+        bash.description.contains("dedicated file tools")
+            && bash.description.contains("instead of shell cat/head/tail"),
+        "R4 dedicated readers still own file I/O"
+    );
+    assert!(
+        bash.description.contains("its own permissions")
+            && bash.description.contains("bypass a denied file operation"),
+        "R4 no permission bypass"
+    );
+    let ids = catalog
         .into_iter()
         .map(|tool| tool.into_descriptor().id)
         .collect::<BTreeSet<_>>();
