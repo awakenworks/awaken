@@ -467,9 +467,15 @@ mod tests {
     fn filesystem_guidance_uses_complete_context_without_forcing_a_second_read() {
         // Graph: G1 full instructions supplied in Agent system / prior tool
         // history / neither; G2 only catalogue metadata; G3 cold/no Environment
-        // / restored same pinned projection. D1 system or history => use the
+        // / restored same pinned projection; G4 supporting reference contents
+        // are absent/present. D1 system or history => use the
         // complete context, no mandatory reread; D2 metadata-only => read the
         // listed pinned file. D3 restoration preserves both rules and paths.
+        // D4 G4=absent and needed => read that separate resource; known contents
+        // do not force a reload. These are the canonical filesystem prompt
+        // contracts, not evidence that a real model obeys them. Generic Bash
+        // adds no Skill-loading condition; semantic activation/narrowing/fork
+        // retain their separate ext-skills contract and existing tests.
         // No new loaded-state flag, body detector, registry or physical work
         // is introduced: the existing model context owns what is available.
         let projection = FilesystemSkillPrompt::from_entries(vec![(
@@ -487,6 +493,10 @@ mod tests {
             "D1 do not compete with preloaded instructions"
         );
         assert!(
+            prompt.contains("DO NOT read `SKILL.md` again"),
+            "D1 explicitly preserves the full-context no-reread rule"
+        );
+        assert!(
             prompt.contains("Otherwise, read"),
             "D2 progressive disclosure remains"
         );
@@ -497,6 +507,11 @@ mod tests {
         assert!(
             prompt.contains(".skills/pinned/SKILL.md"),
             "D2 exact frozen path"
+        );
+        assert!(
+            prompt.contains("Supporting scripts and references are separate")
+                && prompt.contains("when their content is needed and is not already available"),
+            "D4 unknown supporting contents still need disclosure independently of the body"
         );
         assert!(projection.exposes_directory(".skills/pinned"));
         assert_eq!(

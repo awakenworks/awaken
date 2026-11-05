@@ -58,7 +58,7 @@ impl Tool for BashTool {
     type Args = BashArgs;
     type Output = String;
     const ID: &'static str = "bash";
-    const DESCRIPTION: &'static str = "Run shell commands for computations, programs, builds and other operations that require command execution. When dedicated file tools are available, use them to read, write, edit or search text instead of shell cat/head/tail, redirection or ad hoc scripts. In particular, load SKILL.md and known text inputs with the text-file reader before running commands that depend on their instructions. Shell execution remains subject to its own permissions; do not use it to bypass a denied file operation.";
+    const DESCRIPTION: &'static str = "Run shell commands for computations, programs, builds and other operations that require command execution. When dedicated file tools are available, use them to read, write, edit or search text instead of shell cat/head/tail, redirection or ad hoc scripts. Shell execution remains subject to its own permissions; do not use it to bypass a denied file operation.";
 
     async fn call(&self, args: BashArgs) -> Result<String, ToolError> {
         let mut session = self.session.lock().await;
