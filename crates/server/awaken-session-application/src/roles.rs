@@ -75,6 +75,21 @@ pub trait SessionCreation: Send + Sync {
         protocol: &dyn SessionCreateProtocol,
     ) -> Result<PersistedSession, SessionCreateRequestError>;
 
+    /// Current trusted private ingress supplies the binding; wire fields and
+    /// Workspace grants cannot supply private authority. Unsupported owners
+    /// must stay unavailable instead of using ordinary creation.
+    async fn create_requested_private_session(
+        &self,
+        _binding: awaken_session_contract::SessionPrivateBinding,
+        _request: SessionCreateRequest,
+        _protocol: &dyn SessionCreateProtocol,
+    ) -> Result<PersistedSession, SessionCreateRequestError> {
+        Err(
+            awaken_session_types::RunError::unavailable("private Session creation is unavailable")
+                .into(),
+        )
+    }
+
     /// See [`crate::SessionMutations::replay_session_create`].
     async fn replay_session_create(
         &self,
@@ -90,6 +105,30 @@ pub trait SessionCreation: Send + Sync {
         session_id: &SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError>;
+
+    /// Recover the original private root only after current private admission.
+    async fn replay_private_session_create(
+        &self,
+        _binding: &awaken_session_contract::SessionPrivateBinding,
+        _session_id: &SessionId,
+        _idempotency: &IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        Err(SessionCreationError::Unavailable(
+            "private Session create replay is unavailable".into(),
+        ))
+    }
+
+    /// The private counterpart of asynchronous create recovery.
+    async fn replay_accepted_private_session_create(
+        &self,
+        _binding: &awaken_session_contract::SessionPrivateBinding,
+        _session_id: &SessionId,
+        _idempotency: &IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        Err(SessionCreationError::Unavailable(
+            "private Session create replay is unavailable".into(),
+        ))
+    }
 
     /// The process-unique Runtime incarnation a protocol folds into its fresh
     /// Session id candidates.
@@ -111,19 +150,54 @@ pub trait SessionRootReads: Send + Sync {
     /// The Workspace that owns one Session.
     async fn owner(&self, session_id: &SessionId) -> Result<String, SessionMutationError>;
 
+    /// Workspace-visible linked content requires the native root/tombstone
+    /// verdict. This supplies no private or Worker execution authority.
+    async fn workspace_content_is_public(
+        &self,
+        _owner_scope: &str,
+        _session_id: &SessionId,
+    ) -> Result<bool, SessionRepositoryError> {
+        Err(SessionRepositoryError::AuthorityUnavailable(
+            "retained Session content visibility is unavailable".into(),
+        ))
+    }
+
     /// The one ownership verdict owner-scoped commands accept: a foreign and
-    /// a missing Session are the same `NotFound`, with no read of the root.
+    /// a missing Session are the same `NotFound`. Private roots require the
+    /// separate exact private binding, regardless of Workspace privileges.
     async fn authorize(
         &self,
         owner_scope: &str,
         session_id: &SessionId,
     ) -> Result<crate::SessionAccess, crate::SessionAccessError>;
 
+    /// The caller must obtain this binding through current trusted ingress;
+    /// decoding a binding does not authenticate its owner. Implementations
+    /// without the native private ownership mechanism fail closed.
+    async fn authorize_private(
+        &self,
+        _binding: &awaken_session_contract::SessionPrivateBinding,
+        _session_id: &SessionId,
+    ) -> Result<crate::SessionAccess, crate::SessionAccessError> {
+        Err(crate::SessionAccessError::NotFound)
+    }
+
     /// Every visible root one Workspace owns.
     async fn sessions_by_owner(
         &self,
         owner_scope: &str,
     ) -> Result<Vec<PersistedSession>, SessionRepositoryError>;
+
+    /// Exact private collection after current trusted ingress admission.
+    /// Unsupported implementations must never use the Workspace collection.
+    async fn private_sessions(
+        &self,
+        _binding: &awaken_session_contract::SessionPrivateBinding,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        Err(SessionRepositoryError::AuthorityUnavailable(
+            "private Session collection is unavailable".into(),
+        ))
+    }
 
     /// Healthy roots in one Workspace whose MCP attachments reference one
     /// credential source.

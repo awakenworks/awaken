@@ -9,12 +9,13 @@ use awaken_iam_client::IamDecisionError;
 use awaken_iam_contract::{
     AuthorizationDecision, AuthorizationRequest, PrincipalRef, ScopeRef, Timestamp,
 };
-use awaken_iam_host::{AuthReject, HostConfig, IamClient, IamGate, connect_remote};
+use awaken_iam_host::{AuthReject, HostConfig, IamClient, IamGate, VerifiedBearer, connect_remote};
 use awaken_sync::InvariantRwLock;
-use base64::Engine as _;
 
 use super::off_event_loop;
 use super::{ActionNamespace, qualified_action, rfc3339_at, unix_seconds_at};
+
+mod private_account;
 
 pub(super) fn cloud_authorization_denial_detail(
     action: &awaken_iam_contract::ActionKey,
@@ -53,17 +54,6 @@ pub struct RemoteManagementAuthz {
     clock: Arc<dyn awaken_time::WallClock>,
 }
 
-/// Authenticated request identity together with the credential attributes a
-/// route-specific PEP needs. `IamGate` has already verified the JWT signature,
-/// issuer, audience and expiry before these claims are decoded; the decoded
-/// payload is therefore authorization context, never an independent trust
-/// decision.
-#[derive(Debug, Clone)]
-pub(super) struct RemoteAuthenticatedCredential {
-    pub(super) principal: PrincipalRef,
-    pub(super) access_token_claims: Option<awaken_iam_host::AccessTokenClaims>,
-}
-
 /// Closed failure vocabulary for the synchronous remote-IAM authentication
 /// boundary. Transport failure is distinct from a rejected credential so the
 /// PEP can retain stable operator diagnostics without exposing IAM internals.
@@ -78,7 +68,7 @@ pub(super) enum RemoteAuthenticationFailure {
 pub(super) async fn authenticate_off_event_loop(
     authz: Arc<RemoteManagementAuthz>,
     presented: Option<String>,
-) -> Result<RemoteAuthenticatedCredential, RemoteAuthenticationFailure> {
+) -> Result<VerifiedBearer, RemoteAuthenticationFailure> {
     // Desktop OAuth refresh and remote token verification use synchronous IAM
     // transports. A stale cached token may refresh before authentication.
     match off_event_loop::run(move || authz.authenticate(presented)).await {
@@ -91,16 +81,14 @@ pub(super) async fn authenticate_off_event_loop(
     }
 }
 
-impl RemoteAuthenticatedCredential {
-    pub(super) fn is_managed_tunnel_workload(&self) -> bool {
-        self.access_token_claims.as_ref().is_some_and(|claims| {
-            claims.subject_kind == awaken_iam_host::AccessTokenSubjectKind::Service
-                && claims
-                    .scope
-                    .iter()
-                    .any(|scope| scope == "workspace:manage_tunnels")
-        })
-    }
+pub(super) fn is_managed_tunnel_workload(credential: &VerifiedBearer) -> bool {
+    credential.access_token.as_ref().is_some_and(|claims| {
+        claims.subject_kind == awaken_iam_host::AccessTokenSubjectKind::Service
+            && claims
+                .scope
+                .iter()
+                .any(|scope| scope == "workspace:manage_tunnels")
+    })
 }
 
 impl RemoteManagementAuthz {
@@ -183,7 +171,7 @@ impl RemoteManagementAuthz {
     pub(super) fn authenticate(
         &self,
         presented: Option<String>,
-    ) -> Result<RemoteAuthenticatedCredential, AuthReject> {
+    ) -> Result<VerifiedBearer, AuthReject> {
         let sourced;
         let token = match presented.as_deref() {
             Some(token) => token,
@@ -195,26 +183,22 @@ impl RemoteManagementAuthz {
                 sourced.expose_secret()
             }
         };
-        let principal = self
+        let verified = self
             .gate
             .read()
             .map_err(|_| AuthReject::Unavailable)?
             .gate
-            .authenticate_detailed(
+            .authenticate_verified(
                 token,
                 &Timestamp(rfc3339_at(self.clock.as_ref())),
                 unix_seconds_at(self.clock.as_ref()),
-            )
-            .map(|(principal, _)| principal)?;
-        let access_token_claims = if is_api_token(token) {
-            None
-        } else {
-            Some(decode_verified_access_token_claims(token)?)
-        };
-        Ok(RemoteAuthenticatedCredential {
-            principal,
-            access_token_claims,
-        })
+            )?;
+        // Generic Management has no current compound consent authority. Never
+        // reinterpret a delegated credential as a direct request by its subject.
+        if verified.actor.is_some() {
+            return Err(AuthReject::Invalid);
+        }
+        Ok(verified)
     }
 
     pub(super) fn authorize_action(
@@ -279,20 +263,6 @@ impl RemoteManagementAuthz {
         state.user_carrier_token = Some(current);
         Ok(state.gate.clone())
     }
-}
-
-fn is_api_token(token: &str) -> bool {
-    token.starts_with("sk-awaken-") || token.starts_with("sk-ant-")
-}
-
-fn decode_verified_access_token_claims(
-    token: &str,
-) -> Result<awaken_iam_host::AccessTokenClaims, AuthReject> {
-    let payload = token.split('.').nth(1).ok_or(AuthReject::Invalid)?;
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .map_err(|_| AuthReject::Invalid)?;
-    serde_json::from_slice(&decoded).map_err(|_| AuthReject::Invalid)
 }
 
 fn resolve_user_token(source: &RedactedStringSource) -> Result<RedactedString, String> {

@@ -35,6 +35,8 @@ mod event_history_tests;
 mod mutation;
 mod persisted_session;
 mod placement;
+#[cfg(test)]
+mod private_binding_tests;
 mod recovery;
 mod repository_publication;
 mod runtime_intervals;
@@ -87,6 +89,7 @@ mod mutation_tests {
         use awaken_credential_contract::CredentialRealizationProfile;
 
         PersistedSession {
+            private_binding: None,
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             session_id: id.into(),

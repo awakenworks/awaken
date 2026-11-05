@@ -484,14 +484,14 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
-        "line": 319,
+        "line": 329,
         "file_sha256": "8364e13619891a1e023978ff6aa3cdd39d34c7d05ecb2708d96e6a1ca4d547ee"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
-        "line": 324
+        "line": 334
       }
     ],
     "execution_witnesses": [
@@ -525,22 +525,22 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
-        "line": 339,
+        "line": 349,
         "file_sha256": "8364e13619891a1e023978ff6aa3cdd39d34c7d05ecb2708d96e6a1ca4d547ee"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
-        "line": 349
+        "line": 359
       },
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
-        "line": 354
+        "line": 364
       },
       {
         "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
-        "line": 369
+        "line": 379
       }
     ],
     "execution_witnesses": [

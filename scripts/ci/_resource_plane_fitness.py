@@ -119,9 +119,47 @@ def _dependency_package_names(manifest: dict) -> set[str]:
     return names
 
 
-def _rust_violations(content: str) -> list[str]:
+PRIVATE_CONTENT_COORDINATES = Path(
+    "crates/contract/awaken-resource-contract/src/private_content.rs"
+)
+
+
+def _private_content_provenance(code: str) -> str:
+    """Admit only the closed provenance value, never an Org policy or edge."""
+    fields = r"\s*,\s*".join(
+        rf"{name}\s*:\s*{kind}"
+        for name, kind in (
+            ("org_id", "String"),
+            ("application_id", "String"),
+            ("account_id", "String"),
+            ("workspace_id", "String"),
+            ("application_binding_revision", "u64"),
+        )
+    )
+
+    def provenance(match: re.Match) -> str:
+        value = match.group("fields")
+        if not re.fullmatch(rf"\s*{fields}\s*,?\s*", value):
+            return match.group()
+        start, end = match.span("fields")
+        offset = match.start()
+        return (match.group()[: start - offset]
+                + re.sub(r"\borg_id\b(?=\s*:)", "private_provenance_coordinate", value)
+                + match.group()[end - offset :])
+
+    for declaration in (
+        r"\bstruct\s+(?:PrivateContentBinding|BindingFields)\s*\{(?P<fields>[^{}]*)\}",
+        r"\bimpl\s+PrivateContentBinding\s*\{\s*pub\s+fn\s+new\s*\((?P<fields>[^()]*)\)",
+    ):
+        code = re.sub(declaration, provenance, code)
+    return code
+
+
+def _rust_violations(content: str, relative: Path | None = None) -> list[str]:
     production = _crate_boundary_workspace.production_rust(content)
     code = _crate_boundary_workspace.rust_syntax(production)
+    if relative == PRIVATE_CONTENT_COORDINATES:
+        code = _private_content_provenance(code)
     violations: list[str] = []
 
     if re.search(r"\bawaken_(?:iam|authz)\b", code):
@@ -155,6 +193,19 @@ def _has_unversioned_ddl(path: Path, content: str) -> bool:
 
 
 def selftest() -> None:
+    # P1 the sole closed ownership DTO carries opaque coordinates. P2 moving it,
+    # adding another Org-bearing record, or adding permission data still rejects.
+    fields = "org_id: String, application_id: String, account_id: String, workspace_id: String, application_binding_revision: u64"
+    provenance = (f"struct PrivateContentBinding {{ {fields} }}\n"
+                  f"struct BindingFields {{ {fields} }}\n"
+                  f"impl PrivateContentBinding {{ pub fn new({fields}) {{}} }}")
+    assert not _rust_violations(provenance, PRIVATE_CONTENT_COORDINATES), "P1"
+    assert _rust_violations(provenance, Path("other.rs")), "P2 moved"
+    for extra in ("struct Other { org_id: String }", "fn new(org_id: String) {}",
+                  "struct Bad { role_id: String }", "fn decide(_: PermissionDecision) {}",
+                  'const FIELD: &str = "org_id";'):
+        assert _rust_violations(provenance + extra, PRIVATE_CONTENT_COORDINATES), "P2 extra"
+    assert _rust_violations(provenance.replace("account_id: String", "role_id: String"), PRIVATE_CONTENT_COORDINATES), "P2 changed shape"
     allowed = "pub struct Config { pub workspace_id: String, pub retention_policy: RetentionPolicy }"
     assert not _rust_violations(allowed)
     workspace_context = "fn open(workspace_id: &str, resource_id: &str) {}"
@@ -275,7 +326,7 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
 
         for path in sorted((manifest_path.parent / "src").rglob("*.rs")):
             content = path.read_text(encoding="utf-8")
-            for violation in _rust_violations(content):
+            for violation in _rust_violations(content, path.relative_to(repo_root)):
                 errors.append(f"{path.relative_to(repo_root)}: {violation}")
             if _has_unversioned_ddl(path, content):
                 errors.append(

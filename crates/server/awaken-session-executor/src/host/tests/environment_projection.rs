@@ -40,7 +40,9 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     // | R3 | create/adopt | any | stale | n/a | E3; fail closed |
     //
     // This test owns R2. Run-ingress sandbox-binding conformance owns R3.
-    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
+    let roots = ManagedSessionRootFixture::new().await;
+    let mut raw_host =
+        roots.configure(crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await);
     raw_host.env.session_provider =
         awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             std::env::temp_dir().join(format!(
@@ -61,14 +63,14 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 
     // C0 freezes the ordinary empty generation before the first environment is
     // realized, so C1 below advances one exact durable Resource transition.
-    install_complete_test_session_for_realization(
-        &managed,
-        "t-attach",
-        bare_session("agent", host.run_assembly.local_workspace()),
-        awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
-    )
-    .await
-    .expect("install complete empty Session projection");
+    let projection = roots
+        .install_complete_test_session(
+            &managed,
+            "t-attach",
+            bare_session("agent", host.run_assembly.local_workspace()),
+        )
+        .await
+        .expect("install complete empty Session projection");
 
     // A blob to mount, and a first Run that builds + caches the Thread's sandbox.
     let file_id = host
@@ -133,18 +135,8 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         initial_commit: None,
     };
     let attached = effective_resources(vec![res.clone()]);
-    managed
-        .realization_executor
-        .apply_session_inputs(
-            "t-attach",
-            &resource_transition(
-                host.run_assembly.local_workspace(),
-                0,
-                Default::default(),
-                1,
-                attached.clone(),
-            ),
-        )
+    let projection = roots
+        .prepare_resource_update(&managed, "t-attach", projection, attached.clone())
         .await
         .expect("attach");
 
@@ -221,18 +213,8 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     assert!(Arc::ptr_eq(&environment_before, &environment_after));
 
     // Detach removes exactly that mount again.
-    managed
-        .realization_executor
-        .apply_session_inputs(
-            "t-attach",
-            &resource_transition(
-                host.run_assembly.local_workspace(),
-                1,
-                attached,
-                2,
-                Default::default(),
-            ),
-        )
+    roots
+        .prepare_resource_update(&managed, "t-attach", projection, Default::default())
         .await
         .expect("detach");
     let spec = host.realization_executor.sandbox_spec("t-attach");
@@ -272,7 +254,9 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 )]
 async fn invalid_repository_live_replacement_preserves_the_installed_generation() {
     let storage = tempfile::tempdir().unwrap();
-    let mut raw_host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
+    let roots = ManagedSessionRootFixture::new().await;
+    let mut raw_host =
+        roots.configure(crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await);
     raw_host.env.session_provider =
         awaken_session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             storage.path().join("sandboxes"),
@@ -313,14 +297,10 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     }]);
     let mut init = bare_session("agent", host.run_assembly.local_workspace());
     init.resources = installed;
-    install_complete_test_session_for_realization(
-        &managed,
-        "invalid-live-repository",
-        init,
-        awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
-    )
-    .await
-    .unwrap();
+    roots
+        .install_complete_test_session(&managed, "invalid-live-repository", init)
+        .await
+        .unwrap();
     run_prepared_session_messages(
         &managed,
         "agent",

@@ -393,6 +393,8 @@
 /v1/organizations/tunnels/{tunnel_id}/reveal_token @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
 /v1/organizations/tunnels/{tunnel_id}/rotate_token | 404 | 404 | 404 | 404 | 404
 /v1/organizations/tunnels/{tunnel_id}/rotate_token @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/private-assistant/{*operation} | 404 | 404 | 404 | 404 | 404
+/v1/private-assistant/{*operation} @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
 /v1/probe | 404 | 404 | 404 | 404 | 404
 /v1/probe @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
 /v1/scenario/session-run/reserve | 404 | 404 | 404 | 404 | 404

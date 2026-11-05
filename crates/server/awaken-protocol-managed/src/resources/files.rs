@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use crate::AdmittedPrivateSessionRequest;
 use crate::common::headers::{ManagedCapability, parse_idempotency_key_header};
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
@@ -35,15 +36,32 @@ use axum::{Json, Router};
 
 use super::managed_resource_error as error;
 
+mod private_reads;
+mod visibility;
+use visibility::FileHttpState;
+
 /// `clock` is the Resources context's clock (the one the File application
 /// stamps `created_at` with): an upload's `expires_at` is minted from it and a
 /// download judges that expiry against it.
 pub fn files_router(files: Arc<dyn FileApplicationService>, clock: Arc<dyn WallClock>) -> Router {
+    files_router_with_session_reads(files, clock, None, None)
+}
+
+pub(super) fn files_router_with_session_reads(
+    files: Arc<dyn FileApplicationService>,
+    clock: Arc<dyn WallClock>,
+    sessions: Option<Arc<dyn awaken_session_application::SessionRootReads>>,
+    private_inputs: Option<awaken_resource_application::PrivateFileViewFactory>,
+) -> Router {
     Router::new()
         .route("/v1/files", post(upload_file).get(list_files))
         .route("/v1/files/{id}", get(get_file).delete(delete_file))
         .route("/v1/files/{id}/content", get(download_file))
-        .with_state(files)
+        .with_state(FileHttpState {
+            application: files,
+            sessions,
+            private_inputs,
+        })
         .layer(Extension(clock))
 }
 
@@ -94,7 +112,7 @@ fn beta_cursor_metadata(record: &FileRecord) -> BetaFileCursorMetadata {
 }
 
 async fn list_files(
-    State(files): State<Arc<dyn FileApplicationService>>,
+    State(files): State<FileHttpState>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
@@ -115,7 +133,7 @@ async fn list_files(
 }
 
 async fn list_beta_files(
-    files: Arc<dyn FileApplicationService>,
+    files: FileHttpState,
     workspace: &str,
     raw: Option<&str>,
 ) -> axum::response::Response {
@@ -150,7 +168,7 @@ async fn list_beta_files(
 }
 
 async fn list_ga_files(
-    files: Arc<dyn FileApplicationService>,
+    files: FileHttpState,
     workspace: &str,
     raw: Option<&str>,
 ) -> axum::response::Response {
@@ -171,7 +189,7 @@ async fn list_ga_files(
 }
 
 async fn list_beta_cursor_files(
-    files: Arc<dyn FileApplicationService>,
+    files: FileHttpState,
     workspace: &str,
     raw: Option<&str>,
 ) -> axum::response::Response {
@@ -200,7 +218,7 @@ async fn list_beta_cursor_files(
 }
 
 async fn cursor_file_page(
-    files: Arc<dyn FileApplicationService>,
+    files: FileHttpState,
     workspace: &str,
     scope_id: Option<&str>,
     page: Option<String>,
@@ -257,7 +275,8 @@ fn valid_filename(filename: &str) -> bool {
 }
 
 async fn upload_file(
-    State(files): State<Arc<dyn FileApplicationService>>,
+    State(files): State<FileHttpState>,
+    private: Option<Extension<AdmittedPrivateSessionRequest>>,
     Extension(clock): Extension<Arc<dyn WallClock>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
@@ -271,6 +290,28 @@ async fn upload_file(
     let idempotency_key = match parse_idempotency_key_header(&headers) {
         Ok(key) => key,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
+    };
+    let application = match private {
+        Some(Extension(request)) => {
+            let binding = request.binding();
+            if binding.workspace_id() != workspace {
+                return error(StatusCode::NOT_FOUND, "file not found");
+            }
+            if idempotency_key.is_none() {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "private File uploads require Idempotency-Key",
+                );
+            }
+            let Some(factory) = files.private_inputs.as_ref() else {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "private File authority is unavailable",
+                );
+            };
+            factory.for_binding(binding.as_ref().clone())
+        }
+        None => files.application,
     };
     let mut upload: Option<(String, String, Vec<u8>)> = None;
     let mut expiry_seconds = None;
@@ -340,7 +381,7 @@ async fn upload_file(
             "Idempotency-Key cannot be combined with expires_in_seconds",
         );
     }
-    match files
+    match application
         .create_uploaded_file_with_expiry_and_idempotency(
             &workspace,
             filename,
@@ -378,7 +419,8 @@ async fn upload_file(
 }
 
 async fn get_file(
-    State(files): State<Arc<dyn FileApplicationService>>,
+    State(files): State<FileHttpState>,
+    private: Option<Extension<AdmittedPrivateSessionRequest>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -388,7 +430,11 @@ async fn get_file(
         Ok(surface) => surface,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
     };
-    match files.get(&workspace, &id).await {
+    let result = match private {
+        Some(Extension(request)) => files.get_private(request.binding(), &workspace, &id).await,
+        None => files.get(&workspace, &id).await,
+    };
+    match result {
         Ok(Some(record)) => match surface {
             ManagedResourceApiSurface::CapabilityBeta => {
                 (StatusCode::OK, Json(beta_metadata(&record))).into_response()
@@ -406,7 +452,7 @@ async fn get_file(
 }
 
 async fn delete_file(
-    State(files): State<Arc<dyn FileApplicationService>>,
+    State(files): State<FileHttpState>,
     Extension(clock): Extension<Arc<dyn WallClock>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
@@ -432,7 +478,8 @@ async fn delete_file(
 }
 
 async fn download_file(
-    State(files): State<Arc<dyn FileApplicationService>>,
+    State(files): State<FileHttpState>,
+    private: Option<Extension<AdmittedPrivateSessionRequest>>,
     Extension(clock): Extension<Arc<dyn WallClock>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
@@ -442,7 +489,15 @@ async fn download_file(
     if let Err(message) = resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Files) {
         return error(StatusCode::BAD_REQUEST, message);
     }
-    match files.bytes(&workspace, &id).await {
+    let result = match private {
+        Some(Extension(request)) => {
+            files
+                .private_bytes(request.binding(), &workspace, &id)
+                .await
+        }
+        None => files.bytes(&workspace, &id).await,
+    };
+    match result {
         Ok(Some((record, _))) if !record.downloadable => {
             error(StatusCode::BAD_REQUEST, "file is not downloadable")
         }

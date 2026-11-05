@@ -10,6 +10,8 @@ use awaken_session_application::SessionRootReads as _;
 use awaken_session_execution_contract::SessionCoordinationReads as _;
 use awaken_session_execution_contract::{StreamingRuns, ThreadReads};
 use awaken_session_types::SessionId;
+#[path = "adapter/private_binding.rs"]
+mod private_binding;
 mod support;
 
 use std::collections::HashMap;

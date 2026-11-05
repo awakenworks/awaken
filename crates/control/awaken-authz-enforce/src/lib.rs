@@ -275,6 +275,30 @@ pub async fn application_guard(
             "application token does not allow this operation",
         );
     }
+    if let Some(authority) = request
+        .extensions()
+        .get::<Arc<dyn awaken_tenancy::workspace_purpose::OrdinaryWorkspaceAdmission>>()
+        .cloned()
+    {
+        match authority
+            .is_ordinary_workspace(&identity.workspace_id)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return reject(
+                    StatusCode::FORBIDDEN,
+                    "workspace is unavailable for ordinary access",
+                );
+            }
+            Err(_) => {
+                return reject(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "workspace purpose authority unavailable",
+                );
+            }
+        }
+    }
     match scope_application_request(request, &identity, route).await {
         Ok(request) => next.run(request).await,
         Err(rejection) => rejection.into_response(),

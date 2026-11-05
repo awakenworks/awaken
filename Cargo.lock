@@ -662,6 +662,7 @@ dependencies = [
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
  "awaken-sandbox-policy-store",
+ "awaken-service-auth-contract",
  "awaken-service-lifecycle",
  "awaken-session-application",
  "awaken-session-application-contract",
@@ -1732,7 +1733,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-client"
 version = "0.2.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=07af02a746c39b09a42fb97c99fbf71f3e2fc9b4#07af02a746c39b09a42fb97c99fbf71f3e2fc9b4"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=a903f98252908763f0bfad652fbd3935c5e926ba#a903f98252908763f0bfad652fbd3935c5e926ba"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1749,7 +1750,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-contract"
 version = "0.2.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=07af02a746c39b09a42fb97c99fbf71f3e2fc9b4#07af02a746c39b09a42fb97c99fbf71f3e2fc9b4"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=a903f98252908763f0bfad652fbd3935c5e926ba#a903f98252908763f0bfad652fbd3935c5e926ba"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -1761,7 +1762,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-core"
 version = "0.2.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=07af02a746c39b09a42fb97c99fbf71f3e2fc9b4#07af02a746c39b09a42fb97c99fbf71f3e2fc9b4"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=a903f98252908763f0bfad652fbd3935c5e926ba#a903f98252908763f0bfad652fbd3935c5e926ba"
 dependencies = [
  "argon2",
  "awaken-iam-contract",
@@ -1777,7 +1778,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-host"
 version = "0.2.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=07af02a746c39b09a42fb97c99fbf71f3e2fc9b4#07af02a746c39b09a42fb97c99fbf71f3e2fc9b4"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=a903f98252908763f0bfad652fbd3935c5e926ba#a903f98252908763f0bfad652fbd3935c5e926ba"
 dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
@@ -1796,7 +1797,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-preset"
 version = "0.2.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=07af02a746c39b09a42fb97c99fbf71f3e2fc9b4#07af02a746c39b09a42fb97c99fbf71f3e2fc9b4"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=a903f98252908763f0bfad652fbd3935c5e926ba#a903f98252908763f0bfad652fbd3935c5e926ba"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1805,7 +1806,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-server"
 version = "0.2.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=07af02a746c39b09a42fb97c99fbf71f3e2fc9b4#07af02a746c39b09a42fb97c99fbf71f3e2fc9b4"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=a903f98252908763f0bfad652fbd3935c5e926ba#a903f98252908763f0bfad652fbd3935c5e926ba"
 dependencies = [
  "async-trait",
  "atomicwrites",
@@ -2555,6 +2556,7 @@ dependencies = [
  "awaken-session-configuration-contract",
  "awaken-skill-store",
  "awaken-time",
+ "serde_json",
  "sqlx",
  "tempfile",
  "tokio",
@@ -5028,7 +5030,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7418,7 +7420,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7876,7 +7878,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7945,7 +7947,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8794,7 +8796,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9675,7 +9677,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

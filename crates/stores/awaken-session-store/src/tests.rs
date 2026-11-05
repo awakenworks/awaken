@@ -24,6 +24,7 @@ use std::time::Duration;
 
 mod environment_count_stream;
 mod keyset_query_plans;
+mod private_binding;
 mod repository_reads;
 pub(crate) mod root_update_history;
 
@@ -1489,8 +1490,8 @@ async fn sqlite_original_history_converges_without_a_parallel_session_model() {
     .unwrap();
     assert_eq!(
         ledgers,
-        (28, 1),
-        "E1 includes additive typed-receipt and retained-abort tails"
+        (29, 1),
+        "E1 includes additive typed-receipt, retained-abort and privacy tails"
     );
     let retired_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('managed_session') WHERE name IN ('agent_id','metadata_json','runtime_json')",
@@ -1605,7 +1606,7 @@ async fn postgres_original_history_converges_with_the_same_domain_effects() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(ledgers, (28, 1), "E1");
+    assert_eq!(ledgers, (29, 1), "E1");
     let retired_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM information_schema.columns \
          WHERE table_schema='t_session_original_upgrade' AND table_name='managed_session' \
@@ -1664,8 +1665,8 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
     let compacted = compacted_published_session_bundle().unwrap();
 
     // PGV1..PGV6 retain their published prefix inputs. The current tail adds
-    // the event-receipt kind and retained abort fence: exact history totals
-    // are now original 28 / compacted 26. E1 must still reject a missing or
+    // the event-receipt kind, retained abort fence and privacy bit: exact history totals
+    // are now original 29 / compacted 27. E1 must still reject a missing or
     // duplicate migration; PGV7 below still requires a read-only Server open.
     for (rule, schema, source, tail, seed_root, expected_main_receipts) in [
         (
@@ -1674,20 +1675,20 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
             &original,
             1,
             false,
-            28_usize,
+            29_usize,
         ),
-        ("PGV2", "t_session_original_v9", &original, 9, false, 28),
-        ("PGV3", "t_session_original_v12", &original, 12, false, 28),
-        ("PGV4", "t_session_original_v13", &original, 13, true, 28),
+        ("PGV2", "t_session_original_v9", &original, 9, false, 29),
+        ("PGV3", "t_session_original_v12", &original, 12, false, 29),
+        ("PGV4", "t_session_original_v13", &original, 13, true, 29),
         (
             "PGV5",
             "t_session_original_v22_matrix",
             &original,
             22,
             true,
-            28,
+            29,
         ),
-        ("PGV6", "t_session_compacted_v20", &compacted, 20, true, 26),
+        ("PGV6", "t_session_compacted_v20", &compacted, 20, true, 27),
     ] {
         let _ = admin
             .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
@@ -2642,6 +2643,7 @@ async fn root_mutation_decision_table<R: awaken_session_application::SessionStor
     id: &str,
 ) {
     root_observation_replacement_table(repo, id).await;
+    private_binding::replacement_table(repo, id).await;
     root_update_history::replacement_table(repo, id).await;
     let created = create_fixture(repo, "ws_a", sample(id), Vec::new()).await;
     let mut replacement = created.clone();

@@ -24,11 +24,7 @@ async fn composition_selects_the_executor_components_and_binds_once() {
         "stub",
     )
     .await;
-    let assembled = awaken_scenario_host::local_managed_state(
-        dependencies,
-        resources.authorities().resource_registry(),
-    )
-    .await;
+    let assembled = awaken_scenario_host::local_managed_state(dependencies, &resources).await;
     let ports = &assembled.state.execution;
     assert!(
         Arc::ptr_eq(&ports.dispatch, assembled.host.dispatch()),
@@ -67,7 +63,7 @@ async fn composition_selects_the_executor_components_and_binds_once() {
             "stub",
         )
         .await,
-        resources.authorities().resource_registry(),
+        &resources,
     )
     .await;
     assert!(

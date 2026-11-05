@@ -42,8 +42,7 @@ pub(super) async fn mount_parts_on_lifecycle(
     resources: awaken_resource_application::ResourcesApplication,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
-    let catalog = resources.authorities().resource_registry();
-    let managed = crate::local_managed_state(host, catalog.clone()).await;
+    let managed = crate::local_managed_state(host, &resources).await;
     let host = managed.host.clone();
     let router =
         awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
@@ -64,10 +63,9 @@ pub(super) async fn mount_parts_with_model_publication_resolver(
     dream_executor_decorator: Option<awaken_coordinator::ScenarioDreamExecutorDecorator>,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
-    let catalog = resources.authorities().resource_registry();
     let managed = crate::local_managed_state_with_model_publication_resolver(
         host,
-        catalog.clone(),
+        &resources,
         resolver.clone(),
     )
     .await;
@@ -128,9 +126,8 @@ pub(super) async fn mount_parts_with_agent_source_on_lifecycle(
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
-    let catalog = resources.authorities().resource_registry();
     let managed =
-        crate::local_managed_state_with_agent_source(host, catalog.clone(), agent_source).await;
+        crate::local_managed_state_with_agent_source(host, &resources, agent_source).await;
     let host = managed.host.clone();
     let router =
         awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
@@ -153,7 +150,6 @@ pub(super) async fn mount_with_environments_and_agent_source(
 ) -> Router {
     let (host, resources) = platform.into_dependencies();
     let local_workspace = host.local_workspace().to_owned();
-    let catalog = resources.authorities().resource_registry();
     let awaken_protocol_managed_testkit::EnvironmentFixture {
         application: environment_authoring,
         sandbox_policies,
@@ -163,7 +159,7 @@ pub(super) async fn mount_with_environments_and_agent_source(
         Some(source) => {
             crate::local_managed_state_with_environments_and_agent_source(
                 host,
-                catalog.clone(),
+                &resources,
                 environment_execution.clone(),
                 source,
             )
@@ -172,7 +168,7 @@ pub(super) async fn mount_with_environments_and_agent_source(
         None => {
             crate::local_managed_state_with_environments(
                 host,
-                catalog.clone(),
+                &resources,
                 environment_execution.clone(),
             )
             .await

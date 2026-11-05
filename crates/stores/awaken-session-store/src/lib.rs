@@ -40,6 +40,7 @@ use {
     awaken_session_types::SessionRecoveryQuarantine,
 };
 
+mod content_visibility;
 mod creation_intents;
 mod deployments;
 mod dream;
@@ -332,6 +333,13 @@ fn validate_session_create_command(
     idempotency: &IdempotencyRecord,
     lifecycle_facts: &[ManagedLifecycleFact],
 ) -> Result<(), SessionRepositoryError> {
+    if awaken_session_contract::SessionPrivateBinding::of(session)
+        .is_some_and(|binding| binding.workspace_id() != owner_scope)
+    {
+        return Err(SessionRepositoryError::InvalidMutation(
+            "private Session binding does not match its Workspace partition".into(),
+        ));
+    }
     if idempotency.event_admission_key().is_some() {
         return Err(SessionRepositoryError::InvalidMutation(
             "Session creation cannot consume an Event admission identity".into(),
@@ -591,13 +599,14 @@ fn classify_mutation_replay(
 fn validate_current_mutation(
     mutation: &SessionMutation,
     current_row: EncodedSessionRow,
-) -> Result<Option<String>, SessionRepositoryError> {
+) -> Result<(Option<String>, bool), SessionRepositoryError> {
     let current = decode(current_row).map_err(corrupt)?;
     if current.session_id != mutation.payload.session_id() {
         return Err(corrupt(
             "managed Session aggregate id does not match its mutation target",
         ));
     }
+    let private_content = awaken_session_contract::SessionPrivateBinding::of(&current).is_some();
     match &mutation.payload {
         SessionMutationPayload::Replace(replacement) => {
             current
@@ -614,7 +623,7 @@ fn validate_current_mutation(
                     "a keyed Event append requires its canonical Event receipt identity".into(),
                 ));
             }
-            Ok(None)
+            Ok((None, private_content))
         }
         SessionMutationPayload::Delete(tombstone) => {
             if !current.admits_tombstone(tombstone.session_id.as_str(), tombstone.deleted_revision)
@@ -624,7 +633,7 @@ fn validate_current_mutation(
                         .into(),
                 ));
             }
-            Ok(Some(event_admissions::encode(&current)?))
+            Ok((Some(event_admissions::encode(&current)?), private_content))
         }
         SessionMutationPayload::EventNoOp { .. } => {
             if !awaken_session_contract::session_budget_pause_may_absorb_interrupt(&current) {
@@ -639,7 +648,7 @@ fn validate_current_mutation(
                     SessionRepositoryConflict::IdempotencyMismatch,
                 ));
             }
-            Ok(None)
+            Ok((None, private_content))
         }
     }
 }

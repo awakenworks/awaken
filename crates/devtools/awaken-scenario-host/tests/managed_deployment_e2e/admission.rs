@@ -155,7 +155,7 @@ async fn nonlocal_environment_refusals_precede_agent_reads_and_session_creation(
         );
         let managed = awaken_scenario_host::local_managed_state_with_environments_and_agent_source(
             host,
-            resources.authorities().resource_registry(),
+            &resources,
             environments,
             source.clone(),
         )

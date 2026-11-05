@@ -154,6 +154,7 @@ mod hosted_route_profile;
 mod local_browser;
 mod managed_context;
 mod off_event_loop;
+mod private_assistant;
 mod profiles;
 mod route_policy;
 use credentials::{
@@ -164,7 +165,12 @@ use managed_context::memory_actor;
 pub(crate) use managed_context::with_composed_workspace;
 use route_policy::ROUTE_POLICIES;
 mod remote;
-use remote::{RemoteAuthenticationFailure, authenticate_off_event_loop};
+mod workspace_purpose;
+pub use private_assistant::{HttpPrivateWorkspaceContext, private_assistant_router};
+use remote::{
+    RemoteAuthenticationFailure, authenticate_off_event_loop, is_managed_tunnel_workload,
+};
+pub use workspace_purpose::HttpOrdinaryWorkspaceAdmission;
 
 use bootstrap::bootstrap_admin_token;
 use clock::{canonical_timestamp_shape, rfc3339_at, unix_seconds_at};
@@ -1270,12 +1276,12 @@ pub async fn cloud_management_guard(
             return iam_unavailable();
         }
     };
-    if tunnel_route && !authenticated.is_managed_tunnel_workload() {
+    if tunnel_route && !is_managed_tunnel_workload(&authenticated) {
         return forbidden(
             "Tunnel API requires a WIF service token with workspace:manage_tunnels scope",
         );
     }
-    if legacy_tunnel_route && authenticated.access_token_claims.is_some() {
+    if legacy_tunnel_route && authenticated.access_token.is_some() {
         return forbidden("legacy Tunnel API requires an Admin API key");
     }
     let principal = authenticated.principal;
@@ -1291,6 +1297,29 @@ pub async fn cloud_management_guard(
     let Some(workspace) = workspace else {
         return forbidden("no trusted workspace context was resolved");
     };
+
+    if authenticated
+        .workspace
+        .as_ref()
+        .is_some_and(|bound| bound.0 != workspace)
+    {
+        return awaken_protocol_managed::with_managed_workspace_header(
+            forbidden("the API key does not allow this workspace"),
+            &workspace,
+        );
+    }
+
+    if let Some(authority) = req
+        .extensions()
+        .get::<Arc<dyn awaken_tenancy::workspace_purpose::OrdinaryWorkspaceAdmission>>()
+        .cloned()
+    {
+        match authority.is_ordinary_workspace(&workspace).await {
+            Ok(true) => {}
+            Ok(false) => return forbidden("workspace is unavailable for ordinary access"),
+            Err(_) => return iam_unavailable(),
+        }
+    }
 
     let Some(target_scope) = target_scope(scope_class, &workspace, req.uri().path()) else {
         return awaken_protocol_managed::with_managed_workspace_header(

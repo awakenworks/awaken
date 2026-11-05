@@ -404,6 +404,18 @@ mod tests {
 
     #[async_trait::async_trait]
     impl awaken_session_contract::SessionRepositoryReads for TestSessions {
+        async fn workspace_content_is_public(
+            &self,
+            _: &str,
+            _: &awaken_session_types::SessionId,
+        ) -> Result<bool, awaken_session_contract::SessionRepositoryError> {
+            Err(
+                awaken_session_contract::SessionRepositoryError::AuthorityUnavailable(
+                    "this fixture has no retained File visibility".into(),
+                ),
+            )
+        }
+
         async fn get(
             &self,
             session_id: &awaken_session_types::SessionId,

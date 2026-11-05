@@ -20,6 +20,7 @@ enables = ["awaken-model-catalog-store"]
 # NOT depend on the awaken-coordinator data-plane bin — the two planes are siblings the
 # composition root (awaken-cli) weaves together.
 [dependencies]
+awaken-session-contract.workspace = true
 awaken-sync.workspace = true
 awaken-fs-durability = { workspace = true, features = ["native-fs"] }
 awaken-lease-contract.workspace = true
@@ -28,6 +29,7 @@ awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
 awaken-service-lifecycle.workspace = true
 awaken-outbound-http.workspace = true
+awaken-service-auth-contract.workspace = true
 awaken-acp-contract.workspace = true
 awaken-deployment-contract.workspace = true
 # The config-authoring plane (config service + routers + resolver + tool catalog).
@@ -88,13 +90,13 @@ tracing = "0.1"
 url.workspace = true
 schemars = { version = "1", optional = true }
 axum = { version = "0.8", features = ["multipart"] }
+tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
 awaken-session-application-contract.workspace = true
 awaken-ext-builtin-tools.workspace = true
 # The webhook plane test drives lifecycle delivery through the Session outbox relay.
 awaken-session-application.workspace = true
-awaken-session-contract.workspace = true
 awaken-resource-application.workspace = true
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
@@ -111,7 +113,6 @@ awaken-run-executor-acp = { workspace = true, features = ["execution", "host-pre
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 http-body-util = "0.1"
-tower = { version = "0.5", features = ["util"] }
 [lints]
 workspace = true
 

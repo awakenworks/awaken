@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use awaken_tenancy::workspace_purpose::OrdinaryWorkspaceAdmission;
 use axum::Router;
 
 pub(crate) fn finish(
@@ -11,6 +12,7 @@ pub(crate) fn finish(
     reconciler: Option<Arc<dyn awaken_config_service::PublicationBindingReconciler>>,
     worker_observations: Arc<dyn awaken_coordinator::WorkerObservationSource>,
     platform_workspace: String,
+    workspace_purpose: Option<Arc<dyn OrdinaryWorkspaceAdmission>>,
 ) -> Router {
     flat = flat.merge(mcp_export);
     if let Some(reconciler) = reconciler {
@@ -57,6 +59,10 @@ pub(crate) fn finish(
         );
         flat = flat.layer(reconcile_on_authority_change);
     }
+    // Workspace-path dispatch reconstructs request extensions. Install hosted
+    // purpose on the actual target router, so flat and addressed requests go
+    // through the same admission and no outside metadata must be preserved.
+    let flat = crate::managed_platform::public_workspace_purpose(flat, workspace_purpose);
     let flat =
         awaken_coordinator::workspace_path::with_platform_workspace(flat, platform_workspace);
     awaken_coordinator::workspace_path::with_workspace_path_addressing(flat)
@@ -115,6 +121,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_purpose_survives_workspace_address_rewriting() {
+        use awaken_tenancy::{WorkspaceScope, workspace_purpose::WorkspacePurposeUnavailable};
+        use axum::Extension;
+
+        struct Purpose;
+
+        #[async_trait::async_trait]
+        impl OrdinaryWorkspaceAdmission for Purpose {
+            async fn is_ordinary_workspace(
+                &self,
+                workspace: &str,
+            ) -> Result<bool, WorkspacePurposeUnavailable> {
+                match workspace {
+                    "ordinary" => Ok(true),
+                    "private" => Ok(false),
+                    _ => Err(WorkspacePurposeUnavailable),
+                }
+            }
+        }
+
+        async fn protected(
+            Extension(scope): Extension<WorkspaceScope>,
+            authority: Option<Extension<Arc<dyn OrdinaryWorkspaceAdmission>>>,
+        ) -> StatusCode {
+            let Some(Extension(authority)) = authority else {
+                // A standalone native PEP has no hosted purpose dependency.
+                return StatusCode::OK;
+            };
+            match authority.is_ordinary_workspace(&scope.0).await {
+                Ok(true) => StatusCode::OK,
+                Ok(false) => StatusCode::FORBIDDEN,
+                Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+            }
+        }
+
+        let app = finish(
+            Router::new().route("/v1/sessions", axum::routing::get(protected)),
+            Router::new(),
+            None,
+            worker_observations(),
+            "ordinary".into(),
+            Some(Arc::new(Purpose)),
+        );
+        for (path, expected) in [
+            ("/v1/sessions", StatusCode::OK),
+            ("/v1/workspaces/ordinary/sessions", StatusCode::OK),
+            ("/v1/workspaces/private/sessions", StatusCode::FORBIDDEN),
+            (
+                "/v1/workspaces/unavailable/sessions",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            let request = Request::get(path).body(Body::empty()).unwrap();
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                expected,
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn successful_worker_heartbeat_enters_the_all_scope_reconcile_gate() {
         // Cause/effect decision table:
         // H1 successful POST heartbeat -> all-scope reconcile;
@@ -130,6 +198,7 @@ mod tests {
             Some(reconciler.clone()),
             worker_observations(),
             "platform".into(),
+            None,
         );
         for (rule, path) in [("H1", "/v1/worker/heartbeat"), ("H2", "/unrelated")] {
             let response = app
@@ -167,6 +236,7 @@ mod tests {
             })),
             worker_observations(),
             "platform".into(),
+            None,
         );
 
         let response = tokio::time::timeout(

@@ -74,6 +74,16 @@ pub trait SessionRepositoryReads: Send + Sync {
     /// Coordinator application-access authorization.
     async fn owner(&self, session_id: &SessionId) -> Result<String, SessionRepositoryError>;
 
+    /// Observe live-root or retained tombstone privacy in one storage snapshot.
+    /// Only a known ordinary identity in this Workspace permits public scoped
+    /// File access; missing, foreign and private identities return false.
+    /// Every store must provide its selected native snapshot implementation.
+    async fn workspace_content_is_public(
+        &self,
+        owner_scope: &str,
+        session_id: &SessionId,
+    ) -> Result<bool, SessionRepositoryError>;
+
     /// Read a complete, unpaged SELECT-only selection. Corrupt rows fail
     /// closed with [`SessionRepositoryError::Corrupt`]; this role neither
     /// creates nor clears reconciliation quarantine evidence.

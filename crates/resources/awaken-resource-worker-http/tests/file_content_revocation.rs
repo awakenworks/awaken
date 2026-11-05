@@ -170,6 +170,7 @@ async fn build_fixture() -> Fixture {
     let digest = store.put(BYTES).await.unwrap();
     store
         .create_file(awaken_resource_contract::FileRecord {
+            private_binding: None,
             id: FILE.into(),
             workspace_id: WORKSPACE.into(),
             blob_id: digest,
@@ -255,7 +256,9 @@ async fn read(fixture: &Fixture) -> ReadOutcome {
         .read(
             WORKSPACE,
             FILE,
-            &FileReadPurpose::SessionResource,
+            &FileReadPurpose::SessionResource {
+                reader_session_id: None,
+            },
             Some(&ResourceOperationFence::Run(fixture.claim.clone())),
         )
         .await
@@ -395,7 +398,14 @@ async fn t06_c02_settlement_during_lock_wait_is_rechecked_and_premature_check_is
         fixture.source.gate.armed.store(true, Ordering::SeqCst);
         fixture
             .source
-            .read(WORKSPACE, FILE, &FileReadPurpose::SessionResource, None)
+            .read(
+                WORKSPACE,
+                FILE,
+                &FileReadPurpose::SessionResource {
+                    reader_session_id: None,
+                },
+                None,
+            )
             .await
             .map_err(|error| error.to_string())
     };

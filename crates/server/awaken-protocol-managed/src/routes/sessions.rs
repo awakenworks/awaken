@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::collections::HashSet;
 
 use awaken_tenancy::WorkspaceScope;
-use axum::extract::{Path, RawQuery, Request, State};
+use axum::extract::{Path, RawQuery, Request};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -29,8 +29,8 @@ use crate::common::scope::RequiredWorkspaceScope;
 use crate::preview::ThreadPreviewProjector;
 use crate::routes::{ManagedJson, ManagedQuery};
 use crate::state::{
-    CommittedEventDelivery, ManagedState, ProjectionObservationDecision, StateError,
-    internal_thread_id,
+    CommittedEventDelivery, ManagedRequestState, ManagedState, ProjectionObservationDecision,
+    StateError, internal_thread_id,
 };
 use crate::types::{
     DeletedSession, ErrorResponse, ListEventsResponse, PageCursor, PageQuery, SendEventsRequest,
@@ -48,7 +48,7 @@ mod profiled_run;
 mod stream;
 #[cfg(test)]
 use stream::replay_is_terminal_after;
-use stream::{LiveSseSource, SseTerminalScope, live_sse_stream};
+use stream::{LiveSseSource, SseTerminalScope, live_sse_stream, private_stream_deadline};
 
 pub use content_capture::get_session_content_capture;
 pub use event_admission::close_event_admission;
@@ -219,7 +219,7 @@ pub fn router(state: Arc<ManagedState>) -> Router {
 /// not an ownership check. The single-tenant surface is stamped by the
 /// composition root, never by this guard.
 pub(crate) async fn session_scope_guard(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     request: Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -247,7 +247,19 @@ async fn ensure_session_scope(
     match state.resolve_owner(id).await {
         Ok(Some(owner)) if owner != request_scope => Err(session_not_found(id)),
         Err(error) => Err(error_response(error)),
-        Ok(Some(_)) | Ok(None) => Ok(()),
+        Ok(Some(_)) => crate::state::authorize_session(
+            state,
+            request_scope,
+            &awaken_session_types::SessionId::from(id),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            awaken_session_application::SessionAccessError::NotFound => session_not_found(id),
+            error => error_response(StateError::Run(error.into())),
+        }),
+        Ok(None) if state.private_binding.is_some() => Err(session_not_found(id)),
+        Ok(None) => Ok(()),
     }
 }
 
@@ -491,7 +503,7 @@ pub async fn enforce_managed_beta(
 }
 
 async fn create_session(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     headers: HeaderMap,
     ManagedJson(req): ManagedJson<SessionCreateParams>,
@@ -544,7 +556,7 @@ fn parse_if_match(headers: &HeaderMap, representation: &str) -> Result<Option<u6
 }
 
 async fn retrieve_session(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
@@ -618,7 +630,7 @@ fn session_projection_error(
 /// `GET /v1/sessions` — a cursor page of the request scope's sessions (ADR-0051:
 /// tenancy-fenced, so a workspace never lists another's).
 async fn list_sessions(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
     RawQuery(raw): RawQuery,
     headers: HeaderMap,
@@ -652,7 +664,7 @@ async fn list_sessions(
 
 /// `POST /v1/sessions/:id` — update `title` (null clears) + patch `metadata`.
 async fn update_session(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
     headers: HeaderMap,
     ManagedJson(body): ManagedJson<crate::types::SessionUpdateParams>,
@@ -747,7 +759,7 @@ async fn update_session(
 
 /// `DELETE /v1/sessions/:id`.
 async fn delete_session(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
 ) -> Result<Json<DeletedSession>, WireErr> {
     state.delete_session(&id).await.map_err(error_response)?;
@@ -759,7 +771,7 @@ async fn delete_session(
 
 /// `POST /v1/sessions/:id/archive`.
 async fn archive_session(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
 ) -> Result<Json<Session>, WireErr> {
     state
@@ -772,7 +784,7 @@ async fn archive_session(
 // -- Threads --
 
 async fn list_threads(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
     headers: HeaderMap,
@@ -808,7 +820,7 @@ async fn list_threads(
 }
 
 async fn get_thread(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path((id, tid)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, WireErr> {
@@ -833,7 +845,7 @@ async fn get_thread(
 }
 
 async fn archive_thread(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path((id, tid)): Path<(String, String)>,
 ) -> Result<Json<SessionThread>, WireErr> {
     state.ensure_session(&id).await.map_err(error_response)?;
@@ -846,7 +858,7 @@ async fn archive_thread(
 
 /// Thread events are a typed projection of the Session's one committed event log.
 async fn list_thread_events(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path((id, tid)): Path<(String, String)>,
     RawQuery(raw): RawQuery,
     ManagedQuery(query): ManagedQuery<PageQuery>,
@@ -1054,12 +1066,13 @@ pub(crate) fn parse_event_list_filter(raw: Option<&str>) -> Result<EventListFilt
 }
 
 async fn stream_thread_events(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path((id, tid)): Path<(String, String)>,
     RawQuery(raw): RawQuery,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, StateError>>>, WireErr> {
     require_v1_stream_time(&headers)?;
+    let deadline = private_stream_deadline(state.as_ref());
     // The official Thread EventStreamParams carries the same preview selector as
     // the Session stream. Primary and ordinary child Threads consume the same
     // Runtime-owned live observer; Advisor consultations intentionally expose
@@ -1108,6 +1121,7 @@ async fn stream_thread_events(
                 .ok_or_else(|| error_response(StateError::NotFound))?,
             revision,
             current: observation == ProjectionObservationDecision::UseRefreshed,
+            deadline,
         },
         snapshot,
         rx,
@@ -1133,7 +1147,7 @@ async fn stream_thread_events(
 
 /// Read-only projection of the canonical Session Resource root and policy.
 pub async fn get_resource_manifest(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
 ) -> Result<Json<crate::types::resource::SessionResourceObservation>, WireErr> {
@@ -1148,7 +1162,7 @@ pub async fn get_resource_manifest(
 /// application command. The explicitly namespaced protocol crate owns the HTTP
 /// method/path and injects this one handler rather than duplicating the lowering.
 pub async fn replace_resource_manifest(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
@@ -1222,7 +1236,7 @@ async fn profiled_initial_preparation(
 /// Lower Awaken's strongly typed extension request into the sole profiled
 /// Session composer. The handler owns no Session state or realization path.
 pub async fn create_profiled_session(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
     Json(body): Json<crate::awaken_extensions::ProfiledSessionCreate>,
 ) -> Result<
@@ -1232,6 +1246,11 @@ pub async fn create_profiled_session(
     ),
     (StatusCode, Json<ErrorResponse>),
 > {
+    if state.private_binding.is_some() {
+        return Err(error_response(StateError::Run(RunError::unavailable(
+            "private profiled Session creation is unavailable",
+        ))));
+    }
     if body.session_id.trim().is_empty()
         || body.agent_id.trim().is_empty()
         || body.source_revision == Some(0)
@@ -1368,7 +1387,7 @@ fn profiled_release_error_response(
 /// canonical provisioning receipt; it owns neither a publication queue nor a
 /// Git transport implementation.
 pub async fn release_profiled_session(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
     RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
     Json(body): Json<crate::awaken_extensions::ProfiledSessionRelease>,
@@ -1414,7 +1433,7 @@ pub async fn release_profiled_session(
 }
 
 async fn create_resource(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
     ManagedJson(body): ManagedJson<crate::types::resource::ResourceAddParams>,
 ) -> Result<Json<crate::types::resource::SessionResource>, WireErr> {
@@ -1426,7 +1445,7 @@ async fn create_resource(
 }
 
 async fn list_resources(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
 ) -> Result<
     (
@@ -1446,7 +1465,7 @@ async fn list_resources(
 }
 
 async fn get_resource(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path((id, rid)): Path<(String, String)>,
 ) -> Result<Json<crate::types::resource::SessionResource>, WireErr> {
     state
@@ -1457,7 +1476,7 @@ async fn get_resource(
 }
 
 async fn update_resource(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path((id, rid)): Path<(String, String)>,
     ManagedJson(body): ManagedJson<crate::types::resource::ResourceUpdateParams>,
 ) -> Result<Json<crate::types::resource::SessionResource>, WireErr> {
@@ -1469,7 +1488,7 @@ async fn update_resource(
 }
 
 async fn delete_resource(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path((id, rid)): Path<(String, String)>,
 ) -> Result<Json<crate::types::resource::DeletedSessionResource>, WireErr> {
     state
@@ -1502,7 +1521,7 @@ fn event_data_subject(headers: &HeaderMap) -> Result<Option<String>, WireErr> {
 }
 
 async fn send_events(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
     headers: HeaderMap,
     ManagedJson(req): ManagedJson<SendEventsRequest>,
@@ -1520,7 +1539,7 @@ async fn send_events(
 }
 
 async fn list_events(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
     ManagedQuery(query): ManagedQuery<PageQuery>,
@@ -1549,12 +1568,13 @@ async fn list_events(
 }
 
 async fn stream_events(
-    State(state): State<Arc<ManagedState>>,
+    ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, StateError>>>, WireErr> {
     require_v1_stream_time(&headers)?;
+    let deadline = private_stream_deadline(state.as_ref());
     // Opt in to live previews (`event_start`/`event_delta`) via `event_deltas[]`.
     let previews = parse_event_deltas(raw.as_deref())?;
     let observation = state
@@ -1594,6 +1614,7 @@ async fn stream_events(
                 .ok_or_else(|| error_response(StateError::NotFound))?,
             revision,
             current: observation == ProjectionObservationDecision::UseRefreshed,
+            deadline,
         },
         snapshot,
         rx,

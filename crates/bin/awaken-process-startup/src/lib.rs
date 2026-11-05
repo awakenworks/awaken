@@ -130,8 +130,9 @@ pub use service::{
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
 pub use awaken_control::{
-    ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, ManagementAuthz,
-    ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
+    ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, HttpOrdinaryWorkspaceAdmission,
+    HttpPrivateWorkspaceContext, ManagementAuthz, ManagementIdentityMode, RemoteManagementAuthz,
+    TokenSpec, embedded_iam,
 };
 mod live_runtime_capabilities;
 mod managed_platform;

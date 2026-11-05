@@ -10,6 +10,29 @@ use super::{
 
 #[async_trait::async_trait]
 impl SessionRepositoryReads for SqliteManagedSessionRepository {
+    async fn workspace_content_is_public(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<bool, SessionRepositoryError> {
+        let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<i64>)>(
+            "SELECT scope_id, revision, aggregate_json, NULL AS private_content \
+             FROM managed_session WHERE session_id = ?1 \
+             UNION ALL \
+             SELECT scope_id, deleted_revision AS revision, NULL AS aggregate_json, private_content \
+             FROM managed_session_tombstone WHERE session_id = ?1",
+        )
+        .bind(session_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        crate::content_visibility::workspace_content_is_public(
+            owner_scope,
+            session_id.as_str(),
+            rows,
+        )
+    }
+
     async fn get(
         &self,
         session_id: &awaken_session_types::SessionId,

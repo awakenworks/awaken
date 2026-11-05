@@ -119,6 +119,7 @@ pub(in crate::state) fn assert_record_frame_eq(actual: &SessionRecord, expected:
         cache_revision,
         committed_projection_ready,
         owner_scope,
+        private_binding,
         agent_id,
         session,
         root_time,
@@ -135,6 +136,10 @@ pub(in crate::state) fn assert_record_frame_eq(actual: &SessionRecord, expected:
     } = actual;
     assert_eq!(*cache_revision, expected.cache_revision, "frame: cache CAS");
     assert_eq!(owner_scope, &expected.owner_scope, "frame: Session owner");
+    assert_eq!(
+        private_binding, &expected.private_binding,
+        "frame: private Session owner"
+    );
     assert!(
         Arc::ptr_eq(event_page_index, &expected.event_page_index),
         "frame: published event index"

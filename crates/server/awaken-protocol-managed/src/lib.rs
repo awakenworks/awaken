@@ -90,7 +90,8 @@ pub use routes::{
     resume_profiled_session_run, router, submit_profiled_session_run, tunnels_router,
 };
 pub use state::{
-    COMMITTED_PREFIX_READ_CONFLICT, ManagedState, StateError, managed_session_id_from_idempotency,
+    AdmittedPrivateSessionRequest, COMMITTED_PREFIX_READ_CONFLICT, ManagedRequestState,
+    ManagedState, StateError, admitted_private_session_view, managed_session_id_from_idempotency,
 };
 pub use tunnel::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};
 pub use work_session_access::{ManagedWorkSessionAccess, work_session_guard};

@@ -4,6 +4,7 @@ use awaken_session_configuration_contract::resource as session_resource;
 struct FileFenceProbe {
     accepted: Option<crate::ResourceOperationFence>,
     seen: std::sync::Mutex<Vec<Option<crate::ResourceOperationFence>>>,
+    readers: std::sync::Mutex<Vec<Option<String>>>,
 }
 
 impl FileFenceProbe {
@@ -11,6 +12,7 @@ impl FileFenceProbe {
         Self {
             accepted,
             seen: std::sync::Mutex::new(Vec::new()),
+            readers: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -25,13 +27,17 @@ impl crate::FileContentSource<crate::ResourceOperationFence> for FileFenceProbe 
         &self,
         _workspace: &str,
         file_id: &str,
-        _purpose: &awaken_resource_contract::FileReadPurpose,
+        purpose: &awaken_resource_contract::FileReadPurpose,
         fence: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         Option<awaken_resource_contract::ResolvedFileContent>,
         awaken_resource_contract::FileContentSourceError,
     > {
         self.seen.lock().unwrap().push(fence.cloned());
+        self.readers
+            .lock()
+            .unwrap()
+            .push(purpose.reader_session_id().map(str::to_owned));
         if fence != self.accepted.as_ref() {
             return Err(awaken_resource_contract::FileContentSourceError::new(
                 "File fence did not match the current authority",
@@ -211,8 +217,65 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
         assert_eq!(observed.len(), reads, "{rule}: source read count");
         if reads == 1 {
             assert_eq!(observed, vec![sent], "{rule}: complete fence identity");
+            assert_eq!(
+                *source.readers.lock().unwrap(),
+                vec![realization.map(|(id, _)| id.to_owned())],
+                "{rule}: a local fence must retain its original reader as well"
+            );
         }
     }
+}
+
+#[tokio::test]
+async fn retained_file_manifest_keeps_its_reader_without_a_materialization_lease() {
+    let source = Arc::new(FileFenceProbe::new(None));
+    let host = dependencies()
+        .await
+        .with_file_content_source(source.clone())
+        .build()
+        .unwrap();
+    let stage = host.realization_executor.staging();
+    stage.sessions().install_session("native-session").unwrap();
+    stage
+        .sessions()
+        .enter_session_dispatch("native-session")
+        .unwrap();
+    let input = session_resource::ResolvedInput {
+        created_at_unix_ms: None,
+        updated_at_unix_ms: None,
+        binding_id: awaken_resource_contract::BindingId::from("file-binding"),
+        source: session_resource::ResolvedInputSource::File {
+            file_id: "file-a".into(),
+        },
+        mount_path: "/file-a".into(),
+        access: awaken_resource_contract::ResourceAccess::ReadOnly,
+        instructions: None,
+    };
+    let manifest = session_resource::SessionResourceManifest::at_revision(
+        "workspace",
+        1,
+        session_resource::ResolvedSessionResources::try_new(vec![input], Vec::new()).unwrap(),
+    );
+    stage
+        .stage_resource_requirements(
+            "native-session",
+            &manifest,
+            None,
+            None,
+            "native-file-input".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        source.seen(),
+        vec![None],
+        "the ordinary local physical fence is unchanged"
+    );
+    assert_eq!(
+        *source.readers.lock().unwrap(),
+        vec![Some("native-session".into())],
+        "absence of a materialization lease cannot erase the native reader context"
+    );
 }
 
 #[tokio::test]

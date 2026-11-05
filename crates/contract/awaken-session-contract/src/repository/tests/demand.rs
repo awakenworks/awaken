@@ -12,6 +12,14 @@ struct ScriptedRepository(Mutex<VecDeque<Page>>);
 
 #[async_trait::async_trait]
 impl SessionRepositoryReads for ScriptedRepository {
+    async fn workspace_content_is_public(
+        &self,
+        _: &str,
+        _: &SessionId,
+    ) -> Result<bool, SessionRepositoryError> {
+        panic!("this fixture does not admit linked File reads")
+    }
+
     async fn get(&self, _: &SessionId) -> Result<PersistedSession, SessionRepositoryError> {
         panic!("scan already contains authoritative roots")
     }
