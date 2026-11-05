@@ -798,6 +798,7 @@ mod tests {
             ))),
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             Vec::new(),
+            |_| true,
         )
     }
 
@@ -809,6 +810,7 @@ mod tests {
                 Arc::new(LocalExecutableAgentRegistrar::new(executable.clone())),
                 std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
                 Vec::new(),
+                |_| true,
             ),
             executable,
         )
@@ -1827,6 +1829,7 @@ mod tests {
             ))),
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             Vec::new(),
+            |_| true,
         ));
         let plane = ConfigPlane::new(service, store, tools);
         let err = seed_admin_assistant(&plane, DEFAULT_SCOPE, ModelSelection::Auto)

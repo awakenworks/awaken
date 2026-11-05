@@ -163,6 +163,7 @@ pub(super) fn plane_with_store(
                 Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
                 std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
                 Vec::new(),
+                |_| true,
             )),
             store,
             Arc::new(StaticToolCatalog(Vec::new())),
@@ -184,6 +185,7 @@ pub(super) async fn plane_with_delegation_and_catalog(
                 Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
                 std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
                 Vec::new(),
+                |_| true,
             )),
             Arc::new(SqliteConfigStore::open(path).await.expect("config store")),
             Arc::new(StaticToolCatalog(vec![
@@ -208,6 +210,7 @@ pub(super) async fn rejecting_plane(path: &str) -> ConfigPlane {
             ))),
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             Vec::new(),
+            |_| true,
         )),
         Arc::new(SqliteConfigStore::open(path).await.expect("config store")),
         Arc::new(StaticToolCatalog(Vec::new())),

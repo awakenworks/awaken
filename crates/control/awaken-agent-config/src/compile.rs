@@ -28,10 +28,13 @@ pub use error::CompileError;
 /// Assemble the one immutable publication produced by configuration resolution.
 /// `metadata` records every input the configuration plane read; runtime code never
 /// calls this function and therefore cannot re-resolve or broaden those inputs.
+/// The catalog owner's trusted `pattern_selectable` projection narrows only
+/// broad matching; an exact reference still resolves against the full catalog.
 pub fn compile_resolved(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
     metadata: AgentSnapshotMetadata,
+    pattern_selectable: fn(&ToolDescriptor) -> bool,
 ) -> Result<ExecutableAgentSnapshot, CompileError> {
     let primary = config
         .model_binding
@@ -44,12 +47,21 @@ pub fn compile_resolved(
         .cloned()
         .map(ResolvedModelCandidate::host)
         .collect();
-    compile_with_models(config, tools, metadata, primary, candidates, None)
+    compile_with_models(
+        config,
+        tools,
+        metadata,
+        primary,
+        candidates,
+        None,
+        pattern_selectable,
+    )
 }
 
 /// Compile a publication whose complete model candidates were resolved by the
 /// configuration plane. This is the production publish path; direct examples use
 /// [`compile_resolved`] and receive explicit host-executor candidates.
+/// Both entrypoints use the same required catalog selection projection.
 pub fn compile_published(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
@@ -57,8 +69,17 @@ pub fn compile_published(
     primary: ResolvedModelCandidate,
     candidates: Vec<ResolvedModelCandidate>,
     advisor: Option<ResolvedModelCandidate>,
+    pattern_selectable: fn(&ToolDescriptor) -> bool,
 ) -> Result<ExecutableAgentSnapshot, CompileError> {
-    compile_with_models(config, tools, metadata, Some(primary), candidates, advisor)
+    compile_with_models(
+        config,
+        tools,
+        metadata,
+        Some(primary),
+        candidates,
+        advisor,
+        pattern_selectable,
+    )
 }
 
 fn compile_with_models(
@@ -68,6 +89,7 @@ fn compile_with_models(
     primary: Option<ResolvedModelCandidate>,
     candidates: Vec<ResolvedModelCandidate>,
     advisor: Option<ResolvedModelCandidate>,
+    pattern_selectable: fn(&ToolDescriptor) -> bool,
 ) -> Result<ExecutableAgentSnapshot, CompileError> {
     if config.max_steps == Some(0) {
         return Err(CompileError::InvalidBinding {
@@ -143,9 +165,10 @@ fn compile_with_models(
         }
         descriptors.push(descriptor.clone());
     }
-    // Glob patterns: permissively add catalog tools whose id matches, in catalog
-    // order, skipping any already selected. A pattern that matches nothing is not
-    // an error — it is a filter over the catalog, not a reference to a tool.
+    // Glob patterns select only the catalog owner's broad-selection surface,
+    // in catalog order. Exact declarations above retain the complete visible
+    // catalog, including capabilities that must be explicitly requested.
+    // A pattern matching nothing stays a valid filter, not an unknown reference.
     for descriptor in tools {
         if seen.contains(&descriptor.id) {
             continue;
@@ -154,6 +177,7 @@ fn compile_with_models(
             .tool_patterns
             .iter()
             .any(|pattern| tool_id_match(pattern, &descriptor.id))
+            && pattern_selectable(descriptor)
         {
             descriptors.push(descriptor.clone());
             seen.insert(descriptor.id.clone());

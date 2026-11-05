@@ -96,6 +96,9 @@ pub struct ControlDependencies {
     pub model_publication_resolver: Arc<dyn ModelPublicationResolver>,
     pub tool_configuration_compiler:
         Arc<dyn awaken_tool_contract::tool_configuration::ToolConfigurationCompiler>,
+    /// Which visible tools can be selected implicitly by an authored glob.
+    /// Exact capability declarations remain distinct from broad selection.
+    pub pattern_selectable: fn(&awaken_runtime_contract::resolved::ToolDescriptor) -> bool,
     pub plugin_publication_resolvers: Vec<Arc<dyn PluginPublicationResolver>>,
     pub credential_probe: Arc<dyn CredentialProbe>,
     pub model_discovery: Arc<dyn ModelCatalogDiscovery>,
@@ -191,6 +194,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         agent_archive_cascade,
         model_publication_resolver,
         tool_configuration_compiler,
+        pattern_selectable,
         plugin_publication_resolvers,
         credential_probe,
         model_discovery,
@@ -261,6 +265,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         executable_agent_registrar,
         tool_configuration_compiler.clone(),
         platform_plugins.clone(),
+        pattern_selectable,
     )
     .with_credential_reference_validator(credential_validator.clone())
     .with_resources(resource_store.clone());

@@ -102,6 +102,7 @@ pub(super) async fn prepare_publication(
         resolved.models.primary,
         resolved.models.candidates,
         resolved.advisor,
+        service.pattern_selectable,
     )
     .map_err(|error| PublishError::Compile(error.to_string()))?;
     let stored_inputs = defaults.clone();

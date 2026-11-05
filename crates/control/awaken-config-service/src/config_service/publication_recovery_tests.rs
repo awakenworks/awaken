@@ -139,6 +139,7 @@ async fn startup_reconciliation_converges_legacy_duplicate_source_revisions() {
         test_registrar(),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         Vec::new(),
+        |_| true,
     );
     let registry = ScopedConfig::new(store.clone(), scope.clone());
     let last = alternate

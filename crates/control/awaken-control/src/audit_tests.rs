@@ -52,6 +52,7 @@ async fn audit_plane() -> ManagementAuditPlane {
             ))),
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             Vec::new(),
+            |_| true,
         )),
         Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
         Arc::new(StaticToolCatalog(vec![])),

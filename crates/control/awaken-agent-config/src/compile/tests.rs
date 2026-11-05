@@ -8,7 +8,7 @@ fn compile(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
 ) -> Result<ExecutableAgentSnapshot, CompileError> {
-    compile_resolved(config, tools, AgentSnapshotMetadata::default())
+    compile_resolved(config, tools, AgentSnapshotMetadata::default(), |_| true)
 }
 
 pub(super) fn config(tools: &[&str]) -> AgentConfig {
@@ -529,6 +529,67 @@ fn tool_patterns_select_matching_catalog_tools_and_enter_the_fingerprint() {
 }
 
 #[test]
+fn pattern_selection_predicate_only_limits_glob_additions() {
+    // Cause/effect table: C1 exact declarations stay visible; C2 a glob
+    // matches all/nothing/is absent; C3 the trusted predicate allows/denies.
+    // S1 exact + matching glob + deny => exact order only; S2 allow => append
+    // catalog order without duplicating exact ids; S3 no glob or no matches
+    // => identical complete snapshot/fingerprint regardless of C3.
+    // S4 an absent exact id still refuses; the predicate is no visibility gate.
+    let catalog = [tool("alpha"), tool("beta"), tool("gamma")];
+    let run = |cfg: &AgentConfig, selectable: fn(&ToolDescriptor) -> bool| {
+        compile_resolved(cfg, &catalog, AgentSnapshotMetadata::default(), selectable).unwrap()
+    };
+    let ids = |snapshot: &ExecutableAgentSnapshot| {
+        snapshot
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .map(|descriptor| descriptor.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let mut mixed = config(&["gamma", "alpha"]);
+    mixed.tool_patterns = vec!["*".into()];
+    let denied = run(&mixed, |_| false);
+    let allowed = run(&mixed, |_| true);
+    assert_eq!(
+        ids(&denied),
+        ["gamma", "alpha"],
+        "S1 exact visibility/order"
+    );
+    assert_eq!(ids(&allowed), ["gamma", "alpha", "beta"], "S2 order/dedup");
+    mixed.tool_patterns.clear();
+    let denied = run(&mixed, |_| false);
+    let allowed = run(&mixed, |_| true);
+    assert_eq!(
+        denied.fingerprint, allowed.fingerprint,
+        "S3 exact-only fingerprint"
+    );
+    assert_eq!(denied, allowed, "S3 exact-only complete snapshot");
+    let mut unmatched = config(&[]);
+    unmatched.tool_patterns = vec!["missing_*".into()];
+    let denied = run(&unmatched, |_| false);
+    let allowed = run(&unmatched, |_| true);
+    assert!(
+        denied.resolved_spec.tool_descriptors.is_empty(),
+        "S3 empty match stays legal"
+    );
+    assert_eq!(denied, allowed, "S3 unmatched snapshot/fingerprint");
+    assert!(
+        matches!(
+            compile_resolved(
+                &config(&["missing"]),
+                &catalog,
+                AgentSnapshotMetadata::default(),
+                |_| false
+            ),
+            Err(CompileError::UnknownTool { .. })
+        ),
+        "S4 exact lookup remains fail-closed"
+    );
+}
+
+#[test]
 fn auto_binding_fails_closed_at_compile() {
     // ADR-0052 D5: compile is pure and cannot resolve `Auto` — it must be
     // resolved to a concrete binding by publish first, so a bare compile of an
@@ -826,6 +887,7 @@ fn publication_pinned_model_provisioning_is_part_of_the_fingerprint() {
         candidate("credential-a"),
         vec![],
         None,
+        |_| true,
     )
     .unwrap();
     let second = compile_published(
@@ -835,6 +897,7 @@ fn publication_pinned_model_provisioning_is_part_of_the_fingerprint() {
         candidate("credential-b"),
         vec![],
         None,
+        |_| true,
     )
     .unwrap();
     assert_ne!(first.fingerprint, second.fingerprint);
@@ -1264,6 +1327,7 @@ fn advisor_is_distinct_from_delegation_and_requires_one_exact_candidate() {
         primary.clone(),
         vec![],
         Some(advisor_candidate.clone()),
+        |_| true,
     )
     .expect("V1");
     let advisor_only_fingerprint = advisor_only.fingerprint.clone();
@@ -1324,6 +1388,7 @@ fn advisor_is_distinct_from_delegation_and_requires_one_exact_candidate() {
         primary.clone(),
         vec![],
         Some(alternate_advisor),
+        |_| true,
     )
     .expect("V6");
     assert_ne!(alternate.fingerprint, advisor_only_fingerprint, "V6");
@@ -1338,6 +1403,7 @@ fn advisor_is_distinct_from_delegation_and_requires_one_exact_candidate() {
                 primary.clone(),
                 vec![],
                 Some(ambiguous_advisor),
+                |_| true,
             ),
             Err(CompileError::InvalidResolvedModels { .. })
         ),
@@ -1362,6 +1428,7 @@ fn advisor_is_distinct_from_delegation_and_requires_one_exact_candidate() {
         primary.clone(),
         vec![],
         Some(advisor_candidate.clone()),
+        |_| true,
     )
     .expect("V2");
     assert_eq!(both.resolved_spec.plugin_config.agent.delegates.len(), 19);
@@ -1392,6 +1459,7 @@ fn advisor_is_distinct_from_delegation_and_requires_one_exact_candidate() {
                 primary.clone(),
                 vec![],
                 Some(advisor_candidate.clone()),
+                |_| true,
             ),
             Err(CompileError::InvalidBinding {
                 axis: "multiagent",
@@ -1416,6 +1484,7 @@ fn advisor_is_distinct_from_delegation_and_requires_one_exact_candidate() {
                 primary.clone(),
                 vec![],
                 None,
+                |_| true,
             ),
             Err(CompileError::InvalidBinding {
                 axis: "multiagent",
@@ -1444,6 +1513,7 @@ fn advisor_is_distinct_from_delegation_and_requires_one_exact_candidate() {
                 primary,
                 vec![],
                 Some(advisor_candidate),
+                |_| true,
             ),
             Err(CompileError::InvalidBinding {
                 axis: "multiagent",

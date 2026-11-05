@@ -1,3 +1,9 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: ConfigService owns authoring and immutable publication through its existing
+// @formal reason: model, plugin and credential validation collaborators. Its construction-frozen
+// @formal reason: tool-pattern projection filters only the caller's visible catalog at compilation;
+// @formal reason: it grants no authorization or plaintext access. Owning publication tests exercise
+// @formal reason: the shared validation/preview/publish path; this requirement link is not a proof claim.
 //! The scope-free Config Service: author and publish Agent configs.
 //!
 //! `ConfigService` is the config domain's authoring authority — it validates and
@@ -41,12 +47,15 @@ mod publication_build;
 /// are passed in per call
 /// by the edge ([`crate::ConfigPlane`] and router handlers). Publication also receives one
 /// trusted execution Workspace coordinate for registration. It receives no principal,
-/// role, policy, token, authorization decision, or Coordinator store.
+/// role, authorization policy, token, authorization decision, or Coordinator store.
 pub struct ConfigService {
     /// The sole Control-to-Coordinator executable availability boundary.
     pub(crate) registrar: Arc<dyn ExecutableAgentRegistrar>,
     pub(crate) tool_configuration_compiler:
         Arc<dyn awaken_tool_contract::tool_configuration::ToolConfigurationCompiler>,
+    /// Trusted catalog selection, fixed at construction. This narrows glob
+    /// expansion only; visibility and exact references keep their own owners.
+    pub(crate) pattern_selectable: fn(&awaken_runtime_contract::resolved::ToolDescriptor) -> bool,
     /// Per-agent resource bindings (ADR-0038). When wired, the agent's bound-resource
     /// prompt fragments are appended to its effective system prompt at compile (A3a).
     /// `None` → compilation is byte-identical to an unbound agent.

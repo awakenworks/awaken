@@ -461,6 +461,10 @@ async function publishAgent(endpoint: string, memoryStoreId: string): Promise<vo
   assert.equal((await json('PUT', scoped(WORKSPACE, `config/agents/${AGENT}`), {
     name: AGENT, model: { id: MODEL }, system: 'Resource lifecycle test.',
     max_steps: 2,
+    // G: an ordinary Memory Agent's broad tool selection must not acquire the
+    // stateless proposal role; its terminal Run must still trigger extraction.
+    // The extractor below selects that capability through its exact declaration.
+    tool_patterns: ['write*'],
     plugins: ['memory'],
     plugin_config: { memory: { binding_id: 'postgres-memory' } },
   })).status, 200);

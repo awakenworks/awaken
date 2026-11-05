@@ -92,6 +92,9 @@ pub(super) async fn control_component_for_process(
         tool_configuration_compiler: std::sync::Arc::new(
             awaken_ext_builtin_tools::WebToolConfigurationCompiler,
         ),
+        pattern_selectable: |tool| {
+            !awaken_session_run_delivery::MemoryWriteProposals::matches_descriptor(tool)
+        },
         service_lifecycle: service_lifecycle.clone(),
         execution_workspace: execution_workspace.to_owned(),
         data_subject_org: data_subject_org.to_owned(),

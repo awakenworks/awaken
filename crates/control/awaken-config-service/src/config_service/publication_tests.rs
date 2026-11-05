@@ -1,6 +1,108 @@
 // @formal evidence config.inference_access_resolved_once_at_publication
 // @formal evidence config_activation.stale_publication_never_installs
 #[tokio::test]
+async fn required_pattern_predicate_reaches_validate_both_previews_and_publish() {
+    // C/E graph: C1 exact selection or wildcard-only selection; C2 the required
+    // predicate admits/refuses that ordinary fixture descriptor; C3 validate,
+    // unsaved preview, stored preview or publish. R1 wildcard+C2=true -> selected;
+    // R2 wildcard+C2=false -> absent; R3 exact+C2=false -> still selected. All
+    // three snapshots must agree. Validate returns (), so an independent atomic
+    // observation proves it invokes the same constructor-supplied predicate,
+    // rather than merely retaining a field. No real Memory identity rule, new
+    // resolver/factory, transport or provider is introduced by this fixture.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static PREDICATE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn pattern_selectable(tool: &ToolDescriptor) -> bool {
+        PREDICATE_CALLS.fetch_add(1, Ordering::SeqCst);
+        tool.id == "pattern-ordinary"
+    }
+
+    let service = ConfigService::new(
+        Arc::new(FakeResolver),
+        test_registrar(),
+        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Vec::new(),
+        pattern_selectable,
+    );
+    let tools = ["exact-only", "pattern-ordinary", "pattern-excluded"]
+        .into_iter()
+        .map(|id| ToolDescriptor::pinned("test", id, id, serde_json::json!({"type": "object"})))
+        .collect::<Vec<_>>();
+    let workspace = scope("workspace-pattern-selection");
+    let mut config = agent_config("pattern-selection");
+    config.tool_ids = vec!["exact-only".into()];
+    config.tool_patterns = vec!["*".into()];
+
+    PREDICATE_CALLS.store(0, Ordering::SeqCst);
+    service.validate(&workspace, &config, &tools).await.unwrap();
+    assert!(
+        PREDICATE_CALLS.swap(0, Ordering::SeqCst) > 0,
+        "validate invokes the required predicate"
+    );
+
+    let mut preview_config = config.clone();
+    preview_config.id = "pattern-selection-preview".into();
+    let preview = service
+        .preview(
+            &workspace,
+            &preview_config.id,
+            &preview_config,
+            AgentInputConfig {
+                agent_id: preview_config.id.clone(),
+                environment: None,
+                inputs: Vec::new(),
+                revision: 0,
+            },
+            &tools,
+        )
+        .await
+        .unwrap();
+    assert!(
+        PREDICATE_CALLS.swap(0, Ordering::SeqCst) > 0,
+        "unsaved preview invokes the required predicate"
+    );
+
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
+    let registry = ScopedConfig::new(store, workspace.clone());
+    service.put(&registry, &config).await.unwrap();
+    PREDICATE_CALLS.store(0, Ordering::SeqCst);
+    let stored_preview = service
+        .preview_publication(&workspace, &registry, &config.id, &tools)
+        .await
+        .unwrap();
+    assert!(
+        PREDICATE_CALLS.swap(0, Ordering::SeqCst) > 0,
+        "stored preview invokes the required predicate"
+    );
+    let published = service
+        .publish(&workspace, &registry, &config.id, &tools)
+        .await
+        .unwrap();
+    assert!(
+        PREDICATE_CALLS.swap(0, Ordering::SeqCst) > 0,
+        "publish invokes the required predicate"
+    );
+
+    let expected = ["exact-only", "pattern-ordinary"]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    for (entrypoint, snapshot) in [
+        ("unsaved preview", &preview),
+        ("stored preview", &stored_preview.snapshot),
+        ("publish", &published.snapshot),
+    ] {
+        let selected = snapshot
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .map(|tool| tool.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(selected, expected, "{entrypoint}: R1/R2/R3");
+    }
+}
+
+#[tokio::test]
 async fn plugin_configuration_admission_is_shared_by_validate_preview_and_publish() {
     // DT-CONFIG-LIFECYCLE L1 an editable but semantically invalid section may
     // remain in the lossless Draft; L2 the exact same owning pure validator
@@ -30,6 +132,7 @@ async fn plugin_configuration_admission_is_shared_by_validate_preview_and_publis
                 }
             }),
         }],
+        |_| true,
     ));
     let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let plane = ConfigPlane::new(
@@ -115,6 +218,7 @@ async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
         Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         Vec::new(),
+        |_| true,
     ));
     let plane = ConfigPlane::new(
         service,
@@ -320,6 +424,7 @@ async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
             registrar.clone(),
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             Vec::new(),
+            |_| true,
         );
         let registry = StalePublishRegistry { write };
         let err = service
@@ -452,6 +557,7 @@ async fn config_plane_preserves_publish_intent_during_source_race() {
             Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             Vec::new(),
+            |_| true,
         );
         let plane = ConfigPlane::new(
             Arc::new(service),
@@ -539,6 +645,7 @@ async fn resolve_agent_config_derives_the_effective_compaction_window_for_both_r
         test_registrar(),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         Vec::new(),
+        |_| true,
     );
     let pin = || ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
     // Usable budget = context_window − max_output_tokens = 200k − 40k = 160k;
@@ -625,6 +732,7 @@ async fn resolve_agent_config_leaves_a_non_object_compact_untouched() {
         test_registrar(),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         Vec::new(),
+        |_| true,
     );
     let mut cfg = agent_config("a4");
     cfg.model_binding = ModelSelection::Pinned(ModelBinding::new("p", "m-x", "b"));
@@ -710,6 +818,7 @@ async fn publish_pins_agent_model_catalog_and_session_defaults_revision() {
         Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         Vec::new(),
+        |_| true,
     )
     .with_resources(resources.clone());
     let plane = ConfigPlane::new(
@@ -863,6 +972,7 @@ async fn managed_projection_preserves_the_published_authoring_model_id() {
             Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             Vec::new(),
+            |_| true,
         )),
         store,
         Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
@@ -1018,6 +1128,7 @@ async fn reconcile_advances_source_revision_before_changed_policy_fingerprint() 
             registrar.clone(),
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             Vec::new(),
+            |_| true,
         )),
         store.clone(),
         tools.clone(),
@@ -1041,6 +1152,7 @@ async fn reconcile_advances_source_revision_before_changed_policy_fingerprint() 
             registrar,
             std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             Vec::new(),
+            |_| true,
         )),
         store.clone(),
         tools,
@@ -1317,6 +1429,7 @@ async fn web_compilation_rejects_every_config_entry_before_publication_effects()
         test_registrar(),
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         Vec::new(),
+        |_| true,
     );
     service.credential_reference_validator = Some(effects.clone());
     let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
@@ -1489,6 +1602,7 @@ async fn declared_mcp_configuration_uses_one_admission_for_validate_preview_and_
         Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
         Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         vec![mcp_configuration_source()],
+        |_| true,
     ));
     let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let plane = ConfigPlane::new(
@@ -1602,6 +1716,7 @@ async fn unselected_mcp_binding_errors_remain_with_the_original_agent_compiler()
                 validate: None,
             },
         ],
+        |_| true,
     );
     let mut config = agent_config("unselected-invalid-mcp");
     config.plugin_ids = vec!["owned".into()];

@@ -41,6 +41,7 @@ fn acp_alias_publication_decision_table() {
             candidate(supported),
             vec![],
             None,
+            |_| true,
         )
     };
     assert!(publish(&cfg, false).is_ok());
@@ -95,6 +96,7 @@ fn acp_alias_publication_decision_table() {
             managed(supported),
             vec![],
             None,
+            |_| true,
         );
         assert_eq!(result.is_ok(), supported, "managed provisioning");
     }
@@ -106,7 +108,8 @@ fn acp_alias_publication_decision_table() {
             AgentSnapshotMetadata::default(),
             candidate(true),
             vec![candidate(false)],
-            None
+            None,
+            |_| true,
         ),
         Err(CompileError::InvalidToolOverride { .. })
     ));
