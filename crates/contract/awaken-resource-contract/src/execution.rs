@@ -15,8 +15,40 @@ use async_trait::async_trait;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FileReadPurpose {
-    SessionResource,
-    ModelContent { thread_id: String },
+    SessionResource {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reader_session_id: Option<String>,
+    },
+    ModelContent {
+        thread_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reader_session_id: Option<String>,
+    },
+}
+
+impl FileReadPurpose {
+    #[must_use]
+    pub fn reader_session_id(&self) -> Option<&str> {
+        match self {
+            Self::SessionResource { reader_session_id }
+            | Self::ModelContent {
+                reader_session_id, ..
+            } => reader_session_id.as_deref(),
+        }
+    }
+
+    /// The edge supplies the actual reader after comparing any wire selection
+    /// with its held operation authority. This setter establishes no authority.
+    #[must_use]
+    pub fn with_reader_session(mut self, reader: Option<String>) -> Self {
+        match &mut self {
+            Self::SessionResource { reader_session_id }
+            | Self::ModelContent {
+                reader_session_id, ..
+            } => *reader_session_id = reader,
+        }
+        self
+    }
 }
 
 /// One exact logical File resolved to immutable content. Metadata travels with
@@ -53,6 +85,18 @@ impl FileContentSourceError {
             detail: message.into(),
         }
     }
+}
+
+/// Session ownership observation over canonical File provenance. Operation
+/// fencing and current caller admission remain with the driving adapter.
+#[async_trait]
+pub trait FileContentVisibility: Send + Sync {
+    async fn file_content_is_visible(
+        &self,
+        workspace_id: &str,
+        source_session_id: Option<&str>,
+        reader_session_id: Option<&str>,
+    ) -> Result<bool, FileContentSourceError>;
 }
 
 #[async_trait]

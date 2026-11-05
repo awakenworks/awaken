@@ -435,7 +435,9 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
         .read(
             "workspace-runtime",
             "file-runtime",
-            &awaken_resource_contract::FileReadPurpose::SessionResource,
+            &awaken_resource_contract::FileReadPurpose::SessionResource {
+                reader_session_id: None,
+            },
             None,
         )
         .await

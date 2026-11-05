@@ -36,8 +36,8 @@ pub use distributed_control::build_distributed_provider_router;
 pub use distributed_control::serve_distributed_control;
 pub use dream::{build_dream_router, build_dream_router_and_host, build_dream_runtime_router};
 pub use managed_state::{
-    LocalManagedState, local_managed_state, local_managed_state_with_agent_source,
-    local_managed_state_with_agent_source_and_list_prices,
+    LocalManagedResources, LocalManagedState, local_managed_state,
+    local_managed_state_with_agent_source, local_managed_state_with_agent_source_and_list_prices,
     local_managed_state_with_agent_source_and_model_publication_resolver,
     local_managed_state_with_environments, local_managed_state_with_environments_and_agent_source,
     local_managed_state_with_model_publication_resolver, volatile_environment_execution,

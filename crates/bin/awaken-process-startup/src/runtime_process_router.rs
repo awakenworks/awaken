@@ -614,7 +614,13 @@ async fn assemble_execution_host(
             external_credentials: cloud.external_credentials.clone(),
             inference_override: cloud.inference_override.take(),
             credential_refresh: cloud.credential_refresh_factory.take(),
-            file_content: resources.resource_application.file_content_source(),
+            file_content: resources
+                .resource_application
+                .file_content_source_with_visibility(Arc::new(
+                    awaken_session_application::SessionFileContentAccess::new(
+                        execution.sessions.clone(),
+                    ),
+                )),
             memory_content: resources.resource_authorities.memory_execution_content(),
             memory_extractions: execution.memory_extractions.clone(),
             artifact_publisher: resources.resource_application.artifact_publisher(),

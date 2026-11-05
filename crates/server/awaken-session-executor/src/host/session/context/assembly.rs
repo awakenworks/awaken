@@ -28,6 +28,9 @@ pub(super) async fn assemble(
     let coordination_endpoint = &resources.coordination_endpoint;
     let commit = &resources.commit;
     let installed = &resources.plan.installed;
+    // This marker is set by the Session application for its canonical root
+    // thread. Child workers supply their separate original Session coordinate.
+    let file_reader_session_id = resources.plan.session_dispatch.then(|| thread.to_owned());
     let publication_source = &resources.plan.publication_source;
     let toolsets = &resources.toolsets;
     // R1/R2: the runtime is built with the host default executor; each run then
@@ -403,7 +406,8 @@ pub(super) async fn assemble(
                 workspace_id,
                 thread,
                 dispatch_claim,
-            ),
+            )
+            .with_reader_session(file_reader_session_id),
         ));
     run_context.resource_origin = resource_origin;
     run_context.request_context = host

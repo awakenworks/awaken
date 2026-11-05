@@ -259,7 +259,8 @@ impl ChildWorkerFactory {
                 workspace_id,
                 claimed.request.thread_id().0.clone(),
                 Some(awaken_worker_contract::RunClaim::from(&claimed.lease)),
-            ),
+            )
+            .with_reader_session(Some(session_thread_id.0.clone())),
         ));
         let has_model_request_gate = context.model_request_gate.is_some();
         let commit_boundaries = crate::host::boundary_run::commit_boundary_workers(host);

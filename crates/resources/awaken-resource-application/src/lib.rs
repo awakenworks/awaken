@@ -93,6 +93,14 @@ impl ResourcesApplication {
     }
 
     #[must_use]
+    pub fn file_content_source_with_visibility<C: Sync + 'static>(
+        &self,
+        visibility: Arc<dyn awaken_resource_contract::FileContentVisibility>,
+    ) -> Arc<dyn awaken_resource_contract::FileContentSource<C>> {
+        Arc::new(ApplicationFileContentSource::new(self.files.clone()).with_visibility(visibility))
+    }
+
+    #[must_use]
     pub fn artifact_publisher<C: Send + Sync + 'static>(
         &self,
     ) -> Arc<dyn awaken_resource_contract::ArtifactPublisher<C>> {

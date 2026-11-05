@@ -74,8 +74,8 @@ pub use artifact_capture::{
 };
 pub use execution::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
-    ArtifactRecovery, FileContentSource, FileContentSourceError, FileReadPurpose,
-    MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError,
+    ArtifactRecovery, FileContentSource, FileContentSourceError, FileContentVisibility,
+    FileReadPurpose, MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError,
     RepositoryBindingVerifier, RepositoryBindingVerifierError, RepositoryGatewayCapability,
     RepositoryGatewayCapabilityExpiry, RepositoryTransport, ResolvedFileContent,
     UnavailableArtifactPublisher, UnavailableFileContentSource,

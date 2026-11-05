@@ -319,7 +319,7 @@ async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
         dependencies
             .with_judge("judge")
             .expect("live host model reference is an executable binding"),
-        resources.authorities().resource_registry(),
+        &resources,
     )
     .await;
     let host = managed.host;

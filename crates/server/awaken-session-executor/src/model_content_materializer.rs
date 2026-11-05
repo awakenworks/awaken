@@ -22,6 +22,7 @@ pub(crate) struct ResourceModelContentMaterializer {
     workspace_id: String,
     thread_id: String,
     authority: Option<ResourceOperationFence>,
+    reader_session_id: Option<String>,
 }
 
 impl ResourceModelContentMaterializer {
@@ -36,7 +37,13 @@ impl ResourceModelContentMaterializer {
             workspace_id: workspace_id.into(),
             thread_id: thread_id.into(),
             authority: claim.map(ResourceOperationFence::Run),
+            reader_session_id: None,
         }
+    }
+
+    pub(crate) fn with_reader_session(mut self, session_id: Option<String>) -> Self {
+        self.reader_session_id = session_id;
+        self
     }
 }
 
@@ -55,6 +62,7 @@ impl ModelContentMaterializer for ResourceModelContentMaterializer {
         }
 
         let purpose = FileReadPurpose::ModelContent {
+            reader_session_id: self.reader_session_id.clone(),
             thread_id: self.thread_id.clone(),
         };
         let mut resolved = BTreeMap::new();
@@ -203,6 +211,7 @@ mod tests {
         content: Option<ResolvedFileContent>,
         fail: bool,
         reads: AtomicUsize,
+        expected_reader: Option<String>,
     }
 
     #[async_trait::async_trait]
@@ -220,6 +229,7 @@ mod tests {
             assert_eq!(
                 purpose,
                 &FileReadPurpose::ModelContent {
+                    reader_session_id: self.expected_reader.clone(),
                     thread_id: "thread-a".into()
                 }
             );
@@ -268,6 +278,7 @@ mod tests {
             content: None,
             fail: false,
             reads: AtomicUsize::new(0),
+            expected_reader: None,
         });
         let claim = RunClaim {
             run_id: awaken_agent_contract::agent::run::Id("run-a".into()),
@@ -310,8 +321,10 @@ mod tests {
             content: Some(resolved("image/png", b"png")),
             fail: false,
             reads: AtomicUsize::new(0),
+            expected_reader: Some("original-parent-session".into()),
         });
-        let sut = materializer(source.clone());
+        let sut = materializer(source.clone())
+            .with_reader_session(Some("original-parent-session".into()));
         let output = sut
             .materialize(request(vec![
                 ContentBlock::image_file("file-a"),
@@ -327,6 +340,7 @@ mod tests {
             content: None,
             fail: false,
             reads: AtomicUsize::new(0),
+            expected_reader: None,
         });
         let input = request(vec![ContentBlock::text("plain")]);
         assert_eq!(
@@ -343,6 +357,7 @@ mod tests {
             content: Some(resolved("text/plain", b"plain facts")),
             fail: false,
             reads: AtomicUsize::new(0),
+            expected_reader: None,
         }))
         .materialize(request(vec![ContentBlock::document_file("file-a")]))
         .await
@@ -384,6 +399,7 @@ mod tests {
                 content,
                 fail,
                 reads: AtomicUsize::new(0),
+                expected_reader: None,
             }))
             .materialize(request(vec![ContentBlock::image_file("file-a")]))
             .await
@@ -395,6 +411,7 @@ mod tests {
             content: Some(resolved("text/plain", &[0xff, 0xfe])),
             fail: false,
             reads: AtomicUsize::new(0),
+            expected_reader: None,
         }))
         .materialize(request(vec![ContentBlock::document_file("file-a")]))
         .await

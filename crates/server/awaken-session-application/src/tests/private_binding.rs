@@ -358,3 +358,76 @@ async fn private_binding_owner_matrix_refuses_workspace_admin_and_filters_collec
     );
     assert!(repo.pending_lifecycle().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn inconsistent_session_root_cannot_replace_the_file_readers_owner() {
+    use awaken_resource_contract::FileContentVisibility as _;
+    let repository = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let alice = binding()
+        .bind_fresh(persisted("file-reader-alice", false, "idle"))
+        .unwrap();
+    let bob = SessionPrivateBinding::new(
+        "org-a".into(),
+        "desk".into(),
+        "bob".into(),
+        "workspace".into(),
+        1,
+    )
+    .unwrap()
+    .bind_fresh(persisted("file-source-bob", false, "idle"))
+    .unwrap();
+    create(repository.as_ref(), alice).await;
+    create(repository.as_ref(), bob.clone()).await;
+    let reads = Arc::new(FaultingSessionRepository::new(repository));
+    let source = crate::SessionFileContentAccess::new(reads.clone());
+    assert!(
+        source
+            .file_content_is_visible(
+                "workspace",
+                Some("file-reader-alice"),
+                Some("file-reader-alice")
+            )
+            .await
+            .unwrap()
+    );
+    assert!(
+        !source
+            .file_content_is_visible(
+                "workspace",
+                Some("file-source-bob"),
+                Some("file-reader-alice")
+            )
+            .await
+            .unwrap()
+    );
+    // A source-boundary fault returns a well-formed but differently addressed
+    // root from the real selected repository. This cannot substitute its owner.
+    let wrong_partition = SessionPrivateBinding::new(
+        "org-a".into(),
+        "desk".into(),
+        "alice".into(),
+        "other-workspace".into(),
+        1,
+    )
+    .unwrap()
+    .bind_fresh(persisted("file-reader-alice", false, "idle"))
+    .unwrap();
+    for malformed in [bob, wrong_partition] {
+        reads.return_get_once(malformed);
+        let result = source
+            .file_content_is_visible(
+                "workspace",
+                Some("file-source-bob"),
+                Some("file-reader-alice"),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "an inconsistent native observation cannot be an owner verdict: {result:?}"
+        );
+    }
+}

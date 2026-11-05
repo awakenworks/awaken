@@ -34,6 +34,8 @@ pub use execution_admission::SessionExecutionAdmission;
 mod agent_configuration;
 pub use agent_configuration::{SessionRecoveryPurpose, agent_configuration_from_profile};
 mod construction;
+mod file_content_access;
+pub use file_content_access::SessionFileContentAccess;
 mod tool_compilation;
 pub use construction::{SessionApplicationBuilder, SessionCredentialAuthorities, SessionResources};
 

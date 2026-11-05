@@ -100,3 +100,25 @@ This boundary only serves Workspace-visible content. A private-content ingress
 must still establish current private authority and use an explicitly admitted
 path. Unscoped uploads in S and their attachment lifecycle are part of that
 remaining qualification, so these checks do not make private assistant Ready.
+
+## Execution reads of referenced Files
+
+A frozen File id or a model-content reference identifies an input, not the
+private owner of its source. The Resources content adapter must obtain the
+Session owner's source-visibility verdict before opening a scoped File's blob.
+Ordinary source visibility uses the same retained root/tombstone evidence.
+Private sources require the exact immutable binding of the reader's Session.
+Unknown sources and unavailable ownership remain refused.
+Private readers also refuse unscoped Files and ordinary or unknown source
+Sessions in S; a missing private owner must not become an implicit shared input.
+
+The read purpose carries an optional reader Session coordinate, selected from
+the Runtime's actual Session context. The Worker edge compares any supplied
+coordinate with its held Run dispatch or exact materialization intent before
+it can affect source visibility, then supplies that actual reader to the source
+even when an older request omitted the coordinate. A wire coordinate alone never grants access.
+Missing reader context can still consume ordinary Workspace-visible inputs,
+but cannot consume private sources. The same Resources adapter and read-only
+Session owner serve in-process and remote execution; neither gets another
+File database, executor or policy interpreter. Deployment composition must
+select that owner before private execution can become Ready.

@@ -20,12 +20,25 @@ use awaken_time::WallClock;
 
 pub struct ApplicationFileContentSource {
     application: Arc<dyn FileApplicationService>,
+    visibility: Option<Arc<dyn awaken_resource_contract::FileContentVisibility>>,
 }
 
 impl ApplicationFileContentSource {
     #[must_use]
     pub fn new(application: Arc<dyn FileApplicationService>) -> Self {
-        Self { application }
+        Self {
+            application,
+            visibility: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_visibility(
+        mut self,
+        visibility: Arc<dyn awaken_resource_contract::FileContentVisibility>,
+    ) -> Self {
+        self.visibility = Some(visibility);
+        self
     }
 }
 
@@ -35,9 +48,27 @@ impl<C: Sync> FileContentSource<C> for ApplicationFileContentSource {
         &self,
         workspace_id: &str,
         file_id: &str,
-        _purpose: &FileReadPurpose,
+        purpose: &FileReadPurpose,
         _fence: Option<&C>,
     ) -> Result<Option<ResolvedFileContent>, FileContentSourceError> {
+        let Some(record) = self.application.get(workspace_id, file_id).await? else {
+            return Ok(None);
+        };
+        if record.scope_id.is_some() || purpose.reader_session_id().is_some() {
+            let visibility = self.visibility.as_ref().ok_or_else(|| {
+                FileContentSourceError::new("Session File visibility is not selected")
+            })?;
+            if !visibility
+                .file_content_is_visible(
+                    workspace_id,
+                    record.scope_id.as_deref(),
+                    purpose.reader_session_id(),
+                )
+                .await?
+            {
+                return Ok(None);
+            }
+        }
         let Some((record, bytes)) = self
             .application
             .bytes(workspace_id, file_id)
@@ -815,14 +846,19 @@ mod tests {
             .await
             .unwrap();
         let source = super::ApplicationFileContentSource::new(application);
-        let read =
-            |workspace| {
-                <super::ApplicationFileContentSource as
-            awaken_resource_contract::FileContentSource<()>>::read(
-                &source, workspace, &file.id,
-                &awaken_resource_contract::FileReadPurpose::SessionResource, None,
+        let read = |workspace| {
+            <super::ApplicationFileContentSource as awaken_resource_contract::FileContentSource<
+                (),
+            >>::read(
+                &source,
+                workspace,
+                &file.id,
+                &awaken_resource_contract::FileReadPurpose::SessionResource {
+                    reader_session_id: None,
+                },
+                None,
             )
-            };
+        };
         assert_eq!(read("workspace").await.unwrap().unwrap().bytes, b"original");
         std::fs::write(root.path().join(&file.blob_id), b"damaged").unwrap();
         assert!(matches!(read("workspace").await,
@@ -844,7 +880,7 @@ mod tests {
                 &awaken_resource_contract::UnavailableFileContentSource,
                 "workspace",
                 "file",
-                &awaken_resource_contract::FileReadPurpose::SessionResource,
+                &awaken_resource_contract::FileReadPurpose::SessionResource { reader_session_id: None },
                 None,
             )
             .await
