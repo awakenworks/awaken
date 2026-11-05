@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from functools import cache
 from pathlib import Path
 from typing import NamedTuple
 
@@ -64,9 +65,12 @@ def dependency_use_errors(uses: Iterable[DependencyUse], enables: dict[str, froz
     return [f"dependency-use: {error}" for error in errors]
 
 
-def _names(sources: Iterable[str], dependency: str) -> bool:
-    pattern = re.compile(rf"\b{re.escape(dependency.replace('-', '_'))}\b")
-    return any(pattern.search(source) for source in sources)
+def _named_dependencies(sources: Iterable[str], aliases: set[str]) -> set[str]:
+    if not aliases:
+        return set()
+    alternatives = "|".join(re.escape(alias) for alias in sorted(aliases))
+    pattern = re.compile(rf"\b(?:{alternatives})\b")
+    return {match.group() for source in sources for match in pattern.finditer(source)}
 
 
 def _production_source(text: str) -> str:
@@ -87,10 +91,13 @@ def crate_uses(manifest_path: Path, members: frozenset[str]) -> tuple[list[Depen
     in_source = [path for path in rust if path.relative_to(root).parts[0] in {"src", "build.rs"}]
     in_tests = [path for path in rust if path.relative_to(root).parts[0] in {"tests", "benches", "examples"}]
     unresolved: list[str] = []
+    # The module walker and the dependency search use the same projection.
+    # Reuse it only within this crate and only for identical source text.
+    project = cache(_production_source)
     production_paths = _crate_boundary_workspace.production_module_files(
-        [manifest_path], project=_production_source, unresolved_includes=unresolved,
+        [manifest_path], project=project, unresolved_includes=unresolved,
     )
-    production = [_production_source(path.read_text(encoding="utf-8")) for path in sorted(production_paths)]
+    production = [project(path.read_text(encoding="utf-8")) for path in sorted(production_paths)]
     # Preserve the whole-source test scan, and include custom Cargo roots and
     # their external modules through the same canonical walker. A detached test
     # mention can require a dev edge, but cannot justify a normal edge.
@@ -99,6 +106,9 @@ def crate_uses(manifest_path: Path, members: frozenset[str]) -> tuple[list[Depen
     )
     whole = [path.read_text(encoding="utf-8")
              for path in sorted({*in_source, *in_tests, *compiled_paths})]
+    aliases = {dep.alias.replace("-", "_") for group in declared.values() for dep in group}
+    production_names = _named_dependencies(production, aliases)
+    test_names = _named_dependencies(whole, aliases)
     feature_refs = {
         entry.removeprefix("dep:").split("/")[0].rstrip("?")
         for entries in manifest.get("features", {}).values()
@@ -108,8 +118,8 @@ def crate_uses(manifest_path: Path, members: frozenset[str]) -> tuple[list[Depen
         DependencyUse(
             crate,
             name,
-            production=any(_names(production, dependency.alias) for dependency in declarations),
-            tests=any(_names(whole, dependency.alias) for dependency in declarations),
+            production=any(dep.alias.replace('-', '_') in production_names for dep in declarations),
+            tests=any(dep.alias.replace('-', '_') in test_names for dep in declarations),
             turns_on_features=any(dependency.specification.get("features")
                                   or dependency.alias in feature_refs for dependency in declarations),
             unresolved=tuple(unresolved),
@@ -166,7 +176,7 @@ def selftest() -> None:
 
     source = "#[cfg(test)]\nmod tests { use awaken_t::X; }\n#[cfg(kani)]\nmod proofs { use awaken_k::Y; }\n"
     projected = _production_source(source)
-    assert not _names([projected], "awaken-t") and _names([projected], "awaken-k"), "D6"
+    assert _named_dependencies([projected], {"awaken_t", "awaken_k"}) == {"awaken_k"}, "D6"
     # D7 actual Cargo aliases, including target-only aliases, are the Rust
     # namespaces to scan. Multiple declarations of one package produce one
     # owner row and union feature activation; dev/build-only entries remain

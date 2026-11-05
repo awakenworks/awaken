@@ -505,6 +505,38 @@ class ExecutionTests(unittest.TestCase):
         from _build_observation_fixture import synthetic_build_observations
         synthetic_build_observations(self)
 
+    def test_native_self_test_worker_requires_exact_identity_source_and_terminal(self):
+        from _execution_self_tests import validate_report
+        data = {'schema_version': 1, 'case': 'selected', 'source': 'source',
+                'tests_run': 1, 'successful': True, 'outcome': 'passed', 'skipped': [],
+                'failures': [], 'errors': [], 'unexpected_successes': [], 'expected_failures': []}
+        self.assertEqual(validate_report(data, 'selected', 'source', 0), data)
+        for change in ({'case': 'another'}, {'source': 'stale'}, {'tests_run': 0},
+                       {'tests_run': True}, {'successful': False}, {'outcome': 'failed'},
+                       {'skipped': [['another', 'absent']]}, {'outcome': 'skipped'},
+                       {'failures': ['selected (subtest=1)']}, {'unexpected_successes': ['selected']},
+                       {'expected_failures': ['another']}, {'skipped': [['selected', '']]}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                validate_report({**data, **change}, 'selected', 'source', 0)
+        with self.assertRaises(ValueError):
+            validate_report(data, 'selected', 'source', 23)
+        skipped = {**data, 'outcome': 'skipped', 'skipped': [['selected', 'POSIX only']]}
+        self.assertEqual(validate_report(skipped, 'selected', 'source', 0)['outcome'], 'skipped')
+        partial = {**skipped, 'skipped': [['selected (row=1)', 'POSIX only']]}
+        self.assertEqual(validate_report(partial, 'selected', 'source', 0)['outcome'], 'skipped')
+        expected = {**data, 'outcome': 'expected-failure', 'expected_failures': ['selected']}
+        self.assertEqual(validate_report(expected, 'selected', 'source', 0)['outcome'], 'expected-failure')
+
+    @unittest.skipUnless(os.name == 'nt', 'native Windows worker launch/cancellation barriers')
+    def test_native_self_test_cancellation_seals_pending_and_inflight_launches(self):
+        from _execution_self_test_fixtures import cancellation_barriers
+        cancellation_barriers(self)
+
+    @unittest.skipUnless(os.name == 'nt', 'native Windows readiness and permission channel')
+    def test_native_self_test_admission_refuses_eof_wrong_permission_and_source_drift(self):
+        from _execution_self_test_fixtures import admission_refusals
+        admission_refusals(self)
+
     def test_compilation_identity_aliases_share_one_read_but_never_a_later_snapshot(self):
         # DT-ID: C1 compiler/resolver roles resolve to one file => one byte
         # read, distinct role records; C2 same-size/mtime replacement at the
@@ -521,7 +553,7 @@ class ExecutionTests(unittest.TestCase):
             def read(path):
                 if path == tool: reads.append(path)
                 return original(path)
-            with mock.patch.dict(os.environ, {}, clear=True), \
+            with mock.patch.dict(os.environ, {'HOME': str(root), 'USERPROFILE': str(root)}, clear=True), \
                  mock.patch.object(context.shutil, 'which', side_effect=lambda name, **kw: str(tool) if name in ('cargo', 'rustc', 'rustup') else None), \
                  mock.patch.object(context, '_toolchain', return_value='fixture') as resolver, \
                  mock.patch.object(Path, 'read_bytes', read):
@@ -671,17 +703,17 @@ class ExecutionTests(unittest.TestCase):
         cargo = binary / "cargo"
         cargo.write_text('''#!/usr/bin/env bash
 if [ "$1" = awaken-ci-deadline ]; then
-  sleep "${QUEUE_DELAY:-0}"
+  delay="${QUEUE_DELAY:-0}"
+  case " $* " in *" --run "*) delay="${EXECUTION_QUEUE_DELAY:-$delay}" ;; esac
+  [ "$delay" = 0 ] || sleep "$delay"
   [ "${ADMISSION_STATUS:-0}" = 0 ] || exit "$ADMISSION_STATUS"
   [ -z "${DEADLINE_COORDINATE:-}" ] || printf '%s\\n' "$$" > "$DEADLINE_COORDINATE"
-  # The host's real rustup proxy, when named, enters the job exactly as an
-  # admitted Cargo does: it injects its toolchain/home selection first.
   [ -z "${RUSTUP_PROXY_CARGO:-}" ] || exec "$RUSTUP_PROXY_CARGO" "$@"
   entry=$(command -v "cargo-$1"); exec "$entry" "$@"
 fi
 case " $* " in *" --no-run "*)
   printf '%s\\n' "$*" >> "$CARGO_TARGET_DIR/preparation-calls"
-  sleep "${PREPARATION_DELAY:-0}"
+  [ "${PREPARATION_DELAY:-0}" = 0 ] || sleep "$PREPARATION_DELAY"
   [ "${MUTATE_PREPARATION:-0}" != 1 ] || printf 'changed source\\n' > subject.txt
   exit "${PREPARATION_STATUS:-0}"
   ;;
@@ -725,31 +757,48 @@ esac
 
     def test_prepared_graph_refuses_compile_environment_config_and_tool_drift(self) -> None:
         import rust_test_plan
-        from _required_build_context import build_context
-        for fault in ("CARGO_BUILD_TARGET", "RUSTUP_TOOLCHAIN", "RUSTFLAGS", "LIB", "INCLUDE", "LINK", "config", "tool"):
-            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary:
-                fixture = Path(temporary)/"repo"; fixture.mkdir(); self.runner_fixture(fixture)
-                values = self.cargo_fixture(fixture, "exit 99\n")
-                cargo_home = Path(temporary)/"cargo-home"; cargo_home.mkdir()
-                values["CARGO_HOME"] = str(cargo_home)
-                # This owned fake executable is an external compilation input,
-                # excluded from the working-source digest, like installed tools.
-                with (fixture/".gitignore").open("a") as stream: stream.write("bin/\n")
-                directory = fixture/"target/evidence"; directory.mkdir()
-                build = directory/"build.json"; arguments = ["-p", "critical", "--lib"]
-                with mock.patch.dict(os.environ, values, clear=True), mock.patch(__name__ + ".ROOT", fixture), \
-                     mock.patch.object(rust_test_plan, "ROOT", fixture):
-                    self.assertEqual(prepare_required(arguments, directory/"build.log", build), 0)
-                    original_source = rust_test_plan.source_snapshot()[0]
-                    if fault == "config": (cargo_home/"config.toml").write_text("[build]\ntarget='different'\n")
-                    elif fault == "tool":
-                        tool = fixture/"bin"/("cargo.exe" if os.name == "nt" else "cargo")
-                        with tool.open("ab") as stream: stream.write(b"\nchanged-tool-identity\n")
-                    else: os.environ[fault] = "different-compilation-input"
-                    self.assertEqual(rust_test_plan.source_snapshot()[0], original_source)
-                    with self.assertRaisesRegex(ValueError, "changed"):
-                        verify_preparation(build, arguments, original_source)
-                    self.assertFalse((directory/"results.json").exists())
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "repo"
+            fixture.mkdir()
+            self.runner_fixture(fixture)
+            values = self.cargo_fixture(fixture, "exit 99\n")
+            cargo_home = Path(temporary) / "cargo-home"
+            cargo_home.mkdir()
+            values["CARGO_HOME"] = str(cargo_home)
+            # The fake executable is an external compiler input, like an installed tool.
+            with (fixture / ".gitignore").open("a") as stream:
+                stream.write("bin/\n")
+            directory = fixture / "target/evidence"
+            directory.mkdir()
+            build = directory / "build.json"
+            arguments = ["-p", "critical", "--lib"]
+            with mock.patch.dict(os.environ, values, clear=True), mock.patch(__name__ + ".ROOT", fixture), \
+                    mock.patch.object(rust_test_plan, "ROOT", fixture):
+                self.assertEqual(prepare_required(arguments, directory / "build.log", build), 0)
+                original_source = rust_test_plan.source_snapshot()[0]
+                verify_preparation(build, arguments, original_source)
+                # Each fault uses the same valid build receipt and starts with the
+                # original compile inputs, so only the selected input changes.
+                for fault in ("CARGO_BUILD_TARGET", "RUSTUP_TOOLCHAIN", "RUSTFLAGS",
+                              "LIB", "INCLUDE", "LINK", "config", "tool"):
+                    with self.subTest(fault=fault), mock.patch.dict(os.environ):
+                        config = cargo_home / "config.toml"
+                        if fault == "config":
+                            config.write_text("[build]\ntarget='different'\n")
+                        elif fault == "tool":
+                            tool = fixture / "bin" / ("cargo.exe" if os.name == "nt" else "cargo")
+                            with tool.open("ab") as stream:
+                                stream.write(b"\nchanged-tool-identity\n")
+                        else:
+                            os.environ[fault] = "different-compilation-input"
+                        try:
+                            self.assertEqual(rust_test_plan.source_snapshot()[0], original_source)
+                            with self.assertRaisesRegex(ValueError, "changed"):
+                                verify_preparation(build, arguments, original_source)
+                            self.assertFalse((directory / "results.json").exists())
+                        finally:
+                            if fault == "config":
+                                config.unlink()
 
     def test_configuration_is_cargo_owned_and_external_files_are_bound(self) -> None:
         from _required_build_context import build_context
@@ -804,7 +853,7 @@ esac
         self.assertIsNotNone(rustup, "the Linux gate installs rustup")
         proxy = self.rustup_cargo_proxy(rustup)
         with tempfile.TemporaryDirectory() as temporary:
-            fixture = Path(temporary); self.runner_fixture(fixture)
+            fixture = Path(temporary); self.runner_fixture(fixture, "rust-toolchain.toml")
             environment = self.cargo_fixture(fixture, '''
 case "$*" in
   *--list*) echo 'critical: test'; exit 0 ;;
@@ -1105,21 +1154,21 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 
     @unittest.skipIf(os.name == "nt", "POSIX real deadline fixture; Windows runs build/source/receipt rows")
     def test_cold_build_does_not_consume_or_extend_shared_execution_deadline(self) -> None:
-        # Build3s > list/run2s: separate8s preparation succeeds. A real3s test
-        # still times out124 inside that same2s list/run deadline, never4s.
+        # Build16s > list/run15s: preparation succeeds on its own budget.
+        # A slow execution with warm preparation still returns 124.
         for slow, expected in ((False, 0), (True, 124)):
             with self.subTest(slow=slow), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary); self.runner_fixture(fixture)
                 values = self.cargo_fixture(fixture, '''
 case "$*" in *--list*) echo 'critical: test'; exit 0 ;; esac
-sleep "$TEST_DELAY"
+[ "$TEST_DELAY" = 0 ] || sleep "$TEST_DELAY"
 echo 'test critical ... ok'
 echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 ''')
-                values.update(PREPARATION_DELAY="3", TEST_DELAY="3" if slow else "0",
-                              AWAKEN_REQUIRED_TEST_BUILD_TIMEOUT_SECONDS="8", AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="2")
+                values.update(PREPARATION_DELAY="0" if slow else "16", TEST_DELAY="16" if slow else "0",
+                              AWAKEN_REQUIRED_TEST_BUILD_TIMEOUT_SECONDS="26", AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="15")
                 result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical --require-case=critical"],
-                                        cwd=fixture, env=values, capture_output=True, text=True, timeout=25)
+                                        cwd=fixture, env=values, capture_output=True, text=True, timeout=45)
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
                 builds = list((fixture / "target/test-timings").glob("rust-execution.*/build.json"))
                 self.assertEqual(len(builds), 1); self.assertEqual(json.loads(builds[0].read_text())["status"], "built")
@@ -1129,12 +1178,12 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 
     @unittest.skipIf(os.name == "nt", "POSIX admitted shell composition")
     def test_shared_budget_starts_after_queued_admission(self) -> None:
-        # E9: queue2.3s > execution2s, while admitted list/run fit2s. The
+        # E9: execution admission waits 16s, longer than the 15s list/run budget. The
         # actual shell must return child0/23, not charge waiting and return124.
         # Queue refusal75 starts no Cargo test or source-bound body. Only the
-        # fixture Cargo protocol delays; the real deadline owns the clock.
+        # fixture Cargo protocol delays the execution admission; the build queues normally.
         # Revision/index/patch share the initial canonical capture; later
-        # fences stay fresh. Real Git and the2s/2.3s/15s values remain active.
+        # fences stay fresh. Allow startup headroom for the real Git and Python processes.
         for status in (0, 23, 75):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary)
@@ -1146,10 +1195,10 @@ echo 'test critical ... ok'
 echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 exit "$RESULT_STATUS"
 ''')
-                values.update(QUEUE_DELAY="2.3", AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="2",
+                values.update(EXECUTION_QUEUE_DELAY="16", AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="15",
                               ADMISSION_STATUS="75" if status == 75 else "0", RESULT_STATUS=str(status))
                 result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical"],
-                                        cwd=fixture, env=values, capture_output=True, text=True, timeout=15)
+                                        cwd=fixture, env=values, capture_output=True, text=True, timeout=50)
                 self.assertEqual(result.returncode, status, result.stdout + result.stderr)
                 calls = fixture / "target/calls"
                 self.assertEqual(calls.exists(), status != 75)
@@ -1350,44 +1399,49 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
                 self.assertEqual(data["status"], "failed")
                 self.assertFalse(data["source_unchanged"])
 
-    def test_required_source_uses_same_hook_index_and_detaches_foreign_hook(self) -> None:
+    def test_required_source_honors_same_hook_index(self) -> None:
+        self._assert_required_hook_source(True)
+
+    def test_required_source_detaches_foreign_hook(self) -> None:
+        self._assert_required_hook_source(False)
+
+    def _assert_required_hook_source(self, same_hook: bool) -> None:
         # E7: an actual same-root alternate index is the selected subject;
         # foreign DIR/WT/index must not replace it. Both runs use the real
         # shell/working reader. Protect every decoy config/index/ref/WT byte.
         import formal_sources
-        for same_hook in (False, True):
-            with self.subTest(same_hook=same_hook), tempfile.TemporaryDirectory() as temporary:
-                outer = Path(temporary)
-                own, decoy = outer / "own", outer / "decoy"
-                own.mkdir(); decoy.mkdir()
-                self.runner_fixture(own)
-                self.runner_fixture(decoy)
-                before = formal_sources.source_facts(decoy)
-                protected = {path.relative_to(decoy).as_posix(): path.read_bytes()
-                             for path in decoy.rglob("*") if path.is_file()}
-                alternate = own / ".git/partial-index"
-                shutil.copy2(own / ".git/index", alternate)
-                values = self.cargo_fixture(own, '''
+        with tempfile.TemporaryDirectory() as temporary:
+            outer = Path(temporary)
+            own, decoy = outer / "own", outer / "decoy"
+            own.mkdir(); decoy.mkdir()
+            self.runner_fixture(own)
+            self.runner_fixture(decoy)
+            before = formal_sources.source_facts(decoy)
+            protected = {path.relative_to(decoy).as_posix(): path.read_bytes()
+                         for path in decoy.rglob("*") if path.is_file()}
+            alternate = own / ".git/partial-index"
+            shutil.copy2(own / ".git/index", alternate)
+            values = self.cargo_fixture(own, '''
 case "$*" in *--list*) echo 'critical: test'; exit 0 ;; esac
 echo 'test critical ... ok'
 echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 ''')
-                if same_hook:
-                    values.update(GIT_DIR=str(own / ".git"), GIT_WORK_TREE=str(own), GIT_INDEX_FILE=str(alternate))
-                    subprocess.run(["git", "-C", str(own), "update-index", "--force-remove", "subject.txt"], env=values, check=True)
-                    expected_index = subprocess.check_output(["git", "-C", str(own), "write-tree"], env=values).decode().strip()
-                    self.assertNotEqual(expected_index, formal_sources.git_output(own, "write-tree").decode().strip())
-                else:
-                    values.update(GIT_DIR=str(decoy / ".git"), GIT_WORK_TREE=str(decoy), GIT_INDEX_FILE=str(decoy / ".git/index"), GIT_PREFIX="foreign/")
-                    expected_index = formal_sources.git_output(own, "write-tree").decode().strip()
-                result = self.required_shell("source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical", cwd=own, env=values, timeout=15)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                data = json.loads(next((own / "target/test-timings").glob("rust-execution.*/results.json")).read_text())
-                self.assertEqual(data["index_tree"], expected_index)
-                self.assertTrue(data["source_unchanged"])
-                self.assertEqual(formal_sources.source_facts(decoy), before)
-                self.assertEqual({path.relative_to(decoy).as_posix(): path.read_bytes()
-                                  for path in decoy.rglob("*") if path.is_file()}, protected)
+            if same_hook:
+                values.update(GIT_DIR=str(own / ".git"), GIT_WORK_TREE=str(own), GIT_INDEX_FILE=str(alternate))
+                subprocess.run(["git", "-C", str(own), "update-index", "--force-remove", "subject.txt"], env=values, check=True)
+                expected_index = subprocess.check_output(["git", "-C", str(own), "write-tree"], env=values).decode().strip()
+                self.assertNotEqual(expected_index, formal_sources.git_output(own, "write-tree").decode().strip())
+            else:
+                values.update(GIT_DIR=str(decoy / ".git"), GIT_WORK_TREE=str(decoy), GIT_INDEX_FILE=str(decoy / ".git/index"), GIT_PREFIX="foreign/")
+                expected_index = formal_sources.git_output(own, "write-tree").decode().strip()
+            result = self.required_shell("source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical", cwd=own, env=values, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            data = json.loads(next((own / "target/test-timings").glob("rust-execution.*/results.json")).read_text())
+            self.assertEqual(data["index_tree"], expected_index)
+            self.assertTrue(data["source_unchanged"])
+            self.assertEqual(formal_sources.source_facts(decoy), before)
+            self.assertEqual({path.relative_to(decoy).as_posix(): path.read_bytes()
+                              for path in decoy.rglob("*") if path.is_file()}, protected)
 
     def test_unreadable_index_refuses_before_any_cargo(self) -> None:
         # E6: a real malformed private index -> Git128, unknown source and
@@ -1465,7 +1519,7 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
         # its owned children. GROUP_CODE publishes one complete readiness
         # document; failed observation/assertion still retires this fixture's
         # inherited group through its shared cleanup. Production deadlines
-        # and their cleanup policy remain unchanged.
+        # and their cleanup policy remain unchanged. The fixture has startup headroom.
         from test_deadline import GROUP_CODE, cleanup_fixture_group
         for dead_parent in (False, True):
             with self.subTest(dead_parent=dead_parent), tempfile.TemporaryDirectory() as temporary:
@@ -1475,14 +1529,15 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 case "$*" in *--list*) echo 'critical: test'; exit 0 ;; esac
 exec ''' + shlex.quote(sys.executable) + " -c " + shlex.quote(GROUP_CODE) + ' "$CARGO_TARGET_DIR/group" 0 0\n'
                 values = self.cargo_fixture(fixture, body)
-                values.update(AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="2",
+                values.update(AWAKEN_REQUIRED_TEST_BUILD_TIMEOUT_SECONDS="15",
+                              AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="10",
                               DEADLINE_COORDINATE=str(fixture / "target/deadline.pid"))
                 process = subprocess.Popen(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical"],
                                            cwd=fixture, env=values, stdin=subprocess.DEVNULL,
                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 try:
                     ready = fixture / "target/group.ready"
-                    until = time.monotonic() + 5
+                    until = time.monotonic() + 30
                     # awaken-wait: the actual inherited child group publishes PIDs.
                     while not ready.exists() and process.poll() is None and time.monotonic() < until:
                         time.sleep(.01)
@@ -1495,7 +1550,7 @@ exec ''' + shlex.quote(sys.executable) + " -c " + shlex.quote(GROUP_CODE) + ' "$
                         finalizer = parent(parent(deadline_pid))
                         self.assertEqual(Path(f"/proc/{finalizer}/cwd").resolve(), fixture)
                         os.kill(finalizer, signal.SIGTERM)
-                    output = process.communicate(timeout=12)
+                    output = process.communicate(timeout=25)
                     self.assertEqual(process.returncode, 143 if dead_parent else 124, output)
                     data = json.loads(next((fixture / "target/test-timings").glob("rust-execution.*/results.json")).read_text())
                     self.assertEqual(data["status"], "running" if dead_parent else "failed")
@@ -1507,7 +1562,7 @@ exec ''' + shlex.quote(sys.executable) + " -c " + shlex.quote(GROUP_CODE) + ' "$
                         self.assertTrue(not state.exists() or state.read_text().split()[2] == "Z",
                                         "owned child remained live after its deadline")
                 finally:
-                    cleanup_fixture_group(fixture / "target/group", process)
+                    cleanup_fixture_group(fixture / "target/group", process, pipe_timeout=25)
 
     @unittest.skipIf(os.name == "nt", "POSIX shell status/admission fixture")
     def test_required_shell_keeps_execution_status(self) -> None:
@@ -1543,27 +1598,36 @@ exit "$RESULT_STATUS"
         # actual runner declaration, without copying its case list here. The
         # launch selection remains independently fixed by SELECTED below, so
         # this scaffolding cannot admit an empty or former-owner launch.
+        from concurrent.futures import ThreadPoolExecutor
+
+        cases = ("passing", "extra-floor", "empty", "former-owner")
+        with ThreadPoolExecutor(max_workers=3) as workers:
+            results = {case: workers.submit(self._assert_portability_launch_selection, case) for case in cases}
+            for case, result in results.items():
+                with self.subTest(case=case):
+                    result.result()
+
+    def _assert_portability_launch_selection(self, case: str) -> None:
         selected = "sandbox_source::tests::configured_working_directory_drives_process_and_acp_from_one_view"
-        for case in ("passing", "extra-floor", "empty", "former-owner"):
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
-                fixture = Path(temporary)
-                scripts = self.runner_fixture(fixture, "scripts/ci/check-trusted-host-portability.sh",
-                                              "scripts/ci/_cargo_target.sh", "scripts/ci/_provider_environment.sh")
-                entrypoint = scripts / "check-trusted-host-portability.sh"
-                if case == "former-owner":
-                    source = entrypoint.read_text(encoding="utf-8")
-                    entrypoint.write_text(source.replace(
-                        "run_required_rust_tests -p awaken-execution-composition --lib ",
-                        "run_required_rust_tests -p awaken-session-executor --lib ", 1), encoding="utf-8")
-                elif case == "extra-floor":
-                    source = entrypoint.read_text(encoding="utf-8")
-                    position = source.index("--require-case=")
-                    entrypoint.write_text(source[:position] +
-                                          "--require-case=future_portability_floor " +
-                                          source[position:], encoding="utf-8")
-                binary = fixture / "bin"
-                binary.mkdir()
-                environment = self.cargo_fixture(fixture, '''
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary)
+            scripts = self.runner_fixture(fixture, "scripts/ci/check-trusted-host-portability.sh",
+                                          "scripts/ci/_cargo_target.sh", "scripts/ci/_provider_environment.sh")
+            entrypoint = scripts / "check-trusted-host-portability.sh"
+            if case == "former-owner":
+                source = entrypoint.read_text(encoding="utf-8")
+                entrypoint.write_text(source.replace(
+                    "run_required_rust_tests -p awaken-execution-composition --lib ",
+                    "run_required_rust_tests -p awaken-session-executor --lib ", 1), encoding="utf-8")
+            elif case == "extra-floor":
+                source = entrypoint.read_text(encoding="utf-8")
+                position = source.index("--require-case=")
+                entrypoint.write_text(source[:position] +
+                                      "--require-case=future_portability_floor " +
+                                      source[position:], encoding="utf-8")
+            binary = fixture / "bin"
+            binary.mkdir()
+            environment = self.cargo_fixture(fixture, '''
 printf '%s\\n' "$*" >> "$CALL_LOG"
 selection=$(python3 - "$@" <<'PY'
 import json, os, sys
@@ -1601,50 +1665,75 @@ case "$*" in
 esac
 exit 0
 ''')
-                commands = {
-                    "uname": "#!/bin/sh\necho MINGW64_NT\n",
-                    "cygpath": '#!/bin/sh\ncase "$1" in\n-w) echo /owned/git-bash ;;\n-m) printf "%s\\n" "$2" ;;\n*) exit 2 ;;\nesac\n',
-                    "node": '''#!/bin/sh
+            commands = {
+                "uname": "#!/bin/sh\necho MINGW64_NT\n",
+                "cygpath": '#!/bin/sh\ncase "$1" in\n-w) echo /owned/git-bash ;;\n-m) printf "%s\\n" "$2" ;;\n*) exit 2 ;;\nesac\n',
+                "node": '''#!/bin/sh
 if [ "$1" = --input-type=module ]; then echo /owned/hand; else echo E2E >> "$CALL_LOG"; fi
 ''',
-                }
-                for name, source in commands.items():
-                    command = binary / name
-                    command.write_text(source, encoding="utf-8")
-                    command.chmod(0o755)
-                environment.update(CASE=case, SELECTED=selected, CALL_LOG=str(fixture / "target/calls"))
-                result = subprocess.run(["bash", str(entrypoint)], cwd=fixture, env=environment,
-                                        capture_output=True, text=True, timeout=90)
-                passing = case in ("passing", "extra-floor")
-                self.assertEqual(result.returncode == 0, passing, result.stdout + result.stderr)
-                # P5 all actual required phases join one private, terminal
-                # synthetic task; no fake commands escape to the parent run.
-                tasks = list((fixture / 'target/observations').glob('*/evidence.json'))
-                self.assertEqual(len(tasks), 1)
-                observed = json.loads(tasks[0].read_text())
-                self.assertEqual(observed['status'], 'passed' if passing else 'failed')
-                self.assertEqual(observed['observation_kind'], 'synthetic')
-                self.assertTrue(observed['source_unchanged'])
-                calls = (fixture / "target/calls").read_text().splitlines()
-                if passing:
-                    self.assertIn(f"test --locked -p awaken-execution-composition --lib {selected} -- --exact --list", calls)
-                    self.assertIn(f"test --locked -p awaken-execution-composition --lib {selected} -- --exact --show-output", calls)
-                    self.assertEqual(calls.count("E2E"), 5)
-                else:
-                    self.assertIn("required selection is empty", result.stderr)
-                    self.assertNotIn("E2E", calls)
+            }
+            for name, source in commands.items():
+                command = binary / name
+                command.write_text(source, encoding="utf-8")
+                command.chmod(0o755)
+            environment.update(CASE=case, SELECTED=selected, CALL_LOG=str(fixture / "target/calls"))
+            # These synthetic scenarios execute the full shell gate, including every
+            # required Cargo phase. Bound the owned process group independently; the
+            # enclosing framework still owns the common deadline for all scenarios.
+            result = subprocess.run([sys.executable, str(scripts / "deadline.py"), "180",
+                                     "--", "bash", str(entrypoint)],
+                                    cwd=fixture, env=environment, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 124, result.stdout + result.stderr)
+            passing = case in ("passing", "extra-floor")
+            self.assertEqual(result.returncode == 0, passing, result.stdout + result.stderr)
+            # P5 all actual required phases join one private, terminal
+            # synthetic task; no fake commands escape to the parent run.
+            tasks = list((fixture / 'target/observations').glob('*/evidence.json'))
+            self.assertEqual(len(tasks), 1)
+            observed = json.loads(tasks[0].read_text())
+            self.assertEqual(observed['status'], 'passed' if passing else 'failed')
+            self.assertEqual(observed['observation_kind'], 'synthetic')
+            self.assertTrue(observed['source_unchanged'])
+            calls = (fixture / "target/calls").read_text().splitlines()
+            if passing:
+                self.assertIn(f"test --locked -p awaken-execution-composition --lib {selected} -- --exact --list", calls)
+                self.assertIn(f"test --locked -p awaken-execution-composition --lib {selected} -- --exact --show-output", calls)
+                self.assertEqual(calls.count("E2E"), 5)
+            else:
+                self.assertIn("required selection is empty", result.stderr)
+                self.assertNotIn("E2E", calls)
 
-    def test_actual_required_runner_rejects_empty_ignored_skipped_and_failed_runs(self) -> None:
+    def test_required_runner_accepts_success(self) -> None:
+        self._assert_required_runner_outcome('passing')
+
+    def test_required_runner_rejects_empty_selection(self) -> None:
+        self._assert_required_runner_outcome('empty')
+
+    def test_required_runner_rejects_ignored_case(self) -> None:
+        self._assert_required_runner_outcome('ignored')
+
+    def test_required_runner_rejects_fixture_skip(self) -> None:
+        self._assert_required_runner_outcome('skipped')
+
+    def test_required_runner_rejects_legacy_fixture_skip(self) -> None:
+        self._assert_required_runner_outcome('legacy-skipped')
+
+    def test_required_runner_rejects_execution_failure(self) -> None:
+        self._assert_required_runner_outcome('failed')
+
+    def test_required_runner_keeps_listing_failure(self) -> None:
+        self._assert_required_runner_outcome('list-failed')
+
+    def _assert_required_runner_outcome(self, case: str) -> None:
         # E0 both orchestration fixtures consume the actual complete script
         # closure and private Git; missing dependencies cannot fake a negative.
         # E1 same argv for listing/execution, including existing libtest args.
         # E2 zero selection, E3 ignored, E4 fixture skip, E5 execution failure,
         # E6 listing failure all fail. Preserve E6's status and never execute.
-        for case in ("passing", "empty", "ignored", "skipped", "legacy-skipped", "failed", "list-failed"):
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
-                fixture = Path(temporary)
-                self.runner_fixture(fixture)
-                environment = self.cargo_fixture(fixture, '''
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary)
+            self.runner_fixture(fixture)
+            environment = self.cargo_fixture(fixture, '''
 printf '%s\\n' "$*" >> "$CALL_LOG"
 case "$*" in
   *--list*) [ "$CASE" = empty ] || echo 'critical: test'; [ "$CASE" != list-failed ] || exit 47; exit 0 ;;
@@ -1660,16 +1749,15 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 [ "$CASE" != legacy-skipped ] || echo 'skipping live Worker identity: AWAKEN_K8S_E2E=1 is required'
 [ "$CASE" != failed ]
 ''')
-                environment.update(CASE=case, CALL_LOG=str(fixture / "target/calls"))
-                result = self.required_shell("source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical -- --exact", cwd=fixture, env=environment, timeout=15)
-                self.assertEqual(result.returncode == 0, case == "passing", result.stdout + result.stderr)
-                expected = ["test --locked -p critical --lib critical -- --exact --list"]
-                if case == "list-failed":
-                    self.assertEqual(result.returncode, 47)
-                elif case != "empty":
-                    expected.append("test --locked -p critical --lib critical -- --exact --show-output")
-                self.assertEqual((fixture / "target/calls").read_text().splitlines(), expected)
-
+            environment.update(CASE=case, CALL_LOG=str(fixture / "target/calls"))
+            result = self.required_shell("source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical -- --exact", cwd=fixture, env=environment, timeout=15)
+            self.assertEqual(result.returncode == 0, case == "passing", result.stdout + result.stderr)
+            expected = ["test --locked -p critical --lib critical -- --exact --list"]
+            if case == "list-failed":
+                self.assertEqual(result.returncode, 47)
+            elif case != "empty":
+                expected.append("test --locked -p critical --lib critical -- --exact --show-output")
+            self.assertEqual((fixture / "target/calls").read_text().splitlines(), expected)
 
     @unittest.skipIf(os.name == "nt", "systemd substrate qualification belongs to Linux")
     def test_sandbox_entrypoint_requires_the_current_systemd_case(self) -> None:
@@ -2127,6 +2215,9 @@ echo 'test result: ok. 2 passed; 0 failed; 0 ignored;'
 def main() -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--self-test-case")
+    parser.add_argument("--self-test-report", type=Path)
+    parser.add_argument("--self-test-admitted", action="store_true")
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--results", type=Path)
     parser.add_argument("--exit-code", type=int)
@@ -2138,10 +2229,24 @@ def main() -> int:
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if (args.self_test_case is not None or args.self_test_report is not None or args.self_test_admitted) and (
+            not args.self_test or args.self_test_case is None or args.self_test_report is None):
+        parser.error("a self-test worker requires --self-test, --self-test-case and --self-test-report")
     if args.self_test:
         if args.inventory or args.results or args.exit_code is not None or args.run or args.prepare or args.build_log or args.prepared or args.receipt or args.arguments or args.require_case:
             parser.error("--self-test cannot be combined with execution arguments")
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(ExecutionTests)
+        if args.self_test_case is not None:
+            if args.self_test_case not in unittest.defaultTestLoader.getTestCaseNames(ExecutionTests):
+                parser.error("unknown self-test case")
+            from _execution_self_tests import run_case
+            return run_case(Path(__file__).resolve(), ExecutionTests(args.self_test_case),
+                            args.self_test_report, admitted=args.self_test_admitted)
+        if os.name == 'nt':
+            from _execution_self_tests import run_cases
+            from _native_test_launcher import native_fixture_launcher
+            return run_cases(Path(__file__).resolve(), list(suite),
+                             fixture_launcher=native_fixture_launcher())
         from _strict_unittest import observed_runner
         return int(not observed_runner(verbosity=2).run(suite).wasSuccessful())
     if args.prepare:

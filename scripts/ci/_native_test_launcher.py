@@ -3,11 +3,25 @@ from __future__ import annotations
 
 import atexit
 from functools import cache
+import hashlib
 from pathlib import Path
 import os
 import shlex
 import subprocess
 import tempfile
+
+from _native_shell import RUST_WINDOWS_SHELL_ARGUMENT
+
+
+_shared_launcher: Path | None = None
+
+
+def use_shared_launcher(path: Path, digest: str) -> None:
+    """Bind the private launcher compiled by the admitted test supervisor."""
+    if not path.is_absolute() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+        raise ValueError("native fixture launcher differs from the admitted launcher")
+    global _shared_launcher
+    _shared_launcher = path
 
 
 def python_script_header(interpreter: str | Path) -> str:
@@ -24,8 +38,10 @@ def compiler_command(environment: dict[str, str]) -> list[str]:
 @cache
 def native_fixture_launcher() -> Path:
     # Bare CreateProcess command lookup bypasses PATH-first batch/shell files.
-    # Compile once; every fixture delegates its original argv to its chosen
-    # Python or Bash script. The tests already read actual rustc identity.
+    # Share the suite's compiled tool across workers. Each fixture copies it
+    # before delegating argv to its own Python or Bash script.
+    if _shared_launcher is not None:
+        return _shared_launcher
     target = os.environ.get("CARGO_TARGET_DIR")
     parent = Path(target).resolve() / "debug" / "deps" if target else None
     if parent is not None:
@@ -34,10 +50,26 @@ def native_fixture_launcher() -> Path:
     atexit.register(directory.cleanup)
     source = Path(directory.name) / "fixture.rs"
     executable = source.with_suffix(".exe")
-    source.write_text('''use std::{env, process::{Command, exit}};
+    source.write_text(RUST_WINDOWS_SHELL_ARGUMENT + '''use std::{env, process::{Command, exit}};
 fn main() {
-    let status = Command::new(env::var_os("AWAKEN_FIXTURE_PROGRAM").expect("fixture program"))
-        .arg(env::var_os("AWAKEN_FIXTURE_SCRIPT").expect("fixture script"))
+    let program = env::var_os("AWAKEN_FIXTURE_PROGRAM").expect("fixture program");
+    let script = env::var_os("AWAKEN_FIXTURE_SCRIPT").expect("fixture script");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let name = std::path::Path::new(&program).file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        if matches!(name.as_str(), "bash" | "bash.exe" | "sh" | "sh.exe") {
+            let mut command = Command::new(&program);
+            command.raw_arg(windows_shell_argument(&script));
+            for argument in env::args_os().skip(1) {
+                command.raw_arg(windows_shell_argument(&argument));
+            }
+            let status = command.status().expect("fixture native shell");
+            exit(status.code().unwrap_or(1));
+        }
+    }
+    let status = Command::new(program).arg(script)
         .args(env::args_os().skip(1)).status().expect("fixture subprocess");
     exit(status.code().unwrap_or(1));
 }

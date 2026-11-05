@@ -22,10 +22,11 @@ from unittest import mock
 import formal_sources
 import crate_test
 import generate_hooks
+from _crate_boundary_workspace import crate_manifests
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / ".config/rust-tests.toml"
-INPUT_GLOBS = ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/**', 'fuzz/**', 'apps/**', 'tests/**', 'xtask/**', '.cargo/**', '.config/**', 'scripts/ci/**', 'lefthook.yml', 'scripts/ci/test_inventory.txt', 'scripts/ci/modularity_baseline.json')
+INPUT_GLOBS = ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/**', 'fuzz/**', 'apps/**', 'tests/**', 'xtask/**', 'e2e/fixtures/**', '.cargo/**', '.config/**', 'scripts/ci/**', 'lefthook.yml', 'scripts/ci/test_inventory.txt', 'scripts/ci/modularity_baseline.json')
 
 
 def workspace_features() -> str:
@@ -542,6 +543,20 @@ class PlanTests(unittest.TestCase):
                      "examples/sdk-consumer/Cargo.toml", "scripts/ci/check-rust.sh", "lefthook.yml"):
             self.assertTrue(any(generate_hooks.glob_matches(glob, path) for glob in declared), path)
 
+    def test_embedded_e2e_fixture_inputs_cannot_skip_rust_ownership(self) -> None:
+        root = ROOT
+        members = ("first", "second")
+        metadata = {"workspace_members": list(members),
+                    "packages": [{"id": name, "name": name, "manifest_path": str(root / "crates" / name / "Cargo.toml")} for name in members],
+                    "resolve": {"nodes": [{"id": name, "deps": []} for name in members]}}
+        for path in ("e2e/fixtures/acp_awaken_tool_bridge_fixture.mjs",
+                     "e2e/fixtures/mcp_http_fixture_client.mjs", "e2e/fixtures/future_fixture.mjs"):
+            with self.subTest(path=path):
+                kind, selected, _ = gate_scope(metadata, [path], root)
+                self.assertEqual(kind, "whole")
+                self.assertEqual(selected, sorted(members))
+        self.assertEqual(gate_scope(metadata, ["e2e/scenario.mjs"], root)[0], "none")
+
     def planner_cli(self, directory: str, root: Path, metadata: dict, *, metadata_status: int = 0,
                     execution_status: int = 0, mutate: str = "", broken_metadata: bool = False,
                     run: bool = True, check_command: list[str] | None = None) -> tuple[subprocess.CompletedProcess, list[str], list[dict]]:
@@ -933,11 +948,30 @@ else:
                 self.assertEqual(calls, [])
                 self.assertIn(f"status {status}", errors.getvalue())
     def test_shared_profile_names_declared_workspace_features(self) -> None:
-        manifests = {tomllib.loads(path.read_text(encoding="utf-8"))["package"]["name"]: path for path in ROOT.glob("crates/*/*/Cargo.toml")}
+        manifests = {tomllib.loads(path.read_text(encoding="utf-8"))["package"]["name"]: path for path in crate_manifests(ROOT / "crates")}
         for feature in workspace_features().split(","):
             package, name = feature.split("/", 1)
             self.assertIn(package, manifests)
             self.assertIn(name, tomllib.loads(manifests[package].read_text(encoding="utf-8")).get("features", {}))
+
+    def test_nested_product_directories_keep_reverse_consumers_and_global_fallback(self) -> None:
+        # R1 a deeply nested SDK owner selects its Platform and app consumers;
+        # R2 a Platform edit excludes unrelated SDK owners; R3 a removed or
+        # unknown owner still requires the full graph rather than disappearing.
+        locations = {
+            "engine": "crates/sdk/runtime/engine",
+            "session": "crates/platform/session/session",
+            "server": "crates/apps/server",
+            "other": "crates/sdk/support/other",
+        }
+        metadata = {
+            "workspace_members": list(locations),
+            "packages": [{"id": name, "name": name, "manifest_path": str(ROOT / path / "Cargo.toml")} for name, path in locations.items()],
+            "resolve": {"nodes": [{"id": name, "deps": [{"pkg": dep} for dep in deps]} for name, deps in (("engine", ()), ("session", ("engine",)), ("server", ("session",)), ("other", ()))]},
+        }
+        self.assertEqual(affected_packages(metadata, [locations["engine"] + "/src/lib.rs"])[0], ["engine", "server", "session"])
+        self.assertEqual(affected_packages(metadata, [locations["session"] + "/src/lib.rs"])[0], ["server", "session"])
+        self.assertEqual(affected_packages(metadata, ["crates/platform/deleted/src/lib.rs"])[0], sorted(locations))
 
     def test_ownership_reverse_consumers_and_global_fallback(self) -> None:
         # A1 leaf => leaf+consumer+composition; A2 unrelated owner excluded.

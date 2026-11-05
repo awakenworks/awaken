@@ -1085,6 +1085,10 @@ class EvidenceTests(unittest.TestCase):
                 hit = False
                 if axis == "untracked":
                     (self.root / "fresh.rs").write_bytes(b"first bytes")
+                if axis == "tree-names":
+                    # An empty stage entry requires the extra intent-to-add reads.
+                    (self.root / "empty.rs").write_bytes(b"")
+                    self.git("add", "empty.rs")
                 def read(root, environment, *arguments):
                     nonlocal hit
                     result = original_reader(root, environment, *arguments)
@@ -1122,6 +1126,9 @@ class EvidenceTests(unittest.TestCase):
         self.git("add", ".")
         (self.root / "intent.rs").write_bytes(b"not staged\n")
         self.git("add", "-N", "intent.rs")
+        fresh = self.root / "H Unicode 路径.rs"
+        fresh.write_bytes(b"untracked\n")
+        self.git("update-index", "--skip-worktree", "prefix.txt")
         blob = self.git("rev-parse", ":transitive.rs").decode().strip()
         head = self.git("rev-parse", "HEAD").decode().strip()
         for mode, oid, name in (("100755", blob, "executable"), ("120000", blob, "symbolic-link"),
@@ -1131,10 +1138,52 @@ class EvidenceTests(unittest.TestCase):
             with mock.patch.object(formal_sources, "_git_output", wraps=formal_sources._git_output) as reads:
                 captured = formal_sources.source_facts(self.root, with_index_tree=True)
             self.assertEqual(captured["index_tree"], expected, f"I1-I3 {mode}")
+            self.assertEqual(captured["revision"], self.git("rev-parse", "HEAD"))
+            self.assertEqual(captured["tree"], self.git("rev-parse", "HEAD^{tree}"))
+            self.assertEqual(captured["index_entries"], self.git("ls-files", "--stage", "-z"))
+            self.assertEqual(captured["untracked"], {fresh.name: fresh.read_bytes()})
             self.assertFalse(any(call.args[2:] == ("write-tree",) for call in reads.call_args_list))
         self.git("update-index", "--force-remove", "transitive.rs")
         self.assertEqual(formal_sources.source_facts(self.root, with_index_tree=True)["index_tree"],
                          self.git("write-tree"), "I4 deletion")
+
+    def test_shared_capture_preserves_unlocked_stat_only_default_and_alternate_indices(self):
+        # I8 a tracked file changes only its stat data with no index lock held.
+        # Both the default and same-root alternate index retain every byte and
+        # mtime; real content changes must still appear in both source frames.
+        import formal_sources
+        tracked = self.root / "transitive.rs"
+        original = tracked.read_bytes()
+        default = self.root / ".git/index"
+        self.git("config", "diff.autoRefreshIndex", "true")
+        for alternate in (False, True):
+            with self.subTest(alternate=alternate):
+                tracked.write_bytes(original)
+                self.git("update-index", "--refresh")
+                selected = default
+                environment = dict(detached_git_environment(), GIT_OPTIONAL_LOCKS="0")
+                if alternate:
+                    selected = self.root.parent / "selected.index"
+                    selected.write_bytes(default.read_bytes())
+                    environment.update(GIT_DIR=str(self.root / ".git"),
+                                       GIT_WORK_TREE=str(self.root), GIT_INDEX_FILE=str(selected))
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    baseline = formal_sources.source_facts(self.root, with_index_tree=True)
+                    protected = {p: (p.read_bytes(), p.stat().st_mtime_ns)
+                                 for p in {default, selected}}
+                    stamp = tracked.stat()
+                    os.utime(tracked, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 10_000_000_000))
+                    self.assertEqual(formal_sources.source_facts(self.root, with_index_tree=True), baseline)
+                    for path, expected in protected.items():
+                        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), expected,
+                                         "read-only capture refreshed the caller's unlocked index")
+                    tracked.write_bytes(original + b"actual source change\n")
+                    edited = formal_sources.source_facts(self.root, with_index_tree=True)
+                    self.assertNotEqual(edited["working"], baseline["working"])
+                    self.assertNotEqual(edited["patch"], baseline["patch"])
+                    for path, expected in protected.items():
+                        self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), expected)
+                    self.assertFalse((self.root / ".git/index.lock").exists())
 
     def test_parallel_source_capture_never_takes_or_changes_the_callers_index_lock(self):
         # I5 lock occupied + concurrent readers -> the same exact index tree;
