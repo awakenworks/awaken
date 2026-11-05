@@ -332,6 +332,13 @@ fn validate_session_create_command(
     idempotency: &IdempotencyRecord,
     lifecycle_facts: &[ManagedLifecycleFact],
 ) -> Result<(), SessionRepositoryError> {
+    if awaken_session_contract::SessionPrivateBinding::of(session)
+        .is_some_and(|binding| binding.workspace_id() != owner_scope)
+    {
+        return Err(SessionRepositoryError::InvalidMutation(
+            "private Session binding does not match its Workspace partition".into(),
+        ));
+    }
     if idempotency.event_admission_key().is_some() {
         return Err(SessionRepositoryError::InvalidMutation(
             "Session creation cannot consume an Event admission identity".into(),

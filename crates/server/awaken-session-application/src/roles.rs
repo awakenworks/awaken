@@ -112,12 +112,24 @@ pub trait SessionRootReads: Send + Sync {
     async fn owner(&self, session_id: &SessionId) -> Result<String, SessionMutationError>;
 
     /// The one ownership verdict owner-scoped commands accept: a foreign and
-    /// a missing Session are the same `NotFound`, with no read of the root.
+    /// a missing Session are the same `NotFound`. Private roots require the
+    /// separate exact private binding, regardless of Workspace privileges.
     async fn authorize(
         &self,
         owner_scope: &str,
         session_id: &SessionId,
     ) -> Result<crate::SessionAccess, crate::SessionAccessError>;
+
+    /// The caller must obtain this binding through current trusted ingress;
+    /// decoding a binding does not authenticate its owner. Implementations
+    /// without the native private ownership mechanism fail closed.
+    async fn authorize_private(
+        &self,
+        _binding: &awaken_session_contract::SessionPrivateBinding,
+        _session_id: &SessionId,
+    ) -> Result<crate::SessionAccess, crate::SessionAccessError> {
+        Err(crate::SessionAccessError::NotFound)
+    }
 
     /// Every visible root one Workspace owns.
     async fn sessions_by_owner(

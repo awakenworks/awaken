@@ -247,7 +247,17 @@ async fn ensure_session_scope(
     match state.resolve_owner(id).await {
         Ok(Some(owner)) if owner != request_scope => Err(session_not_found(id)),
         Err(error) => Err(error_response(error)),
-        Ok(Some(_)) | Ok(None) => Ok(()),
+        Ok(Some(_)) => state
+            .roles
+            .roots
+            .authorize(request_scope, &awaken_session_types::SessionId::from(id))
+            .await
+            .map(|_| ())
+            .map_err(|error| match error {
+                awaken_session_application::SessionAccessError::NotFound => session_not_found(id),
+                error => error_response(StateError::Run(error.into())),
+            }),
+        Ok(None) => Ok(()),
     }
 }
 

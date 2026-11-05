@@ -14,6 +14,7 @@ use application_fixture::{
 mod effect_counting_runtime;
 mod observation_refinement;
 mod observed_commit;
+mod private_binding;
 mod recording_cleanup_terminal;
 mod update_compilation;
 use std::collections::{BTreeSet, HashMap, VecDeque};

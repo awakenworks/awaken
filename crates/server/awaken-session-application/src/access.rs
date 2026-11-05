@@ -18,7 +18,8 @@
 
 use awaken_session_types::{RunError, RunErrorKind, SessionId};
 
-/// Proof that one Workspace owns one existing Session.
+/// Proof that the native ownership port admitted one existing Session. A
+/// Workspace-only request cannot obtain this proof for a private Session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionAccess {
     owner_scope: String,

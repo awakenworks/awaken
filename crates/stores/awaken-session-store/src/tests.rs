@@ -24,6 +24,7 @@ use std::time::Duration;
 
 mod environment_count_stream;
 mod keyset_query_plans;
+mod private_binding;
 mod repository_reads;
 pub(crate) mod root_update_history;
 
@@ -2642,6 +2643,7 @@ async fn root_mutation_decision_table<R: awaken_session_application::SessionStor
     id: &str,
 ) {
     root_observation_replacement_table(repo, id).await;
+    private_binding::replacement_table(repo, id).await;
     root_update_history::replacement_table(repo, id).await;
     let created = create_fixture(repo, "ws_a", sample(id), Vec::new()).await;
     let mut replacement = created.clone();

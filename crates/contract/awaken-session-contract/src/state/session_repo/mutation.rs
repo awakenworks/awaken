@@ -315,6 +315,8 @@ pub enum SessionMutationResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SessionMutationValidationError {
+    #[error("Session replacement changed its immutable private ownership")]
+    PrivateBindingChanged,
     #[error("Session mutation idempotency key is empty")]
     EmptyIdempotencyKey,
     #[error("Session mutation payload hash is empty")]
@@ -583,6 +585,9 @@ impl PersistedSession {
         &self,
         replacement: &Self,
     ) -> Result<(), SessionMutationValidationError> {
+        if self.private_binding != replacement.private_binding {
+            return Err(SessionMutationValidationError::PrivateBindingChanged);
+        }
         validate_root_observation_replacement(
             self.created_at_unix_ms,
             replacement.created_at_unix_ms,

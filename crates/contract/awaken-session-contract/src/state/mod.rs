@@ -1,6 +1,8 @@
 //! Durable Session aggregate state and pure transition laws.
 
+mod private_binding;
 mod update_history;
+pub use private_binding::SessionPrivateBinding;
 pub use update_history::{
     SessionFieldUpdate, SessionUpdateAgentConfiguration, SessionUpdateChanges, SessionUpdateFact,
     SessionUpdateHistory,
