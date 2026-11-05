@@ -6,6 +6,7 @@ use awaken_authz_enforce::{
     ApplicationAccessAuthenticator, ApplicationAuthenticationError, ApplicationGrant,
     ApplicationIdentity, ApplicationThreadBinding, application_guard,
 };
+use awaken_tenancy::workspace_purpose::{OrdinaryWorkspaceAdmission, WorkspacePurposeUnavailable};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::extract::{Json, Path};
@@ -129,6 +130,57 @@ fn app(authenticator: Arc<dyn ApplicationAccessAuthenticator>) -> Router {
             authenticator,
             application_guard,
         ))
+}
+
+#[tokio::test]
+async fn application_protocols_use_current_purpose_of_the_verified_grant_workspace() {
+    struct Observations(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl OrdinaryWorkspaceAdmission for Observations {
+        async fn is_ordinary_workspace(
+            &self,
+            workspace_id: &str,
+        ) -> Result<bool, WorkspacePurposeUnavailable> {
+            assert_eq!(workspace_id, "ws-1");
+            match self.0.fetch_add(1, Ordering::SeqCst) {
+                0 => Ok(true),
+                1 => Ok(false),
+                _ => Err(WorkspacePurposeUnavailable),
+            }
+        }
+    }
+
+    let token = "application-grant-fixture"; // awaken-allow(secret): -- inert fixture
+    let observation = Arc::new(Observations(AtomicUsize::new(0)));
+    let authority: Arc<dyn OrdinaryWorkspaceAdmission> = observation.clone();
+    let app = app(authenticator(
+        token,
+        grant(&["ai-sdk", "ag-ui"], &["thread.messages.read"]),
+    ))
+    .layer(axum::Extension(authority));
+    for (protocol, presented, expected) in [
+        ("ai-sdk", "unverified", StatusCode::UNAUTHORIZED),
+        ("ai-sdk", token, StatusCode::OK),
+        ("ag-ui", token, StatusCode::FORBIDDEN),
+        ("ai-sdk", token, StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(
+                "GET",
+                &format!("/v1/{protocol}/threads/customer-thread/messages"),
+                Some(presented),
+                Value::Null,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{protocol}");
+        if expected == StatusCode::OK {
+            assert_eq!(json_body(response).await["resolved"], "sesn_existing");
+        }
+    }
+    assert_eq!(observation.0.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test]

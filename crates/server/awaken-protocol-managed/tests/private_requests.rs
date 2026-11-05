@@ -4,7 +4,7 @@ mod support;
 
 use std::sync::Arc;
 
-use awaken_protocol_managed::{ManagedState, admitted_private_session_view, router};
+use awaken_protocol_managed::{AdmittedPrivateSessionRequest, ManagedState, router};
 use awaken_protocol_managed_testkit::RehydrateFake;
 use awaken_session_contract::{SessionPrivateBinding, SessionRepositoryReads};
 use awaken_session_types::SessionId;
@@ -27,9 +27,12 @@ fn binding(account: &str) -> SessionPrivateBinding {
     .unwrap()
 }
 
-fn admitted(base: &ManagedState, binding: SessionPrivateBinding) -> Router {
+fn admitted(base: &Arc<ManagedState>, binding: SessionPrivateBinding) -> Router {
     let workspace = binding.workspace_id().to_owned();
-    router(Arc::new(admitted_private_session_view(base, binding)))
+    router(base.clone())
+        .layer(Extension(AdmittedPrivateSessionRequest::from_admitted(
+            binding,
+        )))
         .layer(Extension(WorkspaceScope(workspace)))
 }
 

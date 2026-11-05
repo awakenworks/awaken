@@ -28,6 +28,7 @@ awaken-tool-contract.workspace = true
 awaken-data-governance-contract.workspace = true
 awaken-service-lifecycle.workspace = true
 awaken-outbound-http.workspace = true
+awaken-service-auth-contract.workspace = true
 awaken-acp-contract.workspace = true
 awaken-deployment-contract.workspace = true
 # The config-authoring plane (config service + routers + resolver + tool catalog).

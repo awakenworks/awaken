@@ -4,9 +4,11 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use awaken_iam_contract::{
-    AuthorizationDecision, AuthorizationOutcome, AuthorizationRequest, Jwks,
+    ApiTokenStatus, AuthorizationDecision, AuthorizationOutcome, AuthorizationRequest, Jwks,
+    PrincipalRef, TokenIntrospectionRequest, TokenIntrospectionResponse, WorkspaceId,
 };
 use awaken_iam_host::{AccessTokenAuthority, AccessTokenClaims, LocalSeedSigner};
+use awaken_tenancy::workspace_purpose::OrdinaryWorkspaceAdmission;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -22,6 +24,7 @@ const SEED: [u8; 32] = [19; 32];
 const KID: &str = "awaken-local-cloud-test";
 const ISSUER: &str = "https://fake-accounts.test";
 const AUDIENCE: &str = "awaken-runtime";
+const SCOPED_KEY: &str = concat!("sk-", "awaken-", "fixture-workspace-coordinate");
 
 #[test]
 fn cloud_denial_names_the_qualified_action_and_workspace_scope() {
@@ -82,6 +85,146 @@ struct CloudIamFixture {
     base_url: String,
     authorization_bearers: Arc<Mutex<Vec<String>>>,
     authorization_status: Arc<AtomicU16>,
+    token_introspections: Arc<AtomicUsize>,
+}
+
+#[test]
+fn remote_management_keeps_the_original_introspected_workspace_before_pdp() {
+    // The PDP would Allow the shared service at either Workspace. The same
+    // key must authorize only its home Workspace, even with both live grants.
+    let fixture = cloud_iam_fixture();
+    let authz = connect_key_fixture(fixture.base_url);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = calls.clone();
+    let app = Router::new()
+        .route(
+            "/v1/config/catalog",
+            get(move || {
+                let handler_calls = handler_calls.clone();
+                async move {
+                    handler_calls.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::OK
+                }
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            authz,
+            cloud_management_guard,
+        ));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        for (workspace, status) in [
+            ("ws_cloud", StatusCode::OK),
+            ("ws_foreign", StatusCode::FORBIDDEN),
+        ] {
+            let request = key_request(workspace);
+            assert_eq!(app.clone().oneshot(request).await.unwrap().status(), status);
+        }
+    });
+    assert_eq!(fixture.token_introspections.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.authorization_bearers.lock().unwrap().len(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+fn connect_key_fixture(base_url: String) -> Arc<RemoteManagementAuthz> {
+    let source: Arc<awaken_agent_contract::RedactedStringSource> = Arc::new(|| {
+        Ok(awaken_agent_contract::RedactedString::new(
+            "fixture-control-carrier",
+        ))
+    });
+    RemoteManagementAuthz::connect_with_user_token_source(
+        base_url,
+        AUDIENCE.into(),
+        ISSUER.into(),
+        source,
+        Some("fixture-control-carrier".into()),
+        awaken_time::system_clock(),
+    )
+    .unwrap()
+}
+
+fn key_request(workspace: &str) -> Request {
+    Request::builder()
+        .uri("/v1/config/catalog")
+        .extension(awaken_tenancy::WorkspaceScope(workspace.into()))
+        .header("authorization", format!("Bearer {SCOPED_KEY}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+struct PurposeObservation {
+    status: AtomicU16,
+    observed: Mutex<Vec<String>>,
+}
+
+#[test]
+fn ordinary_management_admission_cannot_reuse_positive_workspace_purpose() {
+    let fixture = cloud_iam_fixture();
+    let authz = connect_key_fixture(fixture.base_url);
+    let purpose = Arc::new(PurposeObservation {
+        status: AtomicU16::new(204),
+        observed: Mutex::new(Vec::new()),
+    });
+    let app = Router::new()
+        .route("/v1/config/catalog", get(|| async { StatusCode::OK }))
+        .layer(axum::middleware::from_fn_with_state(
+            authz,
+            cloud_management_guard,
+        ));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/purpose", listener.local_addr().unwrap());
+        let source = purpose.clone();
+        let owner = Router::new().route(
+            "/purpose",
+            post(
+                move |headers: HeaderMap, Json(body): Json<serde_json::Value>| {
+                    let source = source.clone();
+                    async move {
+                        assert_eq!(headers["x-iam-audience"], AUDIENCE);
+                        assert_eq!(headers["authorization"], "Bearer fixture-purpose-carrier");
+                        source
+                            .observed
+                            .lock()
+                            .unwrap()
+                            .push(body["workspace_id"].as_str().unwrap().to_owned());
+                        StatusCode::from_u16(source.status.load(Ordering::SeqCst)).unwrap()
+                    }
+                },
+            ),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, owner).await.unwrap() });
+        let directory = tempfile::tempdir().unwrap();
+        let projection = directory.path().join("purpose-token");
+        std::fs::write(&projection, "fixture-purpose-carrier").unwrap();
+        let authority: Arc<dyn OrdinaryWorkspaceAdmission> = Arc::new(
+            crate::HttpOrdinaryWorkspaceAdmission::from_projected_service_token(
+                &endpoint, AUDIENCE, projection,
+            )
+            .unwrap(),
+        );
+        let app = app.layer(axum::Extension(authority));
+        for (observed, expected) in [
+            (204, StatusCode::OK),
+            (404, StatusCode::FORBIDDEN),
+            (503, StatusCode::SERVICE_UNAVAILABLE),
+            (200, StatusCode::SERVICE_UNAVAILABLE),
+        ] {
+            purpose.status.store(observed, Ordering::SeqCst);
+            assert_eq!(
+                app.clone()
+                    .oneshot(key_request("ws_cloud"))
+                    .await
+                    .unwrap()
+                    .status(),
+                expected,
+            );
+        }
+        server.abort();
+    });
+    assert_eq!(*purpose.observed.lock().unwrap(), ["ws_cloud"; 4]);
+    assert_eq!(fixture.authorization_bearers.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -193,6 +336,8 @@ fn cloud_iam_fixture() -> CloudIamFixture {
     let server_bearers = Arc::clone(&authorization_bearers);
     let authorization_status = Arc::new(AtomicU16::new(200));
     let server_status = Arc::clone(&authorization_status);
+    let token_introspections = Arc::new(AtomicUsize::new(0));
+    let server_introspections = token_introspections.clone();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -207,6 +352,26 @@ fn cloud_iam_fixture() -> CloudIamFixture {
             let app = Router::new()
                 .route("/.well-known/jwks.json", get(jwks))
                 .route("/v1/authorize", post(authorize))
+                .route(
+                    "/v1/tokens/introspect",
+                    post(move |Json(request): Json<TokenIntrospectionRequest>| {
+                        let server_introspections = server_introspections.clone();
+                        async move {
+                            server_introspections.fetch_add(1, Ordering::SeqCst);
+                            if request.token != SCOPED_KEY {
+                                return StatusCode::UNAUTHORIZED.into_response();
+                            }
+                            Json(TokenIntrospectionResponse {
+                                principal: PrincipalRef::Service {
+                                    service_id: "shared-management-service".into(),
+                                },
+                                workspace: WorkspaceId("ws_cloud".into()),
+                                status: ApiTokenStatus::Active,
+                            })
+                            .into_response()
+                        }
+                    }),
+                )
                 .with_state(state);
             listener.set_nonblocking(true).unwrap();
             let listener = tokio::net::TcpListener::from_std(listener).unwrap();
@@ -220,6 +385,7 @@ fn cloud_iam_fixture() -> CloudIamFixture {
         base_url,
         authorization_bearers,
         authorization_status,
+        token_introspections,
     }
 }
 
@@ -239,6 +405,7 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
         base_url,
         authorization_bearers,
         authorization_status,
+        ..
     } = cloud_iam_fixture();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (token, rotated_token, service_token) = runtime.block_on(async {

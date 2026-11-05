@@ -332,6 +332,9 @@ async fn prepare_control_process_with_model_supply_and_installations(
         clock.clone(),
     )
     .await?;
+    if managed_services.ordinary_workspace_admission.is_some() && identity.remote_iam.is_none() {
+        return Err("hosted Workspace purpose requires the remote Management IAM edge".into());
+    }
     let catalog = stores
         .control
         .as_ref()

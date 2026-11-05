@@ -215,3 +215,34 @@ These native seams do not enable a product upload endpoint. Current trusted
 product ingress, S permission boundaries, stream/child authority, and compatible
 node rollout remain separate qualifications before personal input writes become
 available to product users.
+
+## Ordinary hosted entrypoints require positive Workspace purpose
+
+Hosted composition can install one request-time ordinary-Workspace observation
+port in Control and Coordinator public routing. Ordinary Cloud management and
+service protocol admission uses it after authenticating the credential and
+resolving the trusted Workspace, before sending a PDP request. The AI SDK and
+AG-UI application guards consult the same port at the already authenticated
+application grant Workspace. No HTTP field supplies an observation. Private,
+unknown, inactive and unsupported Workspaces cannot enter as ordinary; an
+unavailable authority fails closed without reusing a prior observation.
+
+The port reads the hosted Workspace-purpose owner. It does not authenticate the
+principal, choose the Workspace, or replace the native IAM decision or Session
+ownership check. Ordinary non-hosted compositions do not acquire this hosted
+dependency. Public discovery and the distinct native Work capability retain
+their own authority and cannot be reinterpreted as ordinary human admission.
+Hosted private writes still require proven installation at every ordinary edge,
+the separate current private ingress, and source and node adoption.
+
+The native Management package provides the configured HTTP implementation of
+this observation port. The deployment supplies the finite endpoint, its
+audience and the existing workload credential projection. The implementation
+reuses native internal HTTP transport; only the original hosted Scope owner
+knows the purpose or can attest a positive result.
+
+Startup installs the port on the target public router after path-addressed
+Workspace selection. Path dispatch reconstructs request extensions, so putting
+the port only on the outside router would silently leave qualified Workspace
+paths unprotected. Flat and addressed requests enter the same target router
+with the same configured purpose authority.

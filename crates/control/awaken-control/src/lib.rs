@@ -73,9 +73,9 @@ pub use crate::authz::{
     BOOTSTRAP_WORKSPACE, DEFAULT_ORG_ID, HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE,
     HOSTED_RUNTIME_POLICY_NAMESPACE, HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE,
     HOSTED_RUNTIME_WORKSPACE_USER_ROLE, HostedRuntimePathMatch, HostedRuntimeRouteProfile,
-    ManagementAuthz, ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
-    embedded_iam_for_tenant, embedded_iam_for_tenant_with_entitlements, embedded_iam_for_workspace,
-    hosted_runtime_authorization_profile, hosted_runtime_route_profile,
+    HttpOrdinaryWorkspaceAdmission, ManagementAuthz, ManagementIdentityMode, RemoteManagementAuthz,
+    TokenSpec, embedded_iam, embedded_iam_for_tenant, embedded_iam_for_tenant_with_entitlements,
+    embedded_iam_for_workspace, hosted_runtime_authorization_profile, hosted_runtime_route_profile,
     workspace_authorization_profile,
 };
 pub use crate::component::{ControlComponent, ControlDependencies, build_control_component};

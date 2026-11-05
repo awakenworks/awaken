@@ -3,11 +3,48 @@
 // @formal reason: Selects the native ownership role for a trusted request; it authenticates no caller.
 //! One request's private authority over the existing Managed application.
 
+use std::{convert::Infallible, sync::Arc};
+
 use awaken_session_application::{SessionAccess, SessionAccessError};
 use awaken_session_contract::SessionPrivateBinding;
 use awaken_session_types::SessionId;
+use axum::{extract::FromRequestParts, http::request::Parts};
 
 use super::ManagedState;
+
+/// In-process request marker issued only by a trusted, current private ingress.
+/// It has no decoder and must never be constructed from a Session request body.
+#[derive(Clone)]
+pub struct AdmittedPrivateSessionRequest(SessionPrivateBinding);
+
+impl AdmittedPrivateSessionRequest {
+    /// Retain the exact binding from already completed private admission.
+    #[must_use]
+    pub fn from_admitted(binding: SessionPrivateBinding) -> Self {
+        Self(binding)
+    }
+}
+
+/// The ordinary state and the private view share all of the same application
+/// authorities. Scope guards and handlers extract from the same trusted marker.
+/// The Coordinator can mount exported native Session handlers with this
+/// extractor; the projected state stays within the protocol adapter.
+pub struct ManagedRequestState(pub(crate) Arc<ManagedState>);
+
+impl FromRequestParts<Arc<ManagedState>> for ManagedRequestState {
+    type Rejection = Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<ManagedState>,
+    ) -> Result<Self, Self::Rejection> {
+        let state = match parts.extensions.get::<AdmittedPrivateSessionRequest>() {
+            Some(admitted) => Arc::new(admitted_private_session_view(state, admitted.0.clone())),
+            None => state.clone(),
+        };
+        Ok(Self(state))
+    }
+}
 
 /// Derive a view for one private request already admitted by trusted ingress.
 ///

@@ -389,6 +389,10 @@ pub(super) async fn prepare_control_routers(
             Some(component.publication_reconciler),
             worker_observations,
             execution_workspace,
+            process
+                .managed_services
+                .ordinary_workspace_admission
+                .clone(),
         ),
         private_router,
         Some(component.registration_supervisor),

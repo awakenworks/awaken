@@ -281,3 +281,11 @@ they do not gain authority by forwarding an end-user token. A future delegated
 Management seam must establish current compound authority and consent instead
 of weakening this direct-credential edge. Private content admission still needs
 the separate checks owned by [ADR-0105](0105-native-private-session-ownership.md).
+
+The Management edge retains the original native `VerifiedBearer` observation.
+Its verified actor is refused directly, without a second token parser. If that
+observation carries an API key's Workspace, the Workspace must equal the trusted
+route target before PDP or handler dispatch. A service principal's broader
+grants cannot widen a key, and a retry never combines a key's principal and
+Workspace from different introspections. JWT verification alone does not prove
+the current Account and application admission required for private content.

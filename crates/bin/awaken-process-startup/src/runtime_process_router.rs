@@ -1012,6 +1012,10 @@ async fn finish_process_routers(
             control.reconciler,
             base.worker_observations.source,
             base.stores.platform_workspace,
+            base.process
+                .managed_services
+                .ordinary_workspace_admission
+                .clone(),
         ),
         private,
         control.registration_supervisor,
