@@ -1631,3 +1631,322 @@ async fn managed_user_interrupt_reports_interrupted() {
         .await
         .expect("O1 selected fixture joins its registered work");
 }
+
+/// Observe the actual neutral model boundary without replacing the scenario's
+/// list/send/child/report response algorithm or adding a production capture sink.
+#[derive(Default)]
+struct ManagedChildRequestRecorder(std::sync::Mutex<Vec<ChatRequest>>);
+
+#[async_trait::async_trait]
+impl LlmExecutor for ManagedChildRequestRecorder {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.0.lock().unwrap().push(request.clone());
+        awaken_scenario_host::DelegatingModel.infer(request).await
+    }
+}
+
+#[tokio::test]
+async fn managed_child_neutral_requests_keep_publication_and_history_isolated() {
+    // Cause/effect graph: C1 the root has a complete Session Replace plus an
+    // accompanying System/User pair; C2 a different child has nonempty published
+    // instructions; C3 explicit self selects the root publication; C4 the real
+    // Managed admission/claim/child/report path settles. Effects: E1 C2 owns the
+    // child's first System; E2 its sole conversational row is the exact SEND
+    // command, with no parent's User/System/tool history; E3 self retains Replace
+    // while owning a distinct Thread; E4 original receipt/report/idle facts settle.
+    //
+    // | Rule | target | instruction source | effects |
+    // | R1 | other Agent | child's nonempty publication | E1+E2+E4 |
+    // | R2 | explicit self | root's Session Replace | E2+E3+E4 |
+    //
+    // R3's same-Thread follow-up/retained-history positive stays in the existing
+    // managed_delegation_e2e.mjs case; this passive recorder cannot select that
+    // target because DelegatingModel intentionally emits Spawn. This test claims
+    // only first-child neutral input provenance, not full follow-up history or
+    // real-provider request/response evidence. Plain Scenario composition keeps
+    // its existing Workdir/in-process local pool; it is no SandboxTier or physical
+    // provider qualification. Keep the default test stack and join its one owner.
+    use awaken_runtime_contract::agent_bindings::AgentDelegateBinding;
+    use awaken_runtime_contract::snapshot::{
+        AgentConfigRevisionRef, AgentId, AgentSnapshotMetadata,
+    };
+
+    const ORIGINAL_ROOT: &str = "Original root publication instructions";
+    const REPLACEMENT: &str = "Parent-only Session replacement instructions";
+    const CHILD_SYSTEM: &str = "Child-only published instructions\nPreserve this exact block.";
+    const PARENT_SYSTEM: &str = "Parent-only accompanying System history";
+    const MODEL: &str = "child-request-probe";
+    let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+    let model = Arc::new(ManagedChildRequestRecorder::default());
+    let binding = ModelBinding::parse("default", MODEL, "default")
+        .expect("admit the shared synthetic model binding");
+    let metadata = |agent: &str| AgentSnapshotMetadata {
+        source: AgentConfigRevisionRef {
+            agent_id: AgentId(agent.into()),
+            revision: 1,
+        },
+        ..Default::default()
+    };
+    let assistant = ExecutableAgentSnapshot::builder("assistant")
+        .model(binding.clone())
+        .instructions(ORIGINAL_ROOT)
+        .metadata(metadata("assistant"))
+        .agent_bindings(AgentBindings {
+            delegates: vec![
+                AgentDelegateBinding {
+                    agent_id: AgentId("researcher".into()),
+                    source_revision: Some(1),
+                    recursive_self: false,
+                },
+                AgentDelegateBinding {
+                    agent_id: AgentId("assistant".into()),
+                    source_revision: Some(1),
+                    recursive_self: true,
+                },
+            ],
+            ..Default::default()
+        })
+        .build();
+    let researcher = ExecutableAgentSnapshot::builder("researcher")
+        .model(binding)
+        .instructions(CHILD_SYSTEM)
+        .metadata(metadata("researcher"))
+        .build();
+    let (app, _host) = Box::pin(build_router_and_host_with_agent_publications(
+        model.clone(),
+        MODEL,
+        [assistant, researcher],
+        false,
+        lifecycle.clone(),
+    ))
+    .await;
+    for (rule, parent_user, child_user, child_agent, child_system, child_reply) in [
+        (
+            "R1",
+            "Parent-only User: research the answer",
+            "do the research",
+            "researcher",
+            CHILD_SYSTEM,
+            "researched: 42",
+        ),
+        (
+            "R2",
+            "Parent-only User: use the self agent",
+            "self-copy task",
+            "assistant",
+            REPLACEMENT,
+            "self copy: 42",
+        ),
+    ] {
+        let first_request = model.0.lock().unwrap().len();
+        let session = json_call(
+            &app,
+            "POST",
+            "/v1/sessions",
+            serde_json::json!({
+                "agent": {"type": "agent_with_overrides", "id": "assistant", "system": REPLACEMENT},
+                "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+            }),
+        )
+        .await;
+        let id = session["id"].as_str().unwrap();
+        let receipt = json_call(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{id}/events"),
+            serde_json::json!({"events": [
+                {"type": "user.message", "content": [{"type": "text", "text": parent_user}]},
+                {"type": "system.message", "content": [{"type": "text", "text": PARENT_SYSTEM}]},
+            ]}),
+        )
+        .await;
+        let settled = wait_for_session_events(
+            &app,
+            id,
+            DurableFact::command_processed(&receipt),
+            "the actual child, its one later report and the primary idle boundary",
+            |events| {
+                events.iter().any(|event| {
+                    event["type"] == "agent.thread_message_received"
+                        && event["content"][0]["text"] == child_reply
+                }) && events.iter().any(|event| {
+                    event["type"] == "agent.message"
+                        && event["content"][0]["text"] == "coordination completed from child report"
+                }) && events.iter().rev().any(|event| {
+                    event["type"] == "session.status_idle"
+                        && event["stop_reason"]["type"] == "end_turn"
+                })
+            },
+        )
+        .await;
+        let events = settled["data"].as_array().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "session.thread_created")
+                .count(),
+            1,
+            "{rule}: one real child Thread"
+        );
+        let created = last_event_of_type(events, "session.thread_created");
+        assert_eq!(created["agent_name"], child_agent, "{rule}");
+        let threads = json_call(
+            &app,
+            "GET",
+            &format!("/v1/sessions/{id}/threads"),
+            serde_json::Value::Null,
+        )
+        .await;
+        let threads = threads["data"].as_array().unwrap();
+        assert_eq!(threads.len(), 2, "{rule}: root and independent child only");
+        let child = threads
+            .iter()
+            .find(|thread| thread["id"] == created["session_thread_id"])
+            .unwrap();
+        let primary = threads
+            .iter()
+            .find(|thread| thread["parent_thread_id"].is_null())
+            .unwrap();
+        assert_ne!(child["id"], primary["id"], "{rule}: independent Thread");
+        assert_eq!(
+            child["parent_thread_id"], primary["id"],
+            "{rule}: committed relationship"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "agent.thread_message_received")
+                .count(),
+            1,
+            "{rule}: one child report"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "agent.message"
+                    && event["content"][0]["text"] == "coordination completed from child report")
+                .count(),
+            1,
+            "{rule}: one later primary report Run"
+        );
+        assert!(
+            events.iter().any(|event| event["type"] == "agent.message"
+                && event["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("coordination accepted:"))),
+            "{rule}: original admission receipt"
+        );
+        assert!(
+            !events.iter().any(|event| event["type"] == "agent.message"
+                && event["content"][0]["text"] == child_reply),
+            "{rule}: child payload is not a synchronous send result"
+        );
+
+        let requests = model.0.lock().unwrap()[first_request..].to_vec();
+        assert_eq!(
+            requests.len(),
+            5,
+            "{rule}: complete four-parent/one-child request cut"
+        );
+        let child_requests = requests
+            .iter()
+            .filter(|request| !request.tools.iter().any(|tool| tool.id == "send_message"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            child_requests.len(),
+            1,
+            "{rule}: one actual ordinary child inference"
+        );
+        let request = child_requests[0];
+        assert_eq!(
+            request.messages[0].role,
+            Role::System,
+            "{rule}: authored first block"
+        );
+        assert_eq!(
+            request.messages[0].content,
+            [ContentBlock::text(child_system)],
+            "{rule}: exact effective instructions"
+        );
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .filter(|message| message.role != Role::System)
+                .cloned()
+                .collect::<Vec<_>>(),
+            [awaken_runtime_contract::llm::ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::text(child_user)]
+            }],
+            "{rule}: exact child command, no parent conversational/tool history"
+        );
+        // Reject a parent sentinel even if a faulty projection concatenated it
+        // into another legitimate guidance block instead of copying its row.
+        let contains_text =
+            |needle: &str| {
+                request.messages.iter().flat_map(|message| &message.content).any(
+                |block| matches!(block, ContentBlock::Text { text } if text.contains(needle)),
+            )
+            };
+        assert!(
+            !contains_text(PARENT_SYSTEM),
+            "{rule}: no parent accompanying System"
+        );
+        assert!(
+            !contains_text(ORIGINAL_ROOT),
+            "{rule}: no replaced parent instructions"
+        );
+        if rule == "R1" {
+            assert!(
+                !contains_text(REPLACEMENT),
+                "R1: other Agent does not inherit parent Replace"
+            );
+        }
+        let parent_requests = requests
+            .iter()
+            .filter(|request| request.tools.iter().any(|tool| tool.id == "send_message"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            parent_requests.len(),
+            4,
+            "{rule}: original coordinator sequence"
+        );
+        assert!(
+            parent_requests
+                .iter()
+                .all(|request| request.messages[0].content == [ContentBlock::text(REPLACEMENT)]),
+            "{rule}: parent keeps its Session Replace"
+        );
+        assert!(
+            parent_requests.iter().any(|request| request
+                .messages
+                .iter()
+                .any(|message| message.role == Role::User
+                    && message.content == [ContentBlock::text(parent_user)])),
+            "{rule}: parent-only User actually exercised"
+        );
+        assert!(
+            parent_requests.iter().any(|request| request
+                .messages
+                .iter()
+                .any(|message| message.role == Role::System
+                    && message.content == [ContentBlock::text(PARENT_SYSTEM)])),
+            "{rule}: parent-only System actually exercised"
+        );
+        assert!(
+            parent_requests.iter().any(|request| request
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool)),
+            "{rule}: parent tool history actually exercised"
+        );
+    }
+    lifecycle
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("join the original Workdir fixture owner");
+}

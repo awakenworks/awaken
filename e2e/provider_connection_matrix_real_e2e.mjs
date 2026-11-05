@@ -122,6 +122,21 @@ const eventText = (event) => (event.content ?? [])
   .join('')
   .trim();
 
+export function providerRunSelection(id, env = process.env) {
+  const control = env.AWAKEN_PROVIDER_MATRIX_CHILD_LITERAL_CONTROL;
+  assert.ok(control === undefined || control === '0' || control === '1',
+    'child literal control must be explicitly 0 or 1');
+  const childLiteralControl = control === '1';
+  const multiagent = env.AWAKEN_PROVIDER_MATRIX_MANAGED_MULTIAGENT === '1';
+  assert.ok(!(childLiteralControl && multiagent),
+    'diagnostic child literal control cannot replace required multiagent certification');
+  const prefix = `AWAKEN-MANAGED-${id.toUpperCase().replace(/[^A-Z0-9]+/gu, '-')}`;
+  const markers = { childReply: `${prefix}-CHILD-OK`, sendAccepted: `${prefix}-SEND-ACCEPTED`,
+    reportAck: `${prefix}-REPORT-ACK` };
+  return { childLiteralControl, multiagent, markers,
+    singleMarker: childLiteralControl ? markers.childReply : `AWAKEN-PROVIDER-${id.toUpperCase()}-OK` };
+}
+
 function frozenWorkerDeclaration(thread, worker, authoredSystem) {
   const agent = thread?.agent;
   if (!agent || agent.type !== 'agent' || agent.id !== worker) {
@@ -353,11 +368,17 @@ export async function managedMultiagentRun(base, coordinator, worker, markers, o
 }
 
 async function certifyProvider(item, index, result) {
+  // L1 default -> original single/multiagent path. L2 explicit standalone
+  // control -> the same Worker/publication/profile receives the exact child
+  // command through managedRun, once. L3 combining modes refuses before any
+  // fixture/Provider I/O. This observes literal copying without changing the
+  // original coordinator prompt, three attempts, model or Structured policy.
+  const selection = providerRunSelection(item.id, process.env);
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), `awaken-provider-${item.id}-`));
   const port = BASE_PORT + index;
   const env = deploymentEnv(directory, { identityMode: 'no-login' });
   const traceFile = path.join(directory, 'provider.spans.jsonl');
-  const certifyManagedMultiagent = process.env.AWAKEN_PROVIDER_MATRIX_MANAGED_MULTIAGENT === '1';
+  const certifyManagedMultiagent = selection.multiagent;
   let server;
   let failure;
   let started;
@@ -401,20 +422,28 @@ async function certifyProvider(item, index, result) {
     assert.equal(published.installed, true, `${item.id}: agent was not installed`);
     result.publications = { worker: published };
 
-    const marker = `AWAKEN-PROVIDER-${item.id.toUpperCase()}-OK`;
+    const marker = selection.singleMarker;
     result.boundary = 'single_managed_run';
     result.single_run = { status: 'running', boundary: 'create' };
+    if (selection.childLiteralControl) {
+      result.diagnostic_control = { scope: 'standalone child-literal control only',
+        expected_child_reply: selection.markers.childReply, multiagent_certified: false };
+    }
     await managedRun(base, agent, marker, result.single_run);
+    if (selection.childLiteralControl) {
+      // L4 contains-marker success is insufficient for this control: retain
+      // the exact same public-text oracle as the original child assertion.
+      // Extra/wrong/multiple replies fail and strict teardown still runs.
+      const replies = result.single_run.events_after_receipt
+        .filter(event => event.type === 'agent.message').map(eventText);
+      assert.equal(replies.length, 1, 'exact standalone child-literal reply count');
+      assert.equal(replies[0], selection.markers.childReply, 'exact standalone child-literal reply');
+    }
     pass(`${item.id}: discovery -> exact credential -> publication -> real Managed Run`);
     if (certifyManagedMultiagent) {
       result.boundary = 'multiagent_publication';
       const coordinator = `${agent}-coordinator`;
-      const markerPrefix = `AWAKEN-MANAGED-${item.id.toUpperCase().replace(/[^A-Z0-9]+/gu, '-')}`;
-      const markers = {
-        childReply: `${markerPrefix}-CHILD-OK`,
-        sendAccepted: `${markerPrefix}-SEND-ACCEPTED`,
-        reportAck: `${markerPrefix}-REPORT-ACK`,
-      };
+      const markers = selection.markers;
       const publishedCoordinator = await publishManagementAgent(base, coordinator, {
         id: coordinator,
         name: `Provider certification ${item.id} coordinator`,
@@ -519,6 +548,9 @@ async function certifyProvider(item, index, result) {
 
 async function main() {
   const report = { version: 1, results: [] };
+  if (process.env.AWAKEN_PROVIDER_MATRIX_CHILD_LITERAL_CONTROL === '1') {
+    report.scope = 'diagnostic standalone child-literal control';
+  }
   let failure;
   try {
     // Test design (real-provider matrix). Causes: C1=zero or more canonical
@@ -560,7 +592,8 @@ async function main() {
       console.error('Provider report write failed:', error.name, error.code ?? 'unknown');
     }
   }
-  console.log(`E2E PASS: ${report.results.length} real provider/dialect compatibility case(s).`);
+  if (report.scope) console.log(`DIAGNOSTIC: ${report.results.length} standalone child-literal control(s).`);
+  else console.log(`E2E PASS: ${report.results.length} real provider/dialect compatibility case(s).`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
