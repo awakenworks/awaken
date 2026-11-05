@@ -46,22 +46,111 @@ def _listed_selection(inventory: str, required: list[str] | tuple[str, ...]) -> 
     return planned, errors
 
 
+def _execution_observation(results: str) -> tuple[list[tuple[str, str]], list[str]]:
+    """Reconcile each libtest scope; only outer occurrences qualify selection."""
+    running = re.compile(r"running (\d+) tests?")
+    pending = re.compile(r"test (\S+)(?: - should panic)? \.\.\. ")
+    terminal = re.compile(r"(ok|FAILED|ignored)(?:,.*)?")
+    stack: list[dict] = []
+    observed: list[tuple[str, str]] = []
+    errors: list[str] = []
+    explicit, implicit, summaries, invalid_summary = False, False, 0, False
+
+    def scope(expected: int | None) -> dict:
+        return {"expected": expected, "rows": [], "pending": None, "children": 0}
+
+    def current() -> dict:
+        nonlocal implicit
+        if not stack:
+            if explicit:
+                errors.append("libtest output mixes explicit and implicit scopes")
+            implicit = True
+            stack.append(scope(None))
+        return stack[-1]
+
+    def record(active: dict, row: tuple[str, str]) -> None:
+        active["rows"].append(row)
+        if len(stack) == 1:
+            observed.append(row)
+
+    for line in results.splitlines():
+        if not line.strip():
+            continue
+        header = running.fullmatch(line)
+        if header:
+            if implicit:
+                errors.append("libtest output mixes explicit and implicit scopes")
+            explicit = True
+            if stack and stack[-1]["pending"] is None:
+                errors.append("nested libtest scope lacks a pending parent test")
+            stack.append(scope(int(header[1])))
+            continue
+        named = EXECUTED.fullmatch(line)
+        if named:
+            active = current()
+            if active["pending"] is not None:
+                errors.append("pending libtest test has no terminal result")
+            record(active, named.groups())
+            continue
+        opening = pending.fullmatch(line)
+        if opening:
+            active = current()
+            if active["pending"] is not None:
+                errors.append("pending libtest test has no terminal result")
+            active["pending"], active["children"] = opening[1], 0
+            continue
+        summary = SUMMARY.match(line)
+        if summary:
+            active = current()
+            stack.pop()
+            summaries += 1
+            status, passed, failed, ignored = summary.groups()
+            counts = (int(passed), int(failed), int(ignored))
+            invalid_summary |= status != "ok" or bool(counts[1] or counts[2])
+            if active["pending"] is not None:
+                errors.append("pending libtest test has no terminal result")
+            actual = Counter(result for _, result in active["rows"])
+            if tuple(actual[result] for result in ("ok", "FAILED", "ignored")) != counts:
+                errors.append("summary counts differ from named test results")
+            if active["expected"] is not None and active["expected"] != sum(counts):
+                errors.append("libtest scope header differs from its summary")
+            if any(result != "ok" for _, result in active["rows"]):
+                errors.append("required tests failed or were ignored")
+            if stack:
+                stack[-1]["children"] += len(active["rows"])
+            continue
+        ending = terminal.fullmatch(line)
+        if ending and stack:
+            active = stack[-1]
+            if active["pending"] is None or not active["children"]:
+                errors.append("libtest terminal lacks a completed nested scope")
+            else:
+                record(active, (active["pending"], ending[1]))
+                active["pending"], active["children"] = None, 0
+            continue
+        if line.startswith("test result:") or re.match(r"running\b.*\btests?\b", line):
+            errors.append("malformed libtest scope boundary")
+        if stack and stack[-1]["pending"] is not None:
+            # A complete nested scope, not arbitrary tracing/metrics plus an
+            # unrelated standalone ok, is the only split-row terminal witness.
+            errors.append("unframed output interrupts a pending libtest test")
+    if stack:
+        errors.append("libtest scope is incomplete")
+    if not summaries or invalid_summary:
+        errors.append("passing, non-skipped execution summaries are required")
+    return observed, errors
+
+
 def execution_evidence(inventory: str, results: str, exit_code: int,
                        required: list[str] | tuple[str, ...] = ()) -> dict:
     planned, errors = _listed_selection(inventory, required)
-    observed = EXECUTED.findall(results)
+    observed, scope_errors = _execution_observation(results)
+    errors.extend(scope_errors)
     actual = Counter(name for name, _ in observed)
     if exit_code:
         errors.insert(0, f"test command failed with status {exit_code}")
     if actual != planned:
         errors.append(f"selection differs: missing={dict(planned - actual)}, unexpected={dict(actual - planned)}")
-    if any(status != "ok" for _, status in observed):
-        errors.append("required tests failed or were ignored")
-    summaries = SUMMARY.findall(results)
-    if not summaries or any(status != "ok" or int(failed) or int(ignored) for status, _, failed, ignored in summaries):
-        errors.append("passing, non-skipped execution summaries are required")
-    if sum(int(passed) for _, passed, _, _ in summaries) != len(observed):
-        errors.append("summary counts differ from named test results")
     if SKIP.search(results):
         errors.append("a selected test skipped its fixture or behavior")
     # The validator, receipt and success count consume this same observation.
@@ -1735,6 +1824,120 @@ fi
                          "  diagnostic: SKIP is a status label"):
             with self.subTest(ordinary=ordinary):
                 self.assertEqual(execution_evidence(inventory, output + ordinary + "\n", 0)["errors"], [])
+
+    def test_nested_libtest_scopes_qualify_the_actual_hosted_worker_replay(self) -> None:
+        # DT-N1: the original H2 env-cleared selfspawn prints the parent's
+        # pending row, a complete child scope (including H5), then parent ok.
+        # E1 every scope reconciles its own named rows/count; E2 only the one
+        # outer selected occurrence qualifies. This is the actual retained
+        # stdout, not a summary-stripped or CHILD-flagged replacement run.
+        case = "worker::tests::hosted_worker_manifest_derives_session_resources_from_the_canonical_projection"
+        output = '\nrunning 1 test\ntest worker::tests::hosted_worker_manifest_derives_session_resources_from_the_canonical_projection ... \nrunning 1 test\ntest worker::tests::hosted_worker_manifest_derives_session_resources_from_the_canonical_projection ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 109 filtered out; finished in 0.01s\n\nok\n\nsuccesses:\n\nsuccesses:\n    worker::tests::hosted_worker_manifest_derives_session_resources_from_the_canonical_projection\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 109 filtered out; finished in 0.01s\n\n'
+        observed = execution_evidence(case + ": test\n", output, 0, [case])
+        self.assertEqual(observed["errors"], [])
+        self.assertEqual(observed["executed_cases"], [(case, "ok")])
+
+    def test_nested_scope_decision_table_rejects_incomplete_or_failed_evidence(self) -> None:
+        # Cause graph: C1 an exact pending parent row; C2 balanced nested
+        # running/summary scopes; C3 each scope's named status/count agrees;
+        # C4 every child and parent succeeds without fixture skips; C5 the
+        # independent outer inventory and process status agree. N2 all true
+        # qualifies, including nested grandchildren and sequential children.
+        # A completed nested header alone is not execution evidence: N6
+        # empty-only or multiple empty children refuse; N7 an empty child
+        # plus a named, completed child qualifies. Zero-test outer binaries
+        # stay legal alongside the independently listed parent selection.
+        # N3 any false condition refuses; no arbitrary standalone ok may
+        # repair tracing/interleaving or a truncated child/parent terminal.
+        inventory = "parent: test\n"
+        child = "running 1 test\ntest child ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
+        start = "running 1 test\ntest parent ... \n"
+        end = "ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
+        valid = start + child + end
+        empty = "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored;\n"
+        grandchild = child.replace("test child ... ok\n", "test child ... \n" + child.replace("child", "grandchild") + "ok\n")
+        for output in (valid, start + child + child + end, start + grandchild + end,
+                       start + empty + child + end, start + child + empty + end,
+                       empty + valid):
+            self.assertEqual(execution_evidence(inventory, output, 0)["errors"], [])
+        invalid = {
+            "empty-child-only": start + empty + end,
+            "multiple-empty-children-only": start + empty + empty + end,
+            "child-failed": valid.replace("test child ... ok", "test child ... FAILED").replace("test result: ok. 1 passed", "test result: FAILED. 0 passed", 1).replace("0 failed", "1 failed", 1),
+            "child-ignored": valid.replace("test child ... ok", "test child ... ignored").replace("ok. 1 passed; 0 failed; 0 ignored", "ok. 0 passed; 0 failed; 1 ignored", 1),
+            "child-skip": valid.replace("test child ... ok", "SKIP missing fixture\ntest child ... ok"),
+            "child-count": valid.replace("running 1 test\ntest child", "running 2 tests\ntest child"),
+            "child-missing-name": valid.replace("test child ... ok\n", ""),
+            "child-missing-summary": start + child.rsplit("test result:", 1)[0],
+            "parent-missing-name": valid.replace("test parent ... \n", ""),
+            "parent-missing-terminal": start + child + end[3:],
+            "parent-missing-summary": start + child + "ok\n",
+            "extra-terminal": valid.replace(end, "ok\nok\n" + end[3:]),
+            "extra-child-row": valid.replace("test child ... ok\n", "test child ... ok\ntest other ... ok\n"),
+            "flat-before-header": "test parent ... ok\n" + valid,
+            "flat-after-header": valid + "test parent ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n",
+            "implicit-parent": "test parent ... \n" + child + end,
+            "tracing-prefix": valid.replace("test parent ... \n", "test parent ... metric=10\n"),
+            "tracing-between": start + "metric=10\n" + child + end,
+            "unbalanced-header": "running 1 test\n" + valid,
+            "actual-default-parallel-without-pending": '\nrunning 1 test\n\nrunning 1 test\ntest parent ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\ntest parent ... ok\n\nsuccesses:\n\nsuccesses:\n    parent\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n',
+            "malformed-header": valid.replace("running 1 test", "running one test", 1),
+            "renamed-outer": valid.replace("test parent ... ", "test other ... "),
+        }
+        for name, output in invalid.items():
+            with self.subTest(rule=name):
+                self.assertTrue(execution_evidence(inventory, output, 0)["errors"])
+        self.assertTrue(execution_evidence(inventory, valid, 101)["errors"])
+        # N4 independent sequential binaries may each execute the same name;
+        # nested child names do not inflate that outer occurrence count.
+        repeated = "running 1 test\ntest parent ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
+        self.assertEqual(execution_evidence(inventory * 2, repeated + valid, 0)["errors"], [])
+        self.assertTrue(execution_evidence(inventory, repeated + valid, 0)["errors"])
+
+    def test_actual_libtest_selfspawn_is_qualified_without_rewriting_output(self) -> None:
+        # DT-N5 uses the same real rustc/libtest boundary as the existing
+        # expected-panic regression: env-cleared current_exe child success
+        # qualifies its parent once; failed child/parent never qualifies.
+        # Original H5 uses --test-threads=1: only its attributable pending-
+        # parent grammar qualifies. The actual default-parallel output with
+        # no pending parent is retained as a refusal row above, not supported
+        # by guessing a parent. No production flags or output are rewritten.
+        with tempfile.TemporaryDirectory(prefix="awaken-libtest-selfspawn-") as temporary:
+            root = Path(temporary)
+            source = root / "fixture.rs"
+            source.write_text('''#[test] fn parent() {
+    if std::env::var_os("AWAKEN_LIBTEST_FIXTURE_CHILD").is_some() {
+        assert!(std::env::var_os("AWAKEN_LIBTEST_FIXTURE_FAIL").is_none());
+        return;
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child.args(["--exact", "parent", "--nocapture"]).env_clear()
+        .env("AWAKEN_LIBTEST_FIXTURE_CHILD", "1");
+    if std::env::var_os("AWAKEN_LIBTEST_FIXTURE_FAIL").is_some() {
+        child.env("AWAKEN_LIBTEST_FIXTURE_FAIL", "1");
+    }
+    assert!(child.status().unwrap().success());
+}
+''', encoding="utf-8")
+            binary = root / ("fixture.exe" if os.name == "nt" else "fixture")
+            compiled = subprocess.run(["rustc", "--test", str(source), "-o", str(binary)],
+                                      capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
+            listed = subprocess.run([str(binary), "--exact", "parent", "--list"],
+                                    check=True, capture_output=True, text=True).stdout
+            for fails in (False, True):
+                values = dict(os.environ)
+                values.pop("AWAKEN_LIBTEST_FIXTURE_FAIL", None)
+                values.pop("AWAKEN_LIBTEST_FIXTURE_CHILD", None)
+                if fails:
+                    values["AWAKEN_LIBTEST_FIXTURE_FAIL"] = "1"
+                executed = subprocess.run([str(binary), "--exact", "parent", "--test-threads=1", "--show-output"],
+                                          env=values, capture_output=True, text=True)
+                self.assertEqual(executed.returncode, 101 if fails else 0, executed.stdout + executed.stderr)
+                observed = execution_evidence(listed, executed.stdout, executed.returncode, ["parent"])
+                self.assertEqual(not observed["errors"], not fails, executed.stdout + executed.stderr)
+                if not fails:
+                    self.assertEqual(observed["executed_cases"], [("parent", "ok")])
 
     def test_same_name_in_two_binaries_retains_occurrence_count(self) -> None:
         inventory = "same: test\nsame: test\n"
