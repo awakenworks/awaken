@@ -15,6 +15,8 @@ use awaken_sync::InvariantRwLock;
 use super::off_event_loop;
 use super::{ActionNamespace, qualified_action, rfc3339_at, unix_seconds_at};
 
+mod private_account;
+
 pub(super) fn cloud_authorization_denial_detail(
     action: &awaken_iam_contract::ActionKey,
     workspace: &str,

@@ -5,7 +5,7 @@
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use awaken_outbound_http::{InternalHttpClient, JsonRequest, normalize_http_base_url};
+use awaken_outbound_http::{HttpReply, InternalHttpClient, JsonRequest, normalize_http_base_url};
 use awaken_service_auth_contract::{
     ProjectedFileServiceBearerTokenSource, ServiceBearerTokenSource, resolve_service_bearer_token,
 };
@@ -21,6 +21,32 @@ pub struct HttpOrdinaryWorkspaceAdmission {
 }
 
 impl HttpOrdinaryWorkspaceAdmission {
+    pub(super) fn sibling_endpoint(&self, endpoint: &str) -> Result<Self, String> {
+        let endpoint = normalize_http_base_url(endpoint).map_err(|error| error.to_string())?;
+        Ok(Self {
+            endpoint,
+            audience: self.audience.clone(),
+            client: self.client.clone(),
+            tokens: self.tokens.clone(),
+        })
+    }
+
+    pub(super) async fn observe_json(
+        &self,
+        body: &str,
+    ) -> Result<HttpReply, WorkspacePurposeUnavailable> {
+        let token = resolve_service_bearer_token(self.tokens.as_ref())
+            .map_err(|_| WorkspacePurposeUnavailable)?;
+        let request = JsonRequest::post(&self.endpoint)
+            .bearer(token.as_ref())
+            .header("x-iam-audience", &self.audience)
+            .json_body(body);
+        self.client
+            .send(&request)
+            .await
+            .map_err(|_| WorkspacePurposeUnavailable)
+    }
+
     pub fn new(
         endpoint: &str,
         audience: &str,
@@ -65,18 +91,8 @@ impl OrdinaryWorkspaceAdmission for HttpOrdinaryWorkspaceAdmission {
         &self,
         workspace_id: &str,
     ) -> Result<bool, WorkspacePurposeUnavailable> {
-        let token = resolve_service_bearer_token(self.tokens.as_ref())
-            .map_err(|_| WorkspacePurposeUnavailable)?;
         let body = serde_json::json!({ "workspace_id": workspace_id }).to_string();
-        let request = JsonRequest::post(&self.endpoint)
-            .bearer(token.as_ref())
-            .header("x-iam-audience", &self.audience)
-            .json_body(&body);
-        let reply = self
-            .client
-            .send(&request)
-            .await
-            .map_err(|_| WorkspacePurposeUnavailable)?;
+        let reply = self.observe_json(&body).await?;
         match (reply.status(), reply.body().is_empty()) {
             (204, true) => Ok(true),
             (404, true) => Ok(false),

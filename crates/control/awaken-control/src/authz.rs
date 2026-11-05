@@ -154,6 +154,7 @@ mod hosted_route_profile;
 mod local_browser;
 mod managed_context;
 mod off_event_loop;
+mod private_assistant;
 mod profiles;
 mod route_policy;
 use credentials::{
@@ -165,6 +166,7 @@ pub(crate) use managed_context::with_composed_workspace;
 use route_policy::ROUTE_POLICIES;
 mod remote;
 mod workspace_purpose;
+pub use private_assistant::{HttpPrivateWorkspaceContext, private_session_read_router};
 use remote::{
     RemoteAuthenticationFailure, authenticate_off_event_loop, is_managed_tunnel_workload,
 };

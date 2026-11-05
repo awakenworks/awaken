@@ -58,6 +58,17 @@ pub(super) async fn prepare_runtime_routers(
     model_supply: PublicationModelSupply,
     process: ProcessStartup,
 ) -> Result<ProcessRouters, String> {
+    if process.managed_services.private_workspace_context.is_some()
+        && (process.role != config::Role::Coordinator
+            || iam.is_some()
+            || remote_iam.is_none()
+            || process
+                .managed_services
+                .ordinary_workspace_admission
+                .is_none())
+    {
+        return Err("private Session ingress requires a hosted Coordinator with remote IAM and ordinary Workspace admission".into());
+    }
     let mut base = open_process_base(stores, iam, remote_iam, process).await?;
     let credential_execution =
         Arc::new(crate::credential_execution::ExecutionAuthoritySlot::default());
@@ -997,6 +1008,7 @@ async fn finish_process_routers(
         base.remote_iam.clone(),
         control.audit_plane,
         base.managed_rate_limiter.clone(),
+        base.process.managed_services.private_workspace_context,
     );
     let (flat, mcp_export) = match base.role {
         config::Role::AllInOne => (data.merge(control.router), control.mcp_export),

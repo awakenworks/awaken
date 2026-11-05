@@ -131,7 +131,8 @@ pub use service::{
 // constants a test / operator embedding drives — re-exported from the authoring plane.
 pub use awaken_control::{
     ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, HttpOrdinaryWorkspaceAdmission,
-    ManagementAuthz, ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
+    HttpPrivateWorkspaceContext, ManagementAuthz, ManagementIdentityMode, RemoteManagementAuthz,
+    TokenSpec, embedded_iam,
 };
 mod live_runtime_capabilities;
 mod managed_platform;

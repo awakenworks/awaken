@@ -246,3 +246,21 @@ Workspace selection. Path dispatch reconstructs request extensions, so putting
 the port only on the outside router would silently leave qualified Workspace
 paths unprotected. Flat and addressed requests enter the same target router
 with the same configured purpose authority.
+
+## Explicit current private Session reads
+
+A hosted Coordinator can mount an addressed private Session read path over the
+same Managed state and repository. The ingress accepts the original direct
+Account bearer for the configured runtime audience. Native IAM UserInfo proves
+that the Account and credential are current. The hosted purpose owner then
+resolves the private binding for that Account at the addressed Workspace. The
+Coordinator requires the original Hosted Runtime action decision before it
+passes the five coordinates in process to the canonical Session read handler.
+No bearer is passed to the handler, and responses cannot be shared by caches.
+
+Flat requests, delegations, service credentials, generic management, and the
+Worker listener cannot select this view. A disabled or changed application
+binding cannot adopt old content. Session lists, history, threads, and Session
+resources retain their native ownership checks, response conventions, and Org
+admission. Writes, File bytes and long-lived streams require separate admission
+and rollout proof before they can enter through this path.

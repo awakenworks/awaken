@@ -67,6 +67,7 @@ ROUTE_OWNER_FILES = (
     "crates/control/awaken-control/src/config_routes.rs",
     "crates/control/awaken-control/src/config_routes/lifecycle.rs",
     "crates/control/awaken-control/src/authz.rs",
+    "crates/control/awaken-control/src/authz/private_assistant.rs",
     "crates/control/awaken-control/src/admin_assistant.rs",
     "crates/control/awaken-control/src/application_mcp_credentials.rs",
     "crates/control/awaken-control/src/application_credentials.rs",

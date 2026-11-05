@@ -41,6 +41,8 @@ pub struct ManagedServiceAdapters {
     /// the public Management, service and application-token PEPs.
     pub ordinary_workspace_admission:
         Option<Arc<dyn awaken_tenancy::workspace_purpose::OrdinaryWorkspaceAdmission>>,
+    /// Coordinator-only read ingress for explicitly addressed personal content.
+    pub private_workspace_context: Option<Arc<awaken_control::HttpPrivateWorkspaceContext>>,
     pub list_price_provider: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
     pub tunnel_application: Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
     pub inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
@@ -112,6 +114,15 @@ impl ManagedServiceAdapters {
         admission: Arc<dyn awaken_tenancy::workspace_purpose::OrdinaryWorkspaceAdmission>,
     ) -> Self {
         self.ordinary_workspace_admission = Some(admission);
+        self
+    }
+
+    #[must_use]
+    pub fn with_private_workspace_context(
+        mut self,
+        context: Arc<awaken_control::HttpPrivateWorkspaceContext>,
+    ) -> Self {
+        self.private_workspace_context = Some(context);
         self
     }
 
