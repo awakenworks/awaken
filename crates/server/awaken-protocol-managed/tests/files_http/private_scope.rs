@@ -107,6 +107,78 @@ async fn selected_surface(
     app.clone().oneshot(request).await.unwrap()
 }
 
+async fn check_private_file_reads(app: &Router) {
+    use awaken_protocol_managed::AdmittedPrivateSessionRequest;
+
+    for (org, application, account, workspace, revision, admitted) in [
+        ("org-a", "desk", "alice", "test", 1, true),
+        ("org-b", "desk", "alice", "test", 1, false),
+        ("org-a", "other-app", "alice", "test", 1, false),
+        ("org-a", "desk", "bob", "test", 1, false),
+        ("org-a", "desk", "alice", "other-workspace", 1, false),
+        ("org-a", "desk", "alice", "test", 2, false),
+    ] {
+        let binding = SessionPrivateBinding::new(
+            org.into(),
+            application.into(),
+            account.into(),
+            workspace.into(),
+            revision,
+        )
+        .unwrap();
+        let private = app.clone().layer(axum::Extension(
+            AdmittedPrivateSessionRequest::from_admitted(binding),
+        ));
+        for (id, bytes) in [
+            ("file_private", "file_private"),
+            ("file_private_input", "file_ordinary"),
+        ] {
+            for suffix in ["", "/content"] {
+                let response = selected_surface(
+                    &private,
+                    "GET",
+                    &format!("/v1/files/{id}{suffix}"),
+                    false,
+                    "",
+                )
+                .await;
+                let expected = if admitted {
+                    StatusCode::OK
+                } else {
+                    StatusCode::NOT_FOUND
+                };
+                assert_eq!(
+                    response.status(),
+                    expected,
+                    "{account}/{workspace}/{revision}/{id}{suffix}"
+                );
+                if admitted && suffix == "/content" {
+                    assert_eq!(
+                        axum::body::to_bytes(response.into_body(), 1024)
+                            .await
+                            .unwrap(),
+                        bytes.as_bytes()
+                    );
+                }
+            }
+        }
+        for id in ["file_ordinary", "file_unknown"] {
+            assert_eq!(
+                selected_surface(
+                    &private,
+                    "GET",
+                    &format!("/v1/files/{id}/content"),
+                    false,
+                    ""
+                )
+                .await
+                .status(),
+                StatusCode::NOT_FOUND
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn native_session_visibility_protects_every_file_surface_before_pagination_bytes_and_delete()
 {
@@ -201,6 +273,7 @@ async fn native_session_visibility_protects_every_file_surface_before_pagination
             .expect(StatusCode::OK),
         b"file_ordinary"
     );
+    check_private_file_reads(&app).await;
     let private = resources
         .authorities()
         .file_catalog()

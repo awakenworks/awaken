@@ -120,16 +120,21 @@ pub fn resources_router(input: ResourcesRouterInput) -> Router {
     let resources = input.resources;
     let authorities = resources.authorities();
     let clock = authorities.clock();
-    files::files_router_with_session_reads(resources.files(), clock.clone(), input.sessions)
-        .merge(memory_stores_router(&resources))
-        .merge(repositories_router(
-            resources.repositories(input.credentials),
-        ))
-        .merge(skills_router(
-            Some(authorities.skill_store()),
-            resources.purge_scheduler(),
-            clock,
-        ))
+    files::files_router_with_session_reads(
+        resources.files(),
+        clock.clone(),
+        input.sessions,
+        Some(resources.private_file_views()),
+    )
+    .merge(memory_stores_router(&resources))
+    .merge(repositories_router(
+        resources.repositories(input.credentials),
+    ))
+    .merge(skills_router(
+        Some(authorities.skill_store()),
+        resources.purge_scheduler(),
+        clock,
+    ))
 }
 
 #[cfg(test)]

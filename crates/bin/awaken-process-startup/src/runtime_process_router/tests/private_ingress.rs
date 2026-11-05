@@ -92,13 +92,30 @@ async fn configured_private_reads_are_addressed_and_never_mounted_on_the_private
         status(routers.private_router.clone(), addressed).await,
         StatusCode::NOT_FOUND
     );
+    let addressed_file = "/v1/workspaces/assistant-a/private-assistant/files/file-a/content";
+    assert_eq!(
+        status(routers.public_router.clone(), addressed_file).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        status(routers.private_router.clone(), addressed_file).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        status(
+            routers.public_router.clone(),
+            "/v1/workspaces/assistant-a/private-assistant/files"
+        )
+        .await,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         status(
             routers.public_router.clone(),
             "/v1/workspaces/assistant-a/private-assistant/sessions/a/events/stream"
         )
         .await,
-        StatusCode::NOT_FOUND
+        StatusCode::UNAUTHORIZED
     );
     routers
         .service_lifecycle

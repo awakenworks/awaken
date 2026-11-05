@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use crate::AdmittedPrivateSessionRequest;
 use crate::common::headers::{ManagedCapability, parse_idempotency_key_header};
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
@@ -35,6 +36,7 @@ use axum::{Json, Router};
 
 use super::managed_resource_error as error;
 
+mod private_reads;
 mod visibility;
 use visibility::FileHttpState;
 
@@ -42,13 +44,14 @@ use visibility::FileHttpState;
 /// stamps `created_at` with): an upload's `expires_at` is minted from it and a
 /// download judges that expiry against it.
 pub fn files_router(files: Arc<dyn FileApplicationService>, clock: Arc<dyn WallClock>) -> Router {
-    files_router_with_session_reads(files, clock, None)
+    files_router_with_session_reads(files, clock, None, None)
 }
 
 pub(super) fn files_router_with_session_reads(
     files: Arc<dyn FileApplicationService>,
     clock: Arc<dyn WallClock>,
     sessions: Option<Arc<dyn awaken_session_application::SessionRootReads>>,
+    private_inputs: Option<awaken_resource_application::PrivateFileViewFactory>,
 ) -> Router {
     Router::new()
         .route("/v1/files", post(upload_file).get(list_files))
@@ -57,6 +60,7 @@ pub(super) fn files_router_with_session_reads(
         .with_state(FileHttpState {
             application: files,
             sessions,
+            private_inputs,
         })
         .layer(Extension(clock))
 }
@@ -394,6 +398,7 @@ async fn upload_file(
 
 async fn get_file(
     State(files): State<FileHttpState>,
+    private: Option<Extension<AdmittedPrivateSessionRequest>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -403,7 +408,11 @@ async fn get_file(
         Ok(surface) => surface,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
     };
-    match files.get(&workspace, &id).await {
+    let result = match private {
+        Some(Extension(request)) => files.get_private(request.binding(), &workspace, &id).await,
+        None => files.get(&workspace, &id).await,
+    };
+    match result {
         Ok(Some(record)) => match surface {
             ManagedResourceApiSurface::CapabilityBeta => {
                 (StatusCode::OK, Json(beta_metadata(&record))).into_response()
@@ -448,6 +457,7 @@ async fn delete_file(
 
 async fn download_file(
     State(files): State<FileHttpState>,
+    private: Option<Extension<AdmittedPrivateSessionRequest>>,
     Extension(clock): Extension<Arc<dyn WallClock>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
@@ -457,7 +467,15 @@ async fn download_file(
     if let Err(message) = resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Files) {
         return error(StatusCode::BAD_REQUEST, message);
     }
-    match files.bytes(&workspace, &id).await {
+    let result = match private {
+        Some(Extension(request)) => {
+            files
+                .private_bytes(request.binding(), &workspace, &id)
+                .await
+        }
+        None => files.bytes(&workspace, &id).await,
+    };
+    match result {
         Ok(Some((record, _))) if !record.downloadable => {
             error(StatusCode::BAD_REQUEST, "file is not downloadable")
         }

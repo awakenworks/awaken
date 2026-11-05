@@ -48,7 +48,7 @@ mod profiled_run;
 mod stream;
 #[cfg(test)]
 use stream::replay_is_terminal_after;
-use stream::{LiveSseSource, SseTerminalScope, live_sse_stream};
+use stream::{LiveSseSource, SseTerminalScope, live_sse_stream, private_stream_deadline};
 
 pub use content_capture::get_session_content_capture;
 pub use event_admission::close_event_admission;
@@ -1072,6 +1072,7 @@ async fn stream_thread_events(
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, StateError>>>, WireErr> {
     require_v1_stream_time(&headers)?;
+    let deadline = private_stream_deadline(state.as_ref());
     // The official Thread EventStreamParams carries the same preview selector as
     // the Session stream. Primary and ordinary child Threads consume the same
     // Runtime-owned live observer; Advisor consultations intentionally expose
@@ -1120,6 +1121,7 @@ async fn stream_thread_events(
                 .ok_or_else(|| error_response(StateError::NotFound))?,
             revision,
             current: observation == ProjectionObservationDecision::UseRefreshed,
+            deadline,
         },
         snapshot,
         rx,
@@ -1572,6 +1574,7 @@ async fn stream_events(
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, StateError>>>, WireErr> {
     require_v1_stream_time(&headers)?;
+    let deadline = private_stream_deadline(state.as_ref());
     // Opt in to live previews (`event_start`/`event_delta`) via `event_deltas[]`.
     let previews = parse_event_deltas(raw.as_deref())?;
     let observation = state
@@ -1611,6 +1614,7 @@ async fn stream_events(
                 .ok_or_else(|| error_response(StateError::NotFound))?,
             revision,
             current: observation == ProjectionObservationDecision::UseRefreshed,
+            deadline,
         },
         snapshot,
         rx,

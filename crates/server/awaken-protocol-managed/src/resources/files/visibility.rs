@@ -10,6 +10,7 @@ use std::sync::Arc;
 pub(super) struct FileHttpState {
     pub(super) application: Arc<dyn FileApplicationService>,
     pub(super) sessions: Option<Arc<dyn awaken_session_application::SessionRootReads>>,
+    pub(super) private_inputs: Option<awaken_resource_application::PrivateFileViewFactory>,
 }
 
 impl FileHttpState {

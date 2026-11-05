@@ -166,7 +166,7 @@ pub(crate) use managed_context::with_composed_workspace;
 use route_policy::ROUTE_POLICIES;
 mod remote;
 mod workspace_purpose;
-pub use private_assistant::{HttpPrivateWorkspaceContext, private_session_read_router};
+pub use private_assistant::{HttpPrivateWorkspaceContext, private_content_read_router};
 use remote::{
     RemoteAuthenticationFailure, authenticate_off_event_loop, is_managed_tunnel_workload,
 };

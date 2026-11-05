@@ -264,3 +264,20 @@ binding cannot adopt old content. Session lists, history, threads, and Session
 resources retain their native ownership checks, response conventions, and Org
 admission. Writes, File bytes and long-lived streams require separate admission
 and rollout proof before they can enter through this path.
+
+The addressed private read surface also admits exact File metadata and byte
+reads under the existing Workspace File action. The Resources application
+selects personal uploads with the exact immutable File provenance. Session
+outputs instead require the original Session's exact private ownership verdict.
+An ordinary upload, foreign binding or unknown Session never substitutes for
+either source. The private alias does not expose Workspace File listing,
+mutation, or deletion. All responses use the original Files adapter and are
+marked no-store by the private ingress.
+
+Private Session and Thread event streams use the same addressed admission and
+canonical projection. Each admitted stream has an absolute 30-second delivery
+window, including replay; an idle stream also closes at its deadline. A
+reconnect obtains fresh Account, application and PDP authority. Revocation
+denies new admission, and does not recall frames already delivered within an
+in-flight window. Ordinary streams retain their existing lifecycle. The alias
+still accepts no mutation or interrupt.

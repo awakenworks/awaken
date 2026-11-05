@@ -31,6 +31,7 @@ struct Authorities {
     userinfo_calls: AtomicUsize,
     scope_calls: AtomicUsize,
     decision_calls: AtomicUsize,
+    file_decisions: AtomicUsize,
 }
 
 async fn current_account(State(state): State<Arc<Authorities>>, headers: HeaderMap) -> Response {
@@ -88,6 +89,14 @@ async fn decision(
     Json(request): Json<AuthorizationRequest>,
 ) -> Response {
     state.decision_calls.fetch_add(1, Ordering::SeqCst);
+    if request.action == crate::authz::qualified_action(ActionNamespace::Workspace, "file.read") {
+        state.file_decisions.fetch_add(1, Ordering::SeqCst);
+    } else {
+        assert_eq!(
+            request.action,
+            crate::authz::qualified_action(ActionNamespace::HostedRuntime, "run.read")
+        );
+    }
     assert_eq!(
         request.principal,
         PrincipalRef::Account {
@@ -162,6 +171,7 @@ fn addressed_private_read_requires_current_account_binding_and_decision_before_t
         userinfo_calls: AtomicUsize::new(0),
         scope_calls: AtomicUsize::new(0),
         decision_calls: AtomicUsize::new(0),
+        file_decisions: AtomicUsize::new(0),
     });
     let (base, server) = runtime.block_on(async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -227,7 +237,30 @@ fn addressed_private_read_requires_current_account_binding_and_decision_before_t
             },
         ),
     );
-    let app = private_session_read_router(sessions, iam, context);
+    let managed = sessions.route(
+        "/v1/files/{id}/content",
+        get(
+            |Path(id): Path<String>,
+             Extension(_private): Extension<AdmittedPrivateSessionRequest>,
+             headers: HeaderMap| async move {
+                assert_eq!(id, "file-a");
+                assert!(!headers.contains_key("authorization"));
+                StatusCode::ACCEPTED
+            },
+        ),
+    );
+    let managed =
+        managed.route(
+            "/v1/sessions/{id}/events/stream",
+            get(
+                |Extension(_private): Extension<AdmittedPrivateSessionRequest>,
+                 headers: HeaderMap| async move {
+                    assert!(!headers.contains_key("authorization"));
+                    StatusCode::OK
+                },
+            ),
+        );
+    let app = private_content_read_router(managed, iam, context);
     let path = "/v1/private-assistant/sessions/session-a/events";
     let request = |method: &str, path: &str, bearer: &str, addressed: bool| {
         let builder = Request::builder()
@@ -262,14 +295,29 @@ fn addressed_private_read_requires_current_account_binding_and_decision_before_t
             call(request("POST", path, &human, true)).await,
             StatusCode::METHOD_NOT_ALLOWED
         );
-        assert_eq!(
-            call(request("GET", &format!("{path}/stream"), &human, true)).await,
-            StatusCode::NOT_FOUND
-        );
         assert_eq!(state.userinfo_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
             call(request("GET", path, &human, true)).await,
             StatusCode::NO_CONTENT
+        );
+        let stream = format!("{path}/stream");
+        assert_eq!(
+            call(request("GET", &stream, &human, true)).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(request(
+                "GET",
+                "/v1/private-assistant/files/file-a/content",
+                &human,
+                true
+            ))
+            .await,
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            call(request("GET", "/v1/private-assistant/files", &human, true)).await,
+            StatusCode::NOT_FOUND
         );
         state.wrong_coordinates.store(true, Ordering::SeqCst);
         assert_eq!(
@@ -290,13 +338,14 @@ fn addressed_private_read_requires_current_account_binding_and_decision_before_t
         );
         state.account_status.store(401, Ordering::SeqCst);
         assert_eq!(
-            call(request("GET", path, &human, true)).await,
+            call(request("GET", &stream, &human, true)).await,
             StatusCode::UNAUTHORIZED
         );
     });
-    assert_eq!(state.userinfo_calls.load(Ordering::SeqCst), 5);
-    assert_eq!(state.scope_calls.load(Ordering::SeqCst), 4);
+    assert_eq!(state.userinfo_calls.load(Ordering::SeqCst), 7);
+    assert_eq!(state.scope_calls.load(Ordering::SeqCst), 6);
     assert!(state.decision_calls.load(Ordering::SeqCst) >= 2);
+    assert_eq!(state.file_decisions.load(Ordering::SeqCst), 1);
     assert_eq!(handled.load(Ordering::SeqCst), 1);
     server.abort();
 }

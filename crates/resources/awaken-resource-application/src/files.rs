@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 mod deletion;
 mod private_view;
-pub use private_view::admitted_private_file_view;
+pub use private_view::{PrivateFileViewFactory, admitted_private_file_view};
 #[cfg(test)]
 mod private_inputs;
 

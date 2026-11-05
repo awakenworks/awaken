@@ -32,7 +32,7 @@ pub(super) fn protect(
                 Some(managed_rate_limiter.clone()),
             ),
         );
-        awaken_control::private_session_read_router(
+        awaken_control::private_content_read_router(
             sessions,
             remote_iam
                 .clone()

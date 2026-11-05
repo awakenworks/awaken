@@ -4,7 +4,23 @@
 //! One already-admitted personal input request over the original File authority.
 
 use super::FileApplication;
-use awaken_resource_contract::PrivateContentBinding;
+use awaken_resource_contract::{FileApplicationService, PrivateContentBinding};
+use std::sync::Arc;
+
+/// Select admitted personal input views over the original File application.
+#[derive(Clone)]
+pub struct PrivateFileViewFactory(Arc<FileApplication>);
+
+impl PrivateFileViewFactory {
+    pub(crate) fn new(application: Arc<FileApplication>) -> Self {
+        Self(application)
+    }
+
+    #[must_use]
+    pub fn for_binding(&self, binding: PrivateContentBinding) -> Arc<dyn FileApplicationService> {
+        Arc::new(admitted_private_file_view(&self.0, binding))
+    }
+}
 
 /// The host must freshly admit identity, Org membership, application binding
 /// and native PDP authority before selecting this view. A decoded binding is

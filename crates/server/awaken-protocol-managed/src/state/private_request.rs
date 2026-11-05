@@ -23,6 +23,10 @@ impl AdmittedPrivateSessionRequest {
     pub fn from_admitted(binding: SessionPrivateBinding) -> Self {
         Self(binding)
     }
+
+    pub(crate) fn binding(&self) -> &SessionPrivateBinding {
+        &self.0
+    }
 }
 
 /// The ordinary state and the private view share all of the same application

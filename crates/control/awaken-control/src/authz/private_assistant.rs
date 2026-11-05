@@ -1,7 +1,7 @@
 // @formal surface requirement=runtime.permission.authority_never_widens
 // @formal reason: Private HTTP admission combines current native Account,
 // @formal reason: Workspace-purpose and PDP authority before selecting the Session view.
-//! Explicit private Session read ingress over the original Managed router.
+//! Explicit private content reads over the original Managed router.
 
 use std::sync::Arc;
 
@@ -63,16 +63,16 @@ impl HttpPrivateWorkspaceContext {
 
 #[derive(Clone)]
 struct Ingress {
-    sessions: Router,
+    managed: Router,
     iam: Arc<RemoteManagementAuthz>,
     context: Arc<HttpPrivateWorkspaceContext>,
 }
 
-/// Mount the finite read surface. The caller supplies the same Managed Session
+/// Mount the finite read surface. The caller supplies the same Managed
 /// router and state used by ordinary routes. Addressed Workspace selection is
 /// required; the flat platform default cannot select a private application.
-pub fn private_session_read_router(
-    sessions: Router,
+pub fn private_content_read_router(
+    managed: Router,
     iam: Arc<RemoteManagementAuthz>,
     context: Arc<HttpPrivateWorkspaceContext>,
 ) -> Router {
@@ -88,13 +88,13 @@ pub fn private_session_read_router(
             },
         ))
         .with_state(Ingress {
-            sessions,
+            managed,
             iam,
             context,
         })
 }
 
-fn canonical_read(method: &Method, path: &str) -> Option<String> {
+fn canonical_read(method: &Method, path: &str) -> Option<(String, ActionNamespace)> {
     if method != Method::GET {
         return None;
     }
@@ -103,18 +103,22 @@ fn canonical_read(method: &Method, path: &str) -> Option<String> {
     if segments.iter().any(|segment| segment.is_empty()) {
         return None;
     }
-    match segments.as_slice() {
+    let namespace = match segments.as_slice() {
         ["sessions"]
         | ["sessions", _]
         | ["sessions", _, "events" | "threads" | "resources"]
         | ["sessions", _, "threads" | "resources", _]
-        | ["sessions", _, "threads", _, "events"] => Some(format!("/v1/{operation}")),
-        _ => None,
-    }
+        | ["sessions", _, "events", "stream"]
+        | ["sessions", _, "threads", _, "events" | "stream"] => ActionNamespace::HostedRuntime,
+        ["files", _] | ["files", _, "content"] => ActionNamespace::Workspace,
+        _ => return None,
+    };
+    Some((format!("/v1/{operation}"), namespace))
 }
 
 async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response {
-    let Some(canonical) = canonical_read(request.method(), request.uri().path()) else {
+    let Some((canonical, namespace)) = canonical_read(request.method(), request.uri().path())
+    else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let Some(workspace) = request
@@ -123,10 +127,10 @@ async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response 
         .map(|tenancy| tenancy.workspace_id.clone())
         .filter(|workspace| !workspace.is_empty())
     else {
-        return forbidden("private Sessions require an addressed Workspace");
+        return forbidden("private content requires an addressed Workspace");
     };
     let Some(token) = authorization_bearer_token(request.headers()) else {
-        return unauthenticated("private Sessions require a current Account");
+        return unauthenticated("private content requires a current Account");
     };
     let token = RedactedString::new(token);
     let iam = ingress.iam.clone();
@@ -137,7 +141,7 @@ async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response 
     {
         Ok(Ok(account)) => account,
         Ok(Err(AuthReject::Invalid | AuthReject::Expired | AuthReject::Revoked)) => {
-            return unauthenticated("private Sessions require a current Account");
+            return unauthenticated("private content requires a current Account");
         }
         Ok(Err(AuthReject::Unavailable)) | Err(_) => return iam_unavailable(),
     };
@@ -146,8 +150,11 @@ async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response 
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return iam_unavailable(),
     };
-    let (action, scope) = match action_for(request.method(), &canonical) {
-        Some(RouteAuthz::HostedRuntime { action, scope, .. }) => (action, scope),
+    let (action, scope) = match (namespace, action_for(request.method(), &canonical)) {
+        (ActionNamespace::HostedRuntime, Some(RouteAuthz::HostedRuntime { action, scope, .. }))
+        | (ActionNamespace::Workspace, Some(RouteAuthz::Resource { action, scope })) => {
+            (action, scope)
+        }
         _ => return forbidden("no native action is mapped for this private operation"),
     };
     let Some(scope) = target_scope(scope, &workspace, &canonical) else {
@@ -159,12 +166,7 @@ async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response 
     let decision_principal = principal.clone();
     let iam = ingress.iam.clone();
     match off_event_loop::run(move || {
-        iam.authorize_action(
-            decision_principal,
-            action,
-            scope,
-            ActionNamespace::HostedRuntime,
-        )
+        iam.authorize_action(decision_principal, action, scope, namespace)
     })
     .await
     {
@@ -199,7 +201,7 @@ async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response 
     parts.headers.remove("authorization");
     parts.headers.remove("x-api-key");
     ingress
-        .sessions
+        .managed
         .oneshot(Request::from_parts(parts, body))
         .await
         .unwrap_or_else(|error| match error {})
