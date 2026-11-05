@@ -542,6 +542,13 @@ All Sessions still address the same mutable logical store. `recall_enabled`,
 online prompt overrides come only from the parent Agent's `memory` plugin
 configuration.
 
+An explicitly published extractor selects `write_memory` by its exact `tools`
+declaration. The visible authoring catalog includes the canonical descriptor,
+but ordinary `tool_patterns` do not implicitly select this proposal-producing
+capability. Validation, both previews and publication share the required
+construction-time selection projection; it changes no scope visibility or
+execution permission. Existing frozen publications are not re-expanded.
+
 ### Activate and use
 
 After live ownership/state checks, `MemoryRepository.open(workspace, store_id)`
@@ -562,6 +569,20 @@ terminal `RunState::Ended` fact commits, the Memory Extension's
 CAS-applies mutations, and records a receipt. Recovery redelivers a terminal
 observation or resumes a pending intent; Awaiting is not terminal. Observer
 failure cannot alter the committed `RunResult`.
+
+On a registered Worker, the canonical extraction tool records a stateless
+proposal in its ordinary auxiliary Run; it does not write the MemoryStore.
+The controller admits mutations only from that exact successfully committed
+Run/Thread and applies them through the bound repository. The existing
+environment classifier may omit a physical Environment for this trusted
+stateless executor, while retaining its integration, backend and claim guards.
+It does not manufacture a Session Resource transition.
+
+An auxiliary Run still `Awaiting` is not a known failed Run. Its extraction
+intent retains the original Run identity in the existing
+`ExecutionIndeterminate` attention terminal, without content writes or blind
+re-execution. This terminal is outside automatic recovery: independently
+approving or finishing that Runtime Run does not automatically re-harvest it.
 
 ```text
 Session S1 resolves config v3

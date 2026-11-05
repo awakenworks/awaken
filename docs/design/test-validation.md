@@ -1042,6 +1042,61 @@ qualification are separate claims.
   match it to producer pins, image and qualified Flow fingerprint. Neither a
   repaired validator nor a previous partial matrix qualifies that final cohort.
 
+- **Qualified continuation checkpoint (2026-11-06).** On clean
+  `615c885bd4e7`, the original complete Linux Rust group and outer admission
+  returned 0: 10,539 passed / 129 skipped, including the unchanged default-stack
+  two-Run MCP/Vault case. Annotated `verified/20261105-1602` binds that Rust scope;
+  the three independent original SDK package, artifact and compiler-SemVer
+  qualifiers and their outer sequence also returned 0 on this source. Package
+  profiles produced 24 archives each; artifact consumption used 27 archives,
+  13 packages and eight non-skipped tasks plus the sample. Each SemVer profile
+  executed 45 compiler cases / 50 steps, 22 historical standard audits and
+  17 forced-major audits; the latter retained raw 1 with the original strict
+  `accepted_major` assessment, separately from standard raw 0. First-release
+  classification, public publication and Windows retain their own scopes.
+  The model-visible Bash descriptor policy consolidation is part of this
+  checkpoint; it removes the duplicate unconditional Skill-load sentence and
+  does not establish that the older real Skill journey is repaired.
+- **Published Memory repair received privately (2026-11-06).** The original
+  214-entry run on `615c885bd4e7` retained 167 successful entries before entry
+  168 failed at PostgreSQL Resource stage 32; 46 entries remained unrun. Normal
+  `67f38887c804` reuses the existing retained-row decoder, canonical proposal
+  descriptor and single Environment classifier, and keeps an Awaiting auxiliary
+  Run in the existing same-Run attention outcome. Normal `3570fcc93337` fixes the
+  supported wildcard compatibility counterexample: only the original glob loop
+  applies the required catalog-owner predicate, while exact declarations,
+  toolsets, clients and scope visibility retain the complete catalog. All
+  Native compiler/service callers migrate without a legacy wrapper; the
+  remaining Flow constructor migration belongs to its future producer-pin unit.
+  The owning compiler/role matrix first failed three semantic cases, then all
+  five real-catalog cases passed with complete old/new snapshot and fingerprint
+  comparisons. ConfigService passed 81 library cases, Control 277, ConfigStore's
+  SQLite targets 39, the hello example one and the Scenario server target 17;
+  these are distinct selections, not an aggregate workspace count. Both original
+  Clippy graphs, the unchanged default-stack MCP case, the owned and inherited
+  PostgreSQL Resource paths with ordinary `write*` selection and exact extractor,
+  and all ten original stages 32–41 passed. The real PostgreSQL assertions retain
+  the two extractor calls, one mutation and stored-content marker. The normal
+  hooks passed 33 checks for the first unit and 27 for the follow-up; the original
+  formatter's one closure-layout rewrite was reconciled byte-for-byte and its
+  exact affected test passed again on committed `3570fcc93337`. Earlier selector,
+  required-feature and classification refusals remain failed attempts, not
+  rewritten passes. These results do not turn the earlier whole 214 run into
+  a pass or qualify the final combined source, full13 or physical recovery.
+- **Downstream source units (2026-11-06).** Flow's normal `8c754bb50f3d`
+  wraps the existing complete Linux browser source gate in one temporary
+  user/network namespace, preserving its original npm suite, services, process
+  group, deadline and cleanup owner. Eight causal tests, 17 original cleanup and
+  receipt checks, an actual admitted locked Cargo compilation and Chromium
+  loopback page, and the original timeout/child-reaping composition passed;
+  native Windows/macOS execution and the complete 534-browser/whole matrix
+  remain unrun after this change. The earlier network failures remain failures
+  without a proven cause attribution. Cloud's normal private `fb697469ee84`
+  changes six manifests and six locks to qualified Native `615c885bd4e7` through
+  the original six resolver calls, preserving IAM and the other dependency
+  graph; it does not qualify the full 29-command matrix, final Flow fingerprint,
+  images or BOM. Both source units retain their main-rebase and final-cohort work.
+
 Current open scopes and the next qualified cohort are tracked only in
 [STATUS](../STATUS.md#architecture-execution). The executable full suite and
 its publication record remain owned by ADR-0080 and `check-all.sh`; these
