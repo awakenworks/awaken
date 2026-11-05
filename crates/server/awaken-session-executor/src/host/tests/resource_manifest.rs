@@ -749,9 +749,14 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         }])
         .unwrap();
     init.resources = resources.clone();
-    install_complete_test_session_for_realization(&managed, "skill-revoke", init)
-        .await
-        .expect("prepare pinned Skill");
+    install_complete_test_session_for_realization(
+        &managed,
+        "skill-revoke",
+        init,
+        awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
+    )
+    .await
+    .expect("prepare pinned Skill");
     managed
         .realization_executor
         .apply_session_inputs(

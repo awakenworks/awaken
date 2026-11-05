@@ -1321,6 +1321,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         &managed,
         "t-resident-adoption",
         bare_session("assistant", host.run_assembly.local_workspace()),
+        awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
     )
     .await
     .expect("install resident complete Session projection");
@@ -1428,6 +1429,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         &managed,
         "t-retained-adoption",
         bare_session("assistant", host.run_assembly.local_workspace()),
+        awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
     )
     .await
     .expect("install retained complete Session projection");

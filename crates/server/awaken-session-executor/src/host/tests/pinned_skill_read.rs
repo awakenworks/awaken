@@ -404,6 +404,7 @@ async fn read_disabled_or_awaiting_permission_never_leaks_pinned_content() {
             &version,
             true,
             Some(tools),
+            awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
         )
         .await
         .unwrap();
@@ -722,6 +723,161 @@ async fn managed_on_tool_use_reads_instruction_and_reference_before_reply_withou
             .iter()
             .any(|result| result == "根据已知资料逐步提问。"),
         "P1/E2 reference"
+    );
+}
+
+#[tokio::test]
+async fn preloaded_skill_system_override_and_guidance_reach_actual_requests_without_sandbox() {
+    // Cause/effect graph: C1 an immutable Agent has original instructions;
+    // C2 the complete Session creation intent selects Replace with the full
+    // pinned method; C3 the exact Skill has an unknown supporting reference;
+    // C4 provisioning is OnToolUse. Effects: E1 the real first System block is
+    // byte-exact Replace, E2 that same request also contains the canonical
+    // DO_NOT_READ guidance, E3 the reference Tool bytes reach the next request,
+    // E4 both requests retain E1/E2 and no Sandbox is materialized.
+    //
+    // | Rule | instruction source | recorder read path | effects |
+    // | P1 (above) | metadata only | SKILL.md then reference | original 3-request disclosure |
+    // | P2 | canonical creation Replace | reference | E1+E2+E3+E4 |
+    //
+    // The existing recorder scripts the reference read to observe delivery;
+    // its chosen path does not prove a real model obeys DO_NOT_READ. That
+    // independent live assertion remains unchanged. No executable spec is
+    // edited: the original creation finalizer and publication resolver own C2.
+    use awaken_runtime_contract::StaticPublishedAgentSnapshots;
+    use awaken_runtime_contract::agent_bindings::AgentBindings;
+
+    let storage = tempfile::tempdir().unwrap();
+    let model = Arc::new(PinnedReadModel {
+        requests: Mutex::default(),
+        paths: vec!["/workspace/.skills/diagnosis/references/guide.md"],
+    });
+    let publication = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
+        .model(test_model_binding())
+        .instructions("Original publication instructions must be replaced.")
+        .tools(crate::config::advertised_tools(
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        ))
+        .agent_bindings(AgentBindings {
+            skills: vec![awaken_agent_contract::AgentSkillBinding::custom(
+                "diagnosis",
+            )],
+            toolsets: vec![awaken_agent_contract::ToolsetPolicy {
+                source: awaken_agent_contract::ToolsetSource::Agent,
+                default: awaken_agent_contract::ToolExecutionPolicy::default(),
+                overrides: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .build();
+    let publications = Arc::new(
+        StaticPublishedAgentSnapshots::try_new([publication])
+            .expect("one original immutable Agent publication"),
+    );
+    let host = (crate::host::with_test_resource_validation(
+        crate::SessionExecutorBuilder::ephemeral(model.clone(), "stub")
+            .await
+            .with_skill_store(storage.path().join("skills"))
+            .with_store_dir(storage.path())
+            .await
+            .with_agent_publications(publications),
+    ))
+    .build()
+    .expect("validated Host dependencies");
+    let managed = managed_with_resource_source(host.clone());
+    let instructions = "Read references/guide.md before asking.\n根据已知资料逐步提问。";
+    let preloaded = format!(
+        "You help a Chinese SME owner. The following are the complete instructions of the pinned startup-diagnosis Skill.\n{instructions}"
+    );
+    let reference = "资料识别标记：PRELOADED_REFERENCE。";
+    let version = frozen_skill_version(
+        "diagnosis",
+        "Diagnosis",
+        "Diagnose招商",
+        instructions,
+        &[
+            ("references/guide.md", reference),
+            ("scripts/report.py", "print('report')"),
+        ],
+    );
+    install_pinned_managed_skill_session_with_tools(
+        &host,
+        &managed,
+        "preloaded-brain-first",
+        "assistant",
+        on_tool_use_environment(),
+        &version,
+        true,
+        None,
+        awaken_session_configuration_contract::SessionSystemPromptSelection::Replace(
+            preloaded.clone(),
+        ),
+    )
+    .await
+    .expect("P2 complete creation intent and exact Resource pin");
+    run_prepared_session_messages(
+        &managed,
+        "assistant",
+        "preloaded-brain-first",
+        user("请按已经提供的方法读取参考资料后提问。"),
+    )
+    .await
+    .expect("P2 reference read and reply");
+    assert!(
+        host.realization_executor
+            .environments()
+            .session_environment("preloaded-brain-first")
+            .await
+            .expect("installed Sessions")
+            .is_none(),
+        "P2/E4 no Sandbox"
+    );
+    let guide = host
+        .run_assembly
+        .installed_sessions
+        .realizations()
+        .read_realization("preloaded-brain-first", |realization| {
+            realization.staging().skill_prompt.clone()
+        })
+        .expect("installed prompt projection")
+        .flatten()
+        .expect("P2 frozen Skill catalogue")
+        .render(&Default::default(), None)
+        .expect("P2 canonical filesystem guidance");
+    assert!(guide.contains("DO NOT read `SKILL.md` again"), "P2/E2");
+    let requests = model.requests.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        2,
+        "P2 reference then reply, not live quality"
+    );
+    for request in requests.iter() {
+        assert_eq!(request.messages[0].role, Role::System, "P2/E1");
+        assert_eq!(
+            block_text(&request.messages[0].content),
+            preloaded,
+            "P2/E1 exact complete Session override"
+        );
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .filter(|message| {
+                    message.role == Role::System && block_text(&message.content) == guide
+                })
+                .count(),
+            1,
+            "P2/E2 one canonical guidance block in the same actual request"
+        );
+    }
+    assert!(
+        requests[1].messages.iter().any(|message| {
+            message.role == Role::Tool
+                && block_text(&message.content).as_bytes() == reference.as_bytes()
+        }),
+        "P2/E3 reference bytes delivered before subsequent inference"
     );
 }
 

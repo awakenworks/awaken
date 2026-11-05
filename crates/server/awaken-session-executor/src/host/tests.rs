@@ -468,6 +468,7 @@ async fn install_pinned_managed_skill_session(
         version,
         seed_version,
         None,
+        awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
     )
     .await
 }
@@ -482,6 +483,7 @@ async fn install_pinned_managed_skill_session_with_tools(
     version: &awaken_skill_store::SkillVersion,
     seed_version: bool,
     tools: Option<awaken_session_configuration_contract::SessionToolConfiguration>,
+    system_prompt: awaken_session_configuration_contract::SessionSystemPromptSelection,
 ) -> Result<(), awaken_session_types::RunError> {
     let workspace = host.run_assembly.local_workspace().to_string();
     if seed_version {
@@ -508,7 +510,7 @@ async fn install_pinned_managed_skill_session_with_tools(
     init.environment = environment;
     init.resources = resources.clone();
     init.tools = tools;
-    install_complete_test_session_for_realization(managed, thread, init).await?;
+    install_complete_test_session_for_realization(managed, thread, init, system_prompt).await?;
     managed
         .realization_executor
         .apply_session_inputs(
@@ -1190,6 +1192,7 @@ impl LlmExecutor for GatedModel {
 fn compile_complete_test_session_projection(
     managed: &Arc<crate::ExecutorComponents>,
     init: awaken_session_configuration_contract::SessionInit,
+    system_prompt: awaken_session_configuration_contract::SessionSystemPromptSelection,
 ) -> awaken_session_execution_contract::FrozenSessionProjection {
     let awaken_session_configuration_contract::SessionInit {
         workspace_id,
@@ -1251,15 +1254,24 @@ fn compile_complete_test_session_projection(
             inference: Default::default(),
         },
     );
-    let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
-        awaken_session_configuration_contract::SessionBaselineInputs {
+    // The same creation owner freezes a real system selection before Runtime
+    // projection. Inherit passes the exact old compile inputs/model reference,
+    // Managed policy and no application origin to its unchanged private kernel;
+    // Replace never mutates an already compiled baseline or executable spec.
+    let compiled = awaken_session_configuration_contract::SessionCreationIntent {
+        control: awaken_session_configuration_contract::ControlSessionCreationInputs {
+            mutation_policy:
+                awaken_session_configuration_contract::resource::SessionMutationPolicy::Managed,
+            application_origin: None,
             environment,
             runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
             mcp_authoring: Default::default(),
             agent_id,
             agent_revision: None,
-            model: published_model,
+            model: published_model.clone(),
+            execution_model_ref: published_model,
             model_override,
+            system_prompt,
             runtime: Some(published_runtime),
             delegate_ids,
             toolsets: Vec::new(),
@@ -1267,8 +1279,14 @@ fn compile_complete_test_session_projection(
             env: Vec::new(),
             prompts: Vec::new(),
             transcript_prefix: None,
+            resources,
+            initial_mcp: Vec::new(),
         },
-    );
+    }
+    .finalize()
+    .expect("complete canonical test Session creation");
+    let baseline = compiled.baseline;
+    let resources = compiled.initial_resources;
     let previous = crate::session_resource::SessionResourceManifest::at_revision(
         workspace_id.clone(),
         0,
@@ -1297,11 +1315,12 @@ async fn install_complete_test_session(
     managed: &Arc<crate::ExecutorComponents>,
     thread: &str,
     init: awaken_session_configuration_contract::SessionInit,
+    system_prompt: awaken_session_configuration_contract::SessionSystemPromptSelection,
 ) -> Result<(), awaken_session_types::RunError> {
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         thread,
-        compile_complete_test_session_projection(managed, init),
+        compile_complete_test_session_projection(managed, init, system_prompt),
         awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
@@ -1324,7 +1343,13 @@ impl CompleteTestSessionFixture for Arc<crate::ExecutorComponents> {
         thread: &str,
         init: awaken_session_configuration_contract::SessionInit,
     ) -> Result<(), awaken_session_types::RunError> {
-        install_complete_test_session(self, thread, init).await
+        install_complete_test_session(
+            self,
+            thread,
+            init,
+            awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
+        )
+        .await
     }
 }
 
@@ -1336,6 +1361,7 @@ async fn install_complete_test_session_for_realization(
     managed: &Arc<crate::ExecutorComponents>,
     thread: &str,
     init: awaken_session_configuration_contract::SessionInit,
+    system_prompt: awaken_session_configuration_contract::SessionSystemPromptSelection,
 ) -> Result<(), awaken_session_types::RunError> {
     managed
         .run_assembly
@@ -1349,7 +1375,7 @@ async fn install_complete_test_session_for_realization(
             owned_session_id: None,
             committed_environment: None,
         }));
-    install_complete_test_session(managed, thread, init).await?;
+    install_complete_test_session(managed, thread, init, system_prompt).await?;
     managed
         .run_assembly
         .install_session_realization_lease(

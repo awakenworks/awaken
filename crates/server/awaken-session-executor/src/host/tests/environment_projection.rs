@@ -65,6 +65,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         &managed,
         "t-attach",
         bare_session("agent", host.run_assembly.local_workspace()),
+        awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
     )
     .await
     .expect("install complete empty Session projection");
@@ -312,9 +313,14 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     }]);
     let mut init = bare_session("agent", host.run_assembly.local_workspace());
     init.resources = installed;
-    install_complete_test_session_for_realization(&managed, "invalid-live-repository", init)
-        .await
-        .unwrap();
+    install_complete_test_session_for_realization(
+        &managed,
+        "invalid-live-repository",
+        init,
+        awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
+    )
+    .await
+    .unwrap();
     run_prepared_session_messages(
         &managed,
         "agent",
@@ -504,6 +510,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
                 serde_json::json!({}),
             ),
         },
+        awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
     )
     .await
     .unwrap();

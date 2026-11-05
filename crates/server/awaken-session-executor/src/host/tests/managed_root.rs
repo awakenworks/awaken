@@ -67,7 +67,11 @@ impl ManagedSessionRootFixture {
         self.install_projection(
             managed,
             thread,
-            compile_complete_test_session_projection(managed, init),
+            compile_complete_test_session_projection(
+                managed,
+                init,
+                awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
+            ),
         )
         .await
     }
