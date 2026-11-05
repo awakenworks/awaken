@@ -1169,6 +1169,18 @@
       ]
     },
     {
+      "id": "external-rust-input",
+      "when": "Rust gate 已声明但位于 Cargo 成员目录外的输入（包括 Scenario Host 内嵌的 E2E fixture）保守选择 whole graph；目录名称不能使 Rust 门禁消失。",
+      "required": [
+        "L0",
+        "L1",
+        "L2",
+        "L3",
+        "L4-cold",
+        "L4-scale"
+      ]
+    },
+    {
       "id": "global",
       "when": "manifest/lock/toolchain/Cargo 配置/feature profile/CI 或 hook 改动保留 whole Rust graph，并补冷缓存验证。 同时保留规模基准所属 crate 的消费者资格验证。",
       "required": [

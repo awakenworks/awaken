@@ -18,8 +18,10 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # Git exports these to a hook. They name the repository being committed, not
@@ -46,6 +48,18 @@ def detached_git_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key not in _REPOSITORY_ENVIRONMENT}
 
 
+def _git_command(environment: dict[str, str], *arguments: str) -> list[str]:
+    # CreateProcess does not use the supplied child PATH for bare-name lookup.
+    # Resolve the caller-selected native Git without replacing an external shim.
+    executable = "git"
+    if os.name == "nt":
+        executable = shutil.which("git.exe", path=environment.get("PATH", os.defpath))
+        if executable is None:
+            raise FileNotFoundError(2, "Git executable not found in the admitted PATH", "git.exe")
+        executable = os.path.abspath(executable)
+    return [executable, *arguments]
+
+
 def repository_environment(root: Path) -> dict[str, str] | None:
     """How to read ``root``'s index, or None when ``root`` is not a work-tree top.
 
@@ -58,7 +72,7 @@ def repository_environment(root: Path) -> dict[str, str] | None:
     clean = detached_git_environment()
     try:
         found = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel", "--absolute-git-dir"], cwd=root, text=True,
+            _git_command(clean, "rev-parse", "--show-toplevel", "--absolute-git-dir"), cwd=root, text=True,
             capture_output=True, check=False, env=clean,
         )
     except OSError:
@@ -79,15 +93,17 @@ def _source_environment(root: Path) -> dict[str, str]:
     if values is None:
         # Preserve Git's real 128/OSError for an absent repository/tool. If Git
         # succeeds through a parent repository, this root is still invalid.
-        subprocess.check_output(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-                                env=detached_git_environment())
+        clean = detached_git_environment()
+        subprocess.check_output(_git_command(clean, "-C", str(root), "rev-parse", "--show-toplevel"),
+                                env=clean)
         raise SourceError(f"Source root is not an admitted repository top: {root}")
     return values
 
 
 def _git_output(root: Path, environment: dict[str, str], *arguments: str) -> bytes:
     return subprocess.check_output(
-        ["git", "-c", "core.fsmonitor=false", "-C", str(root), *arguments], env=environment,
+        _git_command(environment, "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false",
+                     "-C", str(root), *arguments), env=environment,
     )
 
 
@@ -184,13 +200,30 @@ def framed_digest(parts: Iterable[bytes]) -> str:
     return digest.hexdigest()
 
 
-def _untracked_sources(root: Path, read: Callable[..., bytes]) -> dict[str, bytes]:
-    paths = _path_names(read("ls-files", "--others", "--exclude-standard", "-z"))
+def untracked_sources(root: Path) -> dict[str, bytes]:
+    paths = git_paths(root, "ls-files", "--others", "--exclude-standard", "-z")
     return {name: (root / name).read_bytes() for name in paths}
 
 
-def untracked_sources(root: Path) -> dict[str, bytes]:
-    return _untracked_sources(root, lambda *arguments: git_output(root, *arguments))
+def _index_and_untracked(root: Path, read: Callable[..., bytes]) -> tuple[bytes, dict[str, bytes]]:
+    # Git tags each NUL-terminated row before the pathname (or stage header).
+    # Removing the tags gives the same ordered stage records as --stage alone.
+    records = read("ls-files", "-t", "--stage", "--others", "--exclude-standard", "-z").split(b"\0")
+    if records.pop() != b"":
+        raise SourceError("Unterminated Git file record")
+    entries = bytearray()
+    untracked = {}
+    for row in records:
+        tag, payload = row[:2], row[2:]
+        if tag == b"? " and payload:
+            name = os.fsdecode(payload)
+            untracked[name] = (root / name).read_bytes()
+        elif tag in (b"H ", b"M ", b"S ") and b"\t" in payload:
+            entries.extend(payload)
+            entries.append(0)
+        else:
+            raise SourceError("Malformed Git file record")
+    return bytes(entries), untracked
 
 
 def untracked_parts(files: dict[str, bytes]) -> Iterable[bytes]:
@@ -200,20 +233,32 @@ def untracked_parts(files: dict[str, bytes]) -> Iterable[bytes]:
 
 
 def _source_facts(root: Path, read: Callable[..., bytes]) -> dict:
-    revision = read("rev-parse", "HEAD")
-    revision_name = revision.decode().strip()
-    return {
-        "revision": revision,
-        "tree": read("rev-parse", revision_name + "^{tree}"),
-        # Entries bind mode/object/stage/path even when the index is unmerged.
-        # Formal dirty diagnostics cannot require write-tree to succeed.
-        "index_entries": read("ls-files", "--stage", "-z"),
-        "staged": read("diff", "--cached", "--binary", revision_name, "--"),
-        "working": read("diff", "--binary", "--"),
-        "patch": read("diff", "--binary", revision_name, "--"),
-        "untracked": _untracked_sources(root, read),
-        "status": read("status", "--porcelain=v1", "--untracked-files=all"),
+    # Read both object IDs from one commit object. Force the output shape even
+    # in repositories with configured notes, signatures or decorations.
+    ids = read("show", "-s", "--format=%H%n%T", "--no-show-signature", "--no-notes",
+               "--no-color", "--no-decorate", "HEAD", "--").splitlines(keepends=True)
+    if len(ids) != 2 or not all(re.fullmatch(rb"(?:[a-f0-9]{40}|[a-f0-9]{64})\n", oid) for oid in ids):
+        raise SourceError("Malformed Git commit identity")
+    revision, tree = ids
+    if len(revision) != len(tree):
+        raise SourceError("Inconsistent Git commit and tree object formats")
+    revision_name = revision.decode("ascii").rstrip("\n")
+    reads = {
+        "staged": lambda: read("diff", "--cached", "--binary", revision_name, "--"),
+        "working": lambda: read("diff", "--binary", "--"),
+        "patch": lambda: read("diff", "--binary", revision_name, "--"),
     }
+    # Bound concurrency within each frame; keep both complete frames and
+    # the separate read-only index-tree validation between them.
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        files = executor.submit(_index_and_untracked, root, read)
+        values = executor.map(lambda operation: operation(), reads.values())
+        index_entries, untracked = files.result()
+        facts = {"revision": revision, "tree": tree, "index_entries": index_entries,
+                 **dict(zip(reads, values)), "untracked": untracked}
+    # Keep the original end-of-frame boundary after every earlier read joins.
+    facts["status"] = read("status", "--porcelain=v1", "--untracked-files=all")
+    return facts
 
 
 def source_facts(root: Path, *, with_index_tree: bool = False) -> dict:
@@ -234,15 +279,27 @@ def source_facts(root: Path, *, with_index_tree: bool = False) -> dict:
     index = None
     if with_index_tree:
         revision = facts["revision"].decode().strip()
-        existing = set(read("ls-tree", "-r", "--name-only", "-z", revision).split(b"\0"))
-        staged = set(read("diff", "--cached", "--name-only", "-z", revision, "--").split(b"\0"))
         algorithm = "sha256" if len(facts["tree"].strip()) == 64 else "sha1"
-        index = _index_tree(facts["index_entries"], existing, staged, algorithm)
+        entries = facts["index_entries"]
+        empty_blob = _object_id(algorithm, b"blob", b"").hex().encode("ascii")
+        existing: set[bytes] = set()
+        staged: set[bytes] = set()
+        # Only the empty blob can represent an intent-to-add entry. Avoid the
+        # extra Git reads when no index entry needs that disambiguation.
+        if b" " + empty_blob + b" 0\t" in entries:
+            existing = set(read("ls-tree", "-r", "--name-only", "-z", revision).split(b"\0"))
+            staged = set(read("diff", "--cached", "--name-only", "-z", revision, "--").split(b"\0"))
+        index = _index_tree(entries, existing, staged, algorithm)
     if facts != _source_facts(root, read):
         raise SourceError("Source changed while capturing Git source facts")
     if with_index_tree:
         facts["index_tree"] = index
     return facts
+
+
+def _object_id(algorithm: str, kind: bytes, body: bytes) -> bytes:
+    framed = kind + b" " + str(len(body)).encode("ascii") + b"\0" + body
+    return hashlib.new(algorithm, framed, usedforsecurity=False).digest()
 
 
 def _index_tree(entries: bytes, existing: set[bytes], staged: set[bytes], algorithm: str) -> bytes:
@@ -254,11 +311,8 @@ def _index_tree(entries: bytes, existing: set[bytes], staged: set[bytes], algori
     which Git excludes from write-tree. Both extra reads remain inside the
     existing before/after source fence; formal diagnostics need no tree.
     """
-    def object_id(kind: bytes, body: bytes) -> bytes:
-        framed = kind + b" " + str(len(body)).encode("ascii") + b"\0" + body
-        return hashlib.new(algorithm, framed, usedforsecurity=False).digest()
-
-    empty_blob = object_id(b"blob", b"").hex().encode("ascii")
+    empty_oid = _object_id(algorithm, b"blob", b"")
+    empty_blob = empty_oid.hex().encode("ascii")
     tree: dict = {}
     for record in entries.split(b"\0"):
         if not record:
@@ -272,7 +326,7 @@ def _index_tree(entries: bytes, existing: set[bytes], staged: set[bytes], algori
             raise SourceError("Malformed Git index entry") from error
         if stage != b"0":
             raise SourceError("An unmerged index cannot qualify execution")
-        if len(oid) != len(object_id(b"blob", b"")) or numeric_mode not in {
+        if len(oid) != len(empty_oid) or numeric_mode not in {
             0o100644, 0o100755, 0o120000, 0o160000, 0o40000,
         }:
             raise SourceError("Invalid Git index object or mode")
@@ -300,7 +354,7 @@ def _index_tree(entries: bytes, existing: set[bytes], staged: set[bytes], algori
             order = name + (b"/" if mode == 0o40000 else b"")
             row = format(mode, "o").encode("ascii") + b" " + name + b"\0" + oid
             rows.append((order, row))
-        return object_id(b"tree", b"".join(row for _, row in sorted(rows)))
+        return _object_id(algorithm, b"tree", b"".join(row for _, row in sorted(rows)))
 
     return identity(tree).hex().encode("ascii") + b"\n"
 
@@ -309,7 +363,7 @@ def _git_grep(root: Path, environment: dict[str, str], arguments: list[str]) -> 
     # Explicit flags, so a user's grep.* configuration cannot change the record
     # shape or the pattern language.
     result = subprocess.run(
-        ["git", "grep", "--cached", "--no-color", "--full-name", "-I", *arguments],
+        _git_command(environment, "grep", "--cached", "--no-color", "--full-name", "-I", *arguments),
         cwd=root, capture_output=True, check=False, env=environment,
     )
     if result.returncode not in (0, 1):
@@ -452,8 +506,8 @@ def _selftest_guard_inputs() -> None:
     def prepare(root):
         root.mkdir()
         (root / "docs").mkdir()
-        (root / "probe.py").write_text("print(1)\n")
-        (root / "docs/probe.md").write_text("# short\n")
+        (root / "probe.py").write_text("print(1)\n", encoding="utf-8")
+        (root / "docs/probe.md").write_text("# short\n", encoding="utf-8")
         for arguments in (("init", "--quiet"), ("add", "."),
                           ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                            "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "fixture")):
@@ -471,8 +525,8 @@ def _selftest_guard_inputs() -> None:
         root, foreign = directory / "repo", directory / "foreign"
         prepare(root)
         prepare(foreign)
-        (root / "probe.py").write_text('token = "' + 'abc12345' + 'SECRET"\n# bad\u200b\n')
-        (root / "docs/probe.md").write_text("# large\n" * 1201)
+        (root / "probe.py").write_text('token = "' + 'abc12345' + 'SECRET"\n# bad\u200b\n', encoding="utf-8")
+        (root / "docs/probe.md").write_text("# large\n" * 1201, encoding="utf-8")
         git(root, "add", ".")
         partial = root / ".git/partial-index"
         subprocess.check_output(["git", "read-tree", "HEAD"], cwd=root,

@@ -29,7 +29,9 @@ def bash_executable(*, windows=None, environment=None, find=shutil.which):
         # installation root. Never let CreateProcess resolve bare `bash`, which
         # can choose System32's WSL launcher before the caller's PATH entries.
         for parent in Path(git).resolve().parents:
-            for relative in ("bin/bash.exe", "usr/bin/bash.exe"):
+            # The bin/ launcher also rewrites PATH. The actual MSYS executable
+            # preserves a caller-selected Git/shim and avoids another process.
+            for relative in ("usr/bin/bash.exe", "bin/bash.exe"):
                 candidate = parent / relative
                 if candidate.is_file():
                     return str(candidate)
@@ -50,6 +52,10 @@ def self_test():
             git.parent.mkdir(parents=True, exist_ok=True)
             git.touch()
             assert bash_executable(windows=True, environment={}, find=lambda _: str(git)) == str(shell)
+        direct = root / "usr/bin/bash.exe"
+        direct.parent.mkdir(parents=True)
+        direct.touch()
+        assert bash_executable(windows=True, environment={}, find=lambda _: str(git)) == str(direct)
         assert bash_executable(windows=True, environment={"AWAKEN_NATIVE_BASH": str(shell)}) == str(shell)
         for environment in ({}, {"AWAKEN_NATIVE_BASH": "relative/bash.exe"}, {"AWAKEN_NATIVE_BASH": str(root / "missing.exe")}):
             try:
@@ -73,6 +79,23 @@ def shell_environment(shell, *, windows=None, environment=None):
         tools = directory.parent / "usr/bin"
         if tools.is_dir() and tools != directory:
             paths.append(tools)
+        # Git's bin/git.exe is a launcher for mingw64/bin/git.exe. Every
+        # snapshot runs several Git commands; avoid that extra process while
+        # retaining the same installation and the caller's parent PATH.
+        installation = directory.parent
+        if installation.name == "usr":
+            installation = installation.parent
+        native_git = installation / "mingw64/bin"
+        if (native_git / "git.exe").is_file():
+            selected = shutil.which("git", path=child.get("PATH", ""))
+            entries = (installation / "bin/git.exe", installation / "cmd/git.exe",
+                       native_git / "git.exe")
+            if selected and Path(selected).resolve() in {entry.resolve() for entry in entries}:
+                paths.insert(0, native_git)
+            elif tools.is_dir():
+                # Keep a caller-selected external Git/shim authoritative. Git's
+                # usr/bin supplies nested Bash without bin/git.exe shadowing it.
+                paths = [tools]
         previous = child.get("PATH", "")
         child["PATH"] = ";".join([*(str(path) for path in paths), previous])
     return child
@@ -85,7 +108,26 @@ def windows_shell_command(command):
                     for value in command)
 
 
+# The two native Rust launchers use the same MSYS argv encoding as above.
+RUST_WINDOWS_SHELL_ARGUMENT = r'''
+#[cfg(windows)]
+fn windows_shell_argument(argument: &std::ffi::OsStr) -> std::ffi::OsString {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let mut quoted = vec![34u16];
+    for value in argument.encode_wide() {
+        if value == 34 || value == 92 { quoted.push(92); }
+        quoted.push(value);
+    }
+    quoted.push(34);
+    std::ffi::OsString::from_wide(&quoted)
+}
+'''
+
+
 def main(argv):
+    if argv == ['--lefthook-pre-commit']:
+        from _native_lefthook import run_pre_commit
+        return run_pre_commit()
     if argv[:1] == ["--windows-job-child"]:
         if os.name != "nt" or len(argv) < 4 or argv[2] != "--":
             return 2

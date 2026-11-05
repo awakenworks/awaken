@@ -122,7 +122,7 @@ else:
         self.seed(SURFACE)
         result = self.invoke("--require-tools", API_TEST_SNAPSHOT_TARGET="x86_64-pc-windows-msvc")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(json.loads((self.root / "computed").read_text())[-2:],
+        self.assertEqual(json.loads((self.root / "computed").read_text(encoding="utf-8"))[-2:],
                          ["--target", "x86_64-pc-windows-msvc"])
         for target in ("", "--target", "x86_64;touch injected", "x86_64\nother", "$(false)"):
             for mode in ("--require-tools", "--bless"):
@@ -147,13 +147,13 @@ else:
                            API_TEST_SECOND_SELECTED_MEMBER="1", API_TEST_ARGV_LOG=str(log))
         result = self.invoke("--require-tools", **environment)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
         self.assertEqual([call[3] for call in calls], ["fixture", "zzsecond"])
         self.assertEqual(calls[0][-2:], ["--target", "x86_64-pc-windows-msvc"])
         self.assertNotIn("--target", calls[1])
         # Executed negative control: keep the previous member's target. The
         # exact tool-argv oracle must reject it and preserve both baselines.
-        code = self.script.read_text()
+        code = self.script.read_text(encoding="utf-8")
         self.assertEqual(code.count("  target_args=()\n"), 1)
         self.script.write_text(code.replace("  target_args=()\n", ""), encoding="utf-8", newline="\n")
         result = self.invoke("--require-tools", **environment)
@@ -191,7 +191,7 @@ else:
         return subprocess.run(
             [bash_executable(), str(self.script), *arguments], cwd=self.root,
             env=dict(self.environment, **conditions), capture_output=True,
-            text=True, timeout=10,
+            text=True, encoding="utf-8", timeout=10,
         )
 
     def seed(self, content):

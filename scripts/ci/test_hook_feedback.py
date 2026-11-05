@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Cause/effect contracts for native hook grouping and durable live feedback."""
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -17,6 +18,7 @@ import unittest
 from unittest.mock import patch
 
 import ci_performance
+import deadline
 import generate_hooks
 import parallel_check
 from _build_observation_fixture import real_build_observations
@@ -82,8 +84,42 @@ class HookFeedbackTests(unittest.TestCase):
                    '--hook-label', 'fixture', '--timeout', str(timeout), '--shell', body]
         if readonly:
             command.append('--read-only')
-        return subprocess.run([*command, '--', *args], cwd=root, env=env,
-                              capture_output=True, text=True, timeout=20)
+        return self.bounded([*command, '--', *args], root, env, 20)
+
+    def bounded(self, command, root, env, timeout):
+        # The original outer timeout owns the complete process tree, including
+        # a worker still capturing source facts before its inner checker starts.
+        with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
+            cleanup_error = None
+            if os.name == 'nt':
+                from _windows_job import WindowsJob
+                with WindowsJob() as job:
+                    process = subprocess.Popen(
+                        [sys.executable, str(ROOT / 'scripts/ci/deadline.py'),
+                         '--windows-job-child', job.name, '--', *command],
+                        cwd=root, env=env, stdout=output, stderr=error)
+                    try:
+                        status = process.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        status = deadline.TIMEOUT_EXIT
+                    finally:
+                        try:
+                            job.terminate_and_wait()
+                        except (OSError, TimeoutError) as problem:
+                            cleanup_error = problem
+                        if process.poll() is None:
+                            process.kill()
+                        process.wait()
+            else:
+                with contextlib.chdir(root):
+                    status = deadline.run(timeout, command, stdout=output, stderr=error, environment=env)
+            output.seek(0)
+            error.seek(0)
+            diagnostic = error.read().decode('utf-8')
+            if cleanup_error is not None:
+                diagnostic += f'\nOwned cleanup failed after original exit {status}: {cleanup_error}'
+                status = status or 74
+            return subprocess.CompletedProcess(command, status, output.read().decode('utf-8'), diagnostic)
 
     def private_ci(self, root):
         scripts = root / 'scripts/ci'
@@ -98,6 +134,42 @@ class HookFeedbackTests(unittest.TestCase):
         (scripts / 'pre-commit/observe.sh').chmod(0o755)
         (root / '.gitignore').write_text('target/\narchive/\n__pycache__/\n*.pyc\n')
         return scripts
+
+    @unittest.skipUnless(os.name == 'nt', 'native Windows Job/file-handle ownership')
+    def test_timeout_drains_owned_descendants_and_leaves_an_unrelated_process(self):
+        # A real grandchild holds a Windows file handle at timeout. Returning
+        # 124 must also permit immediate fixture cleanup, while a sibling
+        # outside the selected Job remains alive with its own handle held.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            hold = ('import pathlib,sys,time;'
+                    'p=pathlib.Path(sys.argv[1]);f=p.open("w");'
+                    'p.with_suffix(".ready").touch();time.sleep(60)')
+            unrelated = root / 'unrelated.lock'
+            sibling = subprocess.Popen([sys.executable, '-c', hold, str(unrelated)])
+            try:
+                until = time.monotonic() + 5
+                # awaken-allow(wait): the sibling's actual open handle is acknowledged.
+                while not unrelated.with_suffix('.ready').exists() and time.monotonic() < until:
+                    time.sleep(.01)
+                self.assertTrue(unrelated.with_suffix('.ready').exists())
+                owned = root / 'owned.lock'
+                parent = ('import subprocess,sys,time;'
+                          'subprocess.Popen([sys.executable,"-c",sys.argv[1],sys.argv[2]]);'
+                          'time.sleep(60)')
+                result = self.bounded([sys.executable, '-c', parent, hold, str(owned)],
+                                      root, os.environ.copy(), 4)
+                self.assertEqual(result.returncode, 124, result.stderr)
+                self.assertNotIn('Owned cleanup failed', result.stderr)
+                self.assertTrue(owned.with_suffix('.ready').exists(), 'the actual grandchild started')
+                owned.rename(root / 'owned-closed.lock')
+                self.assertIsNone(sibling.poll(), 'another Job/process must remain alive')
+                with self.assertRaises(OSError):
+                    unrelated.rename(root / 'unrelated-must-stay-open.lock')
+            finally:
+                if sibling.poll() is None:
+                    sibling.kill()
+                sibling.wait()
 
     def test_parser_and_native_inventory_have_one_view(self):
         # I1 observed job + literal staged template -> same original checker
@@ -120,11 +192,17 @@ class HookFeedbackTests(unittest.TestCase):
         native_view = generate_hooks.native_pre_commit_configuration(rendered)
         self.assertNotIn('commit-checks:', native_view)
         self.assertEqual(generate_hooks.command_blocks(native_view), generate_hooks.command_blocks(rendered))
+        # I6 Windows Git checkouts may use CRLF. The byte-decoded hook input
+        # retains the same native job inventory and mandatory refusal rules.
+        for checked_out in (rendered.replace('\n', '\r\n'),
+                            rendered.replace('\n', '\r\n', 1)):
+            self.assertEqual(generate_hooks.native_pre_commit_configuration(checked_out), native_view)
         for broken in (rendered.replace('args: --observe', 'args: --skip'),
                        rendered.replace('observe.sh:', 'elsewhere.sh:'),
                        rendered.replace('commit-checks:', 'unused-checks:')):
-            with self.assertRaises(ValueError):
-                generate_hooks.native_pre_commit_configuration(broken)
+            for newline in ('\n', '\r\n'):
+                with self.subTest(newline=repr(newline)), self.assertRaises(ValueError):
+                    generate_hooks.native_pre_commit_configuration(broken.replace('\n', newline))
         # Universal declarations have multi-line generated comments; nesting
         # must retain both lines and the renderer's fixpoint in the flat view.
         universal = generate_hooks.render(raw, {'check_alpha.py': ('**/*',)})
@@ -290,14 +368,21 @@ sys.exit(23 if name=='alpha' and sys.argv[3]=='fail' else 0)
                              'assert "LEFTHOOK_CONFIG" not in os.environ;'
                              'assert "AWAKEN_HOOK_PARENT_CONFIG_SET" not in os.environ;'
                              'assert "execution_info" in json.loads(subprocess.check_output(["lefthook","dump","--format","json"],text=True))["output"];'
-                             'json.dump(sys.argv[1:],open(pathlib.Path(os.environ["PROBE_ROOT"])/"args.json","w"))')
+                             'p=pathlib.Path(os.environ["PROBE_ROOT"]);'
+                             'json.dump(sys.argv[1:],open(p/"args.json","w"));'
+                             'b=pathlib.Path(os.environ["AWAKEN_BUILD_RUN_DIRECTORY"])/"native-lefthook.json";'
+                             'json.dump(json.loads(b.read_text()) if b.exists() else None,open(p/"bridge.json","w"));'
+                             '(p/"unicode.txt").write_text("原样保留✓",encoding="utf-8")')
                 writer = ('import os,pathlib,sys;p=pathlib.Path(os.environ["PROBE_ROOT"]);'
                           'assert (p/"alpha.done").exists() and (p/"beta.done").exists();'
-                          'pathlib.Path(sys.argv[1]).write_text("formatted");(p/"writer.done").touch()')
+                          'pathlib.Path(sys.argv[1]).write_text("formatted 中文✓",encoding="utf-8");(p/"writer.done").touch()')
                 tail = 'import os,pathlib;assert (pathlib.Path(os.environ["PROBE_ROOT"])/"writer.done").exists()'
-                jobs = ('    - name: readers\n      group:\n        parallel: true\n        jobs:\n'
+                # The argv preflight precedes both handshake peers. Its source
+                # collection latency must not consume the other peer's five
+                # second readiness window; all original jobs/budgets remain.
+                jobs = (leaf('arguments', shlex.join([sys.executable, '-c', arguments]) + ' {staged_files}', glob='*.py')
+                        + '    - name: readers\n      group:\n        parallel: true\n        jobs:\n'
                         + '          - name: lane-a\n            group:\n              piped: true\n              jobs:\n'
-                        + leaf('arguments', shlex.join([sys.executable, '-c', arguments]) + ' {staged_files}', indent=16, glob='*.py')
                         + leaf('alpha', reader('alpha', 'beta'), indent=16, glob='*.py')
                         + '          - name: lane-b\n            group:\n              piped: true\n              jobs:\n'
                         + leaf('beta', reader('beta', 'alpha'), indent=16, glob='*.py')
@@ -307,7 +392,7 @@ sys.exit(23 if name=='alpha' and sys.argv[3]=='fail' else 0)
                         + leaf('unmatched', 'touch forbidden', glob='*.rs'))
                 (root / 'lefthook.yml').write_text(config(jobs))
                 (root / 'lefthook-local.yml').write_text('output: [failure, execution_out, summary, execution_info]\n')
-                selected = "file with 'quotes'.py"
+                selected = "中文 file with 'quotes'.py"
                 (root / selected).write_text('before')
                 intended = (root / 'lefthook.yml').read_text()
                 # An older worktree may have installed the shared generic hook.
@@ -316,14 +401,32 @@ sys.exit(23 if name=='alpha' and sys.argv[3]=='fail' else 0)
                 setup = subprocess.run(['lefthook', 'install', '--force'], cwd=root, env=env,
                                        capture_output=True, text=True, timeout=30)
                 self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
-                (root / 'lefthook.yml').write_text(intended)
+                intended_bytes = intended.replace('\n', '\r\n').encode('utf-8')
+                (root / 'lefthook.yml').write_bytes(intended_bytes)
+                default_index = root / '.git/index'
+                default_index_bytes = default_index.read_bytes()
+                alternate_index = initial.directory.parent / "alternate 中文 'quoted'.index"
+                alternate_index.write_bytes(default_index_bytes)
+                env['GIT_INDEX_FILE'] = str(alternate_index)
                 for command in (['git', 'add', '--', selected],):
                     setup = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=30)
                     self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
-                result = subprocess.run(['git', '-c', 'commit.gpgsign=false', 'commit', '-m', 'fixture feedback'],
-                                        cwd=root, env=env, capture_output=True, text=True, timeout=40)
+                result = self.bounded(['git', '-c', 'commit.gpgsign=false', 'commit', '-m', 'fixture feedback'],
+                                      root, env, 40)
                 self.assertEqual(result.returncode, int(fails), result.stdout + result.stderr)
+                self.assertEqual(default_index.read_bytes(), default_index_bytes,
+                                 'native transport must retain the selected alternate index')
                 self.assertEqual(json.loads((probe / 'args.json').read_text()), [selected])
+                self.assertEqual((probe / 'unicode.txt').read_text(encoding='utf-8'), '原样保留✓')
+                if os.name == 'nt':
+                    import _native_lefthook
+                    bridge = json.loads((probe / 'bridge.json').read_text())
+                    self.assertTrue(Path(bridge['selected_shell']).is_file())
+                    self.assertEqual(bridge['source_sha256'],
+                                     hashlib.sha256(_native_lefthook.SH_SOURCE.encode('utf-8')).hexdigest())
+                    print(json.dumps({'native_lefthook_selected_shell': bridge['selected_shell'],
+                                      'native_source_sha256': bridge['source_sha256'],
+                                      'selected_alternate_index_retained': True}))
                 self.assertEqual((probe / 'writer.done').exists(), not fails)
                 self.assertFalse((root / 'forbidden').exists())
                 records = [p for p in initial.directory.parent.glob('*/evidence.json') if p.parent != initial.directory]
@@ -333,6 +436,10 @@ sys.exit(23 if name=='alpha' and sys.argv[3]=='fail' else 0)
                 self.assertEqual(record['status'], 'failed' if fails else 'passed')
                 self.assertTrue(record['workload_digest'])
                 self.assertTrue((records[0].parent / 'hook-config.json').is_file())
+                projection = json.loads((records[0].parent / 'hook-config.json').read_text())
+                self.assertEqual(projection['source_digest'], hashlib.sha256(intended_bytes).hexdigest())
+                self.assertNotEqual(projection['source_digest'], hashlib.sha256(intended.encode('utf-8')).hexdigest())
+                self.assertEqual(record['configuration']['lefthook.yml'], projection['source_digest'])
                 self.assertEqual(list(records[0].parent.glob('hook-config-*.yml')), [])
                 observed = ci_performance.hook_observations(records[0].parent)
                 self.assertEqual(observed['completed'], 3 if fails else 5)
@@ -341,7 +448,94 @@ sys.exit(23 if name=='alpha' and sys.argv[3]=='fail' else 0)
                     self.assertEqual(next(r for r in observed['rows'] if r['label'] == 'alpha')['exit_code'], 23)
                     self.assertIsNotNone(observed['first_failure_seconds'])
                 else:
-                    self.assertEqual(subprocess.check_output(['git', 'show', 'HEAD:' + selected], cwd=root, env=env), b'formatted')
+                    self.assertEqual(subprocess.check_output(['git', 'show', 'HEAD:' + selected], cwd=root, env=env),
+                                     'formatted 中文✓'.encode('utf-8'))
+
+    @unittest.skipUnless(os.name == 'nt', 'native Windows Lefthook command-line producers')
+    def test_native_condition_commands_keep_quoted_only_and_skip_predicates(self):
+        # Ordinary CRT commands evaluate predicates; the main executor uses a
+        # hand-framed command line. The same bridge must preserve both. A false
+        # `only` is excluded, never promoted to a successfully executed check.
+        initial, root, env = self.fixture()
+        initial.finish(0)
+        for key in ('AWAKEN_BUILD_RUN_ID', 'AWAKEN_BUILD_RUN_DIRECTORY', 'AWAKEN_BUILD_INVOCATION_ID'):
+            env.pop(key, None)
+        self.private_ci(root)
+        probe = initial.directory.parent / 'predicate-results'
+        probe.mkdir()
+        env['PROBE_ROOT'] = str(probe)
+        nested = '''import os,pathlib,subprocess
+owned=pathlib.Path(os.environ['AWAKEN_BUILD_RUN_DIRECTORY'])
+bridges=list(owned.glob('lefthook-native-shell-*/sh.exe'))
+assert len(bridges)==1
+env=dict(os.environ,PATH=str(bridges[0].parent)+os.pathsep+os.environ['PATH'])
+subprocess.run(['lefthook','run','predicates'],env=env,check=True)
+p=pathlib.Path(os.environ['PROBE_ROOT'])
+assert {f.name for f in p.iterdir()}=={'only-true','skip-false'}
+assert all(f.read_text(encoding='utf-8')=='执行✓' for f in p.iterdir())
+'''
+        jobs = leaf('predicate-matrix', shlex.join([sys.executable, '-c', nested]))
+        predicates = []
+        for name, field, exists in (('only-true', 'only', True), ('only-false', 'only', False),
+                                    ('skip-true', 'skip', True), ('skip-false', 'skip', False)):
+            mark = ('import os,pathlib;'
+                    f'(pathlib.Path(os.environ["PROBE_ROOT"])/{name!r}).write_text("执行✓",encoding="utf-8")')
+            condition = 'test -e "' + ('条件 文件.txt' if exists else '缺失 文件.txt') + '"'
+            predicates.append('    - name: ' + name + '\n      run: ' + json.dumps(
+                shlex.join([sys.executable, '-c', mark]), ensure_ascii=False)
+                + '\n      ' + field + ':\n        - run: ' + json.dumps(condition, ensure_ascii=False) + '\n')
+        (root / 'lefthook.yml').write_text(config(jobs) + '\npredicates:\n  jobs:\n' + ''.join(predicates),
+                                          encoding='utf-8')
+        setup = subprocess.run(['lefthook', 'install', '--force'], cwd=root, env=env,
+                               capture_output=True, text=True, timeout=30)
+        self.assertEqual(setup.returncode, 0, setup.stdout + setup.stderr)
+        (root / '条件 文件.txt').write_text('actual condition input', encoding='utf-8')
+        subprocess.run(['git', 'add', '--', '条件 文件.txt'], cwd=root, env=env, check=True)
+        result = self.bounded(['git', '-c', 'commit.gpgsign=false', 'commit', '-m', 'predicate fixture'],
+                              root, env, 40)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_nested_piped_success_orders_the_next_leaf_and_failure_suppresses_it(self):
+        # N1 the actual second nested leaf must see the first one's completion.
+        # N2 first child23 keeps that exact worker result, aggregates to Git1,
+        # and starts no second leaf. This has no unrelated peer-ready timer.
+        for status in (0, 23):
+            with self.subTest(status=status):
+                initial, root, env = self.fixture()
+                initial.finish(0)
+                for key in ('AWAKEN_BUILD_RUN_ID', 'AWAKEN_BUILD_RUN_DIRECTORY', 'AWAKEN_BUILD_INVOCATION_ID'):
+                    env.pop(key, None)
+                self.private_ci(root)
+                probe = initial.directory.parent / 'nested-probe'
+                probe.mkdir()
+                env['PROBE_ROOT'] = str(probe)
+                first = ('import os,pathlib,sys;'
+                         'p=pathlib.Path(os.environ["PROBE_ROOT"]);'
+                         '(p/"first.done").write_text("完成✓",encoding="utf-8");sys.exit(' + str(status) + ')')
+                later = ('import os,pathlib;'
+                         'p=pathlib.Path(os.environ["PROBE_ROOT"]);'
+                         'assert (p/"first.done").read_text(encoding="utf-8")=="完成✓";'
+                         '(p/"later.done").touch()')
+                jobs = ('    - name: nested\n      group:\n        piped: true\n        jobs:\n'
+                        + leaf('first', shlex.join([sys.executable, '-c', first]), indent=10)
+                        + leaf('later', shlex.join([sys.executable, '-c', later]), indent=10))
+                (root / 'lefthook.yml').write_text(config(jobs), encoding='utf-8')
+                setup = subprocess.run(['lefthook', 'install', '--force'], cwd=root, env=env,
+                                       capture_output=True, text=True, timeout=30)
+                self.assertEqual(setup.returncode, 0, setup.stdout + setup.stderr)
+                (root / 'nested 中文.txt').write_text('staged fixture', encoding='utf-8')
+                subprocess.run(['git', 'add', '--', 'nested 中文.txt'], cwd=root, env=env, check=True)
+                result = self.bounded(['git', '-c', 'commit.gpgsign=false', 'commit', '-m', 'nested fixture'],
+                                      root, env, 40)
+                self.assertEqual(result.returncode, int(status != 0), result.stdout + result.stderr)
+                self.assertTrue((probe / 'first.done').exists())
+                self.assertEqual((probe / 'later.done').exists(), status == 0)
+                records = [p for p in initial.directory.parent.glob('*/evidence.json') if p.parent != initial.directory]
+                self.assertEqual(len(records), 1)
+                observed = ci_performance.hook_observations(records[0].parent)
+                self.assertEqual(observed['unfinished'], 0)
+                self.assertEqual({row['label']: row['exit_code'] for row in observed['rows']},
+                                 {'first': 0, 'later': 0} if status == 0 else {'first': 23})
 
     @unittest.skipIf(os.name == 'nt', 'POSIX TERM; native Windows Job cases remain in test_deadline')
     def test_worker_signal_cleans_actual_descendants_and_records_failure(self):
@@ -397,6 +591,24 @@ sys.exit(23 if name=='alpha' and sys.argv[3]=='fail' else 0)
         # entry accepts only --observe; unsupported argv ->2 before lifecycle.
         task, root, env = self.fixture()
         detached = {key: value for key, value in env.items() if not key.startswith('AWAKEN_BUILD_')}
+        import _native_lefthook
+        with patch.dict(os.environ, detached, clear=True), \
+                patch.object(_native_lefthook, 'subprocess') as child, \
+                self.assertRaisesRegex(ValueError, 'active observation context'):
+            _native_lefthook.run_pre_commit()
+        child.assert_not_called()
+        child.run.assert_not_called()
+        for selected in (task.directory.parent / 'foreign.yml', task.directory / 'hook-config-invalid.yml'):
+            selected.write_text('invalid projection', encoding='utf-8')
+            (task.directory / 'hook-config.json').write_text(json.dumps({
+                'source_digest': 'unchanged', 'native_digest': 'not-the-selected-bytes'}))
+            with patch.dict(os.environ, {**task.environment, 'LEFTHOOK_CONFIG': str(selected)}, clear=True), \
+                    patch.object(_native_lefthook, 'subprocess') as child, \
+                    self.assertRaisesRegex(ValueError, 'original owned configuration projection'):
+                _native_lefthook.run_pre_commit()
+            child.assert_not_called()
+            child.run.assert_not_called()
+        (task.directory / 'hook-config.json').unlink()
         result = self.worker(task, root, detached, 'touch forbidden')
         self.assertEqual(result.returncode, 74)
         self.assertFalse((root / 'forbidden').exists())
@@ -458,10 +670,27 @@ assert (p/'release').exists()
         self.assertEqual(setup.returncode, 0, setup.stderr)
         (root / 'live-input.txt').write_text('selected staged input')
         subprocess.run(['git', 'add', '--', 'live-input.txt'], cwd=root, env=env, check=True)
-        process = subprocess.Popen(['git', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'live feedback'],
+        command = ['git', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'live feedback']
+        job = None
+        if os.name == 'nt':
+            from _windows_job import WindowsJob
+            job = WindowsJob()
+            self.addCleanup(job.close)
+            command = [sys.executable, str(ROOT / 'scripts/ci/deadline.py'),
+                       '--windows-job-child', job.name, '--', *command]
+        process = subprocess.Popen(command,
                                    cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   text=True, bufsize=1)
-        self.addCleanup(lambda: process.poll() is None and (process.kill(), process.wait()))
+                                   text=True, bufsize=1, start_new_session=os.name != 'nt')
+        def cleanup():
+            if job is not None:
+                job.terminate_and_wait()
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+            else:
+                deadline.terminate_group(process)
+            process.stdout.close()
+        self.addCleanup(cleanup)
         visible, output = threading.Event(), []
         def consume():
             for line in process.stdout:
@@ -470,16 +699,19 @@ assert (p/'release').exists()
                     visible.set()
         reader = threading.Thread(target=consume, daemon=True)
         reader.start()
+        until = time.monotonic() + 5 + 2 + 15
         try:
-            observed = visible.wait(timeout=5)
-            until = time.monotonic() + 2
+            # Keep the original total budget while measuring live delivery
+            # from the actual checker start, rather than conflating buffered
+            # output with platform-dependent Git/source-capture startup time.
             # awaken-allow(wait): the real checker's start fact precedes release.
             while not (probe/'started').exists() and process.poll() is None and time.monotonic()<until:
                 time.sleep(.01)
+            observed = visible.wait(timeout=min(5, max(0, until - time.monotonic())))
             running = process.poll() is None and (probe/'started').exists()
         finally:
             (probe/'release').touch()
-            process.wait(timeout=15)
+            process.wait(timeout=min(15, max(.01, until - time.monotonic())))
             reader.join(timeout=2)
             process.stdout.close()
         self.assertTrue(observed and running, 'live progress was buffered: '+''.join(output))

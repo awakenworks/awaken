@@ -16,12 +16,12 @@ def main() -> None:
     # mount points. E1 the one canonical image contains python3, bubblewrap, CA
     # roots and OpenSSL; E2 both mount points exist before either shipped binary is
     # copied. Rules: I1 C1+C2+C3 => E1; I2 C1+C4 => E2.
-    dockerfile = (Path(__file__).parent / "Dockerfile").read_text()
+    dockerfile = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
     # I8 a cold/repeated build must not resolve a mutable Ubuntu tag into a
     # different substrate: use the production management image's exact base.
     # Missing pin or divergent base => fail before paid cluster setup. This
     # static contract proves identity, not registry availability or TLS health.
-    management = (Path(__file__).parent.parent / "images" / "management" / "Dockerfile").read_text()
+    management = (Path(__file__).parent.parent / "images" / "management" / "Dockerfile").read_text(encoding="utf-8")
     runtime_base = next(line for line in dockerfile.splitlines() if line.startswith("FROM "))
     management_base = next(line for line in management.splitlines() if line.startswith("FROM "))
     assert "@sha256:" in runtime_base
@@ -53,7 +53,7 @@ def main() -> None:
         for role in ("worker", "control", "coordinator", "sandbox")
     ]
     for image_path, executable in image_entries:
-        copies = [line for line in image_path.read_text().splitlines()
+        copies = [line for line in image_path.read_text(encoding="utf-8").splitlines()
                   if line.startswith("COPY ")
                   and line.endswith(f" /usr/local/bin/{executable}")]
         assert len(copies) == 1, image_path
@@ -65,7 +65,7 @@ def main() -> None:
     # T2 C3 -> fail update before installation, never reuse incomplete indexes.
     # The real canonical image build supplies network/TLS acceptance. These
     # static mutants reject each missing boundary without a second source list.
-    sandbox_source = (Path(__file__).parent.parent / "images" / "sandbox" / "Dockerfile").read_text()
+    sandbox_source = (Path(__file__).parent.parent / "images" / "sandbox" / "Dockerfile").read_text(encoding="utf-8")
     ca_copy = "COPY --from=rust-toolchain /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt"
     https_sources = "sed -i 's#^URIs: http://#URIs: https://#' /etc/apt/sources.list.d/ubuntu.sources"
     strict_update = "apt-get -o APT::Update::Error-Mode=any update"
@@ -78,10 +78,10 @@ def main() -> None:
     assert tls_bootstrap_contract(sandbox_source)
     for part in (ca_copy, https_sources, strict_update):
         assert not tls_bootstrap_contract(sandbox_source.replace(part, "", 1))
-    resources = (Path(__file__).parent / "distributed-control" / "resources.yaml").read_text()
+    resources = (Path(__file__).parent / "distributed-control" / "resources.yaml").read_text(encoding="utf-8")
     policy_graph = (
         Path(__file__).parent / "bases" / "sandbox-network-policy" / "resources.yaml"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
     def policy(name: str) -> str:
         return policy_graph.split(f"name: {name}", 1)[1].split("---", 1)[0]
@@ -95,18 +95,18 @@ def main() -> None:
     assert "awaken-egress: open" in policy("awaken-sandbox-open-egress")
     distributed = Path(__file__).parent / "distributed-control"
     product = Path(__file__).parent / "product-backend"
-    dns = (distributed / "network-policies.yaml").read_text()
+    dns = (distributed / "network-policies.yaml").read_text(encoding="utf-8")
     assert "operator: NotIn, values: [awaken-sandbox]" in dns
     shared_rbac = (
         Path(__file__).parent / "bases" / "sandbox-runtime-rbac" / "resources.yaml"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert 'resources: ["networkpolicies"]' in shared_rbac
     assert 'verbs: ["get", "list", "watch"]' in shared_rbac
     for overlay in (distributed, product):
-        assert "../bases/sandbox-network-policy" in (overlay / "kustomization.yaml").read_text()
-    product_resources = (product / "resources.yaml").read_text()
+        assert "../bases/sandbox-network-policy" in (overlay / "kustomization.yaml").read_text(encoding="utf-8")
+    product_resources = (product / "resources.yaml").read_text(encoding="utf-8")
     for overlay in (distributed, product):
-        assert "../bases/sandbox-runtime-rbac" in (overlay / "kustomization.yaml").read_text()
+        assert "../bases/sandbox-runtime-rbac" in (overlay / "kustomization.yaml").read_text(encoding="utf-8")
     # Worker-retirement cause/effect decision table. C1 Kubernetes begins a
     # normal Job/StatefulSet replacement; C2 the Worker can still claim work
     # until its local gate closes; C3 an in-flight model/tool may outlive the
@@ -123,7 +123,7 @@ def main() -> None:
     lifecycle = (
         Path(__file__).parent.parent.parent
         / "crates" / "bin" / "awaken-worker" / "src" / "lifecycle.rs"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     revocation_budget = int(re.search(
         r"WORKER_REVOCATION_BUDGET[^=]*=.*from_secs\((\d+)\)", lifecycle,
     ).group(1))
@@ -229,7 +229,7 @@ def main() -> None:
     assert resources.count("suspend: true") == 2
     e2e = (
         Path(__file__).parent.parent.parent / "e2e" / "k3d" / "distributed_control_e2e.sh"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     # KRB4: the installed provisioner has a shared all-node directory, and K3s
     # may default to local volumes. The node-recovery scenario must select hostPath
     # explicitly; its live Bound/no-node-affinity checks own Kubernetes admission.
@@ -252,7 +252,7 @@ def main() -> None:
     assert "/etc/awaken-home" not in resources
     worker_image = (
         Path(__file__).parent.parent / "images" / "worker" / "Dockerfile"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     # I4 the standalone production image owns only the Worker artifact, runs as
     # the fixed non-root identity, and carries the Namespace sandbox runtime.
     assert "COPY --chmod=0755 ${BIN} /usr/local/bin/awaken-worker" in worker_image
@@ -266,7 +266,7 @@ def main() -> None:
     for role in ("control", "coordinator"):
         role_image = (
             Path(__file__).parent.parent / "images" / role / "Dockerfile"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         assert f"COPY --chmod=0755 ${{BIN}} /usr/local/bin/awaken-{role}" in role_image
         assert f'ENTRYPOINT ["/usr/local/bin/awaken-{role}"]' in role_image
         assert "USER 10001" in role_image
@@ -280,7 +280,7 @@ def main() -> None:
     # C5+C7 => E4. Podman keeps its ordinary engine-owned output path.
     sandbox_build = (
         Path(__file__).parent.parent / "images" / "sandbox" / "build.sh"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert 'if [[ "${engine##*/}" == "docker" ]]' in sandbox_build
     assert (
         'run_with_deadline "$build_timeout_seconds" "$engine" build --load --platform linux/amd64 \\\n'
@@ -301,7 +301,7 @@ def main() -> None:
     # fingerprint and rebuild behavior belong solely to the executable
     # e2e/fixtures/sandbox_image.test.mjs contract, not this static image test.
     sandbox = Path(__file__).parent.parent / "images" / "sandbox"
-    sandbox_dockerfile = (sandbox / "Dockerfile").read_text()
+    sandbox_dockerfile = (sandbox / "Dockerfile").read_text(encoding="utf-8")
     # The public Managed Agents foundation is one immutable, observable contract:
     # Ubuntu 24.04/amd64 with Node 22, Go 1.24, and Ruby 3.3 as defaults. Build
     # and reuse admission must test that same projection, while every external
@@ -330,12 +330,12 @@ def main() -> None:
     assert not (sandbox / "acp-runtimes.json").exists()
     runtime_profiles = (
         Path(__file__).parent.parent.parent / "e2e" / "acp_runtime_profiles.mjs"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "--example', 'image_runtime_contract'" in runtime_profiles
     assert "ACP_RUNTIME_IDS = Object.freeze([" not in runtime_profiles
     assert "ACP_RUNTIME_VERSION_SPECS = Object.freeze({" not in runtime_profiles
-    installer = (sandbox / "install-acp-runtimes.py").read_text()
-    verifier = (sandbox / "verify-acp-runtimes.py").read_text()
+    installer = (sandbox / "install-acp-runtimes.py").read_text(encoding="utf-8")
+    verifier = (sandbox / "verify-acp-runtimes.py").read_text(encoding="utf-8")
     for source in (installer, verifier):
         assert 'runtime["executables"]' in source
     assert 'runtime["requirements"]' in installer

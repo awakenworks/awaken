@@ -36,7 +36,7 @@ trap finish_observed_hook EXIT
 hook_config=$(python3 scripts/ci/ci_performance.py hook-config) || exit $?
 parent_config="${LEFTHOOK_CONFIG-}" parent_config_set="${LEFTHOOK_CONFIG+x}"
 AWAKEN_HOOK_PARENT_CONFIG="$parent_config" AWAKEN_HOOK_PARENT_CONFIG_SET="$parent_config_set" \
-  LEFTHOOK_CONFIG="$hook_config" lefthook run pre-commit --no-auto-install
+  LEFTHOOK_CONFIG="$hook_config" python3 scripts/ci/_native_shell.py --lefthook-pre-commit
 hook_status=$?
 hook_body_complete=1
 exit "$hook_status"

@@ -36,7 +36,8 @@ def required_layers(paths: list[str], *, qualification: bool = False,
     Package names identify the benchmark owner; directory layout is not a policy.
     A crate README can be Rust input, including rustdoc's include_str! content.
     """
-    from rust_test_plan import gate_scope
+    from rust_test_plan import gate_inputs, gate_scope
+    from generate_hooks import glob_matches
     from crate_test import _members
     layers = {"L0"}; reasons = []; cold = False; scale = False; rust_inputs = []
     if metadata is not None:
@@ -64,8 +65,13 @@ def required_layers(paths: list[str], *, qualification: bool = False,
             layers.update(("L1", "L2", "L3")); rust_inputs.append(path)
             reasons.append(path + ": canonical Cargo owners and transitive consumers, including test dependencies")
         elif path.startswith(("e2e/", "web/", "packages/", "contracts/", "deploy/")):
-            layers.update(("L2", "L3"))
-            reasons.append(path + ": actual service/process or consumer assertions remain separate")
+            if any(glob_matches(pattern, path) for pattern in gate_inputs()):
+                layers.update(("L1", "L2", "L3", "L4")); cold = True; scale = True
+                rust_inputs.append(path)
+                reasons.append(path + ": declared external Rust input has no Cargo member owner; refuse narrow service-only qualification")
+            else:
+                layers.update(("L2", "L3"))
+                reasons.append(path + ": actual service/process or consumer assertions remain separate")
         else:
             layers.update(("L1", "L2", "L3", "L4")); cold = True; scale = True
             reasons.append(path + ": unknown ownership; refuse narrow qualification")
@@ -203,7 +209,7 @@ def validate(value: dict, root: Path = ROOT) -> None:
     for profile in value.get("closed_profiles", []):
         if not (root / profile["receipt"]).is_file():
             raise ValueError("historical scope receipt is missing")
-    if {row.get("id") for row in value.get("trigger_rules", [])} != {"always", "rust", "service-process", "global", "scale", "unknown", "qualification"}:
+    if {row.get("id") for row in value.get("trigger_rules", [])} != {"always", "rust", "external-rust-input", "service-process", "global", "scale", "unknown", "qualification"}:
         raise ValueError("missing layer trigger rule")
 
 
@@ -213,6 +219,16 @@ class MatrixTests(unittest.TestCase):
 
     def test_current_design_links_to_existing_source_without_certifying_execution(self):
         validate(self.fixture())
+
+    def test_every_layer_trigger_rule_is_required(self):
+        original = self.fixture()
+        for rule in original["trigger_rules"]:
+            with self.subTest(rule=rule["id"]):
+                value = copy.deepcopy(original)
+                value["trigger_rules"] = [item for item in value["trigger_rules"]
+                                          if item["id"] != rule["id"]]
+                with self.assertRaisesRegex(ValueError, "missing layer trigger rule"):
+                    validate(value)
 
     def test_missing_domain_duplicate_case_or_deleted_source_cannot_pass(self):
         for fault in ("domain", "duplicate-domain", "duplicate-case", "source", "symbol", "condition", "path"):
@@ -320,6 +336,22 @@ class MatrixTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 required_layers([path], metadata=self.metadata())
 
+
+    def test_external_rust_fixture_obligations_use_canonical_gate_inputs(self):
+        from unittest import mock
+        for path in ("e2e/fixtures/acp_awaken_tool_bridge_fixture.mjs",
+                     "e2e/fixtures/mcp_http_fixture_client.mjs", "e2e/fixtures/future_fixture.mjs"):
+            for metadata in (None, self.metadata()):
+                with self.subTest(path=path, graph=metadata is not None):
+                    result = required_layers([path], metadata=metadata)
+                    self.assertEqual(result["required_layers"], ["L0", "L1", "L2", "L3", "L4"])
+                    self.assertTrue(result["cold_required"] and result["scale_required"])
+        # The owner of the Rust gate input declaration, not a second path list,
+        # also controls a future external path under the process fixture tree.
+        path = "e2e/new_asset.data"
+        with mock.patch("rust_test_plan.gate_inputs", return_value=("e2e/new_asset.data",)):
+            self.assertIn("L1", required_layers([path], metadata=self.metadata())["required_layers"])
+        self.assertEqual(required_layers(["e2e/scenario.mjs"], metadata=self.metadata())["required_layers"], ["L0", "L2", "L3"])
 
     def metadata(self):
         entries = [

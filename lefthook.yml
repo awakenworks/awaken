@@ -90,22 +90,25 @@ commit-checks:
             tags: [read-only]
             run: python3 scripts/ci/parallel_check.py --hook-label file-limits --timeout 600 --read-only --shell 'python3 scripts/ci/check_file_limits.py --staged' --
 
+    # Real process fixtures own their execution window; budgets and checks stay unchanged.
+    - name: rust-execution-framework
+      # >>> generated glob from benchmark_rust_build.py, check_rust_test_execution.py INPUT_GLOBS — do not edit
+      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/e2e/sandbox_capability_suite.sh}"
+      # <<< generated glob
+      tags: [read-only]
+      run: python3 scripts/ci/parallel_check.py --hook-label rust-execution-framework --timeout 600 --read-only --shell 'python3 scripts/ci/benchmark_rust_build.py --self-test && python3 scripts/ci/check_rust_test_execution.py --self-test' --
+
+    - name: hook-feedback
+      # >>> generated glob from test_hook_feedback.py, test_strict_unittest.py INPUT_GLOBS — do not edit
+      glob: "{lefthook.yml,scripts/ci/_build_observation.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_input_closure.py,scripts/ci/_native_lefthook.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/pre-commit/observe.sh,scripts/ci/rust_test_plan.py,scripts/ci/test_coverage_summary.py,scripts/ci/test_hook_feedback.py,scripts/ci/test_strict_unittest.py}"
+      # <<< generated glob
+      tags: [read-only]
+      run: python3 scripts/ci/parallel_check.py --hook-label hook-feedback --timeout 600 --read-only --shell 'python3 scripts/ci/test_hook_feedback.py && python3 scripts/ci/test_strict_unittest.py' --
+
     - name: read-only-phase-2
       group:
         parallel: true
         jobs:
-          - name: read-only-lane-2-1
-            group:
-              piped: true
-              jobs:
-                # Fixture-based execution regressions follow their own script/tool inputs.
-                # Ordinary Rust edits still run the impact planner and every live gate.
-                - name: rust-execution-framework
-                  # >>> generated glob from benchmark_rust_build.py, check_rust_test_execution.py INPUT_GLOBS — do not edit
-                  glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/e2e/sandbox_capability_suite.sh}"
-                  # <<< generated glob
-                  tags: [read-only]
-                  run: python3 scripts/ci/parallel_check.py --hook-label rust-execution-framework --timeout 600 --read-only --shell 'python3 scripts/ci/benchmark_rust_build.py --self-test && python3 scripts/ci/check_rust_test_execution.py --self-test' --
           - name: read-only-lane-2-2
             group:
               piped: true
@@ -126,16 +129,10 @@ commit-checks:
               jobs:
                 - name: hook-bootstrap
                   # >>> generated glob from _lefthook_fitness.py INPUT_GLOBS — do not edit
-                  glob: "{lefthook.yml,scripts/ci/_build_observation.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_lefthook_fitness.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/pre-commit/observe.sh,scripts/ci/pre-push/qualify.sh,scripts/ci/rust_test_plan.py}"
+                  glob: "{lefthook.yml,scripts/ci/_build_observation.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_lefthook_fitness.py,scripts/ci/_native_lefthook.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/pre-commit/observe.sh,scripts/ci/pre-push/qualify.sh,scripts/ci/rust_test_plan.py}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label hook-bootstrap --timeout 600 --read-only --shell 'python3 scripts/ci/_lefthook_fitness.py --self-test && python3 scripts/ci/_lefthook_fitness.py --integration-test' --
-                - name: hook-feedback
-                  # >>> generated glob from test_hook_feedback.py, test_strict_unittest.py INPUT_GLOBS — do not edit
-                  glob: "{lefthook.yml,scripts/ci/_build_observation.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_input_closure.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/pre-commit/observe.sh,scripts/ci/rust_test_plan.py,scripts/ci/test_coverage_summary.py,scripts/ci/test_hook_feedback.py,scripts/ci/test_strict_unittest.py}"
-                  # <<< generated glob
-                  tags: [read-only]
-                  run: python3 scripts/ci/parallel_check.py --hook-label hook-feedback --timeout 600 --read-only --shell 'python3 scripts/ci/test_hook_feedback.py && python3 scripts/ci/test_strict_unittest.py' --
                 # The ledger above proves each obligation carries evidence; this one proves
                 # the product still consumes it. An obligation whose prefix no requirement
                 # owns reddens every later commit by everyone, so it must fail the commit
@@ -190,7 +187,7 @@ commit-checks:
                   run: python3 scripts/ci/parallel_check.py --hook-label degrading-defaults --timeout 600 --read-only --shell 'python3 scripts/ci/check_degrading_defaults.py --self-test && python3 scripts/ci/check_degrading_defaults.py' --
                 - name: affected-rust-plan
                   # >>> generated glob from rust_test_plan.py INPUT_GLOBS — do not edit
-                  glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,tests/**,xtask/**}"
+                  glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,e2e/fixtures/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,tests/**,xtask/**}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label affected-rust-plan --timeout 600 --read-only --shell 'python3 scripts/ci/rust_test_plan.py --self-test' --
@@ -208,13 +205,13 @@ commit-checks:
                 #    anyone runs the reclaimer with --apply.
                 - name: reclaim-build-space
                   # >>> generated glob from reclaim_build_space.py INPUT_GLOBS — do not edit
-                  glob: "{scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_node_dependencies.py,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,scripts/ci/reclaim_build_space.py}"
+                  glob: "{scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_native_lefthook.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_node_dependencies.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/reclaim_build_space.py,scripts/ci/rust_test_plan.py}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label reclaim-build-space --timeout 600 --read-only --shell 'python3 scripts/ci/reclaim_build_space.py --self-test' --
                 - name: ci-performance-policy
                   # >>> generated glob from ci_performance.py INPUT_GLOBS — do not edit
-                  glob: "{.github/workflows/quality.yml,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/rust_test_plan.py}"
+                  glob: "{.github/workflows/quality.yml,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_native_lefthook.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/rust_test_plan.py}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label ci-performance-policy --timeout 600 --read-only --shell 'python3 scripts/ci/ci_performance.py workflow' --
@@ -326,7 +323,7 @@ commit-checks:
                 #    that stopped describing reality fails here rather than inside a proof.
                 - name: gate-tools
                   # >>> generated glob from gate_tools.py INPUT_GLOBS — do not edit
-                  glob: "{e2e/package.json,package.json,pnpm-workspace.yaml,scripts/ci/*.sh,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_node_dependencies.py,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,web/package.json}"
+                  glob: "{e2e/package.json,package.json,pnpm-workspace.yaml,scripts/ci/*.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_native_lefthook.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_node_dependencies.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/rust_test_plan.py,web/package.json}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label gate-tools --timeout 600 --read-only --shell 'python3 scripts/ci/gate_tools.py --self-test' --
@@ -356,7 +353,7 @@ commit-checks:
                 #    run. Staleness is a schedule and is reported by check-all, not here.
                 - name: gate-freshness
                   # >>> generated glob from check_gate_freshness.py INPUT_GLOBS — do not edit
-                  glob: "{scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check-all.sh,scripts/ci/check_gate_freshness.py,scripts/ci/check_node_dependencies.py,scripts/ci/gate_record.json,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py}"
+                  glob: "{scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_native_lefthook.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check-all.sh,scripts/ci/check_file_limits.py,scripts/ci/check_gate_freshness.py,scripts/ci/check_node_dependencies.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/gate_record.json,scripts/ci/gate_tools.json,scripts/ci/gate_tools.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/rust_test_plan.py}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label gate-freshness --timeout 600 --read-only --shell 'python3 scripts/ci/check_gate_freshness.py --self-test' --
@@ -371,7 +368,7 @@ commit-checks:
     # edits too; separate hook invocations would execute the same scan twice.
     - name: rust-quick
       # >>> generated glob from check_sdk_consumer.py, check_trust_roots.py, ci_performance.py, rust_test_plan.py INPUT_GLOBS — do not edit
-      glob: "{.cargo/**,.config/**,.github/workflows/quality.yml,Cargo.lock,Cargo.toml,apps/**,crates/**,deny.toml,examples/sdk-consumer/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,tests/**,xtask/**}"
+      glob: "{.cargo/**,.config/**,.github/workflows/quality.yml,Cargo.lock,Cargo.toml,apps/**,crates/**,deny.toml,e2e/fixtures/**,examples/sdk-consumer/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,tests/**,xtask/**}"
       # <<< generated glob
       run: python3 scripts/ci/parallel_check.py --hook-label rust-quick --timeout 14400 --shell 'python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --quick' --
 
@@ -432,7 +429,7 @@ commit-checks:
               jobs:
                 - name: full-gate-admission
                   # >>> generated glob from test_full_gate_admission.py INPUT_GLOBS — do not edit
-                  glob: "{scripts/ci/_build_observation.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_deadline.sh,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/check-all.sh,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/rust_test_plan.py,scripts/ci/test_full_gate_admission.py}"
+                  glob: "{scripts/ci/_build_observation.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_deadline.sh,scripts/ci/_native_lefthook.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/check-all.sh,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/rust_test_plan.py,scripts/ci/test_full_gate_admission.py}"
                   # <<< generated glob
                   tags: [read-only]
                   # Existing host capability regressions remain separate from the source matrix.
@@ -445,7 +442,7 @@ commit-checks:
                 # full CI uses the same owner through check-all.sh's static lane.
                 - name: command-deadline
                   # >>> generated glob from test_deadline.py INPUT_GLOBS — do not edit
-                  glob: "{scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_deadline.sh,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/rust_test_plan.py,scripts/ci/test_deadline.py}"
+                  glob: "{scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_deadline.sh,scripts/ci/_native_lefthook.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/rust_test_plan.py,scripts/ci/test_deadline.py}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label command-deadline --timeout 600 --read-only --shell 'python3 scripts/ci/test_deadline.py' --
