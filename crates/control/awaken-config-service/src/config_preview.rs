@@ -76,6 +76,7 @@ impl ConfigService {
             resolved.models.primary,
             resolved.models.candidates,
             resolved.advisor,
+            self.pattern_selectable,
         )
         .map(|_| ())
         .map_err(|error| ValidationIssue {
@@ -155,6 +156,7 @@ impl ConfigService {
             resolved.models.primary,
             resolved.models.candidates,
             resolved.advisor,
+            self.pattern_selectable,
         )
         .map_err(|error| PublishError::Compile(error.to_string()))?;
         let session_profile = registered_session_profile(

@@ -46,14 +46,20 @@ pub fn create_time_resource_mounts(
 }
 
 /// An inference-only execution can omit a physical Environment only when its complete immutable
-/// execution surface is environment-free. Inference-only Native/A2A routes do
-/// not need a Sandbox; ACP owns a CLI process and every executable integration
-/// keeps the ordinary Session Environment path.
+/// execution surface is environment-free. The caller's trusted execution owner
+/// classifies tools; a wire name or recovery policy alone grants no omission.
+/// Native/A2A inference and stateless proposals need no Sandbox; ACP and other
+/// executable integrations keep the ordinary Session Environment path.
 pub fn environment_free_inference(
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+    environment_free_tool: fn(&awaken_runtime_contract::resolved::ToolDescriptor) -> bool,
 ) -> bool {
     let agent = &snapshot.resolved_spec.plugin_config.agent;
-    snapshot.resolved_spec.tool_descriptors.is_empty()
+    snapshot
+        .resolved_spec
+        .tool_descriptors
+        .iter()
+        .all(environment_free_tool)
         && snapshot.resolved_spec.plugin_ids.is_empty()
         && agent.mcp_servers.is_empty()
         && agent.skills.is_empty()

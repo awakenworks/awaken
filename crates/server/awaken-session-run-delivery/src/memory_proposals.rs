@@ -28,22 +28,27 @@ use awaken_tool_contract::tool::Tool;
 pub struct MemoryWriteProposals;
 
 impl MemoryWriteProposals {
+    /// Whether the frozen descriptor selects the stateless proposal executor.
+    /// Tool installation, authorization and Environment projection share this
+    /// execution-owner check; a same-named store or client tool does not match.
+    pub fn matches_descriptor(descriptor: &ToolDescriptor) -> bool {
+        let canonical = awaken_ext_memory::write_memory_descriptor();
+        descriptor.id == canonical.id
+            && descriptor.content_namespace() == canonical.content_namespace()
+            && descriptor.kind == ToolKind::Regular
+            && descriptor.provider_server_tool.is_none()
+    }
+
     /// Select the frozen extraction contract, rather than a same-named Session
     /// store write or client-owned tool. The descriptor's existing namespace
     /// owns that distinction; the live tool still owns argument validation.
     #[must_use]
     pub fn descriptor(snapshot: &ExecutableAgentSnapshot) -> Option<&ToolDescriptor> {
-        let canonical = awaken_ext_memory::write_memory_descriptor();
         snapshot
             .resolved_spec
             .tool_descriptors
             .iter()
-            .find(|descriptor| {
-                descriptor.id == canonical.id
-                    && descriptor.content_namespace() == canonical.content_namespace()
-                    && descriptor.kind == ToolKind::Regular
-                    && descriptor.provider_server_tool.is_none()
-            })
+            .find(|descriptor| Self::matches_descriptor(descriptor))
     }
 }
 
@@ -130,7 +135,7 @@ pub fn committed_memory_writes(
     }
     match record.state {
         RunState::Ended(EndCause::NaturalEnd | EndCause::MaxSteps) => {}
-        RunState::Running | RunState::Ended(EndCause::Indeterminate) => {
+        RunState::Running | RunState::Awaiting | RunState::Ended(EndCause::Indeterminate) => {
             return Err(MemoryProposalError::ExecutionIndeterminate);
         }
         _ => return Err(MemoryProposalError::UnsuccessfulRun),
