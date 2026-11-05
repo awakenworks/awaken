@@ -47,3 +47,14 @@ Validation includes each ownership coordinate, malformed or unknown bindings,
 metadata edits, decoded replacement attacks, same-key retries and actual SQL
 reopen/CAS behavior. Linux and Windows evidence and complete product acceptance
 remain distinct under the repository test-validation contract.
+
+## Original creation receipts
+
+Knowing a valid original creation key is not private-content authority. The
+Workspace-only creation replay port must hide private roots just as ordinary
+Session reads do. Private creation and recovery use the same native root and
+receipt transaction with the exact immutable binding supplied by current trusted
+ingress. The binding precedes the first insert and participates in request
+identity even when a protocol supplies its own request fingerprint. Replays
+retain the original root and binding; they never reassign an old Session to the
+current application coordinates.

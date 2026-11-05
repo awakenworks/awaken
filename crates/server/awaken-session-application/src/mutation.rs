@@ -424,6 +424,8 @@ impl SessionMutations {
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<CompleteSessionCreateResult, SessionCreationError> {
+        let private_binding =
+            awaken_session_contract::SessionPrivateBinding::of(root.as_session()).cloned();
         // Receipt identity was compiled before this server-owned observation.
         // A repository replay returns the first committed times unchanged.
         let now = self.clock.now_ms();
@@ -438,6 +440,16 @@ impl SessionMutations {
             )
             .await
             .map_err(SessionCreationError::repository)?;
+        let returned = match &result {
+            awaken_session_contract::SessionCreateResult::Applied(session)
+            | awaken_session_contract::SessionCreateResult::Replayed(session) => session,
+        };
+        // A valid receipt identifies an original effect, never a different
+        // private owner. Check before projection, realization or returning it.
+        if awaken_session_contract::SessionPrivateBinding::of(returned) != private_binding.as_ref()
+        {
+            return Err(SessionCreationError::Conflict);
+        }
         match result {
             awaken_session_contract::SessionCreateResult::Applied(session) => {
                 crate::sandbox_observation::created(&session, session.revision, now);
@@ -503,6 +515,7 @@ impl SessionMutations {
             .replay_create(owner_scope, session_id, idempotency)
             .await
             .map_err(SessionCreationError::repository)?
+            .filter(|session| awaken_session_contract::SessionPrivateBinding::of(session).is_none())
             .map(|session| validated_create_replay(session, completion))
             .transpose()
     }
