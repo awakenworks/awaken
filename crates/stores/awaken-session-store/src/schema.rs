@@ -278,6 +278,13 @@ fn append_current_tail(bundle: MigrationBundle) -> Result<MigrationBundle, Migra
          CREATE INDEX {prefix}_session_creation_intent_recoverable_idx \
              ON {prefix}_session_creation_intent (lease_expires_at_unix_ms, session_id)",
     )?);
+    migrations.push(Migration::new(
+        next + 5,
+        "retain private content visibility at Session deletion",
+        "ALTER TABLE {prefix}_session_tombstone \
+             ADD COLUMN private_content INTEGER \
+             CHECK (private_content IS NULL OR private_content IN (0, 1))",
+    )?);
     MigrationBundle::new(bundle.bundle_id(), migrations)
 }
 
@@ -311,7 +318,7 @@ mod tests {
                 .iter()
                 .map(awaken_scoped_migration::Migration::version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5, 6, 7]
+            [1, 2, 3, 4, 5, 6, 7, 8]
         );
         let sql = bundle.migrations()[0].sql_for(awaken_scoped_migration::Dialect::Sqlite);
         for retired in [
@@ -501,7 +508,7 @@ mod tests {
         );
         assert_eq!(
             original.complete.migrations().last().unwrap().version(),
-            28,
+            29,
             "E2"
         );
         let compacted_receipts = BTreeMap::from([
@@ -524,7 +531,7 @@ mod tests {
         );
         assert_eq!(
             compacted.complete.migrations().last().unwrap().version(),
-            26,
+            27,
             "E3"
         );
         let converged_original_receipts = original

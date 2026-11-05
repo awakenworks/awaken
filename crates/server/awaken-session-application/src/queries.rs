@@ -208,6 +208,16 @@ impl SessionRootReads for SessionQueries {
         session_owner(self.repository.as_ref(), session_id).await
     }
 
+    async fn workspace_content_is_public(
+        &self,
+        owner_scope: &str,
+        session_id: &SessionId,
+    ) -> Result<bool, SessionRepositoryError> {
+        self.repository
+            .workspace_content_is_public(owner_scope, session_id)
+            .await
+    }
+
     async fn authorize(
         &self,
         owner_scope: &str,

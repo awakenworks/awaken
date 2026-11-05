@@ -35,15 +35,29 @@ use axum::{Json, Router};
 
 use super::managed_resource_error as error;
 
+mod visibility;
+use visibility::FileHttpState;
+
 /// `clock` is the Resources context's clock (the one the File application
 /// stamps `created_at` with): an upload's `expires_at` is minted from it and a
 /// download judges that expiry against it.
 pub fn files_router(files: Arc<dyn FileApplicationService>, clock: Arc<dyn WallClock>) -> Router {
+    files_router_with_session_reads(files, clock, None)
+}
+
+pub(super) fn files_router_with_session_reads(
+    files: Arc<dyn FileApplicationService>,
+    clock: Arc<dyn WallClock>,
+    sessions: Option<Arc<dyn awaken_session_application::SessionRootReads>>,
+) -> Router {
     Router::new()
         .route("/v1/files", post(upload_file).get(list_files))
         .route("/v1/files/{id}", get(get_file).delete(delete_file))
         .route("/v1/files/{id}/content", get(download_file))
-        .with_state(files)
+        .with_state(FileHttpState {
+            application: files,
+            sessions,
+        })
         .layer(Extension(clock))
 }
 
@@ -94,7 +108,7 @@ fn beta_cursor_metadata(record: &FileRecord) -> BetaFileCursorMetadata {
 }
 
 async fn list_files(
-    State(files): State<Arc<dyn FileApplicationService>>,
+    State(files): State<FileHttpState>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
@@ -115,7 +129,7 @@ async fn list_files(
 }
 
 async fn list_beta_files(
-    files: Arc<dyn FileApplicationService>,
+    files: FileHttpState,
     workspace: &str,
     raw: Option<&str>,
 ) -> axum::response::Response {
@@ -150,7 +164,7 @@ async fn list_beta_files(
 }
 
 async fn list_ga_files(
-    files: Arc<dyn FileApplicationService>,
+    files: FileHttpState,
     workspace: &str,
     raw: Option<&str>,
 ) -> axum::response::Response {
@@ -171,7 +185,7 @@ async fn list_ga_files(
 }
 
 async fn list_beta_cursor_files(
-    files: Arc<dyn FileApplicationService>,
+    files: FileHttpState,
     workspace: &str,
     raw: Option<&str>,
 ) -> axum::response::Response {
@@ -200,7 +214,7 @@ async fn list_beta_cursor_files(
 }
 
 async fn cursor_file_page(
-    files: Arc<dyn FileApplicationService>,
+    files: FileHttpState,
     workspace: &str,
     scope_id: Option<&str>,
     page: Option<String>,
@@ -257,7 +271,7 @@ fn valid_filename(filename: &str) -> bool {
 }
 
 async fn upload_file(
-    State(files): State<Arc<dyn FileApplicationService>>,
+    State(files): State<FileHttpState>,
     Extension(clock): Extension<Arc<dyn WallClock>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
@@ -341,6 +355,7 @@ async fn upload_file(
         );
     }
     match files
+        .application
         .create_uploaded_file_with_expiry_and_idempotency(
             &workspace,
             filename,
@@ -378,7 +393,7 @@ async fn upload_file(
 }
 
 async fn get_file(
-    State(files): State<Arc<dyn FileApplicationService>>,
+    State(files): State<FileHttpState>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -406,7 +421,7 @@ async fn get_file(
 }
 
 async fn delete_file(
-    State(files): State<Arc<dyn FileApplicationService>>,
+    State(files): State<FileHttpState>,
     Extension(clock): Extension<Arc<dyn WallClock>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
@@ -432,7 +447,7 @@ async fn delete_file(
 }
 
 async fn download_file(
-    State(files): State<Arc<dyn FileApplicationService>>,
+    State(files): State<FileHttpState>,
     Extension(clock): Extension<Arc<dyn WallClock>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,

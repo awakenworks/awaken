@@ -73,3 +73,30 @@ These producer methods do not authenticate a caller. Current trusted ingress is
 still required, and no public request DTO gains an owner or private-authority
 field. Private assistant readiness remains withheld until that ingress and the
 linked-content and revocation checks above are qualified together.
+
+## Workspace File ingress and deletion evidence
+
+A Session-scoped File retains its existing immutable `scope_id`; the Files
+adapter obtains the Session owner's Workspace-content verdict before metadata,
+bytes or deletion, and filters that verdict before pagination. Workspace input
+uploads keep their existing representation. Missing or unsupported Session
+ownership cannot discharge a scoped File request. The adapter does not obtain
+private authority from a File id, broad management grant or request metadata.
+
+The existing Session deletion transaction retains a minimal `private_content`
+bit on its own tombstone, derived from the committed root rather than from the
+Delete command. This prevents deletion from making a private output public.
+Ordinary retained outputs remain readable from the same owner partition after
+their Session is deleted. One SELECT observes either the live root or its
+tombstone; errors, mixed identities and corrupt roots fail closed. This adds no
+File ownership database and copies no private content into deletion evidence.
+
+The new tombstone field has no permissive default or inferred backfill. A
+historical tombstone, or a still-running older writer that omits the new field,
+retains unknown visibility and cannot expose scoped content. Only the current
+native deletion transaction can positively record an ordinary retained output.
+
+This boundary only serves Workspace-visible content. A private-content ingress
+must still establish current private authority and use an explicitly admitted
+path. Unscoped uploads in S and their attachment lifecycle are part of that
+remaining qualification, so these checks do not make private assistant Ready.

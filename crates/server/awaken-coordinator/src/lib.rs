@@ -332,7 +332,7 @@ pub async fn mount_with_managed_and_application_access_and_models(
     let worker_clock = managed_state.clock.clone();
     let local_workspace = managed_state.local_workspace.clone();
     let (resource_management_router, memory_stores) =
-        resource_management_router_from_application(&resources);
+        resource_management_router_from_application(&resources, managed_state.sessions.queries());
     let supervised_state = managed_state.clone();
     let session_application = managed_state.sessions;
     let worker_file_application = resources.files();
@@ -815,7 +815,7 @@ async fn mount_with_managed_over(
     let supervised_state = managed_state.clone();
     let session_application = managed_state.sessions;
     let (resource_management_router, memory_stores) =
-        resource_management_router_from_application(&resources);
+        resource_management_router_from_application(&resources, session_application.queries());
     let worker_file_application = resources.files();
     let worker_skill_bundles = resources.skill_bundle_source();
     let (managed, public, application, worker_private, dreams) =
@@ -1420,16 +1420,20 @@ fn with_local_workspace_scope(router: Router, local_workspace: String) -> Router
 #[cfg(feature = "test-support")]
 fn resource_management_router_from_application(
     resources: &awaken_resource_application::ResourcesApplication,
+    sessions: Arc<dyn awaken_session_application::SessionRootReads>,
 ) -> (
     Router,
     Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
 ) {
     let stores = resources.memory_stores();
     (
-        resources_router(ResourcesRouterInput::new(
-            resources,
-            Arc::new(awaken_resource_contract::UnavailableRepositoryCredentialValidator),
-        )),
+        resources_router(
+            ResourcesRouterInput::new(
+                resources,
+                Arc::new(awaken_resource_contract::UnavailableRepositoryCredentialValidator),
+            )
+            .with_session_reads(sessions),
+        ),
         stores,
     )
 }

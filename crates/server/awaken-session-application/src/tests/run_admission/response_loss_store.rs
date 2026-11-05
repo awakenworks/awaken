@@ -75,6 +75,16 @@ impl ResponseLossStore {
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionRepositoryReads for ResponseLossStore {
+    async fn workspace_content_is_public(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<bool, awaken_session_contract::SessionRepositoryError> {
+        self.inner
+            .workspace_content_is_public(owner_scope, session_id)
+            .await
+    }
+
     async fn get(
         &self,
         session_id: &SessionId,

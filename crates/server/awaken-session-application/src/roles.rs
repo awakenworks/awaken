@@ -150,6 +150,18 @@ pub trait SessionRootReads: Send + Sync {
     /// The Workspace that owns one Session.
     async fn owner(&self, session_id: &SessionId) -> Result<String, SessionMutationError>;
 
+    /// Workspace-visible linked content requires the native root/tombstone
+    /// verdict. This supplies no private or Worker execution authority.
+    async fn workspace_content_is_public(
+        &self,
+        _owner_scope: &str,
+        _session_id: &SessionId,
+    ) -> Result<bool, SessionRepositoryError> {
+        Err(SessionRepositoryError::AuthorityUnavailable(
+            "retained Session content visibility is unavailable".into(),
+        ))
+    }
+
     /// The one ownership verdict owner-scoped commands accept: a foreign and
     /// a missing Session are the same `NotFound`. Private roots require the
     /// separate exact private binding, regardless of Workspace privileges.

@@ -36,13 +36,14 @@ fn broker_router(
 }
 
 fn resource_management_router(
+    sessions: Arc<dyn awaken_session_application::SessionRootReads>,
     resources: &awaken_resource_application::ResourcesApplication,
     credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
 ) -> Router {
-    awaken_coordinator::resources_router(awaken_coordinator::ResourcesRouterInput::new(
-        resources,
-        credentials,
-    ))
+    awaken_coordinator::resources_router(
+        awaken_coordinator::ResourcesRouterInput::new(resources, credentials)
+            .with_session_reads(sessions),
+    )
 }
 
 /// Assemble the runtime process, one stage per component family, in the order
@@ -894,6 +895,7 @@ async fn assemble_coordinator(
         .merge(base.environments.private_router.clone())
         .merge(base.worker_observations.private_router.clone());
     let resource_management_router = resource_management_router(
+        session.session_application.queries(),
         &resources.resource_application,
         control.repository_credentials.clone(),
     );

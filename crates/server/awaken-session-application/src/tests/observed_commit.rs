@@ -23,6 +23,14 @@ struct ObservedCommitPort {
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionRepositoryReads for ObservedCommitPort {
+    async fn workspace_content_is_public(
+        &self,
+        _: &str,
+        _: &SessionId,
+    ) -> Result<bool, SessionRepositoryError> {
+        panic!("this fixture does not admit linked File reads")
+    }
+
     async fn get(
         &self,
         _session_id: &SessionId,

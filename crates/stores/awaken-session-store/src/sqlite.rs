@@ -1095,7 +1095,7 @@ impl SessionRepository for SqliteManagedSessionRepository {
             if current_owner != owner_scope || current_revision != mutation.expected_revision {
                 return Ok(SessionMutationResult::Conflict { current_revision });
             }
-            let mut deleted_admissions = validate_current_mutation(&mutation, current_row)?;
+            let (mut deleted_admissions, private_content) = validate_current_mutation(&mutation, current_row)?;
             if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
                 let noops = sqlx::query_as::<_, (String, String, i64)>(
                     "SELECT idempotency_key, payload_hash, committed_revision \
@@ -1155,14 +1155,15 @@ impl SessionRepository for SqliteManagedSessionRepository {
                     }
                     sqlx::query(
                         "INSERT INTO managed_session_tombstone
-                        (session_id, scope_id, deleted_revision, deleted_at, event_admissions_json)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                        (session_id, scope_id, deleted_revision, deleted_at, event_admissions_json, private_content)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     )
                     .bind(tombstone.session_id.as_str())
                     .bind(owner_scope)
                     .bind(db_revision(tombstone.deleted_revision)?)
                     .bind(&tombstone.deleted_at)
                     .bind(deleted_admissions)
+                    .bind(i64::from(private_content))
                     .execute(&mut *tx)
                     .await
                     .map_err(storage)?;
