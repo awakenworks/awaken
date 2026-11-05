@@ -117,7 +117,7 @@ def _execution_observation(results: str) -> tuple[list[tuple[str, str]], list[st
             if any(result != "ok" for _, result in active["rows"]):
                 errors.append("required tests failed or were ignored")
             if stack:
-                stack[-1]["children"] += 1
+                stack[-1]["children"] += len(active["rows"])
             continue
         ending = terminal.fullmatch(line)
         if ending and stack:
@@ -1756,6 +1756,10 @@ fi
         # C4 every child and parent succeeds without fixture skips; C5 the
         # independent outer inventory and process status agree. N2 all true
         # qualifies, including nested grandchildren and sequential children.
+        # A completed nested header alone is not execution evidence: N6
+        # empty-only or multiple empty children refuse; N7 an empty child
+        # plus a named, completed child qualifies. Zero-test outer binaries
+        # stay legal alongside the independently listed parent selection.
         # N3 any false condition refuses; no arbitrary standalone ok may
         # repair tracing/interleaving or a truncated child/parent terminal.
         inventory = "parent: test\n"
@@ -1763,10 +1767,15 @@ fi
         start = "running 1 test\ntest parent ... \n"
         end = "ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
         valid = start + child + end
+        empty = "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored;\n"
         grandchild = child.replace("test child ... ok\n", "test child ... \n" + child.replace("child", "grandchild") + "ok\n")
-        for output in (valid, start + child + child + end, start + grandchild + end):
+        for output in (valid, start + child + child + end, start + grandchild + end,
+                       start + empty + child + end, start + child + empty + end,
+                       empty + valid):
             self.assertEqual(execution_evidence(inventory, output, 0)["errors"], [])
         invalid = {
+            "empty-child-only": start + empty + end,
+            "multiple-empty-children-only": start + empty + empty + end,
             "child-failed": valid.replace("test child ... ok", "test child ... FAILED").replace("test result: ok. 1 passed", "test result: FAILED. 0 passed", 1).replace("0 failed", "1 failed", 1),
             "child-ignored": valid.replace("test child ... ok", "test child ... ignored").replace("ok. 1 passed; 0 failed; 0 ignored", "ok. 0 passed; 0 failed; 1 ignored", 1),
             "child-skip": valid.replace("test child ... ok", "SKIP missing fixture\ntest child ... ok"),
