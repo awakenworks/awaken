@@ -274,6 +274,66 @@ def _balanced_end(source: str, start: int, opening: str, closing: str) -> int | 
     return None
 
 
+class RustTraitMethod(NamedTuple):
+    name: str
+    start: int
+    body_start: int | None
+    end: int
+
+
+class RustPublicTrait(NamedTuple):
+    name: str
+    start: int
+    methods: tuple[RustTraitMethod, ...]
+
+
+def _rust_body_start(syntax: str, start: int, end: int) -> int | None:
+    if syntax[end - 1] != "}":
+        return None
+    opening = syntax.find("{", start, end)
+    while opening >= 0:
+        if _balanced_end(syntax, opening, "{", "}") == end:
+            return opening
+        opening = syntax.find("{", opening + 1, end)
+    return None
+
+
+def public_rust_traits(source: str) -> tuple[RustPublicTrait, ...]:
+    """Public trait/method spans over the canonical offset-preserving lexer.
+
+    Callers own their rule and production-source selection. This projection
+    only identifies declarations, skipping nested functions and literal text;
+    required methods have no body. All offsets index the original source.
+    """
+    syntax = rust_syntax(source)
+    traits = []
+    for trait in re.finditer(r"\bpub\s+trait\s+([A-Za-z_]\w*)\b", syntax):
+        end = _rust_item_end(syntax, trait.start())
+        opening = None if end is None else _rust_body_start(syntax, trait.end(), end)
+        if end is None or opening is None:
+            raise ValueError(f"unterminated public trait at offset {trait.start()}")
+        methods = []
+        depth = 0
+        consumed = opening + 1
+        for token in re.finditer(r"[{}]|\b(?:async\s+)?fn\s+([A-Za-z_]\w*)", syntax[opening + 1:end - 1]):
+            start = opening + 1 + token.start()
+            if start < consumed:
+                continue
+            if token.group(0) == "{":
+                depth += 1
+            elif token.group(0) == "}":
+                depth -= 1
+            elif depth == 0:
+                method_end = _rust_item_end(syntax, start)
+                if method_end is None or method_end > end - 1:
+                    raise ValueError(f"unterminated trait method at offset {start}")
+                body_start = _rust_body_start(syntax, start, method_end)
+                methods.append(RustTraitMethod(token.group(1), start, body_start, method_end))
+                consumed = method_end
+        traits.append(RustPublicTrait(trait.group(1), trait.start(), tuple(methods)))
+    return tuple(traits)
+
+
 def _top_level_arguments(source: str) -> list[str]:
     arguments: list[str] = []
     start = 0
@@ -996,6 +1056,49 @@ def _selftest_lexical_projection() -> None:
         assert rust_syntax(source) == syntax, 'L3 terminal syntax projection'
 
 
+def _selftest_public_rust_traits() -> None:
+    # Cause/effect table: C1 public/private/restricted trait; C2 required/default
+    # method; C3 nested fn in a method or associated const; C4 fake declarations
+    # in comments/raw strings; C5 const-generic braces, array semicolons and
+    # function-pointer parameters;
+    # C6 unclosed declaration. E1 exact original method/body offsets, E2 no
+    # nested/literal/restricted method, E3 malformed input refuses the scan.
+    # T1 C1(public)+C2 => E1; T2 C1(other)|C3|C4 => E2; T3 C5 => E1;
+    # T4 C6 => E3. Consumers retain their own policy and production projection.
+    source = (
+        'const TEXT: &str = r#"pub trait Fake { fn fake() {} }"#;\n'
+        '// pub trait Comment { fn comment() {} }\n'
+        'pub(crate) trait Restricted { fn restricted(); }\n'
+        'trait Private { fn private(); }\n'
+        'pub trait Selected<const N: usize = { 3 }> {\n'
+        '    fn required(&self, callback: fn(u8)) -> [u8; 3];\n'
+        '    async fn provided(&self) -> Result<[u8; 3], E> {\n'
+        '        fn nested() {}\n'
+        '        let text = "} fn hidden() {"; Ok([0; 3])\n'
+        '    }\n'
+        '    const VALUE: u8 = { fn nested_const() -> u8 { 1 } nested_const() };\n'
+        '    fn unit(&self) {}\n'
+        '}\n'
+    )
+    traits = public_rust_traits(source)
+    assert len(traits) == 1 and traits[0].name == "Selected", "T1/T2 exact public owner"
+    methods = traits[0].methods
+    assert [method.name for method in methods] == ["required", "provided", "unit"], "T2 no nested/literal functions"
+    assert methods[0].body_start is None, "T1/T3 required array signature has no body"
+    assert source[methods[0].start:methods[0].end].endswith("[u8; 3];"), "T3 exact required span"
+    assert source[methods[1].start:methods[1].start + 8] == "async fn", "T1 modifier offset"
+    assert methods[1].body_start is not None and source[methods[1].body_start] == "{", "T1 default body"
+    assert source[methods[1].body_start:methods[1].end].endswith("\n    }"), "T1 nested/literal braces retain the outer body"
+    assert source[methods[2].body_start:methods[2].end] == "{}", "T1 unit default"
+    for malformed in ("pub trait Broken {", "pub trait Broken { fn missing(&self) }"):
+        try:
+            public_rust_traits(malformed)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("T4 malformed input cannot become an empty passing scan")
+
+
 def selftest() -> None:
     """Cause/effect table for first-party facade discovery.
 
@@ -1025,6 +1128,7 @@ def selftest() -> None:
             raise AssertionError("P4 outside source must not become an ownership key")
     _selftest_projection_cache()
     _selftest_lexical_projection()
+    _selftest_public_rust_traits()
     _selftest_crate_discovery()
     _selftest_manifest_source_projection()
     _selftest_dependency_declarations()
