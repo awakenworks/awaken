@@ -912,22 +912,22 @@
     "source_locations": [
       {
         "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1229,
+        "line": 1318,
         "file_sha256": "3152420a7f06986a8a78cef43c42c3e40a0ab20fd9cd079cc7e42fdb7ffcd282"
       }
     ],
     "assertion_locations": [
       {
         "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1259
+        "line": 1348
       },
       {
         "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1260
+        "line": 1349
       },
       {
         "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1261
+        "line": 1350
       }
     ],
     "execution_witnesses": [
