@@ -249,6 +249,7 @@ test('provider case can request the Control-owned default endpoint', () => {
 // its unavailability is recorded and never replaces D2. D4 no raw-model port
 // => explicitly unavailable. Existing model/prompt/maxAttempts3 remain owners.
 const diagnosticAuthoredModel = 'profile=fixture';
+const diagnosticWorkerSystem = 'Follow the user instruction exactly and answer briefly.';
 const diagnosticPublications = { coordinator: { source_revision: 1 }, worker: { source_revision: 1 } };
 const diagnosticMarkers = { childReply: 'AWAKEN-MANAGED-FIXTURE-CHILD-OK',
   sendAccepted: 'AWAKEN-MANAGED-FIXTURE-SEND-ACCEPTED',
@@ -256,7 +257,8 @@ const diagnosticMarkers = { childReply: 'AWAKEN-MANAGED-FIXTURE-CHILD-OK',
 
 function providerWireFixture(t, { reply = diagnosticMarkers.childReply,
   message = `Reply with exactly ${diagnosticMarkers.childReply}`, factsUnavailable = false,
-  frozenReference = diagnosticAuthoredModel, frozenVersion = 1, primaryAgent = 'coordinator' } = {}) {
+  frozenReference = diagnosticAuthoredModel, frozenVersion = 1, primaryAgent = 'coordinator',
+  workerFields = {}, omitChild = false } = {}) {
   const calls = [];
   const text = value => [{ type: 'text', text: value }];
   const event = (id, type, fields = {}) => ({ id, type, processed_at: '2026-01-01T00:00:00Z', ...fields });
@@ -285,8 +287,11 @@ function providerWireFixture(t, { reply = diagnosticMarkers.childReply,
       if (factsUnavailable) return Response.json({ error: { type: 'unavailable', message: 'fixture' } }, { status: 503 });
       return Response.json({ data: [
         { id: 'primary', parent_thread_id: null, agent: { id: primaryAgent, version: frozenVersion, model: { id: frozenReference } } },
-        { id: 'child', parent_thread_id: 'primary', status: 'idle', agent: { id: 'worker', version: frozenVersion, model: { id: frozenReference } } },
-      ], has_more: false });
+        { id: 'child', parent_thread_id: 'primary', status: 'idle', agent: {
+          id: 'worker', type: 'agent', version: frozenVersion, model: { id: frozenReference },
+          system: diagnosticWorkerSystem, tools: [], mcp_servers: [], skills: [], ...workerFields,
+        } },
+      ].filter(thread => !omitChild || thread.id !== 'child'), has_more: false });
     }
     if (url.pathname === '/v1/sessions/session/threads/child/events') {
       if (factsUnavailable) return Response.json({ error: { type: 'unavailable', message: 'fixture' } }, { status: 503 });
@@ -302,7 +307,7 @@ function providerWireFixture(t, { reply = diagnosticMarkers.childReply,
 
 test('provider diagnostic retains receipt and real SDK facts without changing the healthy oracle', async t => {
   const f = providerWireFixture(t); const observation = { boundary: 'create' };
-  await driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel, diagnosticPublications);
+  await driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel, diagnosticPublications, diagnosticWorkerSystem);
   assert.ok(observation.accepted_receipt, 'D1 diagnostic receipt was retained');
   assert.equal(observation.accepted_receipt.id, 'accepted', 'D1 original accepted coordinate');
   assert.equal(observation.session_id, 'session');
@@ -311,6 +316,15 @@ test('provider diagnostic retains receipt and real SDK facts without changing th
     { agent_id: 'worker', message: `Reply with exactly ${diagnosticMarkers.childReply}` });
   assert.equal(observation.frozen_threads.after_failure, false, 'D1 existing positive read point');
   assert.equal(observation.frozen_threads.items[1].agent.model_id, diagnosticAuthoredModel);
+  // F1 known synthetic publication + explicit empty policy arrays => exact
+  // comparison facts at the original read, not model input or tool execution.
+  const declared = observation.frozen_threads.worker_authored_declaration;
+  assert.equal(declared.available, true);
+  assert.match(declared.scope, /not actual request or runtime tool surface/u);
+  assert.deepEqual(declared.system, { available: true, matches_authored: true });
+  for (const field of ['tools', 'mcp_servers', 'skills']) {
+    assert.deepEqual(declared[field], { available: true, empty: true });
+  }
   assert.equal(observation.child_events.events[0].content[0].text, `Reply with exactly ${diagnosticMarkers.childReply}`);
   assert.equal(observation.child_events.after_failure, false);
   assert.equal(observation.raw_model_output.available, false, 'D4 SDK events are not raw provider output');
@@ -324,13 +338,15 @@ for (const reply of ['AWAKEN-MI\u200b\u200bNDED-MANAGED-FIXTURE-CHILD-OK',
   test(`provider diagnostic preserves original reply rejection and input bytes: ${JSON.stringify(reply)}`, async t => {
     const message = `Reply with exactly ${reply}`;
     const f = providerWireFixture(t, { reply, message }); const observation = { boundary: 'create' };
-    await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel, diagnosticPublications),
+    await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel, diagnosticPublications, diagnosticWorkerSystem),
       error => error.code === 'ERR_ASSERTION' && error.actual === reply && error.expected === diagnosticMarkers.childReply);
     assert.ok(observation.failure, 'D2 diagnostic failure boundary was retained');
     assert.equal(observation.failure.boundary, 'exact_child_reply', 'D2 original failure stays authoritative');
     assert.equal(observation.events_after_receipt.find(e => e.id === 'send').input.message, message);
     assert.equal(observation.events_after_receipt.find(e => e.id === 'received').content[0].text, reply);
     assert.equal(observation.frozen_threads.after_failure, true, 'D3 observed later, not a pre-failure snapshot');
+    assert.equal(observation.frozen_threads.worker_authored_declaration.system.matches_authored, true,
+      'F2 a wrong reply and a matching frozen declaration remain independent observations');
     assert.equal(observation.child_events.after_failure, true);
     assert.equal(observation.child_events.events[1].content[0].text, reply);
     assert.equal(observation.session_delete.status, 'completed');
@@ -338,11 +354,101 @@ for (const reply of ['AWAKEN-MI\u200b\u200bNDED-MANAGED-FIXTURE-CHILD-OK',
   });
 }
 
+test('frozen declaration mismatch retains the original reply error and omits unknown content', async t => {
+  // F2/F5: a wrong reply plus a different frozen system/nonempty authored
+  // policy arrays => preserve the original exact-reply assertion; record only
+  // availability/equality/emptiness, never the unknown text/configuration.
+  // Constraint: empty authored policies are not the actual model tool surface
+  // (the coordinator receives injected list/send tools despite tools: []).
+  const privateValue = 'UNRECORDED_FROZEN_CONFIGURATION';
+  const f = providerWireFixture(t, { reply: 'wrong', workerFields: {
+    system: privateValue, tools: [{ private: privateValue }],
+    mcp_servers: [{ private: privateValue }], skills: [{ private: privateValue }],
+  } });
+  const observation = { boundary: 'create' };
+  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid',
+    'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel,
+    diagnosticPublications, diagnosticWorkerSystem),
+  error => error.code === 'ERR_ASSERTION' && error.actual === 'wrong'
+    && error.expected === diagnosticMarkers.childReply);
+  const declared = observation.frozen_threads.worker_authored_declaration;
+  assert.deepEqual(declared.system, { available: true, matches_authored: false });
+  for (const field of ['tools', 'mcp_servers', 'skills']) {
+    assert.deepEqual(declared[field], { available: true, empty: false });
+  }
+  assert.equal(observation.failure.boundary, 'exact_child_reply');
+  assert.equal(observation.frozen_threads.after_failure, true);
+  assert.ok(!JSON.stringify(observation).includes(privateValue));
+  assert.equal(f.calls.filter(call => call.path.endsWith('/threads')).length, 1);
+});
+
+for (const { name, workerFields, systemAvailable, matches } of [
+  { name: 'missing', workerFields: { system: undefined, tools: undefined, mcp_servers: undefined, skills: undefined }, systemAvailable: false, matches: null },
+  { name: 'null', workerFields: { system: null, tools: null, mcp_servers: null, skills: null }, systemAvailable: true, matches: false },
+  { name: 'wrong type', workerFields: { system: 1, tools: {}, mcp_servers: {}, skills: {} }, systemAvailable: false, matches: null },
+]) {
+  test(`frozen declaration ${name} fields remain distinct from an empty policy`, async t => {
+    // F3: missing/wrongly typed fields => unavailable; explicit nullable system
+    // is an available mismatch. No field is coerced to [] or a matching string.
+    providerWireFixture(t, { reply: 'wrong', workerFields });
+    const observation = { boundary: 'create' };
+    await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid',
+      'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel,
+      diagnosticPublications, diagnosticWorkerSystem), error => error.actual === 'wrong');
+    const declared = observation.frozen_threads.worker_authored_declaration;
+    assert.deepEqual(declared.system, { available: systemAvailable, matches_authored: matches });
+    for (const field of ['tools', 'mcp_servers', 'skills']) {
+      assert.deepEqual(declared[field], { available: false, empty: null });
+    }
+  });
+}
+
+test('frozen synthetic system comparison preserves whitespace exactly', async t => {
+  // F2 boundary: one extra byte in otherwise matching known text => false;
+  // trimming the actual public snapshot would conceal the observed mismatch.
+  providerWireFixture(t, { reply: 'wrong', workerFields: { system: `${diagnosticWorkerSystem} ` } });
+  const observation = { boundary: 'create' };
+  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid',
+    'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel,
+    diagnosticPublications, diagnosticWorkerSystem), error => error.actual === 'wrong');
+  assert.deepEqual(observation.frozen_threads.worker_authored_declaration.system,
+    { available: true, matches_authored: false });
+});
+
+test('missing authored expectation cannot validate a frozen declaration', async t => {
+  // F3 expectation absent => unavailable even when the observed fields look
+  // healthy. The diagnostic must not invent the caller's authored expectation.
+  providerWireFixture(t, { reply: 'wrong' });
+  const observation = { boundary: 'create' };
+  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid',
+    'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel,
+    diagnosticPublications, undefined), error => error.actual === 'wrong');
+  assert.deepEqual(observation.frozen_threads.worker_authored_declaration,
+    { available: false, reason: 'authored_system_unavailable' });
+});
+
+for (const changed of [{ omitChild: true }, { workerFields: { type: 'advisor' } },
+  { workerFields: { type: undefined } }, { workerFields: { id: 'other' } }]) {
+  test(`frozen declaration requires the exact ordinary child snapshot: ${JSON.stringify(changed)}`, async t => {
+    // F4: absent child, missing/Advisor union member or another Agent identity
+    // => comparison unavailable, never an invented matching worker snapshot.
+    providerWireFixture(t, { reply: 'wrong', ...changed });
+    const observation = { boundary: 'create' };
+    await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid',
+      'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel,
+      diagnosticPublications, diagnosticWorkerSystem), error => error.actual === 'wrong');
+    assert.deepEqual(observation.frozen_threads.worker_authored_declaration,
+      { available: false, reason: 'selected_worker_snapshot_unavailable' });
+  });
+}
+
 test('provider diagnostic missing readonly facts cannot replace the primary assertion or retry the SDK read', async t => {
   const f = providerWireFixture(t, { reply: 'wrong', factsUnavailable: true }); const observation = { boundary: 'create' };
-  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel, diagnosticPublications),
+  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel, diagnosticPublications, diagnosticWorkerSystem),
     error => error.code === 'ERR_ASSERTION' && error.actual === 'wrong');
   assert.equal(observation.frozen_threads.available, false);
+  assert.deepEqual(observation.frozen_threads.worker_authored_declaration,
+    { available: false, reason: 'threads_read_unavailable' }, 'F3 no read cannot become empty-policy success');
   assert.equal(observation.child_events.available, false);
   assert.equal(observation.session_delete.status, 'completed');
   assert.equal(f.calls.filter(c => c.path.endsWith('/threads')).length, 1, 'D3 diagnostic maxRetries0');
@@ -351,7 +457,7 @@ test('provider diagnostic missing readonly facts cannot replace the primary asse
 
 test('provider diagnostic keeps original three attempts and all three rejected public replies', async t => {
   const f = providerWireFixture(t, { reply: 'wrong' }); const observations = [];
-  await assert.rejects(driver.managedMultiagentRun('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observations, diagnosticAuthoredModel, diagnosticPublications),
+  await assert.rejects(driver.managedMultiagentRun('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observations, diagnosticAuthoredModel, diagnosticPublications, diagnosticWorkerSystem),
     /attempt 1: exact real child reply[\s\S]*attempt 2:[\s\S]*attempt 3:/u);
   assert.equal(observations.length, 3);
   assert.deepEqual(observations.map(o => o.status), ['failed', 'failed', 'failed']);
@@ -438,11 +544,12 @@ for (const primaryFailure of [false, true]) {
 test('provider diagnostic original readonly failure is explicit and never retried as a second read', async t => {
   const f = providerWireFixture(t, { factsUnavailable: true });
   const observation = { boundary: 'create' };
-  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel, diagnosticPublications),
+  await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation, diagnosticAuthoredModel, diagnosticPublications, diagnosticWorkerSystem),
     error => error.status === 503);
   assert.ok(observation.frozen_threads, 'D8 failed original read retained explicit unavailable facts');
   assert.equal(observation.frozen_threads.available, false);
   assert.equal(observation.frozen_threads.after_failure, false);
+  assert.equal(observation.frozen_threads.worker_authored_declaration.available, false, 'F3 original read unavailability');
   assert.equal(typeof observation.frozen_threads.observed_at, 'string');
   assert.equal(observation.failure.boundary, 'frozen_model_assertions');
   assert.equal(f.calls.filter(c => c.path.endsWith('/threads')).length, 3, 'D8 original one SDK call + its default two retries only');
@@ -459,7 +566,7 @@ for (const changed of [{ frozenReference: 'profile=other' }, { frozenVersion: 2 
   test(`provider E7 frozen authored identity remains independent: ${JSON.stringify(changed)}`, async t => {
     providerWireFixture(t, changed); const observation = { boundary: 'create' };
     await assert.rejects(driver.exerciseManagedMultiagentAttempt('http://controlled.invalid', 'coordinator', 'worker', diagnosticMarkers, observation,
-      diagnosticAuthoredModel, diagnosticPublications), error => error.code === 'ERR_ASSERTION');
+      diagnosticAuthoredModel, diagnosticPublications, diagnosticWorkerSystem), error => error.code === 'ERR_ASSERTION');
     assert.equal(observation.failure.boundary, 'frozen_model_assertions');
     assert.doesNotThrow(() => trace.assertThreadModelRequests(requestTrace(), 'selected', { coordinator: 'session', child: 'child' }));
   });

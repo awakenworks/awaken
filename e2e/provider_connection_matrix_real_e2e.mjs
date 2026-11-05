@@ -122,7 +122,32 @@ const eventText = (event) => (event.content ?? [])
   .join('')
   .trim();
 
-export async function exerciseManagedMultiagentAttempt(base, coordinator, worker, markers, observation, authoredModelId, publications) {
+function frozenWorkerDeclaration(thread, worker, authoredSystem) {
+  const agent = thread?.agent;
+  if (!agent || agent.type !== 'agent' || agent.id !== worker) {
+    return { available: false, reason: 'selected_worker_snapshot_unavailable' };
+  }
+  if (typeof authoredSystem !== 'string') {
+    return { available: false, reason: 'authored_system_unavailable' };
+  }
+  const systemAvailable = Object.hasOwn(agent, 'system')
+    && (typeof agent.system === 'string' || agent.system === null);
+  const emptyPolicy = field => {
+    const available = Object.hasOwn(agent, field) && Array.isArray(agent[field]);
+    return { available, empty: available ? agent[field].length === 0 : null };
+  };
+  return {
+    available: true,
+    scope: 'frozen public Agent declaration; not actual request or runtime tool surface',
+    system: { available: systemAvailable,
+      matches_authored: systemAvailable ? agent.system === authoredSystem : null },
+    tools: emptyPolicy('tools'),
+    mcp_servers: emptyPolicy('mcp_servers'),
+    skills: emptyPolicy('skills'),
+  };
+}
+
+export async function exerciseManagedMultiagentAttempt(base, coordinator, worker, markers, observation, authoredModelId, publications, authoredWorkerSystem) {
   const client = new Anthropic({ apiKey: 'local-provider-certification', baseURL: base }); // awaken-allow(secret): (local fixture)
   const session = await client.beta.sessions.create({
     agent: coordinator,
@@ -144,11 +169,15 @@ export async function exerciseManagedMultiagentAttempt(base, coordinator, worker
       observation.frozen_threads = { observed_at: new Date().toISOString(), after_failure: afterFailure,
         items: threads.map(thread => ({ id: thread.id, parent_thread_id: thread.parent_thread_id,
           status: thread.status, agent: { id: thread.agent?.id, version: thread.agent?.version,
-            model_id: thread.agent?.model?.id } })) };
+            model_id: thread.agent?.model?.id } })),
+        worker_authored_declaration: frozenWorkerDeclaration(
+          threads.find(thread => thread.id === childId), worker, authoredWorkerSystem,
+        ) };
       return threads;
     } catch (error) {
       observation.frozen_threads = { observed_at: new Date().toISOString(), after_failure: afterFailure,
-        available: false, error: { name: error.name, code: error.code ?? null } };
+        available: false, error: { name: error.name, code: error.code ?? null },
+        worker_authored_declaration: { available: false, reason: 'threads_read_unavailable' } };
       throw error;
     }
   };
@@ -281,7 +310,7 @@ export async function exerciseManagedMultiagentAttempt(base, coordinator, worker
   }
 }
 
-export async function managedMultiagentRun(base, coordinator, worker, markers, observations, authoredModelId, publications) {
+export async function managedMultiagentRun(base, coordinator, worker, markers, observations, authoredModelId, publications, authoredWorkerSystem) {
   // Real-model cause/effect graph:
   // C1 the coordinator sees both fixed tools; C2 it follows list -> send once;
   // C3 the child produces an exact reply on its ordinary Thread; C4 the report
@@ -309,7 +338,7 @@ export async function managedMultiagentRun(base, coordinator, worker, markers, o
     const observation = { attempt, status: 'running', boundary: 'create' };
     observations.push(observation);
     try {
-      await exerciseManagedMultiagentAttempt(base, coordinator, worker, markers, observation, authoredModelId, publications);
+      await exerciseManagedMultiagentAttempt(base, coordinator, worker, markers, observation, authoredModelId, publications, authoredWorkerSystem);
       return;
     } catch (error) {
       observation.status = 'failed';
@@ -360,10 +389,11 @@ async function certifyProvider(item, index, result) {
     result.discovered_models = discoveredModels;
     result.boundary = 'publication';
     const agent = `provider-cert-${item.id}`;
+    const workerSystem = 'Follow the user instruction exactly and answer briefly.';
     const published = await publishManagementAgent(base, agent, {
       id: agent,
       name: `Provider certification ${item.id}`,
-      system: 'Follow the user instruction exactly and answer briefly.',
+      system: workerSystem,
       max_steps: 2,
       model,
       tools: [],
@@ -409,7 +439,7 @@ async function certifyProvider(item, index, result) {
       result.publications.coordinator = publishedCoordinator;
       result.boundary = 'managed_multiagent';
       result.managed_attempts = [];
-      await managedMultiagentRun(base, coordinator, agent, markers, result.managed_attempts, authoredModelId, result.publications);
+      await managedMultiagentRun(base, coordinator, agent, markers, result.managed_attempts, authoredModelId, result.publications, workerSystem);
       pass(`${item.id}: real coordinator -> fixed tools -> child -> report -> aggregate idle`);
     }
     Object.assign(result, { latency_ms: performance.now() - started,

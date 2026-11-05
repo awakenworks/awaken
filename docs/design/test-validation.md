@@ -905,6 +905,70 @@ qualification are separate claims.
   The critical cases overlap that library and are not an added test total.
   Both records retain their actual cohorts; neither qualifies a newer main,
   a changed producer pin, or a deployed product.
+- **Native-81 original Rust and SDK qualification (2026-11-05).** Clean
+  `81aef316f004` (tree `8d361afd9051`) passed the original complete Linux Rust
+  group: 10,536 passed / 129 original skips, both authored Clippy graphs,
+  doctests, dependency checks and the original default-stack two-Run MCP case.
+  All 70 retained owner files and source snapshots matched before annotated
+  `verified/20261105-0028` was created. Fresh original SDK package, artifact and
+  compiler-SemVer qualifiers and their outer wrappers then returned 0 on the
+  same source: 24 archives per profile, the 27-archive consumption union,
+  13 consumed packages, eight non-skipped tasks plus the sample, both
+  45-case/50-step profiles, both strict 17-package forced-major assessments,
+  22 historical subjects and two first-release classifications. All source
+  windows closed unchanged; these results retain their Linux Rust and SDK
+  scopes without claiming full13, public publication or Windows execution.
+- **Native-81 real Skill journey (2026-11-05).** The original Sandbox builder
+  and local Registry manifest checks passed for the immutable Sandbox image
+  `sha256:f98b2ce317044a5f4ce861b16eba6225790f64b3123569deedd9930606802366`.
+  The original required Skill-lazy entry then returned 1: cold and warm
+  Sessions read the unknown reference and replied in 13.006s / 10.191s,
+  respectively, with zero Session Sandbox Pods; preloaded-cold failed the
+  original prohibition on rereading the supplied Skill body. Later restart,
+  script execution and failure stages did not run. Source snapshots matched
+  and the original wrapper completed its owned cleanup; image/Registry
+  preparation does not establish a Pod pull or the original eight Sessions'
+  physical cleanup receipts.
+- **Repaired reference R7 (2026-11-05).** Normal `213190a00e82`
+  (tree `5065274d4fb0`) contains the approved minimal lifecycle repair in
+  exactly 22 declared f03 exception paths. Owning tests, both original Clippy
+  graphs and normal hooks passed; fresh served-process sampling passed
+  131 commands and failed command 132's old Environment package-network
+  expectation, leaving 82 unrun. It performed no export or combined run and
+  produced no coverage measurement. The sole retained panic marker belongs
+  to the original corrupt-Skill negative control, whose child exit 101 and
+  case success were asserted; independent all-producer termination evidence
+  remains unavailable for that failed sample.
+- **Independent test and diagnostic commits (2026-11-05).** Normal
+  `27e7b0665192` changes one Environment JS oracle to the existing independent
+  package-build/runtime-network law and the tombstone's retained Session-Work
+  law. Its original Environment case and three named native controls passed,
+  while the broader 214-command run passed 161 and failed ACP bridge command
+  162, leaving 52 unrun; main reception remains separate. Normal
+  `20be0d2e96c1` preserves the Provider's original prompts, models, assertions,
+  three-attempt limit and read points, and adds only availability/equality
+  observations of the already-fetched public frozen worker declaration.
+  Its original controlled SDK tests increased from 68 to 78 passing cases
+  without skips; unknown system/tool/MCP/Skill content is omitted, and missing
+  fields never become matching empty policies. This is frozen declaration
+  evidence, with real model input/output and runtime tool capabilities outside
+  its scope; the historical b876 Provider failure remains recorded.
+- **Downstream Native-81 frozen-candidate results (2026-11-05).** Flow's
+  frozen tree `97b4b230c78e`, based on `855564b53675`, resolves Native
+  `81aef316f004` and IAM `07af02a7` with its original fingerprint
+  `d0a9c933cdf5e58170641d464f4113660498c0d9269fccf42c8ed18dab36fa0a`.
+  Its default complete API check and whole required-PostgreSQL matrix returned
+  0: all 11 required named PG cases passed without skips, source-gate tests
+  passed 1,715 / 26 original skips, and browsers passed 532 / two original
+  skips. All 2,318 source hashes matched and the exact created PG container
+  completed create/start/die/destroy with an empty project post-state; normal
+  delivery and protected reception retain separate records. Cloud's frozen
+  tree `a4f9cd15e9f7`, based on `c731e8193a57` and the same producer cohort,
+  retains its first full attempt's browser failure and a separate exact-case
+  trace pass. Its fresh original matrix has six successful phases, including
+  the complete frontend/backend check and production composition, with
+  94 browser passes and two original OAuth skips; this checkpoint does not
+  qualify the remaining deployment, required PG, formal or whole-matrix work.
 
 Current open scopes and the next qualified cohort are tracked only in
 [STATUS](../STATUS.md#architecture-execution). The executable full suite and
