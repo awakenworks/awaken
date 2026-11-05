@@ -48,6 +48,7 @@ impl FileContentVisibility for SessionFileContentAccess {
         &self,
         workspace_id: &str,
         source_session_id: Option<&str>,
+        source_private_binding: Option<&awaken_resource_contract::PrivateContentBinding>,
         reader_session_id: Option<&str>,
     ) -> Result<bool, FileContentSourceError> {
         let reader_binding = match reader_session_id {
@@ -59,6 +60,12 @@ impl FileContentVisibility for SessionFileContentAccess {
             }
             None => None,
         };
+        if let Some(binding) = source_private_binding {
+            if binding.workspace_id() != workspace_id || source_session_id.is_some() {
+                return Err(unavailable());
+            }
+            return Ok(reader_binding.as_ref().map(AsRef::as_ref) == Some(binding));
+        }
         let Some(source_id) = source_session_id else {
             return Ok(reader_binding.is_none());
         };

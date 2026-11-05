@@ -1687,6 +1687,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     let public_id = "file_corrupt".to_string();
     host.file_catalog()
         .create_file(awaken_resource_contract::FileRecord {
+            private_binding: None,
             id: public_id.clone(),
             workspace_id: host.run_assembly.local_workspace().into(),
             blob_id: declared_blob_id,

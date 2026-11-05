@@ -111,6 +111,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
     let digest = file_store.put(b"exact input").await.unwrap();
     file_store
         .create_file(awaken_resource_contract::FileRecord {
+            private_binding: None,
             id: "renewed-file".into(),
             workspace_id: "workspace-memory".into(),
             blob_id: digest,

@@ -40,8 +40,9 @@ fn ce(x: impl ToString) -> FileCatalogError {
     clippy::cast_sign_loss,
     reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
 )]
-fn row_record(row: &sqlx::postgres::PgRow) -> FileRecord {
-    FileRecord {
+fn row_record(row: &sqlx::postgres::PgRow) -> Result<FileRecord, FileCatalogError> {
+    let record = FileRecord {
+        private_binding: crate::decode_private_file_binding(row.get("private_binding_json"))?,
         id: row.get("id"),
         workspace_id: row.get("workspace_id"),
         blob_id: row.get("blob_id"),
@@ -56,12 +57,16 @@ fn row_record(row: &sqlx::postgres::PgRow) -> FileRecord {
         harvest_key: row.get("harvest_key"),
         artifact_idempotency_scope: row.get("artifact_idempotency_scope"),
         deleted: row.get::<i64, _>("deleted") != 0,
-    }
+    };
+    crate::validate_record(&record).map_err(|error| FileCatalogError::CorruptData {
+        detail: error.to_string(),
+    })?;
+    Ok(record)
 }
 
 const FILE_COLUMNS: &str = "id, workspace_id, blob_id, filename, mime_type, size_bytes, \
 created_at AS file_created_at, expires_at, downloadable, scope_id, logical_path, harvest_key, \
-artifact_idempotency_scope, deleted";
+artifact_idempotency_scope, deleted, private_binding_json";
 
 async fn harvest_records_for_update(
     transaction: &mut Transaction<'_, Postgres>,
@@ -77,8 +82,10 @@ async fn harvest_records_for_update(
     .bind(harvest_key)
     .fetch_all(&mut **transaction)
     .await
-    .map(|rows| rows.iter().map(row_record).collect())
-    .map_err(ce)
+    .map_err(ce)?
+    .iter()
+    .map(row_record)
+    .collect()
 }
 
 async fn persist_artifact_association(
@@ -112,7 +119,7 @@ async fn persist_artifact_association(
             })?;
             Ok(Some(CreateFileRecordOutcome::Existing(row_record(
                 &updated,
-            ))))
+            )?)))
         }
         None => Ok(None),
     }
@@ -294,7 +301,7 @@ impl FileCatalog for PgFileStore {
                 .await
                 .map_err(ce)?
                 {
-                    records.push(row_record(&row));
+                    records.push(row_record(&row)?);
                 }
             }
             capture.verify_files(&records)?;
@@ -334,6 +341,10 @@ impl FileCatalog for PgFileStore {
                 .map_err(ce)?;
             let matching =
                 harvest_records_for_update(&mut transaction, &record.workspace_id, key).await?;
+            if let Some(existing) = crate::verify_private_file_history(&matching, &record)? {
+                transaction.commit().await.map_err(ce)?;
+                return Ok(CreateFileRecordOutcome::Existing(existing));
+            }
             if record.artifact_idempotency_scope.is_some() {
                 if let Some(outcome) =
                     persist_artifact_association(&mut transaction, &matching, &record).await?
@@ -358,8 +369,8 @@ impl FileCatalog for PgFileStore {
         }
         let inserted = sqlx::query(&format!(
             "INSERT INTO file_store_file \
-             (id,workspace_id,blob_id,filename,mime_type,size_bytes,created_at,expires_at,downloadable,scope_id,logical_path,harvest_key,artifact_idempotency_scope,deleted) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) \
+             (id,workspace_id,blob_id,filename,mime_type,size_bytes,created_at,expires_at,downloadable,scope_id,logical_path,harvest_key,artifact_idempotency_scope,deleted,private_binding_json) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) \
              ON CONFLICT DO NOTHING RETURNING {FILE_COLUMNS}"
         ))
         .bind(&record.id)
@@ -376,11 +387,12 @@ impl FileCatalog for PgFileStore {
         .bind(&record.harvest_key)
         .bind(&record.artifact_idempotency_scope)
         .bind(i64::from(record.deleted))
+        .bind(record.private_binding.as_ref().map(serde_json::to_string).transpose().map_err(ce)?)
         .fetch_optional(&mut *transaction)
         .await
         .map_err(ce)?;
         if let Some(row) = inserted {
-            let inserted = row_record(&row);
+            let inserted = row_record(&row)?;
             transaction.commit().await.map_err(ce)?;
             return Ok(CreateFileRecordOutcome::Inserted(inserted));
         }
@@ -430,8 +442,10 @@ impl FileCatalog for PgFileStore {
         .bind(include_deleted)
         .fetch_optional(&self.pool)
         .await
-        .map(|row| row.map(|row| row_record(&row)))
-        .map_err(ce)
+        .map_err(ce)?
+        .as_ref()
+        .map(row_record)
+        .transpose()
     }
 
     async fn list_files(
@@ -449,7 +463,7 @@ impl FileCatalog for PgFileStore {
         .fetch_all(&self.pool)
         .await
         .map_err(ce)?;
-        Ok(rows.iter().map(row_record).collect())
+        rows.iter().map(row_record).collect()
     }
 
     async fn list_files_including_deleted(
@@ -467,7 +481,7 @@ impl FileCatalog for PgFileStore {
         .fetch_all(&self.pool)
         .await
         .map_err(ce)?;
-        Ok(rows.iter().map(row_record).collect())
+        rows.iter().map(row_record).collect()
     }
 
     async fn mark_file_deleted(
@@ -483,8 +497,10 @@ impl FileCatalog for PgFileStore {
         .bind(workspace_id)
         .fetch_optional(&self.pool)
         .await
-        .map(|row| row.map(|row| row_record(&row)))
-        .map_err(ce)
+        .map_err(ce)?
+        .as_ref()
+        .map(row_record)
+        .transpose()
     }
 
     #[expect(

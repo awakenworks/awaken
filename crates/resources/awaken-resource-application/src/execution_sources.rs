@@ -51,29 +51,15 @@ impl<C: Sync> FileContentSource<C> for ApplicationFileContentSource {
         purpose: &FileReadPurpose,
         _fence: Option<&C>,
     ) -> Result<Option<ResolvedFileContent>, FileContentSourceError> {
-        let Some(record) = self.application.get(workspace_id, file_id).await? else {
-            return Ok(None);
-        };
-        if record.scope_id.is_some() || purpose.reader_session_id().is_some() {
-            let visibility = self.visibility.as_ref().ok_or_else(|| {
-                FileContentSourceError::new("Session File visibility is not selected")
-            })?;
-            if !visibility
-                .file_content_is_visible(
-                    workspace_id,
-                    record.scope_id.as_deref(),
-                    purpose.reader_session_id(),
-                )
-                .await?
-            {
-                return Ok(None);
-            }
-        }
         let Some((record, bytes)) = self
             .application
-            .bytes(workspace_id, file_id)
-            .await
-            .map_err(FileContentSourceError::from)?
+            .bytes_for_reader(
+                workspace_id,
+                file_id,
+                purpose.reader_session_id(),
+                self.visibility.as_deref(),
+            )
+            .await?
         else {
             return Ok(None);
         };

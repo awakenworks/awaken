@@ -58,6 +58,7 @@ async fn output(
     authorities
         .file_catalog()
         .create_file(FileRecord {
+            private_binding: None,
             id: id.into(),
             workspace_id: "test".into(),
             blob_id,
@@ -132,6 +133,29 @@ async fn native_session_visibility_protects_every_file_surface_before_pagination
         "2026-01-01T00:00:00Z",
     )
     .await;
+    // A personal input has no source Session. Its original File provenance
+    // must still hide it before every ordinary Files projection and effect.
+    let catalog = resources.authorities().file_catalog();
+    let mut input = catalog
+        .get_file("test", "file_ordinary", false)
+        .await
+        .unwrap()
+        .unwrap();
+    input.id = "file_private_input".into();
+    input.created_at = "2026-01-04T00:00:00Z".into();
+    input.scope_id = None;
+    input.logical_path = None;
+    input.private_binding = Some(
+        awaken_resource_contract::PrivateContentBinding::new(
+            "org-a".into(),
+            "desk".into(),
+            "alice".into(),
+            "test".into(),
+            1,
+        )
+        .unwrap(),
+    );
+    catalog.create_file(input).await.unwrap();
     let app = awaken_protocol_managed::resources_router(
         awaken_protocol_managed::ResourcesRouterInput::new(
             &resources,
@@ -145,6 +169,9 @@ async fn native_session_visibility_protects_every_file_surface_before_pagination
             ("GET", "/v1/files/file_private/content"),
             ("DELETE", "/v1/files/file_private"),
             ("GET", "/v1/files/file_unknown"),
+            ("GET", "/v1/files/file_private_input"),
+            ("GET", "/v1/files/file_private_input/content"),
+            ("DELETE", "/v1/files/file_private_input"),
         ] {
             let response = selected_surface(&app, method, path, beta_header, selector).await;
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
@@ -183,6 +210,14 @@ async fn native_session_visibility_protects_every_file_surface_before_pagination
         .unwrap();
     assert!(!private.deleted);
     assert!(
+        !catalog
+            .get_file("test", "file_private_input", true)
+            .await
+            .unwrap()
+            .unwrap()
+            .deleted
+    );
+    assert!(
         SessionPrivateBinding::of(&repo.get(&"private-session".into()).await.unwrap()).is_some()
     );
     // An unavailable owner must not reuse an earlier Workspace-visible answer.
@@ -205,6 +240,7 @@ async fn standalone_files_router_cannot_disclose_session_output_without_its_owne
     authorities
         .file_catalog()
         .create_file(FileRecord {
+            private_binding: None,
             id: "file_private_output".into(),
             workspace_id: "test".into(),
             blob_id,

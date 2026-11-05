@@ -595,6 +595,7 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
         .await
         .unwrap();
     let record = FileRecord {
+        private_binding: None,
         id: "file_output".into(),
         workspace_id: "test".into(),
         blob_id,
@@ -723,6 +724,7 @@ async fn workspace_capacity_is_checked_before_accepting_more_bytes() {
         .authorities()
         .file_catalog()
         .create_file(FileRecord {
+            private_binding: None,
             id: "file_capacity".into(),
             workspace_id: "test".into(),
             blob_id: "blob-capacity".into(),
@@ -845,6 +847,7 @@ async fn file_expiry_and_creation_share_the_one_resources_clock() {
     authorities
         .file_catalog()
         .create_file(FileRecord {
+            private_binding: None,
             id: "file_expiring_output".into(),
             workspace_id: "test".into(),
             blob_id,

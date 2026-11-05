@@ -2555,6 +2555,7 @@ dependencies = [
  "awaken-session-configuration-contract",
  "awaken-skill-store",
  "awaken-time",
+ "serde_json",
  "sqlx",
  "tempfile",
  "tokio",

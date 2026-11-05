@@ -174,3 +174,44 @@ the Resources plane neither owns Org edges nor evaluates IAM policy.
 This representation change does not enable private input uploads. Their original
 File metadata, immutable writes, recovery and trusted ingress must still be
 qualified; an unowned upload in S cannot be promoted into personal ownership.
+
+## Original File input provenance
+
+Personal input provenance is an optional closed binding on the original logical
+File record, read in the same row observation as its content identity. FileStore
+migration 8 adds a nullable column without a default or historical backfill. A
+missing binding retains ordinary or legacy meaning; malformed or contradictory
+stored provenance is an authority failure, never an ordinary File.
+
+Repository creation validates the exact Workspace and excludes Session artifact
+identity from personal input records. Original command recovery cannot change or
+clear any coordinate, adopt a legacy File, or revive a deleted personal input.
+Independent connections use the existing catalog transaction and command lock.
+Ordinary application metadata, collections, bytes, deletion and retry paths hide
+personal inputs before caller pagination or lifecycle effects. Repository reads
+remain internal observations for reference accounting and recovery.
+
+The Resources application supplies an admitted private File view over the same
+catalog, byte store, lifecycle and clock. Trusted ingress must freshly check
+identity, membership, application binding and native PDP authority before
+selecting it. The factory authenticates nobody and is never selected by a wire
+field. Creation retains the exact binding and namespaces the original external
+command key by all five coordinates. The view cannot create Session artifacts,
+adopt an ordinary upload, read another binding, or revive a deleted input.
+
+Execution reads use the same original File row for provenance and immutable
+content identity, then ask the selected native Session repository about the
+actual admitted reader before touching bytes. Personal inputs require exact
+five-coordinate equality with that reader. A claimed or frozen reference alone
+does not supply ownership. Private Session outputs continue to derive their
+owner from their original Session instead of duplicating it in File metadata.
+
+Interrupted deletion resumes through the existing durable purge intent. The
+internal preparation path verifies that complete original command against the
+retained File before removing its logical reference; it does not grant a new
+caller access to private metadata or bytes. No second receipt store is added.
+
+These native seams do not enable a product upload endpoint. Current trusted
+product ingress, S permission boundaries, stream/child authority, and compatible
+node rollout remain separate qualifications before personal input writes become
+available to product users.

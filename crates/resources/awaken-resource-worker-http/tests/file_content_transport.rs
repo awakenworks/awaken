@@ -204,6 +204,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
     let digest = store.put(b"exact-file").await.unwrap();
     store
         .create_file(awaken_resource_contract::FileRecord {
+            private_binding: None,
             id: "file-public".into(),
             workspace_id: "workspace-file".into(),
             blob_id: digest.clone(),
@@ -456,6 +457,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
 
     store
         .create_file(awaken_resource_contract::FileRecord {
+            private_binding: None,
             id: "file-broken".into(),
             workspace_id: "workspace-file".into(),
             blob_id: awaken_resource_contract::content_id(b"missing-blob"),
@@ -505,6 +507,7 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
     let digest = store.put(b"application-file").await.unwrap();
     store
         .create_file(awaken_resource_contract::FileRecord {
+            private_binding: None,
             id: "file-application".into(),
             workspace_id: "workspace-file".into(),
             blob_id: digest.clone(),
@@ -732,6 +735,7 @@ async fn model_content_file_requires_its_claimed_thread_and_strong_input_referen
     let digest = store.put(b"model-file").await.unwrap();
     store
         .create_file(awaken_resource_contract::FileRecord {
+            private_binding: None,
             id: "file-model".into(),
             workspace_id: "workspace-file".into(),
             blob_id: digest,
@@ -839,6 +843,7 @@ async fn model_content_recovery_uses_parent_partition_for_a_child_thread() {
     let digest = store.put(b"recovered-model-file").await.unwrap();
     store
         .create_file(awaken_resource_contract::FileRecord {
+            private_binding: None,
             id: "file-recovered-model".into(),
             workspace_id: "workspace-file".into(),
             blob_id: digest,

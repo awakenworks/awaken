@@ -33,7 +33,7 @@ pub use execution_sources::{
     ApplicationArtifactPublisher, ApplicationFileContentSource, RegistryRepositoryBindingVerifier,
     StoreSkillBundleSource, StoreSkillCatalogApplication,
 };
-pub use files::{CreateFileCommand, FileApplication};
+pub use files::{CreateFileCommand, FileApplication, admitted_private_file_view};
 pub use reclamation::{ResourceLifecycleGuard, ResourcePhysicalCleanup};
 pub use registry::RegistryApplication;
 pub use skill_ingest::{

@@ -207,6 +207,7 @@ mod tests {
         assert!(
             files
                 .create_file(FileRecord {
+                    private_binding: None,
                     id: "file".into(),
                     workspace_id: "workspace".into(),
                     blob_id: "blob".into(),

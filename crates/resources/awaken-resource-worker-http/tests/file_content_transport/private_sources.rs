@@ -44,10 +44,29 @@ async fn private_sessions(
 
 #[tokio::test]
 async fn a_live_claim_and_frozen_reference_cannot_read_another_private_sessions_file() {
+    private_file_source_case(false).await;
+}
+
+#[tokio::test]
+async fn a_live_claim_and_frozen_reference_cannot_adopt_another_persons_private_input() {
+    private_file_source_case(true).await;
+}
+
+async fn private_file_source_case(personal_input: bool) {
     let store = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let digest = store.put(b"bob-private-output").await.unwrap();
     store
         .create_file(awaken_resource_contract::FileRecord {
+            private_binding: personal_input.then(|| {
+                awaken_resource_contract::PrivateContentBinding::new(
+                    "org".into(),
+                    "desk".into(),
+                    "bob".into(),
+                    "workspace-file".into(),
+                    1,
+                )
+                .unwrap()
+            }),
             id: "file-application".into(),
             workspace_id: "workspace-file".into(),
             blob_id: digest,
@@ -57,8 +76,8 @@ async fn a_live_claim_and_frozen_reference_cannot_read_another_private_sessions_
             created_at: "2026-11-05T00:00:00Z".into(),
             expires_at: None,
             downloadable: true,
-            scope_id: Some("private-bob".into()),
-            logical_path: Some("private.txt".into()),
+            scope_id: (!personal_input).then(|| "private-bob".into()),
+            logical_path: (!personal_input).then(|| "private.txt".into()),
             harvest_key: None,
             artifact_idempotency_scope: None,
             deleted: false,
@@ -300,6 +319,7 @@ async fn file_record(
     };
     store
         .create_file(awaken_resource_contract::FileRecord {
+            private_binding: None,
             id: id.into(),
             workspace_id: "workspace-file".into(),
             blob_id: digest,

@@ -170,6 +170,7 @@ async fn build_fixture() -> Fixture {
     let digest = store.put(BYTES).await.unwrap();
     store
         .create_file(awaken_resource_contract::FileRecord {
+            private_binding: None,
             id: FILE.into(),
             workspace_id: WORKSPACE.into(),
             blob_id: digest,

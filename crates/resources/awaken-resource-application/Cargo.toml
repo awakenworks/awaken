@@ -25,6 +25,7 @@ url.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 awaken-lease-testkit.workspace = true
 awaken-resource-reclaimer.workspace = true
 awaken-file-store = { workspace = true, features = ["test-support", "sqlite"] }

@@ -1582,6 +1582,7 @@ fn terminal_recovery_receipt(
         effect_id: artifact_effect.clone(),
         content_id: content_id.clone(),
         record: awaken_resource_contract::FileRecord {
+            private_binding: None,
             id: file_id.into(),
             workspace_id: "terminal-workspace".into(),
             blob_id: content_id,

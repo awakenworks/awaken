@@ -389,6 +389,7 @@ async fn inconsistent_session_root_cannot_replace_the_file_readers_owner() {
             .file_content_is_visible(
                 "workspace",
                 Some("file-reader-alice"),
+                None,
                 Some("file-reader-alice")
             )
             .await
@@ -399,6 +400,7 @@ async fn inconsistent_session_root_cannot_replace_the_file_readers_owner() {
             .file_content_is_visible(
                 "workspace",
                 Some("file-source-bob"),
+                None,
                 Some("file-reader-alice")
             )
             .await
@@ -422,6 +424,7 @@ async fn inconsistent_session_root_cannot_replace_the_file_readers_owner() {
             .file_content_is_visible(
                 "workspace",
                 Some("file-source-bob"),
+                None,
                 Some("file-reader-alice"),
             )
             .await;

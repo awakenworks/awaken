@@ -55,7 +55,13 @@ fn cs(x: impl ToString) -> FileCatalogError {
     reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
 )]
 fn row_record(row: &SqliteRow) -> Result<FileRecord, sqlx::Error> {
-    Ok(FileRecord {
+    let record = FileRecord {
+        private_binding: crate::decode_private_file_binding(row.try_get(14)?).map_err(|error| {
+            sqlx::Error::ColumnDecode {
+                index: "private_binding_json".into(),
+                source: Box::new(error),
+            }
+        })?,
         id: row.try_get(0)?,
         workspace_id: row.try_get(1)?,
         blob_id: row.try_get(2)?,
@@ -70,7 +76,12 @@ fn row_record(row: &SqliteRow) -> Result<FileRecord, sqlx::Error> {
         harvest_key: row.try_get(11)?,
         artifact_idempotency_scope: row.try_get(12)?,
         deleted: row.try_get::<i64, _>(13)? != 0,
-    })
+    };
+    crate::validate_record(&record).map_err(|error| sqlx::Error::ColumnDecode {
+        index: "private_binding_json".into(),
+        source: Box::new(error),
+    })?;
+    Ok(record)
 }
 
 fn row_records(rows: Vec<SqliteRow>) -> Result<Vec<FileRecord>, sqlx::Error> {
@@ -79,7 +90,7 @@ fn row_records(rows: Vec<SqliteRow>) -> Result<Vec<FileRecord>, sqlx::Error> {
 
 const FILE_COLUMNS: &str = "id, workspace_id, blob_id, filename, mime_type, \
 size_bytes, created_at, expires_at, downloadable, scope_id, logical_path, harvest_key, \
-artifact_idempotency_scope, deleted";
+artifact_idempotency_scope, deleted, private_binding_json";
 
 async fn file_by_id(
     conn: &mut SqliteConnection,
@@ -211,6 +222,27 @@ impl SqliteFileStore {
         record: FileRecord,
     ) -> Result<Result<CreateFileRecordOutcome, FileCatalogError>, FileStoreError> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(e)?;
+        if let Some(key) = record.harvest_key.as_deref() {
+            let matching = row_records(
+                sqlx::query(&format!(
+                    "SELECT {FILE_COLUMNS} FROM {NS}_file WHERE workspace_id=?1 AND harvest_key=?2"
+                ))
+                .bind(&record.workspace_id)
+                .bind(key)
+                .fetch_all(&mut *transaction)
+                .await
+                .map_err(e)?,
+            )
+            .map_err(e)?;
+            match crate::verify_private_file_history(&matching, &record) {
+                Ok(Some(existing)) => {
+                    transaction.commit().await.map_err(e)?;
+                    return Ok(Ok(CreateFileRecordOutcome::Existing(existing)));
+                }
+                Ok(None) => {}
+                Err(error) => return Ok(Err(error)),
+            }
+        }
         if let (Some(key), Some(requested)) = (
             record.harvest_key.as_deref(),
             record.artifact_idempotency_scope.as_deref(),
@@ -267,7 +299,7 @@ impl SqliteFileStore {
 
         let inserted = sqlx::query(&format!(
             "INSERT OR IGNORE INTO {NS}_file ({FILE_COLUMNS}) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"
         ))
         .bind(&record.id)
         .bind(&record.workspace_id)
@@ -283,6 +315,14 @@ impl SqliteFileStore {
         .bind(&record.harvest_key)
         .bind(&record.artifact_idempotency_scope)
         .bind(i64::from(record.deleted))
+        .bind(
+            record
+                .private_binding
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(e)?,
+        )
         .execute(&mut *transaction)
         .await
         .map_err(e)?

@@ -15,6 +15,7 @@ use awaken_resource_contract::{
 fn file(id: &str, path: &str) -> FileRecord {
     let blob_id = content_id(id.as_bytes());
     FileRecord {
+        private_binding: None,
         id: id.into(),
         workspace_id: "capture-workspace".into(),
         blob_id: blob_id.clone(),
@@ -700,17 +701,24 @@ async fn sqlite_v5_upgrade_preserves_files_without_guessing_a_capture() {
     .run_bundle(&legacy)
     .await
     .unwrap();
-    let store = awaken_file_store::sqlite::SqliteFileStore::over(connection);
-    for record in [
+    let store = awaken_file_store::sqlite::SqliteFileStore::over(connection.clone());
+    let before = vec![
         file("capture-a", "report.txt"),
         file("capture-b", "report.txt"),
-    ] {
-        store.create_file(record).await.unwrap();
+    ];
+    for record in &before {
+        // Seed the historical V5 shape explicitly. The current adapter must
+        // never silently operate against an unmigrated personal-File schema.
+        sqlx::query("INSERT INTO file_store_file (id,workspace_id,blob_id,filename,mime_type,size_bytes,created_at,expires_at,downloadable,scope_id,logical_path,harvest_key,artifact_idempotency_scope,deleted) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)")
+            .bind(&record.id).bind(&record.workspace_id).bind(&record.blob_id)
+            .bind(&record.filename).bind(&record.mime_type).bind(record.size_bytes as i64)
+            .bind(&record.created_at).bind(&record.expires_at).bind(i64::from(record.downloadable))
+            .bind(&record.scope_id).bind(&record.logical_path).bind(&record.harvest_key)
+            .bind(&record.artifact_idempotency_scope).bind(i64::from(record.deleted))
+            .execute(&connection).await.unwrap();
     }
-    let before = store
-        .list_files("capture-workspace", Some("capture-session"))
-        .await
-        .unwrap();
+    let mut before = before;
+    before.sort_by(|left, right| right.id.cmp(&left.id));
     store.ensure_schema().await.unwrap();
     assert_eq!(current(&store).await, None, "M1");
     assert_eq!(
@@ -871,17 +879,22 @@ async fn postgres_capture_contract_and_reconnect() {
         .run_bundle(&legacy)
         .await
         .unwrap();
-    let store = awaken_file_store::postgres::PgFileStore::with_pool(pool);
-    for record in [
+    let store = awaken_file_store::postgres::PgFileStore::with_pool(pool.clone());
+    let before = vec![
         file("capture-a", "report.txt"),
         file("capture-b", "report.txt"),
-    ] {
-        store.create_file(record).await.unwrap();
+    ];
+    for record in &before {
+        sqlx::query("INSERT INTO file_store_file (id,workspace_id,blob_id,filename,mime_type,size_bytes,created_at,expires_at,downloadable,scope_id,logical_path,harvest_key,artifact_idempotency_scope,deleted) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+            .bind(&record.id).bind(&record.workspace_id).bind(&record.blob_id)
+            .bind(&record.filename).bind(&record.mime_type).bind(record.size_bytes as i64)
+            .bind(&record.created_at).bind(&record.expires_at).bind(i64::from(record.downloadable))
+            .bind(&record.scope_id).bind(&record.logical_path).bind(&record.harvest_key)
+            .bind(&record.artifact_idempotency_scope).bind(i64::from(record.deleted))
+            .execute(&pool).await.unwrap();
     }
-    let before = store
-        .list_files("capture-workspace", Some("capture-session"))
-        .await
-        .unwrap();
+    let mut before = before;
+    before.sort_by(|left, right| right.id.cmp(&left.id));
     store.ensure_schema().await.unwrap();
     assert_eq!(current(&store).await, None, "M1");
     assert_eq!(

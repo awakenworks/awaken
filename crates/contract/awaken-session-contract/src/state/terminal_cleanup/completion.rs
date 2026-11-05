@@ -247,6 +247,7 @@ pub(in crate::state::terminal_cleanup) mod tests {
             effect_id: effect_id.into(),
             content_id: content_id.into(),
             record: FileRecord {
+                private_binding: None,
                 id: format!("file-{effect_id}"),
                 workspace_id: "workspace".into(),
                 blob_id: content_id.into(),

@@ -87,6 +87,11 @@ pub fn file_store_bundle() -> Result<MigrationBundle, MigrationError> {
                 "original Run publication reference on existing output capture",
                 "ALTER TABLE {prefix}_artifact_capture ADD COLUMN origin_json TEXT",
             )?,
+            Migration::new(
+                8,
+                "immutable personal input provenance on the original logical File",
+                "ALTER TABLE {prefix}_file ADD COLUMN private_binding_json TEXT",
+            )?,
         ],
     )
 }

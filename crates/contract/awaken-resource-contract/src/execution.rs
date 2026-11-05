@@ -95,6 +95,7 @@ pub trait FileContentVisibility: Send + Sync {
         &self,
         workspace_id: &str,
         source_session_id: Option<&str>,
+        source_private_binding: Option<&crate::PrivateContentBinding>,
         reader_session_id: Option<&str>,
     ) -> Result<bool, FileContentSourceError>;
 }
@@ -716,6 +717,7 @@ mod tests {
             effect_id: effect_id.clone(),
             content_id: content_id.clone(),
             record: FileRecord {
+                private_binding: None,
                 id: "file-1".into(),
                 workspace_id: "workspace-1".into(),
                 blob_id: content_id,
@@ -900,6 +902,7 @@ mod tests {
         let mut current = ArtifactPublicationReceipt::from_publication_record(
             &publication,
             FileRecord {
+                private_binding: None,
                 id: "file-current".into(),
                 workspace_id: publication.workspace_id.clone(),
                 blob_id: publication.content_id.clone(),
