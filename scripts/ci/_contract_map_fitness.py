@@ -165,13 +165,11 @@ RULES = (
          "method; publish a read-only projection (plan 9.19 item 2, W26)"),
 )
 
-_TRAIT = re.compile(r"\bpub\s+trait\s+([A-Z]\w*)[^{;]*\{")
 _BLOCK = re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?(trait|impl)\b[^{;]*\{", re.M)
 _OPTIONAL_ROLE = re.compile(
     r"\bfn\s+(\w+)[^;{]*?->\s*Option\s*<\s*(?:&\s*(?:'\w+\s+)?(?:mut\s+)?dyn\b|(?:(?:std|alloc)::sync::)?Arc\s*<\s*dyn\b)"
 )
 _IMPL = re.compile(r"\bimpl\b")
-_BODY_TOKEN = re.compile(r"[{}]|\bfn\s+\w+")
 _PUB_USE = re.compile(r"\bpub\s+use\s+([^;]*);")
 _STRUCT = re.compile(r"\bstruct\s+([A-Z]\w*)")
 _ATTRIBUTES = re.compile(r"^(?:\s*#\s*\[[^\]]*\])*\s*")
@@ -243,26 +241,11 @@ def _blocks(syntax: str) -> list[tuple[int, int, str, str]]:
     return blocks
 
 
-def trait_methods(body: str) -> int:
-    """Methods declared directly in a trait body (the text between its braces)."""
-    depth = methods = 0
-    for token in _BODY_TOKEN.finditer(body):
-        if token.group(0) == "{":
-            depth += 1
-        elif token.group(0) == "}":
-            depth -= 1
-        elif depth == 0:
-            methods += 1
-    return methods
-
-
 def contract_traits(syntax: str) -> list[tuple[str, int, int]]:
     """(name, offset, declared methods) of every `pub trait` in one file."""
-    found = []
-    for match in _TRAIT.finditer(syntax):
-        opening = match.end() - 1
-        found.append((match.group(1), match.start(), trait_methods(syntax[opening + 1:_block_end(syntax, opening)])))
-    return found
+    return [(trait.name, trait.start, len(trait.methods))
+            for trait in _crate_boundary_workspace.public_rust_traits(syntax)
+            if trait.name[0].isupper()]
 
 
 def public_types(syntax: str) -> list[tuple[str, int]]:
