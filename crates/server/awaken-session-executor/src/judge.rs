@@ -57,7 +57,10 @@ impl Grader for HostAgentGrader<'_> {
             .register_thread_workspace(&thread.0, &workspace)
             .map_err(|error| GraderError::Execution(error.to_string()))?;
         tracing::debug!(thread = %thread.0, "Outcome grader context opening");
-        let context = if crate::sandbox_layout::environment_free_inference(snapshot) {
+        let context = if crate::sandbox_layout::environment_free_inference(
+            snapshot,
+            awaken_session_run_delivery::MemoryWriteProposals::matches_descriptor,
+        ) {
             self.host
                 .run_assembly
                 .ctx_for_environment_free_snapshot(
@@ -219,7 +222,10 @@ mod tests {
         let inference_only = default_judge_agent("stub", "judge", DEFAULT_JUDGE_INSTRUCTIONS)
             .expect("literal model reference");
         assert!(
-            crate::sandbox_layout::environment_free_inference(&inference_only),
+            crate::sandbox_layout::environment_free_inference(
+                &inference_only,
+                awaken_session_run_delivery::MemoryWriteProposals::matches_descriptor
+            ),
             "R1/E1"
         );
         // The same R1 surface must not acquire namespace requirements again
@@ -248,7 +254,10 @@ mod tests {
             ))
             .build();
         assert!(
-            !crate::sandbox_layout::environment_free_inference(&with_tool),
+            !crate::sandbox_layout::environment_free_inference(
+                &with_tool,
+                awaken_session_run_delivery::MemoryWriteProposals::matches_descriptor
+            ),
             "R2/E2"
         );
 
@@ -260,9 +269,201 @@ mod tests {
             ))
             .build();
         assert!(
-            !crate::sandbox_layout::environment_free_inference(&acp),
+            !crate::sandbox_layout::environment_free_inference(
+                &acp,
+                awaken_session_run_delivery::MemoryWriteProposals::matches_descriptor
+            ),
             "R3/E2"
         );
+    }
+
+    #[test]
+    fn canonical_stateless_memory_proposal_omits_the_environment() {
+        // P1 baseline: one canonical stateless proposal, no integrations or
+        // tool policy, and a Native route => omit the physical Environment.
+        // The SDK constructor owns the descriptor; this case must fail on the
+        // old tool-empty classifier before any production predicate is added.
+        let snapshot = awaken_ext_memory::default_memory_agent(
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                awaken_runtime_contract::ModelBinding::parse("default", "stub", "default")
+                    .expect("fixture model binding"),
+            ),
+            awaken_ext_memory::DEFAULT_MEMORY_INSTRUCTIONS,
+        );
+        assert!(
+            crate::sandbox_layout::environment_free_inference(
+                &snapshot,
+                awaken_session_run_delivery::MemoryWriteProposals::matches_descriptor
+            ),
+            "P1 the stateless Memory proposal needs no Session Environment"
+        );
+    }
+
+    #[test]
+    fn memory_proposal_environment_requirements_keep_each_integration_boundary() {
+        use awaken_agent_contract::{AgentSkillBinding, ToolsetPolicy, ToolsetSource};
+        use awaken_runtime_contract::agent_bindings::{
+            AgentAdvisorBinding, AgentDelegateBinding, AgentMcpServerBinding,
+            AgentMcpTransportBinding,
+        };
+        use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
+
+        // MC/DC from P1: N1 changes exactly one structural condition or route.
+        // plugin/MCP/Skill/delegate/advisor/toolset present, or ACP in either
+        // primary/fallback position => keep the Environment. All other P1
+        // inputs stay fixed, so allowing the proposal cannot waive a boundary.
+        let baseline = awaken_ext_memory::default_memory_agent(
+            ResolvedModelCandidate::host(
+                ModelBinding::parse("default", "stub", "default").expect("fixture model binding"),
+            ),
+            awaken_ext_memory::DEFAULT_MEMORY_INSTRUCTIONS,
+        );
+        for rule in [
+            "plugin",
+            "mcp",
+            "skill",
+            "delegate",
+            "advisor",
+            "toolset",
+            "acp-primary",
+            "acp-fallback",
+        ] {
+            let mut snapshot = baseline.clone();
+            let spec = &mut snapshot.resolved_spec;
+            match rule {
+                "plugin" => spec.plugin_ids.push("fixture-plugin".into()),
+                "mcp" => spec
+                    .plugin_config
+                    .agent
+                    .mcp_servers
+                    .push(AgentMcpServerBinding {
+                        name: "fixture".into(),
+                        transport: AgentMcpTransportBinding::http("http://127.0.0.1:1/mcp"),
+                        credential: None,
+                        prompts_as_skills: false,
+                    }),
+                "skill" => spec
+                    .plugin_config
+                    .agent
+                    .skills
+                    .push(AgentSkillBinding::custom("fixture-skill")),
+                "delegate" => spec
+                    .plugin_config
+                    .agent
+                    .delegates
+                    .push(AgentDelegateBinding {
+                        agent_id: awaken_runtime_contract::snapshot::AgentId(
+                            "fixture-child".into(),
+                        ),
+                        source_revision: Some(1),
+                        recursive_self: false,
+                    }),
+                "advisor" => {
+                    spec.plugin_config.agent.advisor = Some(AgentAdvisorBinding {
+                        model: "stub".into(),
+                        candidate: baseline.resolved_spec.model_binding.clone(),
+                    });
+                }
+                "toolset" => spec.plugin_config.agent.toolsets.push(ToolsetPolicy {
+                    source: ToolsetSource::Agent,
+                    default: Default::default(),
+                    overrides: Vec::new(),
+                }),
+                "acp-primary" => {
+                    spec.model_binding = ResolvedModelCandidate::host(
+                        ModelBinding::parse("default", "stub", "acp:fixture")
+                            .expect("fixture ACP binding"),
+                    );
+                }
+                "acp-fallback" => spec.model_candidates.push(ResolvedModelCandidate::host(
+                    ModelBinding::parse("default", "stub", "acp:fixture")
+                        .expect("fixture ACP binding"),
+                )),
+                _ => unreachable!("closed N1 decision table"),
+            }
+            snapshot.recompute_fingerprint().unwrap();
+            assert!(
+                !crate::sandbox_layout::environment_free_inference(
+                    &snapshot,
+                    awaken_session_run_delivery::MemoryWriteProposals::matches_descriptor
+                ),
+                "N1 {rule} independently retains the Environment"
+            );
+        }
+    }
+
+    #[test]
+    fn memory_proposal_environment_requirements_reject_other_tool_owners() {
+        use awaken_runtime_contract::resolved::{
+            ModelBinding, ProviderServerTool, ResolvedModelCandidate, ToolDescriptor, ToolKind,
+        };
+
+        // N2 owner partitions: another tool alone/mixed with the proposal, or
+        // same-id store/client/foreign/detached/provider execution => retain
+        // the Environment. Display names and a shared id grant no omission;
+        // P1 is the only admitted execution-owner partition in this matrix.
+        let baseline = awaken_ext_memory::default_memory_agent(
+            ResolvedModelCandidate::host(
+                ModelBinding::parse("default", "stub", "default").expect("fixture model binding"),
+            ),
+            awaken_ext_memory::DEFAULT_MEMORY_INSTRUCTIONS,
+        );
+        let canonical = awaken_ext_memory::write_memory_descriptor();
+        let other = ToolDescriptor::pinned(
+            "fixture",
+            "other-tool",
+            "other tool",
+            serde_json::json!({"type": "object"}),
+        );
+        for (rule, descriptors) in [
+            ("other", vec![other.clone()]),
+            ("mixed", vec![canonical.clone(), other]),
+            (
+                "session-store",
+                vec![ToolDescriptor::pinned(
+                    "session-memory",
+                    canonical.id.clone(),
+                    "store",
+                    canonical.model_parameters(),
+                )],
+            ),
+            (
+                "client",
+                vec![ToolDescriptor::client_executed(
+                    canonical.id.clone(),
+                    "client",
+                    canonical.model_parameters(),
+                )],
+            ),
+            (
+                "foreign",
+                vec![ToolDescriptor::pinned(
+                    "foreign",
+                    canonical.id.clone(),
+                    "foreign",
+                    canonical.model_parameters(),
+                )],
+            ),
+            (
+                "detached",
+                vec![canonical.clone().with_kind(ToolKind::DetachedOnly)],
+            ),
+            (
+                "provider",
+                vec![canonical.with_provider_server_tool(ProviderServerTool::openai_web_search())],
+            ),
+        ] {
+            let mut snapshot = baseline.clone();
+            snapshot.resolved_spec.tool_descriptors = descriptors;
+            snapshot.recompute_fingerprint().unwrap();
+            assert!(
+                !crate::sandbox_layout::environment_free_inference(
+                    &snapshot,
+                    awaken_session_run_delivery::MemoryWriteProposals::matches_descriptor
+                ),
+                "N2 {rule} cannot inherit the stateless proposal's omission"
+            );
+        }
     }
 
     #[tokio::test]

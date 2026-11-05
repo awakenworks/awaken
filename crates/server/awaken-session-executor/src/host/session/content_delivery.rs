@@ -409,7 +409,12 @@ impl crate::RunAssembly {
         // purpose, but needs no undeclared physical substrate.
         let inference_only_claim = claimed_attempt
             && !has_published_delegates
-            && published_snapshot.is_some_and(crate::sandbox_layout::environment_free_inference)
+            && published_snapshot.is_some_and(|snapshot| {
+                crate::sandbox_layout::environment_free_inference(
+                    snapshot,
+                    awaken_session_run_delivery::MemoryWriteProposals::matches_descriptor,
+                )
+            })
             && self
                 .installed_sessions
                 .read(thread, |installed| {

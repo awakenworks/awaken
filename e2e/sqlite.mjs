@@ -83,7 +83,9 @@ function filesUnder(root) {
 }
 
 export function sqliteDatabaseForThread(root, threadId, table) {
-  const allowedTables = new Set(['runtime_message', 'runtime_state_command', 'runtime_waiting']);
+  const allowedTables = new Set([
+    'runtime_message', 'runtime_run_record', 'runtime_state_command', 'runtime_waiting',
+  ]);
   if (!allowedTables.has(table)) throw new Error(`unsupported runtime thread table: ${table}`);
   const files = filesUnder(root);
   const matches = files

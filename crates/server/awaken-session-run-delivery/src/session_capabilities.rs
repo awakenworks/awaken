@@ -76,6 +76,9 @@ pub fn authorable_tools() -> Vec<ToolDescriptor> {
     // Both web capabilities are owned exclusively by their configured plugins.
     tools.push(awaken_ext_builtin_tools::web_fetch_descriptor());
     tools.push(awaken_ext_builtin_tools::web_search_descriptor());
+    // Configured extractors explicitly select the same stateless proposal
+    // capability as the built-in default; catalog membership grants no tool.
+    tools.push(awaken_ext_memory::write_memory_descriptor());
     tools.push(delegation_descriptor());
     tools
 }
