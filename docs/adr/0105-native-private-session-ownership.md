@@ -132,3 +132,26 @@ agree. A well-formed but differently addressed root cannot substitute its owner.
 Session queries and linked File observations share this live-root observation;
 unknown or inconsistent observations grant no access. Current authentication,
 membership and PDP admission remain separate ingress requirements.
+
+## Request-bound Managed projection
+
+The trusted product ingress may derive a private request view of the existing
+Managed state after its current identity, membership, application-binding and
+PDP checks. The view retains one exact immutable binding for that request; it
+cannot mutate the authority of another request. It shares the original native
+application, disposable projection cache, event channels and identity sequence.
+It creates no Session store, Runtime or executor. A decoded request field never
+selects this view, and constructing the view does not authenticate a caller.
+
+The ordinary and private views select the corresponding native ownership proof,
+creation driver and original receipt. Private create keys include the complete
+binding so two people using the same external key in S cannot select one root.
+Both durable and cached collections filter exact ownership before pagination.
+Each cache candidate takes its private-binding projection from the same durable
+root as its content, including cold recovery and committed-prefix rebuilds.
+Ordinary Workspace views must hide a private root even after a private request
+has warmed their shared cache.
+
+This adapter seam does not supply current authentication, authorize a long-lived
+stream, or qualify private Files, child delegation or product readiness. Those
+remain the separate ingress and linked-content qualifications above.

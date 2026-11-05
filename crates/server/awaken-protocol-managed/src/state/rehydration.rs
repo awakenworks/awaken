@@ -104,9 +104,6 @@ impl ManagedState {
                 "Session root is not finalized and cannot be rehydrated",
             ))
         })?;
-        let session_revision = persisted.revision;
-        let root_time = RootTimeEvidence::from(&persisted);
-        let resource_state = persisted.resources.clone();
         let session = match purpose {
             SessionRecoveryPurpose::Interactive => {
                 let admission = self
@@ -120,21 +117,13 @@ impl ManagedState {
                             format!("Executable projections could not be refreshed: {error}"),
                         ))
                     })?;
-                admission.enter(|| self.rehydrated_session(id, &owner_scope, persisted))?
+                admission.enter(|| self.rehydrated_session(id, &owner_scope, persisted.clone()))?
             }
             SessionRecoveryPurpose::CollectionRead | SessionRecoveryPurpose::FrozenControl => {
-                self.rehydrated_session_for(id, &owner_scope, persisted, purpose)?
+                self.rehydrated_session_for(id, &owner_scope, persisted.clone(), purpose)?
             }
         };
-        let record = SessionRecord::new(
-            owner_scope,
-            agent_id,
-            session,
-            session_revision,
-            resource_state,
-            root_time,
-            Vec::new(),
-        );
+        let record = SessionRecord::new(owner_scope, agent_id, session, &persisted, Vec::new());
         self.sessions
             .lock()?
             .entry(id.to_string())

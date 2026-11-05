@@ -26,6 +26,45 @@ fn cold_state(repo: Arc<dyn awaken_session_application::SessionStore>) -> Manage
 }
 
 #[tokio::test]
+async fn a_warmed_private_root_is_absent_from_the_workspace_cache_collection() {
+    // The same native repository supplies the private binding and wire content.
+    // Warming a private root through internal recovery cannot turn it public.
+    let repo = Arc::new(ephemeral_session_repo().await);
+    let private = awaken_session_contract::SessionPrivateBinding::new(
+        "org-a".into(),
+        "desk".into(),
+        "alice".into(),
+        "workspace-a".into(),
+        1,
+    )
+    .unwrap()
+    .bind_fresh(sample_persisted("private-cache-root"))
+    .unwrap();
+    create_session_fixture(repo.as_ref(), "workspace-a", private).await;
+    create_session_fixture(
+        repo.as_ref(),
+        "workspace-a",
+        sample_persisted("ordinary-cache-root"),
+    )
+    .await;
+    let state = cold_state(repo);
+    for id in ["private-cache-root", "ordinary-cache-root"] {
+        state
+            .hydrate_session_record(id, SessionRecoveryPurpose::CollectionRead)
+            .await
+            .unwrap();
+    }
+    let visible = state.list_sessions_scoped("workspace-a").unwrap();
+    assert_eq!(
+        visible
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>(),
+        ["ordinary-cache-root"]
+    );
+}
+
+#[tokio::test]
 async fn cold_publication_exposes_owner_before_the_first_hydrator_returns() {
     // C1 purpose is Interactive, CollectionRead or FrozenControl; C2 the first
     // hydrator published its entry but cannot return; C3 a competing hydrator

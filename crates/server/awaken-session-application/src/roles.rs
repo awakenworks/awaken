@@ -188,6 +188,17 @@ pub trait SessionRootReads: Send + Sync {
         owner_scope: &str,
     ) -> Result<Vec<PersistedSession>, SessionRepositoryError>;
 
+    /// Exact private collection after current trusted ingress admission.
+    /// Unsupported implementations must never use the Workspace collection.
+    async fn private_sessions(
+        &self,
+        _binding: &awaken_session_contract::SessionPrivateBinding,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        Err(SessionRepositoryError::AuthorityUnavailable(
+            "private Session collection is unavailable".into(),
+        ))
+    }
+
     /// Healthy roots in one Workspace whose MCP attachments reference one
     /// credential source.
     async fn sessions_referencing_credential_source(

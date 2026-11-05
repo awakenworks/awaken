@@ -43,6 +43,9 @@ pub(crate) use events::{
 };
 mod helpers;
 mod managed_state;
+mod private_request;
+pub use private_request::admitted_private_session_view;
+pub(crate) use private_request::authorize_session;
 mod realization;
 mod rehydration;
 mod resource;

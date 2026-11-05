@@ -264,6 +264,7 @@ pub(super) struct SessionRecord {
     /// Disposable authorization projection from the same durable root as this
     /// record. Required at construction and never independently published.
     owner_scope: String,
+    private_binding: Option<awaken_session_contract::SessionPrivateBinding>,
     /// Process-local compare-and-swap coordinate. It is advanced by every
     /// visible cache mutation and is never persisted or treated as domain truth.
     pub(super) cache_revision: u64,
@@ -328,6 +329,7 @@ impl SessionRecord {
             cache_revision,
             committed_projection_ready: _,
             owner_scope: _,
+            private_binding: _,
             agent_id: _,
             session: _,
             root_time: _,
@@ -388,6 +390,7 @@ impl SessionRecord {
         ))
         .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
         Ok(self.owner_scope == other.owner_scope
+            && self.private_binding == other.private_binding
             && self.agent_id == other.agent_id
             && self.committed_projection_ready == other.committed_projection_ready
             && self.resource_state == other.resource_state
@@ -616,14 +619,12 @@ impl SessionRecord {
         owner_scope: String,
         agent_id: String,
         session: Session,
-        session_revision: awaken_session_types::SessionRevision,
-        resource_state: awaken_session_contract::SessionResourceState,
-        root_time: RootTimeEvidence,
+        root: &PersistedSession,
         events: Vec<Event>,
     ) -> Self {
         let checkpoint = ManagedProjectionCheckpoint {
             source: ManagedProjectionSourceVersion {
-                session_revision,
+                session_revision: root.revision,
                 ..Default::default()
             },
             ..Default::default()
@@ -633,12 +634,13 @@ impl SessionRecord {
             cache_revision: 0,
             committed_projection_ready: false,
             owner_scope,
+            private_binding: awaken_session_contract::SessionPrivateBinding::of(root).cloned(),
             agent_id,
             session,
-            root_time,
+            root_time: RootTimeEvidence::from(root),
             event_times: HashMap::new(),
             child_times: HashMap::new(),
-            resource_state,
+            resource_state: root.resources.clone(),
             events,
             event_page_index,
             checkpoint,
@@ -651,6 +653,12 @@ impl SessionRecord {
 
     pub(super) fn owner_scope(&self) -> &str {
         &self.owner_scope
+    }
+
+    pub(super) fn private_binding(
+        &self,
+    ) -> Option<&awaken_session_contract::SessionPrivateBinding> {
+        self.private_binding.as_ref()
     }
 
     /// Project the HTTP Session DTO from typed aggregate state. The stored

@@ -298,4 +298,23 @@ impl SessionRootReads for SessionQueries {
                     .collect()
             })
     }
+
+    async fn private_sessions(
+        &self,
+        binding: &awaken_session_contract::SessionPrivateBinding,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        self.repository
+            .scan(SessionScanQuery::Workspace {
+                workspace_id: binding.workspace_id(),
+            })
+            .await
+            .map(|scan| {
+                scan.into_sessions()
+                    .into_iter()
+                    .filter(|root| {
+                        awaken_session_contract::SessionPrivateBinding::of(root) == Some(binding)
+                    })
+                    .collect()
+            })
+    }
 }

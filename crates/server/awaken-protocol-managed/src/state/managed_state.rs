@@ -26,6 +26,7 @@ use super::SessionRecord;
 /// The Session application roles this adapter calls, each held as its own
 /// port. Product composition hands over the one canonical application and the
 /// adapter keeps only these narrowed views of it.
+#[derive(Clone)]
 pub(crate) struct SessionApplicationRoles {
     pub(crate) creation: Arc<dyn SessionCreation>,
     pub(crate) credentials: Arc<dyn SessionCredentialCommands>,
@@ -64,18 +65,21 @@ impl SessionApplicationRoles {
 }
 
 /// Disposable Managed wire projections over the canonical Session application.
+#[derive(Clone)]
 pub struct ManagedState {
     pub(crate) roles: SessionApplicationRoles,
+    /// Selected only by trusted composition for one currently admitted request.
+    pub(crate) private_binding: Option<awaken_session_contract::SessionPrivateBinding>,
     /// The fixture composition's own application, kept so tests can drive it
     /// directly and builders can finish configuring it before it is shared.
     #[cfg(any(test, feature = "test-support"))]
     pub(super) application: Arc<SessionApplication>,
     /// Disposable record→wire projection; durable truth lives in the application repository.
-    pub(super) sessions: InvariantLock<HashMap<String, SessionRecord>>,
-    pub(super) session_seq: AtomicU64,
+    pub(super) sessions: Arc<InvariantLock<HashMap<String, SessionRecord>>>,
+    pub(super) session_seq: Arc<AtomicU64>,
     /// Per-Session committed wire-event channels. Runtime live observations use
     /// the ThreadEventHub subscription and never enter this map.
-    pub(super) live: LeafLock<HashMap<String, broadcast::Sender<Event>>>,
+    pub(super) live: Arc<LeafLock<HashMap<String, broadcast::Sender<Event>>>>,
     /// Current Workspace geography policy. Hosted composition supplies this
     /// authority; self-managed mode leaves it absent and retains local policy.
     pub(super) inference_geo_policy: Option<Arc<dyn crate::ManagedInferenceGeoPolicy>>,
@@ -87,11 +91,11 @@ pub struct ManagedState {
     /// the same committed prefix. Only a test that counts source reads turns
     /// it off, because the check reads the prefix a second time.
     #[cfg(test)]
-    pub(super) warm_cold_oracle: std::sync::atomic::AtomicBool,
+    pub(super) warm_cold_oracle: Arc<std::sync::atomic::AtomicBool>,
     /// One-shot test observation after the complete cold cache entry is visible.
     #[cfg(test)]
     pub(super) cold_publication_pause:
-        std::sync::Mutex<Option<super::rehydration::ColdPublicationPause>>,
+        Arc<std::sync::Mutex<Option<super::rehydration::ColdPublicationPause>>>,
 }
 
 impl ManagedState {
