@@ -22,6 +22,7 @@ import {
   parseDurableJson,
   sqliteExec,
   sqliteRows,
+  sqliteRun,
   stringifyDurableJson,
 } from './sqlite.mjs';
 
@@ -221,10 +222,11 @@ function persistTerminalRelease(database, sessionId) {
     status: 'terminated',
     resources,
     terminal_cleanup: {
-      state: 'requested',
+      // The production quiescence owner must freeze its actual Runtime cursor
+      // and thread prefix. A hand-authored Requested without that cursor is
+      // historical unproven state, not today's post-quiescence crash boundary.
+      state: 'fenced',
       effect_id: terminalCleanupEffectId(sessionId),
-      thread_ids: [sessionId],
-      delegation_watermark: 0,
     },
   };
   sqliteExec(
@@ -245,6 +247,7 @@ async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-activation-recovery-'));
   const upstream = await startFakeAnthropic(FAKE_KEY, { models: [MODEL] });
   const sessionsDatabase = path.join(directory, 'sessions.db');
+  const registryDatabase = path.join(directory, 'worker-registry.db');
   let server = start(directory);
   try {
     await ready();
@@ -322,10 +325,14 @@ async function main() {
     ]));
 
     // Model process death after each first durable edge: Prepared for a live
-    // replacement, and Requested root cleanup + Releasing resources for a
-    // terminal Session. These are precisely the states the coordinator persists
-    // before Worker-owned realization and teardown.
-    await hardKillServer(server);
+    // replacement, and Fenced root cleanup + Releasing resources for a terminal
+    // Session. After real quiescence below, a second crash retains the actual
+    // Requested scope, including its authoritative Runtime commit cursor.
+    const crashedProcess = server;
+    assert.equal(crashedProcess.exitCode, null, 'original process is live before the crash');
+    assert.equal(crashedProcess.signalCode, null, 'original process has no prior exit');
+    await hardKillServer(crashedProcess);
+    assert.equal(crashedProcess.signalCode, 'SIGKILL', 'observe the exact original child exit');
     persistPreparedGeneration(sessionsDatabase, recovering.id);
     persistTerminalRelease(sessionsDatabase, terminating.id);
 
@@ -383,15 +390,71 @@ async function main() {
     assert.equal(recovered.resources.activations[1].attempts, 1);
     assert.equal(recovered.resources.activations[1].last_error, undefined);
 
-    const released = await waitForValue(
+    // Q1 Fenced + committed ended Runs -> the existing Coordinator quiescence
+    // freezes the exact targets/cursor and commits Requested. Q2 no independent
+    // predecessor exit -> it cannot prepare/dispose resources. Crash again at
+    // this real Requested boundary: restart must resume that identical scope,
+    // rather than the fixture fabricating a cursor, completion or no-Create.
+    const requested = await waitForValue(
       () => sessionRow(sessionsDatabase, terminating.id),
-      (row) => row.resources.pending === undefined
-        && row.resources.activations.every((activation) => activation.state === 'released'),
-      'terminal resource generation did not release',
+      (row) => row.aggregate.terminal_cleanup.state === 'requested'
+        && row.aggregate.terminal_cleanup.runtime_commit_cursor !== undefined,
+      'terminal quiescence did not freeze its actual Runtime scope',
     );
-    assert.equal(released.status, 'terminated');
-    assert.equal(released.resources.pending, undefined);
-    assert.ok(released.resources.activations.every((activation) => activation.state === 'released'));
+
+    // Exit-admission cause/effect table (the production affinity owner is
+    // session_terminal_cleanup_affinity_for; Registry owns the retained fact):
+    // X1 expired predecessor + Requested cleanup + no process-exit receipt ->
+    // retain the original lease and Releasing generation, even after another
+    // Session's successful replacement proves the new Worker is available.
+    // X2 the same state + exact independently observed original process exit ->
+    // claim a higher epoch, prepare/dispose, and record the original receipt.
+    // Constraints: this is the existing SQLite crash-injection seam, not an
+    // AllInOne production exit observer. The fixture parent actually joined
+    // SIGKILL of the process containing the embedded Worker. It writes only
+    // that incarnation's closure/exit fields; expiry, resource/source identity,
+    // cleanup targets and every other Registry field remain untouched. A new
+    // boot, lease timeout or successful unrelated Run supplies no exit proof.
+    // Exact/foreign/missing/live/malformed receipt combinations are covered by
+    // independently_exited_predecessor_allows_terminal_assignment_without_cleanup_ack.
+    const predecessor = predecessorLeases.get(terminating.id);
+    const unclaimed = sessionRow(sessionsDatabase, terminating.id);
+    assert.deepEqual(unclaimed.aggregate.realization, predecessor, 'X1 cannot steal the predecessor');
+    assert.equal(unclaimed.aggregate.terminal_cleanup.state, 'requested', 'X1 retains intent');
+    assert.ok(unclaimed.resources.activations.every((activation) => activation.state === 'releasing'));
+    assert.ok(predecessor.expires_at_unix_ms <= Date.now(), 'X1 observes actual lease expiry');
+    const requestedProcess = server;
+    assert.equal(requestedProcess.exitCode, null, 'Requested crash process is live');
+    assert.equal(requestedProcess.signalCode, null, 'Requested crash has no prior exit');
+    await hardKillServer(requestedProcess);
+    assert.equal(requestedProcess.signalCode, 'SIGKILL', 'join the real Requested crash');
+    server = start(directory);
+    await ready();
+    const retained = sessionRow(sessionsDatabase, terminating.id);
+    assert.deepEqual(retained.aggregate.terminal_cleanup, requested.aggregate.terminal_cleanup,
+      'Requested restart preserves the production-frozen scope and cursor');
+    assert.deepEqual(retained.aggregate.realization, predecessor,
+      'Requested restart cannot borrow a new incarnation as exit evidence');
+    const oldWorkers = sqliteRows(registryDatabase,
+      'SELECT worker_id, incarnation_id, generation, state, process_exit_json '
+        + 'FROM worker_registry_worker WHERE worker_id = ?', predecessor.owner)
+      .filter((row) => `${row.worker_id}:${row.generation}:${row.incarnation_id}`
+        === predecessor.runtime_incarnation);
+    assert.equal(oldWorkers.length, 1, 'one exact historical Worker incarnation');
+    const oldWorker = oldWorkers[0];
+    assert.equal(oldWorker.process_exit_json, null, 'X1 has no independent exit receipt');
+    const exitReceipt = {
+      provider_id: 'node-child-process-fixture',
+      execution_ref: predecessor.runtime_incarnation,
+      evidence_ref: `child:${crashedProcess.pid}:signal:${crashedProcess.signalCode}`,
+    };
+    const closed = sqliteRun(registryDatabase,
+      "UPDATE worker_registry_worker SET state = 'dead', process_exit_json = ? "
+        + 'WHERE worker_id = ? AND incarnation_id = ? AND generation = ? '
+        + 'AND state = ? AND process_exit_json IS NULL',
+      JSON.stringify(exitReceipt), oldWorker.worker_id, oldWorker.incarnation_id,
+      oldWorker.generation, oldWorker.state);
+    assert.equal(closed.changes, 1, 'X2 closes only the exact observed predecessor');
 
     // Cold-replacement decision table: C1 terminal cleanup is Requested with
     // no resident Host slot after SIGKILL; C2 the registry has a fresh process
@@ -422,7 +485,40 @@ async function main() {
       }),
       'cold replacement did not claim and receipt every terminal root cleanup',
       { timeoutMs: 90_000 },
+    ).catch((error) => {
+      // D1 a bounded release failure -> retain only the existing Dispatch and
+      // Registry admission coordinates before fixture cleanup. These reads do
+      // not close a physical attempt or replace the original failure. Omit
+      // request bodies, credentials and source contents from diagnostics.
+      try {
+        console.error('E2E cleanup admission observations:', JSON.stringify({
+          dispatch: sqliteRows(path.join(directory, 'dispatch.db'),
+            'SELECT run_id, thread_id, status, active_attempt_owner, active_attempt_epoch, '
+              + 'active_attempt_closing FROM runtime_dispatch WHERE thread_id = ?', terminating.id),
+          workers: sqliteRows(registryDatabase,
+            'SELECT worker_id, incarnation_id, generation, state, expires_at_ms, process_exit_json, '
+              + "json_extract(manifest_json, '$.capabilities') AS capabilities "
+              + 'FROM worker_registry_worker WHERE worker_id = ? ORDER BY generation', predecessor.owner),
+        }));
+      } catch (diagnosticError) {
+        console.error('E2E cleanup admission observation unavailable:', diagnosticError.name);
+      }
+      throw error;
+    });
+
+    // The original cold-replacement budget includes Registry lease expiry and
+    // registration. HTTP readiness cannot satisfy that barrier. Only after
+    // its exact cleanup receipt may the shorter Resource consistency wait run;
+    // no timeout or final state requirement is expanded.
+    const released = await waitForValue(
+      () => sessionRow(sessionsDatabase, terminating.id),
+      (row) => row.resources.pending === undefined
+        && row.resources.activations.every((activation) => activation.state === 'released'),
+      'terminal resource generation did not release',
     );
+    assert.equal(released.status, 'terminated');
+    assert.equal(released.resources.pending, undefined);
+    assert.ok(released.resources.activations.every((activation) => activation.state === 'released'));
 
     console.log('E2E PASS: Prepared and Releasing resource generations recover after process death.');
   } finally {
