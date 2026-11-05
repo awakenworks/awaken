@@ -484,6 +484,50 @@ const providerSource = fs.readFileSync(new URL('./provider_connection_matrix_rea
 const providerAst = ts.createSourceFile('provider_connection_matrix_real_e2e.mjs', providerSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 const certifyDeclaration = providerAst.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'certifyProvider');
 assert.ok(certifyDeclaration);
+const eventTextDeclaration = providerAst.statements.find(node => ts.isVariableStatement(node)
+  && node.declarationList.declarations.some(declaration => declaration.name.getText(providerAst) === 'eventText'));
+assert.ok(eventTextDeclaration);
+
+// One controlled constructor for the actual certification owner. Both existing
+// cleanup/attribution tables and the literal control share these same IO leaves;
+// this observes the existing strict Node stopper, not another product factory.
+function certificationFixture(t, { env = {}, exitCode = 0, spans,
+  single = async () => {}, multiagent = async () => {} } = {}) {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-certification-law-'));
+  let child; let ownedDirectory;
+  const calls = [];
+  t.after(async () => {
+    if (child) await stopServer(child);
+    cleanupFixtureTree(temp);
+  });
+  const context = vm.createContext({ assert, fs, path, os: { tmpdir: () => temp }, performance,
+    BASE_PORT: 1, process: { env }, publicProviderCase, deploymentEnv,
+    providerRunSelection: driver.providerRunSelection,
+    spawnServer: (_mode, _port, values) => {
+      ownedDirectory = path.dirname(values.HOME);
+      fs.writeFileSync(path.join(ownedDirectory, 'platform-workspace-id'), 'workspace');
+      child = strictStopNodeChild(exitCode);
+      return { server: child };
+    },
+    waitForPort: async () => { await once(child.stdout, 'data'); },
+    provisionProviderTestModel: async () => ({ offering: { model_id: 'selected' }, discoveredModels: 1,
+      model: { mode: 'profile', profile_id: 'provider-fixture' } }),
+    publishManagementAgent: async (...args) => {
+      calls.push({ kind: 'publication', args });
+      return { installed: true, source_revision: 1 };
+    },
+    managedRun: async (...args) => { calls.push({ kind: 'single', args }); return single(...args); },
+    managedMultiagentRun: multiagent,
+    pass: () => {}, stopServer, cleanupFixtureTree, runCleanupSteps,
+    readSpans: () => {
+      if (spans === undefined) throw new Error('no Native trace in controlled leaf');
+      return spans;
+    },
+    assertThreadModelRequests: trace.assertThreadModelRequests,
+  });
+  const actual = new vm.Script(`${eventTextDeclaration.getText(providerAst)}\n${certifyDeclaration.getText(providerAst)}\ncertifyProvider;`).runInContext(context);
+  return { actual, calls, get child() { return child; }, get directory() { return ownedDirectory; } };
+}
 
 for (const exitCode of [0, 37])
 for (const primaryFailure of [false, true]) {
@@ -492,46 +536,25 @@ for (const primaryFailure of [false, true]) {
     // functional0+exit37 => reject/retain; functional-error+exit37 => keep
     // SAME primary error and independently retain cleanup failure. No fallback
     // no-op stopper or force signal is introduced by the diagnostic caller.
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-cleanup-law-'));
-    let child; let ownedDirectory;
-    t.after(async () => {
-      if (child) await stopServer(child);
-      cleanupFixtureTree(temp);
-    });
     const primary = Object.assign(new Error('controlled original functional failure'), { code: 'ORIGINAL' });
-    const context = vm.createContext({ assert, fs, path, os: { tmpdir: () => temp }, performance,
-      BASE_PORT: 1, process: { env: {} }, publicProviderCase,
-      deploymentEnv,
-      spawnServer: (_mode, _port, env) => {
-        ownedDirectory = path.dirname(env.HOME);
-        fs.writeFileSync(path.join(ownedDirectory, 'platform-workspace-id'), 'workspace');
-        child = strictStopNodeChild(exitCode);
-        return { server: child };
-      },
-      waitForPort: async () => { await once(child.stdout, 'data'); },
-      provisionProviderTestModel: async () => ({ offering: { model_id: 'selected' }, discoveredModels: 1, model: 'selected' }),
-      publishManagementAgent: async () => ({ installed: true }),
-      managedRun: async () => { if (primaryFailure) throw primary; },
-      pass: () => {}, stopServer, cleanupFixtureTree, runCleanupSteps, assertThreadModelRequests: trace.assertThreadModelRequests,
-      readSpans: () => { throw new Error('no Native trace in controlled leaf'); },
-    });
-    const actual = new vm.Script(`${certifyDeclaration.getText(providerAst)}\ncertifyProvider;`).runInContext(context);
+    const f = certificationFixture(t, { exitCode,
+      single: async () => { if (primaryFailure) throw primary; } });
     const observation = {};
     if (primaryFailure || exitCode !== 0) {
-      await assert.rejects(actual({ id: 'fixture' }, 0, observation), error => {
+      await assert.rejects(f.actual({ id: 'fixture' }, 0, observation), error => {
         assert.ok(error instanceof AggregateError, 'D6 existing runCleanupSteps owns aggregation');
         if (primaryFailure) assert.equal(error.errors[0], primary, 'D6 preserve the primary object');
         assert.equal(error.errors.some(item => /failed clean shutdown/u.test(item.message)), exitCode !== 0);
         return true;
       });
     } else {
-      assert.equal(await actual({ id: 'fixture' }, 0, observation), observation);
+      assert.equal(await f.actual({ id: 'fixture' }, 0, observation), observation);
     }
-    assert.equal(child.exitCode, exitCode);
+    assert.equal(f.child.exitCode, exitCode);
     assert.equal(observation.status, primaryFailure || exitCode !== 0 ? 'failed' : 'passed');
     assert.equal(observation.cleanup.server.status, exitCode === 0 ? 'passed' : 'failed');
     assert.equal(observation.cleanup.directory.status, exitCode === 0 ? 'removed' : 'retained');
-    assert.equal(fs.existsSync(ownedDirectory), exitCode !== 0);
+    assert.equal(fs.existsSync(f.directory), exitCode !== 0);
   });
 }
 
@@ -613,12 +636,6 @@ for (const cause of ['coordinator-model', 'child-model', 'missing-child', 'missi
 // The protocol/setup leaves declare data, not a fake Session/Run authority.
 for (const cause of ['wrong-target', 'protocol-error', 'stop-error', 'missing-role', 'missing-parent', 'missing-model', 'missing-attempt', 'not-reached']) {
   test(`provider E7 wiring keeps functional attribution separate from cleanup: ${cause}`, async t => {
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-E7-wiring-'));
-    let child; let ownedDirectory;
-    t.after(async () => {
-      if (child) await stopServer(child);
-      cleanupFixtureTree(temp);
-    });
     const primary = Object.assign(new Error('original exact child reply'), { code: 'ERR_ASSERTION' });
     const spans = requestTrace();
     if (cause === 'wrong-target') spans[4].attributes['gen_ai.request.model'] = 'other';
@@ -626,32 +643,16 @@ for (const cause of ['wrong-target', 'protocol-error', 'stop-error', 'missing-ro
     if (cause === 'missing-parent') spans[4].parent_span_id = null;
     if (cause === 'missing-model') delete spans[4].attributes['gen_ai.request.model'];
     const exitCode = cause === 'stop-error' ? 37 : 0;
-    const context = vm.createContext({ assert, fs, path, os: { tmpdir: () => temp }, performance,
-      BASE_PORT: 1, process: { env: { AWAKEN_PROVIDER_MATRIX_MANAGED_MULTIAGENT: '1' } }, publicProviderCase,
-      deploymentEnv,
-      spawnServer: (_mode, _port, env) => {
-        ownedDirectory = path.dirname(env.HOME); fs.writeFileSync(path.join(ownedDirectory, 'platform-workspace-id'), 'workspace');
-        child = strictStopNodeChild(exitCode);
-        return { server: child };
-      },
-      waitForPort: async () => { await once(child.stdout, 'data'); },
-      provisionProviderTestModel: async () => ({ offering: { model_id: 'selected' }, discoveredModels: 1,
-        model: { mode: 'profile', profile_id: 'provider-fixture' } }),
-      publishManagementAgent: async () => ({ installed: true, source_revision: 1 }),
-      managedRun: async () => { if (cause === 'not-reached') throw primary; },
-      managedMultiagentRun: async (...args) => {
-        // The same controlled IO leaf accepts the old/private call shape for
-        // the old-red comparison; no production compatibility path is added.
-        const observations = args.find(Array.isArray);
+    const f = certificationFixture(t, { exitCode, spans,
+      env: { AWAKEN_PROVIDER_MATRIX_MANAGED_MULTIAGENT: '1' },
+      single: async () => { if (cause === 'not-reached') throw primary; },
+      multiagent: async (_base, _coordinator, _worker, _markers, observations) => {
         if (cause !== 'missing-attempt') observations.push({ attempt: 1, session_id: 'session', child_thread_id: 'child' });
         if (cause === 'protocol-error') throw primary;
       },
-      pass: () => {}, stopServer, cleanupFixtureTree, runCleanupSteps,
-      readSpans: () => spans, assertThreadModelRequests: trace.assertThreadModelRequests,
     });
-    const actual = new vm.Script(`${certifyDeclaration.getText(providerAst)}\ncertifyProvider;`).runInContext(context);
     const observation = {};
-    await assert.rejects(actual({ id: 'fixture' }, 0, observation), error => {
+    await assert.rejects(f.actual({ id: 'fixture' }, 0, observation), error => {
       if (cause === 'protocol-error' || cause === 'not-reached') assert.equal(error.errors[0], primary, 'E5 preserve the original primary');
       return true;
     });
@@ -660,7 +661,7 @@ for (const cause of ['wrong-target', 'protocol-error', 'stop-error', 'missing-ro
     assert.equal(observation.status, 'failed');
     assert.equal(observation.cleanup.server.status, exitCode === 0 ? 'passed' : 'failed');
     assert.equal(observation.cleanup.directory.status, exitCode === 0 ? 'removed' : 'retained');
-    assert.equal(fs.existsSync(ownedDirectory), exitCode !== 0);
+    assert.equal(fs.existsSync(f.directory), exitCode !== 0);
   });
 }
 
@@ -669,3 +670,95 @@ function strictStopNodeChild(exitCode) {
   return spawn(process.execPath, ['-e', `process.stdin.resume();process.stdin.on('end',()=>process.exit(${exitCode}));process.stdout.write('ready\\n')`],
     { stdio: ['pipe', 'pipe', 'pipe'] });
 }
+
+test('standalone literal control preserves the original modes and one marker projection', () => {
+  // L1 no/zero control flag preserves the original marker and multiagent mode.
+  // L2 explicit standalone control selects the SAME child literal only.
+  // L3 both modes or malformed control fail before fixture/Provider I/O;
+  // diagnostic success cannot satisfy the required multiagent entry.
+  for (const env of [{}, { AWAKEN_PROVIDER_MATRIX_CHILD_LITERAL_CONTROL: '0' }]) {
+    const ordinary = driver.providerRunSelection('deepseek', env);
+    assert.equal(ordinary.singleMarker, 'AWAKEN-PROVIDER-DEEPSEEK-OK', 'L1 original marker');
+    assert.equal(ordinary.childLiteralControl, false);
+    assert.equal(ordinary.multiagent, false);
+  }
+  const multiagent = driver.providerRunSelection('vendor.v2', {
+    AWAKEN_PROVIDER_MATRIX_MANAGED_MULTIAGENT: '1',
+  });
+  assert.equal(multiagent.multiagent, true);
+  assert.equal(multiagent.singleMarker, 'AWAKEN-PROVIDER-VENDOR.V2-OK');
+  assert.deepEqual(multiagent.markers, {
+    childReply: 'AWAKEN-MANAGED-VENDOR-V2-CHILD-OK',
+    sendAccepted: 'AWAKEN-MANAGED-VENDOR-V2-SEND-ACCEPTED',
+    reportAck: 'AWAKEN-MANAGED-VENDOR-V2-REPORT-ACK',
+  }, 'L1 original multiagent literals');
+  const control = driver.providerRunSelection('deepseek', {
+    AWAKEN_PROVIDER_MATRIX_CHILD_LITERAL_CONTROL: '1',
+  });
+  assert.equal(control.singleMarker, 'AWAKEN-MANAGED-DEEPSEEK-CHILD-OK', 'L2 exact original child input');
+  assert.equal(control.singleMarker, control.markers.childReply);
+  assert.equal(control.multiagent, false);
+  for (const flag of ['', 'true', '1 ', '2']) {
+    assert.throws(() => driver.providerRunSelection('deepseek', {
+      AWAKEN_PROVIDER_MATRIX_CHILD_LITERAL_CONTROL: flag,
+    }), /explicitly 0 or 1/u, 'L3 malformed');
+  }
+  assert.throws(() => driver.providerRunSelection('deepseek', {
+    AWAKEN_PROVIDER_MATRIX_CHILD_LITERAL_CONTROL: '1',
+    AWAKEN_PROVIDER_MATRIX_MANAGED_MULTIAGENT: '1',
+  }), /cannot replace required multiagent/u, 'L3 incompatible modes');
+});
+
+for (const outcome of ['exact', 'wrong', 'prefix', 'suffix', 'multiple', 'missing']) {
+  test(`standalone literal control keeps the exact reply and strict teardown: ${outcome}`, async t => {
+    // L2/L4 actual certifyProvider over the SAME controlled IO owner:
+    // one publication + one managedRun use the child literal. Only one exact
+    // public reply passes; contains-marker, extra/missing replies fail. Every
+    // outcome joins the real Node child and original directory cleanup. No
+    // coordinator/child run, new model, capture policy or retry is introduced.
+    const marker = 'AWAKEN-MANAGED-FIXTURE-CHILD-OK';
+    const replies = { exact: [marker], wrong: ['wrong'], prefix: [`prefix ${marker}`],
+      suffix: [`${marker} suffix`], multiple: [marker, marker], missing: [] };
+    const f = certificationFixture(t, {
+      env: { AWAKEN_PROVIDER_MATRIX_CHILD_LITERAL_CONTROL: '1' },
+      single: async (_base, _agent, selected, observation) => {
+        assert.equal(selected, marker, 'L2 same fixed child literal');
+        observation.events_after_receipt = replies[outcome].map(text => ({
+          type: 'agent.message', content: [{ type: 'text', text }],
+        }));
+        observation.status = 'passed';
+      },
+      multiagent: async () => { assert.fail('standalone control cannot create a coordinator'); },
+    });
+    const observation = {};
+    if (outcome === 'exact') await f.actual({ id: 'fixture' }, 0, observation);
+    else await assert.rejects(f.actual({ id: 'fixture' }, 0, observation), error => {
+      assert.equal(error.errors[0].code, 'ERR_ASSERTION');
+      assert.match(error.errors[0].message, /exact standalone child-literal reply/u);
+      return true;
+    });
+    assert.deepEqual(f.calls.map(call => call.kind), ['publication', 'single']);
+    assert.equal(f.calls[0].args[1], f.calls[1].args[1], 'L2 exact same published Worker');
+    assert.equal(observation.diagnostic_control.expected_child_reply, marker);
+    assert.equal(observation.diagnostic_control.multiagent_certified, false);
+    assert.equal(observation.managed_attempts, undefined);
+    assert.equal(observation.managed_multiagent, undefined);
+    assert.equal(observation.attribution.status, 'not_requested');
+    assert.equal(observation.status, outcome === 'exact' ? 'passed' : 'failed');
+    assert.equal(f.child.exitCode, 0);
+    assert.equal(observation.cleanup.server.status, 'passed');
+    assert.equal(observation.cleanup.directory.status, 'removed');
+  });
+}
+
+test('literal control combined with required multiagent starts no fixture', async t => {
+  // L3 is checked by the actual caller before its directory/server/model leaves.
+  const f = certificationFixture(t, { env: {
+    AWAKEN_PROVIDER_MATRIX_CHILD_LITERAL_CONTROL: '1',
+    AWAKEN_PROVIDER_MATRIX_MANAGED_MULTIAGENT: '1',
+  } });
+  await assert.rejects(f.actual({ id: 'fixture' }, 0, {}), /cannot replace required multiagent/u);
+  assert.equal(f.child, undefined);
+  assert.equal(f.directory, undefined);
+  assert.deepEqual(f.calls, []);
+});
