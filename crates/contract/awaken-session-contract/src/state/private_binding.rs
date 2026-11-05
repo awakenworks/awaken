@@ -5,23 +5,9 @@
 /// Coordinates supplied by trusted application ingress, never editable metadata.
 /// Decoding validates shape only; it is not authentication or authorization.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "BindingFields")]
+#[serde(transparent)]
 pub struct SessionPrivateBinding {
-    org_id: String,
-    application_id: String,
-    account_id: String,
-    workspace_id: String,
-    application_binding_revision: u64,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BindingFields {
-    org_id: String,
-    application_id: String,
-    account_id: String,
-    workspace_id: String,
-    application_binding_revision: u64,
+    content: awaken_resource_contract::PrivateContentBinding,
 }
 
 impl SessionPrivateBinding {
@@ -55,58 +41,37 @@ impl SessionPrivateBinding {
         workspace_id: String,
         application_binding_revision: u64,
     ) -> Result<Self, &'static str> {
-        let exact = |value: &str| {
-            !value.is_empty()
-                && value.len() <= 256
-                && value.trim() == value
-                && !value.chars().any(char::is_control)
-        };
-        if [&org_id, &application_id, &account_id, &workspace_id]
-            .into_iter()
-            .any(|value| !exact(value))
-            || !application_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-            || application_binding_revision == 0
-        {
-            return Err("invalid private Session binding coordinates");
-        }
-        Ok(Self {
+        awaken_resource_contract::PrivateContentBinding::new(
             org_id,
             application_id,
             account_id,
             workspace_id,
             application_binding_revision,
-        })
+        )
+        .map(|content| Self { content })
+        .map_err(|_| "invalid private Session binding coordinates")
     }
 
     pub fn org_id(&self) -> &str {
-        &self.org_id
+        self.content.org_id()
     }
     pub fn application_id(&self) -> &str {
-        &self.application_id
+        self.content.application_id()
     }
     pub fn account_id(&self) -> &str {
-        &self.account_id
+        self.content.account_id()
     }
     pub fn workspace_id(&self) -> &str {
-        &self.workspace_id
+        self.content.workspace_id()
     }
     pub fn application_binding_revision(&self) -> u64 {
-        self.application_binding_revision
+        self.content.application_binding_revision()
     }
 }
 
-impl TryFrom<BindingFields> for SessionPrivateBinding {
-    type Error = &'static str;
-    fn try_from(value: BindingFields) -> Result<Self, Self::Error> {
-        Self::new(
-            value.org_id,
-            value.application_id,
-            value.account_id,
-            value.workspace_id,
-            value.application_binding_revision,
-        )
+impl AsRef<awaken_resource_contract::PrivateContentBinding> for SessionPrivateBinding {
+    fn as_ref(&self) -> &awaken_resource_contract::PrivateContentBinding {
+        &self.content
     }
 }
 
@@ -124,6 +89,12 @@ mod tests {
             1,
         )
         .unwrap();
+        // Stored roots and original create keys already use this flat codec.
+        // A shared coordinate type must preserve these exact original bytes.
+        assert_eq!(
+            serde_json::to_string(&binding).unwrap(),
+            r#"{"org_id":"org","application_id":"desk","account_id":"alice","workspace_id":"workspace","application_binding_revision":1}"#,
+        );
         let value = serde_json::to_value(&binding).unwrap();
         assert_eq!(
             serde_json::from_value::<SessionPrivateBinding>(value.clone()).unwrap(),

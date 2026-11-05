@@ -54,6 +54,8 @@ mod execution;
 mod generation;
 pub use generation::{CompleteGeneration, generation_matches, sealed};
 mod input;
+mod private_content;
+pub use private_content::PrivateContentBinding;
 mod lifecycle;
 mod memory_application;
 mod memory_copy;

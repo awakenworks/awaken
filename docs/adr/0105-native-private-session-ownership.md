@@ -155,3 +155,22 @@ has warmed their shared cache.
 This adapter seam does not supply current authentication, authorize a long-lived
 stream, or qualify private Files, child delegation or product readiness. Those
 remain the separate ingress and linked-content qualifications above.
+
+## Shared private-content coordinates
+
+The closed five-coordinate value belongs to the lower Resources contract so a
+private input File can retain the same representation without depending on the
+Session aggregate or introducing a second coordinate validator. The Session
+binding remains a transparent wrapper: its root attachment, immutable CAS,
+serialized bytes and original request identity retain their existing semantics.
+Decoding either value validates shape and grants no authority.
+
+The resource-plane fitness rule recognizes only this closed provenance value,
+its shape-identical decoding fields and constructor in their one owning module.
+An additional Org-bearing record, a moved copy, IAM types, credentials and policy
+fields remain forbidden. These coordinates record immutable content provenance;
+the Resources plane neither owns Org edges nor evaluates IAM policy.
+
+This representation change does not enable private input uploads. Their original
+File metadata, immutable writes, recovery and trusted ingress must still be
+qualified; an unowned upload in S cannot be promoted into personal ownership.
