@@ -122,3 +122,13 @@ but cannot consume private sources. The same Resources adapter and read-only
 Session owner serve in-process and remote execution; neither gets another
 File database, executor or policy interpreter. Deployment composition must
 select that owner before private execution can become Ready.
+
+
+## Consistent native root observation
+
+Before minting Workspace or private Session access, the original durable owner,
+requested Session id, returned root id and any immutable private Workspace must
+agree. A well-formed but differently addressed root cannot substitute its owner.
+Session queries and linked File observations share this live-root observation;
+unknown or inconsistent observations grant no access. Current authentication,
+membership and PDP admission remain separate ingress requirements.

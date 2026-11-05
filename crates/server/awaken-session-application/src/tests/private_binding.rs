@@ -431,3 +431,77 @@ async fn inconsistent_session_root_cannot_replace_the_file_readers_owner() {
         );
     }
 }
+
+#[tokio::test]
+async fn observed_owner_coordinates_must_match_before_session_access_is_minted() {
+    let repository = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let id = SessionId::from("access-reader-alice");
+    create(
+        repository.as_ref(),
+        binding()
+            .bind_fresh(persisted(id.as_str(), false, "idle"))
+            .unwrap(),
+    )
+    .await;
+    let bob_binding = SessionPrivateBinding::new(
+        "org-a".into(),
+        "desk".into(),
+        "bob".into(),
+        "workspace".into(),
+        1,
+    )
+    .unwrap();
+    let bob = bob_binding
+        .clone()
+        .bind_fresh(persisted("access-source-bob", false, "idle"))
+        .unwrap();
+    create(repository.as_ref(), bob.clone()).await;
+    let reads = Arc::new(FaultingSessionRepository::new(repository));
+    let executor =
+        crate::SessionExecutor::colocated(Arc::new(NoopRuntime), Arc::new(NoopMcpRealizer));
+    let queries = SessionQueries::new(reads.clone(), &executor, None);
+    assert!(queries.authorize_private(&binding(), &id).await.is_ok());
+    assert_eq!(
+        queries.authorize("workspace", &id).await,
+        Err(SessionAccessError::NotFound)
+    );
+    reads.return_get_once(persisted("unrelated-ordinary-root", false, "idle"));
+    let workspace = queries.authorize("workspace", &id).await;
+    assert!(
+        matches!(workspace, Err(SessionAccessError::Internal(_))),
+        "an unrelated ordinary observation cannot mint Workspace access to a private root: {workspace:?}"
+    );
+    reads.return_get_once(bob);
+    let private = queries.authorize_private(&bob_binding, &id).await;
+    assert!(
+        matches!(private, Err(SessionAccessError::Internal(_))),
+        "another returned root cannot substitute its private owner: {private:?}"
+    );
+    let wrong_partition = SessionPrivateBinding::new(
+        "org-a".into(),
+        "desk".into(),
+        "alice".into(),
+        "other-workspace".into(),
+        1,
+    )
+    .unwrap()
+    .bind_fresh(persisted(id.as_str(), false, "idle"))
+    .unwrap();
+    reads.return_get_once(wrong_partition);
+    assert!(
+        matches!(
+            queries.authorize_private(&binding(), &id).await,
+            Err(SessionAccessError::Internal(_))
+        ),
+        "native owner and immutable private Workspace must agree"
+    );
+    assert_eq!(
+        queries.authorize("workspace", &id).await,
+        Err(SessionAccessError::NotFound),
+        "a bad observation cannot leave a permissive cache"
+    );
+}

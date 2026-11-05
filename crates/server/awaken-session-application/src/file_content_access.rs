@@ -6,9 +6,7 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{FileContentSourceError, FileContentVisibility};
-use awaken_session_contract::{
-    PersistedSession, SessionPrivateBinding, SessionRepositoryError, SessionRepositoryReads,
-};
+use awaken_session_contract::{PersistedSession, SessionPrivateBinding, SessionRepositoryReads};
 use awaken_session_types::SessionId;
 
 pub struct SessionFileContentAccess {
@@ -26,22 +24,15 @@ impl SessionFileContentAccess {
         workspace: &str,
         session: &str,
     ) -> Result<Option<PersistedSession>, FileContentSourceError> {
-        let id = SessionId::from(session);
-        match self.repository.owner(&id).await {
-            Ok(owner) if owner == workspace => {}
-            Ok(_) | Err(SessionRepositoryError::NotFound) => return Ok(None),
-            Err(_) => return Err(unavailable()),
-        }
-        match self.repository.get(&id).await {
-            Ok(root)
-                if root.session_id == id
-                    && SessionPrivateBinding::of(&root)
-                        .is_none_or(|binding| binding.workspace_id() == workspace) =>
-            {
-                Ok(Some(root))
-            }
-            Ok(_) => Err(unavailable()),
-            Err(SessionRepositoryError::NotFound) => Ok(None),
+        match crate::queries::observe_session_root(
+            self.repository.as_ref(),
+            workspace,
+            &SessionId::from(session),
+        )
+        .await
+        {
+            Ok(root) => Ok(Some(root)),
+            Err(crate::SessionAccessError::NotFound) => Ok(None),
             Err(_) => Err(unavailable()),
         }
     }
