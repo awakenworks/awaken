@@ -13,6 +13,7 @@
     "test": "pnpm --filter @awaken/managed-session-projection test && pnpm -C web test && pnpm test:e2e-process-policy && pnpm -C web test:e2e:runner"
   },
   "devDependencies": {
-    "json-schema-to-typescript": "15.0.4"
+    "json-schema-to-typescript": "15.0.4",
+    "typescript": "5.9.3"
   }
 }
