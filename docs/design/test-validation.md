@@ -970,6 +970,78 @@ qualification are separate claims.
   94 browser passes and two original OAuth skips; this checkpoint does not
   qualify the remaining deployment, required PG, formal or whole-matrix work.
 
+- **Normal continuation received in integration (2026-11-05).** Reviewed
+  integration `f2e662b2259e` privately receives the following normal units;
+  main remains `81aef316f004`. Each result belongs to its owning source and
+  selection, not a sum or a whole-source qualification of this integration.
+  `2df68c09a677` replaces three public-trait walkers with the existing shared
+  lexer/span projection: the complete before/after inventories are identical
+  (125,748 bytes, SHA-256
+  `759785b69864f5e430e66eb6cf5c0c108bbe2859aea163ec32678a1f92d0a9ae`),
+  and all 47 original normal-hook results were 0. Three earlier resource-75
+  attempts remain failed attempts. `09451dc615ab` aligns the ACP fixture with
+  canonical aliases and ordered committed tool receipts; the real embedded
+  new/load and NoIO controls, Scenario owner (116 passed / 13 original skips),
+  complete ACP bridge case, both original Clippy graphs and normal hooks passed.
+  Its earlier 214-command run still failed the Resource stage after 167 passes,
+  leaving 46 unrun; those partial results never became a whole pass.
+  `6b374d81281e` repairs that Resource crash seam: the parent joins actual
+  SIGKILL, records only the exact predecessor Registry exit, lets production
+  quiescence freeze the real Requested targets/cursor, then crashes/reopens
+  that durable boundary. The existing 90-second claim/receipt barrier precedes
+  the existing 20-second resource consistency wait; all final assertions and
+  timeout values remain. The original focused process case and normal hooks
+  passed. This is controlled fixture evidence, not an automatic AllInOne exit
+  observer or the original eight Sessions' physical cleanup.
+- **Required execution and neutral-input controls (2026-11-05).** Normal
+  observer source `a88c87027f70` plus `897eeaf9cf19` keeps one libtest scope
+  walker, reconciles each child/parent count and compares only outer cases with
+  the independent list. A pending parent's split result requires actual named
+  child execution; empty-only children fail, while ordinary zero-test binaries
+  and empty-plus-executed children retain their valid cases. The final original
+  self-test passed 44 cases with two native-Windows skips, related consumers and
+  the real Cloud H5 parent/child list/run passed, and normal hooks passed.
+  The original Cloud validator refusal and earlier source/test failures remain
+  recorded. B114 changes only four current navigation coordinates; its original
+  body, assertions, source/log hashes and historical witness fields are retained.
+  Normal `2df37efc4f8c` appends one Scenario regression over the existing
+  publication constructor and unchanged deterministic model. Ordinary-child
+  nonempty System/exact User/parent-history isolation and self Replace rules
+  reach actual neutral requests; the owner passed 117 cases / 13 original skips,
+  both Clippy graphs, formatting and normal hooks. Existing JS retains the
+  separate follow-up-history positive. These controls do not reconstruct a live
+  Provider request or qualify Windows, full13 or coverage.
+- **Live Provider literal control (2026-11-05).** The original `20be0d2e96c1`
+  Managed entry still failed all three exact child replies despite correct
+  `send_message` text, matching frozen worker declarations, model-target
+  observations and strict cleanup. Normal `565506e7759f` adds only an explicit,
+  standalone diagnostic selection in the same test driver; it refuses combination
+  with required multiagent mode and preserves the original setup, prompts,
+  models, three-attempt implementation and Structured capture. Its controlled
+  tests passed 86/86 and normal hooks passed. One fresh diagnostic-only Run with
+  the same published worker/profile and exact child literal returned that literal
+  exactly; the retained trace has one logical chat labelled `deepseek-flash`,
+  server exit was 0, the owned directory was removed and source/SDK snapshots
+  matched. Its attribution remains `not_requested`: role, Run, context and peer
+  envelope differ, physical retries are unknown, and no actual child input or
+  raw response was captured. It neither repairs the prior failures nor assigns
+  them to the vendor, adapter or Kernel.
+- **Later downstream attempts (2026-11-05).** Flow `0f8ff5cd866b` retained its
+  complete API pass, repaired R9 in the full Rust run, and passed all 11 required
+  PG cases without skips; that whole run nevertheless failed one browser journey.
+  The retained trace shows JS module loads rejected with `ERR_NETWORK_CHANGED`
+  before Bootstrap mounted, not a Pack or permission refusal. One original
+  exact-case diagnostic passed with the same timeout and zero retries, without
+  rewriting the failed whole record. Incoming build optimisation then required
+  rebase; `c3f84460bade` has its own normal commit and full API pass, with its
+  fresh whole matrix pending. Cloud's task code was absorbed by main while its
+  original full matrix retained separate browser/Terraform and later validator
+  failures. Its old external runner also selected the mutable Native integration
+  tool directory independently of Cargo pins; final execution must freeze the
+  clean qualified Native tool source with the existing source-facts owner and
+  match it to producer pins, image and qualified Flow fingerprint. Neither a
+  repaired validator nor a previous partial matrix qualifies that final cohort.
+
 Current open scopes and the next qualified cohort are tracked only in
 [STATUS](../STATUS.md#architecture-execution). The executable full suite and
 its publication record remain owned by ADR-0080 and `check-all.sh`; these

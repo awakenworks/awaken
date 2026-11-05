@@ -44,6 +44,9 @@ Reviewed main `81aef316f004` (2026-11-05), qualified by
 program; decisions remain in their ADRs and code, and executed results remain
 in the [qualification record](design/test-validation.md#integrated-source-qualification-record).
 Plan v5 is in force; the v4 slices below identify their existing owners.
+The normal continuation commits through reviewed integration `f2e662b2259e`
+have been received privately. Main remains the qualified `81aef316f004`;
+the combined continuation has not yet earned its own whole-source qualification.
 
 - **Delivered checkpoints.** V4, the E2E continuation, SDK baseline qualifier
   repair, G, nanos-image proof and BackgroundTask consolidation have normal
@@ -66,7 +69,13 @@ Plan v5 is in force; the v4 slices below identify their existing owners.
   selection once and shares the existing [D7 ceiling](adr/0050-telemetry-content-capture-consent-and-gdpr-erasure.md#d7-erasure--retention-are-subject-keyed-store-capabilities-partitioned-by-org)
   across Control, Session and Run; downstream callers retain their own cohort
   verification. Structured spans and frozen public declarations keep their
-  stated observation scope, with actual model input/output still unobserved.
+  stated observation scope. Controlled neutral-request regressions now cover
+  preloaded Skill input and ordinary/self child isolation; actual live child
+  model input and raw output remain unobserved.
+- **Received continuation.** Shared trait projection, the ACP/Environment and
+  Resource crash fixtures, the required libtest observer and child-request
+  regressions are normally committed and privately received. Their owning
+  tests passed; final combined Rust/E2E, coverage and full13 remain open.
 - **Source diagnostics.** On `81aef316f004`,
   `python3 scripts/ci/principle_status.py --guards` reports 0 lock-poison panics,
   33 `Weak`, 56 optional borrowed roles, one wire error rendering and 30 contract
@@ -89,7 +98,7 @@ Plan v5 is in force; the v4 slices below identify their existing owners.
 | Contract convergence | Canonical owners and imports follow [ADR-0090](adr/0090-session-state-model.md) and [ADR-0091](adr/0091-architecture-rules.md); distinct Dream/provider/transport contracts remain distinct. | V4 and G are delivered with source-bound check results; downstream callers still need their own cohort qualification. |
 | Formal | The proof owner records tools, domains and resource limits ([formal trust](design/formal-proof-trust.md)). | The original observation mutant repair is delivered; fresh complete formal qualification remains open in the [record](design/test-validation.md#integrated-source-qualification-record). |
 | Integrated qualification | Original Rust/PG/API entrypoints, normal hooks and protected FF ([record](design/test-validation.md#integrated-source-qualification-record)). | Whole-SHA formal/release/live evidence remains open; G's delivered gates do not establish full13 or coverage. |
-| Downstream | The current candidates resolve qualified Native `81aef316f004` and IAM `07af02a7`. | Flow's complete API/required-PG/frontend/browser matrix passed on its frozen candidate; normal delivery and reception remain open. Cloud's complete current-CI matrix retains its own unfinished run and earlier failure. |
+| Downstream | The candidates resolve qualified Native `81aef316f004` and IAM `07af02a7`; final tooling and producer pins must bind the same qualified Native source. | Rebased Flow `c3f84460bade` is normally committed and its complete API check passed; its new whole required-PG matrix remains open. Cloud's absorbed changes and later main need a fresh complete cohort qualification. |
 
 ### Plan v5
 
@@ -97,14 +106,14 @@ Plan v5 is in force; the v4 slices below identify their existing owners.
 |---|---|---|
 | V0 | Source-bound Rust, PG and cold recovery qualification | The original complete Linux Rust group passed on `81aef316f004`, with 10,536 passed and 129 skipped separately, including the original default-stack two-Run MCP case. PG, recovery and later source retain their own qualification in the [record](design/test-validation.md#integrated-source-qualification-record). |
 | V0b/V0c | Container-instance identity and same-Run/Session recovery | Host cold recovery passed; joined physical restart/Run recovery remains unverified. The separate real Skill journey failed before its restart stage. |
-| V1 | Prefer compiler/Cargo controls; consolidate actual duplicate guards | CrateSpec and lexer reuse their existing owner; a further shared trait/method projection passed original guards and whole-source equivalence. Its normal delivery remains pending after a resource-75 attempt; numerical targets remain diagnostic. |
+| V1 | Prefer compiler/Cargo controls; consolidate actual duplicate guards | Normal `2df68c09a677` consolidates three trait walkers into the existing lexer/span owner, retaining the complete byte-identical inventories and policies. The required libtest observer now reconciles nested execution in one walker and refuses empty-child evidence; both changes are privately received. |
 | V2 | Preserve lock-poisoning policy and typed failures | IAM `07af02a7` (0.2) and the Native typed-failure, atomic-publication and Org credential-authority changes are normally committed and fast-forwarded. The stronger guard removes annotation-based poison exemptions; Native's owning tests and subsequent `a309bcad` whole Rust group passed, while final combined qualification remains pending. |
 | V3 | Complete construction roles and typed boundary errors | The actual file-sink ceiling is frozen once and shared across Control, Session and Run; `b876b2f19acf` also retains the selected lifecycle through the mounted Scenario family and joins it before runtime shutdown. Downstream caller migrations retain their own combination qualification. |
 | V4 | Canonical bounded-context contracts and `RunIngress` naming | Delivered; the historical Baseline interpreter stays with its existing type owner without a new upward edge. Later G results retain their own source subject. |
 | V5 | Keep one short status record and linked design owners | This is the single progress owner; executed details stay in the existing qualification/M5 owners without a second status ledger. |
 | V6 | Every formal gate proof finishes within host resources | The `3eeb9532` full run completed Kani/vacuity and TLAPS before the observation-mutant failure repaired in `395303e5`; the later full attempt returned resource 75. Fresh complete qualification and the existing rerun markers remain open. |
-| V7 | Upgrade the real Cloud/Flow composition cohort | Both candidates resolve qualified Native `81aef316f004` and IAM `07af02a7`; Flow's complete frozen-candidate matrix passed, with normal delivery/reception pending. Cloud's fresh current-CI run passed its first six phases and retains the earlier browser failure separately; complete-matrix qualification remains open. |
-| V8 | Linux, k3d and distributed product acceptance on one final BOM | Required Provider/Skill journeys, full13, distributed acceptance, final BOM and coverage remain open. R7 `213190a00e82` stopped at command 132 after 131 successes without export or combined measurement; the normally committed Environment oracle and Provider diagnostic changes await reception, while the ACP fixture regression remains in progress. |
+| V7 | Upgrade the real Cloud/Flow composition cohort | Flow's typed IAM changes and exact failure-Attention test barrier are normally committed; after preserving incoming build capabilities, `c3f84460bade` has its own API pass and whole qualification in progress. Cloud must rebase absorbed main changes and bind a qualified Native tool tree, matching pins and a genuinely qualified Flow fingerprint before its full matrix. |
+| V8 | Linux, k3d and distributed product acceptance on one final BOM | Required Provider/Skill journeys, full13, distributed acceptance, final BOM and coverage remain open; R7 `213190a00e82` still has no export or combined measurement. Canonical fixture repairs are privately received, and one same-literal standalone Provider control passed; neither controlled input tests nor that control qualify the failed real child journey. |
 | V9 | G private Task control and L SDK SemVer; retire LocalWorker after V8 | G is delivered; all three original SDK package/artifact/compiler-SemVer qualifiers and their outer wrappers passed on `81aef316f004`, with historical and first-release subjects distinguished. Publication/Windows remain separate; LocalWorker retirement follows V8 and requalifies its changed source. |
 
 ## Document Readiness
