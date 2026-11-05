@@ -275,11 +275,39 @@ impl SessionCreationCommands {
     /// entered. Repository participants configured before a later failure are
     /// compensated. A coordinator-realized placement accepts the root as soon
     /// as it is durable; every other placement awaits realization.
-    #[allow(clippy::too_many_lines)]
     pub async fn create_requested_session<P: SessionCreateProtocol + ?Sized>(
         &self,
         request: SessionCreateRequest,
         protocol: &P,
+    ) -> Result<PersistedSession, SessionCreateRequestError> {
+        Box::pin(self.create_requested_session_with_binding(request, protocol, None)).await
+    }
+
+    /// Lower private ingress through the same admission, participant and
+    /// creation pipeline. The caller must establish current authenticated
+    /// private authority; the binding is never taken from protocol fields.
+    pub async fn create_requested_private_session<P: SessionCreateProtocol + ?Sized>(
+        &self,
+        binding: awaken_session_contract::SessionPrivateBinding,
+        request: SessionCreateRequest,
+        protocol: &P,
+    ) -> Result<PersistedSession, SessionCreateRequestError> {
+        if binding.workspace_id() != request.owner_scope {
+            return Err(RunError::bad_request_classified(
+                "private_session_scope_mismatch",
+                "private Session binding has another Workspace",
+            )
+            .into());
+        }
+        Box::pin(self.create_requested_session_with_binding(request, protocol, Some(binding))).await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn create_requested_session_with_binding<P: SessionCreateProtocol + ?Sized>(
+        &self,
+        request: SessionCreateRequest,
+        protocol: &P,
+        private_binding: Option<awaken_session_contract::SessionPrivateBinding>,
     ) -> Result<PersistedSession, SessionCreateRequestError> {
         let (queries, input_service) = (&self.queries, &self.inputs);
         let SessionCreateRequest {
@@ -735,11 +763,14 @@ impl SessionCreationCommands {
             idempotency,
             initial_events,
         };
-        let session = if coordinator_realized {
-            Box::pin(self.accept_session(command)).await
+        let completion = if coordinator_realized {
+            super::SessionCreationCompletion::AcceptDurableRoot
         } else {
-            Box::pin(self.create_session(command)).await
-        }?;
+            super::SessionCreationCompletion::AwaitRealization
+        };
+        let session =
+            Box::pin(self.create_session_with_binding(command, completion, private_binding))
+                .await?;
         Ok(session)
     }
 }

@@ -58,3 +58,18 @@ ingress. The binding precedes the first insert and participates in request
 identity even when a protocol supplies its own request fingerprint. Replays
 retain the original root and binding; they never reassign an old Session to the
 current application coordinates.
+
+## Creation and recovery producer
+
+The Session application exposes private creation and original-receipt recovery
+through its existing creation role. A trusted binding enters the same complete
+root compiler before the atomic insert; asynchronous acceptance and awaited
+realization keep their existing lifecycle. The protocol-neutral request lowering
+shares that driver rather than creating a second execution path. Unsupported
+creation-role implementations return unavailable instead of falling back to
+ordinary creation. A binding for another Workspace is rejected before insertion.
+
+These producer methods do not authenticate a caller. Current trusted ingress is
+still required, and no public request DTO gains an owner or private-authority
+field. Private assistant readiness remains withheld until that ingress and the
+linked-content and revocation checks above are qualified together.

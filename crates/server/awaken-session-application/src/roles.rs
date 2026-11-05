@@ -75,6 +75,21 @@ pub trait SessionCreation: Send + Sync {
         protocol: &dyn SessionCreateProtocol,
     ) -> Result<PersistedSession, SessionCreateRequestError>;
 
+    /// Current trusted private ingress supplies the binding; wire fields and
+    /// Workspace grants cannot supply private authority. Unsupported owners
+    /// must stay unavailable instead of using ordinary creation.
+    async fn create_requested_private_session(
+        &self,
+        _binding: awaken_session_contract::SessionPrivateBinding,
+        _request: SessionCreateRequest,
+        _protocol: &dyn SessionCreateProtocol,
+    ) -> Result<PersistedSession, SessionCreateRequestError> {
+        Err(
+            awaken_session_types::RunError::unavailable("private Session creation is unavailable")
+                .into(),
+        )
+    }
+
     /// See [`crate::SessionMutations::replay_session_create`].
     async fn replay_session_create(
         &self,
@@ -90,6 +105,30 @@ pub trait SessionCreation: Send + Sync {
         session_id: &SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionCreationError>;
+
+    /// Recover the original private root only after current private admission.
+    async fn replay_private_session_create(
+        &self,
+        _binding: &awaken_session_contract::SessionPrivateBinding,
+        _session_id: &SessionId,
+        _idempotency: &IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        Err(SessionCreationError::Unavailable(
+            "private Session create replay is unavailable".into(),
+        ))
+    }
+
+    /// The private counterpart of asynchronous create recovery.
+    async fn replay_accepted_private_session_create(
+        &self,
+        _binding: &awaken_session_contract::SessionPrivateBinding,
+        _session_id: &SessionId,
+        _idempotency: &IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        Err(SessionCreationError::Unavailable(
+            "private Session create replay is unavailable".into(),
+        ))
+    }
 
     /// The process-unique Runtime incarnation a protocol folds into its fresh
     /// Session id candidates.

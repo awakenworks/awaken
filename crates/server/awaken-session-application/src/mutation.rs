@@ -480,6 +480,7 @@ impl SessionMutations {
             session_id,
             idempotency,
             SessionCreationCompletion::AwaitRealization,
+            None,
         )
         .await
     }
@@ -500,22 +501,62 @@ impl SessionMutations {
             session_id,
             idempotency,
             SessionCreationCompletion::AcceptDurableRoot,
+            None,
         )
         .await
     }
 
-    async fn replay_session_create_with_completion(
+    /// Recover an exact private create receipt after current trusted ingress.
+    /// Ownership is checked against the original root in the same repository
+    /// result; this method never upgrades a Workspace or legacy root.
+    pub async fn replay_private_session_create(
+        &self,
+        binding: &awaken_session_contract::SessionPrivateBinding,
+        session_id: &awaken_session_types::SessionId,
+        idempotency: &IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        self.replay_session_create_with_completion(
+            binding.workspace_id(),
+            session_id,
+            idempotency,
+            SessionCreationCompletion::AwaitRealization,
+            Some(binding),
+        )
+        .await
+    }
+
+    /// Recover a private accepted root without re-entering realization.
+    pub async fn replay_accepted_private_session_create(
+        &self,
+        binding: &awaken_session_contract::SessionPrivateBinding,
+        session_id: &awaken_session_types::SessionId,
+        idempotency: &IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        self.replay_session_create_with_completion(
+            binding.workspace_id(),
+            session_id,
+            idempotency,
+            SessionCreationCompletion::AcceptDurableRoot,
+            Some(binding),
+        )
+        .await
+    }
+
+    pub(super) async fn replay_session_create_with_completion(
         &self,
         owner_scope: &str,
         session_id: &awaken_session_types::SessionId,
         idempotency: &IdempotencyRecord,
         completion: SessionCreationCompletion,
+        private_binding: Option<&awaken_session_contract::SessionPrivateBinding>,
     ) -> Result<Option<PersistedSession>, SessionCreationError> {
         self.repository
             .replay_create(owner_scope, session_id, idempotency)
             .await
             .map_err(SessionCreationError::repository)?
-            .filter(|session| awaken_session_contract::SessionPrivateBinding::of(session).is_none())
+            .filter(|session| {
+                awaken_session_contract::SessionPrivateBinding::of(session) == private_binding
+            })
             .map(|session| validated_create_replay(session, completion))
             .transpose()
     }
