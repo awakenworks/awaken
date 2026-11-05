@@ -340,7 +340,7 @@ not its constructor, also covers parsing it from a string.
 | protocol adapters translate | `_protocol_translation_fitness`, `_managed_protocol_boundary` | the same production protocol sources |
 | vocabulary | `_naming_fitness`, `check_architecture_vocabulary`, neutral terms in `check_crate_boundaries`, backend nouns in `check_contract_shape`, the tombstones of R20 | one word table for code and docs |
 | size reports (S7, advisory) | `check_file_limits`, `_modularity_fitness` line rules, `check_contract_shape` size, `_single_owner_fitness` `realization-code` | functional-line counting |
-| trait defaults | `check_degrading_defaults`, `check_contract_shape` capability defaults | one trait-default parser |
+| trait defaults | `check_degrading_defaults`, `check_contract_shape` capability defaults, `_contract_map_fitness` method counts | `public_rust_traits` in `_crate_boundary_workspace` owns public trait/method spans over the existing lexer and item boundaries; each consumer retains its rule |
 | trigger equals input | `generate_hooks`, `_input_closure`, `check_scan_scope` W2, `check_test_orchestration` | one declaration, held at run time |
 
 ## Migration order
@@ -539,3 +539,14 @@ lexer/balance reader instead of parallel implementations; their original pure
 self-tests passed. The observation R1/R2/R3 rules remain, including malformed
 input and offset behavior; this is not Rust/normal qualification of V4/G or a
 claim that every V1 reduction is complete.
+
+### Shared trait projection
+
+The workspace lexer also owns the public trait/method projection used by
+default degradation, capability defaults and contract method counts. Consumers
+keep their production-input selection, policies, exemptions and baselines;
+the projection carries offsets into the original source and distinguishes a
+required method from a default body. Nested functions, associated-constant
+bodies, comments and literal text cannot introduce extra trait methods.
+The decision table lives beside the shared projection's existing self-tests,
+and the original consumer tests continue to own their separate refusal rules.

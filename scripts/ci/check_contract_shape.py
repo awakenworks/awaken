@@ -206,6 +206,8 @@ def measure_sources(sources: dict[str, str]) -> Measurement:
 
     for relpath, production in sorted(sources.items()):
         syntax = workspace.rust_syntax(production)
+        traits = workspace.public_rust_traits(production)
+        port_names = {trait.name for trait in traits if trait.methods}
         lines = sum(1 for line in production.splitlines() if line.strip())
         measurement.production_lines += lines
         measurement.modules[relpath] = (lines, "types")
@@ -216,13 +218,9 @@ def measure_sources(sources: dict[str, str]) -> Measurement:
                 line_start = syntax.rfind("\n", 0, declaration.start()) + 1
                 if not re.search(r"\bpub\s*$", syntax[line_start:declaration.start()]):
                     continue
-                open_index = syntax.find("{", declaration.end())
-                semicolon = syntax.find(";", declaration.end())
-                if open_index >= 0 and (semicolon < 0 or open_index < semicolon):
-                    body = syntax[open_index:_balanced(syntax, open_index)]
-                    if re.search(r"\bfn\s+\w+", body):
-                        measurement.role = "ports"
-                        measurement.modules[relpath] = (lines, "ports")
+                if name in port_names:
+                    measurement.role = "ports"
+                    measurement.modules[relpath] = (lines, "ports")
             noun = next((token for token in BACKEND_NOUNS if token in name), None)
             if noun:
                 measurement.backend_nouns.append(
@@ -257,20 +255,13 @@ def measure_sources(sources: dict[str, str]) -> Measurement:
                     f"{relpath}:{_line(syntax, newtype.start())}: {newtype.group(1)}(String)"
                 )
 
-        for trait in re.finditer(r"\bpub\s+trait\s+([A-Z]\w*)[^{;]*\{", syntax):
-            open_index = trait.end() - 1
-            close = _balanced(syntax, open_index)
-            consumed = open_index
-            for method in re.finditer(r"\bfn\s+([a-z_]\w*)", syntax[open_index:close]):
-                start = open_index + method.end()
-                if start < consumed:
-                    continue  # a function nested inside an earlier default body
-                brace = syntax.find("{", start, close)
-                semicolon = syntax.find(";", start, close)
-                if brace < 0 or (0 <= semicolon < brace):
-                    continue  # required method: no default body
-                body_end = _balanced(syntax, brace)
-                consumed = body_end
+        for trait in traits:
+            if not trait.name[0].isupper():
+                continue
+            for method in trait.methods:
+                brace, body_end = method.body_start, method.end
+                if brace is None:
+                    continue
                 if "Err(" not in syntax[brace:body_end]:
                     continue
                 literal_body = production[brace:body_end]
@@ -278,7 +269,7 @@ def measure_sources(sources: dict[str, str]) -> Measurement:
                     CAPABILITY_VARIANTS.search(syntax[brace:body_end])
                 ):
                     measurement.capability_defaults.append(
-                        f"{relpath}:{_line(syntax, brace)}: {trait.group(1)}::{method.group(1)}"
+                        f"{relpath}:{_line(syntax, brace)}: {trait.name}::{method.name}"
                     )
     return measurement
 

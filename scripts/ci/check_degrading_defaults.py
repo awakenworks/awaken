@@ -258,10 +258,6 @@ SUBSTITUTED_INPUT_RATCHET = {
     ),
 }
 
-TRAIT = re.compile(r"pub trait (\w+)[^{;]*\{")
-METHOD = re.compile(r"(?:async )?fn ([a-z_]\w*)\((?:[^()]|\([^()]*\))*\)\s*->\s*[^;{]*\{")
-
-
 def _brace_span(text: str, open_index: int) -> int:
     """Index of the brace closing ``text[open_index]``, or the last index."""
     end = _crate_boundary_workspace._balanced_end(text, open_index, "{", "}")
@@ -272,13 +268,13 @@ def degrading_default_findings(sources: dict[str, str]) -> list[tuple[str, str]]
     """Raw (trait::method, message) findings; decisions are checked separately."""
     found: list[tuple[str, str]] = []
     for relpath, text in sorted(sources.items()):
-        for trait_match in TRAIT.finditer(text):
-            open_index = text.index("{", trait_match.start())
-            body = text[open_index : _brace_span(text, open_index) + 1]
-            siblings = {m.group(1) for m in re.finditer(r"fn ([a-z_]\w*)\(", body)}
-            for method in METHOD.finditer(body):
-                name = method.group(1)
-                impl = body[method.end() - 1 : _brace_span(body, method.end() - 1) + 1]
+        for trait in _crate_boundary_workspace.public_rust_traits(text):
+            siblings = {method.name for method in trait.methods}
+            for method in trait.methods:
+                if method.body_start is None:
+                    continue
+                name = method.name
+                impl = text[method.body_start:method.end]
                 if "Err(" in impl:
                     continue  # a default that fails closed is not a downgrade
                 # Two independent signals, either of which means the default
@@ -299,8 +295,8 @@ def degrading_default_findings(sources: dict[str, str]) -> list[tuple[str, str]]
                     related = name.startswith(sibling) or sibling.startswith(stem)
                     if not (discards or related):
                         continue
-                    key = f"{trait_match.group(1)}::{name}"
-                    line = text[: open_index + method.start()].count("\n") + 1
+                    key = f"{trait.name}::{name}"
+                    line = text[:method.start].count("\n") + 1
                     found.append((key,
                         f"{relpath}:{line}: {key} defaults to self.{sibling}(), dropping what "
                         f"{name!r} names; an implementation that omits it satisfies the trait "
