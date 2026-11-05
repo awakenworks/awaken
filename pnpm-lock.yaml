@@ -5,13 +5,17 @@ settings:
   excludeLinksFromLockfile: false
 
 importers:
-  packages/credential-client: {}
 
   .:
     devDependencies:
       json-schema-to-typescript:
         specifier: 15.0.4
         version: 15.0.4
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  packages/credential-client: {}
 
   packages/managed-sdk-oracle:
     dependencies:

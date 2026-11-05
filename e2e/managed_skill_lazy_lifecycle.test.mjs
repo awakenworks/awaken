@@ -9,6 +9,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import ts from 'typescript';
+import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 
 const driver = new URL('./managed_skill_lazy_real_e2e.mjs', import.meta.url);
 const source = fs.readFileSync(driver, 'utf8');
@@ -31,7 +32,7 @@ function fixture(t, { upgrade = true, run, inspect } = {}) {
   t.after(() => fs.rmSync(output, { recursive: true, force: true }));
   const before = { Id: oldId, Config: { Labels: { 'awaken.test.case': 'skill-lazy-real',
     'awaken.e2e.owner': 'fixture', 'awaken.e2e.run': 'fixture-run' },
-    Entrypoint: ['/usr/local/bin/awaken'], Cmd: ['all-in-one', '--config', '/etc/awaken/config.toml'] },
+    Entrypoint: ['/usr/local/bin/awaken'], Cmd: automatedAllInOneArgs('--config', '/etc/awaken/config.toml') },
   HostConfig: { NetworkMode: 'host', Binds: ['owned-config:/etc/awaken/config.toml:ro', 'owned-data:/var/lib/awaken'] } };
   const calls = [];
   const receipt = path.join(output, `runtime-replacement-${oldId}.cid`);
@@ -167,7 +168,10 @@ test('malformed receipt cannot replace the original failed-create error', async 
 // mutation; existsSync alone would silently treat that existing path as absent.
 test('a pre-existing dangling receipt is rejected before stopping the runtime', async t => {
   const f = fixture(t);
-  fs.symlinkSync(`${f.receipt}.absent`, f.receipt);
+  // NTFS junctions retain the dangling reparse point without symlink privileges.
+  fs.symlinkSync(`${f.receipt}.absent`, f.receipt, process.platform === 'win32' ? 'junction' : 'file');
+  assert.equal(fs.lstatSync(f.receipt).isSymbolicLink(), true);
+  assert.throws(() => fs.statSync(f.receipt), { code: 'ENOENT' });
   await assert.rejects(f.restore, /receipt is fresh/);
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].args[0], 'inspect');
@@ -194,6 +198,20 @@ const buildBegin = shellSource.indexOf(buildStart);
 const buildFinish = shellSource.indexOf(buildEnd, buildBegin);
 assert.ok(buildFinish > buildBegin, 'original branch boundaries remain ordered');
 const originalBuildBranch = shellSource.slice(buildBegin, buildFinish + '\nfi'.length);
+
+function fixtureBash() {
+  const configured = process.env.AWAKEN_NATIVE_BASH;
+  if (configured) {
+    assert.ok(path.isAbsolute(configured) && fs.statSync(configured).isFile(), 'AWAKEN_NATIVE_BASH must name an existing absolute native Bash');
+    return configured;
+  }
+  if (process.platform !== 'win32') return 'bash';
+  const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'],
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs')].filter(Boolean);
+  const native = roots.map(root => path.join(root, 'Git', 'bin', 'bash.exe')).find(candidate => fs.existsSync(candidate));
+  assert.ok(native, 'Set AWAKEN_NATIVE_BASH to the absolute native Git Bash executable');
+  return native;
+}
 
 function shellBuildFixture(t, { failure = '', explicitImage = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-lazy-build-'));
@@ -222,14 +240,16 @@ if (operation === 'resolve') {
   fs.copyFileSync(args[0], args[1]);
 } else if (operation === 'image' && process.env.LAZY_IO_FAILURE === 'image') process.exit(37);
 `);
-  const result = spawnSync('bash', ['-c', `set -euo pipefail
+  const input = `set -euo pipefail
 resolve_cargo_executable() { "$LAZY_IO_NODE" "$LAZY_IO_STUB" resolve "$@"; }
 cargo() { "$LAZY_IO_NODE" "$LAZY_IO_STUB" cargo "$@"; }
 cp() { "$LAZY_IO_NODE" "$LAZY_IO_STUB" copy "$@"; }
 k3d_docker_build() { "$LAZY_IO_NODE" "$LAZY_IO_STUB" image "$@"; }
 ${originalBuildBranch}
 "$LAZY_IO_NODE" "$LAZY_IO_STUB" continuation
-`], { cwd: root, encoding: 'utf8', env: { ...process.env,
+`;
+  // Stdin preserves quotes/newlines without the Windows CRT/MSYS argv mismatch.
+  const result = spawnSync(fixtureBash(), ['-s'], { input, windowsHide: true, cwd: root, encoding: 'utf8', env: { ...process.env,
     CARGO_TARGET_DIR: path.join(root, 'nondefault final target'),
     AWAKEN_LAZY_RUNTIME_IMAGE: explicitImage ? 'fixture:already-built' : '',
     LAZY_TEMP: context, LAZY_COMMIT: 'a'.repeat(40), LAZY_IMAGE: 'fixture:runtime',
@@ -250,10 +270,11 @@ test('default image stages all exact role snapshots instead of stale target path
   assert.equal(fs.readFileSync(path.join(f.context, 'awaken-worker'), 'utf8'), 'selected:awaken-worker/awaken-worker', 'B1 Worker');
   const roles = [['awaken-cli', 'awaken'], ['awaken-coordinator-process', 'awaken-coordinator'], ['awaken-worker', 'awaken-worker']];
   assert.deepEqual(f.calls.filter(call => call.operation === 'resolve'), roles.map(([owner, binary]) => ({
-    operation: 'resolve', args: [owner, binary, '--release', '--features', 'container-k8s', '--snapshot-destination', path.join(f.context, binary)], target: f.target,
+    // The actual Bash branch appends '/' even when its injected root is native Windows text.
+    operation: 'resolve', args: [owner, binary, '--release', '--features', 'container-k8s', '--snapshot-destination', path.posix.join(f.context, binary)], target: f.target,
   })), 'B1 exact role/feature/profile/snapshot inputs');
   assert.equal(f.calls.some(call => call.operation === 'cargo'), false, 'B1 no second Cargo path');
-  assert.deepEqual(f.calls.filter(call => call.operation === 'copy').map(call => call.args), [[path.join(f.context, 'awaken'), path.join(f.context, 'awaken-server')]], 'B1 one alias copy');
+  assert.deepEqual(f.calls.filter(call => call.operation === 'copy').map(call => call.args), [[path.posix.join(f.context, 'awaken'), path.posix.join(f.context, 'awaken-server')]], 'B1 one alias copy');
   assert.deepEqual(f.calls.filter(call => call.operation === 'image').map(call => call.args), [[
     '--load', '-f', 'deploy/k3d/Dockerfile', '--build-arg', 'AUXILIARY_EXECUTABLE=awaken',
     '--label', `org.opencontainers.image.revision=${'a'.repeat(40)}`, '-t', 'fixture:runtime', f.context,
