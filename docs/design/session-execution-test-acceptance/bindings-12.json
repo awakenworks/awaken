@@ -56,22 +56,22 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 298,
-        "file_sha256": "bf3d1a72f3dcb4a6f16699082d81444f0c248b7d8310fa1a2bd68d82ba65e6db"
+        "line": 301,
+        "file_sha256": "a3a0d6782f6190a46d6a27fb243b5d59bd9d5664d8b01f291ac6ae03c23cf54f"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 318
+        "line": 321
       },
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 326
+        "line": 329
       },
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 327
+        "line": 330
       }
     ],
     "execution_witnesses": [
@@ -106,22 +106,22 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 352,
-        "file_sha256": "bf3d1a72f3dcb4a6f16699082d81444f0c248b7d8310fa1a2bd68d82ba65e6db"
+        "line": 355,
+        "file_sha256": "a3a0d6782f6190a46d6a27fb243b5d59bd9d5664d8b01f291ac6ae03c23cf54f"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 367
+        "line": 370
       },
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 368
+        "line": 371
       },
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 372
+        "line": 375
       }
     ],
     "execution_witnesses": [

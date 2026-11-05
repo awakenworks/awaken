@@ -109,22 +109,44 @@ impl ManagedState {
         idempotency_key: &str,
     ) -> Result<Session, StateError> {
         let owner_scope = owner_scope.to_owned();
-        let session_id = managed_session_id_from_idempotency(&owner_scope, idempotency_key);
+        let session_id = match &self.private_binding {
+            Some(binding) => format!(
+                "sesn_{}",
+                awaken_agent_contract::stable_fingerprint(&(
+                    "managed-private-session-create-idempotency",
+                    binding,
+                    idempotency_key,
+                ))
+            ),
+            None => managed_session_id_from_idempotency(&owner_scope, idempotency_key),
+        };
         let request_fingerprint = request_fingerprint(&req, &session_id)?;
         let idempotency = awaken_session_application::SessionCreateReceipt::ClientRequest
             .record(&session_id, request_fingerprint);
-        if self
-            .roles
-            .creation
-            .replay_session_create(
-                &owner_scope,
-                &awaken_session_types::SessionId::from(&session_id),
-                &idempotency,
-            )
-            .await
-            .map_err(Self::map_create_replay_error)?
-            .is_some()
-        {
+        let replay = match &self.private_binding {
+            Some(binding) => {
+                self.roles
+                    .creation
+                    .replay_private_session_create(
+                        binding,
+                        &awaken_session_types::SessionId::from(&session_id),
+                        &idempotency,
+                    )
+                    .await
+            }
+            None => {
+                self.roles
+                    .creation
+                    .replay_session_create(
+                        &owner_scope,
+                        &awaken_session_types::SessionId::from(&session_id),
+                        &idempotency,
+                    )
+                    .await
+            }
+        }
+        .map_err(Self::map_create_replay_error)?;
+        if replay.is_some() {
             return self.project_replayed_session(&session_id).await;
         }
         Box::pin(self.create_session_with_identity(

@@ -11,13 +11,17 @@
 use std::sync::Arc;
 
 mod deletion;
+mod private_view;
+pub use private_view::{PrivateFileViewFactory, admitted_private_file_view};
+#[cfg(test)]
+mod private_inputs;
 
 use awaken_resource_contract::{
     ArtifactCapture, ArtifactPublication, CreateFileRecordOutcome, FileApplicationService,
     FileCatalog, FileCatalogError, FileRecord, FileStore, MAX_MANAGED_FILE_SIZE_BYTES,
-    MAX_WORKSPACE_FILE_BYTES, ReplaceArtifactCapture, ReplaceArtifactCaptureOutcome, ResourceKind,
-    ResourcePurgeError, ResourceReclamationRepository, ResourceReference, ResourceReferenceKind,
-    ResourceReferenceRecord, ResourceTarget, content_id,
+    MAX_WORKSPACE_FILE_BYTES, PrivateContentBinding, ReplaceArtifactCapture,
+    ReplaceArtifactCaptureOutcome, ResourceKind, ResourcePurgeError, ResourceReclamationRepository,
+    ResourceReference, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget, content_id,
 };
 
 /// Complete logical-File creation command. Public uploads, generated outputs,
@@ -36,6 +40,7 @@ pub struct CreateFileCommand<'a> {
 
 #[derive(Clone)]
 pub struct FileApplication {
+    private_binding: Option<PrivateContentBinding>,
     store: Arc<dyn FileStore>,
     catalog: Arc<dyn FileCatalog>,
     reclamation: Arc<dyn ResourceReclamationRepository>,
@@ -53,6 +58,7 @@ impl FileApplication {
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
+            private_binding: None,
             store,
             catalog,
             reclamation,
@@ -68,6 +74,7 @@ impl FileApplication {
         self.catalog
             .get_file(workspace_id, file_id, false)
             .await
+            .map(|record| record.filter(|record| self.record_is_visible(record)))
             .map_err(file_catalog_error)
     }
 
@@ -79,6 +86,12 @@ impl FileApplication {
         self.catalog
             .list_files(workspace_id, scope_id)
             .await
+            .map(|records| {
+                records
+                    .into_iter()
+                    .filter(|record| self.record_is_visible(record))
+                    .collect()
+            })
             .map_err(file_catalog_error)
     }
 
@@ -90,6 +103,12 @@ impl FileApplication {
         self.catalog
             .list_files_including_deleted(workspace_id, scope_id)
             .await
+            .map(|records| {
+                records
+                    .into_iter()
+                    .filter(|record| self.record_is_visible(record))
+                    .collect()
+            })
             .map_err(file_catalog_error)
     }
 
@@ -102,11 +121,24 @@ impl FileApplication {
 
     async fn create_with_artifact_scope(
         &self,
-        command: CreateFileCommand<'_>,
+        mut command: CreateFileCommand<'_>,
         artifact_idempotency_scope: Option<String>,
     ) -> Result<FileRecord, ResourcePurgeError> {
+        if let Some(binding) = &self.private_binding {
+            if binding.workspace_id() != command.workspace_id
+                || command.scope_id.is_some()
+                || command.logical_path.is_some()
+                || artifact_idempotency_scope.is_some()
+            {
+                return Err(ResourcePurgeError::InvalidIntent { detail: "private input command requires its exact Workspace and no Session artifact identity".into() });
+            }
+            command.idempotency_key = command
+                .idempotency_key
+                .map(|key| awaken_resource_contract::private_input_idempotency_key(binding, &key));
+        }
         if let Some(key) = command.idempotency_key.as_deref() {
-            let records = if artifact_idempotency_scope.is_some() {
+            let records = if artifact_idempotency_scope.is_some() || self.private_binding.is_some()
+            {
                 self.catalog
                     .list_files_including_deleted(command.workspace_id, command.scope_id.as_deref())
                     .await
@@ -120,8 +152,17 @@ impl FileApplication {
                 .into_iter()
                 .find(|record| record.harvest_key.as_deref() == Some(key))
             {
+                if existing.private_binding != self.private_binding
+                    || (self.private_binding.is_some() && existing.deleted)
+                {
+                    return Err(ResourcePurgeError::IdempotencyConflict(key.to_owned()));
+                }
                 if let Some(scope) = artifact_idempotency_scope.as_deref() {
-                    if !same_file_effect_ignoring_lifecycle(&existing, &command) {
+                    if !same_file_effect_ignoring_lifecycle(
+                        &existing,
+                        &command,
+                        self.private_binding.as_ref(),
+                    ) {
                         return Err(ResourcePurgeError::IdempotencyConflict(key.to_owned()));
                     }
                     // `create_file` is the single CAS owner for terminal
@@ -136,7 +177,7 @@ impl FileApplication {
                         .map(|outcome| outcome.record().clone())
                         .map_err(file_catalog_error);
                 }
-                return if same_file_effect(&existing, &command) {
+                return if same_file_effect(&existing, &command, self.private_binding.as_ref()) {
                     Ok(existing)
                 } else {
                     Err(ResourcePurgeError::IdempotencyConflict(key.to_owned()))
@@ -156,6 +197,7 @@ impl FileApplication {
             .await
             .map_err(ResourcePurgeError::from)?;
         let candidate = FileRecord {
+            private_binding: self.private_binding.clone(),
             id: format!("file_{}", uuid::Uuid::new_v4().simple()),
             workspace_id: command.workspace_id.to_string(),
             blob_id,
@@ -298,6 +340,17 @@ impl FileApplication {
         let Some(record) = self.get(workspace_id, file_id).await? else {
             return Ok(None);
         };
+        self.record_bytes(record).await.map(Some)
+    }
+
+    fn record_is_visible(&self, record: &FileRecord) -> bool {
+        record.private_binding == self.private_binding
+    }
+
+    async fn record_bytes(
+        &self,
+        record: FileRecord,
+    ) -> Result<(FileRecord, Vec<u8>), ResourcePurgeError> {
         let bytes = self
             .store
             .get(&record.blob_id)
@@ -305,16 +358,61 @@ impl FileApplication {
             .map_err(ResourcePurgeError::from)?
             .ok_or_else(|| ResourcePurgeError::CorruptData {
                 detail: format!(
-                    "file `{file_id}` references missing blob `{}`",
-                    record.blob_id
+                    "file `{}` references missing blob `{}`",
+                    record.id, record.blob_id
                 ),
             })?;
-        Ok(Some((record, bytes)))
+        Ok((record, bytes))
     }
 }
 
 #[async_trait::async_trait]
 impl FileApplicationService for FileApplication {
+    async fn bytes_for_reader(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+        reader_session_id: Option<&str>,
+        visibility: Option<&dyn awaken_resource_contract::FileContentVisibility>,
+    ) -> Result<Option<(FileRecord, Vec<u8>)>, awaken_resource_contract::FileContentSourceError>
+    {
+        let Some(record) = self
+            .catalog
+            .get_file(workspace_id, file_id, false)
+            .await
+            .map_err(file_catalog_error)?
+        else {
+            return Ok(None);
+        };
+        if self.private_binding.is_some() && !self.record_is_visible(&record) {
+            return Ok(None);
+        }
+        if record.private_binding.is_some()
+            || record.scope_id.is_some()
+            || reader_session_id.is_some()
+        {
+            let visibility = visibility.ok_or_else(|| {
+                awaken_resource_contract::FileContentSourceError::new(
+                    "Session File visibility is not selected",
+                )
+            })?;
+            if !visibility
+                .file_content_is_visible(
+                    workspace_id,
+                    record.scope_id.as_deref(),
+                    record.private_binding.as_ref(),
+                    reader_session_id,
+                )
+                .await?
+            {
+                return Ok(None);
+            }
+        }
+        self.record_bytes(record)
+            .await
+            .map(Some)
+            .map_err(Into::into)
+    }
     async fn artifact_capture(
         &self,
         workspace_id: &str,
@@ -406,15 +504,21 @@ impl FileApplicationService for FileApplication {
     }
 }
 
-fn same_file_effect(existing: &FileRecord, command: &CreateFileCommand<'_>) -> bool {
-    !existing.deleted && same_file_effect_ignoring_lifecycle(existing, command)
+fn same_file_effect(
+    existing: &FileRecord,
+    command: &CreateFileCommand<'_>,
+    binding: Option<&PrivateContentBinding>,
+) -> bool {
+    !existing.deleted && same_file_effect_ignoring_lifecycle(existing, command, binding)
 }
 
 fn same_file_effect_ignoring_lifecycle(
     existing: &FileRecord,
     command: &CreateFileCommand<'_>,
+    binding: Option<&PrivateContentBinding>,
 ) -> bool {
-    existing.workspace_id == command.workspace_id
+    existing.private_binding.as_ref() == binding
+        && existing.workspace_id == command.workspace_id
         && existing.blob_id == content_id(command.bytes)
         && existing.filename == command.filename
         && existing.mime_type == command.mime_type
@@ -434,7 +538,8 @@ fn same_file_record_effect_ignoring_lifecycle(
     existing: &FileRecord,
     candidate: &FileRecord,
 ) -> bool {
-    existing.workspace_id == candidate.workspace_id
+    existing.private_binding == candidate.private_binding
+        && existing.workspace_id == candidate.workspace_id
         && existing.blob_id == candidate.blob_id
         && existing.filename == candidate.filename
         && existing.mime_type == candidate.mime_type
@@ -710,6 +815,7 @@ mod tests {
             .expect("tombstone ordinary artifact");
         files
             .create_file(FileRecord {
+                private_binding: None,
                 id: "file_capacity_filler".into(),
                 workspace_id: "workspace-a".into(),
                 blob_id: "capacity-filler".into(),

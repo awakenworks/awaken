@@ -2,7 +2,7 @@
 //! Preserve canonical IAM, audit, Work admission and private-listener boundaries.
 
 use awaken_config_service::ManagementAuditPlane;
-use awaken_control::{ManagementAuthz, RemoteManagementAuthz};
+use awaken_control::{HttpPrivateWorkspaceContext, ManagementAuthz, RemoteManagementAuthz};
 use axum::Router;
 use std::sync::Arc;
 
@@ -17,7 +17,29 @@ pub(super) fn protect(
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
     audit_plane: ManagementAuditPlane,
     managed_rate_limiter: Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>,
+    private_context: Option<Arc<HttpPrivateWorkspaceContext>>,
 ) -> ProtectedSurfaces {
+    let private_reads = private_context.map(|context| {
+        // The private ingress performs its own current human authentication and
+        // native PDP call before it invokes this same Managed handler graph.
+        // Retain the ordinary Managed response and Org admission boundaries.
+        let sessions = awaken_protocol_managed::with_managed_response_context(
+            awaken_control::protect_management_router(
+                coordinator.managed_router.clone(),
+                audit_plane.clone(),
+                None,
+                None,
+                Some(managed_rate_limiter.clone()),
+            ),
+        );
+        awaken_control::private_assistant_router(
+            sessions,
+            remote_iam
+                .clone()
+                .expect("private ingress preflight requires remote IAM"),
+            context,
+        )
+    });
     let coordinator_data = awaken_control::protect_runtime_protocol_routers(
         coordinator.router,
         coordinator.application_router,
@@ -53,6 +75,10 @@ pub(super) fn protect(
     let data = coordinator_data
         .merge(coordinator_managed)
         .merge(coordinator_management);
+    let data = match private_reads {
+        Some(reads) => data.merge(reads),
+        None => data,
+    };
     ProtectedSurfaces {
         data,
         private: coordinator.private_router,

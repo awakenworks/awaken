@@ -105,12 +105,13 @@ pub async fn submit_profiled_session_run(
         )))
     })?;
     let run_id = body.run_id.clone();
-    let access = state
-        .roles
-        .roots
-        .authorize(&owner_scope, &awaken_session_types::SessionId::from(&id))
-        .await
-        .map_err(|error| session_projection_error(error.into()))?;
+    let access = crate::state::authorize_session(
+        &state,
+        &owner_scope,
+        &awaken_session_types::SessionId::from(&id),
+    )
+    .await
+    .map_err(|error| session_projection_error(error.into()))?;
     let admitted = Box::pin(state.roles.profiled.admit_profiled_session_run(
         &access,
         awaken_session_execution_contract::AdmitSessionRun {

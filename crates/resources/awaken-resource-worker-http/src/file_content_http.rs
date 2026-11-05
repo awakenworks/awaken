@@ -262,7 +262,7 @@ async fn read_file_content(
     }
     let now_ms = clock_ms(service.clock.as_ref());
     let mut run_guard = None;
-    match &request.authority {
+    let reader_session_id = match &request.authority {
         ResourceOperationFence::Run(claim) => {
             if let Some(status) = SessionWorkerEffectAdmission::claim_rejection_status(
                 verify_claim_owner(
@@ -304,11 +304,11 @@ async fn read_file_content(
                 })
             });
             let file_is_authorized = match &request.purpose {
-                FileReadPurpose::SessionResource => {
+                FileReadPurpose::SessionResource { .. } => {
                     file_is_frozen
                         || observe_session_file(&service, dispatch, &request, now_ms).await
                 }
-                FileReadPurpose::ModelContent { thread_id } => {
+                FileReadPurpose::ModelContent { thread_id, .. } => {
                     model_content_file_is_authorized(
                         &service,
                         dispatch,
@@ -321,7 +321,9 @@ async fn read_file_content(
             if !scope_matches || !file_is_authorized {
                 return StatusCode::FORBIDDEN.into_response();
             }
+            let reader = dispatch.session_thread_id.as_ref().map(|id| id.0.clone());
             run_guard = Some(guard);
+            reader
         }
         ResourceOperationFence::SessionMaterialization(intent) => {
             let (Some(identity), Some(control)) = (
@@ -368,23 +370,35 @@ async fn read_file_content(
             );
             if workspace != request.workspace_id
                 || !exact_file
-                || request.purpose != FileReadPurpose::SessionResource
+                || !matches!(request.purpose, FileReadPurpose::SessionResource { .. })
             {
                 return StatusCode::FORBIDDEN.into_response();
             }
+            Some(intent.session_id().to_string())
         }
         ResourceOperationFence::RepositoryPublication { .. }
         | ResourceOperationFence::CheckpointRelease(_)
         | ResourceOperationFence::Terminal(_) => {
             return StatusCode::FORBIDDEN.into_response();
         }
+    };
+    if request
+        .purpose
+        .reader_session_id()
+        .is_some_and(|supplied| reader_session_id.as_deref() != Some(supplied))
+    {
+        return StatusCode::FORBIDDEN.into_response();
     }
+    let purpose = request
+        .purpose
+        .clone()
+        .with_reader_session(reader_session_id);
     let read = service
         .source
         .read(
             &request.workspace_id,
             &request.file_id,
-            &request.purpose,
+            &purpose,
             Some(&request.authority),
         )
         .await;
@@ -548,7 +562,9 @@ mod tests {
             identity: None,
             workspace_id: "workspace".into(),
             file_id: "file".into(),
-            purpose: FileReadPurpose::SessionResource,
+            purpose: FileReadPurpose::SessionResource {
+                reader_session_id: None,
+            },
         };
         let encoded = serde_json::to_value(&request).expect("W1 encode");
         let decoded: FileContentRequest =

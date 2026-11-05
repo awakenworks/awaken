@@ -11,6 +11,49 @@ use std::sync::Arc;
 
 use awaken_session_executor::{ExecutorComponents, SessionExecutorBuilder};
 
+/// Resource capabilities selected by the scenario composition before Host build.
+/// A catalog-only fixture supplies no File authority; complete Resources retain
+/// their original File application and share the selected native Session store.
+pub struct LocalManagedResources {
+    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    files: Option<Arc<dyn awaken_resource_contract::FileApplicationService>>,
+}
+
+impl From<Arc<dyn awaken_resource_contract::ResourceRegistry>> for LocalManagedResources {
+    fn from(catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>) -> Self {
+        Self {
+            catalog,
+            files: None,
+        }
+    }
+}
+
+impl<T: awaken_resource_contract::ResourceRegistry + 'static> From<Arc<T>>
+    for LocalManagedResources
+{
+    fn from(catalog: Arc<T>) -> Self {
+        Self {
+            catalog,
+            files: None,
+        }
+    }
+}
+
+impl From<&awaken_resource_application::ResourcesApplication> for LocalManagedResources {
+    fn from(resources: &awaken_resource_application::ResourcesApplication) -> Self {
+        Self {
+            catalog: resources.authorities().resource_registry(),
+            files: Some(resources.files()),
+        }
+    }
+}
+
+impl From<&Arc<awaken_resource_application::ResourcesApplication>> for LocalManagedResources {
+    fn from(resources: &Arc<awaken_resource_application::ResourcesApplication>) -> Self {
+        Self::from(resources.as_ref())
+    }
+}
+
 /// The executor a scenario built and the Coordinator's Managed state over it.
 pub struct LocalManagedState {
     /// The co-located executor; scenarios drive and inspect it directly.
@@ -26,9 +69,9 @@ pub struct LocalManagedState {
 /// unaware of principals, API keys, roles, or authorization policy.
 pub async fn local_managed_state(
     dependencies: SessionExecutorBuilder,
-    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    catalog: impl Into<LocalManagedResources>,
 ) -> LocalManagedState {
-    local_managed_state_over(dependencies, catalog, None, None, None, None).await
+    local_managed_state_over(dependencies, catalog.into(), None, None, None, None).await
 }
 
 /// Scenario variant with the same Session model-publication resolver used by
@@ -36,10 +79,18 @@ pub async fn local_managed_state(
 /// reference differs from the built-in Agent's deterministic default.
 pub async fn local_managed_state_with_model_publication_resolver(
     dependencies: SessionExecutorBuilder,
-    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    catalog: impl Into<LocalManagedResources>,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
 ) -> LocalManagedState {
-    local_managed_state_over(dependencies, catalog, None, None, Some(resolver), None).await
+    local_managed_state_over(
+        dependencies,
+        catalog.into(),
+        None,
+        None,
+        Some(resolver),
+        None,
+    )
+    .await
 }
 
 /// Scenario variant that freezes both the immutable Agent publication and the
@@ -47,13 +98,13 @@ pub async fn local_managed_state_with_model_publication_resolver(
 /// resolver selects a candidate, while the Agent snapshot proves its backend.
 pub async fn local_managed_state_with_agent_source_and_model_publication_resolver(
     dependencies: SessionExecutorBuilder,
-    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    catalog: impl Into<LocalManagedResources>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
 ) -> LocalManagedState {
     local_managed_state_over(
         dependencies,
-        catalog,
+        catalog.into(),
         None,
         Some(agent_source),
         Some(resolver),
@@ -67,10 +118,18 @@ pub async fn local_managed_state_with_agent_source_and_model_publication_resolve
 /// a second authoring plane.
 pub async fn local_managed_state_with_agent_source(
     dependencies: SessionExecutorBuilder,
-    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    catalog: impl Into<LocalManagedResources>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> LocalManagedState {
-    local_managed_state_over(dependencies, catalog, None, Some(agent_source), None, None).await
+    local_managed_state_over(
+        dependencies,
+        catalog.into(),
+        None,
+        Some(agent_source),
+        None,
+        None,
+    )
+    .await
 }
 
 /// [`local_managed_state_with_agent_source`] with the exact list-price
@@ -78,13 +137,13 @@ pub async fn local_managed_state_with_agent_source(
 /// installed before sharing, so callers never unwrap or mutate an `Arc`.
 pub async fn local_managed_state_with_agent_source_and_list_prices(
     dependencies: SessionExecutorBuilder,
-    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    catalog: impl Into<LocalManagedResources>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     list_prices: Arc<dyn awaken_session_contract::ManagedListPriceProvider>,
 ) -> LocalManagedState {
     local_managed_state_over(
         dependencies,
-        catalog,
+        catalog.into(),
         None,
         Some(agent_source),
         None,
@@ -99,23 +158,31 @@ pub async fn local_managed_state_with_agent_source_and_list_prices(
 /// registry that authored them.
 pub async fn local_managed_state_with_environments(
     dependencies: SessionExecutorBuilder,
-    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    catalog: impl Into<LocalManagedResources>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
 ) -> LocalManagedState {
-    local_managed_state_over(dependencies, catalog, Some(environments), None, None, None).await
+    local_managed_state_over(
+        dependencies,
+        catalog.into(),
+        Some(environments),
+        None,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Scenario/local variant that installs the same Agent projection
 /// used by production before the Managed aggregate starts its supervisors.
 pub async fn local_managed_state_with_environments_and_agent_source(
     dependencies: SessionExecutorBuilder,
-    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    catalog: impl Into<LocalManagedResources>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> LocalManagedState {
     local_managed_state_over(
         dependencies,
-        catalog,
+        catalog.into(),
         Some(environments),
         Some(agent_source),
         None,
@@ -145,7 +212,7 @@ pub fn volatile_environment_execution(
 
 async fn local_managed_state_over(
     dependencies: SessionExecutorBuilder,
-    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    resources: LocalManagedResources,
     environments: Option<
         Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     >,
@@ -155,6 +222,7 @@ async fn local_managed_state_over(
     >,
     managed_list_price_provider: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
 ) -> LocalManagedState {
+    let LocalManagedResources { catalog, files } = resources;
     // The Session application runs on the Host's clock, so Session facts and
     // the dispatch they drive share one timeline.
     let clock = dependencies.clock();
@@ -194,6 +262,17 @@ async fn local_managed_state_over(
         ),
     };
 
+    let dependencies = if let Some(files) = files {
+        dependencies.with_file_content_source(Arc::new(
+            awaken_resource_application::ApplicationFileContentSource::new(files).with_visibility(
+                Arc::new(awaken_session_application::SessionFileContentAccess::new(
+                    session_repo.clone(),
+                )),
+            ),
+        ))
+    } else {
+        dependencies
+    };
     let persistence =
         awaken_session_application::SessionPersistence::new(session_repo, clock.clone());
     let repository_bindings = Arc::new(

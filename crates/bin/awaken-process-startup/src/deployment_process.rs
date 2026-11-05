@@ -151,6 +151,9 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         stores.clock.clone(),
     )
     .await?;
+    if managed_services.ordinary_workspace_admission.is_some() && identity.remote_iam.is_none() {
+        return Err("hosted Workspace purpose requires the remote Management IAM edge".into());
+    }
     let coordinator_authorities =
         stores
             .coordinator

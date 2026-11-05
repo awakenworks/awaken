@@ -96,9 +96,7 @@ impl ManagedState {
             owner_scope.to_owned(),
             agent_id,
             session,
-            persisted.revision,
-            persisted.resources.clone(),
-            RootTimeEvidence::from(persisted),
+            persisted,
             Vec::new(),
         );
         record.cache_revision = memo.cache_revision;

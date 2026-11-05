@@ -36,13 +36,14 @@ fn broker_router(
 }
 
 fn resource_management_router(
+    sessions: Arc<dyn awaken_session_application::SessionRootReads>,
     resources: &awaken_resource_application::ResourcesApplication,
     credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
 ) -> Router {
-    awaken_coordinator::resources_router(awaken_coordinator::ResourcesRouterInput::new(
-        resources,
-        credentials,
-    ))
+    awaken_coordinator::resources_router(
+        awaken_coordinator::ResourcesRouterInput::new(resources, credentials)
+            .with_session_reads(sessions),
+    )
 }
 
 /// Assemble the runtime process, one stage per component family, in the order
@@ -57,6 +58,17 @@ pub(super) async fn prepare_runtime_routers(
     model_supply: PublicationModelSupply,
     process: ProcessStartup,
 ) -> Result<ProcessRouters, String> {
+    if process.managed_services.private_workspace_context.is_some()
+        && (process.role != config::Role::Coordinator
+            || iam.is_some()
+            || remote_iam.is_none()
+            || process
+                .managed_services
+                .ordinary_workspace_admission
+                .is_none())
+    {
+        return Err("private Session ingress requires a hosted Coordinator with remote IAM and ordinary Workspace admission".into());
+    }
     let mut base = open_process_base(stores, iam, remote_iam, process).await?;
     let credential_execution =
         Arc::new(crate::credential_execution::ExecutionAuthoritySlot::default());
@@ -613,7 +625,13 @@ async fn assemble_execution_host(
             external_credentials: cloud.external_credentials.clone(),
             inference_override: cloud.inference_override.take(),
             credential_refresh: cloud.credential_refresh_factory.take(),
-            file_content: resources.resource_application.file_content_source(),
+            file_content: resources
+                .resource_application
+                .file_content_source_with_visibility(Arc::new(
+                    awaken_session_application::SessionFileContentAccess::new(
+                        execution.sessions.clone(),
+                    ),
+                )),
             memory_content: resources.resource_authorities.memory_execution_content(),
             memory_extractions: execution.memory_extractions.clone(),
             artifact_publisher: resources.resource_application.artifact_publisher(),
@@ -894,6 +912,7 @@ async fn assemble_coordinator(
         .merge(base.environments.private_router.clone())
         .merge(base.worker_observations.private_router.clone());
     let resource_management_router = resource_management_router(
+        session.session_application.queries(),
         &resources.resource_application,
         control.repository_credentials.clone(),
     );
@@ -989,6 +1008,7 @@ async fn finish_process_routers(
         base.remote_iam.clone(),
         control.audit_plane,
         base.managed_rate_limiter.clone(),
+        base.process.managed_services.private_workspace_context,
     );
     let (flat, mcp_export) = match base.role {
         config::Role::AllInOne => (data.merge(control.router), control.mcp_export),
@@ -1004,6 +1024,10 @@ async fn finish_process_routers(
             control.reconciler,
             base.worker_observations.source,
             base.stores.platform_workspace,
+            base.process
+                .managed_services
+                .ordinary_workspace_admission
+                .clone(),
         ),
         private,
         control.registration_supervisor,

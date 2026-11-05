@@ -54,6 +54,8 @@ mod execution;
 mod generation;
 pub use generation::{CompleteGeneration, generation_matches, sealed};
 mod input;
+mod private_content;
+pub use private_content::PrivateContentBinding;
 mod lifecycle;
 mod memory_application;
 mod memory_copy;
@@ -74,8 +76,8 @@ pub use artifact_capture::{
 };
 pub use execution::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
-    ArtifactRecovery, FileContentSource, FileContentSourceError, FileReadPurpose,
-    MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError,
+    ArtifactRecovery, FileContentSource, FileContentSourceError, FileContentVisibility,
+    FileReadPurpose, MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError,
     RepositoryBindingVerifier, RepositoryBindingVerifierError, RepositoryGatewayCapability,
     RepositoryGatewayCapabilityExpiry, RepositoryTransport, ResolvedFileContent,
     UnavailableArtifactPublisher, UnavailableFileContentSource,
@@ -140,6 +142,27 @@ pub fn harvest_idempotency_key(thread: &str, logical_path: &str, content_id: &st
     let mut hash = blake3::Hasher::new();
     hash.update(b"awaken-file-harvest-v1\0");
     for component in [thread, logical_path, content_id] {
+        hash.update(&(component.len() as u64).to_be_bytes());
+        hash.update(component.as_bytes());
+    }
+    hash.finalize().to_hex().to_string()
+}
+
+/// Original personal-input command identity, separated by all five coordinates.
+/// Computing a key neither authorizes a caller nor adopts an existing File.
+#[must_use]
+pub fn private_input_idempotency_key(binding: &PrivateContentBinding, key: &str) -> String {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"awaken-private-file-input-v1\0");
+    let revision = binding.application_binding_revision().to_string();
+    for component in [
+        binding.org_id(),
+        binding.application_id(),
+        binding.account_id(),
+        binding.workspace_id(),
+        &revision,
+        key,
+    ] {
         hash.update(&(component.len() as u64).to_be_bytes());
         hash.update(component.as_bytes());
     }
@@ -241,6 +264,11 @@ impl From<std::io::Error> for FileStoreError {
 /// merging filenames, scopes, download policy, or deletion lifecycles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileRecord {
+    /// Immutable provenance for a personal input upload. Absence is ordinary or
+    /// legacy content and never adopts the identity of a private reader. This
+    /// metadata is not an authorization proof and is not a public upload field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_binding: Option<PrivateContentBinding>,
     pub id: String,
     pub workspace_id: String,
     pub blob_id: String,
@@ -466,6 +494,21 @@ pub trait FileApplicationService: Send + Sync {
         workspace_id: &str,
         file_id: &str,
     ) -> Result<Option<(FileRecord, Vec<u8>)>, ResourcePurgeError>;
+
+    /// Execution reads observe original File provenance and current native
+    /// Session ownership before touching bytes. The driving adapter supplies
+    /// its actual admitted reader, never a caller-selected replacement.
+    async fn bytes_for_reader(
+        &self,
+        _workspace_id: &str,
+        _file_id: &str,
+        _reader_session_id: Option<&str>,
+        _visibility: Option<&dyn FileContentVisibility>,
+    ) -> Result<Option<(FileRecord, Vec<u8>)>, FileContentSourceError> {
+        Err(FileContentSourceError::new(
+            "File provenance read is not selected",
+        ))
+    }
 
     async fn delete(
         &self,

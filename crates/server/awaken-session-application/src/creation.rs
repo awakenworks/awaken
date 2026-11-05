@@ -59,9 +59,10 @@ impl CompleteSessionRoot {
         tools: SessionToolConfiguration,
         budget: SessionBudgetState,
         compiled: CompiledSessionCreation,
-        (initial_events, initial_agent_configuration): (
+        (initial_events, initial_agent_configuration, private_binding): (
             Option<awaken_session_contract::SessionInitialEventPlan>,
             Option<Box<awaken_session_configuration_contract::SessionAgentConfiguration>>,
+            Option<awaken_session_contract::SessionPrivateBinding>,
         ),
     ) -> Result<Self, SessionCreationError> {
         let holder = compiled
@@ -89,6 +90,13 @@ impl CompleteSessionRoot {
             tools,
             budget,
         );
+        let session = if let Some(binding) = private_binding {
+            binding
+                .bind_fresh(session)
+                .map_err(|error| SessionCreationError::Internal(error.to_string()))?
+        } else {
+            session
+        };
         let mut root = Self::from_fresh(session)?;
         if let Some(configuration) = initial_agent_configuration {
             root.0
@@ -714,6 +722,64 @@ impl SessionCreationCommands {
         command: CreateSessionCommand,
         completion: SessionCreationCompletion,
     ) -> Result<PersistedSession, SessionCreationError> {
+        Box::pin(self.create_session_with_binding(command, completion, None)).await
+    }
+
+    /// The caller must authenticate and authorize current private ingress.
+    /// A decoded binding is not an owner proof. The native root and receipt
+    /// transaction remain the only creation authority.
+    pub async fn create_private_session(
+        &self,
+        binding: awaken_session_contract::SessionPrivateBinding,
+        command: CreateSessionCommand,
+    ) -> Result<PersistedSession, SessionCreationError> {
+        Box::pin(self.create_session_with_binding(
+            command,
+            SessionCreationCompletion::AwaitRealization,
+            Some(binding),
+        ))
+        .await
+    }
+
+    /// Accept a private root durably through the same lifecycle as ordinary
+    /// Sessions, after the caller's current private admission.
+    pub async fn accept_private_session(
+        &self,
+        binding: awaken_session_contract::SessionPrivateBinding,
+        command: CreateSessionCommand,
+    ) -> Result<PersistedSession, SessionCreationError> {
+        Box::pin(self.create_session_with_binding(
+            command,
+            SessionCreationCompletion::AcceptDurableRoot,
+            Some(binding),
+        ))
+        .await
+    }
+
+    pub(super) async fn create_session_with_binding(
+        &self,
+        command: CreateSessionCommand,
+        completion: SessionCreationCompletion,
+        private_binding: Option<awaken_session_contract::SessionPrivateBinding>,
+    ) -> Result<PersistedSession, SessionCreationError> {
+        if private_binding
+            .as_ref()
+            .is_some_and(|binding| binding.workspace_id() != command.owner_scope)
+        {
+            self.repository_participants
+                .compensate(
+                    &command.session_id,
+                    &command.repository_configurations,
+                    "Session Repository compensation remains pending after private scope rejection",
+                )
+                .await;
+            return Err(SessionCreationError::Rejected(
+                RunError::bad_request_classified(
+                    "private_session_scope_mismatch",
+                    "private Session binding has another Workspace",
+                ),
+            ));
+        }
         let mutations = &self.mutations;
         let CreateSessionCommand {
             owner_scope,
@@ -777,7 +843,11 @@ impl SessionCreationCommands {
             tools,
             budget,
             compiled,
-            (initial_events, initial_agent_configuration),
+            (
+                initial_events,
+                initial_agent_configuration,
+                private_binding.clone(),
+            ),
         ) {
             Ok(root) => root,
             Err(first) => {
@@ -804,10 +874,12 @@ impl SessionCreationCommands {
             Ok(result) => result,
             Err(first) => {
                 match mutations
-                    .replay_session_create(
+                    .replay_session_create_with_completion(
                         &owner_scope,
                         &awaken_session_types::SessionId::from(&session_id),
                         &idempotency,
+                        completion,
+                        private_binding.as_ref(),
                     )
                     .await
                 {
@@ -978,6 +1050,16 @@ impl crate::SessionCreation for SessionCreationCommands {
         SessionCreationCommands::create_requested_session(self, request, protocol).await
     }
 
+    async fn create_requested_private_session(
+        &self,
+        binding: awaken_session_contract::SessionPrivateBinding,
+        request: request::SessionCreateRequest,
+        protocol: &dyn request::SessionCreateProtocol,
+    ) -> Result<PersistedSession, request::SessionCreateRequestError> {
+        SessionCreationCommands::create_requested_private_session(self, binding, request, protocol)
+            .await
+    }
+
     async fn replay_session_create(
         &self,
         owner_scope: &str,
@@ -997,6 +1079,28 @@ impl crate::SessionCreation for SessionCreationCommands {
     ) -> Result<Option<PersistedSession>, SessionCreationError> {
         self.mutations
             .replay_accepted_session_create(owner_scope, session_id, idempotency)
+            .await
+    }
+
+    async fn replay_private_session_create(
+        &self,
+        binding: &awaken_session_contract::SessionPrivateBinding,
+        session_id: &awaken_session_types::SessionId,
+        idempotency: &awaken_session_contract::IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        self.mutations
+            .replay_private_session_create(binding, session_id, idempotency)
+            .await
+    }
+
+    async fn replay_accepted_private_session_create(
+        &self,
+        binding: &awaken_session_contract::SessionPrivateBinding,
+        session_id: &awaken_session_types::SessionId,
+        idempotency: &awaken_session_contract::IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        self.mutations
+            .replay_accepted_private_session_create(binding, session_id, idempotency)
             .await
     }
 

@@ -52,6 +52,18 @@ impl ManagedSessionRootFixture {
         &self,
         dependencies: crate::SessionExecutorBuilder,
     ) -> crate::SessionExecutorBuilder {
+        let dependencies = if let Some(files) = dependencies.resources.file_application.clone() {
+            dependencies.with_file_content_source(Arc::new(
+                awaken_resource_application::ApplicationFileContentSource::new(files)
+                    .with_visibility(Arc::new(
+                        awaken_session_application::SessionFileContentAccess::new(
+                            self.repository.clone(),
+                        ),
+                    )),
+            ))
+        } else {
+            dependencies
+        };
         dependencies.with_environment_binding_sink(self.binding_sink.clone())
     }
 

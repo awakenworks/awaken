@@ -25,11 +25,23 @@ impl FileApplication {
         else {
             return Ok(None);
         };
+        if !self.record_is_visible(&record) {
+            return Ok(None);
+        }
+        self.delete_observed_file(record, requested_at_unix_ms)
+            .await
+    }
+
+    async fn delete_observed_file(
+        &self,
+        record: FileRecord,
+        requested_at_unix_ms: u64,
+    ) -> Result<Option<FileRecord>, ResourcePurgeError> {
         let intent = deletion_intent(&record, requested_at_unix_ms)?;
         self.reclamation.put(intent).await?;
         let deleted = self
             .catalog
-            .mark_file_deleted(workspace_id, file_id)
+            .mark_file_deleted(&record.workspace_id, &record.id)
             .await
             .map_err(file_catalog_error)?;
         if deleted.is_some() {
@@ -85,12 +97,8 @@ impl ResourcePurgePreparation for FileApplication {
             if logical_file_reference(&record).reference == reference
                 && deletion_intent(&record, intent.requested_at_unix_ms)?.same_request(intent)
             {
-                self.delete(
-                    &record.workspace_id,
-                    &record.id,
-                    intent.requested_at_unix_ms,
-                )
-                .await?;
+                self.delete_observed_file(record, intent.requested_at_unix_ms)
+                    .await?;
             }
         }
         Ok(())

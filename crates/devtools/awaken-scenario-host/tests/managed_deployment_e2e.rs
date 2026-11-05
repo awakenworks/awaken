@@ -187,13 +187,10 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     .await;
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let managed = awaken_scenario_host::local_managed_state_with_agent_source(
-        host,
-        resources.authorities().resource_registry(),
-        catalog,
-    )
-    .await
-    .state;
+    let managed =
+        awaken_scenario_host::local_managed_state_with_agent_source(host, &resources, catalog)
+            .await
+            .state;
     let launcher = ManagedDeploymentSessionLauncher::new(managed.managed.clone());
     let request = DeploymentLaunch {
         deployment_id: "depl_failed_initial".into(),
@@ -348,13 +345,10 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     .await;
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let managed = awaken_scenario_host::local_managed_state_with_agent_source(
-        host,
-        resources.authorities().resource_registry(),
-        catalog,
-    )
-    .await
-    .state;
+    let managed =
+        awaken_scenario_host::local_managed_state_with_agent_source(host, &resources, catalog)
+            .await
+            .state;
     // The public Session scope guard must observe the same trusted Workspace as
     // the internal Deployment launcher. Omitting this edge stamp proves only a
     // cross-tenant 404, not the launch or initial-Event contract.
@@ -477,7 +471,7 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
     let managed = awaken_scenario_host::local_managed_state_with_agent_source_and_list_prices(
         host,
-        resources.authorities().resource_registry(),
+        &resources,
         catalog,
         Arc::new(DeploymentPriceProvider),
     )

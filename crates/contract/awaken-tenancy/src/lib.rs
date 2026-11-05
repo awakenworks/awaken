@@ -50,6 +50,7 @@
 use awaken_agent_contract::{ExecutionScopeRef, ScopeId};
 
 pub mod org_admission;
+pub mod workspace_purpose;
 
 /// Seeded Workspace used by the anonymous single-machine composition.
 ///

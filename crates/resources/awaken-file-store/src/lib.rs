@@ -238,6 +238,16 @@ struct MemoryFileCatalog {
     feature = "postgres"
 ))]
 fn validate_record(record: &FileRecord) -> Result<(), FileCatalogError> {
+    if record.private_binding.as_ref().is_some_and(|binding| {
+        binding.workspace_id() != record.workspace_id
+            || record.scope_id.is_some()
+            || record.logical_path.is_some()
+            || record.artifact_idempotency_scope.is_some()
+    }) {
+        return Err(FileCatalogError::InvalidRecord {
+            detail: "private input provenance requires its exact Workspace and no Session artifact identity".into(),
+        });
+    }
     if record.id.trim().is_empty()
         || record.workspace_id.trim().is_empty()
         || record.blob_id.trim().is_empty()
@@ -291,6 +301,63 @@ fn validate_record(record: &FileRecord) -> Result<(), FileCatalogError> {
 enum ArtifactAssociationDecision {
     Existing(FileRecord),
     Associate(FileRecord),
+}
+
+/// One original harvest identity can never change personal provenance, including
+/// after deletion. The application namespaces private command keys before effects.
+#[cfg(any(
+    test,
+    feature = "test-support",
+    feature = "sqlite",
+    feature = "postgres"
+))]
+fn verify_private_file_history(
+    records: &[FileRecord],
+    candidate: &FileRecord,
+) -> Result<Option<FileRecord>, FileCatalogError> {
+    if records
+        .iter()
+        .any(|record| record.private_binding != candidate.private_binding)
+    {
+        return Err(FileCatalogError::IdentityConflict {
+            detail: "File command identity is bound to different private provenance".into(),
+        });
+    }
+    if candidate.private_binding.is_none() {
+        return Ok(None);
+    }
+    match records {
+        [] => Ok(None),
+        [record]
+            if same_harvest_identity(record, candidate)
+                && record.filename == candidate.filename
+                && record.mime_type == candidate.mime_type
+                && record.size_bytes == candidate.size_bytes
+                && record.expires_at == candidate.expires_at
+                && record.downloadable == candidate.downloadable =>
+        {
+            Ok(Some(record.clone()))
+        }
+        [_] => Err(FileCatalogError::IdentityConflict {
+            detail: "private File command is bound to different immutable content".into(),
+        }),
+        _ => Err(FileCatalogError::CorruptData {
+            detail: "private File command has ambiguous retained provenance".into(),
+        }),
+    }
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+fn decode_private_file_binding(
+    value: Option<String>,
+) -> Result<Option<awaken_resource_contract::PrivateContentBinding>, FileCatalogError> {
+    value
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|error| FileCatalogError::CorruptData {
+                detail: format!("invalid private File provenance: {error}"),
+            })
+        })
+        .transpose()
 }
 
 /// Decide the one legal terminal association against every durable row for the
@@ -377,6 +444,7 @@ fn artifact_association_decision(
 ))]
 fn same_harvest_identity(left: &FileRecord, right: &FileRecord) -> bool {
     left.workspace_id == right.workspace_id
+        && left.private_binding == right.private_binding
         && left.blob_id == right.blob_id
         && left.scope_id == right.scope_id
         && left.logical_path == right.logical_path
@@ -435,6 +503,9 @@ impl FileCatalog for InMemoryFileStore {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
+            if let Some(existing) = verify_private_file_history(&matching, &record)? {
+                return Ok(CreateFileRecordOutcome::Existing(existing));
+            }
             if let Some(requested) = record.artifact_idempotency_scope.as_deref() {
                 match artifact_association_decision(&matching, &record)? {
                     Some(ArtifactAssociationDecision::Existing(existing)) => {
@@ -681,6 +752,7 @@ mod tests {
         harvest_key: Option<&str>,
     ) -> FileRecord {
         FileRecord {
+            private_binding: None,
             id: id.into(),
             workspace_id: workspace.into(),
             blob_id: format!("blob-{id}"),

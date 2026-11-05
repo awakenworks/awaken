@@ -16,6 +16,14 @@ struct OwnerFailure(SessionRepositoryError);
 
 #[async_trait::async_trait]
 impl SessionRepositoryReads for OwnerFailure {
+    async fn workspace_content_is_public(
+        &self,
+        _: &str,
+        _: &SessionId,
+    ) -> Result<bool, SessionRepositoryError> {
+        Err(self.0.clone())
+    }
+
     async fn owner(&self, _: &SessionId) -> Result<String, SessionRepositoryError> {
         Err(self.0.clone())
     }

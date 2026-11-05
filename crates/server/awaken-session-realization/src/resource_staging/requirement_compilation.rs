@@ -148,9 +148,22 @@ impl ResourceStaging {
         let mut all = crate::staged_resources::StagedResources::default();
         let mut memory_bindings = std::collections::HashMap::new();
         let environment = realizations.frozen(thread)?.environment_projection.clone();
+        let native_dispatch = realizations
+            .modify_session(thread, |installed| installed.run.session_dispatch())?
+            .unwrap_or(false);
+        let reader_session_id = realization
+            .map(|(session_id, _, _)| session_id)
+            .or(native_dispatch.then_some(thread));
         for input in resources.inputs() {
             let one = self
-                .stage_resolved_input(workspace, input, claim, realization, environment.as_ref())
+                .stage_resolved_input_for_reader(
+                    workspace,
+                    input,
+                    claim,
+                    realization,
+                    environment.as_ref(),
+                    reader_session_id,
+                )
                 .await?;
             // Read this exact projection before merging it. Two bindings may
             // legally reference the same store with different access, and a
@@ -212,6 +225,29 @@ impl ResourceStaging {
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
         environment: Option<&environment_projection::FrozenEnvironmentInputs>,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
+        self.stage_resolved_input_for_reader(
+            workspace,
+            input,
+            claim,
+            realization,
+            environment,
+            realization.map(|(session_id, _, _)| session_id),
+        )
+        .await
+    }
+
+    // A native dispatch marker retains the Session even when no materialization
+    // lease is needed. Direct embedded inputs have no aggregate reader context.
+    #[allow(clippy::too_many_arguments)]
+    async fn stage_resolved_input_for_reader(
+        &self,
+        workspace: &str,
+        input: &session_resource::ResolvedInput,
+        claim: Option<&awaken_worker_contract::RunClaim>,
+        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
+        environment: Option<&environment_projection::FrozenEnvironmentInputs>,
+        reader_session_id: Option<&str>,
+    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         let authority = if let (Some((session_id, resource_revision, lease)), true) =
             (realization, self.fetches_resources_upstream)
         {
@@ -233,6 +269,7 @@ impl ResourceStaging {
             authority.as_ref(),
             realization,
             environment,
+            reader_session_id,
         )
         .await
     }
@@ -263,6 +300,7 @@ impl ResourceStaging {
                 Some(&fence),
                 None,
                 None,
+                None,
             )
             .await?;
         if staged.repositories.len() != 1
@@ -285,6 +323,7 @@ impl ResourceStaging {
         resource_authority: Option<&ResourceOperationFence>,
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
         environment: Option<&environment_projection::FrozenEnvironmentInputs>,
+        reader_session_id: Option<&str>,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         use awaken_session_configuration_contract::resource::ResolvedInputSource;
         use awaken_session_types::RunError;
@@ -312,7 +351,9 @@ impl ResourceStaging {
                     .read(
                         workspace,
                         file_id.as_str(),
-                        &awaken_resource_contract::FileReadPurpose::SessionResource,
+                        &awaken_resource_contract::FileReadPurpose::SessionResource {
+                            reader_session_id: reader_session_id.map(str::to_owned),
+                        },
                         resource_authority,
                     )
                     .await

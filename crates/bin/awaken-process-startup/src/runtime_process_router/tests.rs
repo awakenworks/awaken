@@ -9,6 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
+mod private_ingress;
+
 async fn fixture(role: Role) -> (ProcessStores, ProcessStartup, Arc<dyn SessionStore>) {
     let (stores, control_service) = if role == Role::Coordinator {
         let (stores, services) = in_memory_split_coordinator().await;

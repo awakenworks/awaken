@@ -230,6 +230,9 @@ fn initial_event_installation_decision_table_is_closed() {
 #[serde(deny_unknown_fields)]
 pub struct PersistedSession {
     pub session_id: crate::state::SessionId,
+    /// Immutable personal ownership; absent is legacy Workspace ownership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) private_binding: Option<crate::SessionPrivateBinding>,
     /// Lifetime-retained immutable history; old roots remain unrecorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) update_history: Option<Box<crate::state::SessionUpdateHistory>>,
@@ -395,6 +398,7 @@ impl PersistedSession {
     ) -> Self {
         Self {
             session_id: session_id.into(),
+            private_binding: None,
             update_history: Some(Box::new(
                 crate::state::update_history::SessionUpdateHistory::fresh(),
             )),

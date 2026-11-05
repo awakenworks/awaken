@@ -24,6 +24,8 @@ use std::sync::Arc;
 
 mod file_authorization;
 mod frozen_projection;
+mod root_observation;
+pub(crate) use root_observation::observe_session_root;
 #[path = "projection_evidence.rs"]
 mod projection_evidence;
 
@@ -208,21 +210,43 @@ impl SessionRootReads for SessionQueries {
         session_owner(self.repository.as_ref(), session_id).await
     }
 
+    async fn workspace_content_is_public(
+        &self,
+        owner_scope: &str,
+        session_id: &SessionId,
+    ) -> Result<bool, SessionRepositoryError> {
+        self.repository
+            .workspace_content_is_public(owner_scope, session_id)
+            .await
+    }
+
     async fn authorize(
         &self,
         owner_scope: &str,
         session_id: &SessionId,
     ) -> Result<crate::SessionAccess, crate::SessionAccessError> {
-        match session_owner(self.repository.as_ref(), session_id).await {
-            Ok(owner) if owner == owner_scope => {
-                Ok(crate::SessionAccess::verified(owner_scope, session_id))
-            }
-            Ok(_) | Err(SessionMutationError::NotFound) => Err(crate::SessionAccessError::NotFound),
-            Err(SessionMutationError::Internal(message)) => {
-                Err(crate::SessionAccessError::Internal(message))
-            }
-            Err(error) => Err(crate::SessionAccessError::Unavailable(error.to_string())),
+        let root = observe_session_root(self.repository.as_ref(), owner_scope, session_id).await?;
+        if awaken_session_contract::SessionPrivateBinding::of(&root).is_some() {
+            return Err(crate::SessionAccessError::NotFound);
         }
+        Ok(crate::SessionAccess::verified(owner_scope, session_id))
+    }
+
+    async fn authorize_private(
+        &self,
+        binding: &awaken_session_contract::SessionPrivateBinding,
+        session_id: &SessionId,
+    ) -> Result<crate::SessionAccess, crate::SessionAccessError> {
+        let root =
+            observe_session_root(self.repository.as_ref(), binding.workspace_id(), session_id)
+                .await?;
+        if awaken_session_contract::SessionPrivateBinding::of(&root) != Some(binding) {
+            return Err(crate::SessionAccessError::NotFound);
+        }
+        Ok(crate::SessionAccess::verified(
+            binding.workspace_id(),
+            session_id,
+        ))
     }
 
     async fn sessions_referencing_credential_source(
@@ -265,6 +289,32 @@ impl SessionRootReads for SessionQueries {
                 workspace_id: owner_scope,
             })
             .await
-            .map(awaken_session_contract::SessionScan::into_sessions)
+            .map(|scan| {
+                scan.into_sessions()
+                    .into_iter()
+                    .filter(|root| {
+                        awaken_session_contract::SessionPrivateBinding::of(root).is_none()
+                    })
+                    .collect()
+            })
+    }
+
+    async fn private_sessions(
+        &self,
+        binding: &awaken_session_contract::SessionPrivateBinding,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        self.repository
+            .scan(SessionScanQuery::Workspace {
+                workspace_id: binding.workspace_id(),
+            })
+            .await
+            .map(|scan| {
+                scan.into_sessions()
+                    .into_iter()
+                    .filter(|root| {
+                        awaken_session_contract::SessionPrivateBinding::of(root) == Some(binding)
+                    })
+                    .collect()
+            })
     }
 }

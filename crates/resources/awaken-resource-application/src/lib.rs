@@ -33,7 +33,9 @@ pub use execution_sources::{
     ApplicationArtifactPublisher, ApplicationFileContentSource, RegistryRepositoryBindingVerifier,
     StoreSkillBundleSource, StoreSkillCatalogApplication,
 };
-pub use files::{CreateFileCommand, FileApplication};
+pub use files::{
+    CreateFileCommand, FileApplication, PrivateFileViewFactory, admitted_private_file_view,
+};
 pub use reclamation::{ResourceLifecycleGuard, ResourcePhysicalCleanup};
 pub use registry::RegistryApplication;
 pub use skill_ingest::{
@@ -85,11 +87,25 @@ impl ResourcesApplication {
         self.files.clone()
     }
 
+    /// Request-bound private views share this exact File application.
+    #[must_use]
+    pub fn private_file_views(&self) -> PrivateFileViewFactory {
+        PrivateFileViewFactory::new(self.files.clone())
+    }
+
     #[must_use]
     pub fn file_content_source<C: Sync + 'static>(
         &self,
     ) -> Arc<dyn awaken_resource_contract::FileContentSource<C>> {
         Arc::new(ApplicationFileContentSource::new(self.files.clone()))
+    }
+
+    #[must_use]
+    pub fn file_content_source_with_visibility<C: Sync + 'static>(
+        &self,
+        visibility: Arc<dyn awaken_resource_contract::FileContentVisibility>,
+    ) -> Arc<dyn awaken_resource_contract::FileContentSource<C>> {
+        Arc::new(ApplicationFileContentSource::new(self.files.clone()).with_visibility(visibility))
     }
 
     #[must_use]

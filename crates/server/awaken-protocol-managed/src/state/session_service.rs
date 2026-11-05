@@ -107,17 +107,18 @@ impl ManagedState {
     ) -> Self {
         Self {
             roles: super::SessionApplicationRoles::of(&application),
+            private_binding: None,
             #[cfg(any(test, feature = "test-support"))]
             application,
-            sessions: InvariantLock::new(HashMap::new()),
-            session_seq: AtomicU64::new(0),
-            live: LeafLock::new(HashMap::new()),
+            sessions: Arc::new(InvariantLock::new(HashMap::new())),
+            session_seq: Arc::new(AtomicU64::new(0)),
+            live: Arc::new(LeafLock::new(HashMap::new())),
             inference_geo_policy: None,
             capture_policy,
             #[cfg(test)]
-            warm_cold_oracle: std::sync::atomic::AtomicBool::new(true),
+            warm_cold_oracle: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             #[cfg(test)]
-            cold_publication_pause: std::sync::Mutex::new(None),
+            cold_publication_pause: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -158,6 +159,7 @@ impl ManagedState {
     fn configure_application(self, configure: impl FnOnce(&mut SessionApplication)) -> Self {
         let Self {
             roles,
+            private_binding,
             mut application,
             sessions,
             session_seq,
@@ -176,6 +178,7 @@ impl ManagedState {
         );
         Self {
             roles: super::SessionApplicationRoles::of(&application),
+            private_binding,
             application,
             sessions,
             session_seq,

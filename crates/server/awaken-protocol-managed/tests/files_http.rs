@@ -12,6 +12,8 @@ use axum::http::{Request, StatusCode};
 use serde_json::Value;
 use tower::ServiceExt;
 
+#[path = "files_http/private_scope.rs"]
+mod private_scope;
 mod support;
 
 async fn router() -> Router {
@@ -593,6 +595,7 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
         .await
         .unwrap();
     let record = FileRecord {
+        private_binding: None,
         id: "file_output".into(),
         workspace_id: "test".into(),
         blob_id,
@@ -617,7 +620,16 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
         .create_file(record)
         .await
         .unwrap();
-    let router = files_router(resources.files(), resources.authorities().clock());
+    // No live Managed/runtime registration is needed; the native Session
+    // repository supplies the ordinary owner verdict independently of caches.
+    let (_sessions, queries) = private_scope::session_file_owner().await;
+    let router = awaken_protocol_managed::resources_router(
+        awaken_protocol_managed::ResourcesRouterInput::new(
+            &resources,
+            std::sync::Arc::new(awaken_resource_contract::UnavailableRepositoryCredentialValidator),
+        )
+        .with_session_reads(queries),
+    );
 
     let body = get(&router, "/v1/files?scope_id=deleted-session")
         .await
@@ -712,6 +724,7 @@ async fn workspace_capacity_is_checked_before_accepting_more_bytes() {
         .authorities()
         .file_catalog()
         .create_file(FileRecord {
+            private_binding: None,
             id: "file_capacity".into(),
             workspace_id: "test".into(),
             blob_id: "blob-capacity".into(),
@@ -834,6 +847,7 @@ async fn file_expiry_and_creation_share_the_one_resources_clock() {
     authorities
         .file_catalog()
         .create_file(FileRecord {
+            private_binding: None,
             id: "file_expiring_output".into(),
             workspace_id: "test".into(),
             blob_id,

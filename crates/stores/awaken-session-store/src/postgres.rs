@@ -562,6 +562,29 @@ impl PostgresManagedSessionRepository {
 
 #[async_trait::async_trait]
 impl SessionRepositoryReads for PostgresManagedSessionRepository {
+    async fn workspace_content_is_public(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<bool, SessionRepositoryError> {
+        let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<i64>)>(
+            "SELECT scope_id, revision, aggregate_json, NULL::BIGINT AS private_content \
+             FROM managed_session WHERE session_id = $1 \
+             UNION ALL \
+             SELECT scope_id, deleted_revision AS revision, NULL::TEXT AS aggregate_json, private_content \
+             FROM managed_session_tombstone WHERE session_id = $1",
+        )
+        .bind(session_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        crate::content_visibility::workspace_content_is_public(
+            owner_scope,
+            session_id.as_str(),
+            rows,
+        )
+    }
+
     async fn get(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -824,7 +847,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
             {
                 return Ok(replay);
             }
-            let mut deleted_admissions = validate_current_mutation(
+            let (mut deleted_admissions, private_content) = validate_current_mutation(
                 &mutation,
                 EncodedSessionRow {
                     aggregate_json: current.try_get("aggregate_json").map_err(storage)?,
@@ -892,14 +915,15 @@ impl SessionRepository for PostgresManagedSessionRepository {
                     }
                     sqlx::query(
                         "INSERT INTO managed_session_tombstone
-                        (session_id, scope_id, deleted_revision, deleted_at, event_admissions_json)
-                     VALUES ($1, $2, $3, $4, $5)",
+                        (session_id, scope_id, deleted_revision, deleted_at, event_admissions_json, private_content)
+                     VALUES ($1, $2, $3, $4, $5, $6)",
                     )
                     .bind(tombstone.session_id.as_str())
                     .bind(owner_scope)
                     .bind(db_revision(tombstone.deleted_revision)?)
                     .bind(&tombstone.deleted_at)
                     .bind(deleted_admissions)
+                    .bind(i64::from(private_content))
                     .execute(&mut *tx)
                     .await
                     .map_err(storage)?;

@@ -135,7 +135,9 @@ pub async fn load_skill_candidate<C: Sync>(
         .read(
             &reference.workspace_id,
             &reference.file_id,
-            &FileReadPurpose::SessionResource,
+            &FileReadPurpose::SessionResource {
+                reader_session_id: None,
+            },
             Some(fence),
         )
         .await
@@ -188,7 +190,12 @@ mod tests {
         ) -> Result<Option<ResolvedFileContent>, FileContentSourceError> {
             assert_eq!(workspace, "evaluation-workspace");
             assert_eq!(file, "candidate-file");
-            assert_eq!(purpose, &FileReadPurpose::SessionResource);
+            assert_eq!(
+                purpose,
+                &FileReadPurpose::SessionResource {
+                    reader_session_id: None
+                }
+            );
             assert_eq!(
                 fence,
                 Some(&7),

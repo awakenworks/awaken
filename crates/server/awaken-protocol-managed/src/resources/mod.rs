@@ -86,6 +86,7 @@ pub(super) fn managed_resource_error(
 pub struct ResourcesRouterInput {
     resources: awaken_resource_application::ResourcesApplication,
     credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
+    sessions: Option<Arc<dyn awaken_session_application::SessionRootReads>>,
 }
 
 impl ResourcesRouterInput {
@@ -97,7 +98,19 @@ impl ResourcesRouterInput {
         Self {
             resources: resources.clone(),
             credentials,
+            sessions: None,
         }
+    }
+
+    /// Select the canonical Session owner for Workspace-visible File content.
+    /// Without it, Session-scoped Files remain hidden on this public surface.
+    #[must_use]
+    pub fn with_session_reads(
+        mut self,
+        sessions: Arc<dyn awaken_session_application::SessionRootReads>,
+    ) -> Self {
+        self.sessions = Some(sessions);
+        self
     }
 }
 
@@ -107,16 +120,21 @@ pub fn resources_router(input: ResourcesRouterInput) -> Router {
     let resources = input.resources;
     let authorities = resources.authorities();
     let clock = authorities.clock();
-    files_router(resources.files(), clock.clone())
-        .merge(memory_stores_router(&resources))
-        .merge(repositories_router(
-            resources.repositories(input.credentials),
-        ))
-        .merge(skills_router(
-            Some(authorities.skill_store()),
-            resources.purge_scheduler(),
-            clock,
-        ))
+    files::files_router_with_session_reads(
+        resources.files(),
+        clock.clone(),
+        input.sessions,
+        Some(resources.private_file_views()),
+    )
+    .merge(memory_stores_router(&resources))
+    .merge(repositories_router(
+        resources.repositories(input.credentials),
+    ))
+    .merge(skills_router(
+        Some(authorities.skill_store()),
+        resources.purge_scheduler(),
+        clock,
+    ))
 }
 
 #[cfg(test)]

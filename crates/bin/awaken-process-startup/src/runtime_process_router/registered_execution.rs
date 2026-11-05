@@ -77,7 +77,13 @@ impl RegisteredExecution {
             Arc::new(awaken_session_run_delivery::BackgroundRuns::new()),
             clock.clone(),
         ));
-        let files = resources.resource_application.file_content_source();
+        let files = resources
+            .resource_application
+            .file_content_source_with_visibility(Arc::new(
+                awaken_session_application::SessionFileContentAccess::new(
+                    execution.sessions.clone(),
+                ),
+            ));
         let sessions = Arc::new(WorkerPlacedSessions::new(WorkerPlacement {
             projections,
             publication: dispatch.publication(),

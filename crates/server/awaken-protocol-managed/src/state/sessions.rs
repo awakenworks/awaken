@@ -331,12 +331,24 @@ impl ManagedState {
             model_override: model_override.as_ref(),
             initial_events: &initial_events,
         };
-        let created = Box::pin(
-            self.roles
-                .creation
-                .create_requested_session(request, &protocol),
-        )
-        .await
+        let created = match &self.private_binding {
+            Some(binding) => {
+                Box::pin(self.roles.creation.create_requested_private_session(
+                    binding.clone(),
+                    request,
+                    &protocol,
+                ))
+                .await
+            }
+            None => {
+                Box::pin(
+                    self.roles
+                        .creation
+                        .create_requested_session(request, &protocol),
+                )
+                .await
+            }
+        }
         .map_err(Self::map_create_request_error)?;
         let persisted = created;
         let id = persisted.session_id.to_string();
@@ -354,14 +366,11 @@ impl ManagedState {
                     ))
                 })?;
         let session = session_from_persisted_root(&persisted, baseline, &configuration)?;
-        let root_time = RootTimeEvidence::from(&persisted);
         let record = SessionRecord::new(
             owner_scope.to_owned(),
             agent_id,
             session,
-            persisted.revision,
-            persisted.resources,
-            root_time,
+            &persisted,
             Vec::new(),
         );
         let session = record.session_projection();
@@ -534,7 +543,10 @@ impl ManagedState {
         let sessions = self.sessions.lock()?;
         let mut out: Vec<Session> = sessions
             .values()
-            .filter(|record| record.owner_scope() == scope)
+            .filter(|record| {
+                record.owner_scope() == scope
+                    && record.private_binding() == self.private_binding.as_ref()
+            })
             .map(SessionRecord::session_projection)
             .collect();
         out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -561,12 +573,14 @@ impl ManagedState {
         &self,
         scope: &str,
     ) -> Result<Vec<(Session, RootTimeEvidence)>, StateError> {
-        let persisted = self
-            .roles
-            .roots
-            .sessions_by_owner(scope)
-            .await
-            .map_err(StateError::from)?;
+        let persisted = match &self.private_binding {
+            Some(binding) if binding.workspace_id() == scope => {
+                self.roles.roots.private_sessions(binding).await
+            }
+            Some(_) => return Err(StateError::NotFound),
+            None => self.roles.roots.sessions_by_owner(scope).await,
+        }
+        .map_err(StateError::from)?;
         let cached = self.sessions.lock()?;
         let mut out = Vec::with_capacity(persisted.len());
         for session in persisted {
@@ -848,11 +862,12 @@ pub(crate) async fn owned_session_access(
     session_id: &str,
 ) -> Result<(awaken_session_application::SessionAccess, String), StateError> {
     let owner = state.owner_scope(session_id).ok_or(StateError::NotFound)?;
-    let access = state
-        .roles
-        .roots
-        .authorize(&owner, &awaken_session_types::SessionId::from(session_id))
-        .await
-        .map_err(|error| StateError::Run(error.into()))?;
+    let access = super::authorize_session(
+        state,
+        &owner,
+        &awaken_session_types::SessionId::from(session_id),
+    )
+    .await
+    .map_err(|error| StateError::Run(error.into()))?;
     Ok((access, owner))
 }

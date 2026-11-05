@@ -4,6 +4,52 @@
 
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
+use awaken_time::mono::MonoDeadline;
+
+// Private authority is freshly checked on every connection. An already
+// admitted stream may finish or deliver until this absolute deadline.
+const PRIVATE_STREAM_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub(super) fn private_stream_deadline(state: &ManagedState) -> Option<MonoDeadline> {
+    state
+        .private_binding
+        .as_ref()
+        .map(|_| MonoDeadline::after(PRIVATE_STREAM_LIFETIME))
+}
+
+fn before_deadline<S: Stream>(
+    stream: S,
+    deadline: Option<MonoDeadline>,
+) -> impl Stream<Item = S::Item> {
+    async_stream::stream! {
+        tokio::pin!(stream);
+        let Some(deadline) = deadline else {
+            while let Some(item) = tokio_stream::StreamExt::next(&mut stream).await {
+                yield item;
+            }
+            return;
+        };
+        let expiry = tokio::time::sleep_until(deadline.instant());
+        tokio::pin!(expiry);
+        loop {
+            // The monotonic check also handles a stalled body or an already
+            // buffered replay before the timer has been polled.
+            if deadline.has_passed() {
+                break;
+            }
+            tokio::select! {
+                biased;
+                () = &mut expiry => break,
+                item = tokio_stream::StreamExt::next(&mut stream) => {
+                    match item {
+                        Some(item) if !deadline.has_passed() => yield item,
+                        _ => break,
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SseTerminalScope {
@@ -102,6 +148,7 @@ pub(super) struct LiveSseSource {
     pub(super) owner_scope: String,
     pub(super) revision: u64,
     pub(super) current: bool,
+    pub(super) deadline: Option<MonoDeadline>,
 }
 
 /// Snapshot, broadcast wake, silent-period reconciliation and lag recovery all
@@ -121,7 +168,8 @@ pub(super) fn live_sse_stream<F>(
 where
     F: Fn(Event) -> Option<Event> + Send + Sync + 'static,
 {
-    async_stream::stream! {
+    let deadline = source.deadline;
+    let stream = async_stream::stream! {
         let mut delivery = CommittedEventDelivery::default();
         let mut preview_event_ids = HashSet::new();
         let mut thread_preview = thread_preview;
@@ -314,5 +362,37 @@ where
                 },
             }
         }
+    };
+    before_deadline(stream, deadline)
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio_stream::{StreamExt, iter, pending};
+
+    #[tokio::test]
+    async fn private_stream_expires_while_idle_and_refuses_queued_bytes_after_expiry() {
+        let expired = before_deadline(iter([1_u8, 2]), Some(MonoDeadline::after(Duration::ZERO)));
+        tokio::pin!(expired);
+        assert_eq!(expired.next().await, None);
+        let idle = before_deadline(
+            pending::<u8>(),
+            Some(MonoDeadline::after(Duration::from_millis(5))),
+        );
+        tokio::pin!(idle);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), idle.next())
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            before_deadline(iter([1_u8, 2]), None)
+                .collect::<Vec<_>>()
+                .await,
+            vec![1, 2]
+        );
     }
 }

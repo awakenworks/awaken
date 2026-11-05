@@ -1,5 +1,8 @@
 //! Claim-fenced Memory Coordinator tests over real HTTP.
 
+#[path = "session_file_fixture.rs"]
+mod session_file_fixture;
+
 use awaken_dispatch_testkit::worker_http as support;
 
 use std::sync::Arc;
@@ -108,6 +111,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
     let digest = file_store.put(b"exact input").await.unwrap();
     file_store
         .create_file(awaken_resource_contract::FileRecord {
+            private_binding: None,
             id: "renewed-file".into(),
             workspace_id: "workspace-memory".into(),
             blob_id: digest,
@@ -134,6 +138,29 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
                 .unwrap(),
         ),
         awaken_time::system_clock(),
+    ));
+    let sessions = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let root = session_file_fixture::frozen_application_session(
+        "renewed-session",
+        "renewed-file",
+        &identity,
+    );
+    let key = awaken_session_contract::SessionMutationPayload::default_create_idempotency(&root);
+    awaken_session_contract::SessionRepository::create(
+        sessions.as_ref(),
+        "workspace-memory",
+        root,
+        key,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    let file_visibility = Arc::new(awaken_session_application::SessionFileContentAccess::new(
+        sessions,
     ));
     let mut file_input = memory_input("file", "unused", ResourceAccess::ReadOnly);
     file_input.source =
@@ -208,7 +235,8 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
             Arc::new(
                 awaken_resource_application::ApplicationFileContentSource::new(
                     file_application.clone(),
-                ),
+                )
+                .with_visibility(file_visibility.clone()),
             ),
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
@@ -237,7 +265,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
             .read(
                 "workspace-memory",
                 "renewed-file",
-                &FileReadPurpose::SessionResource,
+                &FileReadPurpose::SessionResource { reader_session_id: None },
                 Some(
                     &awaken_session_execution_contract::ResourceOperationFence::SessionMaterialization(
                         file_intent.clone(),
