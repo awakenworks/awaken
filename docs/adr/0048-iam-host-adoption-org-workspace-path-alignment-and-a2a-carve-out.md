@@ -264,3 +264,20 @@ Coordinator remains the sole durable lifecycle outbox owner.
   — management plane owns the model; unaffected by the addressing change.
 - `awaken-iam-host` (`HostMode`, `IamGate`, `embed_local`, `auth_layer`) — the
   adopted assembly (D1/D2).
+
+## Amendment — 2026-11-06: direct Management credentials preserve actor boundaries
+
+The generic remote Management edge currently authorizes direct Account or
+Service credentials. It has no complete current-delegation and consent proof
+with which to discharge an acting principal. After the original IAM signature,
+issuer, audience, expiry and revocation checks, it decodes IAM's canonical
+actor-aware token payload and refuses a credential carrying `act` before PDP
+dispatch or a protected handler. It must never reinterpret that credential as a
+direct request by `sub`, even when a policy would allow that subject.
+
+Direct Account and Service credentials retain their existing behavior. Admitted
+Run and Work capabilities keep their own native claim and epoch boundaries;
+they do not gain authority by forwarding an end-user token. A future delegated
+Management seam must establish current compound authority and consent instead
+of weakening this direct-credential edge. Private content admission still needs
+the separate checks owned by [ADR-0105](0105-native-private-session-ownership.md).

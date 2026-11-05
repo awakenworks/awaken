@@ -78,18 +78,114 @@ async fn authorize(
     .into_response()
 }
 
+struct CloudIamFixture {
+    base_url: String,
+    authorization_bearers: Arc<Mutex<Vec<String>>>,
+    authorization_status: Arc<AtomicU16>,
+}
+
 #[test]
-fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
-    // Causal graph: Cloud Account token -> typed IAM verification -> Account
-    // principal -> remote Management authorization -> guarded Awaken route.
-    //
-    // | Account credential source | bearer validity | result |
-    // |---|---|---|
-    // | cached Cloud login | valid | authorize |
-    // | rotated cached login | valid successor | rebuild PDP carrier and authorize |
-    // | explicit bearer | valid | authorize |
-    // | explicit bearer | invalid | `401` |
-    // | hosted projected service | no user bearer | `401` |
+fn remote_management_never_drops_a_verified_actor_before_pdp() {
+    use awaken_iam_host::AccessTokenSubjectKind::{Account, Service};
+    use awaken_iam_server::{AccessTokenActor, DelegatedAccessTokenClaims};
+
+    let fixture = cloud_iam_fixture();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let cases = runtime.block_on(async {
+        let now = unix_seconds_at(awaken_time::system_clock().as_ref());
+        let authority = AccessTokenAuthority::new(LocalSeedSigner::new(KID, SEED));
+        let mut cases = Vec::new();
+        for (name, kind) in [("account", Account), ("service", Service)] {
+            let claims = AccessTokenClaims {
+                iss: ISSUER.into(),
+                sub: format!("direct-{name}"),
+                subject_kind: kind,
+                aud: AUDIENCE.into(),
+                exp: now + 3600,
+                iat: now,
+                jti: format!("direct-{name}"),
+                scope: vec!["workspace:ws_cloud".into()],
+            };
+            cases.push((StatusCode::OK, authority.mint(&claims).await.unwrap()));
+            for (actor_name, actor_kind) in [("account", Account), ("service", Service)] {
+                let mut delegated = claims.clone();
+                delegated.jti = format!("{name}-with-{actor_name}-actor");
+                let token = authority
+                    .mint_delegated(&DelegatedAccessTokenClaims {
+                        claims: delegated,
+                        act: Some(AccessTokenActor {
+                            sub: format!("unadmitted-{actor_name}"),
+                            subject_kind: actor_kind,
+                        }),
+                    })
+                    .await
+                    .unwrap();
+                cases.push((StatusCode::UNAUTHORIZED, token));
+            }
+        }
+        cases
+    });
+    let current = cases[0].1.clone();
+    let source: Arc<awaken_agent_contract::RedactedStringSource> =
+        Arc::new(move || Ok(awaken_agent_contract::RedactedString::new(current.clone())));
+    let authz = RemoteManagementAuthz::connect_with_user_token_source(
+        fixture.base_url,
+        AUDIENCE.into(),
+        ISSUER.into(),
+        source,
+        None,
+        awaken_time::system_clock(),
+    )
+    .unwrap();
+    let handlers = Arc::new(AtomicUsize::new(0));
+    let handler_calls = handlers.clone();
+    let app = Router::new()
+        .route(
+            "/v1/config/catalog",
+            get(move || {
+                let calls = handler_calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::OK
+                }
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            authz,
+            cloud_management_guard,
+        ));
+    runtime.block_on(async {
+        for (expected, token) in cases {
+            let pdp_before = fixture.authorization_bearers.lock().unwrap().len();
+            let handlers_before = handlers.load(Ordering::SeqCst);
+            let mut request = Request::builder()
+                .uri("/v1/config/catalog")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(awaken_tenancy::WorkspaceScope("ws_cloud".into()));
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                expected
+            );
+            let admitted = usize::from(expected == StatusCode::OK);
+            assert_eq!(
+                fixture.authorization_bearers.lock().unwrap().len(),
+                pdp_before + admitted,
+                "a subject Allow cannot discharge an unsupported actor"
+            );
+            assert_eq!(
+                handlers.load(Ordering::SeqCst),
+                handlers_before + admitted,
+                "rejected actor credentials have no protected-handler effects"
+            );
+        }
+    });
+}
+
+fn cloud_iam_fixture() -> CloudIamFixture {
     let listener = StdListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let (ready_tx, ready_rx) = mpsc::channel();
@@ -120,6 +216,30 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
     });
     ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     let base_url = format!("http://{address}");
+    CloudIamFixture {
+        base_url,
+        authorization_bearers,
+        authorization_status,
+    }
+}
+
+#[test]
+fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
+    // Causal graph: Cloud Account token -> typed IAM verification -> Account
+    // principal -> remote Management authorization -> guarded Awaken route.
+    //
+    // | Account credential source | bearer validity | result |
+    // |---|---|---|
+    // | cached Cloud login | valid | authorize |
+    // | rotated cached login | valid successor | rebuild PDP carrier and authorize |
+    // | explicit bearer | valid | authorize |
+    // | explicit bearer | invalid | `401` |
+    // | hosted projected service | no user bearer | `401` |
+    let CloudIamFixture {
+        base_url,
+        authorization_bearers,
+        authorization_status,
+    } = cloud_iam_fixture();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (token, rotated_token, service_token) = runtime.block_on(async {
         let now = unix_seconds_at(awaken_time::system_clock().as_ref());

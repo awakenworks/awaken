@@ -292,7 +292,16 @@ fn decode_verified_access_token_claims(
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
         .map_err(|_| AuthReject::Invalid)?;
-    serde_json::from_slice(&decoded).map_err(|_| AuthReject::Invalid)
+    // The gate has verified this exact JWT. Preserve IAM's actor-aware wire
+    // shape at this final projection: the generic Management PEP cannot
+    // discharge current compound delegation/consent authority and must not
+    // silently authorize only the subject of a delegated credential.
+    let verified: awaken_iam_server::DelegatedAccessTokenClaims =
+        serde_json::from_slice(&decoded).map_err(|_| AuthReject::Invalid)?;
+    if verified.act.is_some() {
+        return Err(AuthReject::Invalid);
+    }
+    Ok(verified.claims)
 }
 
 fn resolve_user_token(source: &RedactedStringSource) -> Result<RedactedString, String> {
