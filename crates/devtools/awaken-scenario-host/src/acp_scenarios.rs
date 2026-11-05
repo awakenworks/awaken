@@ -1011,12 +1011,7 @@ mod embedded_fixture_tests {
         }
     }
 
-    #[test]
-    fn embedded_tool_bridge_initializes_without_host_fixture_files() {
-        // C1 the production Scenario --eval source imports the shared MCP
-        // client; C2 cwd is empty, matching the Namespace's absent host tree.
-        // R1 C1+C2 -> actual Node ACP initialization succeeds. An unresolved
-        // relative import must fail this test before any protocol reply.
+    fn embedded_tool_bridge_output(requests: &[serde_json::Value]) -> std::process::Output {
         use std::io::Write;
         use std::process::{Command, Stdio};
         let root = tempfile::tempdir().unwrap();
@@ -1032,13 +1027,24 @@ mod embedded_fixture_tests {
             .stderr(Stdio::piped())
             .spawn()
             .expect("Node is required by the ACP fixture");
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n")
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
+        let mut input = child.stdin.take().unwrap();
+        for request in requests {
+            serde_json::to_writer(&mut input, request).unwrap();
+            input.write_all(b"\n").unwrap();
+        }
+        drop(input);
+        child.wait_with_output().unwrap()
+    }
+
+    #[test]
+    fn embedded_tool_bridge_initializes_without_host_fixture_files() {
+        // C1 the production Scenario --eval source imports the shared MCP
+        // client; C2 cwd is empty, matching the Namespace's absent host tree.
+        // R1 C1+C2 -> actual Node ACP initialization succeeds. An unresolved
+        // relative import must fail this test before any protocol reply.
+        let output = embedded_tool_bridge_output(&[serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize"
+        })]);
         assert!(
             output.status.success(),
             "{}",
@@ -1051,5 +1057,281 @@ mod embedded_fixture_tests {
             reply["result"]["agentCapabilities"]["mcpCapabilities"]["http"],
             true
         );
+    }
+
+    #[test]
+    fn embedded_tool_bridge_new_and_load_accept_the_canonical_alias_policy() {
+        // C1 new/load follows initialization in an empty cwd; C2 the same
+        // presentation used by the Scenario produces its canonical+display
+        // aliases. R1 C1+C2 -> both replies retain their request/session ids.
+        // This exercises the real embedded Node assertion, not a second alias
+        // producer or handshake encoder. The full product E2E separately owns
+        // durable approval, execution, restart, denial and Artifact effects.
+        let aliases = awaken_runtime_contract::resolved::ToolPresentation::from_overrides([(
+            "write".into(),
+            awaken_runtime_contract::resolved::ToolPresentationOverride {
+                alias: Some("Write".into()),
+                description: None,
+                exposure: None,
+            },
+        )])
+        .acp_aliases()
+        .unwrap();
+        let mut failures = Vec::new();
+        for method in ["session/new", "session/load"] {
+            // These are fixture wire inputs. The production encoder remains
+            // claude_session_meta; no general mapping implementation is copied.
+            let mut params = serde_json::json!({
+                "cwd":"/workspace", "mcpServers":[],
+                "_meta":{"claudeCode":{"options":{
+                    "toolAliases":aliases,"tools":[],"disallowedTools":["Write","write"]
+                }}}
+            });
+            if method == "session/load" {
+                params["sessionId"] = serde_json::json!("awaken-tool-bridge-session");
+            }
+            let initialize = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize"});
+            let request =
+                serde_json::json!({"jsonrpc":"2.0","id":2,"method":method,"params":params});
+            let output = embedded_tool_bridge_output(&[initialize.clone(), request.clone()]);
+            if !output.status.success() {
+                failures.push(format!(
+                    "{method}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+                continue;
+            }
+            let replies = output
+                .stdout
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_slice::<serde_json::Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(replies.len(), 2, "R1 {method}");
+            assert_eq!(replies[0]["id"], 1, "R1 initialization identity");
+            assert_eq!(replies[1]["id"], 2, "R1 {method} request identity");
+            assert_eq!(
+                replies[1]["result"]["sessionId"],
+                "awaken-tool-bridge-session"
+            );
+
+            // R2: one wrong field of the otherwise valid R1 request must
+            // trigger the real Node assertion before new/load acknowledges.
+            // Causes cover missing/extra/changed aliases, a builtin bypass and
+            // incomplete denial. Each rule runs for BOTH new and recovered load;
+            // no tool call, permission result or filesystem effect is requested.
+            let options = request["params"]["_meta"]["claudeCode"]["options"].clone();
+            let mut missing = options.clone();
+            missing["toolAliases"]
+                .as_object_mut()
+                .unwrap()
+                .remove("write");
+            let mut extra = options.clone();
+            extra["toolAliases"]["Other"] = serde_json::json!("mcp__awaken_session__write");
+            let mut target = options.clone();
+            target["toolAliases"]["write"] = serde_json::json!("mcp__awaken_session__read");
+            let mut builtin = options.clone();
+            builtin["tools"] = serde_json::json!(["Write"]);
+            let mut disallowed = options;
+            disallowed["disallowedTools"] = serde_json::json!(["Write"]);
+            for (fault, options) in [
+                ("missing", missing),
+                ("extra", extra),
+                ("target", target),
+                ("builtin", builtin),
+                ("disallowed", disallowed),
+            ] {
+                let mut invalid = request.clone();
+                invalid["params"]["_meta"]["claudeCode"]["options"] = options;
+                let output = embedded_tool_bridge_output(&[initialize.clone(), invalid]);
+                assert_eq!(output.status.code(), Some(1), "R2 {method}/{fault}");
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains("ERR_ASSERTION"),
+                    "R2 {method}/{fault} rejects through the fixture assertion"
+                );
+                let replies = output
+                    .stdout
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| serde_json::from_slice::<serde_json::Value>(line).unwrap())
+                    .collect::<Vec<_>>();
+                assert_eq!(replies.len(), 1, "R2 no {method} acknowledgement");
+                assert_eq!(replies[0]["id"], 1, "R2 initialization still succeeded");
+            }
+
+            // R3 a Runtime-committed successful write followed by the exact
+            // successful read -> final text/end_turn, without another MCP call.
+            // R4 denied write -> denied final/no read. R5 failed/foreign/old
+            // read, wrong write identity/input, missing booleans or malformed
+            // JSON -> no fabricated final. Every fact comes from this prompt;
+            // no process-local counter/completion flag survives a relaunch.
+            // The unusable scheme is a NoIO tripwire, not another MCP server:
+            // a completed receipt must never ask a transport for its old result.
+            let write = serde_json::json!({
+                "call_id":"awaken-write-call","tool":"write",
+                "input":{"path":"/mnt/session/outputs/acp-hitl.txt","content":"AWAKEN-ACP-HITL-OK"},
+                "is_error":false,"content":[{"type":"text","text":"wrote 18 bytes"}]
+            });
+            let read = serde_json::json!({
+                "call_id":"read-receipt","tool":"read",
+                "input":{"path":"/mnt/session/outputs/acp-hitl.txt"},
+                "is_error":false,"content":[{"type":"text","text":"AWAKEN-ACP-HITL-OK"}]
+            });
+            let mut denied = write.clone();
+            denied["is_error"] = serde_json::json!(true);
+            let mut failed_read = read.clone();
+            failed_read["is_error"] = serde_json::json!(true);
+            let mut foreign_read = read.clone();
+            foreign_read["input"]["path"] = serde_json::json!("/mnt/session/outputs/foreign.txt");
+            let mut missing_write_bool = write.clone();
+            missing_write_bool
+                .as_object_mut()
+                .unwrap()
+                .remove("is_error");
+            let mut missing_read_bool = read.clone();
+            missing_read_bool
+                .as_object_mut()
+                .unwrap()
+                .remove("is_error");
+            let mut wrong_write = write.clone();
+            wrong_write["call_id"] = serde_json::json!("foreign-write");
+            let mut wrong_input = write.clone();
+            wrong_input["input"] = serde_json::json!({"file_path":"/mnt/session/outputs/acp-hitl.txt","content":"AWAKEN-ACP-HITL-OK"});
+            let mut wrong_marker = read.clone();
+            wrong_marker["content"] =
+                serde_json::json!([{"type":"text","text":"not-the-readback"}]);
+            let mut foreign_tool = read.clone();
+            foreign_tool["tool"] = serde_json::json!("mcp__foreign__read");
+            let mut wrong_read_input = read.clone();
+            wrong_read_input["input"] =
+                serde_json::json!({"file_path":"/mnt/session/outputs/acp-hitl.txt"});
+            let mut missing_read_id = read.clone();
+            missing_read_id.as_object_mut().unwrap().remove("call_id");
+            let allowed_text = "ACP-BRIDGE-ALLOWED-READBACK-OK";
+            let denied_text = "ACP-BRIDGE-DENIED-NO-EFFECT";
+            let vectors = [
+                (
+                    "completed",
+                    serde_json::json!([write.clone(), read.clone()]).to_string(),
+                    Some(allowed_text),
+                ),
+                (
+                    "denied",
+                    serde_json::json!([denied]).to_string(),
+                    Some(denied_text),
+                ),
+                (
+                    "failed-read",
+                    serde_json::json!([write.clone(), failed_read]).to_string(),
+                    None,
+                ),
+                (
+                    "foreign-read",
+                    serde_json::json!([write.clone(), foreign_read]).to_string(),
+                    None,
+                ),
+                (
+                    "old-read",
+                    serde_json::json!([write.clone(), read.clone(), write.clone()]).to_string(),
+                    None,
+                ),
+                (
+                    "foreign-tool",
+                    serde_json::json!([write.clone(), foreign_tool]).to_string(),
+                    None,
+                ),
+                (
+                    "read-input",
+                    serde_json::json!([write.clone(), wrong_read_input]).to_string(),
+                    None,
+                ),
+                (
+                    "read-id",
+                    serde_json::json!([write.clone(), missing_read_id]).to_string(),
+                    None,
+                ),
+                (
+                    "later-wrong-write",
+                    serde_json::json!([write.clone(), read.clone(), wrong_input.clone()])
+                        .to_string(),
+                    None,
+                ),
+                (
+                    "write-bool",
+                    serde_json::json!([missing_write_bool, read.clone()]).to_string(),
+                    None,
+                ),
+                (
+                    "read-bool",
+                    serde_json::json!([write.clone(), missing_read_bool]).to_string(),
+                    None,
+                ),
+                (
+                    "write-id",
+                    serde_json::json!([wrong_write, read.clone()]).to_string(),
+                    None,
+                ),
+                (
+                    "write-input",
+                    serde_json::json!([wrong_input, read.clone()]).to_string(),
+                    None,
+                ),
+                (
+                    "marker",
+                    serde_json::json!([write, wrong_marker]).to_string(),
+                    None,
+                ),
+                ("malformed", "[broken".into(), None),
+            ];
+            for (rule, json, expected_text) in vectors {
+                let mut session = request.clone();
+                session["params"]["mcpServers"] = serde_json::json!([{
+                    "name":"awaken_session","type":"http","url":"unusable://must-not-fetch","headers":[]
+                }]);
+                let output = embedded_tool_bridge_output(&[
+                    initialize.clone(),
+                    session,
+                    serde_json::json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{
+                        "sessionId":"awaken-tool-bridge-session",
+                        "prompt":[{"type":"text","text":format!("Authoritative Awaken tool continuation results, in committed order.\n{json}")}]
+                    }}),
+                ]);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(text) = expected_text {
+                    assert!(
+                        output.status.success(),
+                        "R3/R4 {method}/{rule}: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    let replies = stdout
+                        .lines()
+                        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                        .collect::<Vec<_>>();
+                    assert!(
+                        replies
+                            .iter()
+                            .any(|reply| reply["id"] == 3
+                                && reply["result"]["stopReason"] == "end_turn"),
+                        "R3/R4 prompt identity and terminal frame"
+                    );
+                    assert!(
+                        replies
+                            .iter()
+                            .any(|reply| reply["params"]["update"]["content"]["text"] == text),
+                        "R3/R4 exact final marker"
+                    );
+                } else {
+                    assert!(
+                        !output.status.success(),
+                        "R5 {method}/{rule} must reject or request the missing read"
+                    );
+                    assert!(
+                        !stdout.contains(allowed_text) && !stdout.contains(denied_text),
+                        "R5 no fabricated terminal marker"
+                    );
+                }
+            }
+        }
+        assert!(failures.is_empty(), "R1 {}", failures.join("\n"));
     }
 }

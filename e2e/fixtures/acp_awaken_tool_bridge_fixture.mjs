@@ -6,6 +6,7 @@ import { mcpRequest, mcpNotify } from './mcp_http_fixture_client.mjs';
 
 const TOOL_CALL_ID = 'awaken-write-call';
 const WRITE_ARGUMENTS = { path: '/mnt/session/outputs/acp-hitl.txt', content: 'AWAKEN-ACP-HITL-OK' };
+const CONTINUATION_PREFIX = 'Authoritative Awaken tool continuation results';
 let sessionRequest;
 
 function send(message) {
@@ -86,9 +87,15 @@ input.on('line', async (line) => {
   }
   if (request.method === 'session/new' || request.method === 'session/load') {
     // R1 new and R2 recovered load retain identical alias policy. This fixture
-    // validates delivery; claude_sdk_alias_e2e separately runs the real SDK lookup.
+    // validates delivery of both the declared display spelling and canonical
+    // id to the same Session tool. Both SDK lookup names stay disallowed as
+    // builtin tools; permissions and execution remain with RuntimeToolBatch.
+    // The embedded Node tests reject missing/extra/substituted mappings and
+    // builtin/disallowed-list drift before a Session response. The product E2E
+    // owns approval/restart/effects; claude_sdk_alias_e2e owns real SDK lookup.
     assert.deepEqual(request.params._meta?.claudeCode?.options, {
-      toolAliases: { Write: 'mcp__awaken_session__write' }, tools: [], disallowedTools: ['Write'],
+      toolAliases: { Write: 'mcp__awaken_session__write', write: 'mcp__awaken_session__write' },
+      tools: [], disallowedTools: ['Write', 'write'],
     });
     sessionRequest = request;
     send({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'awaken-tool-bridge-session' } });
@@ -96,23 +103,43 @@ input.on('line', async (line) => {
   }
   if (request.method === 'session/prompt') {
     const prompt = request.params?.prompt?.map((block) => block.text ?? '').join('\n') ?? '';
-    if (prompt.includes('Authoritative Awaken tool continuation results')) {
-      // The RuntimeToolBatch already settled the reserved Awaken write. The
-      // cancelled ACP callback is not a second execution authority.
-      assert.ok(prompt.includes(`"call_id":"${TOOL_CALL_ID}"`));
-      const allowed = prompt.includes('"is_error":false');
-      const denied = prompt.includes('"is_error":true');
-      assert.notEqual(allowed, denied, 'the committed owned-tool receipt has one outcome');
-      if (allowed) {
+    if (prompt.includes(CONTINUATION_PREFIX)) {
+      // Runtime sends its existing committed-order, single-line JSON facts.
+      // R3 completed exact write+read -> final without reissuing read; R4 denied
+      // write -> denied final without reading. R5 foreign/old/failed/malformed
+      // facts cannot prove success. No process-local completion state is used.
+      const lines = prompt.split('\n');
+      const header = lines.findIndex(line => line.startsWith(CONTINUATION_PREFIX));
+      assert.ok(header >= 0, 'the authoritative context has its original header');
+      const receipts = JSON.parse(lines[header + 1]);
+      assert.ok(Array.isArray(receipts), 'the Runtime context is an array of facts');
+      const writeIndex = receipts.findLastIndex(receipt => receipt?.call_id === TOOL_CALL_ID
+        && receipt?.tool === 'write');
+      assert.ok(writeIndex >= 0, 'the latest owned write occurrence is present');
+      const write = receipts[writeIndex];
+      assert.deepEqual(write.input, WRITE_ARGUMENTS, 'the owned write retains its canonical input');
+      assert.equal(typeof write.is_error, 'boolean', 'the owned outcome is explicit');
+      if (write.is_error) {
+        finishPrompt(request.id, 'ACP-BRIDGE-DENIED-NO-EFFECT');
+        return;
+      }
+      const read = receipts.slice(writeIndex + 1).findLast(receipt => receipt?.tool === 'read');
+      if (read) {
+        assert.ok(typeof read.call_id === 'string' && read.call_id.length > 0, 'the read has an occurrence');
+        assert.deepEqual(read.input, { path: WRITE_ARGUMENTS.path }, 'the read belongs to the exact output');
+        assert.equal(read.is_error, false, 'readback completed successfully');
+        assert.ok(Array.isArray(read.content) && read.content.some(block => block?.type === 'text'
+          && block.text === WRITE_ARGUMENTS.content), 'the actual read Text contains the exact marker');
+        finishPrompt(request.id, 'ACP-BRIDGE-ALLOWED-READBACK-OK');
+      } else {
         try {
+          // The MCP arrival remains pending while Runtime stops this opaque
+          // Step, executes the read and supplies its receipt on the next Step.
           await readAwakenOutput();
-          finishPrompt(request.id, 'ACP-BRIDGE-ALLOWED-READBACK-OK');
         } catch (error) {
           process.stderr.write(`${error.stack ?? error}\n`);
           process.exitCode = 1;
         }
-      } else {
-        finishPrompt(request.id, 'ACP-BRIDGE-DENIED-NO-EFFECT');
       }
       return;
     }
