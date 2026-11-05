@@ -131,11 +131,17 @@ async function main() {
       assert.equal(nullableCloud.config.networking.allow_package_managers, false);
       assert.deepEqual(nullableCloud.config.packages.apt, []);
       assert.deepEqual(nullableCloud.config.packages.npm, []);
-      const deniedPackageNetwork = await fetch(`${baseUrl}/v1/environments`, {
+      // PN1: valid declared packages + limited empty runtime policy + both
+      // runtime grants false => accept the definition and preserve each field.
+      // PN2: the malformed operands above still reject before authoring. PN3:
+      // retrieve/list retain this declaration without granting runtime registry
+      // or MCP access. DT-NET and the existing execution RN1/RN2 test own the
+      // derived network policy; this HTTP row does not prove image preparation.
+      const packageDeclarationResponse = await fetch(`${baseUrl}/v1/environments`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
         body: JSON.stringify({
-          name: 'packages-without-network-authority',
+          name: 'declared-packages-with-runtime-egress-disabled',
           config: {
             type: 'cloud',
             networking: { type: 'limited', allow_package_managers: false },
@@ -143,7 +149,19 @@ async function main() {
           },
         }),
       });
-      assert.equal(deniedPackageNetwork.status, 422, 'cross-field package policy fails closed');
+      assert.equal(packageDeclarationResponse.status, 200, 'PN1 package declarations have independent build admission');
+      const packageDeclaration = await packageDeclarationResponse.json();
+      assert.equal(packageDeclaration.config.type, 'cloud', 'PN1');
+      assert.deepEqual(packageDeclaration.config.packages.npm, ['tsx'], 'PN1 retains the explicit build input');
+      assert.equal(packageDeclaration.config.networking.type, 'limited', 'PN3');
+      assert.deepEqual(packageDeclaration.config.networking.allowed_hosts, [], 'PN3 retains empty runtime hosts');
+      assert.equal(packageDeclaration.config.networking.allow_package_managers, false, 'PN3 no runtime registry grant');
+      assert.equal(packageDeclaration.config.networking.allow_mcp_servers, false, 'PN3 no MCP grant');
+      assert.deepEqual(
+        (await client.beta.environments.retrieve(packageDeclaration.id, { betas: BETAS })).config,
+        packageDeclaration.config,
+        'PN1/PN3 the authored config round-trips unchanged',
+      );
 
       // Environment update cause graph:
       // a present cloud config patches only present nested fields; omitted
@@ -197,13 +215,13 @@ async function main() {
       for (const rejectedName of [
         ...rejectedConfigs.map(([name]) => name),
         'must-not-exist',
-        'packages-without-network-authority',
       ]) {
         assert.ok(
           !namesAfterRejectedCreate.includes(rejectedName),
           `${rejectedName} must have no durable Environment/work side effect`,
         );
       }
+      assert.ok(namesAfterRejectedCreate.includes(packageDeclaration.name), 'PN1 the valid declaration is durably listed');
       pass('official Environment config union accepts canonical cases and rejects extensions');
 
       // Awaken sandbox policy is a separate, versioned aggregate. The Environment
@@ -363,13 +381,16 @@ async function main() {
 
       // -- Archive + delete --------------------------------------------------
       // Terminal lifecycle cause/effect graph: C1 first archive withdraws the
-      // current execution projection and purges Work; C2 definition update after
+      // current projection and removes healthcheck Work; C2 definition update after
       // archive; C3 exact-policy bind after archive; C4 delete replays archive.
-      // Effects: E1 C2/C3 are 409 with no revival, E2 Work stays unavailable,
+      // Effects: E1 C2/C3 are 409 with no revival, E2 this healthcheck-only queue
+      // is empty and cannot be reseeded by polling. Historical Session Work keeps
+      // its existing consumer authority, as the native archive continuation and
+      // wrong-owner tests prove; a Work query is not new Session admission.
       // E3 C4 is idempotent and returns the official deleted projection.
       //
       // | Rule | archived | command | status | execution/work effect |
-      // | T1 | false | archive | 200 | withdrawn and purged |
+      // | T1 | false | archive | 200 | withdrawn; healthcheck removed |
       // | T2 | true | update | 409 | none |
       // | T3 | true | bind policy | 409 | none |
       // | T4 | true | delete | 200 | remains withdrawn |
@@ -408,10 +429,25 @@ async function main() {
         },
       );
       assert.equal(archivedBind.status, 409, 'T3 archived policy bind cannot revive execution');
+      assert.deepEqual(
+        await drain(client.beta.environments.work.list(env.id, { betas: BETAS })),
+        [],
+        'T1/T3 archive removes this Environment\'s only healthcheck Work',
+      );
+      const archivedStats = await client.beta.environments.work.stats(env.id, { betas: BETAS });
+      assert.equal(archivedStats.depth, 0, 'T1 no queued healthcheck');
+      assert.equal(archivedStats.pending, 0, 'T1 no retained Session Work in this fixture');
+      assert.equal(await client.beta.environments.work.poll(env.id, { betas: BETAS }), null,
+        'T1/T3 polling cannot recreate withdrawn healthcheck Work');
       await assert.rejects(
-        client.beta.environments.work.list(env.id, { betas: BETAS }),
+        client.beta.environments.work.retrieve(wid, { environment_id: env.id, betas: BETAS }),
         (error) => error?.status === 404,
-        'T1/T3 archived Environment Work remains unavailable',
+        'T1 the retired healthcheck identity remains unavailable',
+      );
+      await assert.rejects(
+        client.beta.environments.work.list('env_unknown_fixture', { betas: BETAS }),
+        (error) => error?.status === 404,
+        'T1 historical archive is distinct from a missing Environment',
       );
       const del = await client.beta.environments.delete(env.id, { betas: BETAS });
       assert.equal(del.type, 'environment_deleted');
