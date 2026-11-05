@@ -271,7 +271,7 @@ fn compile(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
 ) -> Result<awaken_agent_config::ExecutableAgentSnapshot, awaken_agent_config::CompileError> {
-    compile_resolved(config, tools, AgentSnapshotMetadata::default())
+    compile_resolved(config, tools, AgentSnapshotMetadata::default(), |_| true)
 }
 
 #[tokio::test]

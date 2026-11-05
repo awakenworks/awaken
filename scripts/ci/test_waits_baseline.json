@@ -111,7 +111,6 @@
       "e2e/metrics_export_e2e.mjs": 1,
       "e2e/postgres_claimed_commit_guard_e2e.ts": 2,
       "e2e/remote_worker_recovery_e2e.ts": 7,
-      "e2e/resource_plane_postgres_e2e.ts": 3,
       "e2e/resource_reclamation_e2e.mjs": 2,
       "e2e/resource_reclamation_faults_e2e.mjs": 2,
       "e2e/resource_scope_boundary_e2e.mjs": 1,

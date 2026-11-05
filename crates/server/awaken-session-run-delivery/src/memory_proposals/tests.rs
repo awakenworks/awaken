@@ -128,8 +128,8 @@ fn committed_agent_tool_calls_rebuild_only_policy_accepted_mutations() {
 fn extraction_proposals_require_exact_completed_run_and_input() {
     // Cause/effect table: C1 record present; C2 exact Run+Thread; C3 state;
     // C4 immutable input retained; C5 own assistant output. R1 !C1 or
-    // Running/Indeterminate => same-Run uncertainty; R2 !C2 => refusal;
-    // R3 known unsuccessful state => refusal; R4 !C4/!C5 => refusal;
+    // Running/Awaiting/Indeterminate => same-Run uncertainty; R2 !C2 => refusal;
+    // R3 known unsuccessful terminal => refusal; R4 !C4/!C5 => refusal;
     // R5 NaturalEnd/MaxSteps + C1,C2,C4,C5 => complete map (possibly empty).
     // Earlier conditions guard later ones; no failure reaches mutation planning.
     let i = intent();
@@ -161,7 +161,7 @@ fn extraction_proposals_require_exact_completed_run_and_input() {
     ] {
         let unknown = matches!(
             &state,
-            RunState::Running | RunState::Ended(EndCause::Indeterminate)
+            RunState::Running | RunState::Awaiting | RunState::Ended(EndCause::Indeterminate)
         );
         let mut c = valid.clone();
         c.record.as_mut().unwrap().state = state;
@@ -392,11 +392,16 @@ fn committed_memory_proposals_reject_other_execution_owners() {
     // C1 committed successful same-named call; C2 frozen descriptor owner is
     // absent/client/session-store/foreign/detached/provider-native. N1 all six
     // partitions refuse the whole map; a result name alone grants no proposal
-    // authority. N2 the canonical descriptor may change display text while its
-    // existing execution owner and typed arguments remain the same.
+    // authority. N2 an explicitly authorable canonical descriptor may change
+    // display text while its execution owner and typed arguments stay the same;
+    // a configured extractor must select it from the actual publication catalog,
+    // rather than depend on the built-in default's privately assembled tools.
     use awaken_runtime_contract::resolved::{ProviderServerTool, ToolKind};
     let base = intent();
-    let canonical = awaken_ext_memory::write_memory_descriptor();
+    let canonical = crate::authorable_tools()
+        .into_iter()
+        .find(|descriptor| descriptor.id == awaken_ext_memory::write_memory_descriptor().id)
+        .expect("the publication catalog must offer the canonical Memory proposal capability");
     for descriptor in [
         None,
         Some(ToolDescriptor::client_executed(
@@ -433,6 +438,7 @@ fn committed_memory_proposals_reject_other_execution_owners() {
         );
     }
     let mut i = base;
+    i.extractor.agent.resolved_spec.tool_descriptors = vec![canonical];
     i.extractor.agent.resolved_spec.tool_descriptors[0].description = "custom display text".into();
     i.extractor.agent.recompute_fingerprint().unwrap();
     assert!(

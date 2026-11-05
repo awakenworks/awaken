@@ -1673,6 +1673,7 @@ pub async fn build_config_router(
         )),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         awaken_plugin_composition::platform_plugin_configurations(),
+        |tool| !awaken_session_run_delivery::MemoryWriteProposals::matches_descriptor(tool),
     ));
     let plane = awaken_config_service::ConfigPlane::new(service.clone(), store, tools);
     // The management tool executables, backed by real ports (D3/D4): the capability

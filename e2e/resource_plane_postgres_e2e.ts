@@ -11,6 +11,8 @@ import path from 'node:path';
 import { execFileSync, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { extractionValue } from './fixtures/memory_extraction_fixture.mjs';
+import { sqliteDatabaseForThread, sqliteRows } from './sqlite.mjs';
 import {
   FILES_BETA,
   cleanupFixtureTree,
@@ -21,6 +23,7 @@ import {
   stopServer,
   waitForPort,
   waitForSessionEventReceipt,
+  waitForValue,
 } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -32,7 +35,6 @@ const MODEL = `resource-pg-model-${process.pid}`;
 const MANAGED_BETA = 'managed-agents-2026-04-01';
 const MEMORY_BETA = 'agent-memory-2026-07-22';
 const SKILLS_BETA = 'skills-2025-10-02';
-const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const INHERITED_DATABASE_URL = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
 const PROBE_DATABASE = INHERITED_DATABASE_URL
   ? postgresDatabaseName(INHERITED_DATABASE_URL)
@@ -58,21 +60,21 @@ async function postgres(): Promise<{ container: string; url: string; owned: bool
     '--health-interval=1s', '--health-timeout=2s', '--health-retries=30',
     'postgres:16-alpine',
   );
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    const health = docker('inspect', '--format', '{{.State.Health.Status}}', container);
-    if (health === 'healthy') {
-      const mapping = docker('port', container, '5432/tcp').split('\n')[0];
-      const port = mapping.slice(mapping.lastIndexOf(':') + 1);
-      return {
-        container,
-        url: `postgres://postgres:test@127.0.0.1:${port}/awaken`,
-        owned: true,
-      };
-    }
-    await sleep(250);
-  }
-  throw new Error('timed out waiting for disposable Postgres');
+  // PG1 inherited fixture returns above without creating a second daemon;
+  // PG2 an owned fixture must observe real health before its URL is usable.
+  await waitForValue(
+    () => docker('inspect', '--format', '{{.State.Health.Status}}', container),
+    (health: string) => health === 'healthy',
+    'disposable Postgres to become healthy',
+    { timeoutMs: 60_000, pollMs: 250 },
+  );
+  const mapping = docker('port', container, '5432/tcp').split('\n')[0];
+  const port = mapping.slice(mapping.lastIndexOf(':') + 1);
+  return {
+    container,
+    url: `postgres://postgres:test@127.0.0.1:${port}/awaken`,
+    owned: true,
+  };
 }
 
 function start(directory: string, databaseUrl: string): ChildProcess {
@@ -295,29 +297,69 @@ function extractionIntent(
   container: string,
   sessionId: string,
 ): Record<string, any> | undefined {
+  // Retained-row decision table: P1 current frame / P2 published bare intent
+  // => decode through the shared fixture, then match the exact Session;
+  // P3 another Session or no rows => absent; P4 malformed/unknown frame =>
+  // throw instead of an apparently empty queue. The existing SQLite fixture
+  // tests own P1/P2/P4 representation coverage; this real PostgreSQL journey
+  // covers P1 completion and P3 absence without a second SQL JSON codec.
   const output = psql(
     container,
     `SELECT data FROM managed_memory_extraction ` +
-      `WHERE data::jsonb->>'session_id'=${sqlLiteral(sessionId)} ` +
-      `ORDER BY created_at DESC LIMIT 1`,
+      `ORDER BY created_at DESC`,
   );
-  return output ? JSON.parse(output) : undefined;
+  return output
+    ? output.split('\n').map(extractionValue).find((intent) => intent.session_id === sessionId)
+    : undefined;
 }
 
 async function waitForCompletedExtraction(
   container: string,
   sessionId: string,
+  runtimeDirectory: string,
   timeoutMs = 30_000,
 ): Promise<Record<string, any>> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const intent = extractionIntent(container, sessionId);
-    if (intent?.status === 'completed' && intent.receipt !== null) return intent;
-    await sleep(250);
+  let intent: Record<string, any> | undefined;
+  let failure: unknown;
+  try {
+    await waitForValue(
+      () => {
+        intent = extractionIntent(container, sessionId);
+        return { status: intent?.status, has_receipt: intent?.receipt != null };
+      },
+      (observed: { status?: string; has_receipt: boolean }) =>
+        observed.status === 'completed' && observed.has_receipt,
+      `Postgres extraction intent for ${sessionId} to complete`,
+      { timeoutMs, pollMs: 250 },
+    );
+    assert.ok(intent);
+    return intent;
+  } catch (error) {
+    failure = error;
   }
-  throw new Error(
-    `Postgres extraction intent did not complete: ${JSON.stringify(extractionIntent(container, sessionId))}`,
-  );
+  // P5: a non-completed intent never becomes success. Its Runtime fact lives
+  // in the existing thread partition, independently of the PG SessionStore;
+  // retain that exact phase without printing the transcript or credentials.
+  let auxiliaryPhase: unknown;
+  if (intent) {
+    try {
+      const database = sqliteDatabaseForThread(
+        runtimeDirectory, intent.auxiliary_thread_id, 'runtime_run_record',
+      );
+      auxiliaryPhase = sqliteRows(
+        database, 'SELECT phase FROM runtime_run_record WHERE run_id = ?', intent.auxiliary_run_id,
+      )[0]?.phase;
+    } catch (error) {
+      auxiliaryPhase = { observation_error: error instanceof Error ? error.name : 'unknown' };
+    }
+  }
+  if (failure instanceof Error) {
+    failure.message += `; extraction: ${JSON.stringify({
+      intent_id: intent?.intent_id, status: intent?.status,
+      last_error: intent?.last_error, auxiliary_phase: auxiliaryPhase,
+    })}`;
+  }
+  throw failure;
 }
 
 async function waitForResourceIntents(
@@ -326,15 +368,13 @@ async function waitForResourceIntents(
   predicate: (intent: Record<string, any>) => boolean,
   timeoutMs = 30_000,
 ): Promise<Record<string, any>[]> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const rows = ids.map((id) => resourceIntent(container, id));
-    if (rows.every((row) => row !== undefined && predicate(row))) {
-      return rows as Record<string, any>[];
-    }
-    await sleep(250);
-  }
-  throw new Error(`Postgres resource intents did not converge: ${JSON.stringify(ids.map((id) => resourceIntent(container, id)))}`);
+  return waitForValue(
+    () => ids.map((id) => resourceIntent(container, id)),
+    (rows: Array<Record<string, any> | undefined>) =>
+      rows.every((row) => row !== undefined && predicate(row)),
+    `Postgres resource intents to converge for ${JSON.stringify(ids)}`,
+    { timeoutMs, pollMs: 250 },
+  );
 }
 
 function installReclamationFaults(
@@ -421,6 +461,10 @@ async function publishAgent(endpoint: string, memoryStoreId: string): Promise<vo
   assert.equal((await json('PUT', scoped(WORKSPACE, `config/agents/${AGENT}`), {
     name: AGENT, model: { id: MODEL }, system: 'Resource lifecycle test.',
     max_steps: 2,
+    // G: an ordinary Memory Agent's broad tool selection must not acquire the
+    // stateless proposal role; its terminal Run must still trigger extraction.
+    // The extractor below selects that capability through its exact declaration.
+    tool_patterns: ['write*'],
     plugins: ['memory'],
     plugin_config: { memory: { binding_id: 'postgres-memory' } },
   })).status, 200);
@@ -446,6 +490,7 @@ async function publishAgent(endpoint: string, memoryStoreId: string): Promise<vo
     model: { id: MODEL },
     system: 'You are the memory extraction Agent. Save durable facts.',
     max_steps: 2,
+    tools: ['write_memory'],
     plugins: [],
     plugin_config: {},
   })).status, 200);
@@ -814,10 +859,20 @@ async function main(): Promise<void> {
       `SELECT count(*) FROM resource_lifecycle_references WHERE reference_id=${sqlLiteral(session.id)}`,
     );
     assert.ok(Number(realized) >= 1, 'the Session activated its frozen MemoryStore binding');
-    const extraction = await waitForCompletedExtraction(pg.container, session.id);
+    const extraction = await waitForCompletedExtraction(pg.container, session.id, secondDirectory);
+    assert.equal(
+      extractionIntent(pg.container, `${session.id}-absent`),
+      undefined,
+      'P3: another Session cannot borrow the completed extraction receipt',
+    );
     assert.equal(extraction.workspace_id, WORKSPACE);
     assert.equal(extraction.memory_store_id, memoryId);
     assert.equal(extraction.memory_config_version, Number(memoryConfigVersion));
+    assert.deepEqual(
+      extraction.extractor.agent.resolved_spec.tool_descriptors.map((tool: { id: string }) => tool.id),
+      ['write_memory'],
+      'R1: the published extractor freezes its explicitly selected proposal capability',
+    );
     // Cause graph / decision table for the frozen extractor candidate:
     // C1=published candidate is carried exactly; C2=terminal sub-run succeeds.
     // | Rule | C1 | C2 | result                                      |

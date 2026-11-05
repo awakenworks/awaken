@@ -164,6 +164,9 @@ pub async fn build_delegation_router_with_deployment(
         primary,
         Vec::new(),
         Some(advisor),
+        |descriptor| {
+            !awaken_session_run_delivery::MemoryWriteProposals::matches_descriptor(descriptor)
+        },
     )
     .expect("compile the fixed coordinator and reserved Advisor capability");
     let mut snapshots = vec![
@@ -192,4 +195,200 @@ pub async fn build_delegation_router_with_deployment(
     .await
     .map_dependencies(|host| host.with_agent_publications(publication.clone()));
     mount_with_agent_source_on_lifecycle(platform, publication, lifecycle.clone()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_runtime_contract::resolved::ToolDescriptor;
+    use awaken_session_run_delivery::{MemoryWriteProposals, authorable_tools};
+
+    fn publication_catalogs() -> (Vec<ToolDescriptor>, Vec<ToolDescriptor>, ToolDescriptor) {
+        let current = authorable_tools();
+        let mut proposals = current
+            .iter()
+            .filter(|tool| MemoryWriteProposals::matches_descriptor(tool));
+        let proposal = proposals
+            .next()
+            .expect("the real catalog offers the proposal")
+            .clone();
+        assert!(
+            proposals.next().is_none(),
+            "one canonical proposal catalog entry"
+        );
+        // Test preimage only: the former catalog is the same ordered payload
+        // without this one capability, selected by its original owner matcher.
+        let previous = current
+            .iter()
+            .filter(|tool| !MemoryWriteProposals::matches_descriptor(tool))
+            .cloned()
+            .collect();
+        (current, previous, proposal)
+    }
+
+    fn compile_memory_publication(
+        catalog: &[ToolDescriptor],
+        exact: &[&str],
+        patterns: &[&str],
+    ) -> ExecutableAgentSnapshot {
+        let primary = ResolvedModelCandidate::host(
+            ModelBinding::parse("default", "fixture-memory-model", "default")
+                .expect("literal publication model"),
+        );
+        let config = AgentConfig {
+            id: "ordinary-memory-agent".into(),
+            instructions: "An ordinary Agent with terminal Memory extraction.".into(),
+            max_steps: Some(2),
+            model_binding: ModelSelection::Pinned(primary.binding().clone()),
+            tool_ids: exact.iter().map(|id| (*id).to_owned()).collect(),
+            tool_patterns: patterns
+                .iter()
+                .map(|pattern| (*pattern).to_owned())
+                .collect(),
+            plugin_ids: vec![awaken_ext_memory::MEMORY_PLUGIN_ID.into()],
+            plugin_config: std::collections::BTreeMap::from([(
+                awaken_ext_memory::MEMORY_PLUGIN_ID.into(),
+                serde_json::json!({"binding_id":"memory"}),
+            )]),
+            ..Default::default()
+        };
+        let metadata = AgentSnapshotMetadata {
+            source: AgentConfigRevisionRef {
+                agent_id: AgentId(config.id.clone()),
+                revision: 1,
+            },
+            ..Default::default()
+        };
+        // This is the production compiler used by the fixture above, with its
+        // current signature. No router, model inference or sandbox is created.
+        compile_published(
+            &config,
+            catalog,
+            metadata,
+            primary,
+            Vec::new(),
+            None,
+            |descriptor| {
+                !awaken_session_run_delivery::MemoryWriteProposals::matches_descriptor(descriptor)
+            },
+        )
+        .expect("compile the real Memory publication inputs")
+    }
+
+    fn assert_ordinary_glob_matches_previous_catalog(
+        current: &[ToolDescriptor],
+        previous: &[ToolDescriptor],
+        exact: &[&str],
+        pattern: &str,
+    ) {
+        let expected = compile_memory_publication(previous, exact, &[pattern]);
+        let actual = compile_memory_publication(current, exact, &[pattern]);
+        assert_eq!(
+            actual.fingerprint, expected.fingerprint,
+            "G/P a newly available proposal must not change an ordinary Agent fingerprint"
+        );
+        assert_eq!(
+            actual, expected,
+            "G/P complete compiled publication remains unchanged"
+        );
+        assert!(
+            MemoryWriteProposals::descriptor(&actual).is_none(),
+            "G/P ordinary terminal extraction must not acquire the proposal role"
+        );
+    }
+
+    #[test]
+    fn published_exact_memory_proposal_is_retained() {
+        // E: exact proposal + no glob => canonical descriptor retained once,
+        // so the existing stateless executor/settlement owner remains selected.
+        let (current, _, proposal) = publication_catalogs();
+        let snapshot = compile_memory_publication(&current, &[&proposal.id], &[]);
+        assert_eq!(
+            MemoryWriteProposals::descriptor(&snapshot),
+            Some(&proposal),
+            "E exact owner"
+        );
+        assert_eq!(
+            snapshot.resolved_spec.tool_descriptors.len(),
+            1,
+            "E no extra grant"
+        );
+    }
+
+    #[test]
+    fn published_catalog_glob_preserves_ordinary_memory_role() {
+        // G1 MC/DC: exact absent, glob * present, catalog adds only proposal.
+        // Effect: full snapshot/fingerprint equal the previous catalog, no
+        // proposal role. The old compiler must fail this semantic comparison.
+        let (current, previous, _) = publication_catalogs();
+        assert_ordinary_glob_matches_previous_catalog(&current, &previous, &[], "*");
+    }
+
+    #[test]
+    fn published_write_glob_preserves_ordinary_memory_role() {
+        // G2 changes only the pattern from G1 to write*: the rule applies to
+        // every glob that matches the capability, not one spelling of *.
+        let (current, previous, _) = publication_catalogs();
+        assert_ordinary_glob_matches_previous_catalog(&current, &previous, &[], "write*");
+    }
+
+    #[test]
+    fn published_exact_memory_proposal_and_glob_are_deduplicated() {
+        // M: exact proposal + glob * => exactly one proposal plus every ordinary
+        // glob result in its original order. Exact intent wins over the glob
+        // exclusion; a shared matcher, not a repeated id rule, proves its role.
+        let (current, previous, proposal) = publication_catalogs();
+        let ordinary = compile_memory_publication(&previous, &[], &["*"]);
+        let snapshot = compile_memory_publication(&current, &[&proposal.id], &["*"]);
+        assert_eq!(
+            MemoryWriteProposals::descriptor(&snapshot),
+            Some(&proposal),
+            "M exact owner"
+        );
+        assert_eq!(
+            snapshot
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .filter(|tool| MemoryWriteProposals::matches_descriptor(tool))
+                .count(),
+            1,
+            "M exact and glob do not duplicate the proposal"
+        );
+        let expected = std::iter::once(&proposal)
+            .chain(ordinary.resolved_spec.tool_descriptors.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            snapshot
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .collect::<Vec<_>>(),
+            expected,
+            "M exact-first order and ordinary glob payload remain intact"
+        );
+    }
+
+    #[test]
+    fn published_ordinary_exact_and_glob_preserve_memory_role() {
+        // P: one ordinary exact declaration + glob * must not imply proposal
+        // intent. Compare complete old/new results and preserve exact dedup.
+        let (current, previous, _) = publication_catalogs();
+        let ordinary = previous
+            .iter()
+            .find(|tool| tool.kind == ToolKind::Regular)
+            .expect("the real catalog has an ordinary tool");
+        assert_ordinary_glob_matches_previous_catalog(&current, &previous, &[&ordinary.id], "*");
+        let snapshot = compile_memory_publication(&current, &[&ordinary.id], &["*"]);
+        assert_eq!(
+            snapshot
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .filter(|tool| tool.id == ordinary.id)
+                .count(),
+            1,
+            "P exact/glob dedup preserved"
+        );
+    }
 }

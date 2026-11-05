@@ -147,6 +147,7 @@ pub(crate) fn test_service() -> ConfigService {
         test_registrar(),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         Vec::new(),
+        |_| true,
     )
 }
 
@@ -221,6 +222,7 @@ async fn plane_with(
         test_registrar(),
         std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         Vec::new(),
+        |_| true,
     );
     if let Some(resources) = resources {
         service = service.with_resources(resources);
@@ -609,6 +611,7 @@ fn test_service_and_catalog() -> (ConfigService, Arc<ExecutableAgentCatalog>) {
             registrar,
             Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
             Vec::new(),
+            |_| true,
         ),
         catalog,
     )

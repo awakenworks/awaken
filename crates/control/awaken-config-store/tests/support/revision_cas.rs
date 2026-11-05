@@ -80,7 +80,8 @@ pub async fn publication_source_table(store: &impl ScopedConfigRegistry) {
                 )),
                 ..Default::default()
             };
-            let snapshot = awaken_agent_config::compile_resolved(&config, &[], metadata).unwrap();
+            let snapshot =
+                awaken_agent_config::compile_resolved(&config, &[], metadata, |_| true).unwrap();
             let publication = awaken_agent_config::StoredPublication::published_at_revision(
                 snapshot,
                 &config.id,

@@ -5,7 +5,7 @@ import { parseDurableJson, sqliteRows, stringifyDurableJson } from '../sqlite.mj
 // its published frame here; SQLite admission and lossless JSON stay in sqlite.mjs.
 const EXTRACTION_FORMAT = 'awaken.memory-extraction.v1';
 
-function extractionValue(data) {
+export function extractionValue(data) {
   const value = parseDurableJson(data);
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError('Memory extraction fixture requires an object frame');

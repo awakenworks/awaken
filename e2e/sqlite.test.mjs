@@ -3,8 +3,38 @@ import { test } from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseDurableJson, sqliteExec, sqliteRun, stringifyDurableJson } from './sqlite.mjs';
+import { parseDurableJson, sqliteDatabaseForThread, sqliteExec, sqliteRun, stringifyDurableJson } from './sqlite.mjs';
 import * as memoryExtraction from './fixtures/memory_extraction_fixture.mjs';
+
+test('Run facts locate a unique thread partition before any message is committed', () => {
+  // Cause/effect table: L1 an exact Run fact, without message rows, identifies
+  // one Runtime partition; L2 no exact Thread fact refuses without creating a
+  // database; L3 two exact partitions refuse instead of choosing a first file.
+  // Run state is the authority even when inference never committed a message.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-run-fact-'));
+  const database = path.join(directory, 'runtime.db');
+  const create = (file) => {
+    sqliteExec(file, `CREATE TABLE runtime_run_record (
+      run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, phase TEXT NOT NULL
+    )`);
+    sqliteRun(file, 'INSERT INTO runtime_run_record VALUES (?, ?, ?)',
+      'aux-run', 'aux-thread', '"Awaiting"');
+  };
+  try {
+    create(database);
+    assert.equal(sqliteDatabaseForThread(directory, 'aux-thread', 'runtime_run_record'),
+      database, 'L1 no message is required to observe a Run fact');
+    const files = fs.readdirSync(directory).sort();
+    assert.throws(() => sqliteDatabaseForThread(directory, 'missing-thread', 'runtime_run_record'),
+      /matches=\[\]/u, 'L2 no guessed partition');
+    assert.deepEqual(fs.readdirSync(directory).sort(), files, 'L2 query creates no file');
+    create(path.join(directory, 'competing.db'));
+    assert.throws(() => sqliteDatabaseForThread(directory, 'aux-thread', 'runtime_run_record'),
+      /thread must have one/u, 'L3 competing Run authorities are refused');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 // Durable-JSON cause/effect graph: C1 an integer token is safe; C2 an integer
 // token exceeds Number's exact range; C3 the same digits occur inside a string;
