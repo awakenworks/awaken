@@ -511,6 +511,7 @@ def native_pre_commit_configuration(hooks: str) -> str:
     File filtering, stage_fixed, local config and extensions remain Lefthook's
     responsibility. The bridge is absent only in this transient child view.
     """
+    hooks = hooks.replace('\r\n', '\n')
     entry = re.search(r'(?ms)^pre-commit:\n(.*?)(?=^\S|\Z)', hooks)
     checks = re.search(r'(?ms)^commit-checks:\n(.*?)(?=^\S|\Z)', hooks)
     if observation_entry_errors(hooks) or not entry or not checks or checks.start() < entry.end():

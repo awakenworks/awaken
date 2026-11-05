@@ -150,7 +150,7 @@ class ApplicationCaseFloorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='pg-case-policy-') as t:
             d = Path(t) / 'scripts/ci'
             d.mkdir(parents=True)
-            (d / 'pg_tests.sh').write_text(text)
+            (d / 'pg_tests.sh').write_text(text, encoding='utf-8', newline='\n')
             return policy.postgres_phases('resources', Path(t))
 
     def test_complete_existing_case_set_keeps_all_ten_resource_domains(self):

@@ -57,7 +57,7 @@ while True:
 """
 
 
-def cleanup_fixture_group(coordinate: Path, process=None) -> None:
+def cleanup_fixture_group(coordinate: Path, process=None, *, pipe_timeout=5) -> None:
     """Retire only this fixture's group, including a nested inherited group."""
     if coordinate.exists():
         leader = int(coordinate.read_text())
@@ -74,7 +74,7 @@ def cleanup_fixture_group(coordinate: Path, process=None) -> None:
     if process is not None:
         if process.poll() is None:
             process.kill()
-        process.communicate(timeout=5)
+        process.communicate(timeout=pipe_timeout)
 
 
 @unittest.skipIf(os.name == "nt", "POSIX process groups and Cargo admission are owned by Linux/macOS")

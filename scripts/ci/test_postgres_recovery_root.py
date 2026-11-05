@@ -33,6 +33,9 @@ def invoke_fixture(command, **kwargs):
     # Setup/diagnostics are not subsecond startup SLOs. One shared deadline
     # bounds the complete fixture and cleans its process group on timeout;
     # subprocess's longer watchdog diagnoses a failure in that same owner.
+    # Git Bash emits UTF-8 even when Windows uses a legacy code page.
+    if kwargs.get("text"):
+        kwargs.setdefault("encoding", "utf-8")
     return subprocess.run([sys.executable, str(DEADLINE), "60", "--", *command],
                           timeout=75, **kwargs)
 
@@ -61,7 +64,7 @@ def recovery_root_argument(value):
     # traversal components lexical so the negative partition stays meaningful.
     return subprocess.check_output(
         [bash_executable(), "-c", 'cygpath -u -- "$1"', "fixture-path", str(value)],
-        text=True, timeout=15,
+        text=True, encoding="utf-8", timeout=15,
     ).strip()
 
 
