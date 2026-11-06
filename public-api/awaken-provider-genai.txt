@@ -15,7 +15,6 @@ pub struct awaken_provider_genai::GenaiExecutor
 impl awaken_provider_genai::GenaiExecutor
 pub fn awaken_provider_genai::GenaiExecutor::from_materialized_endpoint(genai::adapter::adapter_kind::AdapterKind, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> awaken_runtime_contract::llm::Result<Self>
 pub fn awaken_provider_genai::GenaiExecutor::from_materialized_provider_endpoint(impl core::convert::Into<alloc::string::String>, genai::adapter::adapter_kind::AdapterKind, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, awaken_runtime_contract::resolved::UnspecifiedReasoning) -> awaken_runtime_contract::llm::Result<Self>
-pub fn awaken_provider_genai::GenaiExecutor::with_client(genai::client::client_types::Client) -> Self
 pub fn awaken_provider_genai::GenaiExecutor::with_client_for_adapter(genai::client::client_types::Client, genai::adapter::adapter_kind::AdapterKind) -> Self
 impl awaken_runtime_contract::llm::LlmExecutor for awaken_provider_genai::GenaiExecutor
 pub fn awaken_provider_genai::GenaiExecutor::effect_scope(&self, &awaken_runtime_contract::llm::ChatRequest) -> awaken_runtime_contract::model_operation::reentry::ModelEffectScope
