@@ -493,8 +493,11 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+// Every input below is a closed enum or a bool, so each test enumerates its whole
+// domain. Each `every_*` list is checked against a total `match` (no `_` arm):
+// a new variant fails to compile until it is listed.
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
     // The legacy binding migration is decided by the production selector
@@ -554,193 +557,266 @@ mod verification {
         }
     }
 
-    fn symbolic_access() -> RouteAccess {
-        if kani::any() {
-            RouteAccess::Read
-        } else {
-            RouteAccess::Write
+    const fn listed_access(access: RouteAccess) -> usize {
+        match access {
+            RouteAccess::Read => 0,
+            RouteAccess::Write => 1,
         }
     }
+    const EVERY_ACCESS: [RouteAccess; 2] = [RouteAccess::Read, RouteAccess::Write];
 
-    fn symbolic_authority() -> WorkspaceRoleAuthority {
-        match kani::any::<u8>() % 5 {
-            0 => WorkspaceRoleAuthority::WorkspaceConfigurationAll,
-            1 => WorkspaceRoleAuthority::WorkspaceApiKeyAll,
-            2 => WorkspaceRoleAuthority::WorkspaceModelSupplyRead,
-            3 => WorkspaceRoleAuthority::WorkspaceModelSupplyConnect,
-            _ => WorkspaceRoleAuthority::WorkspaceSkillAll,
+    const fn listed_authority(authority: WorkspaceRoleAuthority) -> usize {
+        match authority {
+            WorkspaceRoleAuthority::WorkspaceConfigurationAll => 0,
+            WorkspaceRoleAuthority::WorkspaceApiKeyAll => 1,
+            WorkspaceRoleAuthority::WorkspaceModelSupplyRead => 2,
+            WorkspaceRoleAuthority::WorkspaceModelSupplyConnect => 3,
+            WorkspaceRoleAuthority::WorkspaceSkillAll => 4,
         }
     }
+    const EVERY_AUTHORITY: [WorkspaceRoleAuthority; 5] = [
+        WorkspaceRoleAuthority::WorkspaceConfigurationAll,
+        WorkspaceRoleAuthority::WorkspaceApiKeyAll,
+        WorkspaceRoleAuthority::WorkspaceModelSupplyRead,
+        WorkspaceRoleAuthority::WorkspaceModelSupplyConnect,
+        WorkspaceRoleAuthority::WorkspaceSkillAll,
+    ];
 
-    fn symbolic_workspace_profile_authority() -> WorkspaceProfileAuthority {
-        match kani::any::<u8>() % 12 {
-            0 => WorkspaceProfileAuthority::WorkspaceAll,
-            1 => WorkspaceProfileAuthority::WorkspaceRead,
-            2 => WorkspaceProfileAuthority::ApiKeyAll,
-            3 => WorkspaceProfileAuthority::ApiKeyRead,
-            4 => WorkspaceProfileAuthority::ModelSupplyAll,
-            5 => WorkspaceProfileAuthority::ModelSupplyRead,
-            6 => WorkspaceProfileAuthority::FileAll,
-            7 => WorkspaceProfileAuthority::FileRead,
-            8 => WorkspaceProfileAuthority::SkillAll,
-            9 => WorkspaceProfileAuthority::SkillRead,
-            10 => WorkspaceProfileAuthority::ModelSupplyConnect,
-            _ => WorkspaceProfileAuthority::ModelSupplyWrite,
+    const fn listed_profile_authority(authority: WorkspaceProfileAuthority) -> usize {
+        match authority {
+            WorkspaceProfileAuthority::WorkspaceAll => 0,
+            WorkspaceProfileAuthority::WorkspaceRead => 1,
+            WorkspaceProfileAuthority::ApiKeyAll => 2,
+            WorkspaceProfileAuthority::ApiKeyRead => 3,
+            WorkspaceProfileAuthority::ModelSupplyAll => 4,
+            WorkspaceProfileAuthority::ModelSupplyRead => 5,
+            WorkspaceProfileAuthority::FileAll => 6,
+            WorkspaceProfileAuthority::FileRead => 7,
+            WorkspaceProfileAuthority::SkillAll => 8,
+            WorkspaceProfileAuthority::SkillRead => 9,
+            WorkspaceProfileAuthority::ModelSupplyConnect => 10,
+            WorkspaceProfileAuthority::ModelSupplyWrite => 11,
         }
     }
+    const EVERY_PROFILE_AUTHORITY: [WorkspaceProfileAuthority; 12] = [
+        WorkspaceProfileAuthority::WorkspaceAll,
+        WorkspaceProfileAuthority::WorkspaceRead,
+        WorkspaceProfileAuthority::ApiKeyAll,
+        WorkspaceProfileAuthority::ApiKeyRead,
+        WorkspaceProfileAuthority::ModelSupplyAll,
+        WorkspaceProfileAuthority::ModelSupplyRead,
+        WorkspaceProfileAuthority::FileAll,
+        WorkspaceProfileAuthority::FileRead,
+        WorkspaceProfileAuthority::SkillAll,
+        WorkspaceProfileAuthority::SkillRead,
+        WorkspaceProfileAuthority::ModelSupplyConnect,
+        WorkspaceProfileAuthority::ModelSupplyWrite,
+    ];
 
-    fn symbolic_binding_role() -> WorkspaceBindingRole {
-        match kani::any::<u8>() % 13 {
-            0 => WorkspaceBindingRole::Admin,
-            1 => WorkspaceBindingRole::Developer,
-            2 => WorkspaceBindingRole::Billing,
-            3 => WorkspaceBindingRole::User,
-            4 => WorkspaceBindingRole::ClaudeCodeUser,
-            5 => WorkspaceBindingRole::WorkspaceAdmin,
-            6 => WorkspaceBindingRole::WorkspaceDeveloper,
-            7 => WorkspaceBindingRole::WorkspaceRestrictedDeveloper,
-            8 => WorkspaceBindingRole::WorkspaceUser,
-            9 => WorkspaceBindingRole::WorkspaceBilling,
-            10 => WorkspaceBindingRole::AgentPublisher,
-            11 => WorkspaceBindingRole::CredentialIngress,
-            _ => WorkspaceBindingRole::HostedWorkspaceAdmin,
+    const fn listed_binding_role(role: WorkspaceBindingRole) -> usize {
+        match role {
+            WorkspaceBindingRole::Admin => 0,
+            WorkspaceBindingRole::Developer => 1,
+            WorkspaceBindingRole::Billing => 2,
+            WorkspaceBindingRole::User => 3,
+            WorkspaceBindingRole::ClaudeCodeUser => 4,
+            WorkspaceBindingRole::WorkspaceAdmin => 5,
+            WorkspaceBindingRole::WorkspaceDeveloper => 6,
+            WorkspaceBindingRole::WorkspaceRestrictedDeveloper => 7,
+            WorkspaceBindingRole::WorkspaceUser => 8,
+            WorkspaceBindingRole::WorkspaceBilling => 9,
+            WorkspaceBindingRole::AgentPublisher => 10,
+            WorkspaceBindingRole::CredentialIngress => 11,
+            WorkspaceBindingRole::HostedWorkspaceAdmin => 12,
+        }
+    }
+    const EVERY_BINDING_ROLE: [WorkspaceBindingRole; 13] = [
+        WorkspaceBindingRole::Admin,
+        WorkspaceBindingRole::Developer,
+        WorkspaceBindingRole::Billing,
+        WorkspaceBindingRole::User,
+        WorkspaceBindingRole::ClaudeCodeUser,
+        WorkspaceBindingRole::WorkspaceAdmin,
+        WorkspaceBindingRole::WorkspaceDeveloper,
+        WorkspaceBindingRole::WorkspaceRestrictedDeveloper,
+        WorkspaceBindingRole::WorkspaceUser,
+        WorkspaceBindingRole::WorkspaceBilling,
+        WorkspaceBindingRole::AgentPublisher,
+        WorkspaceBindingRole::CredentialIngress,
+        WorkspaceBindingRole::HostedWorkspaceAdmin,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_ACCESS.into_iter().enumerate() {
+            assert_eq!(listed_access(value), index);
+        }
+        for (index, value) in EVERY_AUTHORITY.into_iter().enumerate() {
+            assert_eq!(listed_authority(value), index);
+        }
+        for (index, value) in EVERY_PROFILE_AUTHORITY.into_iter().enumerate() {
+            assert_eq!(listed_profile_authority(value), index);
+        }
+        for (index, value) in EVERY_BINDING_ROLE.into_iter().enumerate() {
+            assert_eq!(listed_binding_role(value), index);
         }
     }
 
     // Hosted Runtime and Workspace role vocabulary is owned by its only consumer.
+    /// @exhaustive RouteAccess(2) = 2
     /// @obligation authz.run_backed_protocol_routes_use_the_exact_run_action_namespace
-    #[kani::proof]
+    #[test]
     fn run_backed_route_policy_uses_exact_run_actions() {
-        let access = symbolic_access();
-        let selected = run_backed_route_policy(access);
-        match (access, selected) {
-            (
-                RouteAccess::Read,
-                RouteGuardSelection::HostedRuntime {
-                    action,
-                    embedded_action,
-                },
-            ) => {
-                assert_eq!(action, AuthorizationAction::RunRead);
-                assert_eq!(embedded_action, AuthorizationAction::WorkspaceRead);
+        for access in EVERY_ACCESS {
+            let selected = run_backed_route_policy(access);
+            match (access, selected) {
+                (
+                    RouteAccess::Read,
+                    RouteGuardSelection::HostedRuntime {
+                        action,
+                        embedded_action,
+                    },
+                ) => {
+                    assert_eq!(action, AuthorizationAction::RunRead);
+                    assert_eq!(embedded_action, AuthorizationAction::WorkspaceRead);
+                }
+                (
+                    RouteAccess::Write,
+                    RouteGuardSelection::HostedRuntime {
+                        action,
+                        embedded_action,
+                    },
+                ) => {
+                    assert_eq!(action, AuthorizationAction::RunCreate);
+                    assert_eq!(embedded_action, AuthorizationAction::WorkspaceWrite);
+                }
+                (_, RouteGuardSelection::Application) => unreachable!(),
             }
-            (
-                RouteAccess::Write,
-                RouteGuardSelection::HostedRuntime {
-                    action,
-                    embedded_action,
-                },
-            ) => {
-                assert_eq!(action, AuthorizationAction::RunCreate);
-                assert_eq!(embedded_action, AuthorizationAction::WorkspaceWrite);
-            }
-            (_, RouteGuardSelection::Application) => unreachable!(),
         }
     }
 
+    /// @exhaustive RouteAccess(2) = 2
     /// @obligation authz.application_protocol_is_scoped_by_application_guard_not_service_guard
-    /// @proof-input-debt tautology application_route_policy
-    #[kani::proof]
+    #[test]
     fn application_route_policy_never_enters_the_service_guard() {
-        assert_eq!(
-            application_route_policy(symbolic_access()),
-            RouteGuardSelection::Application
-        );
+        for access in EVERY_ACCESS {
+            assert_eq!(
+                application_route_policy(access),
+                RouteGuardSelection::Application
+            );
+        }
     }
 
+    /// @exhaustive WorkspaceRoleAuthority(5) = 5
     /// @obligation authz.credential_ingress_role_is_exact_workspace_apikey_and_provider_connect_only
-    #[kani::proof]
+    #[test]
     fn credential_ingress_role_contains_only_apikey_and_provider_connect_authority() {
-        let authority = symbolic_authority();
-        assert_eq!(
-            credential_ingress_role_contains(authority),
-            matches!(
-                authority,
-                WorkspaceRoleAuthority::WorkspaceApiKeyAll
-                    | WorkspaceRoleAuthority::WorkspaceModelSupplyConnect
-            )
-        );
+        for authority in EVERY_AUTHORITY {
+            assert_eq!(
+                credential_ingress_role_contains(authority),
+                matches!(
+                    authority,
+                    WorkspaceRoleAuthority::WorkspaceApiKeyAll
+                        | WorkspaceRoleAuthority::WorkspaceModelSupplyConnect
+                )
+            );
+        }
     }
 
+    /// @exhaustive WorkspaceRoleAuthority(5) = 5
     /// @obligation authz.agent_publisher_role_is_exact_workspace_agent_model_read_and_skill_only
-    #[kani::proof]
+    #[test]
     fn agent_publisher_role_contains_only_workspace_model_read_and_skill_authority() {
-        let authority = symbolic_authority();
-        assert_eq!(
-            agent_publisher_role_contains(authority),
-            matches!(
-                authority,
-                WorkspaceRoleAuthority::WorkspaceConfigurationAll
-                    | WorkspaceRoleAuthority::WorkspaceModelSupplyRead
-                    | WorkspaceRoleAuthority::WorkspaceSkillAll
-            )
-        );
+        for authority in EVERY_AUTHORITY {
+            assert_eq!(
+                agent_publisher_role_contains(authority),
+                matches!(
+                    authority,
+                    WorkspaceRoleAuthority::WorkspaceConfigurationAll
+                        | WorkspaceRoleAuthority::WorkspaceModelSupplyRead
+                        | WorkspaceRoleAuthority::WorkspaceSkillAll
+                )
+            );
+        }
     }
 
+    /// @exhaustive WorkspaceProfileAuthority(12) = 12
     /// @obligation authz.hosted_workspace_and_runtime_member_grants_are_exact
-    #[kani::proof]
+    #[test]
     fn hosted_admin_role_contains_exactly_its_seven_workspace_authorities() {
-        let authority = symbolic_workspace_profile_authority();
-        assert_eq!(
-            workspace_profile_role_contains(WorkspaceProfileRole::HostedAdmin, authority),
-            matches!(
-                authority,
-                WorkspaceProfileAuthority::WorkspaceAll
-                    | WorkspaceProfileAuthority::ApiKeyAll
-                    | WorkspaceProfileAuthority::ModelSupplyRead
-                    | WorkspaceProfileAuthority::ModelSupplyConnect
-                    | WorkspaceProfileAuthority::ModelSupplyWrite
-                    | WorkspaceProfileAuthority::FileAll
-                    | WorkspaceProfileAuthority::SkillAll
-            )
-        );
+        for authority in EVERY_PROFILE_AUTHORITY {
+            assert_eq!(
+                workspace_profile_role_contains(WorkspaceProfileRole::HostedAdmin, authority),
+                matches!(
+                    authority,
+                    WorkspaceProfileAuthority::WorkspaceAll
+                        | WorkspaceProfileAuthority::ApiKeyAll
+                        | WorkspaceProfileAuthority::ModelSupplyRead
+                        | WorkspaceProfileAuthority::ModelSupplyConnect
+                        | WorkspaceProfileAuthority::ModelSupplyWrite
+                        | WorkspaceProfileAuthority::FileAll
+                        | WorkspaceProfileAuthority::SkillAll
+                )
+            );
+        }
     }
 
+    /// @exhaustive WorkspaceProfileAuthority(12) = 12
     /// @obligation authz.hosted_workspace_and_runtime_member_grants_are_exact
-    #[kani::proof]
+    #[test]
     fn hosted_builder_role_has_writes_without_apikey_or_model_administration() {
-        let authority = symbolic_workspace_profile_authority();
-        assert_eq!(
-            workspace_profile_role_contains(WorkspaceProfileRole::HostedBuilder, authority),
-            matches!(
-                authority,
-                WorkspaceProfileAuthority::WorkspaceAll
-                    | WorkspaceProfileAuthority::ModelSupplyRead
-                    | WorkspaceProfileAuthority::FileAll
-                    | WorkspaceProfileAuthority::SkillAll
-            )
-        );
+        for authority in EVERY_PROFILE_AUTHORITY {
+            assert_eq!(
+                workspace_profile_role_contains(WorkspaceProfileRole::HostedBuilder, authority),
+                matches!(
+                    authority,
+                    WorkspaceProfileAuthority::WorkspaceAll
+                        | WorkspaceProfileAuthority::ModelSupplyRead
+                        | WorkspaceProfileAuthority::FileAll
+                        | WorkspaceProfileAuthority::SkillAll
+                )
+            );
+        }
     }
 
+    /// @exhaustive WorkspaceProfileAuthority(12) = 12
     /// @obligation authz.hosted_workspace_and_runtime_member_grants_are_exact
-    #[kani::proof]
+    #[test]
     fn workspace_member_role_contains_exactly_read_only_workspace_authorities() {
-        let authority = symbolic_workspace_profile_authority();
-        assert_eq!(
-            workspace_profile_role_contains(WorkspaceProfileRole::WorkspaceMember, authority),
-            matches!(
-                authority,
-                WorkspaceProfileAuthority::WorkspaceRead
-                    | WorkspaceProfileAuthority::ModelSupplyRead
-                    | WorkspaceProfileAuthority::FileRead
-                    | WorkspaceProfileAuthority::SkillRead
-            )
-        );
+        for authority in EVERY_PROFILE_AUTHORITY {
+            assert_eq!(
+                workspace_profile_role_contains(WorkspaceProfileRole::WorkspaceMember, authority),
+                matches!(
+                    authority,
+                    WorkspaceProfileAuthority::WorkspaceRead
+                        | WorkspaceProfileAuthority::ModelSupplyRead
+                        | WorkspaceProfileAuthority::FileRead
+                        | WorkspaceProfileAuthority::SkillRead
+                )
+            );
+        }
     }
 
+    /// @exhaustive WorkspaceBindingRole(13) x bool(2) x bool(2) = 52
     /// @obligation authz.legacy_workspace_binding_migration_is_authority_preserving_and_idempotent
-    #[kani::proof]
+    #[test]
     fn legacy_workspace_binding_migration_is_idempotent_and_authority_exact() {
-        let state = WorkspaceBindingMigrationState::Legacy {
-            role: symbolic_binding_role(),
-            has_management_binding: kani::any(),
-            has_resource_binding: kani::any(),
-        };
-        let migrated = migrate_workspace_binding_state(state);
-        assert_eq!(
-            migration_state_authority_mask(migrated),
-            migration_state_authority_mask(state)
-        );
-        assert_eq!(migrate_workspace_binding_state(migrated), migrated);
+        for role in EVERY_BINDING_ROLE {
+            for has_management_binding in [false, true] {
+                for has_resource_binding in [false, true] {
+                    let state = WorkspaceBindingMigrationState::Legacy {
+                        role,
+                        has_management_binding,
+                        has_resource_binding,
+                    };
+                    let migrated = migrate_workspace_binding_state(state);
+                    assert_eq!(
+                        migration_state_authority_mask(migrated),
+                        migration_state_authority_mask(state)
+                    );
+                    assert_eq!(migrate_workspace_binding_state(migrated), migrated);
+                }
+            }
+        }
     }
 }

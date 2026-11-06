@@ -926,7 +926,13 @@ Recorded tool identities and per-check timings are release evidence, not proof
 that a check which did not execute passed.
 
 `formal/obligations/` (one TOML file per obligation; Kani harnesses name theirs
-with `/// @obligation <id>`) is the claim-oriented ledger. The CI gate verifies
+with `/// @obligation <id>`) is the claim-oriented ledger. An obligation whose
+whole input domain is finite and small (closed enums, bools, small integers) is
+held by an exhaustive `#[test]` instead, anchored with `/// @exhaustive
+<domain> = <cases>` beside its `@obligation` line; nextest proves it on every
+commit (`formal_anchors.py`). Kani harnesses without a tier tag are the
+critical ones the daily `pr` tier proves for affected packages; `tier=nightly`
+marks the heavy ones only the nightly and release `full` tier runs. The CI gate verifies
 that every evidence path exists and that at least 70% of formalizable safety
 obligations have checked formal evidence. The gate prints the obligation total,
 coverage ratio, external-assumption total and the independent model-checked,

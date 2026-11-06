@@ -12,6 +12,20 @@ A harness whose Kani selection is not the default states it the same way, in
 one line: ``/// @kani profile=<name> features=<f,...> tier=pr|nightly`` (see
 ``formal_plan``).
 
+An obligation whose whole input domain is finite and small (closed enums,
+bools, small integers) is held by an exhaustive ``#[test]`` instead of a Kani
+harness: enumerating the domain under nextest is the same proof, run on every
+commit. The test states the domain it enumerates and the obligation it serves::
+
+    /// @exhaustive RouteAccess(2) x WorkspaceRoleAuthority(5) = 10
+    /// @obligation authz.credential_ingress_role_is_exact_workspace_apikey_and_provider_connect_only
+    #[test]
+    fn credential_ingress_role_is_exact_over_every_authority() { ... }
+
+``@exhaustive`` is the reviewed statement that every input ranges over the
+named finite domain and the loop visits all of it; a sampled table is not
+exhaustive and keeps its Kani harness.
+
 The harness block is the run of outer attributes and line comments directly
 above the ``fn`` (through ``#[kani::proof]`` and any attribute after it). An
 anchor anywhere else is dangling. This module only reads and parses; the rules
@@ -38,11 +52,16 @@ from formal_sources import matching_lines, source_text
 RUST_SOURCES = "crates/**/*.rs"
 CARGO_MANIFESTS = "crates/**/Cargo.toml"
 PROOF_ATTRIBUTE = "#[kani::proof]"
+TEST_ATTRIBUTE = "#[test]"
 # `@obligation <id>` names an obligation the harness serves (formal_ledger);
 # `@kani key=value ...` states its non-default Kani selection (formal_plan);
 # `@proof-input-debt <rule> <kernel> [<parameter>]` records an unreviewed
-# proof-input finding (check_proof_input_derivation).
-TAGS = ("obligation", "kani", "proof-input-debt")
+# proof-input finding (check_proof_input_derivation);
+# `@exhaustive <domain>` marks a `#[test]` that enumerates a finite domain as
+# the proof of the obligations it names (formal_ledger).
+TAGS = ("obligation", "kani", "proof-input-debt", "exhaustive")
+# The tags an exhaustive test may carry; the others belong to Kani harnesses.
+TEST_TAGS = ("obligation", "exhaustive")
 # A doc-comment line carrying one tag: `/// @<tag> <value...>`.
 ANCHOR = re.compile(r"^\s*///\s*@(?P<tag>[a-z][a-z-]*)(?:\s+(?P<value>.*?))?\s*$")
 BLOCK_LINE = re.compile(r"^\s*(?:#\[.*\]|///.*|//(?!!).*)\s*$")
@@ -88,6 +107,8 @@ class Scan:
     # Anchors outside every harness block, and structural errors (file:line).
     dangling: list[Anchor]
     errors: list[str]
+    # `#[test]` functions carrying `@exhaustive`: the finite-domain proofs.
+    tests: list[Harness] = field(default_factory=list)
 
 
 def _packages(root: Path) -> dict[str, str]:
@@ -117,17 +138,20 @@ def scan_text(relative: str, text: str, package: str | None) -> Scan:
     raw = text.split("\n")
     syntax = rust_syntax(text).split("\n")
     harnesses: list[Harness] = []
+    tests: list[Harness] = []
     errors: list[str] = []
     claimed: set[int] = set()
     for index, line in enumerate(syntax):
-        if line.strip() != PROOF_ATTRIBUTE:
+        attribute = line.strip()
+        if attribute not in (PROOF_ATTRIBUTE, TEST_ATTRIBUTE):
             continue
         end = index + 1
         while end < len(raw) and BLOCK_LINE.match(raw[end]) and not FUNCTION.match(raw[end]):
             end += 1
         function = FUNCTION.match(raw[end]) if end < len(raw) else None
         if function is None:
-            errors.append(f"{relative}:{index + 1}: {PROOF_ATTRIBUTE} is not followed by a fn")
+            if attribute == PROOF_ATTRIBUTE:
+                errors.append(f"{relative}:{index + 1}: {PROOF_ATTRIBUTE} is not followed by a fn")
             continue
         start = index
         while start > 0 and BLOCK_LINE.match(raw[start - 1]):
@@ -135,18 +159,39 @@ def scan_text(relative: str, text: str, package: str | None) -> Scan:
         harness = Harness(function["name"], relative, end + 1, package)
         for number in range(start, end):
             anchor = ANCHOR.match(raw[number])
-            if anchor is not None:
+            if anchor is not None and (attribute == PROOF_ATTRIBUTE or anchor["tag"] in TEST_TAGS):
                 claimed.add(number)
                 harness.anchors.append(
                     Anchor(relative, number + 1, anchor["tag"], anchor["value"] or "")
                 )
-        harnesses.append(harness)
+        if attribute == PROOF_ATTRIBUTE:
+            if harness.values("exhaustive"):
+                errors.append(
+                    f"{harness.values('exhaustive')[0].where}: @exhaustive marks a #[test]; "
+                    f"Kani harness {harness.name} proves its domain symbolically"
+                )
+            harnesses.append(harness)
+            continue
+        if not harness.anchors:
+            continue
+        exhaustive = harness.values("exhaustive")
+        if len(exhaustive) != 1 or not exhaustive[0].value:
+            errors.append(
+                f"{harness.where}: test {harness.name} serves an obligation only as an exhaustive "
+                "proof; state its finite domain in one `/// @exhaustive <domain>` line"
+            )
+        elif not harness.values("obligation"):
+            errors.append(
+                f"{exhaustive[0].where}: exhaustive test {harness.name} serves no obligation; "
+                "add `/// @obligation <prefix>.<name>` beside its #[test]"
+            )
+        tests.append(harness)
     dangling = [
         Anchor(relative, number + 1, match["tag"], match["value"] or "")
         for number, line in enumerate(raw)
         if number not in claimed and (match := ANCHOR.match(line)) is not None and match["tag"] in TAGS
     ]
-    return Scan(harnesses, dangling, errors)
+    return Scan(harnesses, dangling, errors, tests)
 
 
 def scan(root: Path) -> Scan:
@@ -158,6 +203,7 @@ def scan(root: Path) -> Scan:
     for relative, text in source_text(root, RUST_SOURCES, needles).items():
         found = scan_text(relative, text, _owner(relative, packages))
         result.harnesses.extend(found.harnesses)
+        result.tests.extend(found.tests)
         result.dangling.extend(found.dangling)
         result.errors.extend(found.errors)
     return result
