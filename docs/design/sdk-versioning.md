@@ -61,7 +61,7 @@ snapshot is new and starts at its declared version.
 |---|---|---|
 | `check_public_api.sh` | pre-push (affected crates), full gate | the committed snapshot is the compiled surface |
 | `check_sdk_semver.py` | pre-commit, full gate | each SDK crate's version and changelog cover its snapshot change |
-| `check_sdk_consumer.py --qualify-semver` | release | cargo-semver-checks findings match the declared cohort |
+| `check_sdk_consumer.py --qualify-semver` | release | pinned cargo-semver-checks exits 0 for every SDK crate with a baseline, default and all features: each change is allowed by the crate's declared version |
 
 A hand-edited snapshot (when a lane may not compile) is marked in its commit
 and in the batch report; the integrator's `check_public_api.sh --bless` run
