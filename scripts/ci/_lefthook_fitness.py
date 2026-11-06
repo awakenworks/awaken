@@ -1,4 +1,8 @@
-"""Keep mandatory push qualification independent of push-file discovery."""
+"""Process tests of the pre-push bootstrap (qualify.sh) in real Git and Lefthook.
+
+The static hook-shape rule (`hook_entry_errors`) is owned by
+`generate_hooks.py --check`; this module proves the shape behaves.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ import sys
 import tempfile
 
 from _native_shell import bash_executable
+from generate_hooks import hook_entry_errors
 
 INPUT_GLOBS: tuple[str, ...] = (
     "lefthook.yml",
@@ -28,25 +33,6 @@ INPUT_GLOBS: tuple[str, ...] = (
     "scripts/ci/deadline.py",
 )
 HOOK_ENTRY = "scripts/ci/pre-push/qualify.sh"
-
-
-def hook_entry_errors(hooks: str) -> list[str]:
-    from generate_hooks import hook_execution_errors, observation_entry_errors
-    errors = hook_execution_errors(hooks) + observation_entry_errors(hooks)
-    bridge = re.search(r"(?ms)^pre-push:\n(.*?)(?=^\S|\Z)", hooks)
-    lines = [line.strip() for line in bridge.group(1).splitlines()
-             if line.strip() and not line.lstrip().startswith("#")] if bridge else []
-    qualification = re.search(r"(?ms)^push-qualification:\n(.*?)(?=^\S|\Z)", hooks)
-    commands = re.findall(r"(?m)^      run: (.+)$", qualification.group(1)) if qualification else []
-    required = ["python3 scripts/ci/_native_shell.py " + command for command in (
-        "scripts/ci/check-docs.sh", "scripts/ci/check-rust.sh --push",
-        "scripts/ci/check_public_api.sh --require-tools --affected-upstream",
-        "scripts/ci/check-frontend.sh --quick")]
-    if (re.findall(r"(?m)^source_dir:\s*(\S+)\s*$", hooks) != ["scripts/ci"]
-            or lines != ["scripts:", "qualify.sh:", "runner: python3 scripts/ci/_native_shell.py", "args: --qualify"]
-            or len(re.findall(r"(?m)^push-qualification:$", hooks)) != 1 or commands != required):
-        errors.append("pre-push must use the mandatory script bootstrap and its independent qualification hook")
-    return errors
 
 
 def self_test(root: Path) -> None:

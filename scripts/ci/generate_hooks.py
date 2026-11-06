@@ -560,6 +560,25 @@ def observation_entry_errors(hooks: str) -> list[str]:
     return []
 
 
+def hook_entry_errors(hooks: str) -> list[str]:
+    """Pre-commit structure plus the mandatory pre-push bootstrap and qualification."""
+    errors = hook_execution_errors(hooks) + observation_entry_errors(hooks)
+    bridge = re.search(r"(?ms)^pre-push:\n(.*?)(?=^\S|\Z)", hooks)
+    lines = [line.strip() for line in bridge.group(1).splitlines()
+             if line.strip() and not line.lstrip().startswith("#")] if bridge else []
+    qualification = re.search(r"(?ms)^push-qualification:\n(.*?)(?=^\S|\Z)", hooks)
+    commands = re.findall(r"(?m)^      run: (.+)$", qualification.group(1)) if qualification else []
+    required = ["python3 scripts/ci/_native_shell.py " + command for command in (
+        "scripts/ci/check-docs.sh", "scripts/ci/check-rust.sh --push",
+        "scripts/ci/check_public_api.sh --require-tools --affected-upstream",
+        "scripts/ci/check-frontend.sh --quick")]
+    if (re.findall(r"(?m)^source_dir:\s*(\S+)\s*$", hooks) != ["scripts/ci"]
+            or lines != ["scripts:", "qualify.sh:", "runner: python3 scripts/ci/_native_shell.py", "args: --qualify"]
+            or len(re.findall(r"(?m)^push-qualification:$", hooks)) != 1 or commands != required):
+        errors.append("pre-push must use the mandatory script bootstrap and its independent qualification hook")
+    return errors
+
+
 def _without_generated(block: list[str]) -> list[str]:
     """Drop the generated region and any glob property, keeping the rest verbatim."""
 
@@ -1252,7 +1271,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     rendered = render(current, declarations)
-    execution_errors = hook_execution_errors(rendered) + generated_hook_glob_errors(rendered, declarations)
+    execution_errors = hook_entry_errors(rendered) + generated_hook_glob_errors(rendered, declarations)
     if execution_errors:
         print('\n'.join(execution_errors), file=sys.stderr)
         return 1

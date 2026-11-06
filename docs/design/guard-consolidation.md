@@ -656,3 +656,25 @@ keeps its named crates: the Coordinator binary's closure still holds six non-con
 `context = "worker"` crates (`installation-workspace`, `local-process`, `package-image`,
 `protocol-acp`, `run-executor-acp`, `worker-registry`), so `context` does not yet mean
 "runs on the Worker".
+
+## Hook triggers, gate scope and admission (2026-11-06)
+
+| Removed or changed rule | New holder | Negative example (command → result) |
+|---|---|---|
+| `scripts/ci/**` / `scripts/ci/*.py` as Rust-gate inputs (`rust_test_plan`, `check_sdk_consumer`) | rendered `rust-quick` trigger = Rust build inputs + what `check-rust.sh --quick` runs (`generate_hooks.script_closure`, shell callees included) | `generate_hooks.py --self-test` T5/T6: `check_formal.sh`, `test_formal_run_evidence.py`, docs do not start the gate; `_cargo_target.sh`, `check_rust_test_execution.py`, manifests do |
+| trigger follows Python imports only | `generate_hooks.script_edges/script_closure` (imports, `source`, shell command lines, subprocess script paths; read-only shell lines and Python strings are data) | `--self-test` S1–S4 |
+| "gate script or unowned input → whole" | `rust_test_plan.gate_plan`: none / packages / whole + `script=` reached gate scripts; selector (`rust_test_plan`, `crate_test`, `generate_hooks`, `check-rust.sh`, their imports, sourced helpers), manifest, lockfile → whole | `rust_test_plan.py --self-test` G1–G5 (selector rows → whole; `check_dependency_sources.py` → only its step) |
+| changed script's tests run only in their gate group (e.g. `test_formal_run_evidence.py` only in formal) | pre-commit `script-tests` (`generate_hooks.py --script-tests`): every self-test/`test_*.py` the gates name, plus orphans, whose entry runs, reads or names a staged file | `--self-test` R1–R4; `--script-tests scripts/ci/check_formal.sh` ran 10 tests incl. `test_formal_run_evidence.py` (rc 0, 95 s) |
+| `affected-rust-plan` hook (planner self-test on every Rust edit) | `script-tests` when the planner's closure changes; check-all static | `check_test_orchestration.py --self-test` F1–F4 |
+| wide `scripts/ci/**` in 6 native/postgres tests and `test_formal_gate_mutations` | closure + named data files | `_input_closure` audit of each: 0 escapes |
+| static-metadata execution narrowing, `--execution-scope` | none needed: `test_inventory.txt`/`modularity_baseline.json` are no Rust-gate input | `rust_test_plan.py --self-test` decision table |
+| `compile_scope`/`peer_packages`/`native_graph_reason` (+ the config-key allowlist added first) | incremental `cargo check --workspace` | measured: narrowing kept 152 of 153 packages for `awaken-eval`, `awaken-sync`, `awaken-sandbox` edits |
+| one host admission per cargo step | `check-rust.sh` re-enters once under `run_with_deadline --admit`; inner Cargo inherits it; `_deadline.sh awaken_admission_holder` prints holder/wait every 30 s | fake host: 1 `awaken-ci-deadline` queued, 26 inner calls `inherited` |
+| pre-push bootstrap shape in `_lefthook_fitness` + `check_test_orchestration`; generated-glob errors also in orchestration | `generate_hooks.py --check` (`hook_entry_errors`) | `hook_entry_errors(lefthook with check-rust.sh --push → true)` → refused |
+| Rust-gate telemetry always on | opt-in `AWAKEN_BUILD_OBSERVE=1` | — |
+
+## Concurrent worktree commits (2026-11-07)
+
+| Removed or changed rule | New holder | Negative example (command → result) |
+|---|---|---|
+| none: lefthook's pre-commit backup (`git stash` "lefthook auto backup" + `info/lefthook-unstaged.patch`, both in the shared git dir) let two worktrees committing partially staged files at once swap or lose each other's unstaged hunks | `lefthook.yml` `rc:` → `scripts/ci/pre-commit/lefthook-rc.sh` points the hook's `LEFTHOOK_BIN` at `scripts/ci/lefthook_serial.py`, which holds a lock in the common git dir for a `run pre-commit` with a path both staged and unstaged; whole-file commits, other hooks and a nested run holding the lock do not wait | `python3 scripts/ci/lefthook_serial.py --self-test` with real lefthook 2.1.0: without the wrapper worktree `a` ends with `b unstaged` and `b` loses its hunk; with it both keep their own; mutants (no lock / lock whole-file commits / ignore the nested marker) each fail it |
