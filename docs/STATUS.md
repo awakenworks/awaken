@@ -201,6 +201,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `requirements-coverage.md` | Coverage map | Not required | n/a |
 | `formal-verification-expansion.md` | Coverage report | Not required | n/a |
 | `design/formal-proof-trust.md` | Coverage report | Not required | n/a |
+| `design/formal-exhaustive-tests.md` | Coverage report | Not required | n/a |
 | `design/architecture-overview.md` | Navigation / context map | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/config-to-run-execution-flow.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
 | `design/config-publication-lifecycle.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |

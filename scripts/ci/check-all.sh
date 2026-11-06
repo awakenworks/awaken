@@ -376,7 +376,7 @@ run formal "proof-input-derivation" python3 scripts/ci/check_proof_input_derivat
 # scheduled run keep the full tier, the only receipt a release accepts.
 formal_tier=()
 case "${AWAKEN_FORMAL_TIER:-full}" in
-  full) ;;
+  full) formal_tier=(--tier full) ;;
   pr)
     formal_tier=(--tier pr)
     if [ -n "${AWAKEN_FORMAL_AFFECTED_BASE:-}" ]; then
