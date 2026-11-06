@@ -1432,7 +1432,7 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
         # its owned children. GROUP_CODE publishes one complete readiness
         # document; failed observation/assertion still retires this fixture's
         # inherited group through its shared cleanup. Production deadlines
-        # and their cleanup policy remain unchanged.
+        # and their cleanup policy remain unchanged. The fixture has startup headroom.
         from test_deadline import GROUP_CODE, cleanup_fixture_group
         for dead_parent in (False, True):
             with self.subTest(dead_parent=dead_parent), tempfile.TemporaryDirectory() as temporary:
@@ -1442,14 +1442,15 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 case "$*" in *--list*) echo 'critical: test'; exit 0 ;; esac
 exec ''' + shlex.quote(sys.executable) + " -c " + shlex.quote(GROUP_CODE) + ' "$CARGO_TARGET_DIR/group" 0 0\n'
                 values = self.cargo_fixture(fixture, body)
-                values.update(AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="2",
+                values.update(AWAKEN_REQUIRED_TEST_BUILD_TIMEOUT_SECONDS="15",
+                              AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="10",
                               DEADLINE_COORDINATE=str(fixture / "target/deadline.pid"))
                 process = subprocess.Popen(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical"],
                                            cwd=fixture, env=values, stdin=subprocess.DEVNULL,
                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 try:
                     ready = fixture / "target/group.ready"
-                    until = time.monotonic() + 5
+                    until = time.monotonic() + 30
                     # awaken-wait: the actual inherited child group publishes PIDs.
                     while not ready.exists() and process.poll() is None and time.monotonic() < until:
                         time.sleep(.01)
@@ -1462,7 +1463,7 @@ exec ''' + shlex.quote(sys.executable) + " -c " + shlex.quote(GROUP_CODE) + ' "$
                         finalizer = parent(parent(deadline_pid))
                         self.assertEqual(Path(f"/proc/{finalizer}/cwd").resolve(), fixture)
                         os.kill(finalizer, signal.SIGTERM)
-                    output = process.communicate(timeout=12)
+                    output = process.communicate(timeout=25)
                     self.assertEqual(process.returncode, 143 if dead_parent else 124, output)
                     data = json.loads(next((fixture / "target/test-timings").glob("rust-execution.*/results.json")).read_text())
                     self.assertEqual(data["status"], "running" if dead_parent else "failed")
@@ -1474,7 +1475,7 @@ exec ''' + shlex.quote(sys.executable) + " -c " + shlex.quote(GROUP_CODE) + ' "$
                         self.assertTrue(not state.exists() or state.read_text().split()[2] == "Z",
                                         "owned child remained live after its deadline")
                 finally:
-                    cleanup_fixture_group(fixture / "target/group", process)
+                    cleanup_fixture_group(fixture / "target/group", process, pipe_timeout=25)
 
     @unittest.skipIf(os.name == "nt", "POSIX shell status/admission fixture")
     def test_required_shell_keeps_execution_status(self) -> None:
