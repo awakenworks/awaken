@@ -37,6 +37,7 @@ pub(super) async fn select(
             return WorkerTransport::kubernetes(
                 client,
                 &policy.namespace,
+                &deployment.runtime.sandbox.k8s_namespace,
                 &policy.service_account,
                 &policy.audience,
                 &policy.provider_id,

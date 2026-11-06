@@ -1198,3 +1198,15 @@ fitness rejects reintroduction of host bundle functions, missing Sandbox
 spawn/control-channel use, or credentialed Workdir/Namespace paths. Unit tests
 cover the closed Workload/Platform/Worker delivery table, exact target matching,
 secret-redacted responses, Sandbox command construction, and publication CAS.
+
+### Recipient-key MCP transport parity (2026-11-06)
+
+The existing recipient-key envelope transports an exact static MCP
+Authorization Bearer for both already-admitted consumer mechanisms: the Native
+Worker relay and the ACP Workload process-protocol field. Each keeps its
+original holder and realization kind; WorkerRelay is not reclassified as ACP
+client injection. The issuer and resolver share one target/usage predicate and
+the canonical admission kernel. Another holder, purpose, header shape or OAuth
+refresh sidecar fails closed. This adds no custody path, key registry, source
+selection or unsealed fallback; the same sealed claims continue to bind the
+Workspace, credential revision, target/use, recipient and expiry.

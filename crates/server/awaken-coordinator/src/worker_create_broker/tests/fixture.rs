@@ -61,13 +61,19 @@ pub(super) fn no_api_route_fixture() -> NoApiRouteFixture {
         }
     });
     let client = Client::new(service, "sandbox-ns");
-    let ledger =
-        K8sWorkerCreateLedger::new(client.clone(), "control-ns", "sandbox-ns", "provider-a")
-            .unwrap();
+    let ledger = K8sWorkerCreateLedger::new(
+        client.clone(),
+        "control-ns",
+        "sandbox-ns",
+        "sandbox-ns",
+        "provider-a",
+    )
+    .unwrap();
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let clock = Arc::new(ManualClock::new(100));
     let router = Arc::new(K8sCreateBroker::new(
         Arc::new(ledger),
+        "sandbox-ns",
         "sandbox-ns",
         "provider-a",
     ))
@@ -423,7 +429,7 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
                         }
                         (200, created_pod.lock().unwrap().clone().unwrap())
                     }
-                    ("GET", "/api/v1/namespaces/sandbox-ns/pods/worker") => {
+                    ("GET", "/api/v1/namespaces/workers-ns/pods/worker") => {
                         let state = ledger_state(&stored);
                         assert_eq!(
                             state["worker_sealed"], true,
@@ -463,11 +469,16 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
         }
     });
     let client = Client::new(service, "sandbox-ns");
-    let ledger =
-        K8sWorkerCreateLedger::new(client.clone(), "control-ns", "sandbox-ns", "provider-a")
-            .unwrap();
+    let ledger = K8sWorkerCreateLedger::new(
+        client.clone(),
+        "control-ns",
+        "workers-ns",
+        "sandbox-ns",
+        "provider-a",
+    )
+    .unwrap();
     let (ledger_name, ledger_uid) = ledger
-        .initialize("sandbox-ns", "worker", "pod-uid", "pod-uid")
+        .initialize("workers-ns", "worker", "pod-uid", "pod-uid")
         .await
         .unwrap();
     let anchor = WorkerCreateLedger::new(
@@ -483,7 +494,7 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
     let registered = directory
         .register(
             WorkerRegistration {
-                worker_id: "k8s:sandbox-ns:worker:pod-uid".into(),
+                worker_id: "k8s:workers-ns:worker:pod-uid".into(),
                 incarnation_id: "pod-uid".into(),
                 // A current Worker offers the compiled prepared/journal wire
                 // codecs; an exact claim of a Native Run requires the journal.
@@ -501,7 +512,7 @@ pub(super) async fn broker_fixture(mutate_response: fn(&mut Value)) -> BrokerFix
         .await
         .unwrap();
     let ledger = Arc::new(ledger);
-    let broker = K8sCreateBroker::new(ledger.clone(), "sandbox-ns", "provider-a");
+    let broker = K8sCreateBroker::new(ledger.clone(), "workers-ns", "sandbox-ns", "provider-a");
     let create = K8sCreateRequest {
         path: "/api/v1/namespaces/sandbox-ns/pods".into(),
         object: json!({"metadata":{

@@ -152,6 +152,7 @@ impl WorkerTransport {
     pub fn kubernetes(
         client: kube::Client,
         namespace: &str,
+        sandbox_namespace: &str,
         service_account: &str,
         audience: &str,
         provider_id: &str,
@@ -161,6 +162,7 @@ impl WorkerTransport {
         kubernetes::assemble(
             client,
             namespace,
+            sandbox_namespace,
             service_account,
             audience,
             provider_id,

@@ -23,7 +23,7 @@ async fn closed_worker_create_fence_survives_missing_process_history() {
             let anchor = record.create_ledger.as_ref().unwrap();
             let exact =
                 binding(f.ledger.as_ref(), anchor, &pod, &f.identity, "provider-a").unwrap();
-            let process = serde_json::from_str(&original_process()).unwrap();
+            let process = serde_json::from_str(&original_process(&f.identity)).unwrap();
             f.ledger
                 .retain_process_binding(exact, &process)
                 .await
@@ -228,8 +228,12 @@ async fn closed_idle_worker_uses_the_same_original_creator_seal() {
     // The shared fixture refuses any Worker lookup while its ledger is open.
     let f = fixture::broker_fixture(|_| {}).await;
     f.directory.deregister(&f.identity).await.unwrap();
-    let exit =
-        WorkerProcessExit::new("provider-a", original_process(), "exact-original-exit").unwrap();
+    let exit = WorkerProcessExit::new(
+        "provider-a",
+        original_process(&f.identity),
+        "exact-original-exit",
+    )
+    .unwrap();
     f.directory
         .record_process_exit(&f.identity, exit.clone())
         .await
@@ -262,8 +266,12 @@ async fn closed_idle_worker_uses_the_same_original_creator_seal() {
     );
 }
 
-fn original_process() -> String {
-    json!({"namespace":"sandbox-ns","name":"worker","uid":"pod-uid",
+fn original_process(identity: &WorkerIdentity) -> String {
+    // The original Registry identity owns the process coordinate. Derive it
+    // through the existing Kubernetes type so the witness cannot silently
+    // substitute a Sandbox namespace when the Worker lives elsewhere.
+    let pod = KubernetesPodIdentity::from_worker_id(&identity.worker_id).unwrap();
+    json!({"namespace":pod.namespace(),"name":pod.name(),"uid":pod.uid(),
         "node":"node-a","containers":[{"name":"worker","container_id":"containerd://original",
         "started_at":"2026-10-01T00:00:00Z"}],"retained":true,"restartable":true})
     .to_string()
@@ -276,6 +284,7 @@ fn source(f: &fixture::BrokerFixture) -> Arc<dyn awaken_dispatch::WorkerExecutio
     // the fixture no longer reaches through a foreign private implementation.
     awaken_process_startup::WorkerTransport::kubernetes(
         f.api_client.clone(),
+        "workers-ns",
         "sandbox-ns",
         "worker",
         "awaken-worker",
@@ -328,7 +337,7 @@ async fn exited_worker_closes_its_original_create_ledger_before_releasing_eviden
                 .unwrap()
                 .lease,
         );
-        let process = original_process();
+        let process = original_process(&f.identity);
         let binding =
             AttemptExecutionBinding::new(f.identity.clone(), "provider-a", &process).unwrap();
         store.begin_attempt(&old, Some(&binding)).await.unwrap();
