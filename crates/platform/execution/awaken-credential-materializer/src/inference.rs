@@ -6,7 +6,7 @@
 //! Runtime realization of immutable, publication-pinned model candidates.
 //!
 //! One materializer owns exact candidate validation, fallback routing, direct
-//! provider credential realization, and (when enabled) brokered grant routing.
+//! provider credential realization, and brokered grant routing.
 //! Configuration catalogs and credential selection never enter this boundary.
 
 use std::sync::Arc;
@@ -32,15 +32,12 @@ use awaken_inference_endpoint::executor_from_materialized_endpoint_for_provider;
 #[derive(Clone)]
 pub struct CredentialInferenceMaterializer {
     credentials: PinnedCredentialMaterializer,
-    #[cfg(feature = "brokered")]
     brokered:
         Option<Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>>,
-    #[cfg(feature = "brokered")]
     brokered_mode_enabled: bool,
 }
 
 impl CredentialInferenceMaterializer {
-    #[cfg(feature = "authority")]
     #[must_use]
     pub fn new<A>(local_authority: Arc<A>, clock: Arc<dyn awaken_time::WallClock>) -> Self
     where
@@ -55,21 +52,17 @@ impl CredentialInferenceMaterializer {
     pub fn from_pinned(credentials: PinnedCredentialMaterializer) -> Self {
         Self {
             credentials,
-            #[cfg(feature = "brokered")]
             brokered: None,
-            #[cfg(feature = "brokered")]
             brokered_mode_enabled: false,
         }
     }
 
-    #[cfg(feature = "brokered")]
     #[must_use]
     pub fn with_brokered_mode(mut self, enabled: bool) -> Self {
         self.brokered_mode_enabled = enabled;
         self
     }
 
-    #[cfg(feature = "brokered")]
     #[must_use]
     pub fn with_brokered_client(
         mut self,
@@ -98,32 +91,24 @@ impl CredentialInferenceMaterializer {
         };
 
         if *access_kind == ProviderAccessKind::Brokered {
-            #[cfg(feature = "brokered")]
-            {
-                if !self.brokered_mode_enabled {
-                    return Err("cloud_models_disabled: brokered model supply is disabled".into());
-                }
-                let client = self.brokered.clone().ok_or_else(|| {
-                    "cloud_sign_in_required: brokered inference needs an authenticated Awaken Cloud identity"
-                        .to_string()
-                })?;
-                return awaken_inference_endpoint::brokered_inference::BrokeredCandidateExecutor::new(
-                    client,
-                    provider_ref,
-                    candidate.binding().identity().1,
-                    endpoint,
-                    *unspecified_reasoning,
-                    local_run_correlation,
-                    context.ownership.clone(),
-                )
-                .map(|executor| Some(Arc::new(executor) as Arc<dyn LlmExecutor>));
+            if !self.brokered_mode_enabled {
+                return Err("cloud_models_disabled: brokered model supply is disabled".into());
             }
-            #[cfg(not(feature = "brokered"))]
-            return Err("cloud_models_disabled: brokered model supply is disabled".into());
+            let client = self.brokered.clone().ok_or_else(|| {
+                "cloud_sign_in_required: brokered inference needs an authenticated Awaken Cloud identity"
+                    .to_string()
+            })?;
+            return awaken_inference_endpoint::brokered_inference::BrokeredCandidateExecutor::new(
+                client,
+                provider_ref,
+                candidate.binding().identity().1,
+                endpoint,
+                *unspecified_reasoning,
+                local_run_correlation,
+                context.ownership.clone(),
+            )
+            .map(|executor| Some(Arc::new(executor) as Arc<dyn LlmExecutor>));
         }
-
-        #[cfg(not(feature = "brokered"))]
-        let _ = local_run_correlation;
 
         let secret = self
             .credentials
@@ -303,7 +288,6 @@ impl LlmExecutor for PinnedCandidateExecutor {
 
 impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
     fn supported_access_schemes(&self) -> &'static [&'static str] {
-        #[cfg(feature = "brokered")]
         if self.brokered.is_some() {
             return &[
                 awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
@@ -405,7 +389,6 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "brokered")]
     use awaken_agent_contract::RedactedString;
 
     #[tokio::test]
@@ -488,10 +471,8 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "brokered")]
     struct CurrentOwnership;
 
-    #[cfg(feature = "brokered")]
     #[async_trait::async_trait]
     impl awaken_runtime_contract::AttemptOwnershipVerifier for CurrentOwnership {
         async fn verify_current(
@@ -501,10 +482,8 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "brokered")]
     struct NeverGrantClient;
 
-    #[cfg(feature = "brokered")]
     #[async_trait::async_trait]
     impl awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient for NeverGrantClient {
         async fn create_grant(
@@ -553,14 +532,14 @@ mod tests {
         .expect("coherent brokered provider candidate")
     }
 
-    #[cfg(not(feature = "brokered"))]
     #[tokio::test]
     async fn brokered_access_fails_closed_when_the_adapter_is_absent() {
         // Cause/effect design: C1 the immutable candidate explicitly requests
-        // Brokered access; C2 this binary has no brokered adapter. C1+C2 => E1
-        // fail with cloud_models_disabled before direct credential lookup or
-        // provider I/O. Route text is deliberately plain, so it has no causal
-        // role. Decision rule N1=C1+C2=>E1, with/without authority (N2).
+        // Brokered access; C2 the composition installed no brokered client and
+        // left brokered mode off. C1+C2 => E1 fail with cloud_models_disabled
+        // before direct credential lookup or provider I/O. Route text is
+        // deliberately plain, so it has no causal role. Decision rule
+        // N1=C1+C2=>E1, with/without a local authority (N2).
         let error = neutral_materializer()
             .materialize_exact(
                 &brokered_candidate("model-a"),
@@ -573,7 +552,6 @@ mod tests {
         assert!(error.contains("cloud_models_disabled"), "N1/E1");
     }
 
-    #[cfg(feature = "brokered")]
     fn direct_candidate_with_brokered_looking_route(model: &str) -> ResolvedModelCandidate {
         ResolvedModelCandidate::try_provider(
             ModelBinding::new("openai", model, "genai"),
@@ -689,7 +667,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "brokered")]
     #[tokio::test]
     async fn published_reasoning_policy_survives_candidate_materialization() {
         use awaken_inference_endpoint::brokered_inference::{
@@ -793,7 +770,6 @@ mod tests {
         assert_eq!(*grant.0.lock().unwrap(), 1, "P1/E2");
     }
 
-    #[cfg(feature = "brokered")]
     #[tokio::test]
     async fn pinned_materialization_preserves_journal_identity_in_both_model_modes() {
         use awaken_inference_endpoint::brokered_inference::{
@@ -809,8 +785,8 @@ mod tests {
         // key; the next recorded invocation must differ. The fake broker records
         // the real grant request then refuses it, so no model/credential IO is
         // hidden in this cross-adapter regression.
-        // P4 run the same assertions with/without the authority feature: both
-        // must compile and use the neutral composition, with zero secret reads.
+        // P4 the materializer is the neutral composition (no local authority),
+        // so the assertions hold with zero secret reads.
         #[derive(Default)]
         struct LostGrant(std::sync::Mutex<Vec<BrokeredInferenceRequest>>);
         #[async_trait]
@@ -884,7 +860,6 @@ mod tests {
         assert_eq!(requests[4].idempotency_key, requests[5].idempotency_key);
     }
 
-    #[cfg(feature = "brokered")]
     #[tokio::test]
     async fn brokered_mode_and_candidate_routing_share_one_decision_table() {
         // Causes: C1 brokered supply is enabled; C2 an authenticated client is

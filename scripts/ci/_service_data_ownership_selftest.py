@@ -518,6 +518,19 @@ def selftest() -> None:
     ) == [
         "target.cfg(unix).dependencies dependency `store` enables test-support"
     ]  # O20 target-conditioned normal edge
+    assert product_test_support_violations(
+        {"features": {"fixtures": ["store/test-support"], "test-support": ["fixtures"]}}
+    ) == [
+        "feature `fixtures` enables `store/test-support`; only the `test-support` feature may"
+    ]  # O20 a non-test-support feature would switch it on in the production lint
+    assert product_test_support_violations(
+        {"dependencies": {"kit": {"workspace": True}}}, frozenset({"awaken-kit"})
+    ) == []  # O20 an ordinary normal edge
+    assert product_test_support_violations(
+        {"dependencies": {"kit": {"package": "awaken-kit"}}}, frozenset({"awaken-kit"})
+    ) == [
+        "dependencies dependency `kit` is a tooling crate, which enables test-support"
+    ]  # O20 a normal edge into tooling reopens test-support through the testkit
     guarded_dispatch = (
         'None => { #[cfg(any(test, feature = "test-support"))] '
         "awaken_dispatch::open_sqlite_dispatch_store_in_memory()?; "
