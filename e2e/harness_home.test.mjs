@@ -123,10 +123,14 @@ test('canonical fixture removal preserves foreign siblings and is idempotent', a
 // C3 readiness/body failure; C4 stop/close rejection. Effects: close every
 // acquired resource in dependency order, await close, preserve a lone error's
 // identity or every aggregate cause, and return the unchanged successful value.
-const wrapperSource = fs.readFileSync(new URL('./harness.mjs', import.meta.url), 'utf8');
-const wrapperAst = ts.createSourceFile('harness.mjs', wrapperSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-const wrapperDeclaration = wrapperAst.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'withRealServer');
-assert.ok(wrapperDeclaration);
+function actualFunctionDeclaration(relative, name) {
+  const source = fs.readFileSync(new URL(relative, import.meta.url), 'utf8');
+  const ast = ts.createSourceFile(relative, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  assert.ok(declaration, `the existing owner declares ${name}`);
+  return declaration.getText(ast).replace(/^export /u, '');
+}
+const wrapperDeclaration = actualFunctionDeclaration('./harness.mjs', 'withRealServer');
 
 async function exerciseWireWrapper(t, stage, cleanupMask = 0, strict = false) {
   const { startFakeAnthropic } = await import('./fixtures/fake_anthropic_fixture.mjs');
@@ -173,8 +177,7 @@ async function exerciseWireWrapper(t, stage, cleanupMask = 0, strict = false) {
       if (cleanupMask & 1) throw stopError;
     },
   });
-  const declaration = wrapperDeclaration.getText(wrapperAst).replace(/^export /u, '');
-  const actual = new vm.Script(`${declaration}\nwithRealServer;`).runInContext(context);
+  const actual = new vm.Script(`${wrapperDeclaration}\nwithRealServer;`).runInContext(context);
   const outcome = actual('echo', 1, async (_base, peer) => {
     assert.equal(peer.url, upstream.url);
     if (stage === 'body') throw primary;
@@ -218,5 +221,104 @@ test('withRealServer preserves results and all cleanup outcomes', async t => {
   await t.test('strict successful shutdown', child => exerciseWireWrapper(child, 'success', 0, true));
   for (const stage of ['success', 'body']) {
     for (const mask of [1, 2, 3]) await t.test(`${stage} cleanup=${mask}`, child => exerciseWireWrapper(child, stage, mask));
+  }
+});
+
+
+// Exercise the actual scenario helper, with the existing canonical receipt
+// observer and only the SDK leaves recorded. No copied observer, model, parser,
+// native runtime, sleep, or barrier decides when a snapshot is acceptable.
+test('awaiting child baseline includes the same receipt primary settlement', async (t) => {
+  const { waitForSessionEventReceipt } = await import('./harness.mjs');
+  const declarations = ['listThreadEvents', 'createAwaitingChild']
+    .map(name => actualFunctionDeclaration('./managed_delegation_e2e.mjs', name))
+    .join('\n');
+  const receipt = { id: 'receipt', type: 'user.message', processed_at: 't1' };
+  const oldIdle = { id: 'older-idle', type: 'session.status_idle', stop_reason: { type: 'end_turn' } };
+  const created = { id: 'created', type: 'session.thread_created', agent_name: 'researcher', session_thread_id: 'child' };
+  const usage = { id: 'current-usage', type: 'session.usage' };
+  const close = { id: 'current-idle', type: 'session.status_idle', stop_reason: { type: 'requires_action', event_ids: ['ask'] } };
+  const open = [oldIdle, receipt, created];
+  const closed = [...open, usage, close];
+  const reopened = [...open,
+    { id: 'earlier-current-idle', type: 'session.status_idle', stop_reason: { type: 'end_turn' } },
+    { id: 'external-follow-up', type: 'user.message', processed_at: 't2' },
+    { id: 'current-running', type: 'session.status_running' },
+  ];
+  // Causes: C1 exact receipt is committed; C2 exact child requires_action names
+  // its one tool Event; C3 the latest primary lifecycle after THAT receipt is
+  // Idle; C4 the aggregate DTO is Idle. Effect E1 returns the complete primary/child no-op
+  // baseline only when C1-C4 all hold. Constraint: an older idle never proves C3.
+  // | Rule | scripted incomplete observations                   | effect |
+  // | O1 | no receipt -> pending receipt -> C1+C2 but !C3 -> all | retry each, then E1 |
+  // | O2 | C1+C2+C3 but !C4 -> all                              | retry, then E1 |
+  // | O3 | C1+C3+C4 but wrong child ticket -> all                | retry, then E1 |
+  // | O4 | same receipt scope contains old close then new Running | retry until latest primary close |
+  // O4 reuses the real same-Session follow-up sequence in managed_delegation
+  // F1; the canonical receipt delta continues through later command/Run history
+  // (harness receiptScopedObservation), and aggregate::plan_fallback_aggregate
+  // reopens after a close. No contract gives `.some(old idle)` terminal meaning.
+  // O1 independently lets the later DTO read be Idle while primary history
+  // still lags; O2 already has primary close while the DTO is still Running.
+  // These expose premature primary/aggregate acceptance and keep
+  // the existing exact-ticket rejection. They do not identify old failed-run
+  // hashed events, and never weaken the original rejected-batch ID equality.
+  for (const row of [
+    { rule: 'O1', steps: [
+      { primary: [oldIdle], status: 'idle', ticket: 'ask' },
+      { primary: [oldIdle, { ...receipt, processed_at: null }, created], status: 'idle', ticket: 'ask' },
+      { primary: open, status: 'idle', ticket: 'ask' },
+      { primary: closed, status: 'idle', ticket: 'ask' },
+    ] },
+    { rule: 'O2', steps: [
+      { primary: closed, status: 'running', ticket: 'ask' },
+      { primary: closed, status: 'idle', ticket: 'ask' },
+    ] },
+    { rule: 'O3', steps: [
+      { primary: closed, status: 'idle', ticket: 'wrong-ticket' },
+      { primary: closed, status: 'idle', ticket: 'ask' },
+    ] },
+    { rule: 'O4', steps: [
+      { primary: reopened, status: 'idle', ticket: 'ask' },
+      { primary: [...reopened, usage, close], status: 'idle', ticket: 'ask' },
+    ] },
+  ]) {
+    await t.test(row.rule, { timeout: 5_000 }, async () => {
+      let reads = 0, sends = 0, active;
+      const client = { beta: { sessions: {
+        create: async () => ({ id: 'session' }),
+        retrieve: async sessionId => {
+          assert.equal(sessionId, 'session');
+          return { id: sessionId, status: active.status };
+        },
+        events: {
+          send: async sessionId => {
+            assert.equal(sessionId, 'session');
+            sends += 1;
+            return { data: [receipt] };
+          },
+          list: async function* (sessionId) {
+            assert.equal(sessionId, 'session');
+            active = row.steps[Math.min(reads, row.steps.length - 1)];
+            reads += 1;
+            yield* active.primary;
+          },
+        },
+        threads: { events: { list: async function* (childId, params) {
+          assert.equal(childId, 'child');
+          assert.equal(params.session_id, 'session');
+          yield { id: 'ask', type: 'agent.tool_use' };
+          yield { id: 'child-idle', type: 'session.thread_status_idle', stop_reason: { type: 'requires_action', event_ids: [active.ticket] } };
+        } } },
+      } } };
+      const context = vm.createContext({ waitForSessionEventReceipt, BETAS: ['managed-test'] });
+      const actual = new vm.Script(`${declarations}\ncreateAwaitingChild;`).runInContext(context);
+      const result = await actual(client, 'recorded child await');
+      assert.equal(reads, row.steps.length, `${row.rule} every incomplete cause retries before the baseline is accepted`);
+      assert.equal(sends, 1, `${row.rule} observation never replays the command`);
+      assert.deepEqual(Array.from(result.primaryEvents, event => event.id), row.steps.at(-1).primary.map(event => event.id), `${row.rule} complete current-receipt primary baseline`);
+      assert.equal(result.pendingEventId, 'ask', `${row.rule} exact child occurrence`);
+      assert.equal(result.childId, 'child', `${row.rule} exact child owner`);
+    });
   }
 });

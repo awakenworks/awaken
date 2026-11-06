@@ -148,6 +148,19 @@ async function createAwaitingChild(client, prompt) {
         || pendingEventIds.length !== 1
         || toolUses[0].id !== pendingEventIds[0]
       ) return false;
+      // A1 adds C5: the same receipt's primary aggregate close is visible and
+      // the Session is Idle. A child Thread can reach requires_action between
+      // the primary and child reads; that earlier primary snapshot is not yet
+      // the strict no-op baseline for the rejected batches below. Reuse the
+      // same receipt/primary-idle boundary as runSession. The latest aggregate
+      // lifecycle must be Idle: a later Run can reopen after an older idle in
+      // this receipt's delta. Never refresh/filter history after acceptance.
+      const primaryStatus = [...delta].reverse().find(
+        (event) => event.type.startsWith('session.status_'),
+      );
+      if (primaryStatus?.type !== 'session.status_idle') return false;
+      const aggregate = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
+      if (aggregate.status !== 'idle') return false;
       boundary = {
         session,
         childId: created.session_thread_id,
