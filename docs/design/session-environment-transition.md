@@ -245,6 +245,42 @@ state, and the cleanup laws decide through the transition function:
   refused continuation is executed. A process restart may signal the still
   blocked root again; this diagnostic grants no authority and persists nothing.
 
+## Resource reconciliation decision
+
+The Resource sub-state follows the same pattern. `SessionResourceReconciliationInstruction::decide(&PersistedSession)`
+projects eight facts (terminal, external Worker Environment, Idle, pending
+generation, Repository retirements, Releasing record, installed inputs,
+activation records) and calls the one pure `next_resource_reconciliation`
+(`state/resource_activation/reconciliation.rs`). It returns a closed
+`SessionResourceReconciliationInstruction`:
+
+| Facts | Instruction |
+|---|---|
+| terminal | `ReleaseTerminal` (terminal cleanup) |
+| live, external, no pending, retirements | `RetireDetachedGeneration` |
+| live, external, otherwise | `Hold` |
+| live, local, not Idle | `Hold` (changes deferred while a Run owns execution) |
+| live, local, Idle, pending | `ApplyLocally(InstallPending)` |
+| … no pending, Releasing record | `ApplyLocally(RefuseReleasingWithoutPending)` |
+| … installed inputs or activation records | `ApplyLocally(ReapplyActive { adopt_legacy })`, `adopt_legacy` when there are no records |
+| … only retirements | `ApplyLocally(RetireDetachedGeneration)` |
+| … nothing | `Hold` |
+
+| Site (main `f34b9ac81f`) | Class | Moves to |
+|---|---|---|
+| session-application `resource_reconciliation.rs` `reconcile_persisted_resources` stack-saving pre-check (not Idle; "the exact no-op branch below") | D | **moved**: returns on `Hold` before the activation/retirement future is built; every other step passes the same value on |
+| `reconcile_prepared_resources` external-Worker branch, `ordinary_reconciliation_gate.rs` and the pending/Releasing/installed case analysis | D | **moved**: one `match` on the instruction; the application reads the aggregate only for effect data (manifests, revisions) and post-commit settlement checks |
+| recovery sweep candidate filter (`needs_resource_reconciliation`, external without retirements) | scheduling | stays: which roots the sweep visits; an external root with a pending generation and retirements is still visited for credential pinning |
+
+The Kani harness `terminal_session_never_enters_ordinary_resource_reconciliation`
+moved with the decision; the contract decision table (rows R1–R17, sweep
+S1–S4 over all 256 fact combinations) covers every branch. Behaviour is
+unchanged on every production path. Only two rows differ, and only when the
+full path is entered without the pre-check (a test does this): a non-Idle
+local root, and an Idle local root with nothing installed or retained. Both
+are now `Hold`. Before, the first reached terminal cleanup and the second
+asked for the effects role.
+
 ## Provider retry hints through the one driver
 
 The realization contract owns `SessionRealizationEffectFailure`: the unchanged

@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::state::SessionId;
 use crate::state::{ResolvedInput, ResolvedInputSource, ResolvedSessionResources};
 
+mod reconciliation;
+pub use reconciliation::{SessionResourceLocalApply, SessionResourceReconciliationInstruction};
+
 /// One Session-local realization of one resolved input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionResourceActivation {

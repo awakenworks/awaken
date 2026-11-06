@@ -100,8 +100,8 @@ pub(crate) use crate::event::{
 };
 pub use realization_progress::SessionRealizationProgress;
 pub use resource_activation::{
-    ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceReferences,
-    SessionResourceState,
+    ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceLocalApply,
+    SessionResourceReconciliationInstruction, SessionResourceReferences, SessionResourceState,
 };
 pub use session_repo::{
     IdempotencyRecord, PersistedSession, ScopedPersistedSession, SessionActivitySettlementPlan,

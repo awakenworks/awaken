@@ -12,7 +12,7 @@ evidence = [
 production_entrypoints = []
 
 [[bounds]]
-text = '''Kani exhaustively checks the production ordinary-Resource reconciliation gate across terminal/live and Idle/non-Idle states. Every terminal combination denies ordinary Runtime installation, while only live Idle admits it; the sole ordinary apply branch consumes this gate directly.'''
+text = '''Kani exhaustively checks the production Resource reconciliation decision (`next_resource_reconciliation` in awaken-session-contract) over every combination of its eight aggregate facts. Every terminal root is routed to terminal cleanup and never to an ordinary apply, and an ordinary local apply is decided only for a live, Idle, Coordinator-realized root; the application's early return and its sole ordinary apply branch both consume this one decision.'''
 
 [[bounds]]
 text = '''Application and contract decision-table tests exercise a terminal root retaining both active and attempted pending File generations, assert zero ordinary apply_session_inputs calls, and check the canonical terminal cleanup releases active and fails pending. Existing Worker-placement tests cover delegation to the same cleanup authority. The scalar proof does not establish arbitrary aggregate deserialization, database durability/CAS, Runtime cleanup correctness, Resource provider deletion, or all asynchronous cleanup failure schedules.'''
