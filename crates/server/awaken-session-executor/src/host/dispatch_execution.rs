@@ -424,6 +424,33 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
         session_thread: &ThreadId,
         publications: Arc<StaticPublishedAgentSnapshots>,
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
+        let queue = self
+            .assembly
+            .authority
+            .dispatch_binding()
+            .ok_or_else(|| execution_error("claimed child has no current dispatch authority"))?
+            .queue();
+        awaken_dispatch_execution::claim_bound_ownership_verifier(
+            queue,
+            RunClaim::from(&claimed.lease),
+        )
+        .verify_current()
+        .await
+        .map_err(|error| {
+            execution_error(format!("claimed child lost current authority: {error}"))
+        })?;
+        if let Some(scope) = &claimed.request.execution_scope {
+            let workspace = self
+                .assembly
+                .capabilities
+                .thread_workspace(&session_thread.0)
+                .map_err(|error| execution_error(error.to_string()))?;
+            if scope.0.as_str() != workspace {
+                return Err(execution_error(
+                    "claimed child differs from the parent Session Workspace",
+                ));
+            }
+        }
         crate::background_task::accept_claimed_task_input(
             &self.assembly.capabilities.background_supervisor,
             &claimed.request,

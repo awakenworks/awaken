@@ -1,7 +1,7 @@
 // @formal surface requirement=runtime.permission.authority_never_widens
 // @formal reason: Private HTTP admission combines current native Account,
 // @formal reason: Workspace-purpose and PDP authority before selecting the Session view.
-//! Explicit private reads and interrupts over the original Managed router.
+//! Explicit private Session and File operations over the original Managed router.
 
 use std::sync::Arc;
 
@@ -14,9 +14,8 @@ use awaken_session_contract::SessionPrivateBinding;
 use awaken_tenancy::{WorkspaceScope, workspace_purpose::WorkspacePurposeUnavailable};
 use axum::{
     Router,
-    body::{Body, to_bytes},
     extract::{Request, State},
-    http::{HeaderValue, Method, StatusCode, Uri, header},
+    http::{Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -28,17 +27,28 @@ use super::{
     target_scope, unauthenticated,
 };
 
+mod writes;
+use writes::{Profiles, Write};
+
 /// Deployment-selected observer of the current private application coordinates.
 /// Its response supplies provenance, not Account authentication or PDP authority.
 pub struct HttpPrivateWorkspaceContext {
     transport: HttpOrdinaryWorkspaceAdmission,
+    writes: Option<Profiles>,
 }
 
 impl HttpPrivateWorkspaceContext {
     pub fn new(endpoint: &str, ordinary: &HttpOrdinaryWorkspaceAdmission) -> Result<Self, String> {
         Ok(Self {
             transport: ordinary.sibling_endpoint(endpoint)?,
+            writes: None,
         })
+    }
+
+    /// Install exact deployment-owned Agent and Environment selections.
+    pub fn with_write_profiles(mut self, bytes: &[u8]) -> Result<Self, String> {
+        self.writes = Some(Profiles::parse(bytes)?);
+        Ok(self)
     }
 
     async fn observe(
@@ -121,16 +131,13 @@ fn canonical_read(method: &Method, path: &str) -> Option<(String, ActionNamespac
 }
 
 async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response {
-    let (canonical, namespace, stop) = if request.method() == Method::POST {
-        let Some(session) = request
-            .uri()
-            .path()
-            .strip_prefix("/v1/private-assistant/sessions/")
-            .and_then(|path| path.strip_suffix("/stop"))
-            .filter(|id| !id.is_empty() && !id.contains('/'))
-        else {
+    let (canonical, namespace, write) = if request.method() == Method::POST {
+        let Some((canonical, write)) = Write::classify(request.uri().path()) else {
             return StatusCode::METHOD_NOT_ALLOWED.into_response();
         };
+        if !matches!(write, Write::Stop) && ingress.context.writes.is_none() {
+            return StatusCode::METHOD_NOT_ALLOWED.into_response();
+        }
         if request.uri().query().is_some()
             || !matches!(
                 awaken_protocol_managed::parse_idempotency_key_header(request.headers()),
@@ -139,17 +146,18 @@ async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response 
         {
             return StatusCode::BAD_REQUEST.into_response();
         }
-        (
-            format!("/v1/sessions/{session}/events"),
-            ActionNamespace::HostedRuntime,
-            true,
-        )
+        let namespace = if matches!(write, Write::Upload) {
+            ActionNamespace::Workspace
+        } else {
+            ActionNamespace::HostedRuntime
+        };
+        (canonical, namespace, Some(write))
     } else {
         let Some((canonical, namespace)) = canonical_read(request.method(), request.uri().path())
         else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        (canonical, namespace, false)
+        (canonical, namespace, None)
     };
     let Some(workspace) = request
         .extensions()
@@ -180,7 +188,19 @@ async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response 
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return iam_unavailable(),
     };
-    let (action, scope) = if stop {
+    let profile = ingress
+        .context
+        .writes
+        .as_ref()
+        .and_then(|profiles| profiles.for_binding(&binding));
+    if write
+        .as_ref()
+        .is_some_and(|write| !matches!(write, Write::Stop))
+        && profile.is_none()
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let (action, scope) = if matches!(write, Some(Write::Stop)) {
         ("run.cancel", ScopeClass::Workspace)
     } else {
         match (namespace, action_for(request.method(), &canonical)) {
@@ -222,21 +242,11 @@ async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response 
         return StatusCode::NOT_FOUND.into_response();
     };
     let (mut parts, body) = request.into_parts();
-    let body = if stop {
-        // Do not forward an event or attribution chosen by the caller. Only a
-        // native Session interrupt can be issued under the cancellation action.
-        if to_bytes(body, 0).await.is_err() {
-            return StatusCode::BAD_REQUEST.into_response();
+    let body = if let Some(write) = write {
+        match write.body(&mut parts.headers, body, profile).await {
+            Ok(body) => body,
+            Err(status) => return status.into_response(),
         }
-        parts.headers.remove(header::CONTENT_LENGTH);
-        parts.headers.remove(header::CONTENT_ENCODING);
-        parts.headers.remove(header::TRANSFER_ENCODING);
-        parts.headers.remove("anthropic-user-profile-id");
-        parts.headers.insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
-        Body::from(r#"{"events":[{"type":"user.interrupt"}]}"#)
     } else {
         body
     };

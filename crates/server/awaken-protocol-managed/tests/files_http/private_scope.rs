@@ -180,6 +180,59 @@ async fn check_private_file_reads(app: &Router) {
 }
 
 #[tokio::test]
+async fn private_upload_replays_only_within_the_same_current_personal_binding() {
+    use awaken_protocol_managed::AdmittedPrivateSessionRequest;
+
+    let resources = support::resources::ephemeral_resources().await;
+    let (_repo, queries) = session_file_owner().await;
+    let app = awaken_protocol_managed::resources_router(
+        awaken_protocol_managed::ResourcesRouterInput::new(
+            &resources,
+            Arc::new(awaken_resource_contract::UnavailableRepositoryCredentialValidator),
+        )
+        .with_session_reads(queries),
+    );
+    let for_person = |org: &str, account: &str| {
+        let binding =
+            SessionPrivateBinding::new(org.into(), "desk".into(), account.into(), "test".into(), 1)
+                .unwrap();
+        app.clone().layer(axum::Extension(
+            AdmittedPrivateSessionRequest::from_admitted(binding),
+        ))
+    };
+    let a = for_person("org-a", "alice");
+    let b = for_person("org-b", "bob");
+    assert_eq!(
+        upload(&a, "private.txt", b"a").await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    let a_first = upload_with_key(&a, "private.txt", b"a", Some("same-key"))
+        .await
+        .expect(StatusCode::OK);
+    let a_retry = upload_with_key(&a, "private.txt", b"a", Some("same-key"))
+        .await
+        .expect(StatusCode::OK);
+    let b_first = upload_with_key(&b, "private.txt", b"bb", Some("same-key"))
+        .await
+        .expect(StatusCode::OK);
+    let id_a = a_first["id"].as_str().unwrap();
+    let id_b = b_first["id"].as_str().unwrap();
+    assert_eq!(a_retry["id"], id_a);
+    assert_ne!(id_a, id_b);
+    for (owner, other, id, size) in [(&a, &b, id_a, 1), (&b, &a, id_b, 2)] {
+        let path = format!("/v1/files/{id}");
+        let metadata = get(owner, &path).await.expect(StatusCode::OK);
+        let metadata: Value = serde_json::from_slice(&metadata).unwrap();
+        assert_eq!(metadata["id"], id);
+        assert_eq!(metadata["size_bytes"], size);
+        for addressed in [path.clone(), format!("{path}/content")] {
+            assert_eq!(get(other, &addressed).await.status(), StatusCode::NOT_FOUND);
+            assert_eq!(get(&app, &addressed).await.status(), StatusCode::NOT_FOUND);
+        }
+    }
+}
+
+#[tokio::test]
 async fn native_session_visibility_protects_every_file_surface_before_pagination_bytes_and_delete()
 {
     let resources = support::resources::ephemeral_resources().await;

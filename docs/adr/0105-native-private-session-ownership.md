@@ -290,3 +290,13 @@ through the original Managed Session handler and owner check. Request body and
 caller-supplied data-subject attribution cannot select an Event or another
 Thread. The original Session Event command owns the retained replay receipt;
 the alias adds no second interrupt or execution owner.
+
+Hosted Coordinator can select a private write profile supplied by the deployment
+for the exact Org, application, private Workspace and binding revision. The
+profile pins the Agent version and Environment used for a new Session. The
+native private ingress accepts an original idempotency key and a closed create
+body, restricted user events and personal File uploads. The current direct
+Account, exact private binding and native action must still admit every request.
+Session and File handlers use the admitted binding at the original command
+owners, including on replay. A profile is enabled only after the deployment
+qualifies the ordinary ingress and compatible runtime nodes.

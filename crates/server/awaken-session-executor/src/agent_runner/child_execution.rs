@@ -255,6 +255,11 @@ pub(crate) async fn run_configured_agent_until_boundary(
     scheduler: Option<RunScheduler>,
     adapters: ChildExecutionAdapters,
 ) -> Result<AgentRunBoundary, AgentRunError> {
+    if let Some(ownership) = &context.ownership {
+        ownership.verify_current().await.map_err(|error| {
+            AgentRunError::Configuration(format!("parent attempt cannot start a child: {error}"))
+        })?;
+    }
     let config = config.clone();
     if resume.is_some()
         && let Some(ticket) = scheduler

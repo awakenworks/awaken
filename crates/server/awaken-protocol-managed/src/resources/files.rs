@@ -276,6 +276,7 @@ fn valid_filename(filename: &str) -> bool {
 
 async fn upload_file(
     State(files): State<FileHttpState>,
+    private: Option<Extension<AdmittedPrivateSessionRequest>>,
     Extension(clock): Extension<Arc<dyn WallClock>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
@@ -289,6 +290,28 @@ async fn upload_file(
     let idempotency_key = match parse_idempotency_key_header(&headers) {
         Ok(key) => key,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
+    };
+    let application = match private {
+        Some(Extension(request)) => {
+            let binding = request.binding();
+            if binding.workspace_id() != workspace {
+                return error(StatusCode::NOT_FOUND, "file not found");
+            }
+            if idempotency_key.is_none() {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "private File uploads require Idempotency-Key",
+                );
+            }
+            let Some(factory) = files.private_inputs.as_ref() else {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "private File authority is unavailable",
+                );
+            };
+            factory.for_binding(binding.as_ref().clone())
+        }
+        None => files.application,
     };
     let mut upload: Option<(String, String, Vec<u8>)> = None;
     let mut expiry_seconds = None;
@@ -358,8 +381,7 @@ async fn upload_file(
             "Idempotency-Key cannot be combined with expires_in_seconds",
         );
     }
-    match files
-        .application
+    match application
         .create_uploaded_file_with_expiry_and_idempotency(
             &workspace,
             filename,
