@@ -310,44 +310,12 @@ consumed_packages() {
   sed -n 's/^\(awaken-[a-z0-9-]*\) *=.*path *=.*/\1/p' "$1"
 }
 
-# Cause/effect rule CR1: when Runtime Host is resolved without default
-# features (cause), its neutral credential-refresh port must still compile
-# without acquiring Vault authority (effect). Checking it separately keeps
-# workspace feature unification from masking this product-consumer graph.
-scoped_step "runtime-host-neutral" "keep neutral Runtime Host ports available without enabling authority dependencies" \
-  "awaken-session-executor" cargo check -p awaken-session-executor --no-default-features "${locked[@]}"
-
 # The Host's test fixtures must name their own dev capabilities. The maximal
 # workspace enables store test-support through other members and can hide an
 # undeclared fixture constructor. Compile this package's tests independently;
-# keep the production-only check above so dev capabilities cannot mask CR1.
+# the production lint below keeps dev capabilities out of its library graph.
 scoped_step "runtime-host-neutral-tests" "declare every fixture capability in the consuming crate's dev dependencies" \
   "awaken-session-executor" cargo check -p awaken-session-executor --no-default-features --tests "${locked[@]}"
-
-# Compile-surface decision table: CR10 the Managed HTTP library is a production
-# root without test-support; CR11 it calls a fixture-only Session accessor;
-# CR12 workspace tests enable test-support through feature unification.
-# R1 CR10 + CR11 -> reject the missing production method; R2 CR10 + the narrowed
-# Session roles -> compile; R3 CR12 may compile either implementation and cannot
-# substitute for R1/R2. Keep this in the one Rust gate, before workspace checks,
-# so quick, push and full exercise the same real production dependency graph.
-scoped_step "managed-protocol-production" "use production Session roles rather than fixture-only accessors" \
-  "awaken-protocol-managed" cargo check -p awaken-protocol-managed --lib --no-default-features "${locked[@]}"
-
-# Process assembly compile-surface decision table: C1 is the ordinary Coordinator
-# root; C2 is the ordinary CLI root; C3 enables cfg(test) or test-support.
-# E1 C1 excludes fixture-only URLs/imports and its concrete materializer edge;
-# E2 C2 retains its selected production adapters; both compile without warnings.
-# E3 C3 retains the same constructors, ControlStores and fixture materializer.
-# P1=C1 -> the first isolated compiler invocation; P2=C2 -> the second;
-# P3=C3 -> the existing workspace test/all-feature gates. Resolving C1 and C2
-# together can unify CLI features into Coordinator and cannot substitute for P1.
-scoped_step "coordinator-production" "keep fixture-only Coordinator dependencies out of its ordinary product graph" \
-  "awaken-coordinator" cargo clippy -p awaken-coordinator --lib "${locked[@]}" -- -D warnings
-scoped_step "cli-production" "keep fixture-only CLI helpers out of its ordinary product graph" \
-  "awaken-cli" cargo clippy -p awaken-cli --lib "${locked[@]}" -- -D warnings
-scoped_step "process-startup-production" "keep fixture-only startup helpers out of its ordinary product graph" \
-  "awaken-process-startup" cargo clippy -p awaken-process-startup --lib "${locked[@]}" -- -D warnings
 
 # ACP role decision table: B1 the isolated Coordinator product resolves only
 # catalog/blob custody; B2 the backend's no-default build cannot name physical
@@ -415,36 +383,29 @@ scoped_step "run-ingress-neutral" "keep store-only arithmetic out of the databas
 scoped_step "run-ingress-neutral-unit" "keep memory and domain tests independent from optional SQL drivers" \
   "awaken-dispatch" cargo test -p awaken-dispatch --no-default-features --lib "${locked[@]}"
 
-# Two lint passes over one graph (docs/design/guard-consolidation.md, M4).
+# Two lint passes (docs/design/guard-consolidation.md, M4).
 # `clippy.toml` and `[workspace.lints]` hold rules that bind what ships: no std
 # lock, ambient clock, environment read or private pool construction outside a
 # reviewed `#[expect]`, and no unreachable `pub`. Tests may use std locks, clocks
 # and the environment, so the all-targets pass allows exactly those lints and
-# the production pass (`--lib --bins`, compiled without cfg(test)) denies every
-# warning. A source `#[expect]` outranks the command-line `-A`, so a reviewed
+# the production pass (`--lib --bins` over the production graph below, compiled
+# without cfg(test) or test-support) denies every warning. A source `#[expect]` outranks the command-line `-A`, so a reviewed
 # production site holds in both passes. clippy 1.96 has no `allow-*-in-tests`
 # option for these lints, which is why there are two passes.
 production_only_lints=(-A clippy::disallowed_methods -A clippy::disallowed_types -A unreachable_pub)
 
-# CR7 a brokered client needs catalog/HTTP contracts but no Admin database:
-# its actual transitive graph must compile warning-free without workspace SQL
-# feature unification. CR8 SQL adapters/tests still own migration-history helpers;
-# the workspace check below and Admin schema tests retain those consumers. Do not
-# silence dead-code warnings or enable a database merely to hide this boundary.
-# CR9 default authority must be disabled explicitly: both brokered tests and
-# the adapter-absent rejection test formerly called an authority-only constructor.
-# Cross adapter present/absent with no authority; the workspace graph retains
-# authority-enabled consumers. Execute the same tests, not cfg-filtered copies.
-for materializer_profile in bare brokered; do
-  materializer_features=()
-  if [ "$materializer_profile" = brokered ]; then
-    materializer_features=(--features brokered)
-  fi
-  scoped_step "credential-materializer-$materializer_profile-neutral" "keep database-only helpers out of neutral materializer consumers" \
-    "awaken-credential-materializer" cargo clippy -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --all-targets "${locked[@]}" -- -D warnings "${production_only_lints[@]}"
-  scoped_step "credential-materializer-$materializer_profile-neutral-unit" "keep neutral materializer tests independent of local Vault authority" \
-    "awaken-credential-materializer" cargo test -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --lib "${locked[@]}"
-done
+# The production pass is one graph for every product root: every crate except
+# `layer = "tooling"`, every feature except test-support, libraries and
+# binaries only (resolver 2 activates no dev dependency there). The
+# crate-boundary checker refuses any normal edge, default or feature outside
+# tooling that enables test-support, so a production call into a fixture-only
+# item fails to compile here instead of being hidden by feature unification.
+# It replaces the per-root production builds (Runtime Host, Managed protocol,
+# Coordinator, CLI, process startup) and the former `--all-features` pass,
+# which switched test-support on and so was not a production graph.
+production_selection_text=$(python3 scripts/ci/rust_test_plan.py --production-selection) || exit 1
+mapfile -t production_selection <<< "$production_selection_text"
+lint_production_fix="route the call through its owner (clippy.toml names it), state a reviewed #[expect(clippy::disallowed_methods, reason = ..)] on the composition-root item, or move a fixture-only call behind cfg(test)/test-support"
 
 # CR6 optional Pod transport and its production startup are not enabled by
 # default -> include the owning CLI feature, which also enables Worker and
@@ -519,8 +480,8 @@ case "$mode" in
       else
         step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
           cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings "${production_only_lints[@]}"
-        step "lint-production" "route the call through its owner (clippy.toml names it), or state a reviewed #[expect(clippy::disallowed_methods, reason = ..)] on the composition-root item" \
-          cargo clippy --workspace --all-features --lib --bins "${locked[@]}" -- -D warnings
+        step "lint-production" "$lint_production_fix" \
+          cargo clippy --workspace "${production_selection[@]}" --lib --bins "${locked[@]}" -- -D warnings
       fi
       step "formal-coverage" "fix the harness anchors/@kani tags or formal/obligations/ as shown above" \
         python3 scripts/ci/check_formal_coverage.py
@@ -550,8 +511,8 @@ case "$mode" in
     # those. Compiling and linting them is free; running them is not.
     if step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
       cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings "${production_only_lints[@]}" \
-      && step "lint-production" "route the call through its owner (clippy.toml names it), or state a reviewed #[expect(clippy::disallowed_methods, reason = ..)] on the composition-root item" \
-      cargo clippy --workspace --all-features --lib --bins "${locked[@]}" -- -D warnings; then
+      && step "lint-production" "$lint_production_fix" \
+      cargo clippy --workspace "${production_selection[@]}" --lib --bins "${locked[@]}" -- -D warnings; then
       # Scenario/Coordinator integration uses the real release Hand companion.
       # C1 full workspace tests => E1 build its authored feature in the same
       # Cargo graph; a thin default binary must not replace the tested companion.

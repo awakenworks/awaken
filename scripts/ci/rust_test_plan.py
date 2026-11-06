@@ -34,6 +34,62 @@ def workspace_features() -> str:
     return ",".join(features)
 
 
+TEST_SUPPORT = "test-support"
+
+
+def _enables_test_support(features: dict, feature: str) -> bool:
+    pending, seen = [feature], set()
+    while pending:
+        current = pending.pop()
+        if current == TEST_SUPPORT:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        for value in features.get(current, []):
+            if value.split("/")[-1] == TEST_SUPPORT:
+                return True
+            if value in features:
+                pending.append(value)
+    return False
+
+
+def _implicit_features(manifest: dict) -> list[str]:
+    """Optional dependencies that Cargo exposes as features (no `dep:` use)."""
+    named = {value[4:] for values in manifest.get("features", {}).values()
+             for value in values if value.startswith("dep:")}
+    tables = [manifest.get("dependencies", {})]
+    tables += [target.get("dependencies", {}) for target in manifest.get("target", {}).values()]
+    return sorted({name for table in tables for name, value in table.items()
+                   if isinstance(value, dict) and value.get("optional") and name not in named})
+
+
+def production_selection(manifests: list[Path] | None = None) -> list[str]:
+    """Cargo arguments for the one production lint over every product crate.
+
+    Every crate except `layer = "tooling"` is selected with every feature except
+    test-support (and any feature reaching it); tooling crates are excluded
+    because enabling test-support is their job. The crate-boundary checker holds
+    the converse statically (product_test_support_violations): no other crate
+    enables test-support through a normal dependency, a default, another feature
+    or a tooling dependency. With resolver 2, `--lib --bins` resolves no dev
+    dependency, so this graph is the production graph of each product root.
+    """
+    excluded: list[str] = []
+    features: list[str] = []
+    for path in crate_manifests() if manifests is None else manifests:
+        manifest = tomllib.loads(path.read_text(encoding="utf-8"))
+        name = manifest["package"]["name"]
+        if manifest["package"].get("metadata", {}).get("awaken", {}).get("layer") == "tooling":
+            excluded.append(name)
+            continue
+        table = manifest.get("features", {})
+        for feature in sorted(set(table) | set(_implicit_features(manifest))):
+            if feature != "default" and not _enables_test_support(table, feature):
+                features.append(f"{name}/{feature}")
+    return [f"--exclude={name}" for name in sorted(excluded)] + ["--features", ",".join(features)]
+
+
 def affected_packages(metadata: dict, changed: list[str], root: Path = ROOT) -> tuple[list[str], str]:
     packages = {p["id"]: p for p in crate_test._members(metadata).values()}
     members = set(packages)
@@ -508,6 +564,32 @@ class PlanTests(unittest.TestCase):
                     self.assertFalse(receipt["full_gate"])
                     self.assertTrue(receipt["source_unchanged"])
                     self.assertEqual(receipt["selected_packages"], ["application", "cli", "kernel"] if with_rust else [])
+
+    def test_production_selection_leaves_out_tooling_and_test_support(self) -> None:
+        # S1 a tooling crate -> --exclude, none of its features. S2 test-support,
+        # a feature reaching it (directly or through another feature) and
+        # `default` -> not selected. S3 every other declared feature and an
+        # implicit optional-dependency feature -> selected; a `dep:` optional is
+        # not a feature.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifests = []
+            for name, text in {
+                "kit": '[package]\nname = "kit"\n[package.metadata.awaken]\nlayer = "tooling"\n'
+                       '[features]\nextra = []\n',
+                "product": '[package]\nname = "product"\n[package.metadata.awaken]\nlayer = "infrastructure"\n'
+                           '[dependencies]\nimplicit = { version = "1", optional = true }\n'
+                           'hidden = { version = "1", optional = true }\n'
+                           '[features]\ndefault = ["postgres"]\npostgres = ["dep:hidden"]\n'
+                           'test-support = ["store/test-support"]\nfixtures = ["test-support"]\n'
+                           'chained = ["fixtures"]\ndirect = ["store/test-support"]\n',
+            }.items():
+                path = root / name / "Cargo.toml"
+                path.parent.mkdir()
+                path.write_text(text, encoding="utf-8")
+                manifests.append(path)
+            self.assertEqual(production_selection(manifests),
+                             ["--exclude=kit", "--features", "product/implicit,product/postgres"])
 
     def test_gate_scope_follows_the_decision_table(self) -> None:
         # P1 no declared Rust gate input -> none; P2 member sources -> owners
@@ -1127,6 +1209,8 @@ else:
 def main() -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--features", action="store_true")
+    parser.add_argument("--production-selection", action="store_true",
+                        help="print the production lint's package and feature arguments, one per line")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--source-digest", action="store_true")
     parser.add_argument("--base")
@@ -1136,6 +1220,11 @@ def main() -> int:
     scope_modes.add_argument("--gate-scope", action="store_true")
     scope_modes.add_argument("--execution-scope", action="store_true")
     args = parser.parse_args()
+    if args.production_selection:
+        if len(sys.argv) != 2:
+            parser.error("--production-selection is a standalone mode")
+        print("\n".join(production_selection()))
+        return 0
     if args.gate_scope or args.execution_scope:
         if not args.base or args.run or args.check_command is not None or args.features or args.self_test or args.source_digest:
             parser.error(("--execution-scope" if args.execution_scope else "--gate-scope") + " takes only --base")

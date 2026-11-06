@@ -78,7 +78,7 @@ awaken-model-catalog-store = { workspace = true, features = ["sqlite", "postgres
 awaken-credential-vault = { workspace = true, features = ["oauth-command", "test-support"] }
 awaken-credential-store = { workspace = true, features = ["sqlite", "sealed-aead", "postgres", "test-support"] }
 awaken-credential-contract.workspace = true
-awaken-credential-materializer = { workspace = true, features = ["authority"] }
+awaken-credential-materializer.workspace = true
 awaken-inference-endpoint.workspace = true
 # Embedded IAM (ADR-0042/0043 P1): typed self-managed identity gates management
 # plane behind bearer ApiTokens. contract = ids/scopes/requests, core = token
@@ -156,7 +156,6 @@ awaken-protocol-acp.workspace = true
 # Cross-component suites exercise the existing scenario composition.
 awaken-control = { workspace = true, features = ["test-support"] }
 awaken-coordinator-client = { workspace = true }
-awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
 awaken-data-governance-contract = { workspace = true }
 awaken-deployment-application = { workspace = true, features = ["test-support"] }
 awaken-dispatch = { workspace = true, features = ["test-support"] }

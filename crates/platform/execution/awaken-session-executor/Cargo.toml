@@ -63,7 +63,7 @@ awaken-dispatch-execution.workspace = true
 awaken-deployment-config.workspace = true
 awaken-acp-contract = { workspace = true }
 awaken-credential-contract.workspace = true
-awaken-credential-materializer = { workspace = true }
+awaken-credential-materializer.workspace = true
 async-trait.workspace = true
 awaken-time.workspace = true
 awaken-lease-contract.workspace = true
@@ -154,7 +154,6 @@ tempfile = "3"
 # agent said through the in-memory commit boundary.
 awaken-store-inmem = { workspace = true }
 awaken-store-sqlite = { workspace = true, features = ["test-support"] }
-awaken-credential-materializer = { workspace = true, features = ["authority"] }
 awaken-lease-testkit.workspace = true
 awaken-tenancy.workspace = true
 

@@ -627,3 +627,15 @@ clippy-held, so `check_authority_arithmetic` stays); the private scanners in
 `_service_data_ownership_fitness` already used the shared lexer;
 `check_formal_web_surface` reads TypeScript; `check_test_waits.test_module_of`
 is a line selection, not a brace scan.
+
+### Feature builds replaced by crate edges and values (2026-11-06)
+
+A feature that removes code (`cfg(not(feature))`) costs one build per
+combination to prove the absence. Where the absence is already a dependency
+fact or can be a constructor value, the build goes and the fact is checked
+statically or by an ordinary unit test.
+
+| Removed `check-rust.sh` step | New holder | Negative example |
+|---|---|---|
+| `credential-materializer-{bare,brokered}-neutral{,-unit}` (4 cargo runs): the empty `authority` feature and the `brokered` feature of `awaken-credential-materializer` | both features deleted; the local Vault broker stays an `Option` (constructor injection) and the brokered port is unconditional. "The Worker cannot reach Vault" is `FORBIDDEN_WORKER_DEPENDENCIES` over Cargo's resolved Worker closure in `_service_data_ownership_fitness` (run by `check_crate_boundaries.py`) | a normal `awaken-credential-vault` edge on `awaken-worker` → `Worker transitively links authority-store dependency awaken-credential-vault` |
+| `runtime-host-neutral`, `managed-protocol-production`, `coordinator-production`, `cli-production`, `process-startup-production` (5 per-root builds) and the `--all-features` `lint-production` | one `lint-production`: `cargo clippy --workspace` over `rust_test_plan.py --production-selection` (every crate except `layer = "tooling"`, every feature except test-support) `--lib --bins -D warnings`; `product_test_support_violations` now also refuses a non-`test-support` feature that enables test-support and a normal edge into a tooling crate | a feature `k8s-tests = [.., "awaken-session-mcp/test-support"]` → `feature k8s-tests enables awaken-session-mcp/test-support; only the test-support feature may`; a normal `awaken-session-executor-testkit` edge → `is a tooling crate, which enables test-support`; `cargo tree` over the production selection lists 0 `test-support` features (98 under `--all-features`); a production call to the fixture-only `awaken_tool_relay::InMemoryOperationLedger` in the Worker binary fails the new pass with E0425 and passed the old `--all-features` pass |

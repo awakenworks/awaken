@@ -75,7 +75,6 @@ awaken-session-environment = { workspace = true, features = ["test-support"] }
 awaken-session-executor-testkit = { workspace = true, features = ["host"] }
 awaken-agent-contract.workspace = true
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
-awaken-credential-materializer = { workspace = true, features = ["authority"] }
 tempfile = "3"
 serde_json.workspace = true
 awaken-data-governance-contract.workspace = true
