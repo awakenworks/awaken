@@ -659,6 +659,46 @@ qualification are separate claims.
   batch; 204 commands were unexecuted. The exact failing assertion and evidence
   remain unchanged, with cause still under investigation; this is not whole214
   qualification or evidence for the rebased combination.
+- **Current main reception (`a2a855cd2bb6`).** The six private commits,
+  including observer `547b6d40ad41`, were rebased with `--no-fork-point` onto
+  this main source. All six range-diff rows remain equal; clean receiver
+  `bb39b8dfb8ec` preserves the incoming lifecycle fixes, while original
+  `31645771afd4`, its tag and failed-run evidence remain unchanged.
+  This source-preservation check does not qualify the new combination.
+- **Delegation observer (`547b6d40ad41`).** Four decision-table cases execute
+  the actual `createAwaitingChild` through the existing AST/VM fixture and
+  canonical receipt observer. They proved premature acceptance of an unsettled
+  primary history and of an older idle followed by a newer Running event;
+  the fix requires the latest primary lifecycle in the same receipt delta and
+  the later Session DTO both to be Idle before retaining the strict baseline.
+  The final owner pair passed 26 tests; original harness lifecycle and complete
+  delegation M1–M14 passed, followed by 15 normal hook checks and commit-message
+  validation. Child ticket checks, rejected-batch full event-ID equality,
+  request counts and the 30-second budget remain unchanged; the two opaque IDs
+  in the older failed run still have no recorded event types.
+- **Diagnostic runtime temp preparation.** A separate old-source whole-context
+  diagnostic passed 125 commands, including M10, then failed command 126 and
+  left 88 unrun. Its global `/build` temp override entered the fixture's
+  read-only mount and caused EROFS; later full envelopes leave runtime
+  `TMPDIR`/`TMP`/`TEMP` unset and use the original OS temp plus harness-owned
+  directories. This envelope error neither explains the original M10 failure
+  nor establishes whole214 qualification.
+- **Shared plain-text Org encoding.** The identical AG-UI and AI-SDK callbacks
+  now have one owner behind the existing `OrgAdmissionEncoding::plain_text`;
+  Coordinator passes each unchanged route classifier. The old six callback
+  bodies are removed, with no new protocol dependency or compatibility alias.
+  One codec decision table owns exact 503/429 body, Content-Type and optional
+  Retry-After combinations; the two original named wire regressions move to
+  Coordinator's real middleware assembly to check each route and handler
+  boundary. The four complete owning packages passed 407 tests with one original
+  skip; both original workspace Clippy graphs, full boundaries and docs checks
+  passed with unchanged source/SDK/index facts during execution. Final clean-SHA
+  qualification remains separate.
+- **Approved minimal coverage reference (`98cbe0a93e9a`).** This normal commit
+  directly extends `f03c55823bbe` by exactly the six user-approved files; the
+  other 5,420 blobs and every file mode remain identical. Its normal hooks and
+  nine owning validation steps passed; complete fresh coverage sampling and
+  comparison are still unmeasured, so no earlier partial profiles form a baseline.
 - **Main Resource continuation (`8b908ffec6f4`, 2026-11-06).** The original
   `bash scripts/ci/check-all.sh --group rust` completed with exit 0 on the clean
   SHA: 10,553 nextest cases passed and 129 were skipped; both original workspace
