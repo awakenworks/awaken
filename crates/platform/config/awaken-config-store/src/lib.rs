@@ -261,22 +261,6 @@ pub(crate) fn management_effect_retirement_is_admitted(
     })
 }
 
-#[cfg(kani)]
-/// @obligation resource_binding.pending_effect_survives_until_readback
-/// @obligation resource_binding.replay_is_idempotent_and_identity_stable
-/// @proof-input-debt tautology management_effect_retirement_decision
-#[kani::proof]
-fn management_effect_retirement_requires_present_matching_receipt() {
-    // C1 current pending row exists; C2 its complete payload matches the receipt.
-    // E1 delete iff C1+C2; R0/R1/R2 retain for every other truth-table row.
-    let pending_present: bool = kani::any();
-    let receipt_matches: bool = kani::any();
-    assert_eq!(
-        management_effect_retirement_decision(pending_present, receipt_matches),
-        pending_present && receipt_matches
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -341,6 +325,28 @@ mod tests {
                 management_effect_retirement_decision(pending_present, receipt_matches),
                 expected
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation resource_binding.pending_effect_survives_until_readback
+    /// @obligation resource_binding.replay_is_idempotent_and_identity_stable
+    #[test]
+    fn management_effect_retirement_requires_present_matching_receipt() {
+        // C1 current pending row exists; C2 its complete payload matches the receipt.
+        // E1 delete iff C1+C2; R0/R1/R2 retain for every other truth-table row.
+        for pending_present in [false, true] {
+            for receipt_matches in [false, true] {
+                assert_eq!(
+                    management_effect_retirement_decision(pending_present, receipt_matches),
+                    pending_present && receipt_matches
+                );
+            }
         }
     }
 }

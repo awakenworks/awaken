@@ -342,85 +342,129 @@ impl CredentialRealizationCapabilities {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
-    fn boundary(tag: u8) -> PlaintextBoundary {
-        match tag % 3 {
-            0 => PlaintextBoundary::Workload,
-            1 => PlaintextBoundary::Worker,
-            _ => PlaintextBoundary::Platform,
+    const fn listed_boundary(boundary: PlaintextBoundary) -> usize {
+        match boundary {
+            PlaintextBoundary::Workload => 0,
+            PlaintextBoundary::Worker => 1,
+            PlaintextBoundary::Platform => 2,
+        }
+    }
+    const EVERY_BOUNDARY: [PlaintextBoundary; 3] = [
+        PlaintextBoundary::Workload,
+        PlaintextBoundary::Worker,
+        PlaintextBoundary::Platform,
+    ];
+
+    const fn listed_realization(realization: CredentialRealizationKind) -> usize {
+        match realization {
+            CredentialRealizationKind::ProcessSecretEnvironment => 0,
+            CredentialRealizationKind::PrivateSecretFile => 1,
+            CredentialRealizationKind::ProcessProtocolField => 2,
+            CredentialRealizationKind::WorkerProviderAdapter => 3,
+            CredentialRealizationKind::WorkerRelay => 4,
+            CredentialRealizationKind::PlatformProviderAdapter => 5,
+            CredentialRealizationKind::PlatformRelay => 6,
+        }
+    }
+    const EVERY_REALIZATION: [CredentialRealizationKind; 7] = [
+        CredentialRealizationKind::ProcessSecretEnvironment,
+        CredentialRealizationKind::PrivateSecretFile,
+        CredentialRealizationKind::ProcessProtocolField,
+        CredentialRealizationKind::WorkerProviderAdapter,
+        CredentialRealizationKind::WorkerRelay,
+        CredentialRealizationKind::PlatformProviderAdapter,
+        CredentialRealizationKind::PlatformRelay,
+    ];
+
+    const fn listed_delivery(delivery: McpCredentialDelivery) -> usize {
+        match delivery {
+            McpCredentialDelivery::ClientInjection => 0,
+            McpCredentialDelivery::GatewayMediation => 1,
+        }
+    }
+    const EVERY_DELIVERY: [McpCredentialDelivery; 2] = [
+        McpCredentialDelivery::ClientInjection,
+        McpCredentialDelivery::GatewayMediation,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_BOUNDARY.into_iter().enumerate() {
+            assert_eq!(listed_boundary(value), index);
+        }
+        for (index, value) in EVERY_REALIZATION.into_iter().enumerate() {
+            assert_eq!(listed_realization(value), index);
+        }
+        for (index, value) in EVERY_DELIVERY.into_iter().enumerate() {
+            assert_eq!(listed_delivery(value), index);
         }
     }
 
-    fn realization(tag: u8) -> CredentialRealizationKind {
-        match tag % 7 {
-            0 => CredentialRealizationKind::ProcessSecretEnvironment,
-            1 => CredentialRealizationKind::PrivateSecretFile,
-            2 => CredentialRealizationKind::ProcessProtocolField,
-            3 => CredentialRealizationKind::WorkerProviderAdapter,
-            4 => CredentialRealizationKind::WorkerRelay,
-            5 => CredentialRealizationKind::PlatformProviderAdapter,
-            _ => CredentialRealizationKind::PlatformRelay,
-        }
-    }
-
-    fn delivery(tag: bool) -> McpCredentialDelivery {
-        if tag {
-            McpCredentialDelivery::GatewayMediation
-        } else {
-            McpCredentialDelivery::ClientInjection
-        }
-    }
-
+    /// @exhaustive PlaintextBoundary(3) x CredentialRealizationKind(7) = 21
     /// @obligation credential.mcp_delivery_mode_is_frozen_and_never_falls_back
     /// @obligation credential.mcp_delivery_selection_is_exact_and_fail_closed
-    #[kani::proof]
+    #[test]
     fn mcp_delivery_selection_has_only_the_explicit_pair_classes() {
-        let boundary = boundary(kani::any());
-        let realization = realization(kani::any());
-        let selected = select_mcp_credential_delivery(boundary, realization);
-        assert_eq!(
-            selected,
-            match (boundary, realization) {
-                (PlaintextBoundary::Workload, CredentialRealizationKind::ProcessProtocolField) => {
-                    Some(McpCredentialDelivery::ClientInjection)
-                }
-                (PlaintextBoundary::Platform, CredentialRealizationKind::PlatformRelay) => {
-                    Some(McpCredentialDelivery::GatewayMediation)
-                }
-                _ => None,
+        for boundary in EVERY_BOUNDARY {
+            for realization in EVERY_REALIZATION {
+                let selected = select_mcp_credential_delivery(boundary, realization);
+                assert_eq!(
+                    selected,
+                    match (boundary, realization) {
+                        (
+                            PlaintextBoundary::Workload,
+                            CredentialRealizationKind::ProcessProtocolField,
+                        ) => Some(McpCredentialDelivery::ClientInjection),
+                        (PlaintextBoundary::Platform, CredentialRealizationKind::PlatformRelay) => {
+                            Some(McpCredentialDelivery::GatewayMediation)
+                        }
+                        _ => None,
+                    }
+                );
             }
-        );
+        }
     }
 
+    /// @exhaustive McpCredentialDelivery(2) x PlaintextBoundary(3) x CredentialRealizationKind(7) x PlaintextBoundary(3) x CredentialRealizationKind(7) x bool(2) = 1764
     /// @obligation credential.mcp_delivery_mode_is_frozen_and_never_falls_back
     /// @obligation credential.mcp_delivery_receipt_requires_exact_binding_holder_and_mechanism
-    #[kani::proof]
+    #[test]
     fn mcp_delivery_receipt_requires_exact_binding_holder_and_mechanism() {
-        let expected_delivery = delivery(kani::any());
-        let expected_boundary = boundary(kani::any());
-        let expected_realization = realization(kani::any());
-        let actual_boundary = boundary(kani::any());
-        let actual_realization = realization(kani::any());
-        let exact_binding = kani::any();
-        let matches = mcp_credential_delivery_receipt_matches(
-            expected_delivery,
-            expected_boundary,
-            expected_realization,
-            actual_boundary,
-            actual_realization,
-            exact_binding,
-        );
-        if matches {
-            assert!(exact_binding);
-            assert_eq!(expected_boundary, actual_boundary);
-            assert_eq!(expected_realization, actual_realization);
-            assert_eq!(
-                select_mcp_credential_delivery(actual_boundary, actual_realization),
-                Some(expected_delivery)
-            );
+        for expected_delivery in EVERY_DELIVERY {
+            for expected_boundary in EVERY_BOUNDARY {
+                for expected_realization in EVERY_REALIZATION {
+                    for actual_boundary in EVERY_BOUNDARY {
+                        for actual_realization in EVERY_REALIZATION {
+                            for exact_binding in [false, true] {
+                                let matches = mcp_credential_delivery_receipt_matches(
+                                    expected_delivery,
+                                    expected_boundary,
+                                    expected_realization,
+                                    actual_boundary,
+                                    actual_realization,
+                                    exact_binding,
+                                );
+                                if matches {
+                                    assert!(exact_binding);
+                                    assert_eq!(expected_boundary, actual_boundary);
+                                    assert_eq!(expected_realization, actual_realization);
+                                    assert_eq!(
+                                        select_mcp_credential_delivery(
+                                            actual_boundary,
+                                            actual_realization
+                                        ),
+                                        Some(expected_delivery)
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

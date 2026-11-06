@@ -2487,5 +2487,5 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
+#[cfg(any(test, kani))]
 mod verification;

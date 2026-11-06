@@ -721,83 +721,6 @@ pub fn session_agent_report_text(messages: &[Message], run_id: &RunId) -> String
         .join("\n")
 }
 
-#[cfg(kani)]
-/// @obligation session.agent_message_completed_target_allows_late_source_receipt_without_reexecution
-/// @obligation session.agent_message_missing_lifecycle_projection_relinquishes_without_settlement
-/// @obligation session.agent_message_target_boundary_not_source_receipt_settles_activity
-#[kani::proof]
-fn session_agent_boundary_requires_a_visible_committed_target() {
-    use awaken_agent_contract::agent::run::EndCause;
-
-    // Causes: C1 the actual committed Run state is Running/Awaiting/Completed/
-    // Failed/Cancelled; C2 the lifecycle projection is missing/visible; C3 the
-    // claimed dispatch is a child/root continuation and is/is-not cancelled;
-    // C4 the canonical committed report is absent/present. Effects: E1 a
-    // non-boundary rejects; E2 a missing projection retries without settlement;
-    // E3 only a visible normal Completed child with a report continues; E4 a
-    // visible failed child interrupts before settlement; E5 every other visible
-    // boundary settles directly. The source tool receipt is deliberately not an
-    // input: it has no authority to choose any settlement action.
-    let state = match kani::any::<u8>() % 5 {
-        0 => RunState::Running,
-        1 => RunState::Awaiting,
-        2 => RunState::Ended(EndCause::NaturalEnd),
-        3 => RunState::Ended(EndCause::MaxSteps),
-        _ => RunState::Ended(EndCause::Cancelled),
-    };
-    let role = if kani::any() {
-        SessionAgentBoundaryRole::Child
-    } else {
-        SessionAgentBoundaryRole::PrimaryContinuation
-    };
-    let visibility = if kani::any() {
-        SessionAgentBoundaryVisibility::Visible
-    } else {
-        SessionAgentBoundaryVisibility::Missing
-    };
-    let cancellation_requested = kani::any();
-    let report = if kani::any() {
-        SessionAgentCommittedReport::Present
-    } else {
-        SessionAgentCommittedReport::Absent
-    };
-    let action =
-        session_agent_boundary_action(role, &state, visibility, cancellation_requested, report);
-    let boundary = session_agent_run_boundary(&state);
-
-    assert_eq!(
-        action == SessionAgentBoundaryAction::RejectNonBoundary,
-        boundary.is_none()
-    );
-    assert_eq!(
-        action == SessionAgentBoundaryAction::RetryMissingProjection,
-        boundary.is_some() && visibility == SessionAgentBoundaryVisibility::Missing
-    );
-    assert_eq!(
-        action == SessionAgentBoundaryAction::ContinueReport,
-        boundary == Some(SessionAgentRunBoundary::Completed)
-            && visibility == SessionAgentBoundaryVisibility::Visible
-            && role == SessionAgentBoundaryRole::Child
-            && !cancellation_requested
-            && report == SessionAgentCommittedReport::Present
-    );
-    assert_eq!(
-        action == SessionAgentBoundaryAction::InterruptThenSettle,
-        boundary == Some(SessionAgentRunBoundary::Failed)
-            && visibility == SessionAgentBoundaryVisibility::Visible
-            && role == SessionAgentBoundaryRole::Child
-    );
-    assert_eq!(
-        matches!(
-            action,
-            SessionAgentBoundaryAction::Settle
-                | SessionAgentBoundaryAction::InterruptThenSettle
-                | SessionAgentBoundaryAction::ContinueReport
-        ),
-        boundary.is_some() && visibility == SessionAgentBoundaryVisibility::Visible
-    );
-}
-
 use awaken_session_contract::{SessionThreadTarget, SessionThreadToolReplyCommand};
 
 #[cfg(test)]
@@ -1453,3 +1376,132 @@ pub trait SessionAgentCoordination: Send + Sync {
 
 #[cfg(test)]
 mod boundary_command_tests;
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+    use awaken_agent_contract::agent::run::EndCause;
+
+    const EVERY_ROLE: [SessionAgentBoundaryRole; 2] = [
+        SessionAgentBoundaryRole::Child,
+        SessionAgentBoundaryRole::PrimaryContinuation,
+    ];
+    const EVERY_VISIBILITY: [SessionAgentBoundaryVisibility; 2] = [
+        SessionAgentBoundaryVisibility::Missing,
+        SessionAgentBoundaryVisibility::Visible,
+    ];
+    const EVERY_REPORT: [SessionAgentCommittedReport; 2] = [
+        SessionAgentCommittedReport::Absent,
+        SessionAgentCommittedReport::Present,
+    ];
+
+    const fn listed_role(role: SessionAgentBoundaryRole) -> usize {
+        match role {
+            SessionAgentBoundaryRole::Child => 0,
+            SessionAgentBoundaryRole::PrimaryContinuation => 1,
+        }
+    }
+    const fn listed_visibility(visibility: SessionAgentBoundaryVisibility) -> usize {
+        match visibility {
+            SessionAgentBoundaryVisibility::Missing => 0,
+            SessionAgentBoundaryVisibility::Visible => 1,
+        }
+    }
+    const fn listed_report(report: SessionAgentCommittedReport) -> usize {
+        match report {
+            SessionAgentCommittedReport::Absent => 0,
+            SessionAgentCommittedReport::Present => 1,
+        }
+    }
+
+    #[test]
+    fn every_boundary_role_visibility_and_report_is_listed() {
+        for (index, role) in EVERY_ROLE.into_iter().enumerate() {
+            assert_eq!(listed_role(role), index);
+        }
+        for (index, visibility) in EVERY_VISIBILITY.into_iter().enumerate() {
+            assert_eq!(listed_visibility(visibility), index);
+        }
+        for (index, report) in EVERY_REPORT.into_iter().enumerate() {
+            assert_eq!(listed_report(report), index);
+        }
+    }
+
+    /// @exhaustive RunState{Running,Awaiting,Ended(NaturalEnd|MaxSteps|Cancelled)}(5) x SessionAgentBoundaryRole(2) x SessionAgentBoundaryVisibility(2) x bool(2) x SessionAgentCommittedReport(2) = 80
+    /// @obligation session.agent_message_completed_target_allows_late_source_receipt_without_reexecution
+    /// @obligation session.agent_message_missing_lifecycle_projection_relinquishes_without_settlement
+    /// @obligation session.agent_message_target_boundary_not_source_receipt_settles_activity
+    #[test]
+    fn session_agent_boundary_requires_a_visible_committed_target() {
+        // Causes: C1 the actual committed Run state is Running/Awaiting/Completed/
+        // Failed/Cancelled; C2 the lifecycle projection is missing/visible; C3 the
+        // claimed dispatch is a child/root continuation and is/is-not cancelled;
+        // C4 the canonical committed report is absent/present. Effects: E1 a
+        // non-boundary rejects; E2 a missing projection retries without
+        // settlement; E3 only a visible normal Completed child with a report
+        // continues; E4 a visible failed child interrupts before settlement; E5
+        // every other visible boundary settles directly.
+        let states = [
+            RunState::Running,
+            RunState::Awaiting,
+            RunState::Ended(EndCause::NaturalEnd),
+            RunState::Ended(EndCause::MaxSteps),
+            RunState::Ended(EndCause::Cancelled),
+        ];
+        let mut cases = 0;
+        for state in &states {
+            for role in EVERY_ROLE {
+                for visibility in EVERY_VISIBILITY {
+                    for cancellation_requested in [false, true] {
+                        for report in EVERY_REPORT {
+                            let action = session_agent_boundary_action(
+                                role,
+                                state,
+                                visibility,
+                                cancellation_requested,
+                                report,
+                            );
+                            let boundary = session_agent_run_boundary(state);
+
+                            assert_eq!(
+                                action == SessionAgentBoundaryAction::RejectNonBoundary,
+                                boundary.is_none()
+                            );
+                            assert_eq!(
+                                action == SessionAgentBoundaryAction::RetryMissingProjection,
+                                boundary.is_some()
+                                    && visibility == SessionAgentBoundaryVisibility::Missing
+                            );
+                            assert_eq!(
+                                action == SessionAgentBoundaryAction::ContinueReport,
+                                boundary == Some(SessionAgentRunBoundary::Completed)
+                                    && visibility == SessionAgentBoundaryVisibility::Visible
+                                    && role == SessionAgentBoundaryRole::Child
+                                    && !cancellation_requested
+                                    && report == SessionAgentCommittedReport::Present
+                            );
+                            assert_eq!(
+                                action == SessionAgentBoundaryAction::InterruptThenSettle,
+                                boundary == Some(SessionAgentRunBoundary::Failed)
+                                    && visibility == SessionAgentBoundaryVisibility::Visible
+                                    && role == SessionAgentBoundaryRole::Child
+                            );
+                            assert_eq!(
+                                matches!(
+                                    action,
+                                    SessionAgentBoundaryAction::Settle
+                                        | SessionAgentBoundaryAction::InterruptThenSettle
+                                        | SessionAgentBoundaryAction::ContinueReport
+                                ),
+                                boundary.is_some()
+                                    && visibility == SessionAgentBoundaryVisibility::Visible
+                            );
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 80);
+    }
+}

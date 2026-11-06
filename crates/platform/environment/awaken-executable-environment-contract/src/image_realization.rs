@@ -569,21 +569,29 @@ mod verification {
             ),
         }
     }
+}
 
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
     /// @obligation environment_image_build.single_claim_exact_reclaim_and_stale_fence
-    /// @proof-input-debt tautology environment_image_build_claim_mutation_admitted
-    #[kani::proof]
+    #[test]
     fn environment_image_build_mutation_requires_exact_claim_and_admissible_command() {
-        let owner_matches = kani::any::<bool>();
-        let epoch_matches = kani::any::<bool>();
-        let command_admitted = kani::any::<bool>();
-        assert_eq!(
-            environment_image_build_claim_mutation_admitted(
-                owner_matches,
-                epoch_matches,
-                command_admitted,
-            ),
-            owner_matches && epoch_matches && command_admitted,
-        );
+        for owner_matches in [false, true] {
+            for epoch_matches in [false, true] {
+                for command_admitted in [false, true] {
+                    assert_eq!(
+                        environment_image_build_claim_mutation_admitted(
+                            owner_matches,
+                            epoch_matches,
+                            command_admitted,
+                        ),
+                        owner_matches && epoch_matches && command_admitted,
+                    );
+                }
+            }
+        }
     }
 }

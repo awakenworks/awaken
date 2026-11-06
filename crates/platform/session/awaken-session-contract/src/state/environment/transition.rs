@@ -1034,9 +1034,9 @@ fn suspend_memory_preflight(
     Ok(())
 }
 
-/// The safety laws the decision table and the Kani harnesses both check, so
-/// the exhaustive test sweep and the proof state one predicate each.
-#[cfg(any(test, kani))]
+/// The safety laws the decision tables and the exhaustive domain sweep
+/// check, one predicate each.
+#[cfg(test)]
 mod laws {
     use super::*;
     use SessionEnvironmentEvent as E;
@@ -1254,6 +1254,3 @@ mod laws {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(kani)]
-mod proofs;

@@ -826,27 +826,36 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-/// @obligation resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
-/// @obligation resource_reclamation.reference_and_lease_races_fail_closed
-/// @proof-input-debt free_symbol reclamation_acquisition_decision fence_exists
-/// @proof-input-debt free_symbol reclamation_acquisition_decision has_references
-/// @proof-input-debt free_symbol reclamation_acquisition_decision owned_by_intent
-#[kani::proof]
-fn reclamation_fence_admission_requires_absent_owner_and_zero_references() {
-    // Symbolic form of the production decision table above. All Boolean
-    // projections are covered, including the impossible owned-without-fence
-    // input, which must remain fail closed with respect to references.
-    let fence_exists = kani::any::<bool>();
-    let owned_by_intent = kani::any::<bool>();
-    let has_references = kani::any::<bool>();
-    let decision = reclamation_acquisition_decision(fence_exists, owned_by_intent, has_references);
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
 
-    assert_eq!(
-        decision == ReclamationAcquisitionDecision::InstallFence,
-        !fence_exists && !has_references
-    );
-    if fence_exists || has_references {
-        assert_ne!(decision, ReclamationAcquisitionDecision::InstallFence);
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
+    /// @obligation resource_reclamation.reference_and_lease_races_fail_closed
+    #[test]
+    fn reclamation_fence_admission_requires_absent_owner_and_zero_references() {
+        // Enumerated form of the production decision table above. All Boolean
+        // projections are covered, including the impossible owned-without-fence
+        // input, which must remain fail closed with respect to references.
+        for fence_exists in [false, true] {
+            for owned_by_intent in [false, true] {
+                for has_references in [false, true] {
+                    let decision = reclamation_acquisition_decision(
+                        fence_exists,
+                        owned_by_intent,
+                        has_references,
+                    );
+
+                    assert_eq!(
+                        decision == ReclamationAcquisitionDecision::InstallFence,
+                        !fence_exists && !has_references
+                    );
+                    if fence_exists || has_references {
+                        assert_ne!(decision, ReclamationAcquisitionDecision::InstallFence);
+                    }
+                }
+            }
+        }
     }
 }

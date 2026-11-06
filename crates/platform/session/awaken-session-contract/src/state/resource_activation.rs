@@ -247,64 +247,6 @@ fn resource_materialization_selects_only_active_or_pending_root_generation() {
 }
 
 #[cfg(kani)]
-/// @obligation session_resources.terminal_assignment_retains_desired_generation
-/// @proof-input-debt free_symbol desired_resource_generation_slot pending
-#[kani::proof]
-fn terminal_resource_projection_retains_the_exact_desired_generation() {
-    // Causes: C1 a pending replacement is retained by the Session root; C2 no
-    // pending replacement exists. Effects: E1 select the pending manifest and
-    // attempted revision; E2 select the installed active manifest and its
-    // committed revision. C1/C2 are exclusive and exhaustive.
-    //
-    // | Rule | pending | selected slot | Effect |
-    // |---|---|---|---|
-    // | R1 | yes | Pending | E1 |
-    // | R2 | no  | Active  | E2 |
-    let pending: bool = kani::any();
-    let selected = desired_resource_generation_slot(pending);
-    assert_eq!(selected == DesiredResourceGenerationSlot::Pending, pending);
-    assert_eq!(selected == DesiredResourceGenerationSlot::Active, !pending);
-}
-
-#[cfg(kani)]
-/// @obligation session_resources.failed_replacement_preserves_active_manifest
-#[kani::proof]
-fn failed_resource_replacement_never_promotes_the_pending_manifest() {
-    // Cause/effect graph: C1 realization commits; C2 it fails and rollback
-    // succeeds; C3 it fails and rollback is unavailable. Effects: E1 promote
-    // and clear pending, E2 preserve active and clear pending, E3 preserve
-    // active and retain pending. C1-C3 are closed and mutually exclusive.
-    //
-    // | Rule | outcome | promote pending | retain pending | Effect |
-    // |---|---|---|---|---|
-    // | R1 | commit | yes | no | E1 |
-    // | R2 | rollback | no | no | E2 |
-    // | R3 | retryable failure | no | yes | E3 |
-    let committed: bool = kani::any();
-    let rollback_completed: bool = kani::any();
-    let settlement = if committed {
-        ResourceManifestSettlementKind::Commit
-    } else if rollback_completed {
-        ResourceManifestSettlementKind::Rollback
-    } else {
-        ResourceManifestSettlementKind::RetryableFailure
-    };
-    let plan = resource_manifest_settlement_plan(settlement);
-
-    assert_eq!(
-        plan.promote_pending,
-        settlement == ResourceManifestSettlementKind::Commit
-    );
-    assert_eq!(
-        plan.retain_pending,
-        settlement == ResourceManifestSettlementKind::RetryableFailure
-    );
-    if settlement != ResourceManifestSettlementKind::Commit {
-        assert!(!plan.promote_pending);
-    }
-}
-
-#[cfg(kani)]
 /// @obligation session_resources.restart_retries_same_pending_revision
 /// @proof-input-debt free_symbol pending_resource_retry_revision pending
 #[kani::proof]
@@ -1534,5 +1476,70 @@ mod tests {
         let compacted = state.clone();
         assert!(!state.compact_settled_activations(), "H3/E5");
         assert_eq!(state, compacted, "H3/E5");
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_SETTLEMENT: [ResourceManifestSettlementKind; 3] = [
+        ResourceManifestSettlementKind::Commit,
+        ResourceManifestSettlementKind::Rollback,
+        ResourceManifestSettlementKind::RetryableFailure,
+    ];
+
+    const fn listed_settlement(settlement: ResourceManifestSettlementKind) -> usize {
+        match settlement {
+            ResourceManifestSettlementKind::Commit => 0,
+            ResourceManifestSettlementKind::Rollback => 1,
+            ResourceManifestSettlementKind::RetryableFailure => 2,
+        }
+    }
+
+    #[test]
+    fn every_manifest_settlement_is_listed() {
+        for (index, settlement) in EVERY_SETTLEMENT.into_iter().enumerate() {
+            assert_eq!(listed_settlement(settlement), index);
+        }
+    }
+
+    /// @exhaustive bool(2) = 2
+    /// @obligation session_resources.terminal_assignment_retains_desired_generation
+    #[test]
+    fn terminal_resource_projection_retains_the_exact_desired_generation() {
+        // Causes: C1 a pending replacement is retained by the Session root; C2 no
+        // pending replacement exists. Effects: E1 select the pending manifest and
+        // attempted revision; E2 select the installed active manifest.
+        for pending in [false, true] {
+            let selected = desired_resource_generation_slot(pending);
+            assert_eq!(selected == DesiredResourceGenerationSlot::Pending, pending);
+            assert_eq!(selected == DesiredResourceGenerationSlot::Active, !pending);
+        }
+    }
+
+    /// @exhaustive ResourceManifestSettlementKind(3) = 3
+    /// @obligation session_resources.failed_replacement_preserves_active_manifest
+    #[test]
+    fn failed_resource_replacement_never_promotes_the_pending_manifest() {
+        // | Rule | outcome | promote pending | retain pending | Effect |
+        // |---|---|---|---|---|
+        // | R1 | commit | yes | no | E1 |
+        // | R2 | rollback | no | no | E2 |
+        // | R3 | retryable failure | no | yes | E3 |
+        for settlement in EVERY_SETTLEMENT {
+            let plan = resource_manifest_settlement_plan(settlement);
+            assert_eq!(
+                plan.promote_pending,
+                settlement == ResourceManifestSettlementKind::Commit
+            );
+            assert_eq!(
+                plan.retain_pending,
+                settlement == ResourceManifestSettlementKind::RetryableFailure
+            );
+            if settlement != ResourceManifestSettlementKind::Commit {
+                assert!(!plan.promote_pending);
+            }
+        }
     }
 }

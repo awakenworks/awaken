@@ -91,29 +91,6 @@ pub async fn verify_attempt_ownership(
     }
 }
 
-#[cfg(kani)]
-/// @obligation credential_effect.boundary_preserves_exact_materialization_authority
-/// @obligation worker.secret_materialization_is_claim_fenced
-#[kani::proof]
-fn claim_bound_external_effect_admits_only_current_ownership() {
-    // Test design — Causes: C1 an attempt authority is bound; C2 its latest
-    // observation is current. Effects: E1 admit the external effect or E2
-    // reject it. Constraint: an unbound context is the supported embedded/direct
-    // topology; claim-bound callers must never inherit that allowance.
-    // Decision rules: O1 !C1 -> E1; O2 C1+C2 -> E1; O3 C1+!C2 -> E2.
-    let authority_bound: bool = kani::any();
-    let observation_current: bool = kani::any();
-    let admission =
-        AttemptOwnershipAdmission::from_observation(authority_bound, observation_current);
-    assert_eq!(
-        admission.admits_external_effect(),
-        !authority_bound || observation_current
-    );
-    if authority_bound {
-        assert_eq!(admission.admits_external_effect(), observation_current);
-    }
-}
-
 /// How an executor can be stopped in flight. The host branches on this before it
 /// offers cancel/interrupt for a run — the axis is worth typing because it differs
 /// across execution altitudes (ADR-0055): the native loop observes a cooperative
@@ -655,5 +632,37 @@ mod tests {
             registry.register("acp:claude", Arc::new(NamedExecutor("second"))),
             Err(AttemptExecutorRegistryError::DuplicateBackend(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation credential_effect.boundary_preserves_exact_materialization_authority
+    /// @obligation worker.secret_materialization_is_claim_fenced
+    #[test]
+    fn claim_bound_external_effect_admits_only_current_ownership() {
+        // Test design — Causes: C1 an attempt authority is bound; C2 its latest
+        // observation is current. Effects: E1 admit the external effect or E2
+        // reject it. Constraint: an unbound context is the supported embedded/direct
+        // topology; claim-bound callers must never inherit that allowance.
+        // Decision rules: O1 !C1 -> E1; O2 C1+C2 -> E1; O3 C1+!C2 -> E2.
+        for authority_bound in [false, true] {
+            for observation_current in [false, true] {
+                let admission = AttemptOwnershipAdmission::from_observation(
+                    authority_bound,
+                    observation_current,
+                );
+                assert_eq!(
+                    admission.admits_external_effect(),
+                    !authority_bound || observation_current
+                );
+                if authority_bound {
+                    assert_eq!(admission.admits_external_effect(), observation_current);
+                }
+            }
+        }
     }
 }

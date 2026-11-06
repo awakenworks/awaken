@@ -96,7 +96,7 @@ pub fn process_local_executable_projection_admission() -> ExecutableProjectionAd
     }
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 fn check_paired_refresh_admission(agent: Result<(), ()>, environment: Result<(), ()>) {
     let should_enter = agent.is_ok() && environment.is_ok();
     let admission = agent_refresh_completed(agent)
@@ -106,16 +106,6 @@ fn check_paired_refresh_admission(agent: Result<(), ()>, environment: Result<(),
         admission.enter(|| entered.set(true));
     }
     assert_eq!(entered.get(), should_enter);
-}
-
-#[cfg(kani)]
-/// @obligation executable_projection.failed_refresh_never_enters_handler
-/// @obligation executable_projection.runtime_admission_requires_both_refreshes
-#[kani::proof]
-fn executable_projection_admission_requires_both_ordered_refreshes() {
-    // No assumptions or stubs: both actual Result shapes cross the production
-    // capability constructors and the production handler-entry method.
-    check_paired_refresh_admission(kani::any(), kani::any());
 }
 
 #[cfg(test)]
@@ -135,5 +125,43 @@ mod tests {
         check_paired_refresh_admission(Err(()), Ok(()));
         check_paired_refresh_admission(Ok(()), Err(()));
         check_paired_refresh_admission(Err(()), Err(()));
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_REFRESH: [Result<(), ()>; 2] = [Ok(()), Err(())];
+
+    const fn listed_refresh(refresh: Result<(), ()>) -> usize {
+        match refresh {
+            Ok(()) => 0,
+            Err(()) => 1,
+        }
+    }
+
+    #[test]
+    fn every_refresh_outcome_is_listed() {
+        for (index, refresh) in EVERY_REFRESH.into_iter().enumerate() {
+            assert_eq!(listed_refresh(refresh), index);
+        }
+    }
+
+    /// @exhaustive Result<(), ()>(2) x Result<(), ()>(2) = 4
+    /// @obligation executable_projection.failed_refresh_never_enters_handler
+    /// @obligation executable_projection.runtime_admission_requires_both_refreshes
+    #[test]
+    fn executable_projection_admission_requires_both_ordered_refreshes() {
+        // Both actual Result shapes cross the production capability
+        // constructors and the production handler-entry method.
+        let mut cases = 0;
+        for agent in EVERY_REFRESH {
+            for environment in EVERY_REFRESH {
+                check_paired_refresh_admission(agent, environment);
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 4);
     }
 }

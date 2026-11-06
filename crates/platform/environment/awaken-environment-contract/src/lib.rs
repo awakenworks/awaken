@@ -1324,55 +1324,65 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod network_projection_verification {
+#[cfg(test)]
+mod network_projection_exhaustive {
     use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x package manager(6) = 96
     /// @obligation environment.prepared_packages_do_not_grant_runtime_registry_access
-    #[kani::proof]
-    #[kani::unwind(16)]
+    #[test]
     fn declared_build_packages_never_expand_runtime_hosts() {
         // Raw configuration, then the same stage decision used by both host
         // projections. The six managers and empty/nonempty declarations cover
         // the presence predicate; no free authorization Boolean is supplied.
-        let restricted: bool = kani::any();
-        let runtime_permission: bool = kani::any();
-        let networking = if restricted {
-            EnvironmentNetworking::Limited {
-                allowed_hosts: Vec::new(),
-                allow_mcp_servers: kani::any(),
-                allow_package_managers: runtime_permission,
+        for restricted in [false, true] {
+            for runtime_permission in [false, true] {
+                for allow_mcp_servers in [false, true] {
+                    for present in [false, true] {
+                        for manager in 0_u8..6 {
+                            let networking = if restricted {
+                                EnvironmentNetworking::Limited {
+                                    allowed_hosts: Vec::new(),
+                                    allow_mcp_servers,
+                                    allow_package_managers: runtime_permission,
+                                }
+                            } else {
+                                EnvironmentNetworking::Unrestricted {}
+                            };
+                            let mut config = EnvironmentConfig::Cloud {
+                                networking,
+                                packages: EnvironmentPackages::default(),
+                            };
+                            let before =
+                                config.package_registry_access(EnvironmentNetworkStage::Runtime);
+                            if present {
+                                let EnvironmentConfig::Cloud { packages, .. } = &mut config else {
+                                    unreachable!()
+                                };
+                                match manager {
+                                    0 => &mut packages.apt,
+                                    1 => &mut packages.cargo,
+                                    2 => &mut packages.gem,
+                                    3 => &mut packages.go,
+                                    4 => &mut packages.npm,
+                                    _ => &mut packages.pip,
+                                }
+                                .push("package@1".into());
+                            }
+                            assert_eq!(
+                                before,
+                                config.package_registry_access(EnvironmentNetworkStage::Runtime)
+                            );
+                            assert_eq!(before, !restricted || runtime_permission);
+                            assert_eq!(
+                                config
+                                    .package_registry_access(EnvironmentNetworkStage::PackageBuild),
+                                present
+                            );
+                        }
+                    }
+                }
             }
-        } else {
-            EnvironmentNetworking::Unrestricted {}
-        };
-        let mut config = EnvironmentConfig::Cloud {
-            networking,
-            packages: EnvironmentPackages::default(),
-        };
-        let before = config.package_registry_access(EnvironmentNetworkStage::Runtime);
-        let present: bool = kani::any();
-        if present {
-            let EnvironmentConfig::Cloud { packages, .. } = &mut config else {
-                unreachable!()
-            };
-            match kani::any::<u8>() % 6 {
-                0 => &mut packages.apt,
-                1 => &mut packages.cargo,
-                2 => &mut packages.gem,
-                3 => &mut packages.go,
-                4 => &mut packages.npm,
-                _ => &mut packages.pip,
-            }
-            .push("package@1".into());
         }
-        assert_eq!(
-            before,
-            config.package_registry_access(EnvironmentNetworkStage::Runtime)
-        );
-        assert_eq!(before, !restricted || runtime_permission);
-        assert_eq!(
-            config.package_registry_access(EnvironmentNetworkStage::PackageBuild),
-            present
-        );
     }
 }

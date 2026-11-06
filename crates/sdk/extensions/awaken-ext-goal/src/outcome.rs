@@ -557,61 +557,93 @@ impl Error {
     }
 }
 
-#[cfg(kani)]
-mod proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
-    /// @obligation outcome.grade_transition_obeys_budget
-    #[kani::proof]
-    fn applying_a_grade_obeys_decision_and_budget() {
-        let max_iterations: u32 = kani::any();
-        let iteration: u32 = kani::any();
-        let decision_code: u8 = kani::any();
-        kani::assume((MIN_ITERATIONS..=MAX_ITERATIONS).contains(&max_iterations));
-        kani::assume(iteration < max_iterations);
-        kani::assume(decision_code <= 2);
-
-        let decision = match decision_code {
-            0 => GradeDecision::Satisfied,
-            1 => GradeDecision::Failed,
-            _ => GradeDecision::NeedsRevision,
-        };
-        let transition = grade_transition(decision, iteration, max_iterations);
+    const fn listed_decision(decision: GradeDecision) -> usize {
         match decision {
-            GradeDecision::Satisfied => {
-                assert_eq!(
-                    transition,
-                    GradeTransition::Complete(EvaluationResult::Satisfied)
-                );
-            }
-            GradeDecision::Failed => {
-                assert_eq!(
-                    transition,
-                    GradeTransition::Complete(EvaluationResult::Failed)
-                );
-            }
-            GradeDecision::NeedsRevision if iteration + 1 >= max_iterations => {
-                assert_eq!(transition, GradeTransition::Acknowledge);
-            }
-            GradeDecision::NeedsRevision => {
-                assert_eq!(transition, GradeTransition::Revise(iteration + 1));
-            }
+            GradeDecision::Satisfied => 0,
+            GradeDecision::NeedsRevision => 1,
+            GradeDecision::Failed => 2,
+        }
+    }
+    const EVERY_DECISION: [GradeDecision; 3] = [
+        GradeDecision::Satisfied,
+        GradeDecision::NeedsRevision,
+        GradeDecision::Failed,
+    ];
+
+    const fn listed_result(result: EvaluationResult) -> usize {
+        match result {
+            EvaluationResult::Satisfied => 0,
+            EvaluationResult::NeedsRevision => 1,
+            EvaluationResult::MaxIterationsReached => 2,
+            EvaluationResult::Failed => 3,
+            EvaluationResult::Interrupted => 4,
+        }
+    }
+    const EVERY_RESULT: [EvaluationResult; 5] = [
+        EvaluationResult::Satisfied,
+        EvaluationResult::NeedsRevision,
+        EvaluationResult::MaxIterationsReached,
+        EvaluationResult::Failed,
+        EvaluationResult::Interrupted,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_DECISION.into_iter().enumerate() {
+            assert_eq!(listed_decision(value), index);
+        }
+        for (index, value) in EVERY_RESULT.into_iter().enumerate() {
+            assert_eq!(listed_result(value), index);
         }
     }
 
+    /// @exhaustive (max_iterations in 1..=20, iteration < max_iterations)(210) x GradeDecision(3) = 630
+    /// @obligation outcome.grade_transition_obeys_budget
+    #[test]
+    fn applying_a_grade_obeys_decision_and_budget() {
+        let mut visited = 0;
+        for max_iterations in MIN_ITERATIONS..=MAX_ITERATIONS {
+            for iteration in 0..max_iterations {
+                for decision in EVERY_DECISION {
+                    visited += 1;
+                    let transition = grade_transition(decision, iteration, max_iterations);
+                    match decision {
+                        GradeDecision::Satisfied => {
+                            assert_eq!(
+                                transition,
+                                GradeTransition::Complete(EvaluationResult::Satisfied)
+                            );
+                        }
+                        GradeDecision::Failed => {
+                            assert_eq!(
+                                transition,
+                                GradeTransition::Complete(EvaluationResult::Failed)
+                            );
+                        }
+                        GradeDecision::NeedsRevision if iteration + 1 >= max_iterations => {
+                            assert_eq!(transition, GradeTransition::Acknowledge);
+                        }
+                        GradeDecision::NeedsRevision => {
+                            assert_eq!(transition, GradeTransition::Revise(iteration + 1));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(visited, 630);
+    }
+
+    /// @exhaustive EvaluationResult(5) = 5
     /// @obligation outcome.terminal_absorption
-    #[kani::proof]
+    #[test]
     fn terminal_outcomes_are_absorbing() {
-        let result_code: u8 = kani::any();
-        kani::assume(result_code <= 4);
-        let result = match result_code {
-            0 => EvaluationResult::Satisfied,
-            1 => EvaluationResult::NeedsRevision,
-            2 => EvaluationResult::MaxIterationsReached,
-            3 => EvaluationResult::Failed,
-            _ => EvaluationResult::Interrupted,
-        };
-        assert!(Phase::Completed { result }.is_terminal());
+        for result in EVERY_RESULT {
+            assert!(Phase::Completed { result }.is_terminal());
+        }
         assert!(
             Phase::Errored {
                 failure: ExecutionFailure::Persistence(String::new())

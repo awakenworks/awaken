@@ -226,78 +226,6 @@ pub(super) const fn durable_projection_identity_decision(
     }
 }
 
-#[cfg(kani)]
-/// @obligation session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
-/// @proof-input-debt free_symbol durable_projection_identity_decision binding_is_exact
-/// @proof-input-debt free_symbol durable_projection_identity_decision identity_is_exact
-#[kani::proof]
-fn durable_projection_identity_is_exact_or_a_same_physical_owner_stutter() {
-    // Cause/effect decision table:
-    // C1 effect identity is exact; C2 binding is exact; C3 immutable generation
-    // is exact. E1 C1+C2 => Exact. E2 !C1+C2+C3 => stale same-owner stutter.
-    // E3 every remaining combination => Conflict. The eight Boolean rules are
-    // exhausted here; only E1/E2 may be absorbed by Resident or Retiring.
-    let identity_is_exact: bool = kani::any();
-    let binding_is_exact: bool = kani::any();
-    let generation_is_exact: bool = kani::any();
-    let decision = durable_projection_identity_decision(
-        identity_is_exact,
-        binding_is_exact,
-        generation_is_exact,
-    );
-    assert_eq!(
-        decision == DurableProjectionIdentityDecision::Exact,
-        identity_is_exact && binding_is_exact
-    );
-    assert_eq!(
-        decision == DurableProjectionIdentityDecision::SamePhysicalOwnerStutter,
-        !identity_is_exact && binding_is_exact && generation_is_exact
-    );
-}
-
-#[cfg(kani)]
-/// @obligation session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
-#[kani::proof]
-fn committed_candidate_retains_effect_kind_and_rejects_identity_relabeling() {
-    // Cause/effect decision table: C1 is the closed Candidate origin class; C2
-    // a previously committed identity is exact. E1 New binds DurableCreate;
-    // E2 Adoption binds DurableAdoption; source adoption binds only a compatible
-    // physical generation (or typed legacy upgrade). E3 either committed class plus exact C2
-    // replays; E4 either durable class plus !C2 conflicts. The reducer returns
-    // no Resident decision, so every row remains hidden until the canonical
-    // publication or terminal-retirement owner consumes it.
-    let class = match kani::any::<u8>() % 5 {
-        0 => CandidateCommitClass::New,
-        1 => CandidateCommitClass::Adoption,
-        2 => CandidateCommitClass::DurableCreate,
-        3 => CandidateCommitClass::DurableAdoption,
-        _ => CandidateCommitClass::AdoptionFrom,
-    };
-    let exact: bool = kani::any();
-    let compatible: bool = kani::any();
-    let decision = candidate_commit_decision(class, exact, compatible);
-    match class {
-        CandidateCommitClass::New => assert_eq!(decision, CandidateCommitDecision::BindCreate),
-        CandidateCommitClass::Adoption => {
-            assert_eq!(decision, CandidateCommitDecision::BindAdoption)
-        }
-        CandidateCommitClass::AdoptionFrom => assert_eq!(
-            decision,
-            if compatible {
-                CandidateCommitDecision::BindAdoption
-            } else {
-                CandidateCommitDecision::Conflict
-            }
-        ),
-        CandidateCommitClass::DurableCreate | CandidateCommitClass::DurableAdoption if exact => {
-            assert_eq!(decision, CandidateCommitDecision::Replay)
-        }
-        CandidateCommitClass::DurableCreate | CandidateCommitClass::DurableAdoption => {
-            assert_eq!(decision, CandidateCommitDecision::Conflict)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -637,5 +565,114 @@ mod tests {
             ),
             _ => panic!("restoring projects a restore fence"),
         }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_CLASS: [CandidateCommitClass; 5] = [
+        CandidateCommitClass::New,
+        CandidateCommitClass::Adoption,
+        CandidateCommitClass::DurableCreate,
+        CandidateCommitClass::DurableAdoption,
+        CandidateCommitClass::AdoptionFrom,
+    ];
+    const BOOLS: [bool; 2] = [false, true];
+
+    const fn listed_class(class: CandidateCommitClass) -> usize {
+        match class {
+            CandidateCommitClass::New => 0,
+            CandidateCommitClass::Adoption => 1,
+            CandidateCommitClass::DurableCreate => 2,
+            CandidateCommitClass::DurableAdoption => 3,
+            CandidateCommitClass::AdoptionFrom => 4,
+        }
+    }
+
+    #[test]
+    fn every_candidate_commit_class_is_listed() {
+        for (index, class) in EVERY_CLASS.into_iter().enumerate() {
+            assert_eq!(listed_class(class), index);
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
+    #[test]
+    fn durable_projection_identity_is_exact_or_a_same_physical_owner_stutter() {
+        // C1 effect identity is exact; C2 binding is exact; C3 immutable
+        // generation is exact. E1 C1+C2 => Exact. E2 !C1+C2+C3 => stale
+        // same-owner stutter. E3 every remaining combination => Conflict.
+        let mut cases = 0;
+        for identity_is_exact in BOOLS {
+            for binding_is_exact in BOOLS {
+                for generation_is_exact in BOOLS {
+                    let decision = durable_projection_identity_decision(
+                        identity_is_exact,
+                        binding_is_exact,
+                        generation_is_exact,
+                    );
+                    assert_eq!(
+                        decision == DurableProjectionIdentityDecision::Exact,
+                        identity_is_exact && binding_is_exact
+                    );
+                    assert_eq!(
+                        decision == DurableProjectionIdentityDecision::SamePhysicalOwnerStutter,
+                        !identity_is_exact && binding_is_exact && generation_is_exact
+                    );
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 8);
+    }
+
+    /// @exhaustive CandidateCommitClass(5) x bool(2) x bool(2) = 20
+    /// @obligation session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
+    #[test]
+    fn committed_candidate_retains_effect_kind_and_rejects_identity_relabeling() {
+        // C1 is the closed Candidate origin class; C2 a previously committed
+        // identity is exact. E1 New binds DurableCreate; E2 Adoption binds
+        // DurableAdoption; source adoption binds only a compatible physical
+        // generation. E3 either committed class plus exact C2 replays; E4
+        // either durable class plus !C2 conflicts.
+        let mut cases = 0;
+        for class in EVERY_CLASS {
+            for exact in BOOLS {
+                for compatible in BOOLS {
+                    let decision = candidate_commit_decision(class, exact, compatible);
+                    match class {
+                        CandidateCommitClass::New => {
+                            assert_eq!(decision, CandidateCommitDecision::BindCreate)
+                        }
+                        CandidateCommitClass::Adoption => {
+                            assert_eq!(decision, CandidateCommitDecision::BindAdoption)
+                        }
+                        CandidateCommitClass::AdoptionFrom => assert_eq!(
+                            decision,
+                            if compatible {
+                                CandidateCommitDecision::BindAdoption
+                            } else {
+                                CandidateCommitDecision::Conflict
+                            }
+                        ),
+                        CandidateCommitClass::DurableCreate
+                        | CandidateCommitClass::DurableAdoption
+                            if exact =>
+                        {
+                            assert_eq!(decision, CandidateCommitDecision::Replay)
+                        }
+                        CandidateCommitClass::DurableCreate
+                        | CandidateCommitClass::DurableAdoption => {
+                            assert_eq!(decision, CandidateCommitDecision::Conflict)
+                        }
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 20);
     }
 }

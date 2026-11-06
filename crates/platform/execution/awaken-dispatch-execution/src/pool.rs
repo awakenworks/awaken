@@ -1142,56 +1142,6 @@ fn bounded_exponential_backoff(minimum: Duration, maximum: Duration, ordinal: u6
 }
 
 #[cfg(kani)]
-mod drain_admission_proofs {
-    use super::{AdmissionCommand, AdmissionState};
-
-    fn symbolic_state() -> AdmissionState {
-        match kani::any::<u8>() % 3 {
-            0 => AdmissionState::Open,
-            1 => AdmissionState::Suspended,
-            _ => AdmissionState::Draining,
-        }
-    }
-
-    fn symbolic_command() -> AdmissionCommand {
-        match kani::any::<u8>() % 3 {
-            0 => AdmissionCommand::Suspend,
-            1 => AdmissionCommand::Resume {
-                shutdown_cancelled: kani::any(),
-            },
-            _ => AdmissionCommand::Drain,
-        }
-    }
-
-    /// @obligation worker_drain.closed_generation_is_absorbing
-    /// @obligation worker_drain.no_claim_after_acknowledgement
-    /// @obligation worker_drain.no_claim_attempt_after_registry_drain
-    /// @obligation worker_drain.registry_transition_follows_local_fence
-    /// @kani default-features=false
-    #[kani::proof]
-    fn pool_draining_state_is_absorbing_and_claim_closed() {
-        let initial = symbolic_state();
-        let command = symbolic_command();
-        let next = initial.transition(command);
-
-        assert_eq!(next.accepts_claim(), matches!(next, AdmissionState::Open));
-        assert_eq!(next.can_resume(), !matches!(next, AdmissionState::Draining));
-
-        if matches!(initial, AdmissionState::Draining) {
-            assert_eq!(next, AdmissionState::Draining);
-            assert!(!next.accepts_claim());
-            assert!(!next.can_resume());
-        }
-
-        let (drained, _fence) = initial.begin_drain();
-        assert_eq!(drained, AdmissionState::Draining);
-        assert!(!drained.accepts_claim());
-        assert!(!drained.can_resume());
-        assert_eq!(drained.transition(command), drained);
-    }
-}
-
-#[cfg(kani)]
 mod drain_error_proofs {
     use super::{DrainErrorState, SlotToken, drain_error_backoff, retry_deadline_is_due};
     use std::time::Duration;
@@ -2198,5 +2148,85 @@ mod in_flight_tests {
             )],
             "R3"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_state(state: AdmissionState) -> usize {
+        match state {
+            AdmissionState::Open => 0,
+            AdmissionState::Suspended => 1,
+            AdmissionState::Draining => 2,
+        }
+    }
+    const EVERY_STATE: [AdmissionState; 3] = [
+        AdmissionState::Open,
+        AdmissionState::Suspended,
+        AdmissionState::Draining,
+    ];
+
+    const fn listed_command(command: AdmissionCommand) -> usize {
+        match command {
+            AdmissionCommand::Suspend => 0,
+            AdmissionCommand::Resume {
+                shutdown_cancelled: false,
+            } => 1,
+            AdmissionCommand::Resume {
+                shutdown_cancelled: true,
+            } => 2,
+            AdmissionCommand::Drain => 3,
+        }
+    }
+    const EVERY_COMMAND: [AdmissionCommand; 4] = [
+        AdmissionCommand::Suspend,
+        AdmissionCommand::Resume {
+            shutdown_cancelled: false,
+        },
+        AdmissionCommand::Resume {
+            shutdown_cancelled: true,
+        },
+        AdmissionCommand::Drain,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_STATE.into_iter().enumerate() {
+            assert_eq!(listed_state(value), index);
+        }
+        for (index, value) in EVERY_COMMAND.into_iter().enumerate() {
+            assert_eq!(listed_command(value), index);
+        }
+    }
+
+    /// @exhaustive AdmissionState(3) x AdmissionCommand(4) = 12
+    /// @obligation worker_drain.closed_generation_is_absorbing
+    /// @obligation worker_drain.no_claim_after_acknowledgement
+    /// @obligation worker_drain.no_claim_attempt_after_registry_drain
+    /// @obligation worker_drain.registry_transition_follows_local_fence
+    #[test]
+    fn pool_draining_state_is_absorbing_and_claim_closed() {
+        for initial in EVERY_STATE {
+            for command in EVERY_COMMAND {
+                let next = initial.transition(command);
+
+                assert_eq!(next.accepts_claim(), matches!(next, AdmissionState::Open));
+                assert_eq!(next.can_resume(), !matches!(next, AdmissionState::Draining));
+
+                if matches!(initial, AdmissionState::Draining) {
+                    assert_eq!(next, AdmissionState::Draining);
+                    assert!(!next.accepts_claim());
+                    assert!(!next.can_resume());
+                }
+
+                let (drained, _fence) = initial.begin_drain();
+                assert_eq!(drained, AdmissionState::Draining);
+                assert!(!drained.accepts_claim());
+                assert!(!drained.can_resume());
+                assert_eq!(drained.transition(command), drained);
+            }
+        }
     }
 }

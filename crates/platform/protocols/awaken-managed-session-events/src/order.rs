@@ -103,7 +103,7 @@ pub fn historical_pending_projection_order(
 /// @obligation session.runtime_projection_historical_pending_precedes_terminal_projection
 /// @obligation session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 /// @obligation session_time.event_order_is_independent_of_wall_time
-/// @kani profile=solver-kissat-v1
+/// @kani profile=solver-kissat-v1 tier=nightly
 #[kani::proof]
 fn canonical_event_order_never_depends_on_wall_time() {
     // O1 all order-key axes and optional wall-time observations are arbitrary.
@@ -140,7 +140,7 @@ fn canonical_event_order_never_depends_on_wall_time() {
 
 #[cfg(kani)]
 /// @obligation session.runtime_projection_historical_pending_precedes_terminal_projection
-/// @kani profile=solver-kissat-v1
+/// @kani profile=solver-kissat-v1 tier=nightly
 #[kani::proof]
 fn historical_pending_order_precedes_every_admitted_terminal() {
     // Causes: C1 arbitrary Awaiting source cursor; C2 a later terminal is

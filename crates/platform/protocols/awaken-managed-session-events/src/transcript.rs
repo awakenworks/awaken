@@ -389,63 +389,6 @@ pub fn committed_transcript_evidence(
     }
 }
 
-#[cfg(kani)]
-/// @obligation session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
-/// @kani profile=solver-kissat-v1
-#[kani::proof]
-fn runtime_tool_projection_phase_is_total_distinct_and_fail_closed() {
-    // Causes: C1 a current ticket is client/builtin; C2 an exact retained reply
-    // exists; C3 that reply is processed. Effects: E1 !C2 stays Pending with
-    // exact family; E2 C2+!C3 is Resolving; E3 C2+C3 is Processed; E4 missing
-    // evidence is Unclassified, transcript-invisible, and rejected by server
-    // admission. E5 Resolving durably queues behind the retained reply; E6
-    // Processed is ready. All eight C1-C3 rows call the same production
-    // constructors/predicates consumed by projection and admission; durable
-    // identity matching, queue persistence and snapshot reads remain TCB.
-    let client_executed: bool = kani::any();
-    let retained: bool = kani::any();
-    let processed: bool = kani::any();
-    let phase = if retained {
-        RuntimeToolProjectionPhase::from_retained_reply(processed)
-    } else {
-        RuntimeToolProjectionPhase::from_pending(client_executed)
-    };
-
-    assert_eq!(phase.is_pending(), !retained);
-    assert_eq!(
-        phase == RuntimeToolProjectionPhase::PendingClient,
-        !retained && client_executed
-    );
-    assert_eq!(
-        phase == RuntimeToolProjectionPhase::PendingBuiltin,
-        !retained && !client_executed
-    );
-    assert_eq!(
-        phase == RuntimeToolProjectionPhase::Resolving,
-        retained && !processed
-    );
-    assert_eq!(
-        phase == RuntimeToolProjectionPhase::Processed,
-        retained && processed
-    );
-    assert!(phase.is_transcript_visible());
-    assert!(!RuntimeToolProjectionPhase::Unclassified.is_transcript_visible());
-    assert_eq!(
-        phase.followup_admission(),
-        if !retained {
-            RuntimeToolFollowupAdmission::Reject
-        } else if processed {
-            RuntimeToolFollowupAdmission::Ready
-        } else {
-            RuntimeToolFollowupAdmission::Queue
-        }
-    );
-    assert_eq!(
-        RuntimeToolProjectionPhase::Unclassified.followup_admission(),
-        RuntimeToolFollowupAdmission::Reject
-    );
-}
-
 pub fn advisor_consultation_blocks(
     messages: &[awaken_agent_contract::agent::message::Message],
 ) -> AdvisorConsultationBlocks {
@@ -872,5 +815,70 @@ mod tests {
             RuntimeToolFollowupAdmission::Reject,
             "P4"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
+    #[test]
+    fn runtime_tool_projection_phase_is_total_distinct_and_fail_closed() {
+        // Causes: C1 a current ticket is client/builtin; C2 an exact retained reply
+        // exists; C3 that reply is processed. Effects: E1 !C2 stays Pending with
+        // exact family; E2 C2+!C3 is Resolving; E3 C2+C3 is Processed; E4 missing
+        // evidence is Unclassified, transcript-invisible, and rejected by server
+        // admission. E5 Resolving durably queues behind the retained reply; E6
+        // Processed is ready.
+        let mut cases = 0;
+        for client_executed in [false, true] {
+            for retained in [false, true] {
+                for processed in [false, true] {
+                    let phase = if retained {
+                        RuntimeToolProjectionPhase::from_retained_reply(processed)
+                    } else {
+                        RuntimeToolProjectionPhase::from_pending(client_executed)
+                    };
+
+                    assert_eq!(phase.is_pending(), !retained);
+                    assert_eq!(
+                        phase == RuntimeToolProjectionPhase::PendingClient,
+                        !retained && client_executed
+                    );
+                    assert_eq!(
+                        phase == RuntimeToolProjectionPhase::PendingBuiltin,
+                        !retained && !client_executed
+                    );
+                    assert_eq!(
+                        phase == RuntimeToolProjectionPhase::Resolving,
+                        retained && !processed
+                    );
+                    assert_eq!(
+                        phase == RuntimeToolProjectionPhase::Processed,
+                        retained && processed
+                    );
+                    assert!(phase.is_transcript_visible());
+                    assert!(!RuntimeToolProjectionPhase::Unclassified.is_transcript_visible());
+                    assert_eq!(
+                        phase.followup_admission(),
+                        if !retained {
+                            RuntimeToolFollowupAdmission::Reject
+                        } else if processed {
+                            RuntimeToolFollowupAdmission::Ready
+                        } else {
+                            RuntimeToolFollowupAdmission::Queue
+                        }
+                    );
+                    assert_eq!(
+                        RuntimeToolProjectionPhase::Unclassified.followup_admission(),
+                        RuntimeToolFollowupAdmission::Reject
+                    );
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 8);
     }
 }

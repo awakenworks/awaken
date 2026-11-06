@@ -108,49 +108,6 @@ impl PromptReady {
     }
 }
 
-#[cfg(kani)]
-/// @obligation acp.prompt_is_never_sent_before_bounded_handshake_completion
-/// @kani features=real-acp
-#[kani::proof]
-fn acp_prompt_admission_requires_exact_completed_handshake() {
-    // Cause/effect decision table over the production transition kernel:
-    // | phase          | completed step | effect                         |
-    // | started        | initialize     | initialized                    |
-    // | initialized    | open session   | session opened                 |
-    // | session opened | configure      | configured                     |
-    // | every other pair               | reject without phase advance   |
-    // | configured     | prompt admit   | admission predicate is true    |
-    // | earlier phase  | prompt admit   | admission predicate is false   |
-    // A failed or timed-out async step never calls this completion edge, so
-    // it cannot authorize the later production prompt request.
-    let phase = match (kani::any::<bool>(), kani::any::<bool>()) {
-        (false, false) => HandshakePhase::Started,
-        (false, true) => HandshakePhase::Initialized,
-        (true, false) => HandshakePhase::SessionOpened,
-        (true, true) => HandshakePhase::Configured,
-    };
-    let step = match (kani::any::<bool>(), kani::any::<bool>()) {
-        (false, false) => HandshakeStep::Initialize,
-        (false, true) => HandshakeStep::OpenSession,
-        (true, false) | (true, true) => HandshakeStep::Configure,
-    };
-    let expected = match (phase, step) {
-        (HandshakePhase::Started, HandshakeStep::Initialize) => Some(HandshakePhase::Initialized),
-        (HandshakePhase::Initialized, HandshakeStep::OpenSession) => {
-            Some(HandshakePhase::SessionOpened)
-        }
-        (HandshakePhase::SessionOpened, HandshakeStep::Configure) => {
-            Some(HandshakePhase::Configured)
-        }
-        _ => None,
-    };
-    assert_eq!(advance_handshake(phase, step), expected);
-    assert_eq!(
-        prompt_is_admitted(phase),
-        phase == HandshakePhase::Configured
-    );
-}
-
 pub(super) async fn initialize_agent(
     wire: &mut Wire<'_>,
     sink: &mut dyn RunFactAppender,
@@ -709,6 +666,88 @@ mod tests {
                         })
                         .all(|name| name == expected),
                     "projection and permission share one identity"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_PHASE: [HandshakePhase; 4] = [
+        HandshakePhase::Started,
+        HandshakePhase::Initialized,
+        HandshakePhase::SessionOpened,
+        HandshakePhase::Configured,
+    ];
+
+    const fn listed_phase(phase: HandshakePhase) -> usize {
+        match phase {
+            HandshakePhase::Started => 0,
+            HandshakePhase::Initialized => 1,
+            HandshakePhase::SessionOpened => 2,
+            HandshakePhase::Configured => 3,
+        }
+    }
+
+    const EVERY_STEP: [HandshakeStep; 3] = [
+        HandshakeStep::Initialize,
+        HandshakeStep::OpenSession,
+        HandshakeStep::Configure,
+    ];
+
+    const fn listed_step(step: HandshakeStep) -> usize {
+        match step {
+            HandshakeStep::Initialize => 0,
+            HandshakeStep::OpenSession => 1,
+            HandshakeStep::Configure => 2,
+        }
+    }
+
+    #[test]
+    fn every_handshake_phase_and_step_is_listed_once() {
+        for (index, phase) in EVERY_PHASE.into_iter().enumerate() {
+            assert_eq!(listed_phase(phase), index);
+        }
+        for (index, step) in EVERY_STEP.into_iter().enumerate() {
+            assert_eq!(listed_step(step), index);
+        }
+    }
+
+    /// @exhaustive HandshakePhase(4) x HandshakeStep(3) = 12
+    /// @obligation acp.prompt_is_never_sent_before_bounded_handshake_completion
+    #[test]
+    fn acp_prompt_admission_requires_exact_completed_handshake() {
+        // Cause/effect decision table over the production transition kernel:
+        // | phase          | completed step | effect                         |
+        // | started        | initialize     | initialized                    |
+        // | initialized    | open session   | session opened                 |
+        // | session opened | configure      | configured                     |
+        // | every other pair               | reject without phase advance   |
+        // | configured     | prompt admit   | admission predicate is true    |
+        // | earlier phase  | prompt admit   | admission predicate is false   |
+        // A failed or timed-out async step never calls this completion edge, so
+        // it cannot authorize the later production prompt request.
+        for phase in EVERY_PHASE {
+            for step in EVERY_STEP {
+                let expected = match (phase, step) {
+                    (HandshakePhase::Started, HandshakeStep::Initialize) => {
+                        Some(HandshakePhase::Initialized)
+                    }
+                    (HandshakePhase::Initialized, HandshakeStep::OpenSession) => {
+                        Some(HandshakePhase::SessionOpened)
+                    }
+                    (HandshakePhase::SessionOpened, HandshakeStep::Configure) => {
+                        Some(HandshakePhase::Configured)
+                    }
+                    _ => None,
+                };
+                assert_eq!(advance_handshake(phase, step), expected);
+                assert_eq!(
+                    prompt_is_admitted(phase),
+                    phase == HandshakePhase::Configured
                 );
             }
         }

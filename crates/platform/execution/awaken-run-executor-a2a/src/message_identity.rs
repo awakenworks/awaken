@@ -35,32 +35,6 @@ pub(super) fn stable_message_id(
     Ok(format!("{MESSAGE_ID_DOMAIN}:{fingerprint}"))
 }
 
-#[cfg(kani)]
-mod verification {
-    use super::*;
-
-    /// @obligation remote_attempt.replay_uses_stable_message_identity
-    /// @proof-input-debt tautology message_identity_admitted
-    #[kani::proof]
-    fn a2a_message_identity_rejects_only_resume_without_committed_correlation() {
-        // Causes: C1 initial versus resume message; C2 a non-empty committed
-        // resume correlation is present. Effects: E1 admit the canonical
-        // identity tuple; E2 reject before remote dispatch.
-        //
-        // | Rule | C1 resume | C2 correlation | Effect |
-        // |---|---|---|---|
-        // | R1 | no  | *   | E1 |
-        // | R2 | yes | yes | E1 |
-        // | R3 | yes | no  | E2 |
-        let is_resume: bool = kani::any();
-        let correlation_present: bool = kani::any();
-        assert_eq!(
-            message_identity_admitted(is_resume, correlation_present),
-            !is_resume || correlation_present
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +76,33 @@ mod tests {
             "C5/E2"
         );
         assert!(stable_message_id(&run_a, Some("  ")).is_err(), "C6/E3");
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation remote_attempt.replay_uses_stable_message_identity
+    #[test]
+    fn a2a_message_identity_rejects_only_resume_without_committed_correlation() {
+        // Causes: C1 initial versus resume message; C2 a non-empty committed
+        // resume correlation is present. Effects: E1 admit the canonical
+        // identity tuple; E2 reject before remote dispatch.
+        //
+        // | Rule | C1 resume | C2 correlation | Effect |
+        // |---|---|---|---|
+        // | R1 | no  | *   | E1 |
+        // | R2 | yes | yes | E1 |
+        // | R3 | yes | no  | E2 |
+        for is_resume in [false, true] {
+            for correlation_present in [false, true] {
+                assert_eq!(
+                    message_identity_admitted(is_resume, correlation_present),
+                    !is_resume || correlation_present
+                );
+            }
+        }
     }
 }

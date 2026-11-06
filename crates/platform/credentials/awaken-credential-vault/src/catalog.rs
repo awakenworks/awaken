@@ -1113,43 +1113,6 @@ mod workspace_proofs {
 mod verification {
     use super::*;
 
-    /// @obligation credential.injection_location_has_exactly_three_usable_states_and_partial_updates_preserve_validity
-    #[kani::proof]
-    fn injection_location_represents_exactly_the_three_usable_states() {
-        let header = kani::any::<bool>();
-        let body = kani::any::<bool>();
-        let location = ManagedCredentialInjectionLocation::from_flags(header, body);
-
-        assert_eq!(location.is_some(), header || body);
-        if let Some(location) = location {
-            assert_eq!(location.header(), header);
-            assert_eq!(location.body(), body);
-        }
-    }
-
-    /// @obligation credential.injection_location_has_exactly_three_usable_states_and_partial_updates_preserve_validity
-    #[kani::proof]
-    fn injection_location_partial_update_is_exact_and_never_allows_both_disabled() {
-        let current = match kani::any::<u8>() % 3 {
-            0 => ManagedCredentialInjectionLocation::HeaderOnly,
-            1 => ManagedCredentialInjectionLocation::BodyOnly,
-            _ => ManagedCredentialInjectionLocation::HeaderAndBody,
-        };
-        let header = kani::any::<bool>();
-        let body = kani::any::<bool>();
-        let patch_header = kani::any::<bool>().then_some(header);
-        let patch_body = kani::any::<bool>().then_some(body);
-        let expected_header = patch_header.unwrap_or_else(|| current.header());
-        let expected_body = patch_body.unwrap_or_else(|| current.body());
-        let merged = current.merge(patch_header, patch_body);
-
-        assert_eq!(merged.is_some(), expected_header || expected_body);
-        if let Some(merged) = merged {
-            assert_eq!(merged.header(), expected_header);
-            assert_eq!(merged.body(), expected_body);
-        }
-    }
-
     /// @obligation credential.vault_workspace_authority_admission_is_exact_and_non_widening
     #[kani::proof]
     fn managed_vault_workspace_admission_is_exact_and_non_widening() {
@@ -1226,35 +1189,6 @@ mod verification {
         }
     }
 
-    /// @obligation credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
-    #[kani::proof]
-    fn managed_vault_delete_is_monotonic_identity_bound_and_absorbing() {
-        let current = match kani::any::<u8>() % 3 {
-            0 => None,
-            1 => Some(ManagedVaultDeletionPhase::Requested),
-            _ => Some(ManagedVaultDeletionPhase::Completed),
-        };
-        let proposed = match kani::any::<u8>() % 3 {
-            0 => None,
-            1 => Some(ManagedVaultDeletionPhase::Requested),
-            _ => Some(ManagedVaultDeletionPhase::Completed),
-        };
-        let exact_identity = kani::any::<bool>();
-        let admitted =
-            managed_vault_deletion_transition_admitted(current, proposed, exact_identity);
-
-        if current == Some(ManagedVaultDeletionPhase::Completed) {
-            assert!(!admitted);
-        }
-        if current == Some(ManagedVaultDeletionPhase::Requested) && admitted {
-            assert_eq!(proposed, Some(ManagedVaultDeletionPhase::Completed));
-            assert!(exact_identity);
-        }
-        if current.is_some() && proposed.is_none() {
-            assert!(!admitted);
-        }
-    }
-
     /// @obligation credential.managed_mutation_requires_exact_source_and_child_successor_fences
     #[kani::proof]
     fn managed_credential_replacement_requires_both_fences_and_exact_successor() {
@@ -1280,23 +1214,141 @@ mod verification {
                     .is_some_and(|next| proposed_revision == next)
         );
     }
+}
 
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_location(location: ManagedCredentialInjectionLocation) -> usize {
+        match location {
+            ManagedCredentialInjectionLocation::HeaderOnly => 0,
+            ManagedCredentialInjectionLocation::BodyOnly => 1,
+            ManagedCredentialInjectionLocation::HeaderAndBody => 2,
+        }
+    }
+    const EVERY_LOCATION: [ManagedCredentialInjectionLocation; 3] = [
+        ManagedCredentialInjectionLocation::HeaderOnly,
+        ManagedCredentialInjectionLocation::BodyOnly,
+        ManagedCredentialInjectionLocation::HeaderAndBody,
+    ];
+
+    const fn listed_deletion_phase(phase: ManagedVaultDeletionPhase) -> usize {
+        match phase {
+            ManagedVaultDeletionPhase::Requested => 0,
+            ManagedVaultDeletionPhase::Completed => 1,
+        }
+    }
+    const EVERY_DELETION_PHASE: [ManagedVaultDeletionPhase; 2] = [
+        ManagedVaultDeletionPhase::Requested,
+        ManagedVaultDeletionPhase::Completed,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_LOCATION.into_iter().enumerate() {
+            assert_eq!(listed_location(value), index);
+        }
+        for (index, value) in EVERY_DELETION_PHASE.into_iter().enumerate() {
+            assert_eq!(listed_deletion_phase(value), index);
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation credential.injection_location_has_exactly_three_usable_states_and_partial_updates_preserve_validity
+    #[test]
+    fn injection_location_represents_exactly_the_three_usable_states() {
+        for header in [false, true] {
+            for body in [false, true] {
+                let location = ManagedCredentialInjectionLocation::from_flags(header, body);
+
+                assert_eq!(location.is_some(), header || body);
+                if let Some(location) = location {
+                    assert_eq!(location.header(), header);
+                    assert_eq!(location.body(), body);
+                }
+            }
+        }
+    }
+
+    /// @exhaustive ManagedCredentialInjectionLocation(3) x Option<bool>(3) x Option<bool>(3) = 27
+    /// @obligation credential.injection_location_has_exactly_three_usable_states_and_partial_updates_preserve_validity
+    #[test]
+    fn injection_location_partial_update_is_exact_and_never_allows_both_disabled() {
+        let patches = [None, Some(false), Some(true)];
+        for current in EVERY_LOCATION {
+            for patch_header in patches {
+                for patch_body in patches {
+                    let expected_header = patch_header.unwrap_or_else(|| current.header());
+                    let expected_body = patch_body.unwrap_or_else(|| current.body());
+                    let merged = current.merge(patch_header, patch_body);
+
+                    assert_eq!(merged.is_some(), expected_header || expected_body);
+                    if let Some(merged) = merged {
+                        assert_eq!(merged.header(), expected_header);
+                        assert_eq!(merged.body(), expected_body);
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive Option<ManagedVaultDeletionPhase>(3) x Option<ManagedVaultDeletionPhase>(3) x bool(2) = 18
+    /// @obligation credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
+    #[test]
+    fn managed_vault_delete_is_monotonic_identity_bound_and_absorbing() {
+        let phases = [
+            None,
+            Some(EVERY_DELETION_PHASE[0]),
+            Some(EVERY_DELETION_PHASE[1]),
+        ];
+        for current in phases {
+            for proposed in phases {
+                for exact_identity in [false, true] {
+                    let admitted = managed_vault_deletion_transition_admitted(
+                        current,
+                        proposed,
+                        exact_identity,
+                    );
+
+                    if current == Some(ManagedVaultDeletionPhase::Completed) {
+                        assert!(!admitted);
+                    }
+                    if current == Some(ManagedVaultDeletionPhase::Requested) && admitted {
+                        assert_eq!(proposed, Some(ManagedVaultDeletionPhase::Completed));
+                        assert!(exact_identity);
+                    }
+                    if current.is_some() && proposed.is_none() {
+                        assert!(!admitted);
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive ManagedCredentialLifecycle(3) = 3
     /// @obligation credential.managed_deleted_lifecycle_is_absorbing
-    #[kani::proof]
+    #[test]
     fn deleted_managed_credential_is_absorbing() {
-        let after = if kani::any::<bool>() {
-            ManagedCredentialLifecycle::Active
-        } else if kani::any::<bool>() {
-            ManagedCredentialLifecycle::Archived { at: String::new() }
-        } else {
-            ManagedCredentialLifecycle::Deleted { at: String::new() }
+        let listed = |lifecycle: &ManagedCredentialLifecycle| match lifecycle {
+            ManagedCredentialLifecycle::Active => 0,
+            ManagedCredentialLifecycle::Archived { .. } => 1,
+            ManagedCredentialLifecycle::Deleted { .. } => 2,
         };
-        assert_eq!(
-            managed_credential_lifecycle_transition_allowed(
-                &ManagedCredentialLifecycle::Deleted { at: String::new() },
-                &after,
-            ),
-            matches!(after, ManagedCredentialLifecycle::Deleted { .. })
-        );
+        let every_after = [
+            ManagedCredentialLifecycle::Active,
+            ManagedCredentialLifecycle::Archived { at: String::new() },
+            ManagedCredentialLifecycle::Deleted { at: String::new() },
+        ];
+        for (index, after) in every_after.iter().enumerate() {
+            assert_eq!(listed(after), index);
+            assert_eq!(
+                managed_credential_lifecycle_transition_allowed(
+                    &ManagedCredentialLifecycle::Deleted { at: String::new() },
+                    after,
+                ),
+                matches!(after, ManagedCredentialLifecycle::Deleted { .. })
+            );
+        }
     }
 }

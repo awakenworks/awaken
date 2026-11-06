@@ -486,72 +486,96 @@ mod result_tests {
     }
 }
 
-#[cfg(kani)]
-mod delivery_verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
-    fn symbolic_phase(tag: u8) -> DeliveryPhase {
-        match tag % 4 {
-            0 => DeliveryPhase::Absent,
-            1 => DeliveryPhase::Ready,
-            2 => DeliveryPhase::Consumed,
-            _ => DeliveryPhase::Discarded,
+    const fn listed_phase(phase: DeliveryPhase) -> usize {
+        match phase {
+            DeliveryPhase::Absent => 0,
+            DeliveryPhase::Ready => 1,
+            DeliveryPhase::Consumed => 2,
+            DeliveryPhase::Discarded => 3,
+        }
+    }
+    const EVERY_PHASE: [DeliveryPhase; 4] = [
+        DeliveryPhase::Absent,
+        DeliveryPhase::Ready,
+        DeliveryPhase::Consumed,
+        DeliveryPhase::Discarded,
+    ];
+
+    const fn listed_transition(transition: DeliveryTransition) -> usize {
+        match transition {
+            DeliveryTransition::Record => 0,
+            DeliveryTransition::Consume => 1,
+            DeliveryTransition::EndParent => 2,
+        }
+    }
+    const EVERY_TRANSITION: [DeliveryTransition; 3] = [
+        DeliveryTransition::Record,
+        DeliveryTransition::Consume,
+        DeliveryTransition::EndParent,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_PHASE.into_iter().enumerate() {
+            assert_eq!(listed_phase(value), index);
+        }
+        for (index, value) in EVERY_TRANSITION.into_iter().enumerate() {
+            assert_eq!(listed_transition(value), index);
         }
     }
 
-    fn symbolic_transition(tag: u8) -> DeliveryTransition {
-        match tag % 3 {
-            0 => DeliveryTransition::Record,
-            1 => DeliveryTransition::Consume,
-            _ => DeliveryTransition::EndParent,
-        }
-    }
-
+    /// @exhaustive DeliveryPhase(4) = 4
     /// @obligation delegation.result_record_once
-    #[kani::proof]
+    #[test]
     fn child_result_is_recorded_once_and_duplicate_record_stutters() {
         // Cause/effect table over every production delivery phase: Absent
         // records exactly one Ready value; a Ready replay is an unchanged
         // duplicate; Consumed and Discarded cannot reopen by recording.
-        let phase = symbolic_phase(kani::any());
-        let result = transition_delivery(phase, DeliveryTransition::Record);
-        match phase {
-            DeliveryPhase::Absent => {
-                assert_eq!(result, Some((DeliveryPhase::Ready, true)));
-            }
-            DeliveryPhase::Ready => {
-                assert_eq!(result, Some((DeliveryPhase::Ready, false)));
-            }
-            DeliveryPhase::Consumed | DeliveryPhase::Discarded => {
-                assert_eq!(result, None);
+        for phase in EVERY_PHASE {
+            let result = transition_delivery(phase, DeliveryTransition::Record);
+            match phase {
+                DeliveryPhase::Absent => {
+                    assert_eq!(result, Some((DeliveryPhase::Ready, true)));
+                }
+                DeliveryPhase::Ready => {
+                    assert_eq!(result, Some((DeliveryPhase::Ready, false)));
+                }
+                DeliveryPhase::Consumed | DeliveryPhase::Discarded => {
+                    assert_eq!(result, None);
+                }
             }
         }
     }
 
+    /// @exhaustive DeliveryPhase(4) = 4
     /// @obligation delegation.result_consume_once
-    #[kani::proof]
+    #[test]
     fn child_result_is_consumed_only_from_ready() {
-        let phase = symbolic_phase(kani::any());
-        let result = transition_delivery(phase, DeliveryTransition::Consume);
-        assert_eq!(result.is_some(), phase == DeliveryPhase::Ready);
-        if let Some((next, applied)) = result {
-            assert_eq!(next, DeliveryPhase::Consumed);
-            assert!(applied);
+        for phase in EVERY_PHASE {
+            let result = transition_delivery(phase, DeliveryTransition::Consume);
+            assert_eq!(result.is_some(), phase == DeliveryPhase::Ready);
+            if let Some((next, applied)) = result {
+                assert_eq!(next, DeliveryPhase::Consumed);
+                assert!(applied);
+            }
         }
     }
 
+    /// @exhaustive terminal DeliveryPhase(2) x DeliveryTransition(3) = 6
     /// @obligation delegation.late_result_closed
-    #[kani::proof]
+    #[test]
     fn terminal_delivery_phases_never_reopen() {
-        let phase = if kani::any() {
-            DeliveryPhase::Consumed
-        } else {
-            DeliveryPhase::Discarded
-        };
-        let transition = symbolic_transition(kani::any());
-        let result = transition_delivery(phase, transition);
-        assert!(!result.is_some_and(|(next, applied)| {
-            applied && matches!(next, DeliveryPhase::Absent | DeliveryPhase::Ready)
-        }));
+        for phase in [DeliveryPhase::Consumed, DeliveryPhase::Discarded] {
+            for transition in EVERY_TRANSITION {
+                let result = transition_delivery(phase, transition);
+                assert!(!result.is_some_and(|(next, applied)| {
+                    applied && matches!(next, DeliveryPhase::Absent | DeliveryPhase::Ready)
+                }));
+            }
+        }
     }
 }

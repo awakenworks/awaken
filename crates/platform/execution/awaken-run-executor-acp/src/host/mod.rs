@@ -378,38 +378,6 @@ const fn host_observation_is_routable(
     selected_backend && detected && (!credential_available || capability_verified)
 }
 
-#[cfg(kani)]
-/// @obligation worker_credential.host_observation_projection_is_backend_scoped
-/// @proof-input-debt tautology host_observation_is_routable
-#[kani::proof]
-fn host_observation_projection_is_exactly_backend_scoped() {
-    // Causes: C1 backend selected; C2 executable detected; C3 current login is
-    // available; C4 the protocol capability was verified. Effects: E1 project
-    // a routable backend observation or E2 exclude it. When C3 is false, the
-    // route remains visible for execution-time login revalidation.
-    //
-    // | Rule | C1 | C2 | C3 | C4 | Effect |
-    // |---|---|---|---|---|---|
-    // | R1 | no | any | any | any | E2 |
-    // | R2 | yes | no | any | any | E2 |
-    // | R3 | yes | yes | no | any | E1 |
-    // | R4 | yes | yes | yes | no | E2 |
-    // | R5 | yes | yes | yes | yes | E1 |
-    let selected_backend: bool = kani::any();
-    let detected: bool = kani::any();
-    let credential_available: bool = kani::any();
-    let capability_verified: bool = kani::any();
-    assert_eq!(
-        host_observation_is_routable(
-            selected_backend,
-            detected,
-            credential_available,
-            capability_verified,
-        ),
-        selected_backend && detected && (!credential_available || capability_verified)
-    );
-}
-
 fn routable_cli_ids(
     observations: &[AcpHostObservation],
     selected_cli_ids: &BTreeSet<String>,
@@ -502,53 +470,6 @@ fn stage_local_binding_batch(
     let mut publication = current.clone();
     publication.extend(additions);
     Ok(LocalBindingPublication(publication))
-}
-
-#[cfg(kani)]
-/// @obligation worker_credential.local_binding_batch_is_atomic
-#[kani::proof]
-fn local_binding_batch_publication_is_complete_or_stutters() {
-    // Causes: C1-C3 are the exact admission results for three arbitrary batch
-    // members; C4 is the prior publication bit for each member. Effects: E1 an
-    // accepted batch publishes all three requested bits; E2 any rejected
-    // member preserves all three prior bits. The production staging function
-    // borrows the current map immutably and returns its complete replacement,
-    // so this reducer is the only gate to its single assignment.
-    //
-    // | Rule | C1 | C2 | C3 | Effect |
-    // |---|---|---|---|---|
-    // | R1 | yes | yes | yes | E1 complete publication |
-    // | R2 | no  | any | any | E2 exact stutter |
-    // | R3 | any | no  | any | E2 exact stutter |
-    // | R4 | any | any | no  | E2 exact stutter |
-    let existing = [kani::any::<bool>(), kani::any(), kani::any()];
-    let exact = [kani::any::<bool>(), kani::any(), kani::any()];
-    let admitted = [
-        local_binding_update_admitted(existing[0], exact[0]),
-        local_binding_update_admitted(existing[1], exact[1]),
-        local_binding_update_admitted(existing[2], exact[2]),
-    ];
-    let before = [kani::any::<bool>(), kani::any(), kani::any()];
-    let requested = [kani::any::<bool>(), kani::any(), kani::any()];
-    let admission = admitted
-        .into_iter()
-        .fold(LocalBindingBatchAdmission::empty(), |batch, member| {
-            batch.include(member)
-        });
-    assert_eq!(
-        admission.permits_publication(),
-        admitted.into_iter().all(|member| member)
-    );
-    let after = if admission.permits_publication() {
-        requested
-    } else {
-        before
-    };
-    if admission.permits_publication() {
-        assert_eq!(after, requested);
-    } else {
-        assert_eq!(after, before);
-    }
 }
 
 /// Liveness-only resolver for every `acp:*` WorkerLocal source on one Worker.
@@ -794,5 +715,97 @@ impl WorkerLocalReferenceRevalidator for AcpLocalCredentialResolver {
             credential,
             self.observe(&binding).await,
         )
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) = 16
+    /// @obligation worker_credential.host_observation_projection_is_backend_scoped
+    #[test]
+    fn host_observation_projection_is_exactly_backend_scoped() {
+        // Causes: C1 backend selected; C2 executable detected; C3 current login is
+        // available; C4 the protocol capability was verified. Effects: E1 project
+        // a routable backend observation or E2 exclude it. When C3 is false, the
+        // route remains visible for execution-time login revalidation.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // |---|---|---|---|---|---|
+        // | R1 | no | any | any | any | E2 |
+        // | R2 | yes | no | any | any | E2 |
+        // | R3 | yes | yes | no | any | E1 |
+        // | R4 | yes | yes | yes | no | E2 |
+        // | R5 | yes | yes | yes | yes | E1 |
+        for selected_backend in [false, true] {
+            for detected in [false, true] {
+                for credential_available in [false, true] {
+                    for capability_verified in [false, true] {
+                        assert_eq!(
+                            host_observation_is_routable(
+                                selected_backend,
+                                detected,
+                                credential_available,
+                                capability_verified,
+                            ),
+                            selected_backend
+                                && detected
+                                && (!credential_available || capability_verified)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive [bool; 3](8) x [bool; 3](8) x [bool; 3](8) x [bool; 3](8) = 4096
+    /// @obligation worker_credential.local_binding_batch_is_atomic
+    #[test]
+    fn local_binding_batch_publication_is_complete_or_stutters() {
+        // Causes: C1-C3 are the exact admission results for three arbitrary batch
+        // members; C4 is the prior publication bit for each member. Effects: E1 an
+        // accepted batch publishes all three requested bits; E2 any rejected
+        // member preserves all three prior bits. The production staging function
+        // borrows the current map immutably and returns its complete replacement,
+        // so this reducer is the only gate to its single assignment.
+        //
+        // | Rule | C1 | C2 | C3 | Effect |
+        // |---|---|---|---|---|
+        // | R1 | yes | yes | yes | E1 complete publication |
+        // | R2 | no  | any | any | E2 exact stutter |
+        // | R3 | any | no  | any | E2 exact stutter |
+        // | R4 | any | any | no  | E2 exact stutter |
+        for bits in 0_u16..1 << 12 {
+            let bit = |index: u16| bits & (1 << index) != 0;
+            let existing = [bit(0), bit(1), bit(2)];
+            let exact = [bit(3), bit(4), bit(5)];
+            let admitted = [
+                local_binding_update_admitted(existing[0], exact[0]),
+                local_binding_update_admitted(existing[1], exact[1]),
+                local_binding_update_admitted(existing[2], exact[2]),
+            ];
+            let before = [bit(6), bit(7), bit(8)];
+            let requested = [bit(9), bit(10), bit(11)];
+            let admission = admitted
+                .into_iter()
+                .fold(LocalBindingBatchAdmission::empty(), |batch, member| {
+                    batch.include(member)
+                });
+            assert_eq!(
+                admission.permits_publication(),
+                admitted.into_iter().all(|member| member)
+            );
+            let after = if admission.permits_publication() {
+                requested
+            } else {
+                before
+            };
+            if admission.permits_publication() {
+                assert_eq!(after, requested);
+            } else {
+                assert_eq!(after, before);
+            }
+        }
     }
 }

@@ -237,30 +237,6 @@ pub const fn decide_lease_renewal(
     }
 }
 
-#[cfg(kani)]
-/// @obligation run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
-#[kani::proof]
-fn lease_renewal_observation_preserves_claim_and_attempt_fences() {
-    // Cause/effect decision table: C1=exact current mutation claim;
-    // C2=durably cancelled exact physical attempt. E1=renew current lease;
-    // E2=signal cooperative cancellation; E3=report ownership lost.
-    // R1=C1 -> E1 (including a cancellation worker claiming the intent);
-    // R2=!C1+C2 -> E2; R3=!C1+!C2 -> E3. This exhausts both causes and
-    // prevents cancellation for an unrelated owner/epoch.
-    let current_claim: bool = kani::any();
-    let cancelled_physical_attempt: bool = kani::any();
-    let outcome = decide_lease_renewal(current_claim, cancelled_physical_attempt);
-    assert_eq!(outcome == LeaseRenewalOutcome::Current, current_claim);
-    assert_eq!(
-        outcome == LeaseRenewalOutcome::CancellationRequested,
-        !current_claim && cancelled_physical_attempt
-    );
-    assert_eq!(
-        outcome == LeaseRenewalOutcome::Lost,
-        !current_claim && !cancelled_physical_attempt
-    );
-}
-
 /// Admission result for the physical executor slot carried by one Dispatch
 /// aggregate. A Run claim authorizes durable mutation, but an expired claim may
 /// still have a model/tool/Sandbox future physically unwinding. The successor
@@ -297,28 +273,6 @@ impl AttemptAdmission {
     pub const fn permits_pre_start_no_effect_ack(self) -> bool {
         matches!(self, Self::Applied)
     }
-}
-
-#[cfg(kani)]
-/// @obligation session_execution.pre_start_cancel_ack_requires_fresh_slot_install
-#[kani::proof]
-fn pre_start_no_effect_ack_requires_fresh_install_admission() {
-    // Cause/effect decision table: C1 admission installed an empty slot; C2 it
-    // stuttered an exact prior admission; C3 it replaced a predecessor; C4 it
-    // did not admit. E1 permits a pre-start no-effect ACK; E2 retains the slot.
-    // R1=C1 -> E1. R2=C2|C3|C4 -> E2. This proof prevents future enum growth
-    // from becoming ACK-authoritative by default.
-    let admission = match kani::any::<u8>() % 5 {
-        0 => AttemptAdmission::Applied,
-        1 => AttemptAdmission::AlreadyApplied,
-        2 => AttemptAdmission::Replaced,
-        3 => AttemptAdmission::Blocked,
-        _ => AttemptAdmission::Fenced,
-    };
-    assert_eq!(
-        admission.permits_pre_start_no_effect_ack(),
-        admission == AttemptAdmission::Applied
-    );
 }
 
 /// One durable observation that a dispatch applied [`DispatchOutcome::Done`].
@@ -420,32 +374,6 @@ impl DispatchState {
 #[must_use]
 pub const fn session_run_replacement_candidate_is_safe(state: DispatchState) -> bool {
     matches!(state, DispatchState::Awaiting | DispatchState::Superseded)
-}
-
-#[cfg(kani)]
-mod session_replacement_proofs {
-    use super::{DispatchState, session_run_replacement_candidate_is_safe};
-
-    /// @obligation run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
-    /// @proof-input-debt tautology session_run_replacement_candidate_is_safe
-    #[kani::proof]
-    fn only_awaiting_or_already_superseded_is_replacement_safe() {
-        let tag: u8 = kani::any();
-        kani::assume(tag < 7);
-        let state = match tag {
-            0 => DispatchState::Reserved,
-            1 => DispatchState::ReservationLeased,
-            2 => DispatchState::Pending,
-            3 => DispatchState::Leased,
-            4 => DispatchState::Awaiting,
-            5 => DispatchState::DeadLetter,
-            _ => DispatchState::Superseded,
-        };
-        assert_eq!(
-            session_run_replacement_candidate_is_safe(state),
-            matches!(state, DispatchState::Awaiting | DispatchState::Superseded)
-        );
-    }
 }
 
 /// An operational view of one dispatch row, for monitoring and maintenance — the
@@ -600,4 +528,112 @@ pub enum ContinuationAdmission {
     Root,
     /// Existing/new Session-child Thread under trusted archive evidence.
     SessionChild(SessionChildAdmission),
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_admission(admission: AttemptAdmission) -> usize {
+        match admission {
+            AttemptAdmission::Applied => 0,
+            AttemptAdmission::AlreadyApplied => 1,
+            AttemptAdmission::Replaced => 2,
+            AttemptAdmission::Blocked => 3,
+            AttemptAdmission::Fenced => 4,
+        }
+    }
+    const EVERY_ADMISSION: [AttemptAdmission; 5] = [
+        AttemptAdmission::Applied,
+        AttemptAdmission::AlreadyApplied,
+        AttemptAdmission::Replaced,
+        AttemptAdmission::Blocked,
+        AttemptAdmission::Fenced,
+    ];
+
+    const fn listed_state(state: DispatchState) -> usize {
+        match state {
+            DispatchState::Reserved => 0,
+            DispatchState::ReservationLeased => 1,
+            DispatchState::Pending => 2,
+            DispatchState::Leased => 3,
+            DispatchState::Awaiting => 4,
+            DispatchState::DeadLetter => 5,
+            DispatchState::Superseded => 6,
+        }
+    }
+    const EVERY_STATE: [DispatchState; 7] = [
+        DispatchState::Reserved,
+        DispatchState::ReservationLeased,
+        DispatchState::Pending,
+        DispatchState::Leased,
+        DispatchState::Awaiting,
+        DispatchState::DeadLetter,
+        DispatchState::Superseded,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_ADMISSION.into_iter().enumerate() {
+            assert_eq!(listed_admission(value), index);
+        }
+        for (index, value) in EVERY_STATE.into_iter().enumerate() {
+            assert_eq!(listed_state(value), index);
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
+    #[test]
+    fn lease_renewal_observation_preserves_claim_and_attempt_fences() {
+        // Cause/effect decision table: C1=exact current mutation claim;
+        // C2=durably cancelled exact physical attempt. E1=renew current lease;
+        // E2=signal cooperative cancellation; E3=report ownership lost.
+        // R1=C1 -> E1 (including a cancellation worker claiming the intent);
+        // R2=!C1+C2 -> E2; R3=!C1+!C2 -> E3. This exhausts both causes and
+        // prevents cancellation for an unrelated owner/epoch.
+        for current_claim in [false, true] {
+            for cancelled_physical_attempt in [false, true] {
+                let outcome = decide_lease_renewal(current_claim, cancelled_physical_attempt);
+                assert_eq!(outcome == LeaseRenewalOutcome::Current, current_claim);
+                assert_eq!(
+                    outcome == LeaseRenewalOutcome::CancellationRequested,
+                    !current_claim && cancelled_physical_attempt
+                );
+                assert_eq!(
+                    outcome == LeaseRenewalOutcome::Lost,
+                    !current_claim && !cancelled_physical_attempt
+                );
+            }
+        }
+    }
+
+    /// @exhaustive AttemptAdmission(5) = 5
+    /// @obligation session_execution.pre_start_cancel_ack_requires_fresh_slot_install
+    #[test]
+    fn pre_start_no_effect_ack_requires_fresh_install_admission() {
+        // Cause/effect decision table: C1 admission installed an empty slot; C2 it
+        // stuttered an exact prior admission; C3 it replaced a predecessor; C4 it
+        // did not admit. E1 permits a pre-start no-effect ACK; E2 retains the slot.
+        // R1=C1 -> E1. R2=C2|C3|C4 -> E2. `listed_admission` prevents future enum
+        // growth from becoming ACK-authoritative by default.
+        for admission in EVERY_ADMISSION {
+            assert_eq!(
+                admission.permits_pre_start_no_effect_ack(),
+                admission == AttemptAdmission::Applied
+            );
+        }
+    }
+
+    /// @exhaustive DispatchState(7) = 7
+    /// @obligation run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+    #[test]
+    fn only_awaiting_or_already_superseded_is_replacement_safe() {
+        for state in EVERY_STATE {
+            assert_eq!(
+                session_run_replacement_candidate_is_safe(state),
+                matches!(state, DispatchState::Awaiting | DispatchState::Superseded)
+            );
+        }
+    }
 }

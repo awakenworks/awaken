@@ -86,22 +86,24 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    /// @exhaustive bool(2) x bool(2) = 4
     /// @obligation session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
-    /// @proof-input-debt free_symbol dispatched_resource_scope_is_admitted scope_matches
-    /// @proof-input-debt free_symbol dispatched_resource_scope_is_admitted workspace_is_nonempty
-    #[kani::proof]
+    #[test]
     fn dispatched_resource_manifest_requires_exact_nonempty_scope() {
-        let workspace_is_nonempty: bool = kani::any();
-        let scope_matches: bool = kani::any();
-        let admitted = dispatched_resource_scope_is_admitted(workspace_is_nonempty, scope_matches);
+        for workspace_is_nonempty in [false, true] {
+            for scope_matches in [false, true] {
+                let admitted =
+                    dispatched_resource_scope_is_admitted(workspace_is_nonempty, scope_matches);
 
-        assert_eq!(admitted, workspace_is_nonempty && scope_matches);
-        if !workspace_is_nonempty || !scope_matches {
-            assert!(!admitted);
+                assert_eq!(admitted, workspace_is_nonempty && scope_matches);
+                if !workspace_is_nonempty || !scope_matches {
+                    assert!(!admitted);
+                }
+            }
         }
     }
 }

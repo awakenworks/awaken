@@ -1281,71 +1281,6 @@ fn fixed_target_heartbeat_replay_of_the_planned_successor_acknowledges() {
 }
 
 #[cfg(kani)]
-/// @obligation background_task.cancellation_absorption
-#[kani::proof]
-fn cancellation_is_monotone_and_terminal_states_are_absorbing() {
-    // C1 every phase; C2 known/unknown completion. Cancel is a stutter for
-    // Cancelling/Ended, marks live tasks, ends Requested. Only known matching
-    // completion can be projected to Cancelled; unknown must stay unknown.
-    let raw: u8 = kani::any();
-    kani::assume(raw < 5);
-    let phase = match raw {
-        0 => TaskPhase::Requested,
-        1 => TaskPhase::Running,
-        2 => TaskPhase::Waiting,
-        3 => TaskPhase::Cancelling,
-        _ => TaskPhase::Ended,
-    };
-    let decision = cancel_decision(phase);
-    assert_eq!(
-        decision == CancelDecision::EndCancelled,
-        phase == TaskPhase::Requested
-    );
-    assert_eq!(
-        decision == CancelDecision::MarkCancelling,
-        matches!(phase, TaskPhase::Running | TaskPhase::Waiting)
-    );
-    assert_eq!(
-        decision == CancelDecision::Stutter,
-        matches!(phase, TaskPhase::Cancelling | TaskPhase::Ended)
-    );
-    let indeterminate: bool = kani::any();
-    assert_eq!(
-        cancellation_wins_completion(phase, indeterminate),
-        phase == TaskPhase::Cancelling && !indeterminate
-    );
-}
-
-#[cfg(kani)]
-/// @obligation background_task.never_replay_and_attempt_exhaustion_fail_closed
-/// @obligation background_task.remote_continuation_survives_wait_cancel_and_reclaim
-#[kani::proof]
-fn never_replay_recovery_requires_a_durable_remote_continuation() {
-    // C1 recovery mode; C2 remote handle; C3 cancellation. Remote reconnects,
-    // local NeverReplay or local cancellation cannot replay an uncertain effect.
-    let raw: u8 = kani::any();
-    kani::assume(raw < 4);
-    let mode = match raw {
-        0 => ToolRecoveryMode::NeverReplay,
-        1 => ToolRecoveryMode::ReplaySafe,
-        2 => ToolRecoveryMode::Idempotent,
-        _ => ToolRecoveryMode::DurableRequest,
-    };
-    let has_remote_continuation: bool = kani::any();
-    let cancelling: bool = kani::any();
-    assert_eq!(
-        expired_attempt_is_reconnectable(mode, has_remote_continuation, cancelling),
-        has_remote_continuation || (mode != ToolRecoveryMode::NeverReplay && !cancelling)
-    );
-    if mode == ToolRecoveryMode::NeverReplay {
-        assert_eq!(
-            expired_attempt_is_reconnectable(mode, has_remote_continuation, cancelling),
-            has_remote_continuation
-        );
-    }
-}
-
-#[cfg(kani)]
 /// @obligation background_task.expiry_reclaim_advances_epoch_or_terminates
 /// @obligation background_task.never_replay_and_attempt_exhaustion_fail_closed
 #[kani::proof]
@@ -1439,6 +1374,113 @@ fn expired_reclaim_plan_advances_epoch_or_terminates() {
         } => {
             assert!(exhausted);
             assert_eq!(next_revision, revision + 1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_phase(phase: TaskPhase) -> usize {
+        match phase {
+            TaskPhase::Requested => 0,
+            TaskPhase::Running => 1,
+            TaskPhase::Waiting => 2,
+            TaskPhase::Cancelling => 3,
+            TaskPhase::Ended => 4,
+        }
+    }
+    const EVERY_PHASE: [TaskPhase; 5] = [
+        TaskPhase::Requested,
+        TaskPhase::Running,
+        TaskPhase::Waiting,
+        TaskPhase::Cancelling,
+        TaskPhase::Ended,
+    ];
+
+    const fn listed_mode(mode: ToolRecoveryMode) -> usize {
+        match mode {
+            ToolRecoveryMode::NeverReplay => 0,
+            ToolRecoveryMode::ReplaySafe => 1,
+            ToolRecoveryMode::Idempotent => 2,
+            ToolRecoveryMode::DurableRequest => 3,
+        }
+    }
+    const EVERY_MODE: [ToolRecoveryMode; 4] = [
+        ToolRecoveryMode::NeverReplay,
+        ToolRecoveryMode::ReplaySafe,
+        ToolRecoveryMode::Idempotent,
+        ToolRecoveryMode::DurableRequest,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_PHASE.into_iter().enumerate() {
+            assert_eq!(listed_phase(value), index);
+        }
+        for (index, value) in EVERY_MODE.into_iter().enumerate() {
+            assert_eq!(listed_mode(value), index);
+        }
+    }
+
+    /// @exhaustive TaskPhase(5) x bool(2) = 10
+    /// @obligation background_task.cancellation_absorption
+    #[test]
+    fn cancellation_is_monotone_and_terminal_states_are_absorbing() {
+        // C1 every phase; C2 known/unknown completion. Cancel is a stutter for
+        // Cancelling/Ended, marks live tasks, ends Requested. Only known matching
+        // completion can be projected to Cancelled; unknown must stay unknown.
+        for phase in EVERY_PHASE {
+            let decision = cancel_decision(phase);
+            assert_eq!(
+                decision == CancelDecision::EndCancelled,
+                phase == TaskPhase::Requested
+            );
+            assert_eq!(
+                decision == CancelDecision::MarkCancelling,
+                matches!(phase, TaskPhase::Running | TaskPhase::Waiting)
+            );
+            assert_eq!(
+                decision == CancelDecision::Stutter,
+                matches!(phase, TaskPhase::Cancelling | TaskPhase::Ended)
+            );
+            for indeterminate in [false, true] {
+                assert_eq!(
+                    cancellation_wins_completion(phase, indeterminate),
+                    phase == TaskPhase::Cancelling && !indeterminate
+                );
+            }
+        }
+    }
+
+    /// @exhaustive ToolRecoveryMode(4) x bool(2) x bool(2) = 16
+    /// @obligation background_task.never_replay_and_attempt_exhaustion_fail_closed
+    /// @obligation background_task.remote_continuation_survives_wait_cancel_and_reclaim
+    #[test]
+    fn never_replay_recovery_requires_a_durable_remote_continuation() {
+        // C1 recovery mode; C2 remote handle; C3 cancellation. Remote reconnects,
+        // local NeverReplay or local cancellation cannot replay an uncertain effect.
+        for mode in EVERY_MODE {
+            for has_remote_continuation in [false, true] {
+                for cancelling in [false, true] {
+                    assert_eq!(
+                        expired_attempt_is_reconnectable(mode, has_remote_continuation, cancelling),
+                        has_remote_continuation
+                            || (mode != ToolRecoveryMode::NeverReplay && !cancelling)
+                    );
+                    if mode == ToolRecoveryMode::NeverReplay {
+                        assert_eq!(
+                            expired_attempt_is_reconnectable(
+                                mode,
+                                has_remote_continuation,
+                                cancelling
+                            ),
+                            has_remote_continuation
+                        );
+                    }
+                }
+            }
         }
     }
 }

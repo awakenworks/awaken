@@ -161,29 +161,30 @@ pub fn redact_arguments(schema: &Value, arguments: &Value) -> Value {
     }
 }
 
-#[cfg(kani)]
-mod proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
     /// @obligation mcp.sensitive_marker_projection_is_never_public_or_widened
-    /// @proof-input-debt free_symbol projection_exposure explicit_sensitive
-    /// @proof-input-debt free_symbol projection_exposure password_format
-    /// @proof-input-debt free_symbol projection_exposure write_only
-    #[kani::proof]
+    #[test]
     fn sensitive_marker_never_projects_payload_publicly() {
         // The exact formula (`Redacted` iff any marker is set) is monotone in
         // every marker, so adding a marker can never widen a redacted
         // projection: the "never widened" half of the obligation follows from
-        // these two assertions without a second harness.
-        let explicit_sensitive: bool = kani::any();
-        let write_only: bool = kani::any();
-        let password_format: bool = kani::any();
-
-        let projection = projection_exposure(explicit_sensitive, write_only, password_format);
-        if explicit_sensitive || write_only || password_format {
-            assert_eq!(projection, ProjectionExposure::Redacted);
-        } else {
-            assert_eq!(projection, ProjectionExposure::Public);
+        // these two assertions without a second test.
+        for explicit_sensitive in [false, true] {
+            for write_only in [false, true] {
+                for password_format in [false, true] {
+                    let projection =
+                        projection_exposure(explicit_sensitive, write_only, password_format);
+                    if explicit_sensitive || write_only || password_format {
+                        assert_eq!(projection, ProjectionExposure::Redacted);
+                    } else {
+                        assert_eq!(projection, ProjectionExposure::Public);
+                    }
+                }
+            }
         }
     }
 }

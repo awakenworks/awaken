@@ -972,32 +972,44 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-/// @obligation resource_reclamation.stale_claim_cannot_commit_receipt
-/// @proof-input-debt free_symbol resource_purge_claim_is_current generation_matches
-/// @proof-input-debt free_symbol resource_purge_claim_is_current lease_is_live
-/// @proof-input-debt free_symbol resource_purge_claim_is_current owner_matches
-/// @proof-input-debt free_symbol resource_purge_claim_is_current status_is_claimed
-#[kani::proof]
-fn stale_resource_purge_claim_cannot_commit_receipt() {
-    // Symbolic form of the receipt-admission decision table: Kani covers every
-    // C1/C2/C3/C4 combination and proves E1 is exactly their conjunction.
-    let status_is_claimed = kani::any::<bool>();
-    let owner_matches = kani::any::<bool>();
-    let generation_matches = kani::any::<bool>();
-    let lease_is_live = kani::any::<bool>();
-    let admitted = resource_purge_claim_is_current(
-        status_is_claimed,
-        owner_matches,
-        generation_matches,
-        lease_is_live,
-    );
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
 
-    assert_eq!(
-        admitted,
-        status_is_claimed && owner_matches && generation_matches && lease_is_live
-    );
-    if !(status_is_claimed && owner_matches && generation_matches && lease_is_live) {
-        assert!(!admitted);
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) = 16
+    /// @obligation resource_reclamation.stale_claim_cannot_commit_receipt
+    #[test]
+    fn stale_resource_purge_claim_cannot_commit_receipt() {
+        // Every C1/C2/C3/C4 combination of the receipt-admission decision
+        // table: E1 is exactly their conjunction.
+        for status_is_claimed in [false, true] {
+            for owner_matches in [false, true] {
+                for generation_matches in [false, true] {
+                    for lease_is_live in [false, true] {
+                        let admitted = resource_purge_claim_is_current(
+                            status_is_claimed,
+                            owner_matches,
+                            generation_matches,
+                            lease_is_live,
+                        );
+
+                        assert_eq!(
+                            admitted,
+                            status_is_claimed
+                                && owner_matches
+                                && generation_matches
+                                && lease_is_live
+                        );
+                        if !(status_is_claimed
+                            && owner_matches
+                            && generation_matches
+                            && lease_is_live)
+                        {
+                            assert!(!admitted);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

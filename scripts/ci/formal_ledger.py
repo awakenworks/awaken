@@ -8,7 +8,9 @@ coverage ledger in its v1 shape:
     {metric, minimum_ratio, verified_profile, obligations: [...]}
 
 Each obligation row carries ``id``, ``formalizable``, ``status``, ``evidence``,
-``proof_harnesses``, ``claim_scope``, ``proof_grade``, ``bounds``,
+``proof_harnesses`` (Kani harness names), ``exhaustive_tests`` (``<file>::<fn>``
+of the ``#[test]``s that enumerate a finite domain; see ``formal_anchors``),
+``claim_scope``, ``proof_grade``, ``bounds``,
 ``tcb_assumptions`` and ``production_entrypoints``, and optionally
 ``run_evidence``: ``"needs_rerun"`` on a ``kernel_proved`` row whose harnesses
 have no recorded passing run of their current text. The status states what the
@@ -76,7 +78,7 @@ NEEDS_RERUN = "needs_rerun"
 # the `/// @obligation` anchors, and so is the evidence entry for each harness
 # file. Every array is a set; the assembled ledger lists it sorted.
 ARRAY_FIELDS = ("tcb_assumptions", "evidence", "production_entrypoints")
-SET_FIELDS = (*ARRAY_FIELDS, "proof_harnesses")
+SET_FIELDS = (*ARRAY_FIELDS, "proof_harnesses", "exhaustive_tests")
 PROFILE_KEYS = ("metric", "minimum_ratio", "verified_profile")
 
 
@@ -165,6 +167,7 @@ class Derived:
     """
 
     harnesses: dict[str, set[str]] = field(default_factory=dict)
+    tests: dict[str, set[str]] = field(default_factory=dict)
     evidence: dict[str, set[str]] = field(default_factory=dict)
     entrypoints: dict[str, set[str]] = field(default_factory=dict)
 
@@ -224,6 +227,20 @@ def _derived(root: Path, rows: dict[str, dict] | None) -> Derived:
             if known(anchor.value, anchor.where, "@obligation"):
                 derived.add(derived.harnesses, anchor.value, harness.name)
                 derived.add(derived.evidence, anchor.value, harness.path)
+    tested: dict[str, formal_anchors.Harness] = {}
+    for test in scan.tests:
+        identity = f"{test.path}::{test.name}"
+        if identity in tested:
+            errors.append(f"{test.where}: exhaustive test {identity} is also defined at {tested[identity].where}")
+        tested.setdefault(identity, test)
+        seen = set()
+        for anchor in test.values("obligation"):
+            if anchor.value in seen:
+                errors.append(f"{anchor.where}: duplicate @obligation {anchor.value} on {test.name}")
+            seen.add(anchor.value)
+            if known(anchor.value, anchor.where, "@obligation"):
+                derived.add(derived.tests, anchor.value, identity)
+                derived.add(derived.evidence, anchor.value, test.path)
     harness_files = {key: set(value) for key, value in derived.evidence.items()}
     stated: dict[tuple[str, str], formal_anchors.Header] = {}
     for header in headers:
@@ -285,9 +302,13 @@ def load(root: Path) -> dict:
         errors += _source_anchored_in_storage(relative, row)
         if identifier in derived.harnesses:
             row["proof_harnesses"] = sorted(derived.harnesses[identifier])
-        elif row.get("proof_grade") == "production_kernel_proved":
+        if identifier in derived.tests:
+            row["exhaustive_tests"] = sorted(derived.tests[identifier])
+        if not row.get("proof_harnesses") and not row.get("exhaustive_tests") and (
+            row.get("proof_grade") == "production_kernel_proved"
+        ):
             errors.append(
-                f"{relative}: {identifier} production-kernel grade has no Kani harness; "
+                f"{relative}: {identifier} production-kernel grade has no Kani harness or exhaustive test; "
                 f"anchor one with `/// @obligation {identifier}`"
             )
         for key, table in (("evidence", derived.evidence), ("production_entrypoints", derived.entrypoints)):
@@ -386,8 +407,15 @@ def files(ledger: dict, root: Path | None = None) -> dict[str, str]:
                 f"{row['id']}: proof_harnesses {sorted(declared)} differ from the "
                 f"`/// @obligation` anchors {sorted(derived.harnesses.get(row['id'], set()))}; edit the anchors"
             )
+        tests = set(row.get("exhaustive_tests", []))
+        if tests != derived.tests.get(row["id"], set()):
+            raise LedgerError(
+                f"{row['id']}: exhaustive_tests {sorted(tests)} differ from the "
+                f"`/// @obligation` anchors {sorted(derived.tests.get(row['id'], set()))}; edit the anchors"
+            )
         kept = dict(row)
         kept.pop("proof_harnesses", None)
+        kept.pop("exhaustive_tests", None)
         for key, table in (("evidence", derived.evidence), ("production_entrypoints", derived.entrypoints)):
             if key in kept:
                 kept[key] = [path for path in kept[key] if path not in table.get(row["id"], set())]
@@ -450,6 +478,11 @@ def self_test() -> None:
     harness name defined twice, or one anchor repeated; A5 a
     production-kernel obligation no harness serves; A6 a row whose
     proof_harnesses disagree with the anchors is stored.
+    Exhaustive-test causes: T1 a `#[test]` with `@exhaustive <domain>` is the
+    only holder of a production-kernel obligation; T2 a test names an
+    obligation without stating its finite domain; T3 `@exhaustive` names no
+    obligation; T4 `@exhaustive` sits on a Kani harness; T5 `@kani` sits on a
+    test.
     Header causes: H1 a `// @formal` anchor after code; H2 one naming no
     obligation file; H3 one repeated; H4 evidence already stated by the
     file's harness anchor; H5 an unknown role; H6 an obligation file naming
@@ -462,7 +495,7 @@ def self_test() -> None:
     Effects: E1 load returns what was written, harness names and harness
     files derived from the anchors; E2 refusal naming the file (and line);
     E3 load reads the staged bytes; E4 load reads disk; E5 the hook's index.
-    Rules: C1 => E1; C2|C3|C4|C5|A1..A6|H1..H6 => E2; C6 => formalizable ==
+    Rules: C1 => E1; T1 => E1 with exhaustive_tests; C2|C3|C4|C5|A1..A6|H1..H6|T2..T5 => E2; C6 => formalizable ==
     (scope == repository_safety); C7 => E3; C8 => E4; C9 => E5; C10 => E3.
     """
 
@@ -576,6 +609,23 @@ def self_test() -> None:
         twin.unlink()
         source.write_text("")
         refused(root, "run.safe production-kernel grade has no Kani harness")
+        test_source = header + "/// @exhaustive bool(2) = 2\n/// @obligation run.safe\n#[test]\nfn safe_table() {}\n"
+        source.write_text(test_source)
+        held = {row["id"]: row for row in load(root)["obligations"]}["run.safe"]
+        assert held["exhaustive_tests"] == ["crates/a/src/lib.rs::safe_table"], ("T1", held)
+        assert "proof_harnesses" not in held and "crates/a/src/lib.rs" in held["evidence"], ("T1", held)
+        for text, fragment in (
+            (test_source.replace("/// @exhaustive bool(2) = 2\n", ""),
+             "crates/a/src/lib.rs:4: test safe_table serves an obligation only as an exhaustive proof"),
+            (test_source.replace("/// @obligation run.safe\n", ""),
+             "crates/a/src/lib.rs:2: exhaustive test safe_table serves no obligation"),
+            (harness_source.replace("#[kani::proof]", "/// @exhaustive bool(2) = 2\n#[kani::proof]"),
+             "crates/a/src/lib.rs:4: @exhaustive marks a #[test]"),
+            (test_source.replace("#[test]", "/// @kani tier=nightly\n#[test]"),
+             "crates/a/src/lib.rs:4: @kani is not in the attribute block"),
+        ):
+            source.write_text(text)
+            refused(root, fragment)
         source.write_text(harness_source)
 
         git = ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",

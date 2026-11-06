@@ -631,32 +631,45 @@ mod verification {
             assert!(selections.iter().all(|selected| *selected == resolved));
         }
     }
+}
 
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive u8(256) x u8(256) = 65536
     /// @obligation tenancy.all_selectors_checked
-    #[kani::proof]
+    #[test]
     fn any_uncovered_selector_fails_closed() {
-        let authorized = kani::any::<u8>();
-        let unauthorized = kani::any::<u8>();
-        kani::assume(unauthorized != authorized);
-        let authority = [authorized];
-        let selections = [authorized, unauthorized];
-        assert!(matches!(
-            resolve_indices(&authority, &selections),
-            Err(KernelRejection::NotAuthorized(1))
-        ));
+        for authorized in u8::MIN..=u8::MAX {
+            for unauthorized in u8::MIN..=u8::MAX {
+                if unauthorized == authorized {
+                    continue;
+                }
+                let authority = [authorized];
+                let selections = [authorized, unauthorized];
+                assert!(matches!(
+                    resolve_indices(&authority, &selections),
+                    Err(KernelRejection::NotAuthorized(1))
+                ));
+            }
+        }
     }
 
+    /// @exhaustive u8(256) x u8(256) = 65536
     /// @obligation tenancy.selector_agreement
-    #[kani::proof]
+    #[test]
     fn selector_order_cannot_change_an_authorized_result() {
-        let a = kani::any::<u8>();
-        let b = kani::any::<u8>();
-        let authority = [a, b];
-        let left = [a, b];
-        let right = [b, a];
-        assert_eq!(
-            resolve_indices(&authority, &left).is_ok(),
-            resolve_indices(&authority, &right).is_ok()
-        );
+        for a in u8::MIN..=u8::MAX {
+            for b in u8::MIN..=u8::MAX {
+                let authority = [a, b];
+                let left = [a, b];
+                let right = [b, a];
+                assert_eq!(
+                    resolve_indices(&authority, &left).is_ok(),
+                    resolve_indices(&authority, &right).is_ok()
+                );
+            }
+        }
     }
 }

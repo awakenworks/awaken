@@ -130,7 +130,7 @@ fn seconds_for_quanta(quanta: u64, capacity: u16) -> u64 {
 
 #[cfg(kani)]
 /// @obligation managed_rate_limit.organization_buckets_never_over_admit_under_monotonic_time
-/// @kani profile=solver-kissat-v1
+/// @kani profile=solver-kissat-v1 tier=nightly
 #[kani::proof]
 fn organization_bucket_refill_is_exact_and_bounded() {
     let capacity: u16 = kani::any();
@@ -147,7 +147,7 @@ fn organization_bucket_refill_is_exact_and_bounded() {
 
 #[cfg(kani)]
 /// @obligation managed_rate_limit.organization_buckets_never_over_admit_under_monotonic_time
-/// @kani profile=solver-kissat-v1
+/// @kani profile=solver-kissat-v1 tier=nightly
 #[kani::proof]
 fn organization_bucket_saturated_refill_is_canonical_and_bounded() {
     let capacity: u16 = kani::any();
@@ -161,7 +161,7 @@ fn organization_bucket_saturated_refill_is_canonical_and_bounded() {
 
 #[cfg(kani)]
 /// @obligation managed_rate_limit.organization_buckets_never_over_admit_under_monotonic_time
-/// @kani profile=solver-kissat-v1
+/// @kani profile=solver-kissat-v1 tier=nightly
 #[kani::proof]
 fn organization_bucket_refill_clamp_preserves_capacity_invariant() {
     let capacity_u16: u16 = kani::any();
@@ -191,7 +191,7 @@ fn organization_bucket_refill_clamp_preserves_capacity_invariant() {
 
 #[cfg(kani)]
 /// @obligation managed_rate_limit.organization_buckets_never_over_admit_under_monotonic_time
-/// @kani profile=solver-kissat-v1
+/// @kani profile=solver-kissat-v1 tier=nightly
 #[kani::proof]
 fn organization_bucket_consumption_is_exact_and_non_over_admitting() {
     let capacity_u16: u16 = kani::any();

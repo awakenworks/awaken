@@ -97,66 +97,164 @@ impl ProtocolState {
     }
 }
 
-#[cfg(kani)]
-fn arbitrary_action() -> Action {
-    match kani::any::<u8>() % 5 {
-        0 => Action::StartRequest {
-            supported: kani::any(),
-            valid: kani::any(),
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_ACTION: [Action; 8] = [
+        Action::StartRequest {
+            supported: false,
+            valid: false,
         },
-        1 => Action::StartNotification,
-        2 => Action::Progress,
-        3 => Action::Complete,
-        _ => Action::Cancel,
+        Action::StartRequest {
+            supported: false,
+            valid: true,
+        },
+        Action::StartRequest {
+            supported: true,
+            valid: false,
+        },
+        Action::StartRequest {
+            supported: true,
+            valid: true,
+        },
+        Action::StartNotification,
+        Action::Progress,
+        Action::Complete,
+        Action::Cancel,
+    ];
+
+    const fn listed_action(action: Action) -> usize {
+        match action {
+            Action::StartRequest {
+                supported: false,
+                valid: false,
+            } => 0,
+            Action::StartRequest {
+                supported: false,
+                valid: true,
+            } => 1,
+            Action::StartRequest {
+                supported: true,
+                valid: false,
+            } => 2,
+            Action::StartRequest {
+                supported: true,
+                valid: true,
+            } => 3,
+            Action::StartNotification => 4,
+            Action::Progress => 5,
+            Action::Complete => 6,
+            Action::Cancel => 7,
+        }
     }
-}
 
-#[cfg(kani)]
-fn arbitrary_trace() -> ProtocolState {
-    let mut state = ProtocolState::initial();
-    for _ in 0..8 {
-        state = state.apply(arbitrary_action());
+    #[test]
+    fn every_action_is_listed_once() {
+        for (index, action) in EVERY_ACTION.into_iter().enumerate() {
+            assert_eq!(listed_action(action), index);
+        }
     }
-    state
-}
 
-#[cfg(kani)]
-/// @obligation mcp.at_most_one_final_response
-#[kani::proof]
-fn one_request_has_at_most_one_final_response() {
-    assert!(arbitrary_trace().responses <= 1);
-}
+    /// Every field of the state, destructured without `..` so a new field
+    /// cannot be left out of the identity two traces are merged on.
+    fn state_key(state: &ProtocolState) -> (u8, bool, bool, bool, u8, u8, u8, u8, u8) {
+        let ProtocolState {
+            phase,
+            notification,
+            admitted,
+            cancelled,
+            host_calls,
+            responses,
+            results,
+            progress,
+            progress_at_final,
+        } = *state;
+        let phase = match phase {
+            Phase::Idle => 0,
+            Phase::Active => 1,
+            Phase::Final => 2,
+        };
+        (
+            phase,
+            notification,
+            admitted,
+            cancelled,
+            host_calls,
+            responses,
+            results,
+            progress,
+            progress_at_final,
+        )
+    }
 
-#[cfg(kani)]
-/// @obligation mcp.notification_has_no_response
-#[kani::proof]
-fn notifications_never_have_a_jsonrpc_response() {
-    let state = arbitrary_trace();
-    assert!(!state.notification || state.responses == 0);
-}
+    /// The end state of every one of the 8^8 traces of eight actions from the
+    /// initial state. `apply` is a
+    /// deterministic function of (state, action), so traces that reach equal
+    /// states have equal continuations: expanding each distinct state of a
+    /// step by every action reaches exactly the states of every trace.
+    fn every_trace_end_state() -> Vec<ProtocolState> {
+        let mut frontier = vec![ProtocolState::initial()];
+        for _ in 0..8 {
+            let mut next: Vec<ProtocolState> = Vec::new();
+            for state in &frontier {
+                for action in EVERY_ACTION {
+                    let successor = state.apply(action);
+                    let key = state_key(&successor);
+                    if !next.iter().any(|seen| state_key(seen) == key) {
+                        next.push(successor);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        frontier
+    }
 
-#[cfg(kani)]
-/// @obligation mcp.final_stops_progress
-#[kani::proof]
-fn final_response_is_progress_absorbing() {
-    let state = arbitrary_trace();
-    assert!(state.phase != Phase::Final || state.progress == state.progress_at_final);
-}
+    /// @exhaustive Action(8)^8 = 16777216 traces, every end state enumerated
+    /// @obligation mcp.at_most_one_final_response
+    #[test]
+    fn one_request_has_at_most_one_final_response() {
+        for state in every_trace_end_state() {
+            assert!(state.responses <= 1);
+        }
+    }
 
-#[cfg(kani)]
-/// @obligation mcp.rejected_request_skips_host
-#[kani::proof]
-fn rejected_requests_never_enter_the_host() {
-    let state = arbitrary_trace();
-    assert!(state.admitted || state.host_calls == 0);
-}
+    /// @exhaustive Action(8)^8 = 16777216 traces, every end state enumerated
+    /// @obligation mcp.notification_has_no_response
+    #[test]
+    fn notifications_never_have_a_jsonrpc_response() {
+        for state in every_trace_end_state() {
+            assert!(!state.notification || state.responses == 0);
+        }
+    }
 
-#[cfg(kani)]
-/// @obligation mcp.cancellation_has_no_success_result
-#[kani::proof]
-fn cancellation_never_produces_a_success_result() {
-    let state = arbitrary_trace();
-    assert!(!state.cancelled || state.results == 0);
+    /// @exhaustive Action(8)^8 = 16777216 traces, every end state enumerated
+    /// @obligation mcp.final_stops_progress
+    #[test]
+    fn final_response_is_progress_absorbing() {
+        for state in every_trace_end_state() {
+            assert!(state.phase != Phase::Final || state.progress == state.progress_at_final);
+        }
+    }
+
+    /// @exhaustive Action(8)^8 = 16777216 traces, every end state enumerated
+    /// @obligation mcp.rejected_request_skips_host
+    #[test]
+    fn rejected_requests_never_enter_the_host() {
+        for state in every_trace_end_state() {
+            assert!(state.admitted || state.host_calls == 0);
+        }
+    }
+
+    /// @exhaustive Action(8)^8 = 16777216 traces, every end state enumerated
+    /// @obligation mcp.cancellation_has_no_success_result
+    #[test]
+    fn cancellation_never_produces_a_success_result() {
+        for state in every_trace_end_state() {
+            assert!(!state.cancelled || state.results == 0);
+        }
+    }
 }
 
 #[test]

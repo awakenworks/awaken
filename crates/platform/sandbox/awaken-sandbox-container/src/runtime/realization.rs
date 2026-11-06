@@ -179,47 +179,58 @@ pub fn existing_realization_decision(
     })
 }
 
-#[cfg(kani)]
-/// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
-/// @kani profile=solver-kissat-v1
-/// @proof-input-debt free_symbol observation_admitted exact_continuation
-/// @proof-input-debt free_symbol observation_admitted is_source
-/// @proof-input-debt free_symbol observation_admitted reconstructible
-#[kani::proof]
-fn rebuild_activation_requires_exact_continuation_and_effect() {
-    // Finite quotient of every source/result, continuity, recoverability,
-    // effect identity and phase combination. This invokes the production gate,
-    // not a parallel state machine. Shared tests own fingerprint/lease mapping;
-    // the real K8s lane owns prepare -> activate, API UID and PVC continuity.
-    let continuity: bool = kani::any();
-    let recoverable: bool = kani::any();
-    let source: bool = kani::any();
-    let effect: bool = kani::any();
-    let state: u8 = kani::any();
-    kani::assume(state < 4);
-    let phase = match state {
-        0 => ExistingRealizationPhase::Creating,
-        1 => ExistingRealizationPhase::Ready,
-        2 => ExistingRealizationPhase::Terminal,
-        _ => ExistingRealizationPhase::Indeterminate,
-    };
-    let admitted = observation_admitted(continuity, recoverable, source, effect, phase);
-    assert!(!admitted || (continuity && recoverable));
-    assert!(
-        !admitted
-            || if source {
-                state == 2
-            } else {
-                effect && state < 2
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x ExistingRealizationPhase(4) = 64
+    /// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+    #[test]
+    fn rebuild_activation_requires_exact_continuation_and_effect() {
+        // Finite quotient of every source/result, continuity, recoverability,
+        // effect identity and phase combination. This invokes the production gate,
+        // not a parallel state machine. Shared tests own fingerprint/lease mapping;
+        // the real K8s lane owns prepare -> activate, API UID and PVC continuity.
+        for continuity in [false, true] {
+            for recoverable in [false, true] {
+                for source in [false, true] {
+                    for effect in [false, true] {
+                        for state in 0_u8..4 {
+                            let phase = match state {
+                                0 => ExistingRealizationPhase::Creating,
+                                1 => ExistingRealizationPhase::Ready,
+                                2 => ExistingRealizationPhase::Terminal,
+                                _ => ExistingRealizationPhase::Indeterminate,
+                            };
+                            let admitted = observation_admitted(
+                                continuity,
+                                recoverable,
+                                source,
+                                effect,
+                                phase,
+                            );
+                            assert!(!admitted || (continuity && recoverable));
+                            assert!(
+                                !admitted
+                                    || if source {
+                                        state == 2
+                                    } else {
+                                        effect && state < 2
+                                    }
+                            );
+                            if continuity && recoverable && !source && effect && state < 2 {
+                                assert!(
+                                    admitted,
+                                    "an exact prepared Rebuild result remains activatable"
+                                );
+                            }
+                            if continuity && recoverable && source && state == 2 {
+                                assert!(admitted, "an exact terminal source remains replaceable");
+                            }
+                        }
+                    }
+                }
             }
-    );
-    if continuity && recoverable && !source && effect && state < 2 {
-        assert!(
-            admitted,
-            "an exact prepared Rebuild result remains activatable"
-        );
-    }
-    if continuity && recoverable && source && state == 2 {
-        assert!(admitted, "an exact terminal source remains replaceable");
+        }
     }
 }

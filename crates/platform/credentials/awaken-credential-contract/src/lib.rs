@@ -1569,3 +1569,104 @@ mod tests {
 )]
 #[serde(transparent)]
 pub struct CredentialSourceId(pub String);
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_material_source(source: CredentialMaterialSource) -> usize {
+        match source {
+            CredentialMaterialSource::ControlPlaneReference => 0,
+            CredentialMaterialSource::WorkerReference => 1,
+        }
+    }
+    const EVERY_MATERIAL_SOURCE: [CredentialMaterialSource; 2] = [
+        CredentialMaterialSource::ControlPlaneReference,
+        CredentialMaterialSource::WorkerReference,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_MATERIAL_SOURCE.into_iter().enumerate() {
+            assert_eq!(listed_material_source(value), index);
+        }
+    }
+
+    /// The production source enum is the durable credential channel. This test
+    /// keeps its complete current domain reference-only; material remains behind
+    /// the non-serializable resolver result.
+    /// @exhaustive CredentialMaterialSource(2) = 2
+    /// @obligation worker.durable_dispatch_contains_no_plaintext_secret
+    #[test]
+    fn durable_credential_material_source_has_no_inline_plaintext_class() {
+        // Cause/effect graph: C1 selects the Control-plane source; C2 selects the
+        // Worker-local source. E1 classifies the selected source as reference-only.
+        // The causes are mutually exclusive and exhaustive because the production
+        // match has no wildcard. Adding a source variant breaks compilation of
+        // `listed_material_source` until this boundary is reviewed.
+        for source in EVERY_MATERIAL_SOURCE {
+            assert!(durable_material_source_is_reference_only(source));
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation environment.cloud_native_credential_custody_selection_is_exact
+    #[test]
+    fn environment_credential_custody_selects_exactly_one_authorized_profile() {
+        // Causes: C1 ACP runtime, C2 Cloud Environment, C3 installed hosted
+        // profile. Effects: E1 Hosted wins when C2+C3, E2 otherwise ACP selects
+        // its standalone profile, E3 otherwise Native remains self-hosted.
+        // Decision rules: H1 C2+C3 -> E1; H2 !H1+C1 -> E2; H3 !H1+!C1 -> E3.
+        for acp_runtime in [false, true] {
+            for cloud_environment in [false, true] {
+                for hosted_profile_installed in [false, true] {
+                    let selection = credential_realization_selection(
+                        acp_runtime,
+                        cloud_environment,
+                        hosted_profile_installed,
+                    );
+                    assert_eq!(
+                        selection == CredentialRealizationSelection::SelfHostedAcp,
+                        acp_runtime && !(cloud_environment && hosted_profile_installed)
+                    );
+                    assert_eq!(
+                        selection == CredentialRealizationSelection::HostedCloud,
+                        cloud_environment && hosted_profile_installed
+                    );
+                    assert_eq!(
+                        selection == CredentialRealizationSelection::SelfHostedNative,
+                        !acp_runtime && (!cloud_environment || !hosted_profile_installed)
+                    );
+                }
+            }
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) = 16
+    /// @obligation credential_envelope.issuance_requires_exact_claim
+    #[test]
+    fn credential_envelope_issuance_accepts_exactly_the_complete_claim() {
+        for reference_nonempty in [false, true] {
+            for payload_fingerprint_matches in [false, true] {
+                for recipient_matches in [false, true] {
+                    for boundary_matches in [false, true] {
+                        let accepted = validate_credential_envelope_issuance_claim(
+                            reference_nonempty,
+                            payload_fingerprint_matches,
+                            recipient_matches,
+                            boundary_matches,
+                        )
+                        .is_ok();
+                        assert_eq!(
+                            accepted,
+                            reference_nonempty
+                                && payload_fingerprint_matches
+                                && recipient_matches
+                                && boundary_matches
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

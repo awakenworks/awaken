@@ -69,30 +69,6 @@ pub const fn claim_credential_operation(
     }
 }
 
-#[cfg(kani)]
-/// @obligation credential_effect.boundary_preserves_exact_materialization_authority
-/// @proof-input-debt free_symbol claim_credential_operation cancellation_requested
-#[kani::proof]
-fn claim_credential_operation_is_total_and_terminal_dominates() {
-    // Cause/effect decision table: C1 terminal repair, C2 cancellation request.
-    // R1 C1=* -> TerminalResolution; R2 !C1+C2 -> Cancel;
-    // R3 !C1+!C2 -> Execute. The rules are disjoint and exhaustive, and R1
-    // proves terminal repair cannot accidentally materialize credentials.
-    let terminal_resolution: bool = kani::any();
-    let cancellation_requested: bool = kani::any();
-    let operation = claim_credential_operation(terminal_resolution, cancellation_requested);
-    if terminal_resolution {
-        assert!(matches!(
-            operation,
-            ClaimCredentialOperation::TerminalResolution
-        ));
-    } else if cancellation_requested {
-        assert!(matches!(operation, ClaimCredentialOperation::Cancel));
-    } else {
-        assert!(matches!(operation, ClaimCredentialOperation::Execute));
-    }
-}
-
 pub fn worker_credential_realization_capabilities(
     worker: &WorkerSnapshot,
 ) -> Result<CredentialRealizationCapabilities, AttemptCredentialBindingError> {
@@ -293,70 +269,6 @@ fn admit_session_mcp_requirement(
     }
 }
 
-#[cfg(kani)]
-/// @obligation credential.mcp_claim_admits_only_when_every_requirement_is_installed
-#[kani::proof]
-fn mcp_requirement_route_admits_only_bearer_relay_or_workload_injection() {
-    // Cause/effect table: C1 usage class is Authorization Bearer or not; C2
-    // the selected holder boundary is Worker, Workload or Platform.
-    // R1 !C1 -> RejectUsage for every holder; R2 C1+Worker -> WorkerRelay;
-    // R3 C1+Workload -> ClientInjection; R4 C1+Platform -> RejectHolder. No
-    // route admits a requirement without first selecting exactly one holder
-    // mechanism that the installed evidence must then satisfy.
-    let usage = if kani::any() {
-        McpCredentialUsageClass::AuthorizationBearer
-    } else {
-        McpCredentialUsageClass::Unsupported
-    };
-    let boundary = match kani::any::<u8>() % 3 {
-        0 => awaken_agent_contract::credential::PlaintextBoundary::Worker,
-        1 => awaken_agent_contract::credential::PlaintextBoundary::Workload,
-        _ => awaken_agent_contract::credential::PlaintextBoundary::Platform,
-    };
-    let route = mcp_requirement_route(usage, boundary);
-    match usage {
-        McpCredentialUsageClass::Unsupported => {
-            assert_eq!(route, McpRequirementRoute::RejectUsage, "R1");
-        }
-        McpCredentialUsageClass::AuthorizationBearer => match boundary {
-            awaken_agent_contract::credential::PlaintextBoundary::Worker => {
-                assert_eq!(route, McpRequirementRoute::WorkerRelay, "R2");
-            }
-            awaken_agent_contract::credential::PlaintextBoundary::Workload => {
-                assert_eq!(route, McpRequirementRoute::ClientInjection, "R3");
-            }
-            awaken_agent_contract::credential::PlaintextBoundary::Platform => {
-                assert_eq!(route, McpRequirementRoute::RejectHolder, "R4");
-            }
-        },
-    }
-}
-
-#[cfg(kani)]
-/// @obligation credential.mcp_claim_admits_only_when_every_requirement_is_installed
-#[kani::proof]
-#[kani::unwind(5)]
-fn claim_admits_session_mcp_credentials_only_when_every_requirement_is_admitted() {
-    // Cause/effect table over up to three requirements: C1 how many there
-    // are; C2 which of them the installed evidence admits. E1 every admitted
-    // (including none present) -> the claim admits; E2 any refusal -> the
-    // claim is refused with the first refusal, in requirement order. No
-    // refused requirement can be skipped or outvoted by later admissions.
-    let admitted: [bool; 3] = kani::any();
-    let count = usize::from(kani::any::<u8>() % 4);
-    let verdict = every_mcp_requirement_admitted(
-        admitted[..count]
-            .iter()
-            .enumerate()
-            .map(|(index, ok)| if *ok { Ok(()) } else { Err(index) }),
-    );
-    let first_refusal = (0..count).find(|index| !admitted[*index]);
-    match first_refusal {
-        None => assert_eq!(verdict, Ok(()), "E1"),
-        Some(index) => assert_eq!(verdict, Err(index), "E2"),
-    }
-}
-
 /// Compile all credential-bearing candidates selected for this Run into exact
 /// attempt bindings. Every caller must pass installed capability evidence: an
 /// immutable registered Worker manifest or the in-process Worker's composed
@@ -455,49 +367,6 @@ fn claim_credential_bindings_are_exact(
     expected == claimed
 }
 
-#[cfg(kani)]
-/// @obligation credential_effect.boundary_preserves_exact_materialization_authority
-#[kani::proof]
-#[kani::unwind(12)]
-fn claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_stale_wire() {
-    // Causes: C1 exact ordered pair; C2 missing entry; C3 extra entry;
-    // C4 reordered pair; C5 one stale coordinate. Effects: E1 only C1 admits;
-    // E2 C2-C5 reject before materialization. The receipt proof independently
-    // covers every field coordinate; this proof owns collection completeness
-    // and order using the production slice comparator.
-    let binding = |identity: &str, epoch| AttemptCredentialBinding {
-        candidate_fingerprint: awaken_agent_contract::credential::CandidateFingerprint(
-            identity.into(),
-        ),
-        credential: awaken_agent_contract::credential::CredentialRef {
-            id: identity.into(),
-            revision: 1,
-        },
-        selected_plaintext_holder: awaken_agent_contract::credential::PlaintextHolder::new(
-            awaken_agent_contract::credential::PlaintextBoundary::Worker,
-            identity,
-        ),
-        selected_realization_kind:
-            awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
-        claim_epoch: epoch,
-    };
-    let first = binding("first", 7);
-    let second = binding("second", 7);
-    let expected = vec![first.clone(), second.clone()];
-    let case = kani::any::<u8>() % 5;
-    let claimed = match case {
-        0 => expected.clone(),
-        1 => vec![first.clone()],
-        2 => vec![first.clone(), second.clone(), second.clone()],
-        3 => vec![second, first],
-        _ => vec![binding("first", 8), binding("second", 7)],
-    };
-    assert_eq!(
-        claim_credential_bindings_are_exact(&expected, &claimed),
-        case == 0
-    );
-}
-
 /// Recompute the one canonical claim decision and require the persisted wire
 /// projection to match it exactly. This is the Worker-side trust-boundary check:
 /// it neither searches for a holder nor repairs a stale binding.
@@ -550,4 +419,173 @@ pub fn can_admit_claim_credentials(
 ) -> bool {
     compile_claim_credential_bindings(request, installed, claim_epoch, now_unix_ms, operation)
         .is_ok()
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+    use awaken_agent_contract::credential::PlaintextBoundary;
+
+    const fn listed_usage(usage: McpCredentialUsageClass) -> usize {
+        match usage {
+            McpCredentialUsageClass::AuthorizationBearer => 0,
+            McpCredentialUsageClass::Unsupported => 1,
+        }
+    }
+    const EVERY_USAGE: [McpCredentialUsageClass; 2] = [
+        McpCredentialUsageClass::AuthorizationBearer,
+        McpCredentialUsageClass::Unsupported,
+    ];
+
+    const fn listed_boundary(boundary: PlaintextBoundary) -> usize {
+        match boundary {
+            PlaintextBoundary::Worker => 0,
+            PlaintextBoundary::Workload => 1,
+            PlaintextBoundary::Platform => 2,
+        }
+    }
+    const EVERY_BOUNDARY: [PlaintextBoundary; 3] = [
+        PlaintextBoundary::Worker,
+        PlaintextBoundary::Workload,
+        PlaintextBoundary::Platform,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_USAGE.into_iter().enumerate() {
+            assert_eq!(listed_usage(value), index);
+        }
+        for (index, value) in EVERY_BOUNDARY.into_iter().enumerate() {
+            assert_eq!(listed_boundary(value), index);
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation credential_effect.boundary_preserves_exact_materialization_authority
+    #[test]
+    fn claim_credential_operation_is_total_and_terminal_dominates() {
+        // Cause/effect decision table: C1 terminal repair, C2 cancellation request.
+        // R1 C1=* -> TerminalResolution; R2 !C1+C2 -> Cancel;
+        // R3 !C1+!C2 -> Execute. The rules are disjoint and exhaustive, and R1
+        // shows terminal repair cannot accidentally materialize credentials.
+        for terminal_resolution in [false, true] {
+            for cancellation_requested in [false, true] {
+                let operation =
+                    claim_credential_operation(terminal_resolution, cancellation_requested);
+                if terminal_resolution {
+                    assert!(matches!(
+                        operation,
+                        ClaimCredentialOperation::TerminalResolution
+                    ));
+                } else if cancellation_requested {
+                    assert!(matches!(operation, ClaimCredentialOperation::Cancel));
+                } else {
+                    assert!(matches!(operation, ClaimCredentialOperation::Execute));
+                }
+            }
+        }
+    }
+
+    /// @exhaustive McpCredentialUsageClass(2) x PlaintextBoundary(3) = 6
+    /// @obligation credential.mcp_claim_admits_only_when_every_requirement_is_installed
+    #[test]
+    fn mcp_requirement_route_admits_only_bearer_relay_or_workload_injection() {
+        // Cause/effect table: C1 usage class is Authorization Bearer or not; C2
+        // the selected holder boundary is Worker, Workload or Platform.
+        // R1 !C1 -> RejectUsage for every holder; R2 C1+Worker -> WorkerRelay;
+        // R3 C1+Workload -> ClientInjection; R4 C1+Platform -> RejectHolder. No
+        // route admits a requirement without first selecting exactly one holder
+        // mechanism that the installed evidence must then satisfy.
+        for usage in EVERY_USAGE {
+            for boundary in EVERY_BOUNDARY {
+                let route = mcp_requirement_route(usage, boundary);
+                match usage {
+                    McpCredentialUsageClass::Unsupported => {
+                        assert_eq!(route, McpRequirementRoute::RejectUsage, "R1");
+                    }
+                    McpCredentialUsageClass::AuthorizationBearer => match boundary {
+                        PlaintextBoundary::Worker => {
+                            assert_eq!(route, McpRequirementRoute::WorkerRelay, "R2");
+                        }
+                        PlaintextBoundary::Workload => {
+                            assert_eq!(route, McpRequirementRoute::ClientInjection, "R3");
+                        }
+                        PlaintextBoundary::Platform => {
+                            assert_eq!(route, McpRequirementRoute::RejectHolder, "R4");
+                        }
+                    },
+                }
+            }
+        }
+    }
+
+    /// @exhaustive [bool; 3](8) x count 0..=3(4) = 32
+    /// @obligation credential.mcp_claim_admits_only_when_every_requirement_is_installed
+    #[test]
+    fn claim_admits_session_mcp_credentials_only_when_every_requirement_is_admitted() {
+        // Cause/effect table over up to three requirements: C1 how many there
+        // are; C2 which of them the installed evidence admits. E1 every admitted
+        // (including none present) -> the claim admits; E2 any refusal -> the
+        // claim is refused with the first refusal, in requirement order. No
+        // refused requirement can be skipped or outvoted by later admissions.
+        for mask in 0_u8..8 {
+            let admitted: [bool; 3] = std::array::from_fn(|bit| mask & (1 << bit) != 0);
+            for count in 0..=3_usize {
+                let verdict = every_mcp_requirement_admitted(
+                    admitted[..count]
+                        .iter()
+                        .enumerate()
+                        .map(|(index, ok)| if *ok { Ok(()) } else { Err(index) }),
+                );
+                let first_refusal = (0..count).find(|index| !admitted[*index]);
+                match first_refusal {
+                    None => assert_eq!(verdict, Ok(()), "E1"),
+                    Some(index) => assert_eq!(verdict, Err(index), "E2"),
+                }
+            }
+        }
+    }
+
+    /// @exhaustive case(5) = 5
+    /// @obligation credential_effect.boundary_preserves_exact_materialization_authority
+    #[test]
+    fn claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_stale_wire() {
+        // Causes: C1 exact ordered pair; C2 missing entry; C3 extra entry;
+        // C4 reordered pair; C5 one stale coordinate. Effects: E1 only C1 admits;
+        // E2 C2-C5 reject before materialization. The receipt test independently
+        // covers every field coordinate; this test owns collection completeness
+        // and order using the production slice comparator.
+        let binding = |identity: &str, epoch| AttemptCredentialBinding {
+            candidate_fingerprint: awaken_agent_contract::credential::CandidateFingerprint(
+                identity.into(),
+            ),
+            credential: awaken_agent_contract::credential::CredentialRef {
+                id: identity.into(),
+                revision: 1,
+            },
+            selected_plaintext_holder: awaken_agent_contract::credential::PlaintextHolder::new(
+                PlaintextBoundary::Worker,
+                identity,
+            ),
+            selected_realization_kind:
+                awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            claim_epoch: epoch,
+        };
+        let first = binding("first", 7);
+        let second = binding("second", 7);
+        let expected = vec![first.clone(), second.clone()];
+        for case in 0_u8..5 {
+            let claimed = match case {
+                0 => expected.clone(),
+                1 => vec![first.clone()],
+                2 => vec![first.clone(), second.clone(), second.clone()],
+                3 => vec![second.clone(), first.clone()],
+                _ => vec![binding("first", 8), binding("second", 7)],
+            };
+            assert_eq!(
+                claim_credential_bindings_are_exact(&expected, &claimed),
+                case == 0
+            );
+        }
+    }
 }

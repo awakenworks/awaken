@@ -112,109 +112,160 @@ pub fn decide_capture(inputs: CapturePolicyInputs) -> CapturePolicyDecision {
     }
 }
 
-#[cfg(kani)]
-mod kani_proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
-    fn arbitrary_capture() -> ContentCapture {
-        match kani::any::<u8>() % 3 {
-            0 => ContentCapture::Off,
-            1 => ContentCapture::Structured,
-            _ => ContentCapture::Full,
+    const fn listed_capture(level: ContentCapture) -> usize {
+        match level {
+            ContentCapture::Off => 0,
+            ContentCapture::Structured => 1,
+            ContentCapture::Full => 2,
         }
     }
+    const EVERY_CAPTURE: [ContentCapture; 3] = [
+        ContentCapture::Off,
+        ContentCapture::Structured,
+        ContentCapture::Full,
+    ];
 
-    fn arbitrary_inputs() -> CapturePolicyInputs {
-        let workspace = match kani::any::<u8>() % 3 {
-            0 => Ok(TelemetryNarrowing {
-                content_capture: if kani::any() {
-                    Some(arbitrary_capture())
-                } else {
-                    None
-                },
+    const fn listed_policy_error(error: TelemetryPolicyError) -> usize {
+        match error {
+            TelemetryPolicyError::StoreUnavailable => 0,
+            TelemetryPolicyError::AuthorityUnreachable => 1,
+        }
+    }
+    const EVERY_POLICY_ERROR: [TelemetryPolicyError; 2] = [
+        TelemetryPolicyError::StoreUnavailable,
+        TelemetryPolicyError::AuthorityUnreachable,
+    ];
+
+    /// Every `CapturePolicyInputs`: requested(3) x top(3) x Workspace answer
+    /// (unset, each level, both unreadable kinds = 6) x consent (absent or a
+    /// level = 4) = 216.
+    fn every_input() -> Vec<CapturePolicyInputs> {
+        let workspaces = [
+            Ok(TelemetryNarrowing {
+                content_capture: None,
             }),
-            1 => Err(TelemetryPolicyError::StoreUnavailable),
-            _ => Err(TelemetryPolicyError::AuthorityUnreachable),
-        };
-        CapturePolicyInputs {
-            requested: arbitrary_capture(),
-            top: arbitrary_capture(),
-            workspace,
-            consent: if kani::any() {
-                Some(arbitrary_capture())
-            } else {
-                None
-            },
+            Ok(TelemetryNarrowing {
+                content_capture: Some(EVERY_CAPTURE[0]),
+            }),
+            Ok(TelemetryNarrowing {
+                content_capture: Some(EVERY_CAPTURE[1]),
+            }),
+            Ok(TelemetryNarrowing {
+                content_capture: Some(EVERY_CAPTURE[2]),
+            }),
+            Err(EVERY_POLICY_ERROR[0]),
+            Err(EVERY_POLICY_ERROR[1]),
+        ];
+        let consents = [
+            None,
+            Some(EVERY_CAPTURE[0]),
+            Some(EVERY_CAPTURE[1]),
+            Some(EVERY_CAPTURE[2]),
+        ];
+        let mut inputs = Vec::new();
+        for requested in EVERY_CAPTURE {
+            for top in EVERY_CAPTURE {
+                for workspace in workspaces {
+                    for consent in consents {
+                        inputs.push(CapturePolicyInputs {
+                            requested,
+                            top,
+                            workspace,
+                            consent,
+                        });
+                    }
+                }
+            }
+        }
+        assert_eq!(inputs.len(), 216);
+        inputs
+    }
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_CAPTURE.into_iter().enumerate() {
+            assert_eq!(listed_capture(value), index);
+        }
+        for (index, value) in EVERY_POLICY_ERROR.into_iter().enumerate() {
+            assert_eq!(listed_policy_error(value), index);
         }
     }
 
+    /// @exhaustive CapturePolicyInputs(216) = 216
     /// @obligation capture.policy_meet_and_projection_are_exact_non_widening_and_fail_closed
-    #[kani::proof]
+    #[test]
     fn capture_decision_is_the_exact_meet_and_never_exceeds_any_layer() {
-        let inputs = arbitrary_inputs();
-        let decision = decide_capture(inputs);
+        for inputs in every_input() {
+            let decision = decide_capture(inputs);
 
-        assert_eq!(decision.requested, inputs.requested);
-        assert_eq!(decision.consent, inputs.consent);
-        assert!(decision.ceiling <= inputs.top);
-        assert!(decision.effective <= inputs.requested);
-        assert!(decision.effective <= decision.ceiling);
-        if let Ok(TelemetryNarrowing {
-            content_capture: Some(level),
-        }) = inputs.workspace
-        {
-            assert!(decision.ceiling <= level);
+            assert_eq!(decision.requested, inputs.requested);
+            assert_eq!(decision.consent, inputs.consent);
+            assert!(decision.ceiling <= inputs.top);
+            assert!(decision.effective <= inputs.requested);
+            assert!(decision.effective <= decision.ceiling);
+            if let Ok(TelemetryNarrowing {
+                content_capture: Some(level),
+            }) = inputs.workspace
+            {
+                assert!(decision.ceiling <= level);
+            }
+            if let Some(consent) = inputs.consent {
+                assert!(decision.effective <= consent);
+            }
+            let exact = inputs.requested.min(decision.ceiling);
+            let exact = match inputs.consent {
+                Some(consent) => exact.min(consent),
+                None => exact,
+            };
+            assert_eq!(decision.effective, exact);
         }
-        if let Some(consent) = inputs.consent {
-            assert!(decision.effective <= consent);
-        }
-        let exact = inputs.requested.min(decision.ceiling);
-        let exact = match inputs.consent {
-            Some(consent) => exact.min(consent),
-            None => exact,
-        };
-        assert_eq!(decision.effective, exact);
     }
 
+    /// @exhaustive CapturePolicyInputs(216) x TelemetryPolicyError(2) = 432
     /// @obligation capture.policy_meet_and_projection_are_exact_non_widening_and_fail_closed
-    #[kani::proof]
+    #[test]
     fn unreadable_workspace_narrowing_closes_capture() {
-        let mut inputs = arbitrary_inputs();
-        inputs.workspace = if kani::any() {
-            Err(TelemetryPolicyError::StoreUnavailable)
-        } else {
-            Err(TelemetryPolicyError::AuthorityUnreachable)
-        };
-        let decision = decide_capture(inputs);
-        assert_eq!(decision.ceiling, ContentCapture::Off);
-        assert_eq!(decision.effective, ContentCapture::Off);
-        assert!(!decision.effective.allows_content());
+        for mut inputs in every_input() {
+            for error in EVERY_POLICY_ERROR {
+                inputs.workspace = Err(error);
+                let decision = decide_capture(inputs);
+                assert_eq!(decision.ceiling, ContentCapture::Off);
+                assert_eq!(decision.effective, ContentCapture::Off);
+                assert!(!decision.effective.allows_content());
+            }
+        }
     }
 
+    /// @exhaustive CapturePolicyInputs(216) = 216
     /// @obligation capture.policy_meet_and_projection_are_exact_non_widening_and_fail_closed
-    #[kani::proof]
+    #[test]
     fn capture_reason_names_the_exact_binding_cause() {
-        let inputs = arbitrary_inputs();
-        let decision = decide_capture(inputs);
-        let expected = if decision.effective == inputs.requested {
-            CaptureReason::Ok
-        } else if inputs.consent == Some(decision.effective)
-            && decision.effective < decision.ceiling
-        {
-            CaptureReason::NoConsent
-        } else {
-            CaptureReason::ClampedByCeiling
-        };
-        assert_eq!(decision.reason, expected);
-        // Content is admitted only when every cause admits it.
-        if decision.effective.allows_content() {
-            assert_eq!(inputs.requested, ContentCapture::Full);
-            assert_eq!(decision.ceiling, ContentCapture::Full);
-            assert!(
-                inputs
-                    .consent
-                    .is_none_or(|consent| consent == ContentCapture::Full)
-            );
+        for inputs in every_input() {
+            let decision = decide_capture(inputs);
+            let expected = if decision.effective == inputs.requested {
+                CaptureReason::Ok
+            } else if inputs.consent == Some(decision.effective)
+                && decision.effective < decision.ceiling
+            {
+                CaptureReason::NoConsent
+            } else {
+                CaptureReason::ClampedByCeiling
+            };
+            assert_eq!(decision.reason, expected);
+            // Content is admitted only when every cause admits it.
+            if decision.effective.allows_content() {
+                assert_eq!(inputs.requested, ContentCapture::Full);
+                assert_eq!(decision.ceiling, ContentCapture::Full);
+                assert!(
+                    inputs
+                        .consent
+                        .is_none_or(|consent| consent == ContentCapture::Full)
+                );
+            }
         }
     }
 }

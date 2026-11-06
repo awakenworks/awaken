@@ -207,8 +207,8 @@ for obligation in obligations:
     elif status == "kernel_proved":
         if not has_rust_link:
             fail(f"{obligation_id} is kernel-proved without production Rust evidence")
-        if not harnesses:
-            fail(f"{obligation_id} is kernel-proved without named Kani harnesses")
+        if not harnesses and not obligation.get("exhaustive_tests"):
+            fail(f"{obligation_id} is kernel-proved without a named Kani harness or exhaustive test")
     elif status == "modeled_only" and not has_formal_model:
         fail(f"{obligation_id} is modeled-only without a formal model")
     elif status == "executable_only" and not has_executable_link:
@@ -261,7 +261,7 @@ model_proved = [
 kernel_proved = [
     item
     for item in formalizable
-    if item["status"] == "kernel_proved" or item.get("proof_harnesses")
+    if item["status"] == "kernel_proved" or item.get("proof_harnesses") or item.get("exhaustive_tests")
 ]
 trace_refined = [
     item

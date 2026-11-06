@@ -23,7 +23,7 @@ enum FileReadRoot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FileReadAuthority {
-    #[cfg(any(test, kani, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-support"))]
     Workspace,
     FrozenMount,
 }
@@ -57,7 +57,7 @@ const fn file_read_authority_admitted(
 ) -> bool {
     facts.lexically_safe
         && match authority {
-            #[cfg(any(test, kani, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-support"))]
             FileReadAuthority::Workspace => !facts.absolute,
             FileReadAuthority::FrozenMount => facts.absolute,
         }
@@ -104,31 +104,6 @@ impl FileReadRoot {
             Self::Workspace { subdir } => subdir,
             Self::FrozenMount { path } => path,
         }
-    }
-}
-
-#[cfg(kani)]
-/// @obligation sandbox.file_read_authority_is_explicit
-#[kani::proof]
-fn file_read_authority_never_changes_path_class_or_admits_unsafe_input() {
-    let authority = if kani::any() {
-        FileReadAuthority::Workspace
-    } else {
-        FileReadAuthority::FrozenMount
-    };
-    let facts = FileReadPathFacts {
-        absolute: kani::any(),
-        lexically_safe: kani::any(),
-    };
-    if file_read_authority_admitted(authority, facts) {
-        assert!(facts.lexically_safe);
-        match authority {
-            FileReadAuthority::Workspace => assert!(!facts.absolute),
-            FileReadAuthority::FrozenMount => assert!(facts.absolute),
-        }
-    }
-    if !facts.lexically_safe {
-        assert!(!file_read_authority_admitted(authority, facts));
     }
 }
 
@@ -384,5 +359,56 @@ mod tests {
         assert!(FileReadRoot::frozen_mount("/mnt/session/input").is_ok());
         assert!(FileReadRoot::frozen_mount("mnt/session/input").is_err());
         assert!(FileReadRoot::frozen_mount("/mnt/../secret").is_err());
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_AUTHORITY: [FileReadAuthority; 2] =
+        [FileReadAuthority::Workspace, FileReadAuthority::FrozenMount];
+
+    const fn listed_authority(authority: FileReadAuthority) -> usize {
+        match authority {
+            FileReadAuthority::Workspace => 0,
+            FileReadAuthority::FrozenMount => 1,
+        }
+    }
+
+    #[test]
+    fn every_file_read_authority_is_listed() {
+        for (index, authority) in EVERY_AUTHORITY.into_iter().enumerate() {
+            assert_eq!(listed_authority(authority), index);
+        }
+    }
+
+    /// @exhaustive FileReadAuthority(2) x bool(2) x bool(2) = 8
+    /// @obligation sandbox.file_read_authority_is_explicit
+    #[test]
+    fn file_read_authority_never_changes_path_class_or_admits_unsafe_input() {
+        let mut cases = 0;
+        for authority in EVERY_AUTHORITY {
+            for absolute in [false, true] {
+                for lexically_safe in [false, true] {
+                    let facts = FileReadPathFacts {
+                        absolute,
+                        lexically_safe,
+                    };
+                    if file_read_authority_admitted(authority, facts) {
+                        assert!(facts.lexically_safe);
+                        match authority {
+                            FileReadAuthority::Workspace => assert!(!facts.absolute),
+                            FileReadAuthority::FrozenMount => assert!(facts.absolute),
+                        }
+                    }
+                    if !facts.lexically_safe {
+                        assert!(!file_read_authority_admitted(authority, facts));
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 8);
     }
 }

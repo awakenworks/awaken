@@ -1297,22 +1297,25 @@ pub fn map_usage(usage: &Usage) -> TokenUsage {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    /// @exhaustive bool(2) x bool(2) = 4
     /// @obligation credential_probe.tri_state_is_total_and_fail_safe
-    #[kani::proof]
+    #[test]
     fn credential_probe_tri_state_is_total_and_fail_safe() {
-        let succeeded = kani::any::<bool>();
-        let authentication_rejected = kani::any::<bool>();
-        let outcome = credential_probe_outcome(succeeded, authentication_rejected);
-        if succeeded {
-            assert_eq!(outcome, CredentialProbe::Valid);
-        } else if authentication_rejected {
-            assert_eq!(outcome, CredentialProbe::Invalid);
-        } else {
-            assert_eq!(outcome, CredentialProbe::Unknown);
+        for succeeded in [false, true] {
+            for authentication_rejected in [false, true] {
+                let outcome = credential_probe_outcome(succeeded, authentication_rejected);
+                if succeeded {
+                    assert_eq!(outcome, CredentialProbe::Valid);
+                } else if authentication_rejected {
+                    assert_eq!(outcome, CredentialProbe::Invalid);
+                } else {
+                    assert_eq!(outcome, CredentialProbe::Unknown);
+                }
+            }
         }
     }
 }

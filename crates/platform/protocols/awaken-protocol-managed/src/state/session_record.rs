@@ -180,47 +180,6 @@ pub(super) fn decide_projection_publish(
     )
 }
 
-#[cfg(kani)]
-/// @obligation session.runtime_projection_equal_source_and_content_is_a_read_without_cache_write_or_broadcast
-/// @obligation session.runtime_projection_stale_writer_never_rolls_back_visible_result
-/// @obligation session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
-/// @kani profile=solver-kissat-v1
-/// @proof-input-debt free_symbol decide_projection_publish_from_facts cache_matches
-/// @proof-input-debt free_symbol decide_projection_publish_from_facts source_equal
-#[kani::proof]
-fn projection_publish_decision_is_total_exact_and_fail_closed() {
-    // Decision table causes: C1 cache CAS matches; C2 candidate dominates every
-    // source coordinate; C3 source is equal; C4 rendered content changed.
-    // Effects: E1 !C1=>retry; E2 C1+!C2=>reject; E3 C1+C2+C3+!C4=>read-only;
-    // E4 every remaining C1+C2 row=>apply. Kani covers all 16 combinations;
-    // impossible source fact combinations are deliberately fail-closed too.
-    let cache_matches: bool = kani::any();
-    let candidate_dominates: bool = kani::any();
-    let source_equal: bool = kani::any();
-    let projection_changed: bool = kani::any();
-    let actual = decide_projection_publish_from_facts(
-        cache_matches,
-        candidate_dominates,
-        source_equal,
-        projection_changed,
-    );
-    let expected = if !cache_matches {
-        ProjectionPublishDecision::RetryStaleCache
-    } else if !candidate_dominates {
-        ProjectionPublishDecision::RejectSourceRegression
-    } else if source_equal && !projection_changed {
-        ProjectionPublishDecision::AlreadyCurrent
-    } else {
-        ProjectionPublishDecision::Apply
-    };
-    assert_eq!(actual, expected);
-    assert_eq!(
-        actual == ProjectionPublishDecision::AlreadyCurrent,
-        cache_matches && candidate_dominates && source_equal && !projection_changed
-    );
-    assert!(!cache_matches || actual != ProjectionPublishDecision::RetryStaleCache);
-}
-
 /// The only state a warm record lends to a committed-prefix rebuild. The
 /// consumer is the one candidate builder: its CAS coordinate and local
 /// `evt_N` overlays survive, while every durable Event, child, checkpoint and
@@ -681,3 +640,55 @@ mod tests;
 
 #[cfg(test)]
 pub(in crate::state) use tests::assert_record_frame_eq;
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) = 16
+    /// @obligation session.runtime_projection_equal_source_and_content_is_a_read_without_cache_write_or_broadcast
+    /// @obligation session.runtime_projection_stale_writer_never_rolls_back_visible_result
+    /// @obligation session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
+    #[test]
+    fn projection_publish_decision_is_total_exact_and_fail_closed() {
+        // Decision table causes: C1 cache CAS matches; C2 candidate dominates every
+        // source coordinate; C3 source is equal; C4 rendered content changed.
+        // Effects: E1 !C1=>retry; E2 C1+!C2=>reject; E3 C1+C2+C3+!C4=>read-only;
+        // E4 every remaining C1+C2 row=>apply. the loops cover all 16 combinations;
+        // impossible source fact combinations are deliberately fail-closed too.
+        for cache_matches in [false, true] {
+            for candidate_dominates in [false, true] {
+                for source_equal in [false, true] {
+                    for projection_changed in [false, true] {
+                        let actual = decide_projection_publish_from_facts(
+                            cache_matches,
+                            candidate_dominates,
+                            source_equal,
+                            projection_changed,
+                        );
+                        let expected = if !cache_matches {
+                            ProjectionPublishDecision::RetryStaleCache
+                        } else if !candidate_dominates {
+                            ProjectionPublishDecision::RejectSourceRegression
+                        } else if source_equal && !projection_changed {
+                            ProjectionPublishDecision::AlreadyCurrent
+                        } else {
+                            ProjectionPublishDecision::Apply
+                        };
+                        assert_eq!(actual, expected);
+                        assert_eq!(
+                            actual == ProjectionPublishDecision::AlreadyCurrent,
+                            cache_matches
+                                && candidate_dominates
+                                && source_equal
+                                && !projection_changed
+                        );
+                        assert!(
+                            !cache_matches || actual != ProjectionPublishDecision::RetryStaleCache
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

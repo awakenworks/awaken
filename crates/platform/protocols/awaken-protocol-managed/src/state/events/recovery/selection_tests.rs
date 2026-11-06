@@ -399,6 +399,8 @@ fn check_ticket_admission(kind: u8, shape: u8, run_matches: bool, thread_matches
     assert_eq!(result, expected);
 }
 
+/// @exhaustive RunState class(11) x ticket shape(3) x bool(2) x bool(2) = 132
+/// @obligation tool_result.terminal_run_rejects_late_result
 #[test]
 fn ticket_admission_covers_all_states_cardinalities_and_identity_classes() {
     // Causes: C1 eleven lifecycle classes (Running, Awaiting, all eight closed
@@ -422,24 +424,4 @@ fn ticket_admission_covers_all_states_cardinalities_and_identity_classes() {
             }
         }
     }
-}
-
-#[cfg(kani)]
-/// @obligation tool_result.terminal_run_rejects_late_result
-/// @kani profile=solver-cadical-v1
-#[kani::proof]
-#[kani::unwind(16)]
-fn managed_ticket_admission_preserves_terminal_and_identity_priority() {
-    // Same A1..A5 132-class table as native. Total modulo maps every u8 input;
-    // there is no input-pruning assume. Real RunState, owned identity Strings,
-    // a real borrowed ResumeTicket and the existing contract identity validator
-    // remain in this proof. The tool payload is Null and end-detail Strings are
-    // empty. Native snapshot/admission tests, not this kernel, cover lookup,
-    // historical audit decoding, Pending materialization and async root effects.
-    check_ticket_admission(
-        kani::any::<u8>() % 11,
-        kani::any::<u8>() % 3,
-        kani::any(),
-        kani::any(),
-    );
 }

@@ -44,45 +44,6 @@ const fn executable_model_readiness(
     }
 }
 
-#[cfg(kani)]
-/// @obligation model_readiness.brokered_and_direct_routes_require_exact_access_evidence
-/// @proof-input-debt free_symbol executable_model_readiness offering_active
-#[kani::proof]
-fn brokered_and_direct_model_readiness_require_their_exact_access_evidence() {
-    let offering_active = kani::any();
-    let executor_available = kani::any();
-    let dialect_supported = kani::any();
-    let brokered = kani::any();
-    let brokered_access_enabled = kani::any();
-    let matching_direct_credential = kani::any();
-    let readiness = executable_model_readiness(
-        offering_active,
-        executor_available,
-        dialect_supported,
-        brokered,
-        brokered_access_enabled,
-        matching_direct_credential,
-    );
-
-    if !offering_active {
-        assert_eq!(readiness, ExecutableModelReadiness::OfferingUnavailable);
-    } else if !executor_available {
-        assert_eq!(readiness, ExecutableModelReadiness::RuntimeUnavailable);
-    } else if !dialect_supported {
-        assert_eq!(readiness, ExecutableModelReadiness::DialectUnavailable);
-    } else if brokered {
-        assert_eq!(
-            readiness == ExecutableModelReadiness::Ready,
-            brokered_access_enabled
-        );
-    } else {
-        assert_eq!(
-            readiness == ExecutableModelReadiness::Ready,
-            matching_direct_credential
-        );
-    }
-}
-
 /// One installed executor's provider-model consumption contract.
 ///
 /// This is a secret-free planning input projected from the executor's own
@@ -496,5 +457,52 @@ mod tests {
             Err(ExecutableModelReadiness::RuntimeUnavailable),
             "R6"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x bool(2) x bool(2) = 64
+    /// @obligation model_readiness.brokered_and_direct_routes_require_exact_access_evidence
+    #[test]
+    fn brokered_and_direct_model_readiness_require_their_exact_access_evidence() {
+        for mask in 0_u8..64 {
+            let [
+                offering_active,
+                executor_available,
+                dialect_supported,
+                brokered,
+                brokered_access_enabled,
+                matching_direct_credential,
+            ]: [bool; 6] = std::array::from_fn(|bit| mask & (1 << bit) != 0);
+            let readiness = executable_model_readiness(
+                offering_active,
+                executor_available,
+                dialect_supported,
+                brokered,
+                brokered_access_enabled,
+                matching_direct_credential,
+            );
+
+            if !offering_active {
+                assert_eq!(readiness, ExecutableModelReadiness::OfferingUnavailable);
+            } else if !executor_available {
+                assert_eq!(readiness, ExecutableModelReadiness::RuntimeUnavailable);
+            } else if !dialect_supported {
+                assert_eq!(readiness, ExecutableModelReadiness::DialectUnavailable);
+            } else if brokered {
+                assert_eq!(
+                    readiness == ExecutableModelReadiness::Ready,
+                    brokered_access_enabled
+                );
+            } else {
+                assert_eq!(
+                    readiness == ExecutableModelReadiness::Ready,
+                    matching_direct_credential
+                );
+            }
+        }
     }
 }

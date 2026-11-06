@@ -68,72 +68,6 @@ pub(crate) const fn acp_tool_export_admitted(
     matches!(purpose, RuntimeContextPurpose::Execution) && is_acp && environment_present
 }
 
-#[cfg(kani)]
-/// @obligation acp.tool_export_requires_claim_execution_environment
-/// @proof-input-debt free_symbol acp_tool_export_admitted environment_present
-#[kani::proof]
-fn acp_tool_export_requires_claim_execution_environment() {
-    // Causes: C1 coordination/execution purpose; C2 ACP/native backend; C3 a
-    // realized Environment. Effects: E1 export executable ACP tools, E2 omit.
-    // Decision table: R1 execution+ACP+environment=>E1; every other one of the
-    // eight combinations=>E2. This proves coordination cannot borrow effects,
-    // native execution cannot acquire ACP routes, and unrealized execution
-    // cannot publish a route whose executor substrate does not exist.
-    let purpose = if kani::any::<bool>() {
-        RuntimeContextPurpose::CoordinationEnvelope
-    } else {
-        RuntimeContextPurpose::Execution
-    };
-    let is_acp = kani::any::<bool>();
-    let environment_present = kani::any::<bool>();
-    assert_eq!(
-        acp_tool_export_admitted(purpose, is_acp, environment_present),
-        purpose == RuntimeContextPurpose::Execution && is_acp && environment_present
-    );
-}
-
-#[cfg(kani)]
-/// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
-/// @obligation session_run.reservation_never_executes
-/// @proof-input-debt free_symbol runtime_environment_admission expected_binding
-/// @proof-input-debt free_symbol runtime_environment_admission retained
-#[kani::proof]
-fn runtime_environment_admission_is_total_and_coordination_never_borrows() {
-    // Causes: C1 coordination/execution purpose; C2 a resident Environment;
-    // C3 remote-only execution; C4 a durable binding; C5 policy permits lazy
-    // realization. Effects: E1 omit, E2 reuse, E3 create, E4 reject a missing
-    // adopted binding. Constraints: an earlier topology check rejects C2+C3;
-    // coordination must choose E1 for every C2-C5 combination. Rules:
-    // R1 C1=coordination=>E1; R2 execution+C3=>E1;
-    // R3 execution+C2+!C3=>E2; R4 execution+!C2+!C3+C4=>E4;
-    // R5 execution+!C2+!C3+!C4+C5=>E1; otherwise E3.
-    let purpose = if kani::any::<bool>() {
-        RuntimeContextPurpose::CoordinationEnvelope
-    } else {
-        RuntimeContextPurpose::Execution
-    };
-    let retained = kani::any::<bool>();
-    let a2a_only = kani::any::<bool>();
-    let expected_binding = kani::any::<bool>();
-    let can_defer = kani::any::<bool>();
-    let selected =
-        runtime_environment_admission(purpose, retained, a2a_only, expected_binding, can_defer);
-
-    if purpose == RuntimeContextPurpose::CoordinationEnvelope {
-        assert_eq!(selected, RuntimeEnvironmentAdmission::Omit);
-    } else if a2a_only {
-        assert_eq!(selected, RuntimeEnvironmentAdmission::Omit);
-    } else if retained {
-        assert_eq!(selected, RuntimeEnvironmentAdmission::Reuse);
-    } else if expected_binding {
-        assert_eq!(selected, RuntimeEnvironmentAdmission::RejectMissingBinding);
-    } else if can_defer {
-        assert_eq!(selected, RuntimeEnvironmentAdmission::Omit);
-    } else {
-        assert_eq!(selected, RuntimeEnvironmentAdmission::Create);
-    }
-}
-
 /// Closed cache-admission kernel. Publication equality is necessary but not
 /// sufficient: a coordination envelope deliberately omits execution
 /// realization, so an execution request must rebuild even when every immutable
@@ -152,32 +86,6 @@ pub(crate) const fn runtime_context_cache_reuse_admitted(
                 RuntimeContextPurpose::CoordinationEnvelope
             )
         )
-}
-
-#[cfg(kani)]
-/// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
-/// @obligation session_run.reservation_never_executes
-#[kani::proof]
-fn coordination_envelope_never_satisfies_execution_cache_admission() {
-    let cache_matches_attempt = kani::any::<bool>();
-    let requested = if kani::any::<bool>() {
-        RuntimeContextPurpose::CoordinationEnvelope
-    } else {
-        RuntimeContextPurpose::Execution
-    };
-    let cached = if kani::any::<bool>() {
-        RuntimeContextPurpose::CoordinationEnvelope
-    } else {
-        RuntimeContextPurpose::Execution
-    };
-    let admitted = runtime_context_cache_reuse_admitted(cache_matches_attempt, requested, cached);
-
-    assert_eq!(
-        admitted,
-        cache_matches_attempt
-            && !(requested == RuntimeContextPurpose::Execution
-                && cached == RuntimeContextPurpose::CoordinationEnvelope)
-    );
 }
 
 impl RuntimePublicationIdentity {
@@ -405,5 +313,124 @@ mod cache_admission_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_PURPOSE: [RuntimeContextPurpose; 2] = [
+        RuntimeContextPurpose::CoordinationEnvelope,
+        RuntimeContextPurpose::Execution,
+    ];
+    const BOOLS: [bool; 2] = [false, true];
+
+    const fn listed_purpose(purpose: RuntimeContextPurpose) -> usize {
+        match purpose {
+            RuntimeContextPurpose::CoordinationEnvelope => 0,
+            RuntimeContextPurpose::Execution => 1,
+        }
+    }
+
+    #[test]
+    fn every_runtime_context_purpose_is_listed() {
+        for (index, purpose) in EVERY_PURPOSE.into_iter().enumerate() {
+            assert_eq!(listed_purpose(purpose), index);
+        }
+    }
+
+    /// @exhaustive RuntimeContextPurpose(2) x bool(2) x bool(2) = 8
+    /// @obligation acp.tool_export_requires_claim_execution_environment
+    #[test]
+    fn acp_tool_export_requires_claim_execution_environment() {
+        // Decision table: R1 execution+ACP+environment=>export; every other one
+        // of the eight combinations=>omit.
+        let mut cases = 0;
+        for purpose in EVERY_PURPOSE {
+            for is_acp in BOOLS {
+                for environment_present in BOOLS {
+                    assert_eq!(
+                        acp_tool_export_admitted(purpose, is_acp, environment_present),
+                        purpose == RuntimeContextPurpose::Execution
+                            && is_acp
+                            && environment_present
+                    );
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 8);
+    }
+
+    /// @exhaustive RuntimeContextPurpose(2) x bool(2) x bool(2) x bool(2) x bool(2) = 32
+    /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
+    /// @obligation session_run.reservation_never_executes
+    #[test]
+    fn runtime_environment_admission_is_total_and_coordination_never_borrows() {
+        // R1 C1=coordination=>Omit; R2 execution+remote-only=>Omit;
+        // R3 execution+resident=>Reuse; R4 execution+!resident+binding=>
+        // RejectMissingBinding; R5 execution+!binding+lazy=>Omit; else Create.
+        let mut cases = 0;
+        for purpose in EVERY_PURPOSE {
+            for retained in BOOLS {
+                for a2a_only in BOOLS {
+                    for expected_binding in BOOLS {
+                        for can_defer in BOOLS {
+                            let selected = runtime_environment_admission(
+                                purpose,
+                                retained,
+                                a2a_only,
+                                expected_binding,
+                                can_defer,
+                            );
+                            let expected = if purpose == RuntimeContextPurpose::CoordinationEnvelope
+                                || a2a_only
+                            {
+                                RuntimeEnvironmentAdmission::Omit
+                            } else if retained {
+                                RuntimeEnvironmentAdmission::Reuse
+                            } else if expected_binding {
+                                RuntimeEnvironmentAdmission::RejectMissingBinding
+                            } else if can_defer {
+                                RuntimeEnvironmentAdmission::Omit
+                            } else {
+                                RuntimeEnvironmentAdmission::Create
+                            };
+                            assert_eq!(selected, expected);
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 32);
+    }
+
+    /// @exhaustive bool(2) x RuntimeContextPurpose(2) x RuntimeContextPurpose(2) = 8
+    /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
+    /// @obligation session_run.reservation_never_executes
+    #[test]
+    fn coordination_envelope_never_satisfies_execution_cache_admission() {
+        let mut cases = 0;
+        for cache_matches_attempt in BOOLS {
+            for requested in EVERY_PURPOSE {
+                for cached in EVERY_PURPOSE {
+                    let admitted = runtime_context_cache_reuse_admitted(
+                        cache_matches_attempt,
+                        requested,
+                        cached,
+                    );
+                    assert_eq!(
+                        admitted,
+                        cache_matches_attempt
+                            && !(requested == RuntimeContextPurpose::Execution
+                                && cached == RuntimeContextPurpose::CoordinationEnvelope)
+                    );
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 8);
     }
 }

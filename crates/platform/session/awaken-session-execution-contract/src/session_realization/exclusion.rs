@@ -132,28 +132,6 @@ impl std::fmt::Debug for SessionRealizationPermit {
     }
 }
 
-#[cfg(kani)]
-/// @obligation session_realization.concurrent_phase_drivers_are_serialized_per_session
-/// @obligation session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
-/// @proof-input-debt free_symbol session_realization_exclusion_admits registered_identity_is_current
-#[kani::proof]
-fn session_realization_permit_admits_only_a_current_acquired_slot() {
-    let exclusion_owner_acquired: bool = kani::any();
-    let registered_identity_is_current: bool = kani::any();
-    let decision = session_realization_exclusion_admits(
-        exclusion_owner_acquired,
-        registered_identity_is_current,
-    );
-
-    assert_eq!(
-        decision == SessionRealizationExclusionDecision::Admit,
-        exclusion_owner_acquired && registered_identity_is_current
-    );
-    assert!(
-        registered_identity_is_current || decision == SessionRealizationExclusionDecision::Retry
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,5 +192,33 @@ mod tests {
         assert_eq!(admitted, 2, "R1/E1 + R2/E2");
         assert_eq!(permit.session_id(), "session-a", "R2/E2");
         assert_eq!(*entered.lock().unwrap(), vec![1, 2], "R3/E3");
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation session_realization.concurrent_phase_drivers_are_serialized_per_session
+    /// @obligation session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
+    #[test]
+    fn session_realization_permit_admits_only_a_current_acquired_slot() {
+        for exclusion_owner_acquired in [false, true] {
+            for registered_identity_is_current in [false, true] {
+                let decision = session_realization_exclusion_admits(
+                    exclusion_owner_acquired,
+                    registered_identity_is_current,
+                );
+                assert_eq!(
+                    decision == SessionRealizationExclusionDecision::Admit,
+                    exclusion_owner_acquired && registered_identity_is_current
+                );
+                assert!(
+                    registered_identity_is_current
+                        || decision == SessionRealizationExclusionDecision::Retry
+                );
+            }
+        }
     }
 }

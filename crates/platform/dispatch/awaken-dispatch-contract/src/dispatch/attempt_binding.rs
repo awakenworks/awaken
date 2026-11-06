@@ -277,21 +277,6 @@ pub const fn attempt_binding_retry_is_exact(exact_slot: bool, binding_equal: boo
     !exact_slot || binding_equal
 }
 
-#[cfg(kani)]
-/// @obligation session_execution.one_physical_attempt_per_thread
-/// @proof-input-debt free_symbol attempt_binding_retry_is_exact binding_equal
-/// @proof-input-debt free_symbol attempt_binding_retry_is_exact exact_slot
-#[kani::proof]
-fn physical_binding_cannot_change_on_admission_retry() {
-    // B1 exact slot + equal binding => stutter; B2 exact + different (including
-    // None/Some) => no admission; B3 other/empty => ordinary slot kernel decides.
-    let exact: bool = kani::any();
-    let equal: bool = kani::any();
-    let admitted = attempt_binding_retry_is_exact(exact, equal);
-    assert_eq!(admitted, !exact || equal);
-    assert!(!admitted || !exact || equal);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +320,26 @@ mod tests {
                     attempt_binding_retry_is_exact(exact, equal),
                     !exact || equal
                 );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation session_execution.one_physical_attempt_per_thread
+    #[test]
+    fn physical_binding_cannot_change_on_admission_retry() {
+        // B1 exact slot + equal binding => stutter; B2 exact + different (including
+        // None/Some) => no admission; B3 other/empty => ordinary slot kernel decides.
+        for exact in [false, true] {
+            for equal in [false, true] {
+                let admitted = attempt_binding_retry_is_exact(exact, equal);
+                assert_eq!(admitted, !exact || equal);
+                assert!(!admitted || !exact || equal);
             }
         }
     }

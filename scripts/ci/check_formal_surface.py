@@ -572,6 +572,7 @@ def main() -> None:
                 for item in obligations
                 if item["status"] == "kernel_proved"
                 or item.get("proof_harnesses")
+                or item.get("exhaustive_tests")
                 or "crates/sdk/runtime/awaken-runtime/tests/formal_refinement.rs"
                 in item.get("evidence", [])
             ]
