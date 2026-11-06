@@ -76,7 +76,7 @@ recovery-file permissions, still execute in native Windows Node.js.
 | One crate | `scripts/ci/test.sh -p awaken-cli` | Compiles the authored whole test graph, filters execution to the requested package, and builds its companion once; `--dry-run` prints exact commands. Supported runner/profile arguments retain their meaning; graph-changing requests fail explicitly before tests. |
 | Everything Rust | `scripts/ci/check-rust.sh --full` | Clippy over all features, then the workspace tests. A clippy failure skips the tests. |
 | End to end | `scripts/ci/check-all.sh --group e2e` | Real binaries and processes. `scripts/ci/check-all.sh --list-groups` lists the other groups (postgres, k3d, sandbox, ...). |
-| Formal | `scripts/ci/check_formal.sh --tier pr` | `--affected <base>` narrows a pr run; the default full tier runs every harness. Read [`formal/README.md`](formal/README.md) first. |
+| Formal | `scripts/ci/check_formal.sh --tier pr` | `pr` (the default) runs the critical harnesses and `--affected <base>` narrows it to changed packages; `--tier full` runs every harness and is the only receipt a release accepts. Read [`formal/README.md`](formal/README.md) first. |
 
 The whole release gate is `scripts/ci/check-all.sh` (hours). Before a push the
 pre-push hook runs `scripts/ci/check-rust.sh --push` and

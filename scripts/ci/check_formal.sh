@@ -26,13 +26,14 @@ awaken_append_repo_tools
 # tools for. Admit exactly one spelling; refuse everything else before any
 # receipt is written.
 #
-# The Kani tier: `full` (the default, and the only receipt a release accepts)
-# runs every harness; `pr` leaves out the harnesses tagged `tier=nightly`, and
-# `--affected <base>` narrows a pr run to the packages a change since <base>
-# can alter (formal_plan.py). A full run is never narrowed.
+# The Kani tier: `pr` (the default, the daily gate) runs the critical harnesses
+# -- every one not tagged `tier=nightly` -- and `--affected <base>` narrows it to
+# the packages a change since <base> can alter (formal_plan.py). `full` (the
+# nightly run, and the only receipt a release accepts) runs every harness and
+# is never narrowed; a release must ask for it by name.
 formal_usage="usage: scripts/ci/check_formal.sh [--require-tools] [--tier pr|full] [--affected <base>]"
 require_tools=0
-formal_tier=full
+formal_tier=pr
 formal_tier_seen=0
 formal_affected=""
 while [ "$#" -gt 0 ]; do

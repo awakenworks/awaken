@@ -881,8 +881,12 @@ PATH="/path/to/z3/bin:$PATH" scripts/ci/bootstrap_kani.sh
 TLA2TOOLS_JAR=/path/to/tla2tools.jar \
 TLAPM_BIN=/path/to/tlapm \
 PATH="/path/to/z3/bin:$PATH" \
-scripts/ci/check_formal.sh --require-tools
+scripts/ci/check_formal.sh --require-tools --tier full
 ```
+
+Without `--tier full` the gate runs the daily `pr` tier: the critical Kani
+harnesses only (add `--affected <base>` to narrow them to the packages a change
+can alter). Only a `full` receipt qualifies a release.
 
 Z3 is used for the full-width Memory timestamp caller proof; the other Kani selections retain their existing solvers. TLAPS bundles pinned Z3 under `lib/tlapm/backends/bin`; add it to `PATH` to reuse it.
 The gate checks its version and binds it in the existing execution receipt.

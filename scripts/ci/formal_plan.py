@@ -14,8 +14,15 @@ Keys (each optional, each at most once):
 * ``default-features=false`` -- build the package without default features;
 * ``target=lib`` -- select only the library target (a package whose binary
   compiles the same module would otherwise present the harness twice);
-* ``tier``     -- ``pr`` (default) or ``nightly``, a harness measured too slow
-  for the per-change lane. The full tier runs both.
+* ``tier``     -- ``pr`` (default) or ``nightly``. An untagged harness is
+  *critical*: a wide-domain authority invariant (fences, epochs, revisions,
+  leases, budgets and arithmetic, credential material, erasure counting,
+  generation/exclusion authority) that the daily ``pr`` run proves for every
+  affected package. ``tier=nightly`` marks a *heavy* harness (heap, string or
+  collection contents, memcmp/kissat profiles, anything measured too slow for
+  the daily lane); it runs in the nightly and release ``full`` tier only. A
+  finite-domain property is neither: it is an exhaustive ``#[test]`` (see
+  ``formal_anchors``), proved by nextest on every commit.
 
 Harnesses sharing (package, features, default-features, target, profile) are
 sorted and divided into bounded batches. Each batch is one ``cargo kani``
