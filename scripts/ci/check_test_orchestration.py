@@ -18,6 +18,7 @@ import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
+import _crate_boundary_workspace
 import generate_hooks
 from _nextest_policy_fitness import (
     NEXTEST_CONFIG, test_deadline_errors, self_test as nextest_policy_self_test,
@@ -93,7 +94,7 @@ REQUIRED_RELEASE_COMMANDS = (
     "scripts/contract/generate-contracts.sh --check",
     "pnpm --filter @awaken/managed-sdk-oracle check",
     "cargo deny --log-level error check advisories",
-    "cargo deny --exclude-dev --log-level error check -D unused-wrapper bans",
+    "cargo deny --exclude-dev --log-level error check -D unused-wrapper bans sources",
     "check_formal.sh --require-tools",
     "check-reliability.sh --require-tools",
     "pg_tests.sh --require-docker",
@@ -133,16 +134,16 @@ INGRESS_CONFORMANCE = "crates/platform/dispatch/awaken-dispatch/tests/dispatch_c
 # A test may wait, but it must say how long. The runner's deadline stops a
 # stuck test from taking the suite with it; it cannot tell you what the test
 # was waiting for, and it spends five minutes not telling you. The debt is
-# cleared, so the baseline is zero and this reads as a refusal.
-UNBOUNDED_WAIT_BASELINE = 0
+# cleared, so every occurrence is refused (no baseline).
 # HTTP tests in the Managed protocol crate must name the status a body arrived
 # with. Discarding it is how a route that had begun answering 404 went
 # unnoticed: the test read the empty body and then waited for work the failed
 # request never scheduled, and parked forever. `support::Call` makes that a
-# type error -- it has no accessor that yields the body alone -- so every
-# helper returns one and the status-tuple shape is refused outright.
+# type error -- it has no accessor that yields the body alone -- but nothing
+# stops a new helper from returning the bare tuple again, so the status-tuple
+# shape is refused outright (no baseline). Discarding a status needs a tuple
+# helper to destructure, so refusing the tuple also refuses the discard.
 MANAGED_HTTP_TESTS = "crates/platform/protocols/awaken-protocol-managed/tests"
-TUPLE_HELPER_BASELINE = 0
 HTTP_HELPER_RETURN = re.compile(r"->\s*\(StatusCode,\s*Value\)")
 RUST_FN = re.compile(r"\bfn\s+(\w+)")
 TUPLE_HELPER = re.compile(r"->\s*\((?:axum::http::)?StatusCode\s*,")
@@ -816,31 +817,19 @@ def test_body(text: str, start: int) -> str:
     opening = text.find("{", start)
     if opening < 0:
         return ""
-    depth, index = 0, opening
-    while index < len(text):
-        if text[index] == "{":
-            depth += 1
-        elif text[index] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[opening : index + 1]
-        index += 1
-    return text[opening:]
+    end = _crate_boundary_workspace._balanced_end(text, opening, "{", "}")
+    return text[opening:end]
 
 
-def unbounded_wait_errors(
-    sources: dict[str, str], baseline: int = -1
-) -> list[str]:
-    """Ratchet the tests that wait on a signal without stating a deadline.
+def unbounded_wait_errors(sources: dict[str, str]) -> list[str]:
+    """Refuse a test that waits on a signal without stating a deadline.
 
     Such a test does not fail when its producer stops running -- it parks and
-    reports nothing. The runner now kills it, which bounds the damage but
-    still leaves a test whose failure says "timed out" instead of naming what
-    it waited for. The existing ones are counted, and the count may only fall.
+    reports nothing. The runner kills it after its deadline, which bounds the
+    damage but still leaves a failure that says "timed out" instead of naming
+    what it waited for.
     """
 
-    if baseline < 0:
-        baseline = UNBOUNDED_WAIT_BASELINE
     offenders: list[str] = []
     for relative, text in sorted(sources.items()):
         for match in TEST_ATTRIBUTE.finditer(text):
@@ -853,82 +842,31 @@ def unbounded_wait_errors(
             body = test_body(text, match.end())
             if UNBOUNDED_WAIT.search(body) and not BOUNDED_WAIT.search(body):
                 offenders.append(f"{relative}::{match.group(1)}")
-    if len(offenders) > baseline:
-        listed = ", ".join(offenders[:5])
+    if offenders:
         return [
-            f"{len(offenders)} tests wait without a deadline, baseline "
-            f"{baseline}: {len(offenders) - baseline} "
-            f"new one(s). Wrap the wait in tokio::time::timeout so the failure "
-            f"names what it waited for. First: {listed}"
-        ]
-    if len(offenders) < baseline:
-        return [
-            f"only {len(offenders)} tests wait without a deadline, below the "
-            f"{baseline} baseline; lower UNBOUNDED_WAIT_BASELINE "
-            "to hold the ground"
+            f"{len(offenders)} test(s) wait on a signal without a deadline, so a "
+            "stuck producer reads as a runner timeout instead of naming what was "
+            "awaited. Wrap the wait in tokio::time::timeout. First: "
+            + ", ".join(offenders[:5])
         ]
     return []
 
 
+def status_tuple_errors(sources: dict[str, str]) -> list[str]:
+    """Refuse an HTTP test helper that returns a status tuple."""
 
-def http_helpers(text: str) -> set[str]:
-    """Names of the functions in one test file that return a status and a body.
-
-    Taken by looking back from each `-> (StatusCode, Value)` to the nearest
-    preceding `fn`, because these signatures wrap across lines.
-    """
-
-    names: set[str] = set()
-    for match in HTTP_HELPER_RETURN.finditer(text):
-        declared = RUST_FN.findall(text[: match.start()])
-        if declared:
-            names.add(declared[-1])
-    return names
-
-
-def discarded_status_errors(sources: dict[str, str]) -> list[str]:
-    """Refuse an HTTP test that reads a body without naming its status.
-
-    Two rules, because they fail differently. Discarding the status is the
-    defect itself and is refused outright. Returning the bare tuple is only
-    what makes the defect writable, and there is too much of it to refuse at
-    once, so it is counted and the count may only fall.
-    """
-
-    errors: list[str] = []
-    discards: list[str] = []
-    for relative, text in sorted(sources.items()):
-        helpers = http_helpers(text)
-        if not helpers:
-            continue
-        # Only a call to one of this file's HTTP helpers carries a status to
-        # discard. Other two-value returns here mean something else entirely --
-        # a store generation, a pair of handles -- and ignoring their first
-        # element is not this defect.
-        discard = re.compile(
-            r"^[^/\n]*let \(_, \w+\) =\s*(?:"
-            + "|".join(sorted(re.escape(name) for name in helpers))
-            + r")\(",
-            re.MULTILINE,
-        )
-        discards.extend(
-            f"{relative}:{text[: match.start()].count(chr(10)) + 1}"
-            for match in discard.finditer(text)
-        )
-    if discards:
-        errors.append(
-            f"{len(discards)} HTTP tests read a body without naming the status "
-            f"it arrived with, starting at {discards[0]}. Assert the status, or "
-            "return a response type whose body needs one (see tests/dreams.rs)."
-        )
-    helpers = sum(len(TUPLE_HELPER.findall(text)) for text in sources.values())
-    if helpers > TUPLE_HELPER_BASELINE:
-        errors.append(
-            f"{helpers} test helper(s) return a status tuple a caller can "
-            "destructure past. Return support::Call, whose body is only "
-            "reachable through expect(status)."
-        )
-    return errors
+    helpers = [
+        f"{relative}:{text[: match.start()].count(chr(10)) + 1}"
+        for relative, text in sorted(sources.items())
+        for match in TUPLE_HELPER.finditer(text)
+    ]
+    if helpers:
+        return [
+            f"{len(helpers)} test helper(s) return a status tuple a caller can "
+            f"destructure past, starting at {helpers[0]}. Return support::Call, "
+            "whose body is only reachable through expect(status)."
+        ]
+    return []
 
 
 def validate(root: Path) -> list[str]:
@@ -985,7 +923,7 @@ def validate(root: Path) -> list[str]:
         )
     )
     errors.extend(
-        discarded_status_errors(
+        status_tuple_errors(
             {
                 path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
                 for path in (root / MANAGED_HTTP_TESTS).rglob("*.rs")
@@ -1036,23 +974,23 @@ def validate(root: Path) -> list[str]:
 def self_test() -> None:
     hook_entry_self_test(ROOT)
     nextest_policy_self_test(ROOT)
-    # Unbounded-wait ratchet. W1 the tree is at the baseline -> accept;
-    # W2 one more test waits without a deadline -> reject; W3 one fewer ->
-    # reject until the baseline is lowered with it; W4 a wait the test bounds
-    # itself is not counted.
+    # Unbounded waits (plain deny). W1 a test waits on a signal without a
+    # deadline -> reject; W2 the test bounds the wait itself -> accept; W3 a
+    # paused-clock test is bounded by the runner -> accept.
     waiting = '#[tokio::test]\nasync fn waits() { gate.notified().await; }\n'
     bounded = ('#[tokio::test]\nasync fn waits() '
                '{ tokio::time::timeout(d, gate.notified()).await; }\n')
-    at_baseline = {f"crates/x/src/w{index}.rs": waiting for index in range(3)}
-    assert not unbounded_wait_errors(at_baseline, 3), "W1 baseline"
-    assert unbounded_wait_errors({**at_baseline, "crates/x/src/new.rs": waiting}, 3), "W2 one more"
-    assert unbounded_wait_errors(
-        {key: value for index, (key, value) in enumerate(at_baseline.items()) if index}, 3
-    ), "W3 one fewer without lowering the baseline"
-    assert not unbounded_wait_errors({**at_baseline, "crates/x/src/ok.rs": bounded}, 3), "W4 bounded"
-    # The repository is at zero, so the same rule reads as a plain refusal.
-    assert not unbounded_wait_errors({}, 0), "W5 nothing waiting unbounded"
-    assert unbounded_wait_errors({"crates/x/src/w.rs": waiting}, 0), "W6 refuse the first one"
+    paused = '#[tokio::test(start_paused = true)]\nasync fn waits() { gate.notified().await; }\n'
+    assert unbounded_wait_errors({"crates/x/src/w.rs": waiting}), "W1 refuse the first one"
+    assert not unbounded_wait_errors({"crates/x/src/ok.rs": bounded}), "W2 bounded"
+    assert not unbounded_wait_errors({"crates/x/src/p.rs": paused}), "W3 paused clock"
+    assert not unbounded_wait_errors({}), "W1 nothing waiting unbounded"
+    # Status tuples (plain deny). T1 a helper returns (StatusCode, Value) ->
+    # reject; T2 a helper returns support::Call -> accept.
+    tuple_helper = "async fn get(app: &App) -> (StatusCode, Value) { todo!() }\n"
+    call_helper = "async fn get(app: &App) -> Call { todo!() }\n"
+    assert status_tuple_errors({"tests/a.rs": tuple_helper}), "T1 tuple helper"
+    assert not status_tuple_errors({"tests/a.rs": call_helper}), "T2 support::Call"
     # Hook cause/effect table: H1 canonical nested owner + checker-edit trigger
     # + static-before-Cargo -> accept. H2 duplicate direct/nested invocation ->
     # reject. H3 missing nested invocation/trigger -> reject. H4 Cargo checked
@@ -1525,7 +1463,7 @@ def self_test() -> None:
         check_rust,
     ), "R7 RustSec advisories cannot disappear behind the bans-only gate"
     assert release_gate_errors(
-        check_all.replace("--exclude-dev --log-level error check -D unused-wrapper bans", "--log-level error check bans"),
+        check_all.replace("--exclude-dev --log-level error check -D unused-wrapper bans sources", "--log-level error check bans sources"),
         public_api,
         check_rust,
     ), "R7 the transport bans run on the production graph and refuse a stale wrapper"

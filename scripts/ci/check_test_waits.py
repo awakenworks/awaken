@@ -60,9 +60,6 @@ exemption, before recording a decrease. No CLI reason waives a hard rule:
   has at least 20 characters; another rule's marker never exempts a wait.
 * `wait-reason`: every matched `awaken-allow(wait):` reason must have at least 20
   characters, including markers whose waits the scanner already exempted.
-* `allow-reason`: a baseline `allow` decision exempts only its exact path/rule
-  pair and must explain why in at least 20 characters. Its owner, expiry and
-  unknown metadata are preserved, not reinterpreted by the writer.
 * `baseline-present`: the tracked test-waits baseline must already exist;
   restore it rather than initialize a new allowance for unconverted waits.
 """
@@ -645,26 +642,9 @@ def measure() -> tuple[list[str], Measurement]:
     return errors, measurement(found)
 
 
-def allowed(allow: list[dict]) -> tuple[list[str], set[tuple[str, str]]]:
-    """Validate the existing path/rule decisions; no writer can skip reasons."""
-
-    errors = []
-    exempt = set()
-    for entry in allow:
-        reason = entry.get("reason", "")
-        if len(reason) < MIN_REASON:
-            errors.append(f"allow-reason: {entry.get('path')}/{entry.get('rule')} "
-                          f"{len(reason)} -> >= {MIN_REASON}; the decision must explain why; "
-                          "fix: python3 scripts/ci/guards.py explain check_test_waits:allow-reason")
-        else:
-            exempt.add((entry["path"], entry["rule"]))
-    return errors, exempt
-
-
 def report(
     measured: Measurement,
     baseline: dict[str, dict[str, int]],
-    exempt: set[tuple[str, str]],
 ) -> tuple[list[str], list[str]]:
     """The sole comparison: new waits are errors; decreases must be recorded."""
 
@@ -673,8 +653,6 @@ def report(
     gained = []
     for rule in RULES:
         for relative in sorted(set(counts[rule]) | set(baseline.get(rule, {}))):
-            if (relative, rule) in exempt:
-                continue
             now, was = counts[rule].get(relative, 0), baseline.get(rule, {}).get(relative, 0)
             if now > was:
                 message = MESSAGES[rule].format(owner=owner_for(relative))
@@ -878,10 +856,9 @@ def selftest() -> None:
     baseline = {"sleep-then-assert": {"a.rs": 1}}
     one = {"a.rs": [("sleep-then-assert", 3, "sleep(d)")]}
     two = {"a.rs": [("sleep-then-assert", 3, "sleep(d)"), ("sleep-then-assert", 9, "sleep(d)")]}
-    assert report(measurement(one), baseline, set()) == ([], []), "ratchet holds at the baseline"
-    assert report(measurement(two), baseline, set())[0], "a new wait above the baseline is refused"
-    assert report(measurement({}), baseline, set())[1], "ground gained must lower the baseline"
-    assert report(measurement(two), baseline, {("a.rs", "sleep-then-assert")}) == ([], []), "registered"
+    assert report(measurement(one), baseline) == ([], []), "ratchet holds at the baseline"
+    assert report(measurement(two), baseline)[0], "a new wait above the baseline is refused"
+    assert report(measurement({}), baseline)[1], "ground gained must lower the baseline"
 
     h1 = (
         "submit_background inflight 'x'\n"
@@ -1057,22 +1034,19 @@ def selftest() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     def check(current, previous):
-        errors, exempt = allowed(previous.get("allow", []))
-        growth, gained = report(current, previous.get("baseline", {}), exempt)
-        return errors + growth + gained
+        growth, gained = report(current, previous.get("baseline", {}))
+        return growth + gained
 
     def lower(current, previous):
-        errors, exempt = allowed(previous.get("allow", []))
-        growth, _ = report(current, previous.get("baseline", {}), exempt)
-        if errors or growth:
+        growth, _ = report(current, previous.get("baseline", {}))
+        if growth:
             # Keep the old authority so the shared candidate check refuses a
             # new bad wait, even if an explicit write carries a CLI reason.
             return previous
         counts, _ = current
         return {**previous, "baseline": {
             **previous.get("baseline", {}),
-            **{rule: {path: count for path, count in sorted(counts[rule].items())
-                      if (path, rule) not in exempt} for rule in RULES},
+            **{rule: dict(sorted(counts[rule].items())) for rule in RULES},
         }}
 
     return _architecture_ratchet.baseline_cli(
@@ -1085,19 +1059,20 @@ def main(argv: list[str] | None = None) -> int:
 def _selftest_cli() -> None:
     """CLI cause/effect graph and decision table, attached to the tested cases.
 
-    Valid argv AND existing baseline AND valid source/allow reasons -> one
+    Valid argv AND existing baseline AND valid source reasons -> one
     scan -> per-key growth? refuse : decrease? read-only refusal / write a
     checked lower candidate : equal/no write. Any hard failure blocks writes.
     Constraints: modes exclusive; a nonempty reason belongs only to write;
     growth and decrease may coexist and never cancel; CLI reason cannot admit
-    bad waits or replace a source/allow decision. Effects: status, exact bytes,
+    bad waits or replace a source decision. Effects: status, exact bytes,
     one source/scanner invocation, diagnostics and retained foreign metadata.
 
     TCLI1 equal/fall x default/check -> read-only success/refusal.
     TCLI2 equal/fall x tighten/write -> no write/shrink, preserve metadata.
     TCLI3 growth/new path/new rule/mixed fall -> refuse, even reasoned write.
-    TCLI4 short source/allow reason -> hard refusal; length 20 is admitted.
-    TCLI5 genuine timing/valid path+rule allow -> scoped exemption, data kept.
+    TCLI4 short source reason -> hard refusal; length 20 is admitted.
+    TCLI5 a genuine-timing source marker is the only exemption; a baseline
+          `allow` entry (retired) exempts nothing.
     TCLI6 missing/empty baseline cannot initialize unconverted waits.
     TCLI7 invalid/abbreviated/conflicting argv -> usage before measurement.
     TCLI8 self-test -> existing tests, no normal scan or baseline write.
@@ -1111,7 +1086,7 @@ def _selftest_cli() -> None:
 
     path = "e2e/probe.mjs"
     sleep = "await sleep(10);\nassert.equal(calls, 1);\n"
-    held = {"baseline": {rule: {} for rule in RULES}, "allow": [],
+    held = {"baseline": {rule: {} for rule in RULES},
             "owner": "waits", "expiry": "after-conversion", "foreign": {"exact": [1, 2]}}
     held["baseline"]["sleep-then-assert"][path] = 1
     held["baseline"]["future-rule"] = {"foreign-path": 7, "owner": "other", "expiry": "later"}
@@ -1191,26 +1166,15 @@ def _selftest_cli() -> None:
     for argv in modes:
         status, before, after, _, _, _, errors = invoke(argv, {path: "// awaken-allow(wait): flaky\n" + sleep})
         assert status == 1 and before == after and "wait-reason:" in errors, "TCLI4 short exempt marker"
-        invalid = {**held, "allow": [{"path": path, "rule": "sleep-then-assert", "reason": "short"}]}
-        status, before, after, _, _, _, errors = invoke(argv, baseline=invalid)
-        assert status == 1 and before == after and "allow-reason:" in errors, "TCLI4 short allow"
     for reason in ("x" * MIN_REASON, "the lease TTL itself is the subject of this test"):
         for argv in writes:
             status, _, after, _, _, _, _ = invoke(argv, {path: "// awaken-allow(wait): " + reason + "\n" + sleep})
             assert status == 0 and json.loads(after)["baseline"]["sleep-then-assert"] == {}, "TCLI4/TCLI5 valid reason"
-    decision = {"path": path, "rule": "sleep-then-assert", "reason": "x" * MIN_REASON,
-                "owner": "test-owner", "expiry": "review", "unknown": {"keep": True}}
-    registered = {**held, "allow": [decision]}
+    decision = {"path": "e2e/new.mjs", "rule": "sleep-then-assert", "reason": "x" * MIN_REASON}
+    retired = {**held, "allow": [decision]}
     for argv in modes:
-        status, _, after, _, _, _, _ = invoke(argv, baseline=registered)
-        assert status == 0 and json.loads(after)["allow"] == [decision], "TCLI5 registered decision exact"
-        status, before, after, _, _, _, _ = invoke(argv, {"e2e/new.mjs": sleep}, registered)
-        assert status == 1 and before == after, "TCLI5 allow does not cover another file"
-    other_rule = "waitForValue(read, (v) => v.status === 'idle');\n"
-    status, before, after, _, _, _, errors = invoke(writes[-1], {path: other_rule}, registered)
-    assert status == 1 and before == after and "generic-settle:" in errors, "TCLI5 allow does not cover another rule"
-    status, _, after, _, _, _, _ = invoke(writes[0], {path: sleep + sleep}, registered)
-    assert status == 0 and json.loads(after)["allow"] == [decision], "TCLI5 allowed occurrences remain exempt"
+        status, before, after, _, _, _, errors = invoke(argv, {path: sleep, "e2e/new.mjs": sleep}, retired)
+        assert status == 1 and before == after and "e2e/new.mjs:1" in errors, "TCLI5 baseline allow exempts nothing"
 
     for argv in modes:
         for texts in ({}, {path: sleep}):

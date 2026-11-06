@@ -175,20 +175,15 @@ many ADRs, and some of them pull the code apart. Measured on main `14ef08382e`:
    Default/check stays read-only; tighten only lowers records; explicitly raising
    a recorded count still requires the four-field review record below.
 
-   **Crate line ceilings are approved allowances (2026-10-31).** Every crate holds
-   an approved line ceiling in `scripts/ci/modularity_baseline.json`
-   `crate-line-ceiling`: its functional lines (comments, blank lines and
-   `cfg(test)` code excluded) plus headroom of max(10% of the lines, 1000),
-   rounded up. `awaken-runtime` gets 5% and no floor, because the SDK engine
-   stays minimal. The ceiling is not a measurement that can only shrink: a crate
-   at or below it is silent, and above it `_modularity_fitness.py` warns the
-   author to move the code to the crate that owns it, or, when the growth is the
-   crate's own responsibility, to raise the ceiling with `--write-baseline
-   --reason '<four-field JSON>'`, which records lines plus headroom and appends
-   the review to the crate's history. A function above 150 lines is held the
-   same way at its approved length, without headroom. `--tighten` only lowers a
-   ceiling to lines plus headroom. Line counts stay advisory: these warnings
-   never block. `crate-budget` keeps only the review reason and the exact
+   **Function lengths are approved allowances (2026-10-31).** A function above
+   150 functional lines (comments, blank lines and `cfg(test)` code excluded) is
+   held in `scripts/ci/modularity_baseline.json` `long-function` at its approved
+   length: at or below it is silent, above it `_modularity_fitness.py` warns the
+   author to move the code to the component that owns it or to raise the length
+   with `--write-baseline --reason '<four-field JSON>'`. The per-crate
+   `crate-line-ceiling` that once sat beside it was deleted on 2026-11-06: it was
+   advisory (S7) and duplicated `check_file_limits`, which remains. Line counts
+   stay advisory: these warnings never block. `crate-budget` keeps only the review reason and the exact
    dependency count of crates above 15000 lines, both hard; the host and
    extracting-realization measurements are retired with the realization crate.
 

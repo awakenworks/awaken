@@ -34,6 +34,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import _crate_boundary_workspace
+
 # The kernel's own sources: `fence.rs` and the `fence/` module directory.
 KERNEL = "crates/sdk/contracts/awaken-lease-contract/src/fence"
 
@@ -68,30 +70,12 @@ def _in_kernel(path: str) -> bool:
 RELEVANT = re.compile(r"epoch|Epoch|Fence|Lease|Tenure|Arc\s*<")
 
 
-# Comments, string/char literals and raw strings, in one pass. Blanking them
-# keeps line numbers; a char literal is matched before a string so `'"'` does
-# not open one, and a lifetime (`'a` with no closing quote) is never a literal.
-NON_CODE = re.compile(
-    r"'(?:\\.|[^'\\\n])'"
-    r"|//[^\n]*"
-    r"|/\*.*?\*/"
-    r'|r(#*)".*?"\1'
-    r'|"(?:\\.|[^"\\])*"',
-    re.S,
-)
-
-
-def _blank(match: re.Match[str]) -> str:
-    text = match.group(0)
-    return "\n".join(" " * len(line) for line in text.split("\n"))
-
-
 def _code(sources: dict[str, str]) -> dict[str, str]:
     """Comments and literal contents blanked, so prose never counts; kernel
     files and files that cannot match any rule are left out."""
 
     return {
-        path: NON_CODE.sub(_blank, source)
+        path: _crate_boundary_workspace.rust_syntax(source)
         for path, source in sources.items()
         if not _in_kernel(path) and RELEVANT.search(source)
     }
@@ -137,10 +121,7 @@ def identity_defaults(sources: dict[str, str]) -> list[str]:
     for path, source in sources.items():
         if "default" not in source or "serde" not in source:
             continue
-        code = NON_CODE.sub(
-            lambda match: match.group(0) if match.group(0).startswith('"') else _blank(match),
-            source,
-        )
+        code = _crate_boundary_workspace.rust_without_comments(source)
         for match in SERDE_DEFAULT_FIELD.finditer(code):
             if not re.search(r"\bdefault\b", match.group("args")):
                 continue
