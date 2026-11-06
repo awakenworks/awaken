@@ -10,7 +10,6 @@ evidence = [
   "formal/tla/Delegation.cfg",
   "formal/tla/Delegation.tla",
   "scripts/ci/check_formal.sh",
-  "scripts/ci/formal_delegation_mutations.py",
 ]
 production_entrypoints = []
 

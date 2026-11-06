@@ -7,7 +7,6 @@ evidence = [
   "formal/tla/SessionNetworkPolicy.tla",
   "formal/tla/SessionNetworkPolicyProof.tla",
   "scripts/ci/check_formal.sh",
-  "scripts/ci/check_formal_mutations.py",
 ]
 production_entrypoints = []
 

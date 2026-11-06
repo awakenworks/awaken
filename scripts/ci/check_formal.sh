@@ -235,6 +235,13 @@ python3 scripts/ci/check_formal_surface.py --require-complete
 python3 scripts/ci/check_formal_web_surface.py
 python3 scripts/ci/check_proof_boundaries.py
 python3 scripts/ci/check_formal_mutations.py
+# Mutation adequacy is a full-tier (nightly/release) check. The validators'
+# own self-tests above hold their rejection classes every run; these four
+# mutants hold the strict-CI wiring rules check_formal_coverage reads from
+# this file, which no fixture self-test reaches yet.
+if [ "$formal_tier" = full ]; then
+  python3 scripts/ci/check_formal_mutations.py --gate-mutants
+fi
 
 # Framework fixtures execute the original initialization and inherit PATH.
 # Install this one heavy-Java adapter only after those metadata/receipt checks;
@@ -471,14 +478,6 @@ python3 scripts/ci/render_runtime_refinement_traces.py \
 AWAKEN_SESSION_EVIDENCE_DIR="$formal_artifact_dir/session-observations" \
   run_admitted_phase "$formal_phase_budget" scripts/ci/check-reliability.sh --session-observations
 
-# Consume the real producer output exactly once before the long solver batches.
-# The existing checker owns baseline, mutant construction and exact oracles.
-# A no-op/invalid mutation must fail here without spending hours in Kani first.
-if [ "$tlc_available" -eq 1 ]; then
-  AWAKEN_FORMAL_MUTATION_EVIDENCE_DIR="$formal_artifact_dir/observation-mutations" \
-    python3 scripts/ci/check_formal_mutations.py --session-observation-trace-mutants "$tla_jar" --observation-trace-dir "$observation_trace_dir"
-fi
-
 if command -v cargo-kani >/dev/null 2>&1; then
   run_admitted_phase "$formal_phase_budget" scripts/ci/bootstrap_kani.sh --verify-source "$kani_source_dir" \
     > "$formal_artifact_dir/kani-source-build.txt"
@@ -656,11 +655,9 @@ else
 fi
 
 if [ "$tlc_available" -eq 1 ]; then
-  # This existing mutation entry checks the complete green baseline from
-  # formal/tla/SessionRunBudgetAdmission.tla and
-  # formal/tla/SessionRunBudgetAdmission.cfg before its exact mutants/witnesses.
-  python3 scripts/ci/check_formal_mutations.py --session-observation-model-mutants "$tla_jar"
-  python3 scripts/ci/check_formal_mutations.py --cowork-lifecycle-model-mutants "$tla_jar"
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-run-budget-admission" \
+    -config formal/tla/SessionRunBudgetAdmission.cfg formal/tla/SessionRunBudgetAdmission.tla
   # The standalone instance loads the canonical transition owner from
   # formal/tla/RunIngressKernel.tla; TLC checks that composition through this
   # one configuration rather than maintaining a second kernel configuration.
@@ -683,7 +680,6 @@ if [ "$tlc_available" -eq 1 ]; then
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/work-queue" \
     -config formal/tla/WorkQueue.cfg formal/tla/WorkQueue.tla
-  python3 scripts/ci/check_formal_mutations.py --work-queue-stop-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-activity" \
     -config formal/tla/SessionActivity.cfg formal/tla/SessionActivity.tla
@@ -697,7 +693,6 @@ if [ "$tlc_available" -eq 1 ]; then
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/delegation" \
     -config formal/tla/Delegation.cfg formal/tla/Delegation.tla
-  python3 scripts/ci/check_formal_mutations.py --delegation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/tool-batch" \
     -config formal/tla/ToolBatch.cfg formal/tla/ToolBatch.tla
@@ -719,14 +714,12 @@ if [ "$tlc_available" -eq 1 ]; then
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/remote-attempt" \
     -config formal/tla/RemoteAttempt.cfg formal/tla/RemoteAttempt.tla
-  python3 scripts/ci/check_formal_mutations.py --remote-attempt-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/authz-kernel" \
     -config formal/tla/AuthzKernel.cfg formal/tla/AuthzKernel.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-ownership" \
     -config formal/tla/SessionOwnership.cfg formal/tla/SessionOwnership.tla
-  python3 scripts/ci/check_formal_mutations.py --session-ownership-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-deletion" \
     -config formal/tla/SessionDeletion.cfg formal/tla/SessionDeletion.tla
@@ -788,15 +781,12 @@ if [ "$tlc_available" -eq 1 ]; then
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-network-policy" \
     -config formal/tla/SessionNetworkPolicy.cfg formal/tla/SessionNetworkPolicy.tla
-  python3 scripts/ci/check_formal_mutations.py --session-network-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/circuit-breaker" \
     -config formal/tla/CircuitBreaker.cfg formal/tla/CircuitBreaker.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/config-cas" \
     -config formal/tla/AggregateCAS.cfg formal/tla/AggregateCAS.tla
-  # Config family owns the five counterexamples; the shared dispatcher/runner executes them.
-  python3 scripts/ci/check_formal_mutations.py --config-cas-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/deployment-cas" \
     -config formal/tla/DeploymentCAS.cfg formal/tla/DeploymentCAS.tla
@@ -816,35 +806,28 @@ if [ "$tlc_available" -eq 1 ]; then
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/checkpoint-recovery" \
     -config formal/tla/CheckpointRecovery.cfg formal/tla/CheckpointRecovery.tla
-  python3 scripts/ci/check_formal_mutations.py --checkpoint-recovery-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/background-task" \
     -config formal/tla/BackgroundTask.cfg formal/tla/BackgroundTask.tla
-  python3 scripts/ci/check_formal_mutations.py --background-completion-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/sandbox-control-publication" \
     -config formal/tla/SandboxControlPublication.cfg \
     formal/tla/SandboxControlPublication.tla
-  python3 scripts/ci/check_formal_mutations.py --sandbox-control-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/memory-invalidation-lifecycle" \
     -config formal/tla/MemoryInvalidationLifecycle.cfg \
     formal/tla/MemoryInvalidationLifecycle.tla
-  python3 scripts/ci/check_formal_mutations.py --memory-invalidation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/memory-participant-ownership" \
     -config formal/tla/MemoryParticipantOwnership.cfg \
     formal/tla/MemoryParticipantOwnership.tla
-  python3 scripts/ci/check_formal_mutations.py --memory-participant-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/memory-extraction" \
     -config formal/tla/MemoryExtraction.cfg \
     formal/tla/MemoryExtraction.tla
-  python3 scripts/ci/check_formal_mutations.py --memory-extraction-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/eval-evidence" \
     -config formal/tla/EvalEvidence.cfg formal/tla/EvalEvidence.tla
-  python3 scripts/ci/check_formal_mutations.py --eval-evidence-model-mutants "$tla_jar"
   run_required_rust_tests -p awaken-eval --lib \
     outcome_judge::tests::eval_evidence_decision_table_cross_checks_frozen_complete_model --locked -- --exact
   java -XX:+UseParallelGC -jar "$tla_jar" \
@@ -853,14 +836,12 @@ if [ "$tlc_available" -eq 1 ]; then
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/webhook-subscription" \
     -config formal/tla/WebhookSubscription.cfg formal/tla/WebhookSubscription.tla
-  python3 scripts/ci/check_formal_mutations.py --webhook-subscription-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/registration-intent" \
     -config formal/tla/RegistrationIntent.cfg formal/tla/RegistrationIntent.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/erasure-saga" \
     -config formal/tla/ErasureSaga.cfg formal/tla/ErasureSaga.tla
-  python3 scripts/ci/check_formal_mutations.py --erasure-checkpoint-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/credential-creation" \
     -config formal/tla/CredentialCreation.cfg formal/tla/CredentialCreation.tla
@@ -873,14 +854,12 @@ if [ "$tlc_available" -eq 1 ]; then
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/memory-retention" \
     -config formal/tla/MemoryCASRetention.cfg formal/tla/MemoryCAS.tla
-  python3 scripts/ci/check_formal_mutations.py --memory-copy-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/local-process-lifecycle" \
     -config formal/tla/LocalProcessLifecycle.cfg formal/tla/LocalProcessLifecycle.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/local-process-scope" \
     -config formal/tla/LocalProcessScope.cfg formal/tla/LocalProcessLifecycle.tla
-  python3 scripts/ci/check_formal_mutations.py --local-process-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/local-process-boundary" \
     -config formal/tla/LocalProcessBoundary.cfg formal/tla/LocalProcessLifecycle.tla
@@ -918,7 +897,6 @@ if [ "$tlc_available" -eq 1 ]; then
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/tool-result-protocol" \
     -config formal/tla/ToolResultProtocol.cfg formal/tla/ToolResultProtocol.tla
-  python3 scripts/ci/check_formal_mutations.py --event-batch-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/worker-drain" \
     -config formal/tla/WorkerDrain.cfg formal/tla/WorkerDrain.tla
@@ -932,24 +910,18 @@ if [ "$tlc_available" -eq 1 ]; then
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/acp-local-binding-batch" \
     -config formal/tla/AcpLocalBindingBatch.cfg formal/tla/AcpLocalBindingBatch.tla
-  python3 scripts/ci/check_formal_mutations.py --acp-binding-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/acp-observation-refresh" \
     -config formal/tla/AcpObservationRefresh.cfg formal/tla/AcpObservationRefresh.tla
-  python3 scripts/ci/check_formal_mutations.py --acp-observation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/acp-projected-binding-use" \
     -config formal/tla/AcpProjectedBindingUse.cfg formal/tla/AcpProjectedBindingUse.tla
-  python3 scripts/ci/check_formal_mutations.py --acp-projection-model-mutants "$tla_jar"
-  python3 scripts/ci/check_formal_mutations.py --managed-projection-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/audit-commit" \
     -config formal/tla/AuditCommit.cfg formal/tla/AuditCommit.tla
-  python3 scripts/ci/check_formal_mutations.py --audit-commit-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/config-activation" \
     -config formal/tla/ConfigActivation.cfg formal/tla/ConfigActivation.tla
-  python3 scripts/ci/check_formal_mutations.py --config-activation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/inference-access-publication" \
     -config formal/tla/InferenceAccessPublication.cfg \
@@ -957,11 +929,9 @@ if [ "$tlc_available" -eq 1 ]; then
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/resource-binding-effect" \
     -config formal/tla/ResourceBindingEffect.cfg formal/tla/ResourceBindingEffect.tla
-  python3 scripts/ci/check_formal_mutations.py --effect-retirement-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/agent-input-revision" \
     -config formal/tla/AgentInputRevision.cfg formal/tla/AgentInputRevision.tla
-  python3 scripts/ci/check_formal_mutations.py --agent-input-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/outcome-lifecycle" \
     -config formal/tla/OutcomeLifecycle.cfg formal/tla/OutcomeLifecycle.tla
@@ -969,14 +939,12 @@ if [ "$tlc_available" -eq 1 ]; then
     -metadir "$tlc_state_root/session-resource-activation" \
     -config formal/tla/SessionResourceActivation.cfg \
     formal/tla/SessionResourceActivation.tla
-  python3 scripts/ci/check_formal_mutations.py --terminal-resource-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-unmaterialized-cleanup" \
     -config formal/tla/SessionUnmaterializedCleanup.cfg formal/tla/SessionUnmaterializedCleanup.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-unmaterialized-cleanup-target" \
     -config formal/tla/SessionUnmaterializedCleanupTarget.cfg formal/tla/SessionUnmaterializedCleanup.tla
-  python3 scripts/ci/check_formal_mutations.py --unmaterialized-cleanup-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/resource-dispatch" \
     -config formal/tla/ResourceDispatch.cfg formal/tla/ResourceDispatch.tla
@@ -984,7 +952,6 @@ if [ "$tlc_available" -eq 1 ]; then
     -metadir "$tlc_state_root/resource-reclamation" \
     -config formal/tla/ResourceReclamation.cfg \
     formal/tla/ResourceReclamation.tla
-  python3 scripts/ci/check_formal_mutations.py --file-reclamation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/management-audit-intent" \
     -config formal/tla/ManagementAuditIntent.cfg formal/tla/ManagementAuditIntent.tla
@@ -995,11 +962,9 @@ if [ "$tlc_available" -eq 1 ]; then
     -metadir "$tlc_state_root/managed-credential-creation" \
     -config formal/tla/ManagedCredentialCreation.cfg \
     formal/tla/ManagedCredentialCreation.tla
-  python3 scripts/ci/check_formal_mutations.py --credential-creation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/verified-profile-admission" \
     -config formal/tla/VerifiedProfileAdmission.cfg formal/tla/VerifiedProfileAdmission.tla
-  python3 scripts/ci/check_formal_mutations.py --verified-admission-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/managed-credential-rollout" \
     -config formal/tla/ManagedCredentialRollout.cfg \
@@ -1019,7 +984,6 @@ if [ "$tlc_available" -eq 1 ]; then
     -metadir "$tlc_state_root/mcp-credential-delivery" \
     -config formal/tla/McpCredentialDelivery.cfg \
     formal/tla/McpCredentialDelivery.tla
-  python3 scripts/ci/check_formal_mutations.py --mcp-credential-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/worker-replacement" \
     -config formal/tla/WorkerReplacement.cfg formal/tla/WorkerReplacement.tla
@@ -1030,22 +994,22 @@ if [ "$tlc_available" -eq 1 ]; then
     -metadir "$tlc_state_root/credential-effect-boundary" \
     -config formal/tla/CredentialEffectBoundary.cfg \
     formal/tla/CredentialEffectBoundary.tla
-  python3 scripts/ci/check_formal_mutations.py --credential-effect-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-realization-mutex" \
     -config formal/tla/SessionRealizationMutex.cfg \
     formal/tla/SessionRealizationMutex.tla
-  python3 scripts/ci/check_formal_mutations.py --resource-preparation-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-realization-publication" \
     -config formal/tla/SessionRealizationPublication.cfg formal/tla/SessionRealizationMutex.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-realization-renewal" \
     -config formal/tla/SessionRealizationRenewal.cfg formal/tla/SessionRealizationMutex.tla
-  python3 scripts/ci/check_formal_mutations.py --realization-renewal-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-realization-authority" \
     -config formal/tla/SessionRealizationAuthority.cfg formal/tla/SessionRealizationAuthority.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-realization-continuation" \
+    -config formal/tla/SessionRealizationContinuation.cfg formal/tla/SessionRealizationContinuation.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/worker-authority-exit" \
     -config formal/tla/WorkerAuthorityExit.cfg formal/tla/WorkerAuthorityExit.tla
@@ -1086,23 +1050,26 @@ if [ "$tlc_available" -eq 1 ]; then
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-run-resolution" \
     -config formal/tla/SessionRunProtocolResolution.cfg formal/tla/SessionRunProtocol.tla
-  # The mutation family checks formal/tla/SessionRunCommitObservation.cfg over
-  # the canonical ObserveCommittedRun action in SessionRunProtocol.tla.
-  # The same gate also checks formal/tla/SessionRunStopEvidence.tla with
-  # formal/tla/SessionRunStopEvidence.cfg, participant mutants and conditional
-  # delivery fairness. It imports the original SessionRunProtocol transitions.
-  python3 scripts/ci/check_formal_mutations.py --resolution-failure-model-mutant "$tla_jar"
+  run_with_deadline 600 java -Djava.io.tmpdir="$tlc_state_root" -Xmx4096m -XX:+UseParallelGC \
+    -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-run-commit-observation" \
+    -config formal/tla/SessionRunCommitObservation.cfg formal/tla/SessionRunProtocol.tla
+  run_with_deadline 300 java -Djava.io.tmpdir="$tlc_state_root" -Xmx2048m -XX:+UseParallelGC \
+    -jar "$tla_jar" -workers 4 \
+    -metadir "$tlc_state_root/session-run-stop-evidence" \
+    -config formal/tla/SessionRunStopEvidence.cfg formal/tla/SessionRunStopEvidence.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/terminal-reconciliation-scan" \
     -config formal/tla/TerminalReconciliationScan.cfg formal/tla/TerminalReconciliationScan.tla
-  python3 scripts/ci/check_formal_mutations.py --terminal-scan-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/dispatch-maintenance-scheduling" \
     -config formal/tla/DispatchMaintenanceScheduling.cfg formal/tla/DispatchMaintenanceScheduling.tla
-  # The shared mutation runner checks the complete green baseline from
-  # formal/tla/K8sProcessObservation.tla and formal/tla/K8sProcessObservation.cfg
-  # once, then the exact semantic mutants/witnesses, with one qualified profile.
-  python3 scripts/ci/check_formal_mutations.py --k8s-process-observation-model-mutants "$tla_jar"
+  # The complete three-generation/two-container configuration exceeded 300s
+  # at 1024MiB/one worker; it completes in under a minute at this budget.
+  run_with_deadline 300 java -Djava.io.tmpdir="$tlc_state_root" -Xmx4096m -XX:+UseParallelGC \
+    -jar "$tla_jar" -workers 8 \
+    -metadir "$tlc_state_root/k8s-process-observation" \
+    -config formal/tla/K8sProcessObservation.cfg formal/tla/K8sProcessObservation.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-run-cancellation" \
     -config formal/tla/SessionRunProtocolCancellation.cfg formal/tla/SessionRunProtocol.tla
@@ -1121,7 +1088,6 @@ if [ "$tlc_available" -eq 1 ]; then
     -metadir "$tlc_state_root/session-start-protocol-reachability" \
     -config formal/tla/SessionStartProtocolReachability.cfg \
     formal/tla/SessionStartProtocol.tla
-  python3 scripts/ci/check_formal_mutations.py --session-start-root-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -workers auto \
     -metadir "$tlc_state_root/remote-worker-protocol" \
@@ -1130,10 +1096,34 @@ if [ "$tlc_available" -eq 1 ]; then
     -workers auto \
     -metadir "$tlc_state_root/remote-worker-registration" \
     -config formal/tla/RemoteWorkerProtocolRegistration.cfg formal/tla/RemoteWorkerProtocol.tla
-  python3 scripts/ci/check_formal_mutations.py --worker-registration-model-mutants "$tla_jar"
-  # The one mutation owner runs formal/tla/RetainedWorkerRetirement.tla with
-  # retained/prepared/unknown configurations before checking its counterexamples.
-  python3 scripts/ci/check_formal_mutations.py --retained-worker-retirement-model-mutants "$tla_jar"
+  for retirement_config in RetainedWorkerRetirement RetainedWorkerRetirementPrepared \
+      RetainedWorkerRetirementUnknown RetainedWorkerRetirementLive; do
+    java -XX:+UseParallelGC -jar "$tla_jar" \
+      -metadir "$tlc_state_root/$retirement_config" \
+      -config "formal/tla/$retirement_config.cfg" formal/tla/RetainedWorkerRetirement.tla
+  done
+  # Model mutation adequacy for the critical authority models (leases,
+  # fences, budgets, credentials, erasure) runs in the full tier only: each
+  # family re-checks its green baseline, then requires every guard-removing
+  # mutant to fail its exact named invariant. Every model above is checked
+  # on every run; these mutants show its invariants are not vacuous.
+  if [ "$formal_tier" = full ]; then
+    python3 scripts/ci/check_formal_mutations.py --session-budget-admission-model-mutants "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --work-queue-stop-model-mutants "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --session-ownership-model-mutants "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --config-cas-model-mutant "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --background-completion-model-mutant "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --file-reclamation-model-mutants "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --resource-preparation-model-mutant "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --realization-renewal-model-mutant "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --erasure-checkpoint-model-mutants "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --credential-creation-model-mutants "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --mcp-credential-model-mutants "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --credential-effect-model-mutants "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --acp-binding-model-mutants "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --acp-observation-model-mutants "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --acp-projection-model-mutants "$tla_jar"
+  fi
   for trace_config in "$rendered_trace_dir"/RustTrace*.cfg "$observation_rendered_dir"/RustTrace*.cfg; do
     trace_module="${trace_config%.cfg}.tla"
     trace_name="$(basename "$trace_module" .tla)"

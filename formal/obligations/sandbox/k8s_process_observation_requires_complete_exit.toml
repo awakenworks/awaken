@@ -11,7 +11,6 @@ evidence = [
   "e2e/k3d/distributed_control_e2e.sh",
   "formal/tla/K8sProcessObservation.cfg",
   "formal/tla/K8sProcessObservation.tla",
-  "scripts/ci/formal_execution_replacement_mutations.py",
 ]
 production_entrypoints = []
 

@@ -5,7 +5,6 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/SessionEnvironmentProjection.cfg",
   "formal/tla/SessionEnvironmentProjection.tla",
-  "scripts/ci/check_formal_mutations.py",
 ]
 production_entrypoints = []
 

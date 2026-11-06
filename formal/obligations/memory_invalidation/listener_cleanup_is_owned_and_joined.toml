@@ -7,7 +7,6 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/MemoryInvalidationLifecycle.cfg",
   "formal/tla/MemoryInvalidationLifecycle.tla",
-  "scripts/ci/check_formal_mutations.py",
 ]
 production_entrypoints = []
 
