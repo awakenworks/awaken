@@ -235,7 +235,8 @@ async fn builder_enabled_retention_propagates_authority_failure_instead_of_silen
             .resource_manifests
             .resource_references()
             .commit("workspace", candidate, "builder-retention", Vec::new())
-            .await;
+            .await
+            .map(crate::SnapshotCommit::into_session);
         assert_eq!(result.is_err(), enabled);
         if enabled {
             let retained = app
@@ -248,11 +249,13 @@ async fn builder_enabled_retention_propagates_authority_failure_instead_of_silen
                 "retention failure blocks root CAS"
             );
             references.fail_replace.store(false, Ordering::SeqCst);
-            app.resource_manifests
+            let _ = app
+                .resource_manifests
                 .resource_references()
                 .commit("workspace", retained, "builder-retention", Vec::new())
                 .await
-                .unwrap();
+                .unwrap()
+                .into_session();
         }
     }
 }

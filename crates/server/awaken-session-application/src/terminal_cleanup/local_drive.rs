@@ -365,6 +365,10 @@ impl SessionTerminalCleanups {
                         .resource_references
                         .commit(owner_scope, session, "terminal-cleanup-fence", Vec::new())
                         .await
+                        .and_then(|commit| {
+                            crate::mutation::aggregate_from_snapshot(commit.into_session())
+                                .map_err(crate::mutation::repository_failure)
+                        })
                         .map_err(mutation_failure)?;
                 }
                 // Work retirement belongs to the recoverable cleanup operation.
@@ -389,6 +393,10 @@ impl SessionTerminalCleanups {
                         .resource_references
                         .commit(owner_scope, session, "resource-release-intent", Vec::new())
                         .await
+                        .and_then(|commit| {
+                            crate::mutation::aggregate_from_snapshot(commit.into_session())
+                                .map_err(crate::mutation::repository_failure)
+                        })
                         .map_err(mutation_failure)?;
                 }
 
@@ -426,6 +434,10 @@ impl SessionTerminalCleanups {
                                 Vec::new(),
                             )
                             .await
+                            .and_then(|commit| {
+                                crate::mutation::aggregate_from_snapshot(commit.into_session())
+                                    .map_err(crate::mutation::repository_failure)
+                            })
                             .map_err(mutation_failure)?;
                     }
                     TerminalCleanupPath::WaitForExternalWorker => {
