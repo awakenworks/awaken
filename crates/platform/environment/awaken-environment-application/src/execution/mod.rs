@@ -1194,7 +1194,7 @@ mod tests {
 
         let v2 = SandboxExecutionPolicy {
             id: SandboxExecutionPolicyId("policy-a".into()),
-            version: SandboxExecutionPolicyVersion(1),
+            version: SandboxExecutionPolicyVersion::new(1),
             config: SandboxOverride {
                 isolation: Some(IsolationClass::Namespace),
                 ..Default::default()
@@ -1228,7 +1228,7 @@ mod tests {
 
         let disabled = SandboxExecutionPolicy {
             id: SandboxExecutionPolicyId("policy-a".into()),
-            version: SandboxExecutionPolicyVersion(2),
+            version: SandboxExecutionPolicyVersion::new(2),
             config: SandboxOverride::default(),
             provisioning: awaken_provisioning_contract::SandboxProvisioning::Eager,
             idle_retention: Default::default(),

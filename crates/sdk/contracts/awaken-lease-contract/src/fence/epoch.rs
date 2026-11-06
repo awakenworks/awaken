@@ -12,11 +12,18 @@ use serde::{Deserialize, Serialize};
 /// field and a missing SQL column all decode to, so a zero epoch is exactly the
 /// value that reads as "some lease" without any grant having minted it. There
 /// is no `Default`, and decoding refuses `0` and a missing field alike.
-/// [`Epoch::next`] is the only way to advance one, and it refuses to wrap.
+/// [`Epoch::next`] is the only way to advance one, and it refuses to wrap;
+/// integer arithmetic on an epoch does not compile:
+///
+/// ```compile_fail
+/// use awaken_lease_contract::fence::Epoch;
+/// let _ = Epoch::FIRST + 1;
+/// ```
 ///
 /// Consumers: every [`super::Tenure`], and through it every [`super::Lease`]
-/// and [`super::EffectFence`]; the work-store lease authority mints successors
-/// with [`Epoch::next`].
+/// and [`super::EffectFence`]; the work-store lease authority, the dispatch
+/// kernel and the Environment image-build claim mint successors with
+/// [`Epoch::next`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "u64", into = "u64")]
 pub struct Epoch(NonZeroU64);

@@ -249,7 +249,7 @@ impl EnvironmentApplication {
             &current.config,
             Some(&EnvironmentSandboxPolicyRef {
                 policy_id: reference.id.0.clone(),
-                version: reference.version.0,
+                version: reference.version.get(),
             }),
         )
         .await?;
@@ -261,7 +261,7 @@ impl EnvironmentApplication {
                     sandbox_policy: Some(EnvironmentFieldUpdate::Replace(
                         EnvironmentSandboxPolicyRef {
                             policy_id: reference.id.0,
-                            version: reference.version.0,
+                            version: reference.version.get(),
                         },
                     )),
                     ..Default::default()
@@ -337,7 +337,7 @@ pub(crate) async fn validate_environment_policy(
     let policy = sandbox_policies
         .get_exact(&SandboxExecutionPolicyRef {
             id: awaken_provisioning_contract::SandboxExecutionPolicyId(reference.policy_id.clone()),
-            version: SandboxExecutionPolicyVersion(reference.version),
+            version: SandboxExecutionPolicyVersion::new(reference.version),
         })
         .await?;
     if policy.disabled {
@@ -1251,7 +1251,7 @@ mod tests {
                             id: awaken_provisioning_contract::SandboxExecutionPolicyId(
                                 "policy".into(),
                             ),
-                            version: SandboxExecutionPolicyVersion(1),
+                            version: SandboxExecutionPolicyVersion::new(1),
                         }
                     )
                     .await,

@@ -131,7 +131,7 @@ async fn project_policy_binding(
     Ok(SandboxPolicyBindingOutput {
         environment_id,
         policy_id: Some(reference.id.0),
-        version: Some(reference.version.0),
+        version: Some(reference.version.get()),
         provisioning: policy.provisioning,
     })
 }
@@ -160,7 +160,7 @@ async fn publish_sandbox_policy(
     Path(id): Path<String>,
     Json(input): Json<SandboxPolicyPublish>,
 ) -> Result<Json<SandboxExecutionPolicy>, StatusCode> {
-    let current = SandboxExecutionPolicyVersion(input.expected_current);
+    let current = SandboxExecutionPolicyVersion::new(input.expected_current);
     // The value type owns succession; this adapter preserves the existing
     // exhausted-version conflict before checking store availability.
     let next = current.checked_next().map_err(|_| StatusCode::CONFLICT)?;
@@ -186,7 +186,7 @@ async fn get_exact_sandbox_policy(
     let policy = policy_store(&state)?
         .get_exact(&SandboxExecutionPolicyRef {
             id: SandboxExecutionPolicyId(id),
-            version: SandboxExecutionPolicyVersion(version),
+            version: SandboxExecutionPolicyVersion::new(version),
         })
         .await
         .map_err(map_policy_error)?;
@@ -226,7 +226,7 @@ async fn bind_environment_sandbox_policy(
 ) -> Result<Json<SandboxPolicyBindingOutput>, StatusCode> {
     let reference = SandboxExecutionPolicyRef {
         id: SandboxExecutionPolicyId(input.policy_id),
-        version: SandboxExecutionPolicyVersion(input.version),
+        version: SandboxExecutionPolicyVersion::new(input.version),
     };
     state
         .application
@@ -252,7 +252,7 @@ async fn get_environment_sandbox_policy(
         .sandbox_policy
         .map(|reference| SandboxExecutionPolicyRef {
             id: SandboxExecutionPolicyId(reference.policy_id),
-            version: SandboxExecutionPolicyVersion(reference.version),
+            version: SandboxExecutionPolicyVersion::new(reference.version),
         })
     else {
         return Ok(Json(SandboxPolicyBindingOutput {
@@ -671,7 +671,7 @@ mod tests {
             disabled: false,
         };
         let mut second = first.clone();
-        second.version = SandboxExecutionPolicyVersion(2);
+        second.version = SandboxExecutionPolicyVersion::new(2);
         second.config.requests.cpu_millis = Some(750);
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let application = Arc::new(EnvironmentApplication::new(

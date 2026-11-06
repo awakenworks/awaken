@@ -9,12 +9,36 @@ use crate::{SandboxIdleRetentionPolicy, SandboxOverride, SandboxProvisioning};
 #[serde(transparent)]
 pub struct SandboxExecutionPolicyId(pub String);
 
+/// One published version of a sandbox execution policy.
+///
+/// The field is private, so a version cannot be advanced by integer
+/// arithmetic: [`Self::checked_next`] is the only succession and it refuses to
+/// wrap. [`Self::new`] decodes a stored or requested number; it never derives
+/// a successor.
+///
+/// ```compile_fail
+/// use awaken_provisioning_contract::SandboxExecutionPolicyVersion;
+/// let version = SandboxExecutionPolicyVersion::INITIAL;
+/// let _ = version.0.saturating_add(1);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct SandboxExecutionPolicyVersion(pub u64);
+pub struct SandboxExecutionPolicyVersion(u64);
 
 impl SandboxExecutionPolicyVersion {
     pub const INITIAL: Self = Self(1);
+
+    /// Decode a persisted or requested version number.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// The version number, for storage and wire projections.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
 
     pub fn checked_next(self) -> Result<Self, SandboxExecutionPolicyError> {
         self.0
@@ -113,11 +137,13 @@ mod tests {
     #[test]
     fn policy_version_exhaustion_fails_closed() {
         assert_eq!(
-            SandboxExecutionPolicyVersion(1).checked_next().unwrap(),
-            SandboxExecutionPolicyVersion(2)
+            SandboxExecutionPolicyVersion::new(1)
+                .checked_next()
+                .unwrap(),
+            SandboxExecutionPolicyVersion::new(2)
         );
         assert!(matches!(
-            SandboxExecutionPolicyVersion(u64::MAX).checked_next(),
+            SandboxExecutionPolicyVersion::new(u64::MAX).checked_next(),
             Err(SandboxExecutionPolicyError::Invalid(message)) if message.contains("exhausted")
         ));
     }
