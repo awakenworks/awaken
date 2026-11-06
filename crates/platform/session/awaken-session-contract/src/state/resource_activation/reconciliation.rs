@@ -137,48 +137,51 @@ impl SessionResourceReconciliationInstruction {
     }
 }
 
-#[cfg(kani)]
-fn any_facts() -> SessionResourceReconciliationFacts {
-    SessionResourceReconciliationFacts {
-        terminal: kani::any(),
-        external_environment: kani::any(),
-        execution_idle: kani::any(),
-        pending: kani::any(),
-        repository_retirements: kani::any(),
-        releasing_activations: kani::any(),
-        active_inputs: kani::any(),
-        activation_records: kani::any(),
-    }
-}
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
 
-#[cfg(kani)]
-/// @obligation session_resources.terminal_session_never_reactivates
-#[kani::proof]
-fn terminal_session_never_enters_ordinary_resource_reconciliation() {
-    // Over every fact combination: a terminal root always reaches terminal
-    // cleanup and never an ordinary apply; an ordinary apply is reached only
-    // by a live, Idle, Coordinator-realized root; an external live root never
-    // runs a local Runtime effect.
-    let facts = any_facts();
-    let instruction = next_resource_reconciliation(facts);
-    let local = matches!(
-        instruction,
-        SessionResourceReconciliationInstruction::ApplyLocally(_)
-    );
-    if facts.terminal {
-        assert!(matches!(
-            instruction,
-            SessionResourceReconciliationInstruction::ReleaseTerminal
-        ));
-    }
-    if local {
-        assert!(!facts.terminal && !facts.external_environment && facts.execution_idle);
-    }
-    if !facts.terminal {
-        assert!(!matches!(
-            instruction,
-            SessionResourceReconciliationInstruction::ReleaseTerminal
-        ));
+    /// @exhaustive bool(2)^8 = 256
+    /// @obligation session_resources.terminal_session_never_reactivates
+    #[test]
+    fn terminal_session_never_enters_ordinary_resource_reconciliation() {
+        // Over every fact combination: a terminal root always reaches terminal
+        // cleanup and never an ordinary apply; an ordinary apply is reached only
+        // by a live, Idle, Coordinator-realized root; an external live root never
+        // runs a local Runtime effect.
+        for bits in 0_u16..256 {
+            let bit = |index: u16| bits & (1 << index) != 0;
+            let facts = SessionResourceReconciliationFacts {
+                terminal: bit(0),
+                external_environment: bit(1),
+                execution_idle: bit(2),
+                pending: bit(3),
+                repository_retirements: bit(4),
+                releasing_activations: bit(5),
+                active_inputs: bit(6),
+                activation_records: bit(7),
+            };
+            let instruction = next_resource_reconciliation(facts);
+            let local = matches!(
+                instruction,
+                SessionResourceReconciliationInstruction::ApplyLocally(_)
+            );
+            if facts.terminal {
+                assert!(matches!(
+                    instruction,
+                    SessionResourceReconciliationInstruction::ReleaseTerminal
+                ));
+            }
+            if local {
+                assert!(!facts.terminal && !facts.external_environment && facts.execution_idle);
+            }
+            if !facts.terminal {
+                assert!(!matches!(
+                    instruction,
+                    SessionResourceReconciliationInstruction::ReleaseTerminal
+                ));
+            }
+        }
     }
 }
 

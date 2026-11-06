@@ -143,73 +143,6 @@ pub fn repository_git_credential_delivery(
     )
 }
 
-#[cfg(kani)]
-/// @obligation credential_effect.repository_git_delivery_excludes_runtime_host_and_mixed_route_authority
-#[kani::proof]
-fn credential_effect_delivery_policy_is_total_and_never_mixes_route_authority() {
-    // Causes: P=purpose permits this boundary, C=purpose permits this carrier,
-    // B=the exact plaintext boundary. Effects: A=the policy helpers admit,
-    // R=its route/authority pair. Constraint: every B has one route/authority.
-    // Decision rules: P+C => A and R follows B; !P or !C => refusal.
-    // Repository/Worker and verification/any-boundary are mandatory refusal
-    // instances. All 8 purposes x 3 boundaries x 3 carriers are selected.
-    let purpose = match kani::any::<u8>() % 8 {
-        0 => CredentialPurpose::ProviderAdapter,
-        1 => CredentialPurpose::RepositoryTransport,
-        2 => CredentialPurpose::McpAuthorization,
-        3 => CredentialPurpose::RemoteAgentAuthorization,
-        4 => CredentialPurpose::WebProviderAuthorization,
-        5 => CredentialPurpose::HttpEffect,
-        6 => CredentialPurpose::SignatureVerification,
-        _ => CredentialPurpose::Extension,
-    };
-    let boundary = match kani::any::<u8>() % 3 {
-        0 => PlaintextBoundary::Workload,
-        1 => PlaintextBoundary::Worker,
-        _ => PlaintextBoundary::Platform,
-    };
-    let carrier = match kani::any::<u8>() % 3 {
-        0 => CredentialDeliveryCarrier::ProcessEnvironment,
-        1 => CredentialDeliveryCarrier::PrivateFile,
-        _ => CredentialDeliveryCarrier::ProcessProtocol,
-    };
-
-    // Policy is total: every triple is either an admitted shape or a closed
-    // refusal, and the refusal reason is exactly one of the two stated axes.
-    let admitted =
-        purpose_admits_boundary(purpose, boundary) && purpose_admits_carrier(purpose, carrier);
-
-    // Route and authority never mix across the plaintext boundary.
-    let (route, authority) = boundary_delivery_shape(boundary);
-    match boundary {
-        PlaintextBoundary::Worker | PlaintextBoundary::Workload => assert!(matches!(
-            (route, authority),
-            (
-                CredentialInvocationRoute::Direct,
-                CredentialDeliveredAuthority::PlaintextMaterial
-            )
-        )),
-        PlaintextBoundary::Platform => assert!(matches!(
-            (route, authority),
-            (
-                CredentialInvocationRoute::EgressGateway,
-                CredentialDeliveredAuthority::DelegatedCapability
-            )
-        )),
-    }
-
-    // Repository Git custody never reaches a Worker, in any topology.
-    if matches!(purpose, CredentialPurpose::RepositoryTransport)
-        && matches!(boundary, PlaintextBoundary::Worker)
-    {
-        assert!(!admitted);
-    }
-    // Host-side verification performs no upstream effect at all.
-    if matches!(purpose, CredentialPurpose::SignatureVerification) {
-        assert!(!admitted);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +324,124 @@ mod tests {
             hosted.authority,
             CredentialDeliveredAuthority::DelegatedCapability
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_purpose(purpose: CredentialPurpose) -> usize {
+        match purpose {
+            CredentialPurpose::ProviderAdapter => 0,
+            CredentialPurpose::RepositoryTransport => 1,
+            CredentialPurpose::McpAuthorization => 2,
+            CredentialPurpose::RemoteAgentAuthorization => 3,
+            CredentialPurpose::WebProviderAuthorization => 4,
+            CredentialPurpose::HttpEffect => 5,
+            CredentialPurpose::SignatureVerification => 6,
+            CredentialPurpose::Extension => 7,
+        }
+    }
+    const EVERY_PURPOSE: [CredentialPurpose; 8] = [
+        CredentialPurpose::ProviderAdapter,
+        CredentialPurpose::RepositoryTransport,
+        CredentialPurpose::McpAuthorization,
+        CredentialPurpose::RemoteAgentAuthorization,
+        CredentialPurpose::WebProviderAuthorization,
+        CredentialPurpose::HttpEffect,
+        CredentialPurpose::SignatureVerification,
+        CredentialPurpose::Extension,
+    ];
+
+    const fn listed_boundary(boundary: PlaintextBoundary) -> usize {
+        match boundary {
+            PlaintextBoundary::Workload => 0,
+            PlaintextBoundary::Worker => 1,
+            PlaintextBoundary::Platform => 2,
+        }
+    }
+    const EVERY_BOUNDARY: [PlaintextBoundary; 3] = [
+        PlaintextBoundary::Workload,
+        PlaintextBoundary::Worker,
+        PlaintextBoundary::Platform,
+    ];
+
+    const fn listed_carrier(carrier: CredentialDeliveryCarrier) -> usize {
+        match carrier {
+            CredentialDeliveryCarrier::ProcessEnvironment => 0,
+            CredentialDeliveryCarrier::PrivateFile => 1,
+            CredentialDeliveryCarrier::ProcessProtocol => 2,
+        }
+    }
+    const EVERY_CARRIER: [CredentialDeliveryCarrier; 3] = [
+        CredentialDeliveryCarrier::ProcessEnvironment,
+        CredentialDeliveryCarrier::PrivateFile,
+        CredentialDeliveryCarrier::ProcessProtocol,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_PURPOSE.into_iter().enumerate() {
+            assert_eq!(listed_purpose(value), index);
+        }
+        for (index, value) in EVERY_BOUNDARY.into_iter().enumerate() {
+            assert_eq!(listed_boundary(value), index);
+        }
+        for (index, value) in EVERY_CARRIER.into_iter().enumerate() {
+            assert_eq!(listed_carrier(value), index);
+        }
+    }
+
+    /// @exhaustive CredentialPurpose(8) x PlaintextBoundary(3) x CredentialDeliveryCarrier(3) = 72
+    /// @obligation credential_effect.repository_git_delivery_excludes_runtime_host_and_mixed_route_authority
+    #[test]
+    fn credential_effect_delivery_policy_is_total_and_never_mixes_route_authority() {
+        // Causes: P=purpose permits this boundary, C=purpose permits this carrier,
+        // B=the exact plaintext boundary. Effects: A=the policy helpers admit,
+        // R=its route/authority pair. Constraint: every B has one route/authority.
+        // Decision rules: P+C => A and R follows B; !P or !C => refusal.
+        // Repository/Worker and verification/any-boundary are mandatory refusal
+        // instances.
+        for purpose in EVERY_PURPOSE {
+            for boundary in EVERY_BOUNDARY {
+                for carrier in EVERY_CARRIER {
+                    let admitted = purpose_admits_boundary(purpose, boundary)
+                        && purpose_admits_carrier(purpose, carrier);
+
+                    // Route and authority never mix across the plaintext boundary.
+                    let (route, authority) = boundary_delivery_shape(boundary);
+                    match boundary {
+                        PlaintextBoundary::Worker | PlaintextBoundary::Workload => {
+                            assert!(matches!(
+                                (route, authority),
+                                (
+                                    CredentialInvocationRoute::Direct,
+                                    CredentialDeliveredAuthority::PlaintextMaterial
+                                )
+                            ));
+                        }
+                        PlaintextBoundary::Platform => assert!(matches!(
+                            (route, authority),
+                            (
+                                CredentialInvocationRoute::EgressGateway,
+                                CredentialDeliveredAuthority::DelegatedCapability
+                            )
+                        )),
+                    }
+
+                    // Repository Git custody never reaches a Worker, in any topology.
+                    if matches!(purpose, CredentialPurpose::RepositoryTransport)
+                        && matches!(boundary, PlaintextBoundary::Worker)
+                    {
+                        assert!(!admitted);
+                    }
+                    // Host-side verification performs no upstream effect at all.
+                    if matches!(purpose, CredentialPurpose::SignatureVerification) {
+                        assert!(!admitted);
+                    }
+                }
+            }
+        }
     }
 }

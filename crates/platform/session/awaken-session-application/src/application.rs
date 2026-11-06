@@ -48,41 +48,62 @@ fn validate_environment_continuation_topology(
     Ok(())
 }
 
-#[cfg(kani)]
-mod environment_owner_kani_proof {
+#[cfg(test)]
+mod environment_owner_exhaustive {
     use super::{SessionExecutionPlacement, runtime_placement_for_topology};
     use awaken_session_contract::SessionPlacementClass;
     use awaken_session_types::SessionRuntimePlacement;
 
+    const EVERY_TOPOLOGY: [SessionExecutionPlacement; 2] = [
+        SessionExecutionPlacement::LocalWorker,
+        SessionExecutionPlacement::RegisteredWorker,
+    ];
+
+    const fn listed_topology(topology: SessionExecutionPlacement) -> usize {
+        match topology {
+            SessionExecutionPlacement::LocalWorker => 0,
+            SessionExecutionPlacement::RegisteredWorker => 1,
+        }
+    }
+
+    #[test]
+    fn every_execution_topology_is_listed() {
+        for (index, topology) in EVERY_TOPOLOGY.into_iter().enumerate() {
+            assert_eq!(listed_topology(topology), index);
+        }
+    }
+
+    /// @exhaustive SessionExecutionPlacement(2) x bool(2) = 4
     /// @obligation runtime.backend_owned_environment_is_materialized_only_by_the_claimed_worker
     /// @obligation session_environment.owner_topology_is_exact_and_frozen
     /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
-    #[kani::proof]
+    #[test]
     fn environment_owner_topology_is_exact_and_frozen() {
-        // Build partition: cfg(kani) without test-support reads the defining
-        // type owner directly; ambient unit-test imports are not a proof input.
         // Process topology freezes exactly one runtime placement, and the one
         // contract placement class selects the Environment owner from that
         // placement alone: the self-hosted Environment bit never moves it.
-        let registered: bool = kani::any();
-        let topology = if registered {
-            SessionExecutionPlacement::RegisteredWorker
-        } else {
-            SessionExecutionPlacement::LocalWorker
-        };
-        let frozen = runtime_placement_for_topology(topology);
-        assert_eq!(
-            frozen,
-            if registered {
-                SessionRuntimePlacement::Worker
-            } else {
-                SessionRuntimePlacement::Local
+        let mut cases = 0;
+        for topology in EVERY_TOPOLOGY {
+            let registered = topology == SessionExecutionPlacement::RegisteredWorker;
+            let frozen = runtime_placement_for_topology(topology);
+            assert_eq!(
+                frozen,
+                if registered {
+                    SessionRuntimePlacement::Worker
+                } else {
+                    SessionRuntimePlacement::Local
+                }
+            );
+            for self_hosted_environment in [false, true] {
+                assert_eq!(
+                    SessionPlacementClass::new(frozen, self_hosted_environment)
+                        .requires_external_environment_owner(),
+                    registered
+                );
+                cases += 1;
             }
-        );
-        assert_eq!(
-            SessionPlacementClass::new(frozen, kani::any()).requires_external_environment_owner(),
-            registered
-        );
+        }
+        assert_eq!(cases, 4);
     }
 }
 

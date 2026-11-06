@@ -1774,56 +1774,6 @@ fn settle_outcome(state: &RunState) -> Result<DispatchOutcome, Error> {
     }
 }
 
-#[cfg(kani)]
-/// @obligation remote_worker.pending_signal_is_consumed_by_commit
-/// @obligation tool_result.terminal_run_rejects_late_result
-/// @kani default-features=false
-/// @proof-input-debt free_symbol classify_pending_input_admission committed_ticket_exists
-/// @proof-input-debt free_symbol classify_pending_input_admission correlation_matches_ticket
-/// @proof-input-debt free_symbol classify_pending_input_admission input_is_unbound
-#[kani::proof]
-fn pending_signal_is_deliverable_only_without_consuming_commit() {
-    // Causes: C1 committed truth is terminal; C2 it retains an awaiting ticket;
-    // C3 the signal matches that exact ticket; C4 the input is unbound. Effects:
-    // E1 deliver only for a nonterminal exact ticket match or a nonterminal fresh
-    // unbound input; E2 every terminal, stale-correlation, and orphan-bound signal
-    // is consumed logically by committed truth and can only be deleted by the
-    // existing settlement transaction. Rules: R1=C1=>E2; R2=!C1+C2+C3=>E1;
-    // R3=!C1+C2+!C3=>E2; R4=!C1+!C2+C4=>E1;
-    // R5=!C1+!C2+!C4=>E2. C4 is irrelevant while C2 is true.
-    let terminal: bool = kani::any();
-    let ticket: bool = kani::any();
-    let correlation_matches: bool = kani::any();
-    let unbound: bool = kani::any();
-    let disposition =
-        classify_pending_input_admission(terminal, ticket, correlation_matches, unbound);
-    assert_eq!(
-        disposition == PendingInputAdmission::Deliver,
-        !terminal && ((ticket && correlation_matches) || (!ticket && unbound))
-    );
-}
-
-#[cfg(kani)]
-/// @obligation remote_worker.execution_requires_claimed_snapshot
-/// @kani default-features=false
-/// @proof-input-debt tautology claimed_snapshot_execution_admission
-#[kani::proof]
-fn claimed_snapshot_execution_requires_exact_identity() {
-    // Causes: C1 Run identity matches; C2 Thread identity matches; C3 claim
-    // epoch matches. Effect E1 permits the already claim-fenced physical
-    // executor boundary. Every other combination is E2 rejection. Decision
-    // rule R1=C1+C2+C3=>E1; the seven complementary Boolean combinations all
-    // imply E2. Token construction remains private to the successful recovery
-    // installation path, so no caller can bypass this production reducer.
-    let run_matches: bool = kani::any();
-    let thread_matches: bool = kani::any();
-    let epoch_matches: bool = kani::any();
-    assert_eq!(
-        claimed_snapshot_execution_admission(run_matches, thread_matches, epoch_matches),
-        run_matches && thread_matches && epoch_matches
-    );
-}
-
 /// Every topology supplies its required authority before any claim is driven.
 enum ExecutionAuthority {
     Local(Arc<dyn LocalWorkerDispatch>),
@@ -1977,4 +1927,68 @@ mod tests {
     use awaken_dispatch_contract::DispatchClaims;
     use awaken_dispatch_contract::DispatchEnqueue;
     include!("worker/tests.rs");
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) = 16
+    /// @obligation remote_worker.pending_signal_is_consumed_by_commit
+    /// @obligation tool_result.terminal_run_rejects_late_result
+    #[test]
+    fn pending_signal_is_deliverable_only_without_consuming_commit() {
+        // Causes: C1 committed truth is terminal; C2 it retains an awaiting ticket;
+        // C3 the signal matches that exact ticket; C4 the input is unbound. Effects:
+        // E1 deliver only for a nonterminal exact ticket match or a nonterminal fresh
+        // unbound input; E2 every terminal, stale-correlation, and orphan-bound signal
+        // is consumed logically by committed truth and can only be deleted by the
+        // existing settlement transaction. Rules: R1=C1=>E2; R2=!C1+C2+C3=>E1;
+        // R3=!C1+C2+!C3=>E2; R4=!C1+!C2+C4=>E1;
+        // R5=!C1+!C2+!C4=>E2. C4 is irrelevant while C2 is true.
+        for terminal in [false, true] {
+            for ticket in [false, true] {
+                for correlation_matches in [false, true] {
+                    for unbound in [false, true] {
+                        let disposition = classify_pending_input_admission(
+                            terminal,
+                            ticket,
+                            correlation_matches,
+                            unbound,
+                        );
+                        assert_eq!(
+                            disposition == PendingInputAdmission::Deliver,
+                            !terminal && ((ticket && correlation_matches) || (!ticket && unbound))
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation remote_worker.execution_requires_claimed_snapshot
+    #[test]
+    fn claimed_snapshot_execution_requires_exact_identity() {
+        // Causes: C1 Run identity matches; C2 Thread identity matches; C3 claim
+        // epoch matches. Effect E1 permits the already claim-fenced physical
+        // executor boundary. Every other combination is E2 rejection. Decision
+        // rule R1=C1+C2+C3=>E1; the seven complementary Boolean combinations all
+        // imply E2. Token construction remains private to the successful recovery
+        // installation path, so no caller can bypass this production reducer.
+        for run_matches in [false, true] {
+            for thread_matches in [false, true] {
+                for epoch_matches in [false, true] {
+                    assert_eq!(
+                        claimed_snapshot_execution_admission(
+                            run_matches,
+                            thread_matches,
+                            epoch_matches
+                        ),
+                        run_matches && thread_matches && epoch_matches
+                    );
+                }
+            }
+        }
+    }
 }

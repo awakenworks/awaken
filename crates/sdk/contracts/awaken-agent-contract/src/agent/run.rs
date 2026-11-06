@@ -233,49 +233,82 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod kani_proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
-    fn symbolic_failure(tag: u8) -> Failure {
-        match tag % 3 {
-            0 => Failure::Inference {
+    const fn listed_failure(failure: &Failure) -> usize {
+        match failure {
+            Failure::Inference { .. } => 0,
+            Failure::CapabilityBound => 1,
+            Failure::StateConflict => 2,
+        }
+    }
+
+    const fn listed_end_cause(cause: &EndCause) -> usize {
+        match cause {
+            EndCause::NaturalEnd => 0,
+            EndCause::MaxSteps => 1,
+            EndCause::Cancelled => 2,
+            EndCause::Stopped(_) => 3,
+            EndCause::Error(failure) => 4 + listed_failure(failure),
+            EndCause::Indeterminate => 7,
+        }
+    }
+
+    const fn listed_state(state: &RunState) -> usize {
+        match state {
+            RunState::Running => 0,
+            RunState::Awaiting => 1,
+            RunState::Ended(cause) => 2 + listed_end_cause(cause),
+        }
+    }
+
+    /// Every lifecycle class, end cause and failure kind. Payload strings are
+    /// the empty string: the transition relation reads only the variants.
+    fn every_state() -> Vec<RunState> {
+        let failures = [
+            Failure::Inference {
                 code: String::new(),
                 message: String::new(),
             },
-            1 => Failure::CapabilityBound,
-            _ => Failure::StateConflict,
-        }
+            Failure::CapabilityBound,
+            Failure::StateConflict,
+        ];
+        let mut causes = vec![
+            EndCause::NaturalEnd,
+            EndCause::MaxSteps,
+            EndCause::Cancelled,
+            EndCause::Stopped(String::new()),
+        ];
+        causes.extend(failures.into_iter().map(EndCause::Error));
+        causes.push(EndCause::Indeterminate);
+        let mut states = vec![RunState::Running, RunState::Awaiting];
+        states.extend(causes.into_iter().map(RunState::Ended));
+        states
     }
 
-    fn symbolic_end_cause(tag: u8, failure_tag: u8) -> EndCause {
-        match tag % 6 {
-            0 => EndCause::NaturalEnd,
-            1 => EndCause::MaxSteps,
-            2 => EndCause::Cancelled,
-            3 => EndCause::Stopped(String::new()),
-            4 => EndCause::Error(symbolic_failure(failure_tag)),
-            _ => EndCause::Indeterminate,
-        }
-    }
-
-    fn symbolic_state(state_tag: u8, cause_tag: u8, failure_tag: u8) -> RunState {
-        match state_tag % 3 {
-            0 => RunState::Running,
-            1 => RunState::Awaiting,
-            _ => RunState::Ended(symbolic_end_cause(cause_tag, failure_tag)),
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in every_state().iter().enumerate() {
+            assert_eq!(listed_state(value), index);
         }
     }
 
     /// Covers every lifecycle class, end cause, failure kind, and next-state
     /// class against the production transition relation.
+    /// @exhaustive RunState(10) x RunState(10) = 100
     /// @obligation run.lifecycle_absorption
     /// @obligation store_history.terminal_run_is_final_for_every_backend_history
     /// @obligation tool_result.terminal_run_rejects_late_result
-    #[kani::proof]
+    #[test]
     fn ended_is_absorbing_for_every_next_state() {
-        let current = symbolic_state(kani::any(), kani::any(), kani::any());
-        let next = symbolic_state(kani::any(), kani::any(), kani::any());
-        assert_eq!(current.permits(&next), !current.is_terminal());
+        let states = every_state();
+        assert_eq!(states.len(), 10);
+        for current in &states {
+            for next in &states {
+                assert_eq!(current.permits(next), !current.is_terminal());
+            }
+        }
     }
 }

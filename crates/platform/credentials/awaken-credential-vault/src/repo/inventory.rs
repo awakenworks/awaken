@@ -233,31 +233,42 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-/// @obligation credential.material_is_always_published_or_intent_tracked
-/// @obligation credential_inventory.committed_material_is_preserved
-/// @obligation credential_inventory.orphans_are_reported_and_retained_without_an_atomic_claim
-/// @obligation credential_inventory.pending_intent_material_is_preserved
-/// @proof-input-debt free_symbol credential_inventory_decision committed
-/// @proof-input-debt free_symbol credential_inventory_decision pending
-/// @proof-input-debt free_symbol credential_inventory_decision present
-#[kani::proof]
-fn credential_inventory_never_orphans_committed_pending_or_foreign_material() {
-    let credential_namespace = kani::any::<bool>();
-    let present = kani::any::<bool>();
-    let committed = kani::any::<bool>();
-    let pending = kani::any::<bool>();
-    let decision = credential_inventory_decision(credential_namespace, present, committed, pending);
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
 
-    assert_eq!(
-        decision == CredentialInventoryDecision::ReportMissing,
-        committed && !present
-    );
-    assert_eq!(
-        decision == CredentialInventoryDecision::ReportOrphan,
-        credential_namespace && present && !committed && !pending
-    );
-    if committed || pending || !credential_namespace {
-        assert_ne!(decision, CredentialInventoryDecision::ReportOrphan);
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) = 16
+    /// @obligation credential.material_is_always_published_or_intent_tracked
+    /// @obligation credential_inventory.committed_material_is_preserved
+    /// @obligation credential_inventory.orphans_are_reported_and_retained_without_an_atomic_claim
+    /// @obligation credential_inventory.pending_intent_material_is_preserved
+    #[test]
+    fn credential_inventory_never_orphans_committed_pending_or_foreign_material() {
+        for credential_namespace in [false, true] {
+            for present in [false, true] {
+                for committed in [false, true] {
+                    for pending in [false, true] {
+                        let decision = credential_inventory_decision(
+                            credential_namespace,
+                            present,
+                            committed,
+                            pending,
+                        );
+
+                        assert_eq!(
+                            decision == CredentialInventoryDecision::ReportMissing,
+                            committed && !present
+                        );
+                        assert_eq!(
+                            decision == CredentialInventoryDecision::ReportOrphan,
+                            credential_namespace && present && !committed && !pending
+                        );
+                        if committed || pending || !credential_namespace {
+                            assert_ne!(decision, CredentialInventoryDecision::ReportOrphan);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

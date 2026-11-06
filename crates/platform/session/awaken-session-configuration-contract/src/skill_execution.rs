@@ -127,50 +127,52 @@ pub fn validate_skill_bundle(
     Ok(version)
 }
 
-#[cfg(kani)]
-/// @obligation session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
-/// @obligation skill.execution_pin_binds_exact_workspace_revision_and_hash
-/// @obligation skill.invalid_workspace_or_hash_fails_closed
-/// @obligation skill.loaded_version_equals_session_pin
-/// @proof-input-debt free_symbol skill_pin_facts_match custom_kind
-/// @proof-input-debt free_symbol skill_pin_facts_match same_hash
-/// @proof-input-debt free_symbol skill_pin_facts_match same_revision
-/// @proof-input-debt free_symbol skill_pin_facts_match same_skill
-/// @proof-input-debt free_symbol skill_pin_facts_match same_workspace
-#[kani::proof]
-fn skill_execution_pin_requires_exact_workspace_revision_and_hash() {
-    let custom_kind = kani::any();
-    let same_workspace = kani::any();
-    let same_skill = kani::any();
-    let same_revision = kani::any();
-    let same_hash = kani::any();
-    let accepted = skill_pin_facts_match(
-        custom_kind,
-        same_workspace,
-        same_skill,
-        same_revision,
-        same_hash,
-    );
-    assert_eq!(
-        accepted,
-        custom_kind && same_workspace && same_skill && same_revision && same_hash
-    );
-}
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
 
-#[cfg(kani)]
-/// @obligation skill.execution_pin_binds_exact_workspace_revision_and_hash
-#[kani::proof]
-fn every_skill_execution_pin_axis_is_binding() {
-    let changed_axis: u8 = kani::any();
-    kani::assume(changed_axis < 5);
-    let accepted = skill_pin_facts_match(
-        changed_axis != 0,
-        changed_axis != 1,
-        changed_axis != 2,
-        changed_axis != 3,
-        changed_axis != 4,
-    );
-    assert!(!accepted);
+    /// @exhaustive bool(2)^5 = 32
+    /// @obligation session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+    /// @obligation skill.execution_pin_binds_exact_workspace_revision_and_hash
+    /// @obligation skill.invalid_workspace_or_hash_fails_closed
+    /// @obligation skill.loaded_version_equals_session_pin
+    #[test]
+    fn skill_execution_pin_requires_exact_workspace_revision_and_hash() {
+        for mask in 0_u8..32 {
+            let custom_kind = mask & 1 != 0;
+            let same_workspace = mask & 2 != 0;
+            let same_skill = mask & 4 != 0;
+            let same_revision = mask & 8 != 0;
+            let same_hash = mask & 16 != 0;
+            let accepted = skill_pin_facts_match(
+                custom_kind,
+                same_workspace,
+                same_skill,
+                same_revision,
+                same_hash,
+            );
+            assert_eq!(
+                accepted,
+                custom_kind && same_workspace && same_skill && same_revision && same_hash
+            );
+        }
+    }
+
+    /// @exhaustive changed axis 0..5 (5) = 5
+    /// @obligation skill.execution_pin_binds_exact_workspace_revision_and_hash
+    #[test]
+    fn every_skill_execution_pin_axis_is_binding() {
+        for changed_axis in 0_u8..5 {
+            let accepted = skill_pin_facts_match(
+                changed_axis != 0,
+                changed_axis != 1,
+                changed_axis != 2,
+                changed_axis != 3,
+                changed_axis != 4,
+            );
+            assert!(!accepted);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -24,32 +24,6 @@ pub(super) const fn logical_deletion_is_proven(
     }
 }
 
-#[cfg(kani)]
-/// @obligation session.runtime_projection_logical_deletion_requires_positive_exact_scoped_evidence
-/// @kani profile=solver-kissat-v1
-#[kani::proof]
-fn logical_deletion_observation_requires_positive_exact_scoped_evidence() {
-    // Direct production read-decision over all 64 Boolean rows. Repository
-    // decoding/owner-partition honesty and async consistency are explicit TCB.
-    let present: bool = kani::any();
-    let id: bool = kani::any();
-    let owner: bool = kani::any();
-    let hidden: bool = kani::any();
-    let terminal: bool = kani::any();
-    let tombstone: bool = kani::any();
-    let proven = logical_deletion_is_proven(present, id, owner, hidden, terminal, tombstone);
-    assert_eq!(
-        proven,
-        (present && id && owner && hidden && terminal) || (!present && tombstone)
-    );
-    if present && (!id || !owner || !hidden || !terminal) {
-        assert!(!proven);
-    }
-    if !present && !tombstone {
-        assert!(!proven);
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProjectionObservationDecision {
     UseRefreshed,
@@ -325,6 +299,45 @@ mod tests {
                 ProjectionObservationDecision::UseRefreshed,
                 "R3-R4/E1"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x bool(2) x bool(2) = 64
+    /// @obligation session.runtime_projection_logical_deletion_requires_positive_exact_scoped_evidence
+    #[test]
+    fn logical_deletion_observation_requires_positive_exact_scoped_evidence() {
+        // Direct production read-decision over all 64 Boolean rows. Repository
+        // decoding/owner-partition honesty and async consistency are explicit TCB.
+        for present in [false, true] {
+            for id in [false, true] {
+                for owner in [false, true] {
+                    for hidden in [false, true] {
+                        for terminal in [false, true] {
+                            for tombstone in [false, true] {
+                                let proven = logical_deletion_is_proven(
+                                    present, id, owner, hidden, terminal, tombstone,
+                                );
+                                assert_eq!(
+                                    proven,
+                                    (present && id && owner && hidden && terminal)
+                                        || (!present && tombstone)
+                                );
+                                if present && (!id || !owner || !hidden || !terminal) {
+                                    assert!(!proven);
+                                }
+                                if !present && !tombstone {
+                                    assert!(!proven);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

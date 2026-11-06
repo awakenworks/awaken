@@ -269,88 +269,6 @@ impl PendingManagedCredentialMutation {
     }
 }
 
-#[cfg(kani)]
-/// @obligation credential.failed_create_compensates_material
-/// @obligation credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
-/// @obligation credential.restart_recovery_compensates_unpublished_material
-/// @proof-input-debt free_symbol reclamation_selected after
-/// @proof-input-debt free_symbol reclamation_selected before
-#[kani::proof]
-fn credential_reclamation_never_deletes_shared_or_live_predecessor_material() {
-    // C1 all phases, C2 distinct replacement, C3 independent membership in
-    // before/after. R1 nonterminal => reject; R2 published => only retired refs,
-    // and never a live distinct predecessor; R3 aborted => only candidate refs;
-    // R4 shared or unrelated => never delete. No bound is assumed between C2/C3.
-    use CredentialMaterialMutationPhase::*;
-    let phase = match kani::any::<u8>() % 4 {
-        0 => Writing,
-        1 => Ready,
-        2 => Reclaiming,
-        _ => ReclaimingAbort,
-    };
-    let distinct = kani::any::<bool>();
-    let before = kani::any::<bool>();
-    let after = kani::any::<bool>();
-    let selected = reclamation_selected(phase, distinct, before, after);
-    match phase {
-        Writing | Ready => assert_eq!(selected, None),
-        Reclaiming => assert_eq!(selected, Some(before && !after && !distinct)),
-        ReclaimingAbort => assert_eq!(selected, Some(after && !before)),
-    }
-    if before == after {
-        assert_ne!(selected, Some(true));
-    }
-}
-
-#[cfg(kani)]
-/// @obligation credential.failed_create_compensates_material
-/// @obligation credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
-/// @obligation credential.material_is_always_published_or_intent_tracked
-/// @obligation credential.restart_recovery_compensates_unpublished_material
-/// @proof-input-debt free_symbol abort_admitted exact_authority
-/// @proof-input-debt free_symbol abort_admitted unpublished
-/// @proof-input-debt free_symbol completion_admitted exact_authority
-/// @proof-input-debt free_symbol completion_admitted published
-/// @proof-input-debt free_symbol completion_admitted unpublished
-#[kani::proof]
-fn credential_cleanup_requires_exact_authority_and_phase_truth() {
-    // Causes: all four phases, exact intent identity, published/unpublished
-    // projection. No relation is assumed between the projections (a no-op
-    // mutation may satisfy both). Rules: foreign authority always rejects;
-    // Writing/Ready never complete; Reclaiming only completes published truth;
-    // abort only admits unpublished truth and can never abort Reclaiming.
-    // This proves the production scalar decisions, not heap Eq or SQL locking.
-    use CredentialMaterialMutationPhase::*;
-    let phase = match kani::any::<u8>() % 4 {
-        0 => Writing,
-        1 => Ready,
-        2 => Reclaiming,
-        _ => ReclaimingAbort,
-    };
-    let exact = kani::any::<bool>();
-    let published = kani::any::<bool>();
-    let unpublished = kani::any::<bool>();
-    let complete = completion_admitted(phase, exact, published, unpublished);
-    let abort = abort_admitted(phase, exact, unpublished);
-    match phase {
-        Writing | Ready => {
-            assert!(!complete);
-            assert_eq!(abort, exact && unpublished);
-        }
-        Reclaiming => {
-            assert_eq!(complete, exact && published);
-            assert!(!abort);
-        }
-        ReclaimingAbort => {
-            assert_eq!(complete, exact && unpublished);
-            assert_eq!(abort, complete);
-        }
-    }
-    if !exact {
-        assert!(!complete && !abort);
-    }
-}
-
 #[cfg(test)]
 pub(super) mod tests {
 
@@ -847,6 +765,108 @@ pub(super) mod tests {
                     .unwrap(),
                 abort
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_phase(phase: CredentialMaterialMutationPhase) -> usize {
+        match phase {
+            CredentialMaterialMutationPhase::Writing => 0,
+            CredentialMaterialMutationPhase::Ready => 1,
+            CredentialMaterialMutationPhase::Reclaiming => 2,
+            CredentialMaterialMutationPhase::ReclaimingAbort => 3,
+        }
+    }
+    const EVERY_PHASE: [CredentialMaterialMutationPhase; 4] = [
+        CredentialMaterialMutationPhase::Writing,
+        CredentialMaterialMutationPhase::Ready,
+        CredentialMaterialMutationPhase::Reclaiming,
+        CredentialMaterialMutationPhase::ReclaimingAbort,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_PHASE.into_iter().enumerate() {
+            assert_eq!(listed_phase(value), index);
+        }
+    }
+
+    /// @exhaustive CredentialMaterialMutationPhase(4) x bool(2) x bool(2) x bool(2) = 32
+    /// @obligation credential.failed_create_compensates_material
+    /// @obligation credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+    /// @obligation credential.restart_recovery_compensates_unpublished_material
+    #[test]
+    fn credential_reclamation_never_deletes_shared_or_live_predecessor_material() {
+        // C1 all phases, C2 distinct replacement, C3 independent membership in
+        // before/after. R1 nonterminal => reject; R2 published => only retired refs,
+        // and never a live distinct predecessor; R3 aborted => only candidate refs;
+        // R4 shared or unrelated => never delete. No bound is assumed between C2/C3.
+        use CredentialMaterialMutationPhase::*;
+        for phase in EVERY_PHASE {
+            for distinct in [false, true] {
+                for before in [false, true] {
+                    for after in [false, true] {
+                        let selected = reclamation_selected(phase, distinct, before, after);
+                        match phase {
+                            Writing | Ready => assert_eq!(selected, None),
+                            Reclaiming => {
+                                assert_eq!(selected, Some(before && !after && !distinct));
+                            }
+                            ReclaimingAbort => assert_eq!(selected, Some(after && !before)),
+                        }
+                        if before == after {
+                            assert_ne!(selected, Some(true));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive CredentialMaterialMutationPhase(4) x bool(2) x bool(2) x bool(2) = 32
+    /// @obligation credential.failed_create_compensates_material
+    /// @obligation credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+    /// @obligation credential.material_is_always_published_or_intent_tracked
+    /// @obligation credential.restart_recovery_compensates_unpublished_material
+    #[test]
+    fn credential_cleanup_requires_exact_authority_and_phase_truth() {
+        // Causes: all four phases, exact intent identity, published/unpublished
+        // projection. No relation is assumed between the projections (a no-op
+        // mutation may satisfy both). Rules: foreign authority always rejects;
+        // Writing/Ready never complete; Reclaiming only completes published truth;
+        // abort only admits unpublished truth and can never abort Reclaiming.
+        // This checks the production scalar decisions, not heap Eq or SQL locking.
+        use CredentialMaterialMutationPhase::*;
+        for phase in EVERY_PHASE {
+            for exact in [false, true] {
+                for published in [false, true] {
+                    for unpublished in [false, true] {
+                        let complete = completion_admitted(phase, exact, published, unpublished);
+                        let abort = abort_admitted(phase, exact, unpublished);
+                        match phase {
+                            Writing | Ready => {
+                                assert!(!complete);
+                                assert_eq!(abort, exact && unpublished);
+                            }
+                            Reclaiming => {
+                                assert_eq!(complete, exact && published);
+                                assert!(!abort);
+                            }
+                            ReclaimingAbort => {
+                                assert_eq!(complete, exact && unpublished);
+                                assert_eq!(abort, complete);
+                            }
+                        }
+                        if !exact {
+                            assert!(!complete && !abort);
+                        }
+                    }
+                }
+            }
         }
     }
 }

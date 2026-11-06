@@ -122,29 +122,6 @@ pub const fn has_verified_capability_observation(
     matches!(state, Some(AcpCapabilityObservationState::Verified))
 }
 
-#[cfg(kani)]
-/// @obligation worker.acp_capability_is_detected_only_after_a_verified_handshake
-#[kani::proof]
-fn acp_capability_is_detected_exactly_after_a_verified_observation() {
-    let present: bool = kani::any();
-    let verified: bool = kani::any();
-    let probe_failed: bool = kani::any();
-    let state = if !present {
-        None
-    } else if verified {
-        Some(AcpCapabilityObservationState::Verified)
-    } else if probe_failed {
-        Some(AcpCapabilityObservationState::ProbeFailed)
-    } else {
-        Some(AcpCapabilityObservationState::Unavailable)
-    };
-
-    assert_eq!(
-        has_verified_capability_observation(state),
-        present && verified
-    );
-}
-
 /// Point-in-time, secret-free capability evidence from one Worker-local ACP.
 ///
 /// ```compile_fail
@@ -699,5 +676,45 @@ mod tests {
         }
         assert!(serde_json::from_str::<AcpModelSelectionSupport>("true").is_err());
         assert!(serde_json::from_str::<AcpModelSelectionSupport>("\"unknown\"").is_err());
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_state(state: AcpCapabilityObservationState) -> usize {
+        match state {
+            AcpCapabilityObservationState::Verified => 0,
+            AcpCapabilityObservationState::Unavailable => 1,
+            AcpCapabilityObservationState::ProbeFailed => 2,
+        }
+    }
+    const EVERY_STATE: [AcpCapabilityObservationState; 3] = [
+        AcpCapabilityObservationState::Verified,
+        AcpCapabilityObservationState::Unavailable,
+        AcpCapabilityObservationState::ProbeFailed,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_STATE.into_iter().enumerate() {
+            assert_eq!(listed_state(value), index);
+        }
+    }
+
+    /// @exhaustive Option<AcpCapabilityObservationState(3)>(4) = 4
+    /// @obligation worker.acp_capability_is_detected_only_after_a_verified_handshake
+    #[test]
+    fn acp_capability_is_detected_exactly_after_a_verified_observation() {
+        let every_observation = std::iter::once(None).chain(EVERY_STATE.map(Some));
+        for state in every_observation {
+            let present = state.is_some();
+            let verified = state == Some(AcpCapabilityObservationState::Verified);
+            assert_eq!(
+                has_verified_capability_observation(state),
+                present && verified
+            );
+        }
     }
 }

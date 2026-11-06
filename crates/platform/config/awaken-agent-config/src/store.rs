@@ -742,41 +742,6 @@ fn management_effect_confirmation_requires_positive_exact_readback() {
     );
 }
 
-#[cfg(kani)]
-/// @obligation resource_binding.draft_audit_and_effect_are_atomic
-/// @obligation resource_binding.replay_is_idempotent_and_identity_stable
-/// @proof-input-debt free_symbol management_effect_enqueue_decision pending_exists
-/// @proof-input-debt free_symbol management_effect_enqueue_decision pending_is_exact
-/// @proof-input-debt free_symbol management_effect_enqueue_decision revision_is_positive
-#[kani::proof]
-fn management_effect_enqueue_is_exact_replay_or_absent_insert() {
-    // Causes: C1 the effect revision is positive; C2 a pending effect exists;
-    // C3 its complete typed payload is identical. Effects: E1 insert only for
-    // C1+!C2; E2 replay only for C1+C2+C3; E3 reject a changed stable identity;
-    // E4 reject every nonpositive revision. Decision rules R1-R4 are exactly
-    // those four disjoint partitions; C3 is irrelevant when C2 is false.
-    let positive: bool = kani::any();
-    let present: bool = kani::any();
-    let exact: bool = kani::any();
-    let decision = management_effect_enqueue_decision(positive, present, exact);
-    assert_eq!(
-        decision == ManagementEffectEnqueueDecision::Insert,
-        positive && !present
-    );
-    assert_eq!(
-        decision == ManagementEffectEnqueueDecision::Replay,
-        positive && present && exact
-    );
-    assert_eq!(
-        decision == ManagementEffectEnqueueDecision::Conflict,
-        positive && present && !exact
-    );
-    assert_eq!(
-        decision == ManagementEffectEnqueueDecision::InvalidRevision,
-        !positive
-    );
-}
-
 #[cfg(test)]
 mod effect_receipt_tests {
     use super::*;
@@ -1294,5 +1259,45 @@ mod publication_revision_tests {
             publication_revision_decision("workspace-a", 7, "new", existing),
             PublicationRevisionDecision::ExactReplay
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation resource_binding.draft_audit_and_effect_are_atomic
+    /// @obligation resource_binding.replay_is_idempotent_and_identity_stable
+    #[test]
+    fn management_effect_enqueue_is_exact_replay_or_absent_insert() {
+        // Causes: C1 the effect revision is positive; C2 a pending effect exists;
+        // C3 its complete typed payload is identical. Effects: E1 insert only for
+        // C1+!C2; E2 replay only for C1+C2+C3; E3 reject a changed stable identity;
+        // E4 reject every nonpositive revision. Decision rules R1-R4 are exactly
+        // those four disjoint partitions; C3 is irrelevant when C2 is false.
+        for positive in [false, true] {
+            for present in [false, true] {
+                for exact in [false, true] {
+                    let decision = management_effect_enqueue_decision(positive, present, exact);
+                    assert_eq!(
+                        decision == ManagementEffectEnqueueDecision::Insert,
+                        positive && !present
+                    );
+                    assert_eq!(
+                        decision == ManagementEffectEnqueueDecision::Replay,
+                        positive && present && exact
+                    );
+                    assert_eq!(
+                        decision == ManagementEffectEnqueueDecision::Conflict,
+                        positive && present && !exact
+                    );
+                    assert_eq!(
+                        decision == ManagementEffectEnqueueDecision::InvalidRevision,
+                        !positive
+                    );
+                }
+            }
+        }
     }
 }

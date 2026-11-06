@@ -161,33 +161,37 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    /// @exhaustive bool(2) = 2
     /// @obligation tool_policy.scoped_catalog_admin_membership_is_exact_and_non_disclosing
-    /// @proof-input-debt free_symbol scoped_catalog_membership is_reserved_scope
-    #[kani::proof]
+    #[test]
     fn only_the_reserved_scope_selects_admin_catalog_membership() {
-        let is_reserved_scope: bool = kani::any();
-        let membership = scoped_catalog_membership(is_reserved_scope);
+        for is_reserved_scope in [false, true] {
+            let membership = scoped_catalog_membership(is_reserved_scope);
 
-        assert_eq!(
-            membership == ScopedCatalogMembership::GlobalAndAdmin,
-            is_reserved_scope
-        );
+            assert_eq!(
+                membership == ScopedCatalogMembership::GlobalAndAdmin,
+                is_reserved_scope
+            );
+        }
     }
 
+    /// @exhaustive bool(2) = 2
     /// @obligation tool_policy.scoped_catalog_admin_membership_is_exact_and_non_disclosing
-    /// @proof-input-debt free_symbol scoped_catalog_membership is_reserved_scope
-    #[kani::proof]
+    #[test]
     fn every_non_reserved_scope_selects_strictly_global_membership() {
-        let is_reserved_scope: bool = kani::any();
-        kani::assume(!is_reserved_scope);
+        for is_reserved_scope in [false, true] {
+            if is_reserved_scope {
+                continue;
+            }
 
-        assert_eq!(
-            scoped_catalog_membership(is_reserved_scope),
-            ScopedCatalogMembership::GlobalOnly
-        );
+            assert_eq!(
+                scoped_catalog_membership(is_reserved_scope),
+                ScopedCatalogMembership::GlobalOnly
+            );
+        }
     }
 }

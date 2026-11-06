@@ -943,28 +943,6 @@ mod tests {
 mod verification {
     use super::*;
 
-    /// @obligation live_inbox.close_is_absorbing
-    #[kani::proof]
-    fn live_inbox_closed_lifecycle_is_absorbing_for_every_mutation() {
-        let lifecycle = if kani::any::<bool>() {
-            InboxLifecycle::Open
-        } else {
-            InboxLifecycle::Closed
-        };
-        let next = lifecycle.close();
-
-        assert_eq!(
-            lifecycle.admits_mutation(),
-            matches!(lifecycle, InboxLifecycle::Open)
-        );
-        if matches!(lifecycle, InboxLifecycle::Closed) {
-            assert_eq!(next, InboxLifecycle::Closed);
-            assert!(!next.admits_mutation());
-        }
-        assert_eq!(next, InboxLifecycle::Closed);
-        assert_eq!(next.close(), InboxLifecycle::Closed);
-    }
-
     /// @obligation live_inbox.reorder_is_exact_and_rejection_stutters
     /// @kani tier=nightly
     #[kani::proof]
@@ -1021,6 +999,7 @@ mod verification {
     }
 
     /// @obligation live_inbox.replace_preserves_identity_and_order
+    /// @kani tier=nightly
     #[kani::proof]
     fn live_inbox_replace_preserves_identity_and_order() {
         // Causes: P1 target is key 1/2/3; P2 target is every other u8. Effects:
@@ -1062,6 +1041,7 @@ mod verification {
     }
 
     /// @obligation live_inbox.boundary_drain_retires_exactly_the_returned_best_effort_fold
+    /// @kani tier=nightly
     #[kani::proof]
     fn live_inbox_boundary_drain_retires_exactly_the_queue() {
         // Cause: D1 the bounded non-empty queue contains three arbitrary
@@ -1074,5 +1054,45 @@ mod verification {
 
         assert_eq!(drained, before);
         assert!(entries.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_lifecycle(lifecycle: InboxLifecycle) -> usize {
+        match lifecycle {
+            InboxLifecycle::Open => 0,
+            InboxLifecycle::Closed => 1,
+        }
+    }
+    const EVERY_LIFECYCLE: [InboxLifecycle; 2] = [InboxLifecycle::Open, InboxLifecycle::Closed];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_LIFECYCLE.into_iter().enumerate() {
+            assert_eq!(listed_lifecycle(value), index);
+        }
+    }
+
+    /// @exhaustive InboxLifecycle(2) = 2
+    /// @obligation live_inbox.close_is_absorbing
+    #[test]
+    fn live_inbox_closed_lifecycle_is_absorbing_for_every_mutation() {
+        for lifecycle in EVERY_LIFECYCLE {
+            let next = lifecycle.close();
+
+            assert_eq!(
+                lifecycle.admits_mutation(),
+                matches!(lifecycle, InboxLifecycle::Open)
+            );
+            if matches!(lifecycle, InboxLifecycle::Closed) {
+                assert_eq!(next, InboxLifecycle::Closed);
+                assert!(!next.admits_mutation());
+            }
+            assert_eq!(next, InboxLifecycle::Closed);
+            assert_eq!(next.close(), InboxLifecycle::Closed);
+        }
     }
 }

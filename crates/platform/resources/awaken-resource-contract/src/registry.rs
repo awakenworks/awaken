@@ -1427,33 +1427,59 @@ mod registry_proofs {
             matches!(state, ResourceState::Archived | ResourceState::Deleted).then_some(at)
         );
     }
+}
 
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_RESOURCE_STATE: [ResourceState; 4] = [
+        ResourceState::Active,
+        ResourceState::Suspended,
+        ResourceState::Archived,
+        ResourceState::Deleted,
+    ];
+
+    const fn listed_resource_state(state: ResourceState) -> usize {
+        match state {
+            ResourceState::Active => 0,
+            ResourceState::Suspended => 1,
+            ResourceState::Archived => 2,
+            ResourceState::Deleted => 3,
+        }
+    }
+
+    #[test]
+    fn every_resource_state_is_listed_once() {
+        for (index, state) in EVERY_RESOURCE_STATE.into_iter().enumerate() {
+            assert_eq!(listed_resource_state(state), index);
+        }
+    }
+
+    /// @exhaustive bool(2) x ResourceState(4) x bool(2) = 16
     /// @obligation session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
-    /// @proof-input-debt free_symbol live_binding_admission workspace_matches
-    #[kani::proof]
+    #[test]
     fn live_resource_binding_requires_exact_scope_active_state_and_existing_pin() {
-        let workspace_matches: bool = kani::any();
-        let state_code: u8 = kani::any();
-        let config_exists: bool = kani::any();
-        kani::assume(state_code <= 3);
-        let state = match state_code {
-            0 => ResourceState::Active,
-            1 => ResourceState::Suspended,
-            2 => ResourceState::Archived,
-            _ => ResourceState::Deleted,
-        };
-        let decision = live_binding_admission(workspace_matches, state, config_exists);
+        for workspace_matches in [false, true] {
+            for state in EVERY_RESOURCE_STATE {
+                for config_exists in [false, true] {
+                    let decision = live_binding_admission(workspace_matches, state, config_exists);
 
-        assert_eq!(
-            decision == LiveBindingAdmission::Accept,
-            workspace_matches && matches!(state, ResourceState::Active) && config_exists
-        );
-        if !workspace_matches {
-            assert_eq!(decision, LiveBindingAdmission::WorkspaceMismatch);
-        } else if !matches!(state, ResourceState::Active) {
-            assert_eq!(decision, LiveBindingAdmission::NotActive);
-        } else if !config_exists {
-            assert_eq!(decision, LiveBindingAdmission::ConfigMissing);
+                    assert_eq!(
+                        decision == LiveBindingAdmission::Accept,
+                        workspace_matches
+                            && matches!(state, ResourceState::Active)
+                            && config_exists
+                    );
+                    if !workspace_matches {
+                        assert_eq!(decision, LiveBindingAdmission::WorkspaceMismatch);
+                    } else if !matches!(state, ResourceState::Active) {
+                        assert_eq!(decision, LiveBindingAdmission::NotActive);
+                    } else if !config_exists {
+                        assert_eq!(decision, LiveBindingAdmission::ConfigMissing);
+                    }
+                }
+            }
         }
     }
 }

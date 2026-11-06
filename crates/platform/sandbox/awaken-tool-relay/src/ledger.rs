@@ -557,12 +557,13 @@ impl FsOperationLedger {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    /// @exhaustive LedgerEntryPhase(3) = 3
     /// @obligation remote_tool.result_matches_operation
-    #[kani::proof]
+    #[test]
     fn ledger_completion_requires_the_exact_executing_operation_entry() {
         // Cause C1: the same operation id has the live Executing entry.
         // Effect E1: admit completion for that operation; E2: reject completion
@@ -573,18 +574,19 @@ mod verification {
         // |---|---|---|
         // | R1 | yes | E1 |
         // | R2 | no  | E2 |
-        let tag: u8 = kani::any();
-        kani::assume(tag < 3);
-        let phase = match tag {
-            0 => LedgerEntryPhase::Absent,
-            1 => LedgerEntryPhase::Executing,
-            _ => LedgerEntryPhase::Completed,
-        };
-        assert_eq!(ledger_completion_admitted(phase), tag == 1);
+        for tag in 0_u8..3 {
+            let phase = match tag {
+                0 => LedgerEntryPhase::Absent,
+                1 => LedgerEntryPhase::Executing,
+                _ => LedgerEntryPhase::Completed,
+            };
+            assert_eq!(ledger_completion_admitted(phase), tag == 1);
+        }
     }
 
+    /// @exhaustive LedgerEntryPhase(3) = 3
     /// @obligation remote_tool.invoke_at_most_once
-    #[kani::proof]
+    #[test]
     fn ledger_begin_allows_claim_only_from_absent_and_never_from_replay() {
         // Cause C1: operation entry absent; C2: executing; C3: completed.
         // Effects: E1 attempt the single durable claim; E2 join the live owner;
@@ -595,16 +597,16 @@ mod verification {
         // | R1 | Absent | E1 |
         // | R2 | Executing | E2 |
         // | R3 | Completed | E3 |
-        let tag: u8 = kani::any();
-        kani::assume(tag < 3);
-        let phase = match tag {
-            0 => LedgerEntryPhase::Absent,
-            1 => LedgerEntryPhase::Executing,
-            _ => LedgerEntryPhase::Completed,
-        };
-        let disposition = ledger_begin_disposition(phase);
-        assert_eq!(disposition == LedgerBeginDisposition::Claim, tag == 0);
-        assert_eq!(disposition == LedgerBeginDisposition::Join, tag == 1);
-        assert_eq!(disposition == LedgerBeginDisposition::Replay, tag == 2);
+        for tag in 0_u8..3 {
+            let phase = match tag {
+                0 => LedgerEntryPhase::Absent,
+                1 => LedgerEntryPhase::Executing,
+                _ => LedgerEntryPhase::Completed,
+            };
+            let disposition = ledger_begin_disposition(phase);
+            assert_eq!(disposition == LedgerBeginDisposition::Claim, tag == 0);
+            assert_eq!(disposition == LedgerBeginDisposition::Join, tag == 1);
+            assert_eq!(disposition == LedgerBeginDisposition::Replay, tag == 2);
+        }
     }
 }

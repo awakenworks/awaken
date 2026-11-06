@@ -33,8 +33,6 @@ pub use repository_publication::{
 pub use state::SessionCleanupOperation;
 pub(crate) use state::SessionCleanupRequestIdentity;
 pub(crate) use state::deserialize_persisted_operation;
-#[cfg(kani)]
-use state::{SessionCleanupPhase, session_cleanup_phase_advance_admitted};
 
 #[cfg(test)]
 use effects::cleanup_effect_id;
@@ -1683,64 +1681,88 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
+    use super::state::{SessionCleanupPhase, session_cleanup_phase_advance_admitted};
     use super::*;
 
-    /// @obligation session.cleanup_completion_requires_exact_identity_and_canonical_artifact_evidence
-    /// @proof-input-debt free_symbol session_cleanup_completion_admitted canonical_receipt_matches
-    /// @proof-input-debt free_symbol session_cleanup_completion_admitted effect_matches
-    /// @proof-input-debt free_symbol session_cleanup_completion_admitted session_matches
-    /// @proof-input-debt free_symbol session_cleanup_completion_admitted thread_matches
-    #[kani::proof]
-    fn session_cleanup_completion_requires_every_identity_axis() {
-        let artifact_effects_unique = kani::any::<bool>();
-        let session_matches = kani::any::<bool>();
-        let thread_matches = kani::any::<bool>();
-        let effect_matches = kani::any::<bool>();
-        let canonical_receipt_matches = kani::any::<bool>();
-        let admitted = session_cleanup_completion_admitted(
-            artifact_effects_unique,
-            session_matches,
-            thread_matches,
-            effect_matches,
-            canonical_receipt_matches,
-        );
-        assert_eq!(
-            admitted,
-            artifact_effects_unique
-                && session_matches
-                && thread_matches
-                && effect_matches
-                && canonical_receipt_matches
-        );
+    const EVERY_PHASE: [SessionCleanupPhase; 4] = [
+        SessionCleanupPhase::NotRequested,
+        SessionCleanupPhase::Fenced,
+        SessionCleanupPhase::Requested,
+        SessionCleanupPhase::Completed,
+    ];
+
+    const fn listed_phase(phase: SessionCleanupPhase) -> usize {
+        match phase {
+            SessionCleanupPhase::NotRequested => 0,
+            SessionCleanupPhase::Fenced => 1,
+            SessionCleanupPhase::Requested => 2,
+            SessionCleanupPhase::Completed => 3,
+        }
     }
 
+    const BOOLS: [bool; 2] = [false, true];
+
+    #[test]
+    fn every_cleanup_phase_is_listed() {
+        for (index, phase) in EVERY_PHASE.into_iter().enumerate() {
+            assert_eq!(listed_phase(phase), index);
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x bool(2) = 32
+    /// @obligation session.cleanup_completion_requires_exact_identity_and_canonical_artifact_evidence
+    #[test]
+    fn session_cleanup_completion_requires_every_identity_axis() {
+        let mut cases = 0;
+        for artifact_effects_unique in BOOLS {
+            for session_matches in BOOLS {
+                for thread_matches in BOOLS {
+                    for effect_matches in BOOLS {
+                        for canonical_receipt_matches in BOOLS {
+                            let admitted = session_cleanup_completion_admitted(
+                                artifact_effects_unique,
+                                session_matches,
+                                thread_matches,
+                                effect_matches,
+                                canonical_receipt_matches,
+                            );
+                            assert_eq!(
+                                admitted,
+                                artifact_effects_unique
+                                    && session_matches
+                                    && thread_matches
+                                    && effect_matches
+                                    && canonical_receipt_matches
+                            );
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 32);
+    }
+
+    /// @exhaustive SessionCleanupPhase(4) x SessionCleanupPhase(4) = 16
     /// @obligation session.cleanup_operation_advances_exactly_and_completed_is_absorbing
     /// @obligation session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
-    #[kani::proof]
+    #[test]
     fn session_cleanup_phase_advances_only_not_requested_fenced_requested_completed() {
-        let current_code = kani::any::<u8>();
-        let next_code = kani::any::<u8>();
-        kani::assume(current_code < 4);
-        kani::assume(next_code < 4);
-        let current = match current_code {
-            0 => SessionCleanupPhase::NotRequested,
-            1 => SessionCleanupPhase::Fenced,
-            2 => SessionCleanupPhase::Requested,
-            3 => SessionCleanupPhase::Completed,
-            _ => unreachable!(),
-        };
-        let next = match next_code {
-            0 => SessionCleanupPhase::NotRequested,
-            1 => SessionCleanupPhase::Fenced,
-            2 => SessionCleanupPhase::Requested,
-            3 => SessionCleanupPhase::Completed,
-            _ => unreachable!(),
-        };
-        assert_eq!(
-            session_cleanup_phase_advance_admitted(current, next),
-            next_code == current_code + 1
-        );
+        // The listed order is NotRequested, Fenced, Requested, Completed: an
+        // advance is admitted exactly onto the immediate successor.
+        let mut cases = 0;
+        for current in EVERY_PHASE {
+            for next in EVERY_PHASE {
+                assert_eq!(
+                    session_cleanup_phase_advance_admitted(current, next),
+                    listed_phase(next) == listed_phase(current) + 1,
+                    "{current:?} -> {next:?}"
+                );
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 16);
     }
 }

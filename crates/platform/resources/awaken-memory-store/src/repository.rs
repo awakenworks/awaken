@@ -206,7 +206,7 @@ impl ConditionalDeleteAdmission {
     }
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 fn check_head_update_admission(
     expected_path_matches: bool,
     identity_matches: bool,
@@ -242,7 +242,7 @@ fn check_head_update_admission(
     }
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 fn check_conditional_delete_admission(current_matches: Option<(bool, bool, bool)>) {
     // Causes: C1 a head exists at the selected path; C2 id matches; C3 version
     // matches; C4 hash matches. Effects: D1 !C1 => Absent; D2 C1 and any of
@@ -258,36 +258,6 @@ fn check_conditional_delete_admission(current_matches: Option<(bool, bool, bool)
             assert_eq!(current_matches, Some((true, true, true)));
         }
     }
-}
-
-#[cfg(kani)]
-/// @obligation memory.cas_has_one_winner_per_generation
-/// @obligation memory.idempotent_write_does_not_advance_generation
-/// @obligation memory.stale_cas_never_clobbers_live_content
-#[kani::proof]
-fn memory_head_update_admission_preserves_stale_and_idempotent_heads() {
-    // No assumptions: all 32 path/identity/version/hash/current classes pass
-    // through the exact production decision used by every backend. Locking, row
-    // selection, hash computation and persistence remain outside this proof.
-    check_head_update_admission(
-        kani::any(),
-        kani::any(),
-        kani::any(),
-        kani::any(),
-        kani::any(),
-    );
-}
-
-#[cfg(kani)]
-/// @obligation memory.absent_conditional_delete_is_idempotent
-/// @obligation memory.matched_conditional_delete_removes_exact_head
-/// @obligation memory.stale_conditional_delete_never_removes_live_head
-#[kani::proof]
-fn memory_conditional_delete_admission_is_exact() {
-    // No assumptions: None and every present id/hash comparison class pass
-    // through the production decision used by every backend. Backend atomicity
-    // and history persistence remain outside this decision proof.
-    check_conditional_delete_admission(kani::any());
 }
 
 #[cfg(kani)]
@@ -1591,5 +1561,41 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn volatile_store_capacity_rejects_only_new_heads_and_reopens_after_delete() {
         capacity_conformance(&VolatileMemoryRepository::new(awaken_time::system_clock())).await;
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x bool(2) = 32
+    /// @obligation memory.cas_has_one_winner_per_generation
+    /// @obligation memory.idempotent_write_does_not_advance_generation
+    /// @obligation memory.stale_cas_never_clobbers_live_content
+    #[test]
+    fn memory_head_update_admission_preserves_stale_and_idempotent_heads() {
+        // No assumptions: all 32 path/identity/version/hash/current classes pass
+        // through the exact production decision used by every backend. Locking, row
+        // selection, hash computation and persistence remain outside this proof.
+        for bits in 0_u8..1 << 5 {
+            let bit = |index: u8| bits & (1 << index) != 0;
+            check_head_update_admission(bit(0), bit(1), bit(2), bit(3), bit(4));
+        }
+    }
+
+    /// @exhaustive Option<(bool, bool, bool)>(9) = 9
+    /// @obligation memory.absent_conditional_delete_is_idempotent
+    /// @obligation memory.matched_conditional_delete_removes_exact_head
+    /// @obligation memory.stale_conditional_delete_never_removes_live_head
+    #[test]
+    fn memory_conditional_delete_admission_is_exact() {
+        // No assumptions: None and every present id/hash comparison class pass
+        // through the production decision used by every backend. Backend atomicity
+        // and history persistence remain outside this decision proof.
+        check_conditional_delete_admission(None);
+        for bits in 0_u8..1 << 3 {
+            let bit = |index: u8| bits & (1 << index) != 0;
+            check_conditional_delete_admission(Some((bit(0), bit(1), bit(2))));
+        }
     }
 }

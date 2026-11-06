@@ -24,13 +24,14 @@ pub(crate) fn pinned_candidate_at<'a, T>(
     }
 }
 
-#[cfg(kani)]
-mod kani_proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::pinned_candidate_at;
 
+    /// @exhaustive ordinal 0..=3 (4) = 4
     /// @obligation config.inference_access_resolved_once_at_publication
     /// @obligation model_route.fallback_preserves_the_complete_publication_pin
-    #[kani::proof]
+    #[test]
     fn fallback_selection_preserves_the_complete_publication_pin() {
         // Test design — Causes: ordinal is primary, either published fallback,
         // or the first out-of-range value. Effects: selection returns the exact
@@ -46,18 +47,17 @@ mod kani_proofs {
         // address-identity assertions; no duplicate Boolean selector is used.
         let primary = 1_u8;
         let fallbacks = [2_u8, 3_u8];
-        let ordinal: usize = kani::any();
-        kani::assume(ordinal <= fallbacks.len() + 1);
-
-        let selected = pinned_candidate_at(&primary, &fallbacks, ordinal);
-        let exact = match (ordinal, selected) {
-            (0, Some(candidate)) => std::ptr::eq(candidate, &primary),
-            (1, Some(candidate)) => std::ptr::eq(candidate, &fallbacks[0]),
-            (2, Some(candidate)) => std::ptr::eq(candidate, &fallbacks[1]),
-            (_, None) => true,
-            _ => false,
-        };
-        assert!(exact);
+        for ordinal in 0..=fallbacks.len() + 1 {
+            let selected = pinned_candidate_at(&primary, &fallbacks, ordinal);
+            let exact = match (ordinal, selected) {
+                (0, Some(candidate)) => std::ptr::eq(candidate, &primary),
+                (1, Some(candidate)) => std::ptr::eq(candidate, &fallbacks[0]),
+                (2, Some(candidate)) => std::ptr::eq(candidate, &fallbacks[1]),
+                (_, None) => true,
+                _ => false,
+            };
+            assert!(exact);
+        }
     }
 }
 

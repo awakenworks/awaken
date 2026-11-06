@@ -159,62 +159,6 @@ fn reject_current_only_field(
     }
 }
 
-#[cfg(kani)]
-/// @obligation managed_user_profiles.capability_and_field_projection_is_total_exclusive_and_exact
-/// @kani profile=solver-kissat-v1
-#[kani::proof]
-fn user_profile_capability_and_field_projection_is_total_exclusive_and_exact() {
-    // Exactly one selector chooses a projection; none or several choose
-    // nothing. The field set admitted by each projection is monotone in the
-    // selector's age: legacy admits neither newer field, current admits
-    // access_type, external admits both.
-    let legacy: bool = kani::any();
-    let current: bool = kani::any();
-    let external: bool = kani::any();
-    let access_type_is_present: bool = kani::any();
-    let external_user_details_is_present: bool = kani::any();
-    let projection = user_profile_projection(legacy, current, external);
-    // Legacy is exclusive; the current family (08-18, 09-04) is cumulative
-    // with the newest selector deciding; nothing selected chooses nothing.
-    assert_eq!(
-        projection.is_some(),
-        (legacy && !current && !external) || (!legacy && (current || external)),
-    );
-    match projection {
-        None => {}
-        Some(UserProfileProjection::Legacy) => {
-            assert!(legacy && !current && !external);
-            assert_eq!(
-                user_profile_field_set_is_valid(
-                    UserProfileProjection::Legacy,
-                    access_type_is_present,
-                    external_user_details_is_present,
-                ),
-                !access_type_is_present && !external_user_details_is_present,
-            );
-        }
-        Some(UserProfileProjection::Current) => {
-            assert!(current && !legacy && !external);
-            assert_eq!(
-                user_profile_field_set_is_valid(
-                    UserProfileProjection::Current,
-                    access_type_is_present,
-                    external_user_details_is_present,
-                ),
-                !external_user_details_is_present,
-            );
-        }
-        Some(UserProfileProjection::External) => {
-            assert!(external && !legacy);
-            assert!(user_profile_field_set_is_valid(
-                UserProfileProjection::External,
-                access_type_is_present,
-                external_user_details_is_present,
-            ));
-        }
-    }
-}
-
 fn check_len(field: &str, value: Option<&str>) -> Result<(), WireError> {
     if let Some(value) = value
         && value.len() > 255
@@ -683,4 +627,71 @@ async fn enrollment_url(
             })
         })
         .map_err(error_response)
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x bool(2) = 32
+    /// @obligation managed_user_profiles.capability_and_field_projection_is_total_exclusive_and_exact
+    #[test]
+    fn user_profile_capability_and_field_projection_is_total_exclusive_and_exact() {
+        // Exactly one selector chooses a projection; none or several choose
+        // nothing. The field set admitted by each projection is monotone in the
+        // selector's age: legacy admits neither newer field, current admits
+        // access_type, external admits both.
+        for legacy in [false, true] {
+            for current in [false, true] {
+                for external in [false, true] {
+                    for access_type_is_present in [false, true] {
+                        for external_user_details_is_present in [false, true] {
+                            let projection = user_profile_projection(legacy, current, external);
+                            // Legacy is exclusive; the current family (08-18, 09-04) is cumulative
+                            // with the newest selector deciding; nothing selected chooses nothing.
+                            assert_eq!(
+                                projection.is_some(),
+                                (legacy && !current && !external)
+                                    || (!legacy && (current || external)),
+                            );
+                            match projection {
+                                None => {}
+                                Some(UserProfileProjection::Legacy) => {
+                                    assert!(legacy && !current && !external);
+                                    assert_eq!(
+                                        user_profile_field_set_is_valid(
+                                            UserProfileProjection::Legacy,
+                                            access_type_is_present,
+                                            external_user_details_is_present,
+                                        ),
+                                        !access_type_is_present
+                                            && !external_user_details_is_present,
+                                    );
+                                }
+                                Some(UserProfileProjection::Current) => {
+                                    assert!(current && !legacy && !external);
+                                    assert_eq!(
+                                        user_profile_field_set_is_valid(
+                                            UserProfileProjection::Current,
+                                            access_type_is_present,
+                                            external_user_details_is_present,
+                                        ),
+                                        !external_user_details_is_present,
+                                    );
+                                }
+                                Some(UserProfileProjection::External) => {
+                                    assert!(external && !legacy);
+                                    assert!(user_profile_field_set_is_valid(
+                                        UserProfileProjection::External,
+                                        access_type_is_present,
+                                        external_user_details_is_present,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

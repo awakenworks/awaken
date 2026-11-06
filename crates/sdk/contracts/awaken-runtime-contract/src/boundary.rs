@@ -232,19 +232,22 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::BoundaryPriority;
 
+    /// @exhaustive bool(2) x bool(2) = 4
     /// @obligation live_inbox.boundary_priority_is_pause_then_input_then_idle
-    #[kani::proof]
+    #[test]
     fn boundary_priority_is_pause_then_input_then_idle() {
-        let paused = kani::any::<bool>();
-        let has_input = kani::any::<bool>();
-        let selected = BoundaryPriority::select(paused, has_input);
+        for paused in [false, true] {
+            for has_input in [false, true] {
+                let selected = BoundaryPriority::select(paused, has_input);
 
-        assert_eq!(selected == BoundaryPriority::Pause, paused);
-        assert_eq!(selected == BoundaryPriority::Input, !paused && has_input);
-        assert_eq!(selected == BoundaryPriority::Idle, !paused && !has_input);
+                assert_eq!(selected == BoundaryPriority::Pause, paused);
+                assert_eq!(selected == BoundaryPriority::Input, !paused && has_input);
+                assert_eq!(selected == BoundaryPriority::Idle, !paused && !has_input);
+            }
+        }
     }
 }

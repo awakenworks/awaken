@@ -314,17 +314,6 @@ impl Plugin for MemoryPlugin {
     }
 }
 
-#[cfg(kani)]
-/// @obligation memory.recall_config_contributes_authority_exactly_when_enabled
-#[kani::proof]
-fn memory_recall_contribution_is_exact_and_disabled_is_inert() {
-    let enabled = kani::any::<bool>();
-    let decision = recall_contribution_decision(enabled);
-
-    assert_eq!(decision == RecallContributionDecision::Active, enabled);
-    assert_eq!(decision == RecallContributionDecision::Inert, !enabled);
-}
-
 /// The JSON Schema for the `memory` config section (the recall bounds), for a
 /// config frontend to discover and author.
 pub fn config_schema() -> serde_json::Value {
@@ -866,5 +855,22 @@ mod tests {
             error.starts_with("invalid Memory configuration: "),
             "C4 {error}"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) = 2
+    /// @obligation memory.recall_config_contributes_authority_exactly_when_enabled
+    #[test]
+    fn memory_recall_contribution_is_exact_and_disabled_is_inert() {
+        for enabled in [false, true] {
+            let decision = recall_contribution_decision(enabled);
+
+            assert_eq!(decision == RecallContributionDecision::Active, enabled);
+            assert_eq!(decision == RecallContributionDecision::Inert, !enabled);
+        }
     }
 }

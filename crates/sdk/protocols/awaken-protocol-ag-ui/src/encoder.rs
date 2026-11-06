@@ -389,31 +389,6 @@ fn terminal_failure(fact: &Fact) -> Option<(String, String)> {
     }
 }
 
-#[cfg(kani)]
-mod proofs {
-    use super::*;
-
-    /// @obligation ui_stream.terminal_projection_is_exact_fail_closed_and_absorbing
-    #[kani::proof]
-    fn ag_ui_terminal_category_mapping_is_total_and_exact() {
-        let tag: u8 = kani::any();
-        kani::assume(tag <= 2);
-        let kind = match tag {
-            0 => StreamTerminalKind::Awaiting,
-            1 => StreamTerminalKind::Finished,
-            _ => StreamTerminalKind::Failed,
-        };
-        let projected = ag_ui_terminal_class(kind);
-        match projected {
-            AgUiTerminalClass::Finished => assert!(matches!(
-                kind,
-                StreamTerminalKind::Awaiting | StreamTerminalKind::Finished
-            )),
-            AgUiTerminalClass::Error => assert_eq!(kind, StreamTerminalKind::Failed),
-        }
-    }
-}
-
 /// Project one committed step into an ordered AG-UI event stream (`RUN_STARTED` …
 /// `RUN_FINISHED`).
 pub fn encode_step(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<AgUiEvent> {
@@ -1535,5 +1510,31 @@ mod tests {
                 .iter()
                 .all(|event| !matches!(event, AgUiEvent::RunFinished { .. }))
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive StreamTerminalKind(3) = 3
+    /// @obligation ui_stream.terminal_projection_is_exact_fail_closed_and_absorbing
+    #[test]
+    fn ag_ui_terminal_category_mapping_is_total_and_exact() {
+        for tag in 0_u8..=2 {
+            let kind = match tag {
+                0 => StreamTerminalKind::Awaiting,
+                1 => StreamTerminalKind::Finished,
+                _ => StreamTerminalKind::Failed,
+            };
+            let projected = ag_ui_terminal_class(kind);
+            match projected {
+                AgUiTerminalClass::Finished => assert!(matches!(
+                    kind,
+                    StreamTerminalKind::Awaiting | StreamTerminalKind::Finished
+                )),
+                AgUiTerminalClass::Error => assert_eq!(kind, StreamTerminalKind::Failed),
+            }
+        }
     }
 }

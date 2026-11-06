@@ -376,7 +376,7 @@ mod tests {
 
 #[cfg(kani)]
 /// @obligation session.runtime_projection_delivery_preserves_exact_payload_digest_and_monotonic_completion
-/// @kani profile=solver-kissat-v1
+/// @kani profile=solver-kissat-v1 tier=nightly
 #[kani::proof]
 fn committed_delivery_all_equalities_preserve_only_monotonic_completion() {
     // The actual generic production comparison, over arbitrary payload/time

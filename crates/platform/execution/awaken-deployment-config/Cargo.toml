@@ -24,9 +24,11 @@ awaken-container-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-environment-contract.workspace = true
-awaken-tool-contract.workspace = true
 thiserror.workspace = true
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+awaken-tool-contract.workspace = true
 
 [lints]
 workspace = true

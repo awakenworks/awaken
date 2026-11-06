@@ -304,23 +304,43 @@ impl<T> Drop for ClaimedEffectInFlight<'_, T> {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
-    fn disposition(settled: bool) -> ClaimDisposition {
-        if settled {
-            ClaimDisposition::Settled
-        } else {
-            ClaimDisposition::Unsettled
+    const EVERY_DISPOSITION: [ClaimDisposition; 2] =
+        [ClaimDisposition::Unsettled, ClaimDisposition::Settled];
+
+    const fn listed_disposition(disposition: ClaimDisposition) -> usize {
+        match disposition {
+            ClaimDisposition::Unsettled => 0,
+            ClaimDisposition::Settled => 1,
         }
     }
 
-    fn transition(tag: u8, ok: bool) -> ClaimTransition {
-        match tag % 3 {
-            0 => ClaimTransition::Completed { ok },
-            1 => ClaimTransition::Abandoned,
-            _ => ClaimTransition::Dropped,
+    const EVERY_TRANSITION: [ClaimTransition; 4] = [
+        ClaimTransition::Completed { ok: false },
+        ClaimTransition::Completed { ok: true },
+        ClaimTransition::Abandoned,
+        ClaimTransition::Dropped,
+    ];
+
+    const fn listed_transition(transition: ClaimTransition) -> usize {
+        match transition {
+            ClaimTransition::Completed { ok: false } => 0,
+            ClaimTransition::Completed { ok: true } => 1,
+            ClaimTransition::Abandoned => 2,
+            ClaimTransition::Dropped => 3,
+        }
+    }
+
+    #[test]
+    fn every_claim_disposition_and_transition_is_listed_once() {
+        for (index, disposition) in EVERY_DISPOSITION.into_iter().enumerate() {
+            assert_eq!(listed_disposition(disposition), index);
+        }
+        for (index, transition) in EVERY_TRANSITION.into_iter().enumerate() {
+            assert_eq!(listed_transition(transition), index);
         }
     }
 
@@ -331,27 +351,32 @@ mod verification {
     /// exhausting the transitions exhausts the reachable behaviour. Sequencing
     /// two arbitrary transitions is what shows retention cannot run twice, and
     /// covers the `into_future` handoff where two `Drop` owners see one claim.
+    /// @exhaustive ClaimDisposition(2) x ClaimTransition(4) x ClaimTransition(4) = 32
     /// @obligation claimed_effect.retention_runs_once_for_an_unsettled_drop
-    #[kani::proof]
+    #[test]
     fn claim_retention_runs_once_only_for_an_unsettled_drop() {
-        let start = disposition(kani::any());
-        let first = transition(kani::any(), kani::any());
-        let (after_first, retained_first) = advance_claim(start, first);
+        for start in EVERY_DISPOSITION {
+            for first in EVERY_TRANSITION {
+                let (after_first, retained_first) = advance_claim(start, first);
 
-        // I3: every transition settles, so nothing is ever left owing.
-        assert!(after_first == ClaimDisposition::Settled);
-        // I2 and I4: retention is exactly the unsettled drop, and never a
-        // completion (Ok or Err) or an abandonment.
-        assert!(
-            retained_first
-                == (start == ClaimDisposition::Unsettled && first == ClaimTransition::Dropped)
-        );
+                // I3: every transition settles, so nothing is ever left owing.
+                assert!(after_first == ClaimDisposition::Settled);
+                // I2 and I4: retention is exactly the unsettled drop, and never a
+                // completion (Ok or Err) or an abandonment.
+                assert!(
+                    retained_first
+                        == (start == ClaimDisposition::Unsettled
+                            && first == ClaimTransition::Dropped)
+                );
 
-        let second = transition(kani::any(), kani::any());
-        let (after_second, retained_second) = advance_claim(after_first, second);
-        // I5: a settled claim never retains, so no path runs retention twice.
-        assert!(!retained_second);
-        assert!(after_second == ClaimDisposition::Settled);
+                for second in EVERY_TRANSITION {
+                    let (after_second, retained_second) = advance_claim(after_first, second);
+                    // I5: a settled claim never retains, so no path runs retention twice.
+                    assert!(!retained_second);
+                    assert!(after_second == ClaimDisposition::Settled);
+                }
+            }
+        }
     }
 }
 

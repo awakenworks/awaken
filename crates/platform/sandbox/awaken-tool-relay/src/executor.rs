@@ -304,27 +304,41 @@ where
     }
 }
 
-#[cfg(kani)]
-mod verification {
-    use super::*;
-
-    /// @obligation remote_tool.cancelled_channel_never_correlates_a_late_reply_to_another_call
-    /// @proof-input-debt tautology hand_channel_reply_admitted
-    #[kani::proof]
-    fn hand_channel_only_exact_decoded_reply_restores_readiness() {
-        let decoded = kani::any();
-        let correlation_matches = kani::any();
-        assert_eq!(
-            hand_channel_reply_admitted(decoded, correlation_matches),
-            decoded && correlation_matches
-        );
+#[async_trait]
+impl<S> ToolExecutor for RemoteToolExecutor<S>
+where
+    S: AgentChannel,
+{
+    fn recovery_capability(&self, _tool_id: &str) -> ToolRecoveryCapability {
+        self.recovery_capability
     }
 
+    async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
+        map_hand_result(&call.tool_id, self.call_hand(call).await?)
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation remote_tool.cancelled_channel_never_correlates_a_late_reply_to_another_call
+    #[test]
+    fn hand_channel_only_exact_decoded_reply_restores_readiness() {
+        for decoded in [false, true] {
+            for correlation_matches in [false, true] {
+                assert_eq!(
+                    hand_channel_reply_admitted(decoded, correlation_matches),
+                    decoded && correlation_matches
+                );
+            }
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) = 4 (3 after assume !(explicit_success && indeterminate))
     /// @obligation remote_tool.indeterminate_never_false_success
-    /// @proof-input-debt free_symbol hand_result_disposition explicit_success
-    /// @proof-input-debt free_symbol hand_result_disposition indeterminate
-    #[kani::proof]
-    #[kani::unwind(16)]
+    #[test]
     fn hand_result_disposition_allows_only_explicit_success() {
         // Cause graph: C1 the Hand returned Ok; C2 it returned a definite Err;
         // C3 its outcome is Indeterminate. Effects: E1 select Success; E2
@@ -336,33 +350,37 @@ mod verification {
         // | R1 | Ok | E1 |
         // | R2 | Err | E2 |
         // | R3 | Indeterminate | E3 |
-        let explicit_success: bool = kani::any();
-        let indeterminate: bool = kani::any();
-        kani::assume(!(explicit_success && indeterminate));
+        for explicit_success in [false, true] {
+            for indeterminate in [false, true] {
+                if explicit_success && indeterminate {
+                    continue;
+                }
 
-        let disposition = hand_result_disposition(explicit_success, indeterminate);
-        assert_eq!(
-            disposition == HandResultDisposition::Success,
-            explicit_success
-        );
-        assert_eq!(
-            disposition == HandResultDisposition::Indeterminate,
-            indeterminate
-        );
-        // Verify the actual adapter too: selecting the right disposition is
-        // insufficient if payload mapping erases Unknown into ordinary failure.
-        // Prove the changed Unknown adapter arm with a fixed diagnostic id.
-        // Success/error payload serialization remains executable-test evidence;
-        // this does not prove transport delivery or provider termination.
-        assert!(matches!(
-            map_hand_result("tool", HandResult::Indeterminate),
-            Err(ToolError::Indeterminate(_))
-        ));
+                let disposition = hand_result_disposition(explicit_success, indeterminate);
+                assert_eq!(
+                    disposition == HandResultDisposition::Success,
+                    explicit_success
+                );
+                assert_eq!(
+                    disposition == HandResultDisposition::Indeterminate,
+                    indeterminate
+                );
+                // Verify the actual adapter too: selecting the right disposition is
+                // insufficient if payload mapping erases Unknown into ordinary failure.
+                // Prove the changed Unknown adapter arm with a fixed diagnostic id.
+                // Success/error payload serialization remains executable-test evidence;
+                // this does not prove transport delivery or provider termination.
+                assert!(matches!(
+                    map_hand_result("tool", HandResult::Indeterminate),
+                    Err(ToolError::Indeterminate(_))
+                ));
+            }
+        }
     }
 
+    /// @exhaustive bool(2) x bool(2) = 4
     /// @obligation remote_tool.stable_operation_identity
-    /// @proof-input-debt free_symbol operation_identity_decision has_runtime_token
-    #[kani::proof]
+    #[test]
     fn durable_hand_identity_requires_the_runtime_operation_token() {
         // Causes: C1 a Runtime-owned operation token is present; C2 durable
         // request recovery is enabled. Effects: E1 use the canonical token;
@@ -375,35 +393,23 @@ mod verification {
         // | R2 | yes | yes | E1 |
         // | R3 | no  | no  | E2 |
         // | R4 | no  | yes | E3 |
-        let has_runtime_token: bool = kani::any();
-        let durable_recovery: bool = kani::any();
-        let decision = operation_identity_decision(has_runtime_token, durable_recovery);
+        for has_runtime_token in [false, true] {
+            for durable_recovery in [false, true] {
+                let decision = operation_identity_decision(has_runtime_token, durable_recovery);
 
-        assert_eq!(
-            decision == OperationIdentityDecision::RuntimeToken,
-            has_runtime_token
-        );
-        assert_eq!(
-            decision == OperationIdentityDecision::LegacyCallIdentity,
-            !has_runtime_token && !durable_recovery
-        );
-        assert_eq!(
-            decision == OperationIdentityDecision::RejectMissingRuntimeToken,
-            !has_runtime_token && durable_recovery
-        );
-    }
-}
-
-#[async_trait]
-impl<S> ToolExecutor for RemoteToolExecutor<S>
-where
-    S: AgentChannel,
-{
-    fn recovery_capability(&self, _tool_id: &str) -> ToolRecoveryCapability {
-        self.recovery_capability
-    }
-
-    async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
-        map_hand_result(&call.tool_id, self.call_hand(call).await?)
+                assert_eq!(
+                    decision == OperationIdentityDecision::RuntimeToken,
+                    has_runtime_token
+                );
+                assert_eq!(
+                    decision == OperationIdentityDecision::LegacyCallIdentity,
+                    !has_runtime_token && !durable_recovery
+                );
+                assert_eq!(
+                    decision == OperationIdentityDecision::RejectMissingRuntimeToken,
+                    !has_runtime_token && durable_recovery
+                );
+            }
+        }
     }
 }

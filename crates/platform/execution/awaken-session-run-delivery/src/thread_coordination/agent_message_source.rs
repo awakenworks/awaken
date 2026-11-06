@@ -126,51 +126,6 @@ fn agent_message_operation_matches<T: Eq + ?Sized>(
     committed == requested
 }
 
-#[cfg(kani)]
-/// @obligation session.agent_message_exact_replay_reuses_one_dispatch_and_payload_conflict_stutters
-/// @obligation session.agent_message_requires_exact_committed_tool_source_and_payload
-#[kani::proof]
-fn session_agent_message_admission_requires_every_committed_field() {
-    // Causes: C1 the production extractor has reconstructed one complete typed
-    // command from the committed prefix; C2 each of its seven identity/payload
-    // fields equals the requested command. Effects: E1 only the complete C1+C2
-    // row returns the committed value consumed by Session admission; E2 every
-    // single changed field rejects. This calls the production operation-view
-    // comparator, not caller-supplied booleans. Store rebuild,
-    // ActiveToolBatch/JSON extraction and String equality remain adapter TCB.
-    let changed_axis = kani::any::<u8>();
-    kani::assume(changed_axis < 8);
-    let exact = [0_u8];
-    let changed = [1_u8];
-    let committed = AgentMessageOperationRef {
-        session_id: &exact,
-        source_thread_id: &exact,
-        source_run_id: &exact,
-        source_call_id: &exact,
-        operation_id: &exact,
-        target: AgentMessageTargetRef::Spawn(&exact),
-        message: &exact,
-    };
-    let requested = AgentMessageOperationRef {
-        session_id: if changed_axis == 1 { &changed } else { &exact },
-        source_thread_id: if changed_axis == 2 { &changed } else { &exact },
-        source_run_id: if changed_axis == 3 { &changed } else { &exact },
-        source_call_id: if changed_axis == 4 { &changed } else { &exact },
-        operation_id: if changed_axis == 5 { &changed } else { &exact },
-        target: if changed_axis == 6 {
-            AgentMessageTargetRef::ExistingThread(&exact)
-        } else {
-            AgentMessageTargetRef::Spawn(&exact)
-        },
-        message: if changed_axis == 7 { &changed } else { &exact },
-    };
-
-    assert_eq!(
-        agent_message_operation_matches(committed, requested),
-        changed_axis == 0
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +246,53 @@ mod tests {
             .is_err(),
             "V5/E2"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive changed_axis u8<8(8) = 8
+    /// @obligation session.agent_message_exact_replay_reuses_one_dispatch_and_payload_conflict_stutters
+    /// @obligation session.agent_message_requires_exact_committed_tool_source_and_payload
+    #[test]
+    fn session_agent_message_admission_requires_every_committed_field() {
+        // C1 one complete typed command reconstructed from the committed prefix;
+        // C2 each of its seven identity/payload fields equals the requested
+        // command. E1 only the complete C1+C2 row returns the committed value;
+        // E2 every single changed field rejects. Axis 0 changes nothing.
+        let exact = [0_u8];
+        let changed = [1_u8];
+        for changed_axis in 0_u8..8 {
+            let committed = AgentMessageOperationRef {
+                session_id: &exact,
+                source_thread_id: &exact,
+                source_run_id: &exact,
+                source_call_id: &exact,
+                operation_id: &exact,
+                target: AgentMessageTargetRef::Spawn(&exact),
+                message: &exact,
+            };
+            let requested = AgentMessageOperationRef {
+                session_id: if changed_axis == 1 { &changed } else { &exact },
+                source_thread_id: if changed_axis == 2 { &changed } else { &exact },
+                source_run_id: if changed_axis == 3 { &changed } else { &exact },
+                source_call_id: if changed_axis == 4 { &changed } else { &exact },
+                operation_id: if changed_axis == 5 { &changed } else { &exact },
+                target: if changed_axis == 6 {
+                    AgentMessageTargetRef::ExistingThread(&exact)
+                } else {
+                    AgentMessageTargetRef::Spawn(&exact)
+                },
+                message: if changed_axis == 7 { &changed } else { &exact },
+            };
+
+            assert_eq!(
+                agent_message_operation_matches(committed, requested),
+                changed_axis == 0,
+                "axis {changed_axis}"
+            );
+        }
     }
 }

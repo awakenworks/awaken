@@ -465,34 +465,6 @@ const fn artifact_receipt_admitted(evidence: ArtifactReceiptEvidence) -> bool {
         && evidence.exact_terminal_scope
 }
 
-#[cfg(kani)]
-/// @obligation resource_catalog.artifact_publication_receipt_requires_exact_publication_identity
-/// @proof-input-debt tautology artifact_receipt_admitted
-#[kani::proof]
-fn artifact_publication_receipt_requires_every_identity_axis() {
-    let evidence = ArtifactReceiptEvidence {
-        exact_effect: kani::any(),
-        exact_content: kani::any(),
-        exact_blob: kani::any(),
-        same_workspace: kani::any(),
-        same_session: kani::any(),
-        same_path: kani::any(),
-        exact_harvest_key: kani::any(),
-        exact_terminal_scope: kani::any(),
-    };
-    assert_eq!(
-        artifact_receipt_admitted(evidence),
-        evidence.exact_effect
-            && evidence.exact_content
-            && evidence.exact_blob
-            && evidence.same_workspace
-            && evidence.same_session
-            && evidence.same_path
-            && evidence.exact_harvest_key
-            && evidence.exact_terminal_scope
-    );
-}
-
 impl ArtifactPublicationReceipt {
     /// Canonicalize one receipt set at its domain owner. Every caller uses the
     /// same effect-id order and duplicate rule; transport recovery and Session
@@ -1014,5 +986,40 @@ mod tests {
         assert_eq!(decoded, current);
         assert!(RepositoryGatewayCapabilityExpiry::new(0).is_err(), "W3/E3");
         assert!(serde_json::from_str::<RepositoryGatewayCapabilityExpiry>("0").is_err());
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x bool(2) x bool(2) x bool(2) x bool(2) = 256
+    /// @obligation resource_catalog.artifact_publication_receipt_requires_exact_publication_identity
+    #[test]
+    fn artifact_publication_receipt_requires_every_identity_axis() {
+        for bits in 0_u16..1 << 8 {
+            let axis = |index: u16| bits & (1 << index) != 0;
+            let evidence = ArtifactReceiptEvidence {
+                exact_effect: axis(0),
+                exact_content: axis(1),
+                exact_blob: axis(2),
+                same_workspace: axis(3),
+                same_session: axis(4),
+                same_path: axis(5),
+                exact_harvest_key: axis(6),
+                exact_terminal_scope: axis(7),
+            };
+            assert_eq!(
+                artifact_receipt_admitted(evidence),
+                evidence.exact_effect
+                    && evidence.exact_content
+                    && evidence.exact_blob
+                    && evidence.same_workspace
+                    && evidence.same_session
+                    && evidence.same_path
+                    && evidence.exact_harvest_key
+                    && evidence.exact_terminal_scope
+            );
+        }
     }
 }

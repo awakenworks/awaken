@@ -314,97 +314,119 @@ impl Machine {
     }
 }
 
-#[cfg(kani)]
-mod kani_proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::{
         EVENT_TRIGGER_KIND, TOOL_TRIGGER_KIND, TransitionAdvanceDecision, terminal_state_decision,
         transition_advance_decision, transition_preconditions_met, transition_trigger_matches,
     };
 
+    /// @exhaustive bool(2) = 2
     /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
-    /// @proof-input-debt free_symbol transition_trigger_matches pattern_matches
-    #[kani::proof]
+    #[test]
     fn tool_and_event_transitions_never_cross_trigger_kinds() {
-        let pattern_matches: bool = kani::any();
-        assert_eq!(
-            transition_trigger_matches(TOOL_TRIGGER_KIND, TOOL_TRIGGER_KIND, pattern_matches),
-            pattern_matches
-        );
-        assert!(!transition_trigger_matches(
-            TOOL_TRIGGER_KIND,
-            EVENT_TRIGGER_KIND,
-            pattern_matches
-        ));
-        assert_eq!(
-            transition_trigger_matches(EVENT_TRIGGER_KIND, EVENT_TRIGGER_KIND, pattern_matches),
-            pattern_matches
-        );
-        assert!(!transition_trigger_matches(
-            EVENT_TRIGGER_KIND,
-            TOOL_TRIGGER_KIND,
-            pattern_matches
-        ));
+        for pattern_matches in [false, true] {
+            assert_eq!(
+                transition_trigger_matches(TOOL_TRIGGER_KIND, TOOL_TRIGGER_KIND, pattern_matches),
+                pattern_matches
+            );
+            assert!(!transition_trigger_matches(
+                TOOL_TRIGGER_KIND,
+                EVENT_TRIGGER_KIND,
+                pattern_matches
+            ));
+            assert_eq!(
+                transition_trigger_matches(EVENT_TRIGGER_KIND, EVENT_TRIGGER_KIND, pattern_matches),
+                pattern_matches
+            );
+            assert!(!transition_trigger_matches(
+                EVENT_TRIGGER_KIND,
+                TOOL_TRIGGER_KIND,
+                pattern_matches
+            ));
+        }
     }
 
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
     /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
-    /// @proof-input-debt tautology transition_preconditions_met
-    #[kani::proof]
+    #[test]
     fn state_transition_requires_every_exact_precondition() {
-        let trigger_matches: bool = kani::any();
-        let source_state_matches: bool = kani::any();
-        let counters_match: bool = kani::any();
-        assert_eq!(
-            transition_preconditions_met(trigger_matches, source_state_matches, counters_match),
-            trigger_matches && source_state_matches && counters_match
-        );
+        for trigger_matches in [false, true] {
+            for source_state_matches in [false, true] {
+                for counters_match in [false, true] {
+                    assert_eq!(
+                        transition_preconditions_met(
+                            trigger_matches,
+                            source_state_matches,
+                            counters_match
+                        ),
+                        trigger_matches && source_state_matches && counters_match
+                    );
+                }
+            }
+        }
     }
 
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
     /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
-    /// @proof-input-debt free_symbol transition_advance_decision has_fallback
-    #[kani::proof]
+    #[test]
     fn result_transition_and_authored_fallback_are_exact() {
-        let preconditions_met: bool = kani::any();
-        let result_matches: bool = kani::any();
-        let has_fallback: bool = kani::any();
-        let decision =
-            transition_advance_decision(preconditions_met, true, result_matches, has_fallback);
-        assert_eq!(
-            decision == TransitionAdvanceDecision::Advance,
-            preconditions_met && result_matches
-        );
-        assert_eq!(
-            decision == TransitionAdvanceDecision::Fallback,
-            preconditions_met && !result_matches && has_fallback
-        );
-        assert!(
-            decision != TransitionAdvanceDecision::Fallback || has_fallback,
-            "an unauthored fallback can never fire"
-        );
+        for preconditions_met in [false, true] {
+            for result_matches in [false, true] {
+                for has_fallback in [false, true] {
+                    let decision = transition_advance_decision(
+                        preconditions_met,
+                        true,
+                        result_matches,
+                        has_fallback,
+                    );
+                    assert_eq!(
+                        decision == TransitionAdvanceDecision::Advance,
+                        preconditions_met && result_matches
+                    );
+                    assert_eq!(
+                        decision == TransitionAdvanceDecision::Fallback,
+                        preconditions_met && !result_matches && has_fallback
+                    );
+                    assert!(
+                        decision != TransitionAdvanceDecision::Fallback || has_fallback,
+                        "an unauthored fallback can never fire"
+                    );
+                }
+            }
+        }
     }
 
+    /// @exhaustive bool(2) x bool(2) = 4
     /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
-    /// @proof-input-debt tautology terminal_state_decision
-    #[kani::proof]
+    #[test]
     fn terminal_state_classification_is_exact() {
-        let state_is_known: bool = kani::any();
-        let declared_terminal: bool = kani::any();
-        assert_eq!(
-            terminal_state_decision(state_is_known, declared_terminal),
-            state_is_known && declared_terminal
-        );
+        for state_is_known in [false, true] {
+            for declared_terminal in [false, true] {
+                assert_eq!(
+                    terminal_state_decision(state_is_known, declared_terminal),
+                    state_is_known && declared_terminal
+                );
+            }
+        }
     }
 
+    /// @exhaustive u8(256) minus the two known kinds (254) x u8(256) = 65024
     /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
-    #[kani::proof]
+    #[test]
     fn unknown_transition_trigger_and_result_fail_closed() {
-        let actual_kind: u8 = kani::any();
-        kani::assume(actual_kind != TOOL_TRIGGER_KIND && actual_kind != EVENT_TRIGGER_KIND);
-        let expected_kind: u8 = kani::any();
-        assert!(!transition_trigger_matches(
-            actual_kind,
-            expected_kind,
-            true
-        ));
+        for actual_kind in u8::MIN..=u8::MAX {
+            if actual_kind == TOOL_TRIGGER_KIND || actual_kind == EVENT_TRIGGER_KIND {
+                continue;
+            }
+            for expected_kind in u8::MIN..=u8::MAX {
+                assert!(!transition_trigger_matches(
+                    actual_kind,
+                    expected_kind,
+                    true
+                ));
+            }
+        }
         assert_eq!(
             transition_advance_decision(true, false, true, true),
             TransitionAdvanceDecision::Reject

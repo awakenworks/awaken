@@ -99,7 +99,7 @@ fn invoke_publication_resolution_once<R>(resolve: impl FnOnce() -> R) -> R {
     resolve()
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 fn check_publication_resolution_invocation(succeeds: bool) {
     let calls = std::cell::Cell::new(0_u8);
     let observed = invoke_publication_resolution_once(|| {
@@ -109,18 +109,6 @@ fn check_publication_resolution_invocation(succeeds: bool) {
 
     assert_eq!(calls.get(), 1);
     assert_eq!(observed, if succeeds { Ok(7) } else { Err(9) });
-}
-
-#[cfg(kani)]
-/// @obligation config.inference_access_resolved_once_at_publication
-#[kani::proof]
-fn publication_resolution_invokes_exactly_one_owner() {
-    // Cause/effect decision table: R1 resolver succeeds -> invoke once and
-    // return its exact success; R2 resolver fails -> invoke once and return its
-    // exact failure. No assumptions: both result classes enter the production
-    // FnOnce seam. Future polling, cancellation and command-level retry remain
-    // outside this synchronous invocation boundary.
-    check_publication_resolution_invocation(kani::any());
 }
 
 fn validate_candidate_scope_and_proof(
@@ -726,5 +714,24 @@ mod tests {
         let error = ResolvedModelCandidate::try_remote(binding.clone(), "workspace-a", None, "")
             .expect_err("missing Agent Card proof is not constructible");
         assert!(error.to_string().contains("security fingerprint"));
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) = 2
+    /// @obligation config.inference_access_resolved_once_at_publication
+    #[test]
+    fn publication_resolution_invokes_exactly_one_owner() {
+        // Cause/effect decision table: R1 resolver succeeds -> invoke once and
+        // return its exact success; R2 resolver fails -> invoke once and return its
+        // exact failure. Both result classes enter the production FnOnce seam.
+        // Future polling, cancellation and command-level retry remain outside
+        // this synchronous invocation boundary.
+        for succeeds in [false, true] {
+            check_publication_resolution_invocation(succeeds);
+        }
     }
 }

@@ -77,35 +77,6 @@ fn rehydration_publication_decision_table_is_exact() {
     }
 }
 
-#[cfg(kani)]
-/// @obligation session.missing_publication_is_available_only_to_noninteractive_frozen_projection
-/// @kani profile=solver-kissat-v1
-/// @proof-input-debt free_symbol rehydration_publication_decision has_frozen_revision
-/// @proof-input-debt free_symbol rehydration_publication_decision profile_available
-#[kani::proof]
-fn missing_agent_publication_is_available_only_to_noninteractive_projection() {
-    let purpose_discriminant: u8 = kani::any();
-    kani::assume(purpose_discriminant < 3);
-    let has_frozen_revision: bool = kani::any();
-    let profile_available: bool = kani::any();
-    let purpose = match purpose_discriminant {
-        0 => SessionRecoveryPurpose::Interactive,
-        1 => SessionRecoveryPurpose::CollectionRead,
-        _ => SessionRecoveryPurpose::FrozenControl,
-    };
-    let decision =
-        rehydration_publication_decision(purpose, has_frozen_revision, profile_available);
-
-    assert_eq!(
-        decision == RehydrationPublicationDecision::NonInteractiveFrozenProjection,
-        purpose != SessionRecoveryPurpose::Interactive && has_frozen_revision && !profile_available
-    );
-    assert_eq!(
-        decision == RehydrationPublicationDecision::RejectMissingExact,
-        purpose == SessionRecoveryPurpose::Interactive && has_frozen_revision && !profile_available
-    );
-}
-
 /// Capture direct publications once in declaration order. The caller retains
 /// its exact/current selection and admission policy; consumers borrow these
 /// same values for the accepted roster and transitive Skill admission.
@@ -445,5 +416,63 @@ fn missing_exact_publication_is_readable_but_not_interactively_recoverable() {
             rehydration_publication_decision(purpose, true, true),
             RehydrationPublicationDecision::Available
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_PURPOSE: [SessionRecoveryPurpose; 3] = [
+        SessionRecoveryPurpose::Interactive,
+        SessionRecoveryPurpose::CollectionRead,
+        SessionRecoveryPurpose::FrozenControl,
+    ];
+
+    const fn listed_purpose(purpose: SessionRecoveryPurpose) -> usize {
+        match purpose {
+            SessionRecoveryPurpose::Interactive => 0,
+            SessionRecoveryPurpose::CollectionRead => 1,
+            SessionRecoveryPurpose::FrozenControl => 2,
+        }
+    }
+
+    #[test]
+    fn every_recovery_purpose_is_listed() {
+        for (index, purpose) in EVERY_PURPOSE.into_iter().enumerate() {
+            assert_eq!(listed_purpose(purpose), index);
+        }
+    }
+
+    /// @exhaustive SessionRecoveryPurpose(3) x bool(2) x bool(2) = 12
+    /// @obligation session.missing_publication_is_available_only_to_noninteractive_frozen_projection
+    #[test]
+    fn missing_agent_publication_is_available_only_to_noninteractive_projection() {
+        let mut cases = 0;
+        for purpose in EVERY_PURPOSE {
+            for has_frozen_revision in [false, true] {
+                for profile_available in [false, true] {
+                    let decision = rehydration_publication_decision(
+                        purpose,
+                        has_frozen_revision,
+                        profile_available,
+                    );
+                    assert_eq!(
+                        decision == RehydrationPublicationDecision::NonInteractiveFrozenProjection,
+                        purpose != SessionRecoveryPurpose::Interactive
+                            && has_frozen_revision
+                            && !profile_available
+                    );
+                    assert_eq!(
+                        decision == RehydrationPublicationDecision::RejectMissingExact,
+                        purpose == SessionRecoveryPurpose::Interactive
+                            && has_frozen_revision
+                            && !profile_available
+                    );
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 12);
     }
 }

@@ -1541,40 +1541,62 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
-    fn symbolic_status(tag: u8) -> DelegationStatus {
-        match tag % 3 {
-            0 => DelegationStatus::Open,
-            1 => DelegationStatus::Completed,
-            _ => DelegationStatus::CancelRequested,
+    const fn listed_status(status: DelegationStatus) -> usize {
+        match status {
+            DelegationStatus::Open => 0,
+            DelegationStatus::Completed => 1,
+            DelegationStatus::CancelRequested => 2,
+        }
+    }
+    const EVERY_STATUS: [DelegationStatus; 3] = [
+        DelegationStatus::Open,
+        DelegationStatus::Completed,
+        DelegationStatus::CancelRequested,
+    ];
+
+    const fn listed_transition(transition: RelationshipTransition) -> usize {
+        match transition {
+            RelationshipTransition::Complete => 0,
+            RelationshipTransition::RequestCancel => 1,
+        }
+    }
+    const EVERY_TRANSITION: [RelationshipTransition; 2] = [
+        RelationshipTransition::Complete,
+        RelationshipTransition::RequestCancel,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_STATUS.into_iter().enumerate() {
+            assert_eq!(listed_status(value), index);
+        }
+        for (index, value) in EVERY_TRANSITION.into_iter().enumerate() {
+            assert_eq!(listed_transition(value), index);
         }
     }
 
-    fn symbolic_transition(tag: u8) -> RelationshipTransition {
-        match tag % 2 {
-            0 => RelationshipTransition::Complete,
-            _ => RelationshipTransition::RequestCancel,
-        }
-    }
-
+    /// @exhaustive DelegationStatus(3) = 3
     /// @obligation delegation.depth_cycle_parallel_total
-    #[kani::proof]
+    #[test]
     fn only_unsettled_relationships_occupy_a_parallel_slot() {
-        let status = symbolic_status(kani::any());
-        assert_eq!(
-            status.occupies_parallel_slot(),
-            matches!(
-                status,
-                DelegationStatus::Open | DelegationStatus::CancelRequested
-            )
-        );
+        for status in EVERY_STATUS {
+            assert_eq!(
+                status.occupies_parallel_slot(),
+                matches!(
+                    status,
+                    DelegationStatus::Open | DelegationStatus::CancelRequested
+                )
+            );
+        }
     }
 
+    /// @exhaustive DelegationStatus(3) x RelationshipTransition(2) = 6
     /// @obligation delegation.relationship_transition
-    #[kani::proof]
+    #[test]
     fn every_relationship_effect_has_one_documented_precondition() {
         // Cause/effect decision table over the production transition kernel.
         // The assertion is deliberately total rather than conditional on a
@@ -1591,33 +1613,113 @@ mod verification {
         // | T4 | CancelRequested | RequestCancel | Ok(CancelRequested, Duplicate) |
         // | T5 | Completed | RequestCancel | Err(InvalidTransition) |
         // | T6 | CancelRequested | Complete | Err(InvalidTransition) |
-        //
-        // The successor is compared through `Result::ok` rather than against a
-        // whole `DelegationError`: that error carries a `String` variant whose
-        // derived equality the model checker would have to unwind, and the
-        // rejected rows are pinned by their variant instead.
-        let status = symbolic_status(kani::any());
-        let transition = symbolic_transition(kani::any());
-        let expected = match (status, transition) {
-            (DelegationStatus::Open, RelationshipTransition::Complete) => {
-                Some((DelegationStatus::Completed, TransitionResult::Applied))
+        for status in EVERY_STATUS {
+            for transition in EVERY_TRANSITION {
+                let expected = match (status, transition) {
+                    (DelegationStatus::Open, RelationshipTransition::Complete) => {
+                        Some((DelegationStatus::Completed, TransitionResult::Applied))
+                    }
+                    (DelegationStatus::Open, RelationshipTransition::RequestCancel) => {
+                        Some((DelegationStatus::CancelRequested, TransitionResult::Applied))
+                    }
+                    (DelegationStatus::Completed, RelationshipTransition::Complete)
+                    | (DelegationStatus::CancelRequested, RelationshipTransition::RequestCancel) => {
+                        Some((status, TransitionResult::Duplicate))
+                    }
+                    _ => None,
+                };
+                let result = transition_relationship(status, transition);
+                assert_eq!(result.as_ref().ok().copied(), expected);
+                assert!(
+                    expected.is_some() || matches!(result, Err(DelegationError::InvalidTransition)),
+                    "a rejected row must reject with the one documented error"
+                );
             }
-            (DelegationStatus::Open, RelationshipTransition::RequestCancel) => {
-                Some((DelegationStatus::CancelRequested, TransitionResult::Applied))
-            }
-            (DelegationStatus::Completed, RelationshipTransition::Complete)
-            | (DelegationStatus::CancelRequested, RelationshipTransition::RequestCancel) => {
-                Some((status, TransitionResult::Duplicate))
-            }
-            _ => None,
-        };
-        let result = transition_relationship(status, transition);
-        assert_eq!(result.as_ref().ok().copied(), expected);
-        assert!(
-            expected.is_some() || matches!(result, Err(DelegationError::InvalidTransition)),
-            "a rejected row must reject with the one documented error"
-        );
+        }
     }
+
+    /// @exhaustive Option<bool(2)^6 x DelegationStatus(3)>(1 + 192) = 193
+    /// @obligation delegation.relationship_identity
+    #[test]
+    fn child_invocation_requires_one_exact_open_relationship() {
+        // Cause/effect decision table over the production executor gate:
+        // absent relationship -> Missing; any call/id/target/self/child mismatch
+        // -> IdentityConflict; an exact Completed/CancelRequested relationship
+        // -> Closed; only the exact Open row -> Admit. No rejecting row can
+        // create or reopen a relationship because the gate is read-only.
+        let mut every_facts = vec![None];
+        for mask in 0_u8..64 {
+            for status in EVERY_STATUS {
+                every_facts.push(Some(RelationshipIdentityFacts {
+                    call_index_matches: mask & 1 != 0,
+                    id_matches: mask & 2 != 0,
+                    parent_call_matches: mask & 4 != 0,
+                    target_matches: mask & 8 != 0,
+                    recursive_self_matches: mask & 16 != 0,
+                    child_run_matches: mask & 32 != 0,
+                    status,
+                }));
+            }
+        }
+        assert_eq!(every_facts.len(), 193);
+        for facts in every_facts {
+            let present = facts.is_some();
+            let result = child_invocation_admission(facts);
+            let expected = facts.is_some_and(|facts| {
+                facts.exact() && matches!(facts.status, DelegationStatus::Open)
+            });
+            assert_eq!(result == ChildInvocationAdmission::Admit, expected);
+            if !present {
+                assert_eq!(result, ChildInvocationAdmission::Missing);
+            } else if facts.is_some_and(|facts| !facts.exact()) {
+                assert_eq!(result, ChildInvocationAdmission::IdentityConflict);
+            } else if facts.is_some_and(|facts| {
+                facts.exact() && !matches!(facts.status, DelegationStatus::Open)
+            }) {
+                assert_eq!(result, ChildInvocationAdmission::Closed);
+            }
+        }
+    }
+
+    /// @exhaustive DelegationStatus(3) x RelationshipTransition(2) = 6
+    /// @obligation delegation.cancel_intent
+    #[test]
+    fn cancellation_delivery_is_enabled_only_by_durable_intent() {
+        // Cause/effect decision table over the production relationship kernel:
+        // Open+RequestCancel applies CancelRequested and newly enables delivery;
+        // CancelRequested+RequestCancel is a stuttering retry that keeps delivery
+        // enabled; Complete reaches/stutters at Completed and never enables it;
+        // the two crossed terminal transitions reject without a successor.
+        for status in EVERY_STATUS {
+            for transition in EVERY_TRANSITION {
+                let before = requires_cancellation_delivery(status);
+                let result = transition_relationship(status, transition);
+                let after = result
+                    .as_ref()
+                    .is_ok_and(|(next, _)| requires_cancellation_delivery(*next));
+                assert_eq!(
+                    !before && after,
+                    status == DelegationStatus::Open
+                        && transition == RelationshipTransition::RequestCancel
+                        && result
+                            .as_ref()
+                            .is_ok_and(|(_, effect)| *effect == TransitionResult::Applied)
+                );
+                if transition == RelationshipTransition::Complete {
+                    assert!(!after);
+                }
+                if let Ok((next, TransitionResult::Duplicate)) = result {
+                    assert_eq!(next, status);
+                    assert_eq!(requires_cancellation_delivery(next), before);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
 
     /// @obligation delegation.depth_cycle_parallel_total
     #[kani::proof]
@@ -1718,71 +1820,6 @@ mod verification {
                 // the kernel owns the arithmetic; the proof pins it unreachable.
                 PersistedStateDefect::DepthOverflow => false,
             }),
-        }
-    }
-
-    /// @obligation delegation.relationship_identity
-    #[kani::proof]
-    fn child_invocation_requires_one_exact_open_relationship() {
-        // Cause/effect decision table over the production executor gate:
-        // absent relationship -> Missing; any call/id/target/self/child mismatch
-        // -> IdentityConflict; an exact Completed/CancelRequested relationship
-        // -> Closed; only the exact Open row -> Admit. No rejecting row can
-        // create or reopen a relationship because the gate is read-only.
-        let present: bool = kani::any();
-        let facts = present.then(|| RelationshipIdentityFacts {
-            call_index_matches: kani::any(),
-            id_matches: kani::any(),
-            parent_call_matches: kani::any(),
-            target_matches: kani::any(),
-            recursive_self_matches: kani::any(),
-            child_run_matches: kani::any(),
-            status: symbolic_status(kani::any()),
-        });
-        let result = child_invocation_admission(facts);
-        let expected = facts
-            .is_some_and(|facts| facts.exact() && matches!(facts.status, DelegationStatus::Open));
-        assert_eq!(result == ChildInvocationAdmission::Admit, expected);
-        if !present {
-            assert_eq!(result, ChildInvocationAdmission::Missing);
-        } else if facts.is_some_and(|facts| !facts.exact()) {
-            assert_eq!(result, ChildInvocationAdmission::IdentityConflict);
-        } else if facts
-            .is_some_and(|facts| facts.exact() && !matches!(facts.status, DelegationStatus::Open))
-        {
-            assert_eq!(result, ChildInvocationAdmission::Closed);
-        }
-    }
-
-    /// @obligation delegation.cancel_intent
-    #[kani::proof]
-    fn cancellation_delivery_is_enabled_only_by_durable_intent() {
-        // Cause/effect decision table over the production relationship kernel:
-        // Open+RequestCancel applies CancelRequested and newly enables delivery;
-        // CancelRequested+RequestCancel is a stuttering retry that keeps delivery
-        // enabled; Complete reaches/stutters at Completed and never enables it;
-        // the two crossed terminal transitions reject without a successor.
-        let status = symbolic_status(kani::any());
-        let transition = symbolic_transition(kani::any());
-        let before = requires_cancellation_delivery(status);
-        let result = transition_relationship(status, transition);
-        let after = result
-            .as_ref()
-            .is_ok_and(|(next, _)| requires_cancellation_delivery(*next));
-        assert_eq!(
-            !before && after,
-            status == DelegationStatus::Open
-                && transition == RelationshipTransition::RequestCancel
-                && result
-                    .as_ref()
-                    .is_ok_and(|(_, effect)| { *effect == TransitionResult::Applied })
-        );
-        if transition == RelationshipTransition::Complete {
-            assert!(!after);
-        }
-        if let Ok((next, TransitionResult::Duplicate)) = result {
-            assert_eq!(next, status);
-            assert_eq!(requires_cancellation_delivery(next), before);
         }
     }
 }

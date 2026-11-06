@@ -80,31 +80,57 @@ pub(super) fn publication_action(
     Ok(SessionRealizationAction::Publish { publish, drain })
 }
 
-#[cfg(kani)]
-/// @obligation session_realization.publication_excludes_staged_retired_generation
-#[kani::proof]
-fn realization_publication_selects_only_unacknowledged_active_generation() {
-    // Cause/effect decision table: C1 state is Requested, Realizing, Active,
-    // Draining, Removed, or Failed; C2 publication is acknowledged. R1 selects
-    // iff C1=Active and C2=false; every staged, retired, terminal, or already
-    // acknowledged row is excluded. Kani covers all 12 state/acknowledgement
-    // rows against the exact production predicate consumed above.
-    let discriminator: u8 = kani::any();
-    kani::assume(discriminator < 6);
-    let state = match discriminator {
-        0 => McpAttachmentState::Requested,
-        1 => McpAttachmentState::Realizing,
-        2 => McpAttachmentState::Active,
-        3 => McpAttachmentState::Draining,
-        4 => McpAttachmentState::Removed,
-        _ => McpAttachmentState::Failed,
-    };
-    let acknowledged: bool = kani::any();
-    assert_eq!(
-        realization_publication_selects(state, acknowledged),
-        state == McpAttachmentState::Active && !acknowledged
-    );
-}
-
 #[cfg(test)]
 mod collection_tests;
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_STATE: [McpAttachmentState; 6] = [
+        McpAttachmentState::Requested,
+        McpAttachmentState::Realizing,
+        McpAttachmentState::Active,
+        McpAttachmentState::Draining,
+        McpAttachmentState::Removed,
+        McpAttachmentState::Failed,
+    ];
+
+    const fn listed_state(state: McpAttachmentState) -> usize {
+        match state {
+            McpAttachmentState::Requested => 0,
+            McpAttachmentState::Realizing => 1,
+            McpAttachmentState::Active => 2,
+            McpAttachmentState::Draining => 3,
+            McpAttachmentState::Removed => 4,
+            McpAttachmentState::Failed => 5,
+        }
+    }
+
+    #[test]
+    fn every_attachment_state_is_listed() {
+        for (index, state) in EVERY_STATE.into_iter().enumerate() {
+            assert_eq!(listed_state(state), index);
+        }
+    }
+
+    /// @exhaustive McpAttachmentState(6) x bool(2) = 12
+    /// @obligation session_realization.publication_excludes_staged_retired_generation
+    #[test]
+    fn realization_publication_selects_only_unacknowledged_active_generation() {
+        // R1 selects iff the state is Active and the publication is not yet
+        // acknowledged; every staged, retired, terminal, or already
+        // acknowledged row is excluded.
+        let mut cases = 0;
+        for state in EVERY_STATE {
+            for acknowledged in [false, true] {
+                assert_eq!(
+                    realization_publication_selects(state, acknowledged),
+                    state == McpAttachmentState::Active && !acknowledged
+                );
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 12);
+    }
+}

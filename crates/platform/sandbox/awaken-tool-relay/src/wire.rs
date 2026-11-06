@@ -186,80 +186,6 @@ const fn legacy_hand_protocol_version() -> u16 {
     1
 }
 
-#[cfg(kani)]
-mod verification {
-    use super::*;
-
-    /// @obligation remote_tool.controls_never_admit_invocation
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn recovery_control_plan_never_selects_invocation_admission() {
-        // Raw request fields, not free admission facts: arbitrary wire version,
-        // each control action, and absent/present operation identity. The same
-        // production plan routes serve_hand before its only ledger.begin call.
-        let action = if kani::any::<bool>() {
-            HandAction::Observe
-        } else {
-            HandAction::Cancel
-        };
-        let mut request = HandRequest::new(
-            1,
-            ToolCall {
-                call_id: "c".into(),
-                tool_id: "t".into(),
-                arguments: serde_json::Value::Null,
-            },
-        );
-        request.action = action;
-        request.protocol_version = kani::any();
-        if kani::any::<bool>() {
-            request.operation_id.clear();
-        }
-        let plan = hand_dispatch_plan(&request);
-        assert_ne!(plan, HandDispatchPlan::Invoke);
-        if matches!(plan, HandDispatchPlan::Observe | HandDispatchPlan::Cancel) {
-            assert_eq!(request.protocol_version, 3);
-            assert!(!request.operation_id.is_empty());
-        }
-    }
-
-    /// @obligation remote_tool.protocol_version_requires_stable_v2_operation_identity
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn hand_protocol_requires_supported_version_and_v2_operation_identity() {
-        // The production caller derives identity presence from wire bytes.
-        // Empty/nonempty strings are the two equivalence classes of that
-        // derivation; do not substitute an unconstrained admission Boolean.
-        let mut request = HandRequest::new(
-            1,
-            ToolCall {
-                call_id: "c".into(),
-                tool_id: "t".into(),
-                arguments: serde_json::Value::Null,
-            },
-        );
-        request.protocol_version = kani::any();
-        if kani::any::<bool>() {
-            request.operation_id.clear();
-        }
-        let admitted = hand_protocol_envelope_admitted(
-            request.protocol_version,
-            !request.operation_id.is_empty(),
-        );
-        if admitted {
-            assert!(request.protocol_version >= 1);
-            assert!(request.protocol_version <= CURRENT_HAND_PROTOCOL_VERSION);
-            assert!(request.protocol_version == 1 || !request.operation_id.is_empty());
-        }
-        if request.protocol_version == 1 {
-            assert!(admitted);
-        }
-        if request.protocol_version == 2 && request.operation_id.is_empty() {
-            assert!(!admitted);
-        }
-    }
-}
-
 impl HandResult {
     pub fn ok(output: ToolOutput) -> Self {
         HandResult::Ok { output }
@@ -267,5 +193,89 @@ impl HandResult {
 
     pub fn err(error: HandError) -> Self {
         HandResult::Err { error }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive HandAction control(2) x u16(65536) x bool(2) = 262144
+    /// @obligation remote_tool.controls_never_admit_invocation
+    #[test]
+    fn recovery_control_plan_never_selects_invocation_admission() {
+        // Raw request fields, not free admission facts: arbitrary wire version,
+        // each control action, and absent/present operation identity. The same
+        // production plan routes serve_hand before its only ledger.begin call.
+        for observe in [false, true] {
+            for protocol_version in u16::MIN..=u16::MAX {
+                for clear_operation_id in [false, true] {
+                    let action = if observe {
+                        HandAction::Observe
+                    } else {
+                        HandAction::Cancel
+                    };
+                    let mut request = HandRequest::new(
+                        1,
+                        ToolCall {
+                            call_id: "c".into(),
+                            tool_id: "t".into(),
+                            arguments: serde_json::Value::Null,
+                        },
+                    );
+                    request.action = action;
+                    request.protocol_version = protocol_version;
+                    if clear_operation_id {
+                        request.operation_id.clear();
+                    }
+                    let plan = hand_dispatch_plan(&request);
+                    assert_ne!(plan, HandDispatchPlan::Invoke);
+                    if matches!(plan, HandDispatchPlan::Observe | HandDispatchPlan::Cancel) {
+                        assert_eq!(request.protocol_version, 3);
+                        assert!(!request.operation_id.is_empty());
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive u16(65536) x bool(2) = 131072
+    /// @obligation remote_tool.protocol_version_requires_stable_v2_operation_identity
+    #[test]
+    fn hand_protocol_requires_supported_version_and_v2_operation_identity() {
+        // The production caller derives identity presence from wire bytes.
+        // Empty/nonempty strings are the two equivalence classes of that
+        // derivation; do not substitute an unconstrained admission Boolean.
+        for protocol_version in u16::MIN..=u16::MAX {
+            for clear_operation_id in [false, true] {
+                let mut request = HandRequest::new(
+                    1,
+                    ToolCall {
+                        call_id: "c".into(),
+                        tool_id: "t".into(),
+                        arguments: serde_json::Value::Null,
+                    },
+                );
+                request.protocol_version = protocol_version;
+                if clear_operation_id {
+                    request.operation_id.clear();
+                }
+                let admitted = hand_protocol_envelope_admitted(
+                    request.protocol_version,
+                    !request.operation_id.is_empty(),
+                );
+                if admitted {
+                    assert!(request.protocol_version >= 1);
+                    assert!(request.protocol_version <= CURRENT_HAND_PROTOCOL_VERSION);
+                    assert!(request.protocol_version == 1 || !request.operation_id.is_empty());
+                }
+                if request.protocol_version == 1 {
+                    assert!(admitted);
+                }
+                if request.protocol_version == 2 && request.operation_id.is_empty() {
+                    assert!(!admitted);
+                }
+            }
+        }
     }
 }

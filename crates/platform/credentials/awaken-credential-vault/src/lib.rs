@@ -690,46 +690,6 @@ mod verification {
     use super::*;
     use crate::availability::{AvailabilityState, availability_at};
 
-    /// The canonical authorization projection has no endpoint-to-provider
-    /// fallback: endpoint scope binds both axes, provider scope binds its
-    /// provider, and malformed or generic shapes always deny.
-    /// @obligation credential.provider_scope_widening_requires_exact_revision_provider_and_endpoint
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn provider_scope_never_widens_endpoint_scope() {
-        // Equality is the only operation on either identity. These one-byte
-        // representatives enumerate its complete equal/unequal partition
-        // without asking CBMC to solve a symbolic fat-pointer/string formula.
-        let provider = CredentialAuthorizationScope::Provider { provider_id: "p" };
-        let other_provider = CredentialAuthorizationScope::Provider { provider_id: "q" };
-        assert!(provider.authorizes("p", None));
-        assert!(provider.authorizes("p", Some("e")));
-        assert!(!other_provider.authorizes("p", None));
-        assert!(!other_provider.authorizes("p", Some("e")));
-
-        for (scoped_provider, provider_matches) in [("p", true), ("q", false)] {
-            for (scoped_endpoint, endpoint_matches) in [("e", true), ("f", false)] {
-                let endpoint = CredentialAuthorizationScope::ProtocolEndpoint {
-                    provider_id: scoped_provider,
-                    protocol_endpoint_id: scoped_endpoint,
-                };
-                assert!(!endpoint.authorizes("p", None));
-                assert_eq!(
-                    endpoint.authorizes("p", Some("e")),
-                    provider_matches && endpoint_matches
-                );
-            }
-        }
-
-        for denied in [
-            CredentialAuthorizationScope::Generic,
-            CredentialAuthorizationScope::Invalid,
-        ] {
-            assert!(!denied.authorizes("p", None));
-            assert!(!denied.authorizes("p", Some("e")));
-        }
-    }
-
     /// @obligation credential_pool.disabled_member_is_ineligible
     #[kani::proof]
     fn disabled_credential_pool_members_are_never_eligible() {
@@ -758,27 +718,6 @@ mod verification {
         let state = availability_at(true, Some(kani::any()), kani::any());
         assert_eq!(state, AvailabilityState::Exhausted);
         assert!(!state.is_available());
-    }
-
-    /// @obligation credential_pool.empty_eligible_set_fails_closed
-    #[kani::proof]
-    fn a_pool_with_no_enabled_available_member_fails_closed() {
-        let enabled = [kani::any::<bool>(), kani::any(), kani::any()];
-        let available = [kani::any::<bool>(), kani::any(), kani::any()];
-        let mut selected = None;
-        for index in 0..3 {
-            let state = if available[index] {
-                AvailabilityState::Available
-            } else {
-                AvailabilityState::Exhausted
-            };
-            if selected.is_none() && member_is_eligible(enabled[index], state) {
-                selected = Some(index);
-            }
-        }
-        if (0..3).all(|i| !enabled[i] || !available[i]) {
-            assert!(selected.is_none());
-        }
     }
 }
 
@@ -1952,5 +1891,76 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(vault_no_secret, CredentialError::InvalidSource(_)));
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// The canonical authorization projection has no endpoint-to-provider
+    /// fallback: endpoint scope binds both axes, provider scope binds its
+    /// provider, and malformed or generic shapes always deny.
+    /// @exhaustive no symbolic input (1) = 1
+    /// @obligation credential.provider_scope_widening_requires_exact_revision_provider_and_endpoint
+    #[test]
+    fn provider_scope_never_widens_endpoint_scope() {
+        // Equality is the only operation on either identity. These one-byte
+        // representatives enumerate its complete equal/unequal partition.
+        let provider = CredentialAuthorizationScope::Provider { provider_id: "p" };
+        let other_provider = CredentialAuthorizationScope::Provider { provider_id: "q" };
+        assert!(provider.authorizes("p", None));
+        assert!(provider.authorizes("p", Some("e")));
+        assert!(!other_provider.authorizes("p", None));
+        assert!(!other_provider.authorizes("p", Some("e")));
+
+        for (scoped_provider, provider_matches) in [("p", true), ("q", false)] {
+            for (scoped_endpoint, endpoint_matches) in [("e", true), ("f", false)] {
+                let endpoint = CredentialAuthorizationScope::ProtocolEndpoint {
+                    provider_id: scoped_provider,
+                    protocol_endpoint_id: scoped_endpoint,
+                };
+                assert!(!endpoint.authorizes("p", None));
+                assert_eq!(
+                    endpoint.authorizes("p", Some("e")),
+                    provider_matches && endpoint_matches
+                );
+            }
+        }
+
+        for denied in [
+            CredentialAuthorizationScope::Generic,
+            CredentialAuthorizationScope::Invalid,
+        ] {
+            assert!(!denied.authorizes("p", None));
+            assert!(!denied.authorizes("p", Some("e")));
+        }
+    }
+
+    /// @exhaustive [bool; 3](8) x [bool; 3](8) = 64
+    /// @obligation credential_pool.empty_eligible_set_fails_closed
+    #[test]
+    fn a_pool_with_no_enabled_available_member_fails_closed() {
+        let flags = |mask: u8| -> [bool; 3] { std::array::from_fn(|bit| mask & (1 << bit) != 0) };
+        for enabled_mask in 0_u8..8 {
+            for available_mask in 0_u8..8 {
+                let enabled = flags(enabled_mask);
+                let available = flags(available_mask);
+                let mut selected = None;
+                for index in 0..3 {
+                    let state = if available[index] {
+                        AvailabilityState::Available
+                    } else {
+                        AvailabilityState::Exhausted
+                    };
+                    if selected.is_none() && member_is_eligible(enabled[index], state) {
+                        selected = Some(index);
+                    }
+                }
+                if (0..3).all(|i| !enabled[i] || !available[i]) {
+                    assert!(selected.is_none());
+                }
+            }
+        }
     }
 }

@@ -423,68 +423,6 @@ const fn advisor_candidate_is_admitted(
     primary_admitted && advisor_present && !advisor_is_duplicate
 }
 
-#[cfg(kani)]
-/// @obligation model_advisor.never_substitutes_for_primary_admission_or_duplicates_a_binding
-#[kani::proof]
-#[kani::unwind(8)]
-fn advisor_never_substitutes_for_primary_model_admission() {
-    // The de-duplication fact enters through the production derivation over
-    // real bindings, not as a free bool: whether the Advisor duplicates a
-    // published route is decided by `ModelBinding` equality over admissible
-    // representatives, one of which may carry a different provider identity.
-    //
-    // Causes: whether any candidate is published, whether an Advisor exists,
-    // and whether the Advisor's binding is the published one. Effects: R1 no
-    // published candidate => never admitted (an Advisor cannot create primary
-    // admission); R2 no Advisor => never admitted; R3 an Advisor on an already
-    // published binding => never admitted (no second credential/claim slot);
-    // R4 otherwise admitted.
-    //
-    // Bounds: at most one published candidate. The fold over a longer candidate
-    // list is `Iterator::any` over the same equality, and a non-empty
-    // `Vec<ResolvedModelCandidate>` does not complete under Kani; the executable
-    // tests in this module cover multi-candidate pools.
-    let published = ModelBinding::proof_representative(false);
-    let advisor = ModelBinding::proof_representative(kani::any());
-    let has_candidate: bool = kani::any();
-    let has_advisor: bool = kani::any();
-
-    let candidates: &[&ModelBinding] = if has_candidate { &[&published] } else { &[] };
-    let advisor_ref = has_advisor.then_some(&advisor);
-    let advisor_is_duplicate =
-        advisor_binding_is_duplicate(candidates.iter().copied(), advisor_ref);
-    assert_eq!(
-        advisor_is_duplicate,
-        has_advisor && has_candidate && advisor == published,
-        "an Advisor duplicates exactly a published candidate carrying its own binding"
-    );
-
-    // The first two facts are production's own projections of the same shapes,
-    // not the free bools that chose them.
-    let admitted = advisor_candidate_is_admitted(
-        !candidates.is_empty(),
-        advisor_ref.is_some(),
-        advisor_is_duplicate,
-    );
-    if !has_candidate {
-        assert!(!admitted, "R1 an Advisor never creates primary admission");
-    }
-    if !has_advisor {
-        assert!(!admitted, "R2 no Advisor, no advisory route");
-    }
-    if advisor_is_duplicate {
-        assert!(
-            !admitted,
-            "R3 a duplicate route spends no second claim slot"
-        );
-    }
-    assert_eq!(
-        admitted,
-        has_candidate && has_advisor && !advisor_is_duplicate,
-        "R4 an Advisor on its own route beside a published candidate is admitted"
-    );
-}
-
 /// The execution backend a resolved agent binds to (R3/R4): the in-process awaken
 /// runtime, or a launched external ACP CLI. A *typed view* over the model binding's
 /// runtime-selection axis — the string `backend_ref` (`"genai"`, `"acp:claude"`)
@@ -1941,3 +1879,72 @@ mod tool_presentation;
 #[cfg(test)]
 #[path = "resolved/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation model_advisor.never_substitutes_for_primary_admission_or_duplicates_a_binding
+    #[test]
+    fn advisor_never_substitutes_for_primary_model_admission() {
+        // The de-duplication fact enters through the production derivation over
+        // real bindings, not as a free bool: whether the Advisor duplicates a
+        // published route is decided by `ModelBinding` equality over admissible
+        // bindings, one of which may carry a different provider identity.
+        //
+        // Causes: whether any candidate is published, whether an Advisor exists,
+        // and whether the Advisor's binding is the published one. Effects: R1 no
+        // published candidate => never admitted (an Advisor cannot create primary
+        // admission); R2 no Advisor => never admitted; R3 an Advisor on an already
+        // published binding => never admitted (no second credential/claim slot);
+        // R4 otherwise admitted. At most one published candidate; the executable
+        // tests in `resolved/tests.rs` cover multi-candidate pools.
+        let binding = |distinct: bool| {
+            ModelBinding::parse(if distinct { "q" } else { "p" }, "m", "native")
+                .expect("the coordinates are admissible")
+        };
+        let published = binding(false);
+        for distinct_advisor in [false, true] {
+            let advisor = binding(distinct_advisor);
+            for has_candidate in [false, true] {
+                for has_advisor in [false, true] {
+                    let candidates: &[&ModelBinding] =
+                        if has_candidate { &[&published] } else { &[] };
+                    let advisor_ref = has_advisor.then_some(&advisor);
+                    let advisor_is_duplicate =
+                        advisor_binding_is_duplicate(candidates.iter().copied(), advisor_ref);
+                    assert_eq!(
+                        advisor_is_duplicate,
+                        has_advisor && has_candidate && advisor == published,
+                        "an Advisor duplicates exactly a published candidate carrying its own binding"
+                    );
+                    // The first two facts are production's own projections of the
+                    // same shapes, not the free bools that chose them.
+                    let admitted = advisor_candidate_is_admitted(
+                        !candidates.is_empty(),
+                        advisor_ref.is_some(),
+                        advisor_is_duplicate,
+                    );
+                    if !has_candidate {
+                        assert!(!admitted, "R1 an Advisor never creates primary admission");
+                    }
+                    if !has_advisor {
+                        assert!(!admitted, "R2 no Advisor, no advisory route");
+                    }
+                    if advisor_is_duplicate {
+                        assert!(
+                            !admitted,
+                            "R3 a duplicate route spends no second claim slot"
+                        );
+                    }
+                    assert_eq!(
+                        admitted,
+                        has_candidate && has_advisor && !advisor_is_duplicate,
+                        "R4 an Advisor on its own route beside a published candidate is admitted"
+                    );
+                }
+            }
+        }
+    }
+}

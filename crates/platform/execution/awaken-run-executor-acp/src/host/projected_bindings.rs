@@ -26,31 +26,6 @@ const fn projection_recheck_decision(exact_projection: bool) -> ProjectionRechec
     }
 }
 
-#[cfg(kani)]
-/// @obligation worker_credential.projected_binding_use_rechecks_after_probe
-/// @proof-input-debt free_symbol projection_recheck_decision exact_projection
-#[kani::proof]
-fn projected_binding_use_rechecks_the_exact_projection_after_probe() {
-    // Cause C1: the post-probe projection exactly matches the pre-probe
-    // projection. Effects E1/E2: return the original observation outcome or
-    // reject it as unavailable. The two rules are exhaustive.
-    //
-    // | Rule | C1 | Effect |
-    // |---|---|---|
-    // | R1 | yes | E1 return observation |
-    // | R2 | no  | E2 reject |
-    let exact_projection: bool = kani::any();
-    let decision = projection_recheck_decision(exact_projection);
-    assert_eq!(
-        decision == ProjectionRecheckDecision::ReturnObservation,
-        exact_projection
-    );
-    assert_eq!(
-        decision == ProjectionRecheckDecision::Reject,
-        !exact_projection
-    );
-}
-
 pub(super) fn to_local_binding(
     projection: &AcpLocalCredentialBinding,
 ) -> Result<LocalBinding, String> {
@@ -721,5 +696,35 @@ mod tests {
                 .is_ok(),
             "R15"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) = 2
+    /// @obligation worker_credential.projected_binding_use_rechecks_after_probe
+    #[test]
+    fn projected_binding_use_rechecks_the_exact_projection_after_probe() {
+        // Cause C1: the post-probe projection exactly matches the pre-probe
+        // projection. Effects E1/E2: return the original observation outcome or
+        // reject it as unavailable. The two rules are exhaustive.
+        //
+        // | Rule | C1 | Effect |
+        // |---|---|---|
+        // | R1 | yes | E1 return observation |
+        // | R2 | no  | E2 reject |
+        for exact_projection in [false, true] {
+            let decision = projection_recheck_decision(exact_projection);
+            assert_eq!(
+                decision == ProjectionRecheckDecision::ReturnObservation,
+                exact_projection
+            );
+            assert_eq!(
+                decision == ProjectionRecheckDecision::Reject,
+                !exact_projection
+            );
+        }
     }
 }

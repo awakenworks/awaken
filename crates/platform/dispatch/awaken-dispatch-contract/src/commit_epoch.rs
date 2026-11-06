@@ -306,63 +306,6 @@ impl CommitEpochGuard {
     }
 }
 
-#[cfg(kani)]
-/// @obligation ingress.commit_epoch_atomic_local
-/// @obligation ingress.commit_epoch_atomic_remote_custom
-/// @obligation remote_worker.stale_epoch_never_mutates_truth
-#[kani::proof]
-fn commit_epoch_completion_requires_observed_release() {
-    // Cause/effect decision table:
-    // C1 inner outcome has settled (enforced structurally by typestate);
-    // C2 explicit backend release succeeds/fails. E1 exposes the already
-    // settled inner outcome only for C2=true; E2 returns a release failure for
-    // C2=false. R1/R2 exhaust Boolean C2, while C1=false cannot construct the
-    // settled receiver and therefore has no completion transition.
-    let release_succeeded: bool = kani::any();
-    let decision = CommitEpochBoundary::held()
-        .settle_inner()
-        .complete(release_succeeded);
-    assert_eq!(
-        decision == CommitEpochCompletion::ReturnInner,
-        release_succeeded
-    );
-}
-
-#[cfg(kani)]
-/// @obligation ingress.commit_epoch_atomic_remote_custom
-/// @obligation remote_worker.committed_truth_is_coordinator_owned
-/// @obligation remote_worker.execution_requires_claimed_snapshot
-/// @obligation remote_worker.single_live_claim_owner
-/// @obligation remote_worker.stale_epoch_never_mutates_truth
-/// @proof-input-debt free_symbol classify_commit_epoch_admission epoch_matches
-/// @proof-input-debt free_symbol classify_commit_epoch_admission expiry_present
-/// @proof-input-debt free_symbol classify_commit_epoch_admission owner_matches
-/// @proof-input-debt free_symbol classify_commit_epoch_admission owner_present
-/// @proof-input-debt free_symbol classify_commit_epoch_admission row_in_required_state
-#[kani::proof]
-fn commit_epoch_guard_admits_only_complete_exact_claim() {
-    let row_in_required_state: bool = kani::any();
-    let owner_present: bool = kani::any();
-    let expiry_present: bool = kani::any();
-    let owner_matches: bool = kani::any();
-    let epoch_matches: bool = kani::any();
-    let admission = classify_commit_epoch_admission(
-        row_in_required_state,
-        owner_present,
-        expiry_present,
-        owner_matches,
-        epoch_matches,
-    );
-    assert_eq!(
-        admission == CommitEpochAdmission::Guarded,
-        row_in_required_state && owner_present && expiry_present && owner_matches && epoch_matches
-    );
-    assert_eq!(
-        admission == CommitEpochAdmission::Corrupt,
-        row_in_required_state && (!owner_present || !expiry_present)
-    );
-}
-
 #[cfg(test)]
 mod commit_epoch_tests {
     use super::*;
@@ -691,5 +634,72 @@ mod commit_epoch_tests {
             CommitEpochAdmission::Corrupt,
             "G3/E3"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) = 2
+    /// @obligation ingress.commit_epoch_atomic_local
+    /// @obligation ingress.commit_epoch_atomic_remote_custom
+    /// @obligation remote_worker.stale_epoch_never_mutates_truth
+    #[test]
+    fn commit_epoch_completion_requires_observed_release() {
+        // Cause/effect decision table:
+        // C1 inner outcome has settled (enforced structurally by typestate);
+        // C2 explicit backend release succeeds/fails. E1 exposes the already
+        // settled inner outcome only for C2=true; E2 returns a release failure for
+        // C2=false. R1/R2 exhaust Boolean C2, while C1=false cannot construct the
+        // settled receiver and therefore has no completion transition.
+        for release_succeeded in [false, true] {
+            let decision = CommitEpochBoundary::held()
+                .settle_inner()
+                .complete(release_succeeded);
+            assert_eq!(
+                decision == CommitEpochCompletion::ReturnInner,
+                release_succeeded
+            );
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x bool(2) = 32
+    /// @obligation ingress.commit_epoch_atomic_remote_custom
+    /// @obligation remote_worker.committed_truth_is_coordinator_owned
+    /// @obligation remote_worker.execution_requires_claimed_snapshot
+    /// @obligation remote_worker.single_live_claim_owner
+    /// @obligation remote_worker.stale_epoch_never_mutates_truth
+    #[test]
+    fn commit_epoch_guard_admits_only_complete_exact_claim() {
+        for row_in_required_state in [false, true] {
+            for owner_present in [false, true] {
+                for expiry_present in [false, true] {
+                    for owner_matches in [false, true] {
+                        for epoch_matches in [false, true] {
+                            let admission = classify_commit_epoch_admission(
+                                row_in_required_state,
+                                owner_present,
+                                expiry_present,
+                                owner_matches,
+                                epoch_matches,
+                            );
+                            assert_eq!(
+                                admission == CommitEpochAdmission::Guarded,
+                                row_in_required_state
+                                    && owner_present
+                                    && expiry_present
+                                    && owner_matches
+                                    && epoch_matches
+                            );
+                            assert_eq!(
+                                admission == CommitEpochAdmission::Corrupt,
+                                row_in_required_state && (!owner_present || !expiry_present)
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

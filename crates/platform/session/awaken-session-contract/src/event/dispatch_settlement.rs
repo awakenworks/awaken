@@ -339,121 +339,6 @@ fn user_event_processing_requires_exact_applied_dispatch_and_activity_settlement
     );
 }
 
-/// The retained-input half of R4, proved over the production predicate rather
-/// than over a free symbol.
-///
-/// Causes: the Event's processed marker, its class, and the class and marker of
-/// its immediate predecessor (absent for the first). Effects: R1 any processed
-/// Event is inert; R2 a pending ordinary User is inert, whatever precedes it --
-/// this is the rule whose absence held an Awaiting Session Running behind its
-/// own queued User; R3 a pending System is inert only while the User that froze
-/// it is itself still pending, so a System standing alone is real work; R4 every
-/// other pending kind blocks idling unconditionally.
-///
-/// Bounds: this proves the per-Event rule and the class each real command maps
-/// to. The fold that applies it -- `Iterator::all` over the entries of each
-/// batch and over the batches of a Session, disjoined with
-/// `all_events_processed` -- is NOT proved here: a non-empty
-/// `Vec<SessionEventEntry>` does not complete under Kani in this crate (a bare
-/// command is 0.15s, the same command inside one `Vec` does not finish in
-/// 400s), which is the same wall `terminal_batch_resolution_empty` documents.
-/// The fold is covered by the executable decision tables in this module and in
-/// `crate::tests::event_batches`.
-#[cfg(kani)]
-/// @obligation session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
-/// @obligation session_execution.initial_event_path_reaches_idle_only_after_full_settlement
-#[kani::proof]
-fn retained_input_idling_is_exactly_settled_or_only_blocked_users() {
-    let class = proof_class(kani::any());
-    let previous = kani::any::<bool>().then(|| (proof_class(kani::any()), kani::any::<bool>()));
-
-    // R1: a processed Event never blocks, in any class or position.
-    assert!(retained_event_is_inert(true, class, previous));
-
-    let pending = retained_event_is_inert(false, class, previous);
-    // R2 and R4: an ordinary User is inert and any other non-System kind is not,
-    // independently of what precedes them.
-    if class == RetainedInputClass::OrdinaryUser {
-        assert!(
-            pending,
-            "a queued ordinary User must not hold the Session Running"
-        );
-    }
-    if class == RetainedInputClass::Other {
-        assert!(
-            !pending,
-            "every other pending command keeps the gate closed"
-        );
-    }
-    // R3: a pending System is inert exactly while its own pending User precedes it.
-    if class == RetainedInputClass::ReservedSystem {
-        assert_eq!(
-            pending,
-            previous == Some((RetainedInputClass::OrdinaryUser, false)),
-            "a System is inert only inside its own User's reservation"
-        );
-    }
-    // Processing an Event can never turn an inert one back into a blocker.
-    assert!(!(pending && !retained_event_is_inert(true, class, previous)));
-
-    // The classification is the derivation's other half: every real command
-    // variant maps to exactly one class, over values built by the real type.
-    let operation_id = String::new;
-    assert_eq!(
-        SessionEventCommand::UserMessage {
-            operation_id: operation_id(),
-            run_id: RunId(String::new()),
-            content: Vec::new(),
-            data_subject_id: None,
-        }
-        .retained_input_class(),
-        RetainedInputClass::OrdinaryUser
-    );
-    assert_eq!(
-        SessionEventCommand::SystemMessage {
-            operation_id: operation_id(),
-            content: Vec::new(),
-        }
-        .retained_input_class(),
-        RetainedInputClass::ReservedSystem
-    );
-    assert_eq!(
-        SessionEventCommand::Interrupt {
-            operation_id: operation_id(),
-            interrupt: crate::event::SessionEventInterrupt {
-                requested_target: None,
-                targets: Vec::new(),
-            },
-        }
-        .retained_input_class(),
-        RetainedInputClass::Other
-    );
-    assert_eq!(
-        SessionEventCommand::DefineOutcome {
-            operation_id: operation_id(),
-            outcome_id: String::new(),
-            description: String::new(),
-            rubric: crate::event::SessionOutcomeRubric::Text {
-                content: String::new(),
-            },
-            max_iterations: None,
-        }
-        .retained_input_class(),
-        RetainedInputClass::Other
-    );
-}
-
-/// The three retained-input classes as a symbolic choice, without building a
-/// command: the mapping from commands to classes is asserted separately above.
-#[cfg(kani)]
-fn proof_class(tag: u8) -> RetainedInputClass {
-    match tag % 3 {
-        0 => RetainedInputClass::OrdinaryUser,
-        1 => RetainedInputClass::ReservedSystem,
-        _ => RetainedInputClass::Other,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,5 +569,129 @@ mod tests {
                 "R5 no partial mutation"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_CLASS: [RetainedInputClass; 3] = [
+        RetainedInputClass::OrdinaryUser,
+        RetainedInputClass::ReservedSystem,
+        RetainedInputClass::Other,
+    ];
+
+    const fn listed_class(class: RetainedInputClass) -> usize {
+        match class {
+            RetainedInputClass::OrdinaryUser => 0,
+            RetainedInputClass::ReservedSystem => 1,
+            RetainedInputClass::Other => 2,
+        }
+    }
+
+    #[test]
+    fn every_retained_input_class_is_listed() {
+        for (index, class) in EVERY_CLASS.into_iter().enumerate() {
+            assert_eq!(listed_class(class), index);
+        }
+    }
+
+    /// @exhaustive RetainedInputClass(3) x Option<(RetainedInputClass(3), bool(2))>(7) = 21
+    /// @obligation session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+    /// @obligation session_execution.initial_event_path_reaches_idle_only_after_full_settlement
+    #[test]
+    fn retained_input_idling_is_exactly_settled_or_only_blocked_users() {
+        // The retained-input half of R4, over the production predicate. Causes:
+        // the Event's processed marker, its class, and the class and marker of
+        // its immediate predecessor (absent for the first). Effects: R1 any
+        // processed Event is inert; R2 a pending ordinary User is inert,
+        // whatever precedes it; R3 a pending System is inert only while the
+        // User that froze it is itself still pending; R4 every other pending
+        // kind blocks idling unconditionally.
+        let mut previous_values = vec![None];
+        for class in EVERY_CLASS {
+            for processed in [false, true] {
+                previous_values.push(Some((class, processed)));
+            }
+        }
+        let mut cases = 0;
+        for class in EVERY_CLASS {
+            for &previous in &previous_values {
+                // R1: a processed Event never blocks, in any class or position.
+                assert!(retained_event_is_inert(true, class, previous));
+
+                let pending = retained_event_is_inert(false, class, previous);
+                if class == RetainedInputClass::OrdinaryUser {
+                    assert!(
+                        pending,
+                        "a queued ordinary User must not hold the Session Running"
+                    );
+                }
+                if class == RetainedInputClass::Other {
+                    assert!(
+                        !pending,
+                        "every other pending command keeps the gate closed"
+                    );
+                }
+                if class == RetainedInputClass::ReservedSystem {
+                    assert_eq!(
+                        pending,
+                        previous == Some((RetainedInputClass::OrdinaryUser, false)),
+                        "a System is inert only inside its own User's reservation"
+                    );
+                }
+                // Processing an Event can never turn an inert one back into a blocker.
+                assert!(!pending || retained_event_is_inert(true, class, previous));
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 21);
+
+        // The classification is the derivation's other half: every real command
+        // variant maps to exactly one class, over values built by the real type.
+        let operation_id = String::new;
+        assert_eq!(
+            SessionEventCommand::UserMessage {
+                operation_id: operation_id(),
+                run_id: RunId(String::new()),
+                content: Vec::new(),
+                data_subject_id: None,
+            }
+            .retained_input_class(),
+            RetainedInputClass::OrdinaryUser
+        );
+        assert_eq!(
+            SessionEventCommand::SystemMessage {
+                operation_id: operation_id(),
+                content: Vec::new(),
+            }
+            .retained_input_class(),
+            RetainedInputClass::ReservedSystem
+        );
+        assert_eq!(
+            SessionEventCommand::Interrupt {
+                operation_id: operation_id(),
+                interrupt: crate::event::SessionEventInterrupt {
+                    requested_target: None,
+                    targets: Vec::new(),
+                },
+            }
+            .retained_input_class(),
+            RetainedInputClass::Other
+        );
+        assert_eq!(
+            SessionEventCommand::DefineOutcome {
+                operation_id: operation_id(),
+                outcome_id: String::new(),
+                description: String::new(),
+                rubric: crate::event::SessionOutcomeRubric::Text {
+                    content: String::new(),
+                },
+                max_iterations: None,
+            }
+            .retained_input_class(),
+            RetainedInputClass::Other
+        );
     }
 }

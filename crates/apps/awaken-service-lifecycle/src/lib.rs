@@ -724,24 +724,101 @@ mod tests {
 mod verification {
     use super::*;
 
-    fn symbolic_process_role(value: u8) -> ProcessRole {
-        ProcessRole::from_discriminant(value % 4).expect("modulo four is a known process role")
-    }
+    /// @obligation service_lifecycle.concurrent_shutdown_waits_for_active_drain
+    /// @kani target=lib tier=nightly
+    #[kani::proof]
+    fn concurrent_shutdown_admission_waits_for_the_active_drain() {
+        // Cause/effect graph: C1 the first caller transfers the production
+        // registry; C2 a follower arrives before or after finish. Effects: E1
+        // C1 alone receives Lead with the exact tasks; E2 a follower before
+        // finish receives only Wait; E3 only finish admits Complete. Decision
+        // table: R1=C1 -> E1; R2=C1+C2+!finish -> E2;
+        // R3=C1+C2+finish -> E3. The symbolic finish placement exhausts both
+        // follower rows through the exact production phase owner.
+        let finish_before_follower: bool = kani::any();
+        let first_task: u8 = kani::any();
+        let second_task: u8 = kani::any();
+        let exact_result: u8 = kani::any();
+        let mut registry: TaskRegistry<u8, u8> = TaskRegistry::new();
+        assert!(registry.register_with(|| first_task));
+        assert!(registry.register_with(|| second_task));
+        assert_eq!(
+            registry.begin_shutdown(),
+            ShutdownAdmission::Lead(vec![first_task, second_task])
+        );
 
-    fn symbolic_role(value: u8) -> StartupRole {
-        match value % 3 {
-            0 => StartupRole::AllInOne,
-            1 => StartupRole::Control,
-            _ => StartupRole::Coordinator,
+        if finish_before_follower {
+            registry.finish_shutdown(exact_result);
+            assert_eq!(
+                registry.begin_shutdown(),
+                ShutdownAdmission::Complete(exact_result)
+            );
+        } else {
+            assert_eq!(registry.begin_shutdown(), ShutdownAdmission::Wait);
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_PROCESS_ROLE: [ProcessRole; 4] = [
+        ProcessRole::AllInOne,
+        ProcessRole::Control,
+        ProcessRole::Coordinator,
+        ProcessRole::Worker,
+    ];
+
+    const fn listed_process_role(role: ProcessRole) -> usize {
+        match role {
+            ProcessRole::AllInOne => 0,
+            ProcessRole::Control => 1,
+            ProcessRole::Coordinator => 2,
+            ProcessRole::Worker => 3,
         }
     }
 
-    fn symbolic_component(value: u8) -> StartupComponent {
-        match value % 4 {
-            0 => StartupComponent::Control,
-            1 => StartupComponent::Resources,
-            2 => StartupComponent::Coordinator,
-            _ => StartupComponent::LocalWorker,
+    const EVERY_STARTUP_ROLE: [StartupRole; 3] = [
+        StartupRole::AllInOne,
+        StartupRole::Control,
+        StartupRole::Coordinator,
+    ];
+
+    const fn listed_startup_role(role: StartupRole) -> usize {
+        match role {
+            StartupRole::AllInOne => 0,
+            StartupRole::Control => 1,
+            StartupRole::Coordinator => 2,
+        }
+    }
+
+    const EVERY_STARTUP_COMPONENT: [StartupComponent; 4] = [
+        StartupComponent::Control,
+        StartupComponent::Resources,
+        StartupComponent::Coordinator,
+        StartupComponent::LocalWorker,
+    ];
+
+    const fn listed_startup_component(component: StartupComponent) -> usize {
+        match component {
+            StartupComponent::Control => 0,
+            StartupComponent::Resources => 1,
+            StartupComponent::Coordinator => 2,
+            StartupComponent::LocalWorker => 3,
+        }
+    }
+
+    #[test]
+    fn every_role_and_component_is_listed_once() {
+        for (index, role) in EVERY_PROCESS_ROLE.into_iter().enumerate() {
+            assert_eq!(listed_process_role(role), index);
+        }
+        for (index, role) in EVERY_STARTUP_ROLE.into_iter().enumerate() {
+            assert_eq!(listed_startup_role(role), index);
+        }
+        for (index, component) in EVERY_STARTUP_COMPONENT.into_iter().enumerate() {
+            assert_eq!(listed_startup_component(component), index);
         }
     }
 
@@ -805,9 +882,9 @@ mod verification {
         assert_task_prefix(&registry.tasks, expected);
     }
 
+    /// @exhaustive [bool; 3](8) = 8
     /// @obligation service_lifecycle.shutdown_fences_task_registration
-    /// @kani target=lib
-    #[kani::proof]
+    #[test]
     fn shutdown_registry_fences_registration_and_transfers_exactly_once() {
         // Cause/effect graph: C1 the registry is Accepting; C2 any of three
         // ordered operations begins shutdown; C3 a builder has an observable
@@ -818,163 +895,142 @@ mod verification {
         // Complete. Decision table: R1=C1+register -> E1;
         // R2=C1+C2 -> E2; R3=!C1+C2+!C4 -> E3;
         // R4=!C1+register+C3 -> E4; R5=C4+C2 -> E5.
-        // Three symbolic positions exhaust every first-shutdown placement; the
+        // Three enumerated positions exhaust every first-shutdown placement; the
         // forced shutdown, late registration, waiting and finish calls close all rows.
         // R5 updates the independent model after finish, then reuses the same
         // step to exercise Complete and check the empty task prefix and phase.
-        let closes: [bool; 3] = kani::any();
-        let mut registry = TaskRegistry::<u8>::new();
-        let mut expected = ExpectedRegistry {
-            tasks: [0; 3],
-            len: 0,
-            phase: RegistryPhase::Accepting,
-        };
-        exercise_registry_step(&mut registry, &mut expected, closes[0], 0);
-        exercise_registry_step(&mut registry, &mut expected, closes[1], 1);
-        exercise_registry_step(&mut registry, &mut expected, closes[2], 2);
+        for bits in 0_u8..8 {
+            let closes = [bits & 1 != 0, bits & 2 != 0, bits & 4 != 0];
+            let mut registry = TaskRegistry::<u8>::new();
+            let mut expected = ExpectedRegistry {
+                tasks: [0; 3],
+                len: 0,
+                phase: RegistryPhase::Accepting,
+            };
+            exercise_registry_step(&mut registry, &mut expected, closes[0], 0);
+            exercise_registry_step(&mut registry, &mut expected, closes[1], 1);
+            exercise_registry_step(&mut registry, &mut expected, closes[2], 2);
 
-        match registry.begin_shutdown() {
-            ShutdownAdmission::Lead(transferred) => {
-                assert_eq!(expected.phase, RegistryPhase::Accepting);
-                assert_task_prefix(&transferred, &expected);
+            match registry.begin_shutdown() {
+                ShutdownAdmission::Lead(transferred) => {
+                    assert_eq!(expected.phase, RegistryPhase::Accepting);
+                    assert_task_prefix(&transferred, &expected);
+                }
+                ShutdownAdmission::Wait => assert_eq!(expected.phase, RegistryPhase::Draining),
+                ShutdownAdmission::Complete(()) => panic!("the drain was not completed"),
             }
-            ShutdownAdmission::Wait => assert_eq!(expected.phase, RegistryPhase::Draining),
-            ShutdownAdmission::Complete(()) => panic!("the drain was not completed"),
-        }
-        assert_eq!(registry.phase, RegistryPhase::Draining);
-        assert!(registry.tasks.is_empty());
+            assert_eq!(registry.phase, RegistryPhase::Draining);
+            assert!(registry.tasks.is_empty());
 
-        let late_builder_called = std::cell::Cell::new(false);
-        assert!(!registry.register_with(|| {
-            late_builder_called.set(true);
-            u8::MAX
-        }));
-        assert!(!late_builder_called.get());
-        assert_eq!(registry.begin_shutdown(), ShutdownAdmission::Wait);
-        registry.finish_shutdown(());
-        expected.phase = RegistryPhase::Complete(());
-        expected.len = 0;
-        exercise_registry_step(&mut registry, &mut expected, true, 0);
-    }
-
-    /// @obligation service_lifecycle.concurrent_shutdown_waits_for_active_drain
-    /// @kani target=lib
-    #[kani::proof]
-    fn concurrent_shutdown_admission_waits_for_the_active_drain() {
-        // Cause/effect graph: C1 the first caller transfers the production
-        // registry; C2 a follower arrives before or after finish. Effects: E1
-        // C1 alone receives Lead with the exact tasks; E2 a follower before
-        // finish receives only Wait; E3 only finish admits Complete. Decision
-        // table: R1=C1 -> E1; R2=C1+C2+!finish -> E2;
-        // R3=C1+C2+finish -> E3. The symbolic finish placement exhausts both
-        // follower rows through the exact production phase owner.
-        let finish_before_follower: bool = kani::any();
-        let first_task: u8 = kani::any();
-        let second_task: u8 = kani::any();
-        let exact_result: u8 = kani::any();
-        let mut registry: TaskRegistry<u8, u8> = TaskRegistry::new();
-        assert!(registry.register_with(|| first_task));
-        assert!(registry.register_with(|| second_task));
-        assert_eq!(
-            registry.begin_shutdown(),
-            ShutdownAdmission::Lead(vec![first_task, second_task])
-        );
-
-        if finish_before_follower {
-            registry.finish_shutdown(exact_result);
-            assert_eq!(
-                registry.begin_shutdown(),
-                ShutdownAdmission::Complete(exact_result)
-            );
-        } else {
+            let late_builder_called = std::cell::Cell::new(false);
+            assert!(!registry.register_with(|| {
+                late_builder_called.set(true);
+                u8::MAX
+            }));
+            assert!(!late_builder_called.get());
             assert_eq!(registry.begin_shutdown(), ShutdownAdmission::Wait);
+            registry.finish_shutdown(());
+            expected.phase = RegistryPhase::Complete(());
+            expected.len = 0;
+            exercise_registry_step(&mut registry, &mut expected, true, 0);
         }
     }
 
+    /// @exhaustive StartupRole(3) x StartupComponent(4) = 12
     /// @obligation service_lifecycle.startup_wiring_is_exact_for_every_service_role
-    /// @kani target=lib
-    #[kani::proof]
+    #[test]
     fn startup_wiring_is_exact_for_every_service_role() {
-        let role = symbolic_role(kani::any());
-        let component = symbolic_component(kani::any());
-        let expected = match role {
-            StartupRole::AllInOne => true,
-            StartupRole::Control => component == StartupComponent::Control,
-            StartupRole::Coordinator => matches!(
-                component,
-                StartupComponent::Resources | StartupComponent::Coordinator
-            ),
-        };
-        assert_eq!(startup_requires(role, component), expected);
-    }
-
-    /// @obligation service_lifecycle.startup_wiring_requires_every_role_owned_component
-    /// @kani target=lib
-    #[kani::proof]
-    fn startup_wiring_requires_every_role_owned_component() {
-        let role = symbolic_role(kani::any());
-        let components: u8 = kani::any();
-        if startup_wiring_is_exact(role as u8, components) {
-            let component = symbolic_component(kani::any());
-            assert_eq!(
-                components & component.bit() != 0,
-                startup_requires(role, component)
-            );
-        }
-    }
-
-    /// @obligation service_lifecycle.startup_wiring_fails_closed_for_unknown_missing_or_extra_authority
-    /// @kani target=lib
-    #[kani::proof]
-    fn startup_wiring_fails_closed_for_unknown_missing_or_extra_authority() {
-        let role_discriminant: u8 = kani::any();
-        let components: u8 = kani::any();
-        let admitted = startup_wiring_is_exact(role_discriminant, components);
-        match StartupRole::from_discriminant(role_discriminant) {
-            Some(role) => {
-                assert_eq!(admitted, components == required_startup_components(role));
+        for role in EVERY_STARTUP_ROLE {
+            for component in EVERY_STARTUP_COMPONENT {
+                let expected = match role {
+                    StartupRole::AllInOne => true,
+                    StartupRole::Control => component == StartupComponent::Control,
+                    StartupRole::Coordinator => matches!(
+                        component,
+                        StartupComponent::Resources | StartupComponent::Coordinator
+                    ),
+                };
+                assert_eq!(startup_requires(role, component), expected);
             }
-            None => assert!(!admitted),
         }
     }
 
+    /// @exhaustive StartupRole(3) x u8(256) x StartupComponent(4) = 3072
+    /// @obligation service_lifecycle.startup_wiring_requires_every_role_owned_component
+    #[test]
+    fn startup_wiring_requires_every_role_owned_component() {
+        for role in EVERY_STARTUP_ROLE {
+            for components in u8::MIN..=u8::MAX {
+                if startup_wiring_is_exact(role as u8, components) {
+                    for component in EVERY_STARTUP_COMPONENT {
+                        assert_eq!(
+                            components & component.bit() != 0,
+                            startup_requires(role, component)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive u8(256) x u8(256) = 65536
+    /// @obligation service_lifecycle.startup_wiring_fails_closed_for_unknown_missing_or_extra_authority
+    #[test]
+    fn startup_wiring_fails_closed_for_unknown_missing_or_extra_authority() {
+        for role_discriminant in u8::MIN..=u8::MAX {
+            for components in u8::MIN..=u8::MAX {
+                let admitted = startup_wiring_is_exact(role_discriminant, components);
+                match StartupRole::from_discriminant(role_discriminant) {
+                    Some(role) => {
+                        assert_eq!(admitted, components == required_startup_components(role));
+                    }
+                    None => assert!(!admitted),
+                }
+            }
+        }
+    }
+
+    /// @exhaustive ProcessRole(4) x StartupComponent(4) = 16
     /// @obligation assembly_role.process_role_projects_exact_startup_authority
-    /// @kani target=lib
-    #[kani::proof]
+    #[test]
     fn process_role_projects_exact_startup_authority() {
-        let role = symbolic_process_role(kani::any());
-        let component = symbolic_component(kani::any());
-        let expected = match role {
-            ProcessRole::AllInOne => true,
-            ProcessRole::Control => component == StartupComponent::Control,
-            ProcessRole::Coordinator => matches!(
-                component,
-                StartupComponent::Resources | StartupComponent::Coordinator
-            ),
-            ProcessRole::Worker => false,
-        };
-        assert_eq!(role.owns_startup_component(component), expected);
+        for role in EVERY_PROCESS_ROLE {
+            for component in EVERY_STARTUP_COMPONENT {
+                let expected = match role {
+                    ProcessRole::AllInOne => true,
+                    ProcessRole::Control => component == StartupComponent::Control,
+                    ProcessRole::Coordinator => matches!(
+                        component,
+                        StartupComponent::Resources | StartupComponent::Coordinator
+                    ),
+                    ProcessRole::Worker => false,
+                };
+                assert_eq!(role.owns_startup_component(component), expected);
+            }
+        }
     }
 
+    /// @exhaustive StartupComponent(4) = 4
     /// @obligation assembly_role.worker_never_acquires_service_startup_or_migration_authority
-    /// @kani target=lib
-    #[kani::proof]
+    #[test]
     fn worker_never_acquires_service_startup_or_local_mount_authority() {
-        let component = symbolic_component(kani::any());
-        assert_eq!(ProcessRole::Worker.startup_role(), None);
-        assert!(!ProcessRole::Worker.owns_startup_component(component));
-        assert!(!ProcessRole::Worker.mounts_managed_runtime());
+        for component in EVERY_STARTUP_COMPONENT {
+            assert_eq!(ProcessRole::Worker.startup_role(), None);
+            assert!(!ProcessRole::Worker.owns_startup_component(component));
+            assert!(!ProcessRole::Worker.mounts_managed_runtime());
+        }
     }
 
+    /// @exhaustive ProcessRole(4) = 4
     /// @obligation assembly_role.local_managed_mount_requires_exact_local_worker_component
-    /// @kani target=lib
-    #[kani::proof]
+    #[test]
     fn local_managed_mount_is_exactly_the_local_worker_component() {
-        let role = symbolic_process_role(kani::any());
-        assert_eq!(
-            role.mounts_managed_runtime(),
-            role.owns_startup_component(StartupComponent::LocalWorker)
-        );
-        assert_eq!(role.mounts_managed_runtime(), role == ProcessRole::AllInOne);
+        for role in EVERY_PROCESS_ROLE {
+            assert_eq!(
+                role.mounts_managed_runtime(),
+                role.owns_startup_component(StartupComponent::LocalWorker)
+            );
+            assert_eq!(role.mounts_managed_runtime(), role == ProcessRole::AllInOne);
+        }
     }
 }

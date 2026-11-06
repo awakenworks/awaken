@@ -688,85 +688,6 @@ fn fixture_binding(
 }
 
 #[cfg(kani)]
-/// @obligation model_operation.reentry_requires_positive_execution_evidence
-#[kani::proof]
-fn no_dispatch_mints_only_reviewed_pre_call_stages() {
-    // C1 the production caller chooses one of four explicit constructors;
-    // E1 the sealed proof carries that exact pre-call stage; E2 no constructor
-    // can mint decoder-only Unrecorded. Exhaust every u8 selector; this is a
-    // constructor/stage proof, not transport honesty or async journal proof.
-    let choice: u8 = kani::any();
-    let proof = match choice % 4 {
-        0 => NoDispatchProof::request_projection(),
-        1 => NoDispatchProof::executor_resolution(),
-        2 => NoDispatchProof::runtime_admission(),
-        _ => NoDispatchProof::transport_connect(),
-    };
-    assert!(matches!(
-        proof.stage(),
-        PreDispatchStage::RequestProjection
-            | PreDispatchStage::ExecutorResolution
-            | PreDispatchStage::RuntimeAdmission
-            | PreDispatchStage::TransportConnect
-    ));
-    assert_eq!(
-        proof.stage(),
-        match choice % 4 {
-            0 => PreDispatchStage::RequestProjection,
-            1 => PreDispatchStage::ExecutorResolution,
-            2 => PreDispatchStage::RuntimeAdmission,
-            _ => PreDispatchStage::TransportConnect,
-        }
-    );
-    assert_ne!(proof.stage(), PreDispatchStage::Unrecorded);
-    assert!(ModelExecutionEvidence::NotDispatched(proof).permits_reentry());
-}
-
-#[cfg(kani)]
-/// @obligation model_operation.reentry_requires_positive_execution_evidence
-#[kani::proof]
-fn model_execution_reentry_requires_positive_evidence() {
-    // R1 unknown => deny; R2 not dispatched / terminal => only the physical
-    // gate opens. Retry policy and claim/budget remain separate authorities.
-    let selector: u8 = kani::any();
-    let evidence = any_evidence(selector);
-    assert_eq!(evidence.permits_reentry(), selector % 3 != 0);
-    // R3 absent journal + checkpoint => deny; R4 neither => fresh entry.
-    // R5 Unknown + original ResponseOnly + actual Returned => a fresh request
-    // only; retained checkpoint remains denied. Cross all phases/scopes and
-    // checkpoint presence through the production kernel. This does not prove
-    // adapter honesty, async durability or provider completion.
-    let present: bool = kani::any();
-    let recovering_checkpoint: bool = kani::any();
-    let phase_selector: u8 = kani::any();
-    let response_only: bool = kani::any();
-    let operation = ModelOperation {
-        effect_scope: if response_only {
-            ModelEffectScope::ResponseOnly
-        } else {
-            ModelEffectScope::Opaque
-        },
-        ordinal: NonZeroU64::MIN,
-        binding: ModelBinding::proof_representative(false),
-        phase: match phase_selector % 3 {
-            0 => ModelOperationPhase::Entered,
-            1 => ModelOperationPhase::Returned,
-            _ => ModelOperationPhase::TimedOut,
-        },
-        execution: evidence,
-    };
-    assert_eq!(
-        ModelOperation::permits_reentry(present.then_some(&operation), recovering_checkpoint),
-        if present {
-            selector % 3 != 0
-                || (response_only && phase_selector % 3 == 1 && !recovering_checkpoint)
-        } else {
-            !recovering_checkpoint
-        }
-    );
-}
-
-#[cfg(kani)]
 /// @obligation model_operation.ordinal_never_wraps_or_reuses_a_coordinate
 #[kani::proof]
 fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
@@ -802,7 +723,7 @@ fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
 
 #[cfg(kani)]
 /// @obligation model_operation.ordinal_never_wraps_or_reuses_a_coordinate
-/// @kani profile=solver-kissat-v1
+/// @kani profile=solver-kissat-v1 tier=nightly
 #[kani::proof]
 // The bound covers the two-element history fold and the byte comparison of the
 // representative's longest coordinate ("native"): the binding is now a real
@@ -1579,6 +1500,185 @@ mod tests {
                     );
                     wire["ordinal"] = 0.into();
                     assert!(serde_json::from_value::<ModelOperation>(wire).is_err());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_stage(stage: PreDispatchStage) -> usize {
+        match stage {
+            PreDispatchStage::RequestProjection => 0,
+            PreDispatchStage::ExecutorResolution => 1,
+            PreDispatchStage::RuntimeAdmission => 2,
+            PreDispatchStage::TransportConnect => 3,
+            PreDispatchStage::Unrecorded => 4,
+        }
+    }
+    const EVERY_STAGE: [PreDispatchStage; 5] = [
+        PreDispatchStage::RequestProjection,
+        PreDispatchStage::ExecutorResolution,
+        PreDispatchStage::RuntimeAdmission,
+        PreDispatchStage::TransportConnect,
+        PreDispatchStage::Unrecorded,
+    ];
+
+    const fn listed_fact(fact: TerminalWireFact) -> usize {
+        match fact {
+            TerminalWireFact::Status => 0,
+            TerminalWireFact::CompleteBody => 1,
+            TerminalWireFact::CompleteErrorBody => 2,
+            TerminalWireFact::StreamEndFrame => 3,
+            TerminalWireFact::Unrecorded => 4,
+        }
+    }
+    const EVERY_FACT: [TerminalWireFact; 5] = [
+        TerminalWireFact::Status,
+        TerminalWireFact::CompleteBody,
+        TerminalWireFact::CompleteErrorBody,
+        TerminalWireFact::StreamEndFrame,
+        TerminalWireFact::Unrecorded,
+    ];
+
+    const fn listed_phase(phase: ModelOperationPhase) -> usize {
+        match phase {
+            ModelOperationPhase::Entered => 0,
+            ModelOperationPhase::Returned => 1,
+            ModelOperationPhase::TimedOut => 2,
+        }
+    }
+    const EVERY_PHASE: [ModelOperationPhase; 3] = [
+        ModelOperationPhase::Entered,
+        ModelOperationPhase::Returned,
+        ModelOperationPhase::TimedOut,
+    ];
+
+    const fn listed_evidence(evidence: ModelExecutionEvidence) -> usize {
+        match evidence {
+            ModelExecutionEvidence::Unknown => 0,
+            ModelExecutionEvidence::NotDispatched(proof) => 1 + listed_stage(proof.stage),
+            ModelExecutionEvidence::Terminated(receipt) => {
+                1 + EVERY_STAGE.len() + listed_fact(receipt.fact)
+            }
+        }
+    }
+
+    /// Every evidence value a decoder can restore: Unknown, a sealed proof at
+    /// each pre-call stage and a sealed receipt for each wire fact.
+    fn every_evidence() -> Vec<ModelExecutionEvidence> {
+        let mut every = vec![ModelExecutionEvidence::Unknown];
+        every.extend(EVERY_STAGE.map(|stage| {
+            ModelExecutionEvidence::NotDispatched(NoDispatchProof { stage, seal: Seal })
+        }));
+        every.extend(
+            EVERY_FACT.map(|fact| {
+                ModelExecutionEvidence::Terminated(TerminalReceipt { fact, seal: Seal })
+            }),
+        );
+        every
+    }
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_STAGE.into_iter().enumerate() {
+            assert_eq!(listed_stage(value), index);
+        }
+        for (index, value) in EVERY_FACT.into_iter().enumerate() {
+            assert_eq!(listed_fact(value), index);
+        }
+        for (index, value) in EVERY_PHASE.into_iter().enumerate() {
+            assert_eq!(listed_phase(value), index);
+        }
+        for (index, value) in every_evidence().into_iter().enumerate() {
+            assert_eq!(listed_evidence(value), index);
+        }
+    }
+
+    /// @exhaustive u8(256) = 256
+    /// @obligation model_operation.reentry_requires_positive_execution_evidence
+    #[test]
+    fn no_dispatch_mints_only_reviewed_pre_call_stages() {
+        // C1 the production caller chooses one of four explicit constructors;
+        // E1 the sealed proof carries that exact pre-call stage; E2 no constructor
+        // can mint decoder-only Unrecorded. Exhaust every u8 selector; this is a
+        // constructor/stage proof, not transport honesty or async journal proof.
+        for choice in u8::MIN..=u8::MAX {
+            let proof = match choice % 4 {
+                0 => NoDispatchProof::request_projection(),
+                1 => NoDispatchProof::executor_resolution(),
+                2 => NoDispatchProof::runtime_admission(),
+                _ => NoDispatchProof::transport_connect(),
+            };
+            assert!(matches!(
+                proof.stage(),
+                PreDispatchStage::RequestProjection
+                    | PreDispatchStage::ExecutorResolution
+                    | PreDispatchStage::RuntimeAdmission
+                    | PreDispatchStage::TransportConnect
+            ));
+            assert_eq!(
+                proof.stage(),
+                match choice % 4 {
+                    0 => PreDispatchStage::RequestProjection,
+                    1 => PreDispatchStage::ExecutorResolution,
+                    2 => PreDispatchStage::RuntimeAdmission,
+                    _ => PreDispatchStage::TransportConnect,
+                }
+            );
+            assert_ne!(proof.stage(), PreDispatchStage::Unrecorded);
+            assert!(ModelExecutionEvidence::NotDispatched(proof).permits_reentry());
+        }
+    }
+
+    /// @exhaustive ModelExecutionEvidence(11) x bool(2) x bool(2) x ModelOperationPhase(3) x bool(2) = 264
+    /// @obligation model_operation.reentry_requires_positive_execution_evidence
+    #[test]
+    fn model_execution_reentry_requires_positive_evidence() {
+        // R1 unknown => deny; R2 not dispatched / terminal => only the physical
+        // gate opens. Retry policy and claim/budget remain separate authorities.
+        // R3 absent journal + checkpoint => deny; R4 neither => fresh entry.
+        // R5 Unknown + original ResponseOnly + actual Returned => a fresh request
+        // only; retained checkpoint remains denied. Cross all phases/scopes and
+        // checkpoint presence through the production kernel. This does not prove
+        // adapter honesty, async durability or provider completion.
+        for evidence in every_evidence() {
+            let positive = !matches!(evidence, ModelExecutionEvidence::Unknown);
+            assert_eq!(evidence.permits_reentry(), positive);
+            for present in [false, true] {
+                for recovering_checkpoint in [false, true] {
+                    for phase in EVERY_PHASE {
+                        for response_only in [false, true] {
+                            let operation = ModelOperation {
+                                effect_scope: if response_only {
+                                    ModelEffectScope::ResponseOnly
+                                } else {
+                                    ModelEffectScope::Opaque
+                                },
+                                ordinal: NonZeroU64::MIN,
+                                binding: fixture_binding("p", "m", "native"),
+                                phase,
+                                execution: evidence,
+                            };
+                            assert_eq!(
+                                ModelOperation::permits_reentry(
+                                    present.then_some(&operation),
+                                    recovering_checkpoint
+                                ),
+                                if present {
+                                    positive
+                                        || (response_only
+                                            && phase == ModelOperationPhase::Returned
+                                            && !recovering_checkpoint)
+                                } else {
+                                    !recovering_checkpoint
+                                }
+                            );
+                        }
+                    }
                 }
             }
         }

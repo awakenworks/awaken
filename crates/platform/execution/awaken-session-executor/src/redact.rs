@@ -34,55 +34,79 @@ const fn uses_pii_redaction(configured: awaken_deployment_config::ContentRedacti
     }
 }
 
-#[cfg(kani)]
-mod kani_proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::{clamp_for_trace_file, uses_pii_redaction};
     use awaken_deployment_config::ContentRedaction;
     use awaken_runtime_contract::ContentCapture;
 
-    fn arbitrary_capture() -> ContentCapture {
-        match kani::any::<u8>() % 3 {
-            0 => ContentCapture::Off,
-            1 => ContentCapture::Structured,
-            _ => ContentCapture::Full,
+    const EVERY_CAPTURE: [ContentCapture; 3] = [
+        ContentCapture::Off,
+        ContentCapture::Structured,
+        ContentCapture::Full,
+    ];
+    const EVERY_REDACTION: [ContentRedaction; 2] =
+        [ContentRedaction::None, ContentRedaction::Regex];
+
+    const fn listed_capture(capture: ContentCapture) -> usize {
+        match capture {
+            ContentCapture::Off => 0,
+            ContentCapture::Structured => 1,
+            ContentCapture::Full => 2,
         }
     }
 
+    const fn listed_redaction(redaction: ContentRedaction) -> usize {
+        match redaction {
+            ContentRedaction::None => 0,
+            ContentRedaction::Regex => 1,
+        }
+    }
+
+    #[test]
+    fn every_capture_and_redaction_is_listed() {
+        for (index, capture) in EVERY_CAPTURE.into_iter().enumerate() {
+            assert_eq!(listed_capture(capture), index);
+        }
+        for (index, redaction) in EVERY_REDACTION.into_iter().enumerate() {
+            assert_eq!(listed_redaction(redaction), index);
+        }
+    }
+
+    /// @exhaustive ContentCapture(3) x bool(2) = 6
     /// @obligation capture.persistence_redaction_selection_is_total_exact_and_non_widening
-    #[kani::proof]
+    #[test]
     fn trace_capture_clamp_is_exact_and_never_widens_persisted_content() {
-        let configured = arbitrary_capture();
-        let trace_file_present: bool = kani::any();
-        let effective = clamp_for_trace_file(configured, trace_file_present);
-        let expected = if trace_file_present && configured == ContentCapture::Full {
-            ContentCapture::Structured
-        } else {
-            configured
-        };
+        for configured in EVERY_CAPTURE {
+            for trace_file_present in [false, true] {
+                let effective = clamp_for_trace_file(configured, trace_file_present);
+                let expected = if trace_file_present && configured == ContentCapture::Full {
+                    ContentCapture::Structured
+                } else {
+                    configured
+                };
 
-        assert_eq!(effective, expected);
-        assert!(effective <= configured);
-        if trace_file_present {
-            assert_ne!(effective, ContentCapture::Full);
+                assert_eq!(effective, expected);
+                assert!(effective <= configured);
+                if trace_file_present {
+                    assert_ne!(effective, ContentCapture::Full);
+                }
+            }
         }
     }
 
+    /// @exhaustive ContentRedaction(2) = 2
     /// @obligation capture.persistence_redaction_selection_is_total_exact_and_non_widening
-    #[kani::proof]
+    #[test]
     fn configured_capture_redactor_selection_is_total_and_exact() {
-        // Decision rows: None => false (Noop), Regex => true (Pii). These are
-        // all supported inputs to the predicate used by the real constructor;
-        // the bytes table below independently checks its selected effect.
-        let configured = if kani::any() {
-            ContentRedaction::None
-        } else {
-            ContentRedaction::Regex
-        };
-        let expected = match configured {
-            ContentRedaction::None => false,
-            ContentRedaction::Regex => true,
-        };
-        assert_eq!(uses_pii_redaction(configured), expected);
+        // Decision rows: None => false (Noop), Regex => true (Pii).
+        for configured in EVERY_REDACTION {
+            let expected = match configured {
+                ContentRedaction::None => false,
+                ContentRedaction::Regex => true,
+            };
+            assert_eq!(uses_pii_redaction(configured), expected);
+        }
     }
 }
 

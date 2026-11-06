@@ -1559,41 +1559,6 @@ mod proofs {
 
     /// @obligation session_execution.one_physical_attempt_per_thread
     #[kani::proof]
-    fn quarantine_admission_never_widens_settlement_or_execution() {
-        // R1 quantifies every slot and cancellation intent. The new rule may
-        // only add quarantine admission; it must never make settlement or
-        // physical execution admissible where they were not already.
-        let slot = arbitrary_physical_slot();
-        let cancellation_requested: bool = kani::any();
-
-        assert_eq!(
-            slot.quarantine_admits_occupation(cancellation_requested),
-            cancellation_requested
-                && matches!(
-                    slot,
-                    PhysicalAttemptSlot::ExactClaim | PhysicalAttemptSlot::OtherClaim
-                )
-        );
-        // A torn pair is never admitted by any cause.
-        if slot == PhysicalAttemptSlot::Corrupt {
-            assert!(!slot.quarantine_admits_occupation(cancellation_requested));
-        }
-        // Settlement stays exactly as strict as before.
-        assert_eq!(
-            slot.permits_settlement(),
-            slot == PhysicalAttemptSlot::Empty
-        );
-        // Execution admission is owned by
-        // physical_attempt_slot_installs_and_clears_only_exact_authority and
-        // thread_physical_peer_vetoes_begin_and_handoff. Repeating the same
-        // production call on both sides would prove no additional property.
-        if slot.quarantine_admits_occupation(cancellation_requested) {
-            assert!(!slot.permits_settlement());
-        }
-    }
-
-    /// @obligation session_execution.one_physical_attempt_per_thread
-    #[kani::proof]
     fn quarantined_cancelled_row_can_never_re_enter_execution() {
         // The root-cause theorem. Admitting quarantine on an occupied slot is
         // only safe if the resulting row can never be handed back to a claimant
@@ -1666,130 +1631,6 @@ mod proofs {
             );
         }
         assert_eq!(current, live && epoch > retired);
-    }
-
-    /// @obligation remote_worker.execution_requires_claimed_snapshot
-    /// @obligation remote_worker.single_live_claim_owner
-    /// @obligation session_execution.one_physical_attempt_per_thread
-    /// @obligation worker_credential.exact_revision_and_current_epoch_required
-    /// @obligation worker_credential.expired_observation_never_executes
-    #[kani::proof]
-    fn physical_attempt_slot_installs_and_clears_only_exact_authority() {
-        let current = kani::any::<bool>();
-        let slot = arbitrary_physical_slot();
-        let closing: bool = kani::any();
-        let closure_evidence: bool = kani::any();
-        // R2/R4: neither a current mutation claim nor logical completion can
-        // authorize settlement effects while any physical slot remains.
-        assert_eq!(
-            slot.permits_settlement(),
-            slot == PhysicalAttemptSlot::Empty
-        );
-        let begin = begin_physical_attempt(current, slot, false, closing);
-        let handoff = handoff_physical_attempt(current, slot, false, closing);
-        let finish = finish_physical_attempt(slot, closing, closure_evidence);
-
-        // Normalization rule: continuation changes only the disposition of a
-        // complete predecessor. Every other admission guard/result is shared,
-        // including a stale claim combined with corrupt persisted evidence.
-        assert_eq!(
-            handoff,
-            if begin == PhysicalAttemptTransition::Blocked && !closing {
-                PhysicalAttemptTransition::Replace
-            } else {
-                begin
-            }
-        );
-        assert_eq!(
-            begin == PhysicalAttemptTransition::Install,
-            current && !closing && slot == PhysicalAttemptSlot::Empty
-        );
-        assert_eq!(
-            begin == PhysicalAttemptTransition::Stutter,
-            current && !closing && slot == PhysicalAttemptSlot::ExactClaim
-        );
-        assert_eq!(
-            finish == PhysicalAttemptTransition::Clear,
-            slot == PhysicalAttemptSlot::ExactClaim && closing == closure_evidence
-        );
-        if !current {
-            assert_eq!(begin, PhysicalAttemptTransition::Fenced);
-            assert_eq!(handoff, PhysicalAttemptTransition::Fenced);
-        }
-        if slot == PhysicalAttemptSlot::OtherClaim {
-            assert_ne!(begin, PhysicalAttemptTransition::Install);
-            assert_ne!(finish, PhysicalAttemptTransition::Clear);
-            assert_eq!(
-                handoff == PhysicalAttemptTransition::Replace,
-                current && !closing
-            );
-        }
-    }
-
-    /// @obligation session_execution.one_physical_attempt_per_thread
-    #[kani::proof]
-    fn thread_physical_peer_vetoes_begin_and_handoff() {
-        // P1 current/stale, P2 all four slot shapes, P3 begin/handoff,
-        // P4 peer absent/present. A peer can only restrict admission; it never
-        // changes stale/corrupt classification and never becomes Clear.
-        let current = kani::any();
-        let slot = arbitrary_physical_slot();
-        let handoff = kani::any();
-        let peer = kani::any();
-        let closing = kani::any();
-        let base = if handoff {
-            handoff_physical_attempt(current, slot, false, closing)
-        } else {
-            begin_physical_attempt(current, slot, false, closing)
-        };
-        let result = if handoff {
-            handoff_physical_attempt(current, slot, peer, closing)
-        } else {
-            begin_physical_attempt(current, slot, peer, closing)
-        };
-        if !peer {
-            assert_eq!(result, base);
-        } else {
-            assert!(!matches!(
-                result,
-                PhysicalAttemptTransition::Install
-                    | PhysicalAttemptTransition::Replace
-                    | PhysicalAttemptTransition::Stutter
-            ));
-        }
-        assert_eq!(
-            result == PhysicalAttemptTransition::Fenced,
-            base == PhysicalAttemptTransition::Fenced
-        );
-        assert_eq!(
-            result == PhysicalAttemptTransition::Corrupt,
-            base == PhysicalAttemptTransition::Corrupt
-        );
-    }
-
-    /// @obligation remote_worker.single_live_claim_owner
-    /// @obligation session_execution.one_physical_attempt_per_thread
-    #[kani::proof]
-    fn physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair() {
-        let owner_present = kani::any::<bool>();
-        let epoch_present = kani::any::<bool>();
-        let owner_matches = kani::any::<bool>();
-        let epoch_matches = kani::any::<bool>();
-        let slot = PhysicalAttemptSlot::from_facts(
-            owner_present,
-            epoch_present,
-            owner_matches,
-            epoch_matches,
-        );
-        assert_eq!(
-            slot == PhysicalAttemptSlot::Corrupt,
-            owner_present != epoch_present
-        );
-        assert_eq!(slot.permits_settlement(), !owner_present && !epoch_present);
-        assert_eq!(
-            slot == PhysicalAttemptSlot::ExactClaim,
-            owner_present && epoch_present && owner_matches && epoch_matches
-        );
     }
 
     /// @obligation ingress.settle_fence
@@ -2154,5 +1995,211 @@ mod proofs {
                 crate::DispatchState::Pending | crate::DispatchState::Awaiting
             ) && !state.cancellation_requested
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_slot(slot: PhysicalAttemptSlot) -> usize {
+        match slot {
+            PhysicalAttemptSlot::Empty => 0,
+            PhysicalAttemptSlot::ExactClaim => 1,
+            PhysicalAttemptSlot::OtherClaim => 2,
+            PhysicalAttemptSlot::Corrupt => 3,
+        }
+    }
+    const EVERY_SLOT: [PhysicalAttemptSlot; 4] = [
+        PhysicalAttemptSlot::Empty,
+        PhysicalAttemptSlot::ExactClaim,
+        PhysicalAttemptSlot::OtherClaim,
+        PhysicalAttemptSlot::Corrupt,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_SLOT.into_iter().enumerate() {
+            assert_eq!(listed_slot(value), index);
+        }
+    }
+
+    /// @exhaustive PhysicalAttemptSlot(4) x bool(2) = 8
+    /// @obligation session_execution.one_physical_attempt_per_thread
+    #[test]
+    fn quarantine_admission_never_widens_settlement_or_execution() {
+        // R1 quantifies every slot and cancellation intent. The new rule may
+        // only add quarantine admission; it must never make settlement or
+        // physical execution admissible where they were not already.
+        for slot in EVERY_SLOT {
+            for cancellation_requested in [false, true] {
+                assert_eq!(
+                    slot.quarantine_admits_occupation(cancellation_requested),
+                    cancellation_requested
+                        && matches!(
+                            slot,
+                            PhysicalAttemptSlot::ExactClaim | PhysicalAttemptSlot::OtherClaim
+                        )
+                );
+                // A torn pair is never admitted by any cause.
+                if slot == PhysicalAttemptSlot::Corrupt {
+                    assert!(!slot.quarantine_admits_occupation(cancellation_requested));
+                }
+                // Settlement stays exactly as strict as before.
+                assert_eq!(
+                    slot.permits_settlement(),
+                    slot == PhysicalAttemptSlot::Empty
+                );
+                // Execution admission is owned by
+                // physical_attempt_slot_installs_and_clears_only_exact_authority and
+                // thread_physical_peer_vetoes_begin_and_handoff. Repeating the same
+                // production call on both sides would prove no additional property.
+                if slot.quarantine_admits_occupation(cancellation_requested) {
+                    assert!(!slot.permits_settlement());
+                }
+            }
+        }
+    }
+
+    /// @exhaustive bool(2) x PhysicalAttemptSlot(4) x bool(2) x bool(2) = 32
+    /// @obligation remote_worker.execution_requires_claimed_snapshot
+    /// @obligation remote_worker.single_live_claim_owner
+    /// @obligation session_execution.one_physical_attempt_per_thread
+    /// @obligation worker_credential.exact_revision_and_current_epoch_required
+    /// @obligation worker_credential.expired_observation_never_executes
+    #[test]
+    fn physical_attempt_slot_installs_and_clears_only_exact_authority() {
+        for current in [false, true] {
+            for slot in EVERY_SLOT {
+                for closing in [false, true] {
+                    for closure_evidence in [false, true] {
+                        // R2/R4: neither a current mutation claim nor logical
+                        // completion can authorize settlement effects while any
+                        // physical slot remains.
+                        assert_eq!(
+                            slot.permits_settlement(),
+                            slot == PhysicalAttemptSlot::Empty
+                        );
+                        let begin = begin_physical_attempt(current, slot, false, closing);
+                        let handoff = handoff_physical_attempt(current, slot, false, closing);
+                        let finish = finish_physical_attempt(slot, closing, closure_evidence);
+
+                        // Normalization rule: continuation changes only the
+                        // disposition of a complete predecessor. Every other
+                        // admission guard/result is shared, including a stale
+                        // claim combined with corrupt persisted evidence.
+                        assert_eq!(
+                            handoff,
+                            if begin == PhysicalAttemptTransition::Blocked && !closing {
+                                PhysicalAttemptTransition::Replace
+                            } else {
+                                begin
+                            }
+                        );
+                        assert_eq!(
+                            begin == PhysicalAttemptTransition::Install,
+                            current && !closing && slot == PhysicalAttemptSlot::Empty
+                        );
+                        assert_eq!(
+                            begin == PhysicalAttemptTransition::Stutter,
+                            current && !closing && slot == PhysicalAttemptSlot::ExactClaim
+                        );
+                        assert_eq!(
+                            finish == PhysicalAttemptTransition::Clear,
+                            slot == PhysicalAttemptSlot::ExactClaim && closing == closure_evidence
+                        );
+                        if !current {
+                            assert_eq!(begin, PhysicalAttemptTransition::Fenced);
+                            assert_eq!(handoff, PhysicalAttemptTransition::Fenced);
+                        }
+                        if slot == PhysicalAttemptSlot::OtherClaim {
+                            assert_ne!(begin, PhysicalAttemptTransition::Install);
+                            assert_ne!(finish, PhysicalAttemptTransition::Clear);
+                            assert_eq!(
+                                handoff == PhysicalAttemptTransition::Replace,
+                                current && !closing
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive bool(2) x PhysicalAttemptSlot(4) x bool(2) x bool(2) x bool(2) = 64
+    /// @obligation session_execution.one_physical_attempt_per_thread
+    #[test]
+    fn thread_physical_peer_vetoes_begin_and_handoff() {
+        // P1 current/stale, P2 all four slot shapes, P3 begin/handoff,
+        // P4 peer absent/present. A peer can only restrict admission; it never
+        // changes stale/corrupt classification and never becomes Clear.
+        for current in [false, true] {
+            for slot in EVERY_SLOT {
+                for handoff in [false, true] {
+                    for peer in [false, true] {
+                        for closing in [false, true] {
+                            let base = if handoff {
+                                handoff_physical_attempt(current, slot, false, closing)
+                            } else {
+                                begin_physical_attempt(current, slot, false, closing)
+                            };
+                            let result = if handoff {
+                                handoff_physical_attempt(current, slot, peer, closing)
+                            } else {
+                                begin_physical_attempt(current, slot, peer, closing)
+                            };
+                            if !peer {
+                                assert_eq!(result, base);
+                            } else {
+                                assert!(!matches!(
+                                    result,
+                                    PhysicalAttemptTransition::Install
+                                        | PhysicalAttemptTransition::Replace
+                                        | PhysicalAttemptTransition::Stutter
+                                ));
+                            }
+                            assert_eq!(
+                                result == PhysicalAttemptTransition::Fenced,
+                                base == PhysicalAttemptTransition::Fenced
+                            );
+                            assert_eq!(
+                                result == PhysicalAttemptTransition::Corrupt,
+                                base == PhysicalAttemptTransition::Corrupt
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) = 16
+    /// @obligation remote_worker.single_live_claim_owner
+    /// @obligation session_execution.one_physical_attempt_per_thread
+    #[test]
+    fn physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair() {
+        for owner_present in [false, true] {
+            for epoch_present in [false, true] {
+                for owner_matches in [false, true] {
+                    for epoch_matches in [false, true] {
+                        let slot = PhysicalAttemptSlot::from_facts(
+                            owner_present,
+                            epoch_present,
+                            owner_matches,
+                            epoch_matches,
+                        );
+                        assert_eq!(
+                            slot == PhysicalAttemptSlot::Corrupt,
+                            owner_present != epoch_present
+                        );
+                        assert_eq!(slot.permits_settlement(), !owner_present && !epoch_present);
+                        assert_eq!(
+                            slot == PhysicalAttemptSlot::ExactClaim,
+                            owner_present && epoch_present && owner_matches && epoch_matches
+                        );
+                    }
+                }
+            }
+        }
     }
 }

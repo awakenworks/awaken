@@ -1,7 +1,5 @@
 {
   "$comment": "Kani harnesses whose free inputs are legitimately free. scripts/ci/check_proof_input_derivation.py enforces this file: a finding that is neither justified here nor tagged `/// @proof-input-debt` on its harness fails the gate, and an entry or tag matching no finding fails too. Never add an entry to silence a new harness.",
   "justified_note": "A free symbol is legitimate only when the fact is environmental -- outside repository control, so no proof could enumerate it -- AND the kernel's claim holds for every value it could take. Each entry states that in 'reason' and names the obligation the reason belongs to; the checker refuses an entry with neither.",
-  "justified": [
-    {"rule": "free_symbol", "source": "crates/sdk/providers/awaken-provider-genai/src/lib.rs", "harness": "credential_probe_tri_state_is_total_and_fail_safe", "kernel": "credential_probe_outcome", "parameter": "authentication_rejected", "derived_in": "same_crate", "obligation": "credential_probe.tri_state_is_total_and_fail_safe", "reason": "Genuinely environmental. The fact is whether a REMOTE provider rejected the credential, which the transport adapter reads out of a provider-supplied error string (AUTH.iter().any(|needle| message.contains(needle))). That string is not repository-controlled, so no proof can enumerate it, and a free bool is the complete over-approximation of every classification it could yield. The kernel's claim is fail-safety, and it holds for BOTH values: an unrecognised message yields Unknown, which never retires a key. The substring table itself is a heuristic over external text, checked by the executable tests in this module, not a safety relation this obligation claims."}
-  ]
+  "justified": []
 }

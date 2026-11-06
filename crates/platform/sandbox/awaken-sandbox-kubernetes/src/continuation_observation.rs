@@ -146,60 +146,6 @@ pub(crate) fn continuation_observation_disposition(
     Ok(ContinuationObservationDisposition::Live)
 }
 
-#[cfg(kani)]
-/// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
-/// @kani profile=solver-kissat-v1
-#[kani::proof]
-fn absent_pod_observation_never_confuses_recovery_with_completed_cleanup() {
-    // KCO2 proof calls the production classifier for both purposes over every
-    // absent/exact/foreign claim, termination, fence and total-absence bit.
-    // KPV5 checks purpose routing and API effects; this finite string quotient
-    // proves classification, not API linearizability or external storage bytes.
-    use ContinuationObservationDisposition::{Disposing, Incompatible, Live};
-    use SandboxObservationPurpose::{Recovery, TerminalCleanup};
-    let claim = kani::any::<u8>();
-    kani::assume(claim < 3);
-    let observed_uid = match claim {
-        0 => None,
-        1 => Some("p"),
-        _ => Some("q"),
-    };
-    let terminating = kani::any::<bool>();
-    let fenced = kani::any::<bool>();
-    let total_absence = kani::any::<bool>() && fenced;
-    let evidence = ContinuationObservationEvidence {
-        purpose: Recovery,
-        pod_present: false,
-        pod_deleting: false,
-        cleanup_gate_held: false,
-        original_guard_retained: false,
-        gc_independent: false,
-        expected_uid: Some("p"),
-        observed_uid,
-        observed_terminating: terminating,
-        effect_fenced: fenced,
-        effect_fenced_total_absence: total_absence,
-    };
-    let recovery = continuation_observation_disposition(evidence);
-    let terminal = continuation_observation_disposition(ContinuationObservationEvidence {
-        purpose: TerminalCleanup,
-        ..evidence
-    });
-    if claim == 1 && !terminating {
-        assert_eq!(recovery.unwrap(), Live);
-        assert!(!matches!(terminal, Ok(Live | Disposing)));
-    } else if claim == 1 && terminating && fenced {
-        assert_eq!(recovery.unwrap(), Disposing);
-        assert_eq!(terminal.unwrap(), Disposing);
-    } else if claim == 0 && total_absence {
-        assert_eq!(recovery.unwrap(), Live);
-        assert_eq!(terminal.unwrap(), Live);
-    } else {
-        assert_eq!(recovery.unwrap(), Incompatible);
-        assert_eq!(terminal.unwrap(), Incompatible);
-    }
-}
-
 /// Claim API access is owned only by an enabled continuation policy or an
 /// already-persisted claim incarnation. A PVC-free deployment must not require
 /// ambient PVC read permission merely to observe its ephemeral Pod.
@@ -210,19 +156,83 @@ pub(crate) fn continuation_claim_observation_required(
     continuation_configured || exact_claim_expected
 }
 
-#[cfg(kani)]
-/// @obligation sandbox_continuation.ephemeral_never_allocates_or_references_a_claim
-/// @kani profile=solver-kissat-v1
-/// @proof-input-debt free_symbol continuation_claim_observation_required continuation_configured
-/// @proof-input-debt free_symbol continuation_claim_observation_required exact_claim_expected
-#[kani::proof]
-fn disabled_continuation_has_no_claim_api_obligation_without_durable_evidence() {
-    let continuation_configured: bool = kani::any();
-    let exact_claim_expected: bool = kani::any();
-    let required =
-        continuation_claim_observation_required(continuation_configured, exact_claim_expected);
-    assert_eq!(required, continuation_configured || exact_claim_expected);
-    if !continuation_configured && !exact_claim_expected {
-        assert!(!required);
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive claim uid(3) x bool(2) x bool(2) x bool(2) = 24
+    /// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+    #[test]
+    fn absent_pod_observation_never_confuses_recovery_with_completed_cleanup() {
+        // KCO2 proof calls the production classifier for both purposes over every
+        // absent/exact/foreign claim, termination, fence and total-absence bit.
+        // KPV5 checks purpose routing and API effects; this finite string quotient
+        // proves classification, not API linearizability or external storage bytes.
+        use ContinuationObservationDisposition::{Disposing, Incompatible, Live};
+        use SandboxObservationPurpose::{Recovery, TerminalCleanup};
+        for claim in 0_u8..3 {
+            for terminating in [false, true] {
+                for fenced in [false, true] {
+                    for total_absence_reported in [false, true] {
+                        let observed_uid = match claim {
+                            0 => None,
+                            1 => Some("p"),
+                            _ => Some("q"),
+                        };
+                        let total_absence = total_absence_reported && fenced;
+                        let evidence = ContinuationObservationEvidence {
+                            purpose: Recovery,
+                            pod_present: false,
+                            pod_deleting: false,
+                            cleanup_gate_held: false,
+                            original_guard_retained: false,
+                            gc_independent: false,
+                            expected_uid: Some("p"),
+                            observed_uid,
+                            observed_terminating: terminating,
+                            effect_fenced: fenced,
+                            effect_fenced_total_absence: total_absence,
+                        };
+                        let recovery = continuation_observation_disposition(evidence);
+                        let terminal =
+                            continuation_observation_disposition(ContinuationObservationEvidence {
+                                purpose: TerminalCleanup,
+                                ..evidence
+                            });
+                        if claim == 1 && !terminating {
+                            assert_eq!(recovery.unwrap(), Live);
+                            assert!(!matches!(terminal, Ok(Live | Disposing)));
+                        } else if claim == 1 && terminating && fenced {
+                            assert_eq!(recovery.unwrap(), Disposing);
+                            assert_eq!(terminal.unwrap(), Disposing);
+                        } else if claim == 0 && total_absence {
+                            assert_eq!(recovery.unwrap(), Live);
+                            assert_eq!(terminal.unwrap(), Live);
+                        } else {
+                            assert_eq!(recovery.unwrap(), Incompatible);
+                            assert_eq!(terminal.unwrap(), Incompatible);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation sandbox_continuation.ephemeral_never_allocates_or_references_a_claim
+    #[test]
+    fn disabled_continuation_has_no_claim_api_obligation_without_durable_evidence() {
+        for continuation_configured in [false, true] {
+            for exact_claim_expected in [false, true] {
+                let required = continuation_claim_observation_required(
+                    continuation_configured,
+                    exact_claim_expected,
+                );
+                assert_eq!(required, continuation_configured || exact_claim_expected);
+                if !continuation_configured && !exact_claim_expected {
+                    assert!(!required);
+                }
+            }
+        }
     }
 }

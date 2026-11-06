@@ -188,7 +188,7 @@ impl ProjectionRefreshDomain {
         self.cursor.applied()
     }
 
-    #[cfg(any(test, kani))]
+    #[cfg(test)]
     fn try_lock(&self) -> Option<ProjectionRefreshGuard<'_>> {
         self.mutation
             .try_lock()
@@ -213,7 +213,7 @@ impl ProjectionRefreshGuard<'_> {
     }
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 fn check_projection_refresh_domain_permit_is_exclusive() {
     // Causes: C1 the domain is vacant; C2 one permit remains live; C3 that
     // permit is released. Effects: E1 the first acquisition succeeds; E2 no
@@ -224,15 +224,6 @@ fn check_projection_refresh_domain_permit_is_exclusive() {
     assert!(domain.try_lock().is_none(), "D2/E2");
     drop(first);
     assert!(domain.try_lock().is_some(), "D3/E3");
-}
-
-#[cfg(kani)]
-/// @obligation executable_projection.concurrent_refresh_is_serialized_per_domain
-#[kani::proof]
-fn projection_refresh_domain_permit_is_exclusive() {
-    // This invokes the actual Tokio mutex wrapper used by both production
-    // registrars; there is no separate lock state or modeled acquisition.
-    check_projection_refresh_domain_permit_is_exclusive();
 }
 
 #[cfg(any(test, kani))]
@@ -556,5 +547,19 @@ mod tests {
             vec![(4, 9), (0, 9)],
             "R4"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive unit(1) = 1
+    /// @obligation executable_projection.concurrent_refresh_is_serialized_per_domain
+    #[test]
+    fn projection_refresh_domain_permit_is_exclusive() {
+        // This invokes the actual Tokio mutex wrapper used by both production
+        // registrars; there is no separate lock state or modeled acquisition.
+        check_projection_refresh_domain_permit_is_exclusive();
     }
 }

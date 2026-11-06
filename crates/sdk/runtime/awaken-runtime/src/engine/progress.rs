@@ -270,7 +270,7 @@ impl StepLedger {
 
 #[cfg(kani)]
 mod verification {
-    use super::{WatermarkRegression, advance_durable_watermark, resume_commit_is_coherent};
+    use super::{WatermarkRegression, advance_durable_watermark};
 
     /// @obligation checkpoint.durable_watermark_never_rolls_back
     #[kani::proof]
@@ -290,23 +290,30 @@ mod verification {
             }
         }
     }
+}
 
+#[cfg(test)]
+mod exhaustive {
+    use super::resume_commit_is_coherent;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
     /// @obligation tool_result.resume_receipt_is_atomic_with_ticket_consumption
-    /// @proof-input-debt tautology resume_commit_is_coherent
-    #[kani::proof]
+    #[test]
     fn a_resume_receipt_requires_consumption_of_the_exact_ticket() {
         // Causes: exact/foreign Thread, exact/foreign Run and retention/removal
         // of the answered ticket. Effect: admission exactly for the one rule
         // exact Thread + exact Run + answered ticket removed. This is the full
-        // Boolean partition consumed by `assemble_attempt_commit` and needs no
-        // assumptions or bounded heap model.
-        let same_thread = kani::any::<bool>();
-        let same_run = kani::any::<bool>();
-        let retains_answered_ticket = kani::any::<bool>();
-        assert_eq!(
-            resume_commit_is_coherent(same_thread, same_run, retains_answered_ticket),
-            same_thread && same_run && !retains_answered_ticket
-        );
+        // Boolean partition consumed by `assemble_attempt_commit`.
+        for same_thread in [false, true] {
+            for same_run in [false, true] {
+                for retains_answered_ticket in [false, true] {
+                    assert_eq!(
+                        resume_commit_is_coherent(same_thread, same_run, retains_answered_ticket),
+                        same_thread && same_run && !retains_answered_ticket
+                    );
+                }
+            }
+        }
     }
 }
 

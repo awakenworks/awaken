@@ -279,122 +279,182 @@ const fn session_create_effect_plan(
     }
 }
 
-#[cfg(kani)]
-mod create_effect_gate_verification {
+#[cfg(test)]
+mod create_effect_gate_exhaustive {
     use super::*;
+    use awaken_session_contract::SessionRepositoryConflict;
 
+    const EVERY_RECEIPT: [SessionCreateReceiptKind; 2] = [
+        SessionCreateReceiptKind::Applied,
+        SessionCreateReceiptKind::Replayed,
+    ];
+    const EVERY_COMPLETION: [SessionCreationCompletion; 2] = [
+        SessionCreationCompletion::AwaitRealization,
+        SessionCreationCompletion::AcceptDurableRoot,
+    ];
+    const EVERY_DISPOSITION: [SessionRealizationControlDisposition; 3] = [
+        SessionRealizationControlDisposition::NotReady,
+        SessionRealizationControlDisposition::Retryable,
+        SessionRealizationControlDisposition::Terminal,
+    ];
+    const EVERY_EXECUTION_STATE: [SessionExecutionState; 7] = [
+        SessionExecutionState::Preparing,
+        SessionExecutionState::Activating,
+        SessionExecutionState::ActivationFailed,
+        SessionExecutionState::Running,
+        SessionExecutionState::Rescheduling,
+        SessionExecutionState::Idle,
+        SessionExecutionState::Terminated,
+    ];
+
+    const fn listed_receipt(receipt: SessionCreateReceiptKind) -> usize {
+        match receipt {
+            SessionCreateReceiptKind::Applied => 0,
+            SessionCreateReceiptKind::Replayed => 1,
+        }
+    }
+    const fn listed_completion(completion: SessionCreationCompletion) -> usize {
+        match completion {
+            SessionCreationCompletion::AwaitRealization => 0,
+            SessionCreationCompletion::AcceptDurableRoot => 1,
+        }
+    }
+    const fn listed_disposition(disposition: SessionRealizationControlDisposition) -> usize {
+        match disposition {
+            SessionRealizationControlDisposition::NotReady => 0,
+            SessionRealizationControlDisposition::Retryable => 1,
+            SessionRealizationControlDisposition::Terminal => 2,
+        }
+    }
+    const fn listed_execution_state(state: SessionExecutionState) -> usize {
+        match state {
+            SessionExecutionState::Preparing => 0,
+            SessionExecutionState::Activating => 1,
+            SessionExecutionState::ActivationFailed => 2,
+            SessionExecutionState::Running => 3,
+            SessionExecutionState::Rescheduling => 4,
+            SessionExecutionState::Idle => 5,
+            SessionExecutionState::Terminated => 6,
+        }
+    }
+    fn listed_conflict(conflict: &SessionRepositoryConflict) -> usize {
+        match conflict {
+            SessionRepositoryConflict::AlreadyExists => 0,
+            SessionRepositoryConflict::Tombstoned => 1,
+            SessionRepositoryConflict::IdempotencyMismatch => 2,
+        }
+    }
+    fn every_conflict() -> [SessionRepositoryConflict; 3] {
+        [
+            SessionRepositoryConflict::AlreadyExists,
+            SessionRepositoryConflict::Tombstoned,
+            SessionRepositoryConflict::IdempotencyMismatch,
+        ]
+    }
+
+    #[test]
+    fn every_create_gate_input_is_listed() {
+        for (index, receipt) in EVERY_RECEIPT.into_iter().enumerate() {
+            assert_eq!(listed_receipt(receipt), index);
+        }
+        for (index, completion) in EVERY_COMPLETION.into_iter().enumerate() {
+            assert_eq!(listed_completion(completion), index);
+        }
+        for (index, disposition) in EVERY_DISPOSITION.into_iter().enumerate() {
+            assert_eq!(listed_disposition(disposition), index);
+        }
+        for (index, state) in EVERY_EXECUTION_STATE.into_iter().enumerate() {
+            assert_eq!(listed_execution_state(state), index);
+        }
+        for (index, conflict) in every_conflict().iter().enumerate() {
+            assert_eq!(listed_conflict(conflict), index);
+        }
+    }
+
+    /// @exhaustive SessionCreateReceiptKind(2) x SessionCreationCompletion(2) = 4
     /// @obligation session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
     /// @obligation session_creation.atomic_complete_root_precedes_every_projection
     /// @obligation session_creation.exact_replay_conflict_and_tombstone_are_closed
     /// @obligation session_creation.repository_receipt_is_the_only_post_create_effect_gate
-    #[kani::proof]
+    #[test]
     fn only_an_applied_awaited_create_may_enter_post_create_effects() {
-        // Causes: C1 repository receipt is Applied/Replayed; C2 caller awaits
-        // realization or accepts the durable root. Effects: E1 continue physical
-        // effects, E2 accept and wake recovery, E3 return replayed truth. The
-        // closed 2x2 table proves E1 iff Applied+Await and no Replay can reach E1.
-        //
-        // | Rule | C1 | C2 | Effect |
+        // | Rule | C1 receipt | C2 completion | Effect |
         // |---|---|---|---|
-        // | R1 | Applied | Await | E1 |
-        // | R2 | Applied | Accept | E2 |
-        // | R3 | Replayed | Await | E3 |
+        // | R1 | Applied | Await | E1 continue physical effects |
+        // | R2 | Applied | Accept | E2 accept and wake recovery |
+        // | R3 | Replayed | Await | E3 return replayed truth |
         // | R4 | Replayed | Accept | E3 |
-        let receipt = if kani::any::<bool>() {
-            SessionCreateReceiptKind::Applied
-        } else {
-            SessionCreateReceiptKind::Replayed
-        };
-        let completion = if kani::any::<bool>() {
-            SessionCreationCompletion::AwaitRealization
-        } else {
-            SessionCreationCompletion::AcceptDurableRoot
-        };
-        let plan = session_create_effect_plan(receipt, completion);
-        assert_eq!(
-            plan == SessionCreateEffectPlan::ContinueAppliedRealization,
-            receipt == SessionCreateReceiptKind::Applied
-                && completion == SessionCreationCompletion::AwaitRealization
-        );
-        if receipt == SessionCreateReceiptKind::Replayed {
-            assert_eq!(plan, SessionCreateEffectPlan::ReturnDurableReplay);
+        for receipt in EVERY_RECEIPT {
+            for completion in EVERY_COMPLETION {
+                let plan = session_create_effect_plan(receipt, completion);
+                assert_eq!(
+                    plan == SessionCreateEffectPlan::ContinueAppliedRealization,
+                    receipt == SessionCreateReceiptKind::Applied
+                        && completion == SessionCreationCompletion::AwaitRealization
+                );
+                if receipt == SessionCreateReceiptKind::Replayed {
+                    assert_eq!(plan, SessionCreateEffectPlan::ReturnDurableReplay);
+                }
+            }
         }
     }
 
+    /// @exhaustive SessionRealizationControlDisposition(3) = 3
     /// @obligation session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
     /// @obligation session_creation.repository_receipt_is_the_only_post_create_effect_gate
-    #[kani::proof]
+    #[test]
     fn nonterminal_control_failures_only_replay_the_durable_create_root() {
-        // Causes: C1 contract disposition is NotReady/Retryable/Terminal.
-        // Effects: E1 replay exact receipt and wake recovery; E2 preserve the
-        // terminal failure path. The closed table proves no nonterminal control
-        // disposition can reach cleanup and no terminal disposition is accepted.
-        //
         // | Rule | Disposition | Effect |
         // |---|---|---|
-        // | P1 | NotReady or Retryable | E1 |
-        // | P2 | Terminal | E2 |
-        let disposition = match kani::any::<u8>() % 3 {
-            0 => SessionRealizationControlDisposition::NotReady,
-            1 => SessionRealizationControlDisposition::Retryable,
-            _ => SessionRealizationControlDisposition::Terminal,
-        };
-        let plan = session_create_control_failure_plan(disposition);
-        assert_eq!(
-            plan == SessionCreateControlFailurePlan::ReplayDurableRootAndWake,
-            disposition != SessionRealizationControlDisposition::Terminal
-        );
+        // | P1 | NotReady or Retryable | replay exact receipt and wake recovery |
+        // | P2 | Terminal | preserve the terminal failure path |
+        for disposition in EVERY_DISPOSITION {
+            let plan = session_create_control_failure_plan(disposition);
+            assert_eq!(
+                plan == SessionCreateControlFailurePlan::ReplayDurableRootAndWake,
+                disposition != SessionRealizationControlDisposition::Terminal
+            );
+        }
     }
 
+    /// @exhaustive SessionExecutionState(7) x SessionCreationCompletion(2) x SessionRepositoryConflict(3) = 42
     /// @obligation session_creation.exact_replay_conflict_and_tombstone_are_closed
-    #[kani::proof]
+    #[test]
     fn create_replay_conflict_and_terminal_occupation_are_exact_and_closed() {
-        // Cause/effect table: C1 crosses every durable execution state; C2 the
-        // caller awaits realization or accepts the already durable root; C3 is
-        // each repository identity conflict. E1 only Await+ActivationFailed is
-        // the historical terminal occupation; E2 every other exact replay
-        // returns durable truth; E3 each conflict maps to one distinct error
-        // and no branch can fall through to create effects.
-        let execution = match kani::any::<u8>() % 7 {
-            0 => SessionExecutionState::Preparing,
-            1 => SessionExecutionState::Activating,
-            2 => SessionExecutionState::ActivationFailed,
-            3 => SessionExecutionState::Running,
-            4 => SessionExecutionState::Rescheduling,
-            5 => SessionExecutionState::Idle,
-            _ => SessionExecutionState::Terminated,
-        };
-        let completion = if kani::any::<bool>() {
-            SessionCreationCompletion::AwaitRealization
-        } else {
-            SessionCreationCompletion::AcceptDurableRoot
-        };
-        assert_eq!(
-            session_create_replay_plan(execution, completion)
-                == SessionCreateReplayPlan::RejectTerminalOccupation,
-            execution == SessionExecutionState::ActivationFailed
-                && completion == SessionCreationCompletion::AwaitRealization
-        );
-
-        let conflict = match kani::any::<u8>() % 3 {
-            0 => awaken_session_contract::SessionRepositoryConflict::AlreadyExists,
-            1 => awaken_session_contract::SessionRepositoryConflict::Tombstoned,
-            _ => awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch,
-        };
-        let error = SessionCreationError::repository(
-            awaken_session_contract::SessionRepositoryError::Conflict(conflict.clone()),
-        );
-        assert!(match conflict {
-            awaken_session_contract::SessionRepositoryConflict::AlreadyExists => {
-                matches!(error, SessionCreationError::Conflict)
+        // C1 crosses every durable execution state; C2 the caller awaits
+        // realization or accepts the already durable root; C3 is each
+        // repository identity conflict. E1 only Await+ActivationFailed is the
+        // historical terminal occupation; E2 every other exact replay returns
+        // durable truth; E3 each conflict maps to one distinct error.
+        let mut cases = 0;
+        for execution in EVERY_EXECUTION_STATE {
+            for completion in EVERY_COMPLETION {
+                for conflict in every_conflict() {
+                    assert_eq!(
+                        session_create_replay_plan(execution, completion)
+                            == SessionCreateReplayPlan::RejectTerminalOccupation,
+                        execution == SessionExecutionState::ActivationFailed
+                            && completion == SessionCreationCompletion::AwaitRealization
+                    );
+                    let error = SessionCreationError::repository(
+                        awaken_session_contract::SessionRepositoryError::Conflict(conflict.clone()),
+                    );
+                    assert!(match conflict {
+                        SessionRepositoryConflict::AlreadyExists => {
+                            matches!(error, SessionCreationError::Conflict)
+                        }
+                        SessionRepositoryConflict::Tombstoned => {
+                            matches!(error, SessionCreationError::Tombstoned)
+                        }
+                        SessionRepositoryConflict::IdempotencyMismatch => {
+                            matches!(error, SessionCreationError::IdempotencyMismatch)
+                        }
+                    });
+                    cases += 1;
+                }
             }
-            awaken_session_contract::SessionRepositoryConflict::Tombstoned => {
-                matches!(error, SessionCreationError::Tombstoned)
-            }
-            awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch => {
-                matches!(error, SessionCreationError::IdempotencyMismatch)
-            }
-        });
+        }
+        assert_eq!(cases, 42);
     }
 }
 

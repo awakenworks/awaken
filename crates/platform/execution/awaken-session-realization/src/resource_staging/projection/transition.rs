@@ -39,42 +39,6 @@ pub(super) const fn live_resource_projection_change(
     }
 }
 
-#[cfg(kani)]
-/// @obligation session_resources.explicit_empty_manifest_revokes_runtime_projection
-#[kani::proof]
-fn explicit_empty_resource_manifest_revokes_without_activation() {
-    // Cause/effect graph: C1 the aggregate generation changed; C2 the desired
-    // manifest has inputs; C3 it has Skills. E1 retain performs no removal or
-    // target installation; E2 replacement removes old state and installs the
-    // nonempty target; E3 explicit empty removes old state and installs no
-    // target. Constraints: inputs/Skills are the complete manifest payload.
-    // Decision rules: R1=!C1=>E1; R2=C1&&(C2||C3)=>E2;
-    // R3=C1&&!C2&&!C3=>E3.
-    let generation_changed: bool = kani::any();
-    let desired_has_inputs: bool = kani::any();
-    let desired_has_skills: bool = kani::any();
-    let change =
-        live_resource_projection_change(generation_changed, desired_has_inputs, desired_has_skills);
-    let explicit_empty = !desired_has_inputs && !desired_has_skills;
-
-    assert_eq!(
-        change == LiveResourceProjectionChange::Retain,
-        !generation_changed,
-    );
-    assert_eq!(
-        change == LiveResourceProjectionChange::Replace,
-        generation_changed && !explicit_empty,
-    );
-    assert_eq!(
-        change == LiveResourceProjectionChange::Revoke,
-        generation_changed && explicit_empty,
-    );
-    if change == LiveResourceProjectionChange::Revoke {
-        assert!(change.removes_previous());
-        assert!(!change.installs_desired());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{LiveResourceProjectionChange, live_resource_projection_change};
@@ -104,5 +68,51 @@ mod tests {
             assert_eq!(actual.removes_previous(), actual != Retain);
             assert_eq!(actual.installs_desired(), actual == Replace);
         }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation session_resources.explicit_empty_manifest_revokes_runtime_projection
+    #[test]
+    fn explicit_empty_resource_manifest_revokes_without_activation() {
+        // C1 the aggregate generation changed; C2 the desired manifest has
+        // inputs; C3 it has Skills. R1=!C1=>retain; R2=C1&&(C2||C3)=>replace;
+        // R3=C1&&!C2&&!C3=>revoke (remove old state, install no target).
+        let mut cases = 0;
+        for generation_changed in [false, true] {
+            for desired_has_inputs in [false, true] {
+                for desired_has_skills in [false, true] {
+                    let change = live_resource_projection_change(
+                        generation_changed,
+                        desired_has_inputs,
+                        desired_has_skills,
+                    );
+                    let explicit_empty = !desired_has_inputs && !desired_has_skills;
+
+                    assert_eq!(
+                        change == LiveResourceProjectionChange::Retain,
+                        !generation_changed,
+                    );
+                    assert_eq!(
+                        change == LiveResourceProjectionChange::Replace,
+                        generation_changed && !explicit_empty,
+                    );
+                    assert_eq!(
+                        change == LiveResourceProjectionChange::Revoke,
+                        generation_changed && explicit_empty,
+                    );
+                    if change == LiveResourceProjectionChange::Revoke {
+                        assert!(change.removes_previous());
+                        assert!(!change.installs_desired());
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 8);
     }
 }

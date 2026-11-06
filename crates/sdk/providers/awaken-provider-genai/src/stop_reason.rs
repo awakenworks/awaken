@@ -5,7 +5,6 @@ use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, TerminalR
 // Provider-specific wire values are classified before entering this finite
 // kernel. Keep its neutral projection free of payload ownership and allocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(kani, derive(kani::Arbitrary))]
 pub(crate) enum ProviderStopClass {
     Completed,
     MaxTokens,
@@ -97,12 +96,39 @@ pub fn map_stop_reason(reason: &genai::chat::StopReason) -> Result<StopReason> {
         .ok_or_else(|| Error::Provider("model returned an unclassified stop reason".into()))
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    const fn listed_class(class: ProviderStopClass) -> usize {
+        match class {
+            ProviderStopClass::Completed => 0,
+            ProviderStopClass::MaxTokens => 1,
+            ProviderStopClass::ToolCall => 2,
+            ProviderStopClass::StopSequence => 3,
+            ProviderStopClass::ContentFilter => 4,
+            ProviderStopClass::Unclassified => 5,
+        }
+    }
+    const EVERY_CLASS: [ProviderStopClass; 6] = [
+        ProviderStopClass::Completed,
+        ProviderStopClass::MaxTokens,
+        ProviderStopClass::ToolCall,
+        ProviderStopClass::StopSequence,
+        ProviderStopClass::ContentFilter,
+        ProviderStopClass::Unclassified,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_CLASS.into_iter().enumerate() {
+            assert_eq!(listed_class(value), index);
+        }
+    }
+
+    /// @exhaustive ProviderStopClass(6) = 6
     /// @obligation model_stop.unclassified_provider_reason_fails_closed
-    #[kani::proof]
+    #[test]
     fn unclassified_provider_stop_reason_fails_closed() {
         // Cause/effect graph: C1-C5 are the five classified provider stop
         // classes and C6 is Unclassified. E1-E5 are the exact neutral stop
@@ -111,36 +137,39 @@ mod verification {
         // classification authority. Decision table K1-K6 exhausts both the SDK
         // variant boundary and derived six-variant production kernel without
         // modeling the unrelated allocation of the final diagnostic message.
-        let class: ProviderStopClass = kani::any();
-        let sdk_reason = match class {
-            ProviderStopClass::Completed => genai::chat::StopReason::Completed(String::new()),
-            ProviderStopClass::MaxTokens => genai::chat::StopReason::MaxTokens(String::new()),
-            ProviderStopClass::ToolCall => genai::chat::StopReason::ToolCall(String::new()),
-            ProviderStopClass::StopSequence => genai::chat::StopReason::StopSequence(String::new()),
-            ProviderStopClass::ContentFilter => {
-                genai::chat::StopReason::ContentFilter(String::new())
+        for class in EVERY_CLASS {
+            let sdk_reason = match class {
+                ProviderStopClass::Completed => genai::chat::StopReason::Completed(String::new()),
+                ProviderStopClass::MaxTokens => genai::chat::StopReason::MaxTokens(String::new()),
+                ProviderStopClass::ToolCall => genai::chat::StopReason::ToolCall(String::new()),
+                ProviderStopClass::StopSequence => {
+                    genai::chat::StopReason::StopSequence(String::new())
+                }
+                ProviderStopClass::ContentFilter => {
+                    genai::chat::StopReason::ContentFilter(String::new())
+                }
+                ProviderStopClass::Unclassified => genai::chat::StopReason::Other(String::new()),
+            };
+            assert_eq!(provider_stop_class(&sdk_reason), class);
+            let projected = project_stop_class(class);
+            match class {
+                ProviderStopClass::Completed => {
+                    assert_eq!(projected, Some(StopReason::NaturalEnd));
+                }
+                ProviderStopClass::MaxTokens => {
+                    assert_eq!(projected, Some(StopReason::MaxTokens));
+                }
+                ProviderStopClass::ToolCall => {
+                    assert_eq!(projected, Some(StopReason::ToolUse));
+                }
+                ProviderStopClass::StopSequence => {
+                    assert_eq!(projected, Some(StopReason::StopSequence));
+                }
+                ProviderStopClass::ContentFilter => {
+                    assert_eq!(projected, Some(StopReason::ContentFilter));
+                }
+                ProviderStopClass::Unclassified => assert_eq!(projected, None),
             }
-            ProviderStopClass::Unclassified => genai::chat::StopReason::Other(String::new()),
-        };
-        assert_eq!(provider_stop_class(&sdk_reason), class);
-        let projected = project_stop_class(class);
-        match class {
-            ProviderStopClass::Completed => {
-                assert_eq!(projected, Some(StopReason::NaturalEnd));
-            }
-            ProviderStopClass::MaxTokens => {
-                assert_eq!(projected, Some(StopReason::MaxTokens));
-            }
-            ProviderStopClass::ToolCall => {
-                assert_eq!(projected, Some(StopReason::ToolUse));
-            }
-            ProviderStopClass::StopSequence => {
-                assert_eq!(projected, Some(StopReason::StopSequence));
-            }
-            ProviderStopClass::ContentFilter => {
-                assert_eq!(projected, Some(StopReason::ContentFilter));
-            }
-            ProviderStopClass::Unclassified => assert_eq!(projected, None),
         }
     }
 }

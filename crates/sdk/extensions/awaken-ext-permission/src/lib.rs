@@ -419,11 +419,86 @@ impl PermissionRuleset {
     }
 }
 
+#[cfg(test)]
+mod exhaustive {
+    use super::{LegacyMode, ToolPermissionBehavior};
+
+    const fn listed_mode(mode: LegacyMode) -> usize {
+        match mode {
+            LegacyMode::Default => 0,
+            LegacyMode::AcceptEdits => 1,
+            LegacyMode::Plan => 2,
+            LegacyMode::BypassPermissions => 3,
+        }
+    }
+    const EVERY_MODE: [LegacyMode; 4] = [
+        LegacyMode::Default,
+        LegacyMode::AcceptEdits,
+        LegacyMode::Plan,
+        LegacyMode::BypassPermissions,
+    ];
+
+    const fn listed_behavior(behavior: ToolPermissionBehavior) -> usize {
+        match behavior {
+            ToolPermissionBehavior::Allow => 0,
+            ToolPermissionBehavior::RequireConfirmation => 1,
+            ToolPermissionBehavior::Deny => 2,
+        }
+    }
+    const EVERY_BEHAVIOR: [ToolPermissionBehavior; 3] = [
+        ToolPermissionBehavior::Allow,
+        ToolPermissionBehavior::RequireConfirmation,
+        ToolPermissionBehavior::Deny,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_MODE.into_iter().enumerate() {
+            assert_eq!(listed_mode(value), index);
+        }
+        for (index, value) in EVERY_BEHAVIOR.into_iter().enumerate() {
+            assert_eq!(listed_behavior(value), index);
+        }
+    }
+
+    /// @exhaustive LegacyMode(4) x ToolPermissionBehavior(3) = 12
+    /// @obligation permission.extension_policy_merge_is_exact_and_fail_closed
+    #[test]
+    fn retired_mode_compiles_into_one_exact_unmatched_default() {
+        // The mode axis is gone; a historical section's mode folds into the one
+        // remaining knob. The fold must be exact for every retired value, and it
+        // must never turn an authored `deny` default into a weaker one except
+        // through the single documented bypass case, which the deny-fold proof
+        // shows is a narrowing overall (deny rules regain their authority).
+        for mode in EVERY_MODE {
+            for authored in EVERY_BEHAVIOR {
+                let compiled = mode.compiled_default(authored);
+                let expected = match mode {
+                    LegacyMode::Plan => ToolPermissionBehavior::Deny,
+                    LegacyMode::BypassPermissions => ToolPermissionBehavior::Allow,
+                    LegacyMode::Default | LegacyMode::AcceptEdits => authored,
+                };
+                assert_eq!(compiled, expected);
+                if mode == LegacyMode::Plan {
+                    assert_eq!(compiled, ToolPermissionBehavior::Deny);
+                }
+                // Only the retired bypass posture may produce an allow default out
+                // of a stricter authored one; every other mode preserves it exactly.
+                if compiled == ToolPermissionBehavior::Allow
+                    && authored != ToolPermissionBehavior::Allow
+                {
+                    assert_eq!(mode, LegacyMode::BypassPermissions);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(kani)]
 mod kani_proofs {
     use super::{
-        LegacyMode, MatchedRule, MatchedRuleSelection, PermissionPolicy, Specificity,
-        ToolPermissionBehavior, fold_matches, select_matched_rule,
+        MatchedRule, MatchedRuleSelection, PermissionPolicy, Specificity, ToolPermissionBehavior,
+        fold_matches, select_matched_rule,
     };
 
     fn arbitrary_policy() -> PermissionPolicy {
@@ -449,38 +524,6 @@ mod kani_proofs {
             has_args: kani::any(),
             field_count: kani::any(),
             field_precision: kani::any(),
-        }
-    }
-
-    /// @obligation permission.extension_policy_merge_is_exact_and_fail_closed
-    #[kani::proof]
-    fn retired_mode_compiles_into_one_exact_unmatched_default() {
-        // The mode axis is gone; a historical section's mode folds into the one
-        // remaining knob. The fold must be exact for every retired value, and it
-        // must never turn an authored `deny` default into a weaker one except
-        // through the single documented bypass case, which the next proof shows
-        // is a narrowing overall (deny rules regain their authority).
-        let mode = match kani::any::<u8>() % 4 {
-            0 => LegacyMode::Default,
-            1 => LegacyMode::AcceptEdits,
-            2 => LegacyMode::Plan,
-            _ => LegacyMode::BypassPermissions,
-        };
-        let authored = arbitrary_behavior();
-        let compiled = mode.compiled_default(authored);
-        let expected = match mode {
-            LegacyMode::Plan => ToolPermissionBehavior::Deny,
-            LegacyMode::BypassPermissions => ToolPermissionBehavior::Allow,
-            LegacyMode::Default | LegacyMode::AcceptEdits => authored,
-        };
-        assert_eq!(compiled, expected);
-        if mode == LegacyMode::Plan {
-            assert_eq!(compiled, ToolPermissionBehavior::Deny);
-        }
-        // Only the retired bypass posture may produce an allow default out of a
-        // stricter authored one; every other mode preserves it exactly.
-        if compiled == ToolPermissionBehavior::Allow && authored != ToolPermissionBehavior::Allow {
-            assert_eq!(mode, LegacyMode::BypassPermissions);
         }
     }
 

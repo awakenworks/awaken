@@ -85,45 +85,66 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    const fn listed_kind(kind: StreamTerminalKind) -> usize {
+        match kind {
+            StreamTerminalKind::Awaiting => 0,
+            StreamTerminalKind::Finished => 1,
+            StreamTerminalKind::Failed => 2,
+        }
+    }
+    const EVERY_KIND: [StreamTerminalKind; 3] = [
+        StreamTerminalKind::Awaiting,
+        StreamTerminalKind::Finished,
+        StreamTerminalKind::Failed,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_KIND.into_iter().enumerate() {
+            assert_eq!(listed_kind(value), index);
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x StreamTerminalKind(3) = 24
     /// @obligation ui_stream.terminal_projection_is_exact_fail_closed_and_absorbing
-    #[kani::proof]
+    #[test]
     fn stream_terminal_projection_is_exact_fail_closed_and_absorbing() {
-        let started: bool = kani::any();
-        let terminal_emitted: bool = kani::any();
-        let reconciliation_exact: bool = kani::any();
-        let tag: u8 = kani::any();
-        kani::assume(tag <= 2);
-        let requested = match tag {
-            0 => StreamTerminalKind::Awaiting,
-            1 => StreamTerminalKind::Finished,
-            _ => StreamTerminalKind::Failed,
-        };
-
-        let decision =
-            decide_stream_terminal(started, terminal_emitted, reconciliation_exact, requested);
-
-        if !started {
-            assert!(!matches!(
-                decision,
-                StreamTerminalDecision::Emit(StreamTerminalKind::Awaiting)
-                    | StreamTerminalDecision::Emit(StreamTerminalKind::Finished)
-            ));
-        }
-        if terminal_emitted {
-            assert_eq!(decision, StreamTerminalDecision::AlreadyEmitted);
-        }
-        if started && !terminal_emitted && !reconciliation_exact {
-            assert_eq!(
-                decision,
-                StreamTerminalDecision::Emit(StreamTerminalKind::Failed)
-            );
-        }
-        if started && !terminal_emitted && reconciliation_exact {
-            assert_eq!(decision, StreamTerminalDecision::Emit(requested));
+        for started in [false, true] {
+            for terminal_emitted in [false, true] {
+                for reconciliation_exact in [false, true] {
+                    for requested in EVERY_KIND {
+                        let decision = decide_stream_terminal(
+                            started,
+                            terminal_emitted,
+                            reconciliation_exact,
+                            requested,
+                        );
+                        if !started {
+                            assert!(!matches!(
+                                decision,
+                                StreamTerminalDecision::Emit(StreamTerminalKind::Awaiting)
+                                    | StreamTerminalDecision::Emit(StreamTerminalKind::Finished)
+                            ));
+                        }
+                        if terminal_emitted {
+                            assert_eq!(decision, StreamTerminalDecision::AlreadyEmitted);
+                        }
+                        if started && !terminal_emitted && !reconciliation_exact {
+                            assert_eq!(
+                                decision,
+                                StreamTerminalDecision::Emit(StreamTerminalKind::Failed)
+                            );
+                        }
+                        if started && !terminal_emitted && reconciliation_exact {
+                            assert_eq!(decision, StreamTerminalDecision::Emit(requested));
+                        }
+                    }
+                }
+            }
         }
     }
 }

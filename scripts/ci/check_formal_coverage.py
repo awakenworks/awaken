@@ -261,7 +261,7 @@ model_proved = [
 kernel_proved = [
     item
     for item in formalizable
-    if item["status"] == "kernel_proved" or item.get("proof_harnesses")
+    if item["status"] == "kernel_proved" or item.get("proof_harnesses") or item.get("exhaustive_tests")
 ]
 trace_refined = [
     item

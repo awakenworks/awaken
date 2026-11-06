@@ -4,8 +4,6 @@
 // retains topology, terminal-state and claimed-Run revival admission.
 //! Session-owned permission to acquire or release a Worker assignment lease.
 
-#[cfg(kani)]
-use crate::worker_lease_types::proof_representative_lease;
 use crate::{SessionWork, SessionWorkAcquisition, SessionWorkGrant, SessionWorkOwnership};
 use awaken_lease_contract::fence::{Epoch, Tenure, ZeroEpoch};
 use awaken_runtime_contract::runs::RunError;
@@ -246,53 +244,6 @@ fn lease_tenure(lease: &SessionWorkGrant) -> Tenure<SessionWork> {
     lease.tenure().clone()
 }
 
-#[cfg(kani)]
-/// @obligation session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
-#[kani::proof]
-fn session_work_receipt_kind_and_minting_are_exact() {
-    // Causes: K1 the observed authority kind differs; K2 the acquisition is
-    // unowned; K3 Session or owner differs at minting. Effects: K1 never
-    // matches a leased receipt; K2-K3 mint nothing. A Work-free receipt matches
-    // only Work-free. Four symbolic minting rows and concrete cross-kind rows
-    // keep this branch separate from the executable coordinate matrix.
-    let session_matches: bool = kani::any();
-    let owner_matches: bool = kani::any();
-    let acquired = SessionWorkOwnership::Leased(proof_representative_lease(
-        true, true, true, true, true, true,
-    ));
-    let receipt = SessionWorkAuthorityReceipt::from_acquired("s", "w", &acquired)
-        .expect("an exactly owned acquisition mints a receipt");
-
-    // Cross-kind rows: a leased receipt never matches a Work-free or unowned
-    // observation, and a NotRequired receipt matches only its own kind.
-    assert!(!receipt.matches_observation(&SessionWorkOwnership::NotRequired));
-    assert!(!receipt.matches_observation(&SessionWorkOwnership::Unowned));
-    let free =
-        SessionWorkAuthorityReceipt::from_acquired("s", "w", &SessionWorkOwnership::NotRequired)
-            .expect("a Work-free acquisition mints a receipt");
-    assert!(free.matches_observation(&SessionWorkOwnership::NotRequired));
-    assert!(!free.matches_observation(&SessionWorkOwnership::Unowned));
-    assert!(!free.matches_observation(&acquired));
-
-    // The minting door is part of the same derivation: unowned Work mints no
-    // authority, and a foreign Session or owner cannot mint one either.
-    assert!(
-        SessionWorkAuthorityReceipt::from_acquired("s", "w", &SessionWorkOwnership::Unowned)
-            .is_none(),
-        "unowned Work mints no authority"
-    );
-    assert_eq!(
-        SessionWorkAuthorityReceipt::from_acquired(
-            if session_matches { "s" } else { "S" },
-            if owner_matches { "w" } else { "W" },
-            &acquired,
-        )
-        .is_some(),
-        session_matches && owner_matches,
-        "a leased acquisition mints authority only for its exact Session and owner"
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +335,65 @@ mod tests {
             serde_json::from_value::<super::SessionWorkAuthorityReceipt>(zero).is_err(),
             "W3"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+    use crate::worker_lease_types::proof_representative_lease;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
+    #[test]
+    fn session_work_receipt_kind_and_minting_are_exact() {
+        // Causes: K1 the observed authority kind differs; K2 the acquisition is
+        // unowned; K3 Session or owner differs at minting. Effects: K1 never
+        // matches a leased receipt; K2-K3 mint nothing. A Work-free receipt
+        // matches only Work-free.
+        let mut cases = 0;
+        for session_matches in [false, true] {
+            for owner_matches in [false, true] {
+                let acquired = SessionWorkOwnership::Leased(proof_representative_lease(
+                    true, true, true, true, true, true,
+                ));
+                let receipt = SessionWorkAuthorityReceipt::from_acquired("s", "w", &acquired)
+                    .expect("an exactly owned acquisition mints a receipt");
+
+                assert!(!receipt.matches_observation(&SessionWorkOwnership::NotRequired));
+                assert!(!receipt.matches_observation(&SessionWorkOwnership::Unowned));
+                let free = SessionWorkAuthorityReceipt::from_acquired(
+                    "s",
+                    "w",
+                    &SessionWorkOwnership::NotRequired,
+                )
+                .expect("a Work-free acquisition mints a receipt");
+                assert!(free.matches_observation(&SessionWorkOwnership::NotRequired));
+                assert!(!free.matches_observation(&SessionWorkOwnership::Unowned));
+                assert!(!free.matches_observation(&acquired));
+
+                assert!(
+                    SessionWorkAuthorityReceipt::from_acquired(
+                        "s",
+                        "w",
+                        &SessionWorkOwnership::Unowned
+                    )
+                    .is_none(),
+                    "unowned Work mints no authority"
+                );
+                assert_eq!(
+                    SessionWorkAuthorityReceipt::from_acquired(
+                        if session_matches { "s" } else { "S" },
+                        if owner_matches { "w" } else { "W" },
+                        &acquired,
+                    )
+                    .is_some(),
+                    session_matches && owner_matches,
+                    "a leased acquisition mints authority only for its exact Session and owner"
+                );
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 4);
     }
 }

@@ -307,45 +307,6 @@ pub const fn combine_permission_consensus(
     }
 }
 
-#[cfg(kani)]
-fn arbitrary_permission_consensus(first: bool, second: bool) -> PermissionConsensus {
-    if first {
-        PermissionConsensus::Deny
-    } else if second {
-        PermissionConsensus::Await
-    } else {
-        PermissionConsensus::Allow
-    }
-}
-
-#[cfg(kani)]
-/// @obligation acp.mcp_alias_permission_consensus_never_widens_authority
-/// @kani features=real-acp
-#[kani::proof]
-fn permission_consensus_is_a_conservative_order_independent_semilattice() {
-    let a = arbitrary_permission_consensus(kani::any(), kani::any());
-    let b = arbitrary_permission_consensus(kani::any(), kani::any());
-    let c = arbitrary_permission_consensus(kani::any(), kani::any());
-
-    assert_eq!(combine_permission_consensus(a, a), a);
-    assert_eq!(
-        combine_permission_consensus(a, b),
-        combine_permission_consensus(b, a)
-    );
-    assert_eq!(
-        combine_permission_consensus(combine_permission_consensus(a, b), c),
-        combine_permission_consensus(a, combine_permission_consensus(b, c))
-    );
-    assert_eq!(
-        combine_permission_consensus(a, PermissionConsensus::Allow),
-        a
-    );
-    assert_eq!(
-        combine_permission_consensus(a, PermissionConsensus::Deny),
-        PermissionConsensus::Deny
-    );
-}
-
 /// Resolves an agent permission request. Injected like [`RunFactAppender`]: this
 /// low wire crate defines the narrow port; the executor supplies an adapter that
 /// bridges it to the single neutral `ToolPermissionPolicy` authority (G21). This is a
@@ -1694,3 +1655,58 @@ mod tests {
 #[cfg(test)]
 #[path = "tests/cleanup.rs"]
 mod cleanup_tests;
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    pub(crate) const EVERY_PERMISSION_CONSENSUS: [PermissionConsensus; 3] = [
+        PermissionConsensus::Allow,
+        PermissionConsensus::Await,
+        PermissionConsensus::Deny,
+    ];
+
+    const fn listed_permission_consensus(consensus: PermissionConsensus) -> usize {
+        match consensus {
+            PermissionConsensus::Allow => 0,
+            PermissionConsensus::Await => 1,
+            PermissionConsensus::Deny => 2,
+        }
+    }
+
+    #[test]
+    fn every_permission_consensus_is_listed_once() {
+        for (index, consensus) in EVERY_PERMISSION_CONSENSUS.into_iter().enumerate() {
+            assert_eq!(listed_permission_consensus(consensus), index);
+        }
+    }
+
+    /// @exhaustive PermissionConsensus(3) x PermissionConsensus(3) x PermissionConsensus(3) = 27
+    /// @obligation acp.mcp_alias_permission_consensus_never_widens_authority
+    #[test]
+    fn permission_consensus_is_a_conservative_order_independent_semilattice() {
+        for a in EVERY_PERMISSION_CONSENSUS {
+            for b in EVERY_PERMISSION_CONSENSUS {
+                for c in EVERY_PERMISSION_CONSENSUS {
+                    assert_eq!(combine_permission_consensus(a, a), a);
+                    assert_eq!(
+                        combine_permission_consensus(a, b),
+                        combine_permission_consensus(b, a)
+                    );
+                    assert_eq!(
+                        combine_permission_consensus(combine_permission_consensus(a, b), c),
+                        combine_permission_consensus(a, combine_permission_consensus(b, c))
+                    );
+                    assert_eq!(
+                        combine_permission_consensus(a, PermissionConsensus::Allow),
+                        a
+                    );
+                    assert_eq!(
+                        combine_permission_consensus(a, PermissionConsensus::Deny),
+                        PermissionConsensus::Deny
+                    );
+                }
+            }
+        }
+    }
+}

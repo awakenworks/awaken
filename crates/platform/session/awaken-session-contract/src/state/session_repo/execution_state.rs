@@ -99,39 +99,10 @@ impl SessionExecutionState {
     }
 }
 
-#[cfg(kani)]
-/// @obligation session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
-#[kani::proof]
-fn initial_realization_recovery_is_exact_for_every_execution_state() {
-    // Causes: C1 is each closed SessionExecutionState variant. Effects: E1 the
-    // complete root remains in the repository reconciliation index; E2 it does
-    // not gain initial-realization work. R1 Preparing/Activating => E1 because
-    // creation or activation can be resumed after process loss. R2 every other
-    // state => E2 because it is terminal, already realized, or owns a different
-    // reconciliation cause. This is the production predicate consumed by
-    // PersistedSession::needs_reconciliation and both durable stores.
-    let state = match kani::any::<u8>() % 7 {
-        0 => SessionExecutionState::Preparing,
-        1 => SessionExecutionState::Activating,
-        2 => SessionExecutionState::ActivationFailed,
-        3 => SessionExecutionState::Running,
-        4 => SessionExecutionState::Rescheduling,
-        5 => SessionExecutionState::Idle,
-        _ => SessionExecutionState::Terminated,
-    };
-    assert_eq!(
-        state.requires_initial_realization_recovery(),
-        matches!(
-            state,
-            SessionExecutionState::Preparing | SessionExecutionState::Activating
-        )
-    );
-}
-
 #[cfg(test)]
 #[test]
 fn initial_realization_recovery_decision_table_is_closed() {
-    // Cause/effect table mirrors the Kani proof with concrete named rows. Only
+    // Cause/effect table mirrors the exhaustive test with concrete named rows. Only
     // Preparing and Activating retain the initial realization obligation; all
     // five complementary states rely on their own durable lifecycle causes.
     for (rule, state, expected) in [
@@ -185,6 +156,60 @@ impl std::str::FromStr for SessionExecutionState {
             other => Err(SessionExecutionStateError::UnrecognizedState {
                 value: other.to_string(),
             }),
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod exhaustive {
+    use super::*;
+
+    /// Every closed execution state, in declaration order.
+    pub(crate) const EVERY_EXECUTION_STATE: [SessionExecutionState; 7] = [
+        SessionExecutionState::Preparing,
+        SessionExecutionState::Activating,
+        SessionExecutionState::ActivationFailed,
+        SessionExecutionState::Running,
+        SessionExecutionState::Rescheduling,
+        SessionExecutionState::Idle,
+        SessionExecutionState::Terminated,
+    ];
+
+    const fn listed_execution_state(state: SessionExecutionState) -> usize {
+        match state {
+            SessionExecutionState::Preparing => 0,
+            SessionExecutionState::Activating => 1,
+            SessionExecutionState::ActivationFailed => 2,
+            SessionExecutionState::Running => 3,
+            SessionExecutionState::Rescheduling => 4,
+            SessionExecutionState::Idle => 5,
+            SessionExecutionState::Terminated => 6,
+        }
+    }
+
+    #[test]
+    fn every_execution_state_is_listed() {
+        for (index, state) in EVERY_EXECUTION_STATE.into_iter().enumerate() {
+            assert_eq!(listed_execution_state(state), index);
+        }
+    }
+
+    /// @exhaustive SessionExecutionState(7) = 7
+    /// @obligation session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
+    #[test]
+    fn initial_realization_recovery_is_exact_for_every_execution_state() {
+        // Causes: C1 is each closed SessionExecutionState variant. Effects: E1
+        // the complete root remains in the repository reconciliation index; E2
+        // it does not gain initial-realization work. R1 Preparing/Activating =>
+        // E1; R2 every other state => E2.
+        for state in EVERY_EXECUTION_STATE {
+            assert_eq!(
+                state.requires_initial_realization_recovery(),
+                matches!(
+                    state,
+                    SessionExecutionState::Preparing | SessionExecutionState::Activating
+                )
+            );
         }
     }
 }

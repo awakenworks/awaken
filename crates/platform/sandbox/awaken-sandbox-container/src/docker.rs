@@ -137,36 +137,6 @@ fn docker_not_found(error: &bollard::errors::Error) -> bool {
     )
 }
 
-#[cfg(kani)]
-/// @obligation sandbox.docker_absence_requires_explicit_backend_not_found
-/// @kani features=docker
-#[kani::proof]
-#[kani::unwind(2)]
-fn docker_absence_requires_an_explicit_not_found_response() {
-    // Actual Engine-error classifier over every u16 API status and the distinct
-    // transport-timeout variant. C1 explicit HTTP response; C2 status=404.
-    // R1 C1+C2 => absence; R2 every other status/transport error => unknown.
-    // This is the classification kernel, not truth of the daemon, immutable-ID
-    // addressing, async deletion, or physical termination; HTTP tests own wiring.
-    let status: u16 = kani::any();
-    let api_response: bool = kani::any();
-    let error = if api_response {
-        bollard::errors::Error::DockerResponseServerError {
-            status_code: status,
-            message: "engine".into(),
-        }
-    } else {
-        bollard::errors::Error::RequestTimeoutError
-    };
-    if docker_not_found(&error) {
-        assert!(api_response);
-        assert_eq!(status, 404);
-    }
-    if api_response && status == 404 {
-        assert!(docker_not_found(&error));
-    }
-}
-
 fn exec_env(command: &pc::MaterializedCommand) -> Result<Vec<String>, RuntimeError> {
     Ok(command
         .env
@@ -1495,5 +1465,40 @@ mod observation_error_tests {
             !docker_not_found(&bollard::errors::Error::RequestTimeoutError),
             "R2"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive u16(65536) x bool(2) = 131072
+    /// @obligation sandbox.docker_absence_requires_explicit_backend_not_found
+    #[test]
+    fn docker_absence_requires_an_explicit_not_found_response() {
+        // Actual Engine-error classifier over every u16 API status and the distinct
+        // transport-timeout variant. C1 explicit HTTP response; C2 status=404.
+        // R1 C1+C2 => absence; R2 every other status/transport error => unknown.
+        // This is the classification kernel, not truth of the daemon, immutable-ID
+        // addressing, async deletion, or physical termination; HTTP tests own wiring.
+        for status in u16::MIN..=u16::MAX {
+            for api_response in [false, true] {
+                let error = if api_response {
+                    bollard::errors::Error::DockerResponseServerError {
+                        status_code: status,
+                        message: "engine".into(),
+                    }
+                } else {
+                    bollard::errors::Error::RequestTimeoutError
+                };
+                if docker_not_found(&error) {
+                    assert!(api_response);
+                    assert_eq!(status, 404);
+                }
+                if api_response && status == 404 {
+                    assert!(docker_not_found(&error));
+                }
+            }
+        }
     }
 }

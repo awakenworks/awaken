@@ -190,37 +190,42 @@ pub async fn redeliver_committed_terminal(
     Some(deliver_committed_terminal(observers, &terminal).await)
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) = 16
     /// @obligation remote_worker.committed_terminal_recovery_skips_execution_and_settles_dispatch
     /// @obligation remote_worker.pending_signal_is_consumed_by_commit
     /// @obligation tool_result.terminal_run_rejects_late_result
-    /// @proof-input-debt free_symbol committed_terminal_admission ended
-    /// @proof-input-debt free_symbol committed_terminal_admission record_present
-    /// @proof-input-debt free_symbol committed_terminal_admission run_identity_matches
-    /// @proof-input-debt free_symbol committed_terminal_admission thread_identity_matches
-    #[kani::proof]
+    #[test]
     fn committed_terminal_projection_admits_only_exact_ended_identity() {
-        let present: bool = kani::any();
-        let run_matches: bool = kani::any();
-        let thread_matches: bool = kani::any();
-        let ended: bool = kani::any();
-        let admission = committed_terminal_admission(present, run_matches, thread_matches, ended);
-
-        assert_eq!(
-            admission == CommittedTerminalAdmission::Exact,
-            present && run_matches && thread_matches && ended
-        );
-        assert_eq!(
-            admission == CommittedTerminalAdmission::IdentityConflict,
-            present && (!run_matches || !thread_matches)
-        );
-        assert_eq!(
-            admission == CommittedTerminalAdmission::Nonterminal,
-            !present || (run_matches && thread_matches && !ended)
-        );
+        for present in [false, true] {
+            for run_matches in [false, true] {
+                for thread_matches in [false, true] {
+                    for ended in [false, true] {
+                        let admission = committed_terminal_admission(
+                            present,
+                            run_matches,
+                            thread_matches,
+                            ended,
+                        );
+                        assert_eq!(
+                            admission == CommittedTerminalAdmission::Exact,
+                            present && run_matches && thread_matches && ended
+                        );
+                        assert_eq!(
+                            admission == CommittedTerminalAdmission::IdentityConflict,
+                            present && (!run_matches || !thread_matches)
+                        );
+                        assert_eq!(
+                            admission == CommittedTerminalAdmission::Nonterminal,
+                            !present || (run_matches && thread_matches && !ended)
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 

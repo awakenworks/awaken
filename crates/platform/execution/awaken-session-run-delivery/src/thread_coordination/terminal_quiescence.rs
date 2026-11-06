@@ -282,45 +282,6 @@ impl CoordinatedThreads {
     }
 }
 
-#[cfg(kani)]
-/// @obligation session_terminal.unstarted_reservation_is_rejected_after_cancel
-#[kani::proof]
-fn terminal_quiescence_rejects_only_unstarted_reservations() {
-    // The reused Runtime physical-marker primitive only replaces the two
-    // existing is_none probes. Cancellation intent still precedes local signal;
-    // pass/deadline/retry and persisted physical-slot decisions stay below.
-    // A local inactive marker cannot prove a remote Worker or request is closed.
-    // Cause/effect decision table: C1 is the closed durable Dispatch phase.
-    // E1 Reserved/ReservationLeased is canceled and guarded-rejected because no
-    // executor was admitted; E2 Pending/Leased/Awaiting/DeadLetter follows the
-    // ordinary cancellation/settlement authority; E3 Superseded is absorbing
-    // and ignored. The seven-state partition is exhaustive, so terminal cleanup
-    // can neither delete activated work as a reservation nor wait on the normal
-    // reservation TTL after Session terminal truth is already durable.
-    let state = match kani::any::<u8>() % 7 {
-        0 => awaken_dispatch_contract::DispatchState::Reserved,
-        1 => awaken_dispatch_contract::DispatchState::ReservationLeased,
-        2 => awaken_dispatch_contract::DispatchState::Pending,
-        3 => awaken_dispatch_contract::DispatchState::Leased,
-        4 => awaken_dispatch_contract::DispatchState::Awaiting,
-        5 => awaken_dispatch_contract::DispatchState::DeadLetter,
-        _ => awaken_dispatch_contract::DispatchState::Superseded,
-    };
-    let action = terminal_dispatch_action(state);
-    assert_eq!(
-        action == TerminalDispatchAction::CancelAndRejectReservation,
-        matches!(
-            state,
-            awaken_dispatch_contract::DispatchState::Reserved
-                | awaken_dispatch_contract::DispatchState::ReservationLeased
-        )
-    );
-    assert_eq!(
-        action == TerminalDispatchAction::Ignore,
-        state == awaken_dispatch_contract::DispatchState::Superseded
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,6 +328,65 @@ mod tests {
                     RunResidence::Elsewhere
                 ),
                 "Q3"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+    use awaken_dispatch_contract::DispatchState;
+
+    const EVERY_STATE: [DispatchState; 7] = [
+        DispatchState::Reserved,
+        DispatchState::ReservationLeased,
+        DispatchState::Pending,
+        DispatchState::Leased,
+        DispatchState::Awaiting,
+        DispatchState::DeadLetter,
+        DispatchState::Superseded,
+    ];
+
+    const fn listed_state(state: DispatchState) -> usize {
+        match state {
+            DispatchState::Reserved => 0,
+            DispatchState::ReservationLeased => 1,
+            DispatchState::Pending => 2,
+            DispatchState::Leased => 3,
+            DispatchState::Awaiting => 4,
+            DispatchState::DeadLetter => 5,
+            DispatchState::Superseded => 6,
+        }
+    }
+
+    #[test]
+    fn every_dispatch_state_is_listed() {
+        for (index, state) in EVERY_STATE.into_iter().enumerate() {
+            assert_eq!(listed_state(state), index);
+        }
+    }
+
+    /// @exhaustive DispatchState(7) = 7
+    /// @obligation session_terminal.unstarted_reservation_is_rejected_after_cancel
+    #[test]
+    fn terminal_quiescence_rejects_only_unstarted_reservations() {
+        // E1 Reserved/ReservationLeased is canceled and guarded-rejected because
+        // no executor was admitted; E2 Pending/Leased/Awaiting/DeadLetter follows
+        // the ordinary cancellation/settlement authority; E3 Superseded is
+        // absorbing and ignored.
+        for state in EVERY_STATE {
+            let action = terminal_dispatch_action(state);
+            assert_eq!(
+                action == TerminalDispatchAction::CancelAndRejectReservation,
+                matches!(
+                    state,
+                    DispatchState::Reserved | DispatchState::ReservationLeased
+                )
+            );
+            assert_eq!(
+                action == TerminalDispatchAction::Ignore,
+                state == DispatchState::Superseded
             );
         }
     }

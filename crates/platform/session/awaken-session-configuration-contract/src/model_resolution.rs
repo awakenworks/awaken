@@ -124,31 +124,34 @@ pub trait SessionModelPublicationResolver: Send + Sync {
     ) -> Result<SessionModelPublication, SessionModelResolutionError>;
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    /// @exhaustive u8(256) x u8(256) = 65536
     /// @obligation model_route.session_override_reuses_only_exact_identity_and_resolves_every_mismatch
-    #[kani::proof]
+    #[test]
     fn session_model_override_reuses_only_the_same_identity_and_resolves_every_mismatch() {
-        let requested_model = kani::any::<u8>();
-        let published_model = kani::any::<u8>();
-        let decision = session_model_override_decision(&requested_model, &published_model);
+        for requested_model in u8::MIN..=u8::MAX {
+            for published_model in u8::MIN..=u8::MAX {
+                let decision = session_model_override_decision(&requested_model, &published_model);
 
-        assert_eq!(
-            decision,
-            if requested_model == published_model {
-                SessionModelOverrideDecision::ReusePublished
-            } else {
-                SessionModelOverrideDecision::ResolveComplete
-            }
-        );
-        match decision {
-            SessionModelOverrideDecision::ReusePublished => {
-                assert_eq!(requested_model, published_model);
-            }
-            SessionModelOverrideDecision::ResolveComplete => {
-                assert_ne!(requested_model, published_model);
+                assert_eq!(
+                    decision,
+                    if requested_model == published_model {
+                        SessionModelOverrideDecision::ReusePublished
+                    } else {
+                        SessionModelOverrideDecision::ResolveComplete
+                    }
+                );
+                match decision {
+                    SessionModelOverrideDecision::ReusePublished => {
+                        assert_eq!(requested_model, published_model);
+                    }
+                    SessionModelOverrideDecision::ResolveComplete => {
+                        assert_ne!(requested_model, published_model);
+                    }
+                }
             }
         }
     }

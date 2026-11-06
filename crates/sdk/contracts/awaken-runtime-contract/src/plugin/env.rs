@@ -344,62 +344,72 @@ fn topological_order(
     Ok(ordered)
 }
 
-#[cfg(kani)]
-mod kani_proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::{PluginActivationDecision, plugin_activation_decision};
 
+    /// @exhaustive bool(2) = 2
     /// @obligation plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
-    /// @proof-input-debt free_symbol plugin_activation_decision selected
-    #[kani::proof]
+    #[test]
     fn plugin_activation_is_exactly_the_requested_identity() {
-        let selected: bool = kani::any();
-        let decision = plugin_activation_decision(selected, true, true, true);
-        assert_eq!(decision == PluginActivationDecision::Active, selected);
-        assert_eq!(decision == PluginActivationDecision::Inactive, !selected);
+        for selected in [false, true] {
+            let decision = plugin_activation_decision(selected, true, true, true);
+            assert_eq!(decision == PluginActivationDecision::Active, selected);
+            assert_eq!(decision == PluginActivationDecision::Inactive, !selected);
+        }
     }
 
+    /// @exhaustive bool(2) = 2
     /// @obligation plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
-    #[kani::proof]
+    #[test]
     fn plugin_activation_requires_every_declared_dependency() {
-        let dependency_present: bool = kani::any();
-        let decision = plugin_activation_decision(true, true, dependency_present, true);
-        assert_eq!(
-            decision == PluginActivationDecision::Active,
-            dependency_present
-        );
-        assert_eq!(
-            decision == PluginActivationDecision::RejectMissingDependency,
-            !dependency_present
-        );
+        for dependency_present in [false, true] {
+            let decision = plugin_activation_decision(true, true, dependency_present, true);
+            assert_eq!(
+                decision == PluginActivationDecision::Active,
+                dependency_present
+            );
+            assert_eq!(
+                decision == PluginActivationDecision::RejectMissingDependency,
+                !dependency_present
+            );
+        }
     }
 
+    /// @exhaustive bool(2) = 2
     /// @obligation plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
-    /// @proof-input-debt free_symbol plugin_activation_decision capability_within_bound
-    #[kani::proof]
+    #[test]
     fn plugin_activation_never_widens_the_capability_bound() {
-        let capability_within_bound: bool = kani::any();
-        let decision = plugin_activation_decision(true, true, true, capability_within_bound);
-        assert_eq!(
-            decision == PluginActivationDecision::Active,
-            capability_within_bound
-        );
-        assert_eq!(
-            decision == PluginActivationDecision::RejectCapability,
-            !capability_within_bound
-        );
+        for capability_within_bound in [false, true] {
+            let decision = plugin_activation_decision(true, true, true, capability_within_bound);
+            assert_eq!(
+                decision == PluginActivationDecision::Active,
+                capability_within_bound
+            );
+            assert_eq!(
+                decision == PluginActivationDecision::RejectCapability,
+                !capability_within_bound
+            );
+        }
     }
 
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
     /// @obligation plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
-    /// @proof-input-debt free_symbol plugin_activation_decision capability_within_bound
-    /// @proof-input-debt free_symbol plugin_activation_decision unique
-    #[kani::proof]
+    #[test]
     fn plugin_activation_never_admits_a_duplicate_identity() {
-        let unique: bool = kani::any();
-        let dependencies_present: bool = kani::any();
-        let capability_within_bound: bool = kani::any();
-        let decision =
-            plugin_activation_decision(true, unique, dependencies_present, capability_within_bound);
-        assert!(unique || decision == PluginActivationDecision::RejectDuplicate);
-        assert!(decision != PluginActivationDecision::Active || unique);
+        for unique in [false, true] {
+            for dependencies_present in [false, true] {
+                for capability_within_bound in [false, true] {
+                    let decision = plugin_activation_decision(
+                        true,
+                        unique,
+                        dependencies_present,
+                        capability_within_bound,
+                    );
+                    assert!(unique || decision == PluginActivationDecision::RejectDuplicate);
+                    assert!(decision != PluginActivationDecision::Active || unique);
+                }
+            }
+        }
     }
 }

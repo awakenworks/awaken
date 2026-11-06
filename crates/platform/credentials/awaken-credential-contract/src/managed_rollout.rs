@@ -86,7 +86,7 @@ pub const fn managed_credential_rollout_adoption_revision(current: u64, event: u
 
 #[cfg(kani)]
 /// @obligation credential.managed_rollout_abstract_ack_requires_every_target_adoption
-/// @kani profile=solver-kissat-v1
+/// @kani profile=solver-kissat-v1 tier=nightly
 #[kani::proof]
 fn rollout_update_revision_is_monotonic_and_covers_event() {
     let current = kani::any::<u64>();

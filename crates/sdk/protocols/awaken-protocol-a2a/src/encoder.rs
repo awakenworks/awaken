@@ -145,54 +145,6 @@ fn execution_unknown_status(thread: &str) -> Message {
     message
 }
 
-#[cfg(kani)]
-mod proofs {
-    use super::*;
-    use awaken_agent_contract::agent::run::Failure;
-
-    /// @obligation protocol_adapter.a2a_task_state_projection_is_total_exact_and_non_strengthening
-    #[kani::proof]
-    fn a2a_task_state_projection_is_total_exact_and_non_strengthening() {
-        let tag: u8 = kani::any();
-        kani::assume(tag <= 7);
-        let state = match tag {
-            0 => RunState::Running,
-            1 => RunState::Awaiting,
-            2 => RunState::Ended(EndCause::Error(Failure::CapabilityBound)),
-            3 => RunState::Ended(EndCause::MaxSteps),
-            4 => RunState::Ended(EndCause::Stopped(String::new())),
-            5 => RunState::Ended(EndCause::Cancelled),
-            6 => RunState::Ended(EndCause::Indeterminate),
-            _ => RunState::Ended(EndCause::NaturalEnd),
-        };
-
-        let projected = task_state_for_run_state(&state);
-        match projected {
-            TaskState::Working => assert_eq!(state, RunState::Running),
-            TaskState::InputRequired => assert_eq!(state, RunState::Awaiting),
-            TaskState::Failed => assert!(matches!(
-                state,
-                RunState::Ended(
-                    EndCause::Error(_)
-                        | EndCause::MaxSteps
-                        | EndCause::Stopped(_)
-                        | EndCause::Indeterminate
-                )
-            )),
-            TaskState::Canceled => {
-                assert_eq!(state, RunState::Ended(EndCause::Cancelled))
-            }
-            TaskState::Completed => {
-                assert_eq!(state, RunState::Ended(EndCause::NaturalEnd))
-            }
-            TaskState::Submitted
-            | TaskState::AuthRequired
-            | TaskState::Rejected
-            | TaskState::Unknown => unreachable!("runtime projection cannot invent this state"),
-        }
-    }
-}
-
 /// Convert a neutral message to an A2A message. User/assistant map to the A2A
 /// roles; system and tool messages are internal and dropped from the A2A history.
 fn to_a2a_message(thread: &str, message: &AgentMessage) -> Option<Message> {
@@ -496,5 +448,54 @@ mod tests {
         let task = encode_task("t", &history, &outcome(false, None), TIMESTAMP.into());
         assert_eq!(task.history[0].role, MessageRole::User);
         assert_eq!(task.history[1].role, MessageRole::Agent);
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+    use awaken_agent_contract::agent::run::Failure;
+
+    /// @exhaustive RunState representative(8) = 8
+    /// @obligation protocol_adapter.a2a_task_state_projection_is_total_exact_and_non_strengthening
+    #[test]
+    fn a2a_task_state_projection_is_total_exact_and_non_strengthening() {
+        for tag in 0_u8..=7 {
+            let state = match tag {
+                0 => RunState::Running,
+                1 => RunState::Awaiting,
+                2 => RunState::Ended(EndCause::Error(Failure::CapabilityBound)),
+                3 => RunState::Ended(EndCause::MaxSteps),
+                4 => RunState::Ended(EndCause::Stopped(String::new())),
+                5 => RunState::Ended(EndCause::Cancelled),
+                6 => RunState::Ended(EndCause::Indeterminate),
+                _ => RunState::Ended(EndCause::NaturalEnd),
+            };
+
+            let projected = task_state_for_run_state(&state);
+            match projected {
+                TaskState::Working => assert_eq!(state, RunState::Running),
+                TaskState::InputRequired => assert_eq!(state, RunState::Awaiting),
+                TaskState::Failed => assert!(matches!(
+                    state,
+                    RunState::Ended(
+                        EndCause::Error(_)
+                            | EndCause::MaxSteps
+                            | EndCause::Stopped(_)
+                            | EndCause::Indeterminate
+                    )
+                )),
+                TaskState::Canceled => {
+                    assert_eq!(state, RunState::Ended(EndCause::Cancelled))
+                }
+                TaskState::Completed => {
+                    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd))
+                }
+                TaskState::Submitted
+                | TaskState::AuthRequired
+                | TaskState::Rejected
+                | TaskState::Unknown => unreachable!("runtime projection cannot invent this state"),
+            }
+        }
     }
 }

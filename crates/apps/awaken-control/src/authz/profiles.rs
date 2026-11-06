@@ -422,22 +422,38 @@ mod hosted_runtime_tests {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    const fn listed_runtime_authority(authority: HostedRuntimeAuthority) -> usize {
+        match authority {
+            HostedRuntimeAuthority::RunAll => 0,
+            HostedRuntimeAuthority::RunRead => 1,
+        }
+    }
+    const EVERY_RUNTIME_AUTHORITY: [HostedRuntimeAuthority; 2] = [
+        HostedRuntimeAuthority::RunAll,
+        HostedRuntimeAuthority::RunRead,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_RUNTIME_AUTHORITY.into_iter().enumerate() {
+            assert_eq!(listed_runtime_authority(value), index);
+        }
+    }
+
+    /// @exhaustive HostedRuntimeAuthority(2) = 2
     /// @obligation authz.hosted_workspace_and_runtime_member_grants_are_exact
-    #[kani::proof]
+    #[test]
     fn runtime_member_role_contains_exactly_run_read() {
-        let authority = if kani::any() {
-            HostedRuntimeAuthority::RunAll
-        } else {
-            HostedRuntimeAuthority::RunRead
-        };
-        assert_eq!(
-            hosted_runtime_role_authorities(HostedRuntimeRole::WorkspaceMember)
-                .contains(&authority),
-            authority == HostedRuntimeAuthority::RunRead
-        );
+        for authority in EVERY_RUNTIME_AUTHORITY {
+            assert_eq!(
+                hosted_runtime_role_authorities(HostedRuntimeRole::WorkspaceMember)
+                    .contains(&authority),
+                authority == HostedRuntimeAuthority::RunRead
+            );
+        }
     }
 }

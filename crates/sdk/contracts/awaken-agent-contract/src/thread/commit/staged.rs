@@ -670,35 +670,67 @@ mod assemble_tests {
     }
 }
 
-#[cfg(kani)]
-mod kani_proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
     use crate::agent::run::{EndCause, RunState};
 
-    fn symbolic_state(tag: u8) -> RunState {
-        match tag % 3 {
-            0 => RunState::Running,
-            1 => RunState::Awaiting,
-            _ => RunState::Ended(EndCause::NaturalEnd),
+    // The validator reads only the lifecycle class of the state; the Ended
+    // payload is the one fixed representative the former harness used.
+    const fn listed_state_class(state: &RunState) -> usize {
+        match state {
+            RunState::Running => 0,
+            RunState::Awaiting => 1,
+            RunState::Ended(_) => 2,
         }
     }
 
-    /// Covers the complete 3×3 wire lifecycle/ticket product symbolically.
+    const fn listed_shape(shape: WireTicketShape) -> usize {
+        match shape {
+            WireTicketShape::Absent => 0,
+            WireTicketShape::Matching => 1,
+            WireTicketShape::Mismatched => 2,
+        }
+    }
+    const EVERY_SHAPE: [WireTicketShape; 3] = [
+        WireTicketShape::Absent,
+        WireTicketShape::Matching,
+        WireTicketShape::Mismatched,
+    ];
+
+    fn every_state_class() -> [RunState; 3] {
+        [
+            RunState::Running,
+            RunState::Awaiting,
+            RunState::Ended(EndCause::NaturalEnd),
+        ]
+    }
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in every_state_class().iter().enumerate() {
+            assert_eq!(listed_state_class(value), index);
+        }
+        for (index, value) in EVERY_SHAPE.into_iter().enumerate() {
+            assert_eq!(listed_shape(value), index);
+        }
+    }
+
+    /// Covers the complete 3×3 wire lifecycle/ticket product.
+    /// @exhaustive RunState class(3) x WireTicketShape(3) = 9
     /// @obligation run.ticket_coherence
-    #[kani::proof]
+    #[test]
     fn wire_accepts_exactly_the_legal_dispositions() {
-        let state = symbolic_state(kani::any());
-        let ticket_shape = kani::any::<u8>() % 3;
-        let shape = match ticket_shape {
-            0 => WireTicketShape::Absent,
-            1 => WireTicketShape::Matching,
-            _ => WireTicketShape::Mismatched,
-        };
-        let accepted = wire_shape_is_valid(&state, shape);
-        let expected = matches!(
-            (&state, ticket_shape),
-            (RunState::Running, 0) | (RunState::Awaiting, 1) | (RunState::Ended(_), 0)
-        );
-        assert_eq!(accepted, expected);
+        for state in every_state_class() {
+            for shape in EVERY_SHAPE {
+                let ticket_shape = listed_shape(shape);
+                let accepted = wire_shape_is_valid(&state, shape);
+                let expected = matches!(
+                    (&state, ticket_shape),
+                    (RunState::Running, 0) | (RunState::Awaiting, 1) | (RunState::Ended(_), 0)
+                );
+                assert_eq!(accepted, expected);
+            }
+        }
     }
 }

@@ -118,33 +118,6 @@ pub fn realization_lease_generation_authorizes(
 
 #[cfg(kani)]
 /// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
-/// @proof-input-debt free_symbol realization_lease_facts_authorize same_epoch
-/// @proof-input-debt free_symbol realization_lease_facts_authorize same_owner
-/// @proof-input-debt free_symbol realization_lease_facts_authorize same_runtime_incarnation
-#[kani::proof]
-fn realization_renewal_requires_every_identity_axis() {
-    // C1 owner, C2 runtime incarnation and C3 epoch match independently;
-    // expiry is a live nonregressed renewal. E1 all three admit; E2 any
-    // mismatch rejects. Rule C1+C2+C3=>E1, every other row=>E2.
-    let same_owner = kani::any();
-    let same_runtime_incarnation = kani::any();
-    let same_epoch = kani::any();
-    let authorized = realization_lease_facts_authorize(
-        same_owner,
-        same_runtime_incarnation,
-        same_epoch,
-        2,
-        1,
-        1,
-    );
-    assert_eq!(
-        authorized,
-        same_owner && same_runtime_incarnation && same_epoch
-    );
-}
-
-#[cfg(kani)]
-/// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
 #[kani::proof]
 fn realization_renewal_requires_nonregressed_expiry() {
     // C1 exact identity, C2 independent asserted/current expiry, C3 now at
@@ -214,4 +187,36 @@ fn realization_renewal_expires_at_exact_boundary() {
         "expired at the expiry instant"
     );
     kani::cover!(!authorized && current < now, "expired after the expiry");
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+    #[test]
+    fn realization_renewal_requires_every_identity_axis() {
+        // C1 owner, C2 runtime incarnation and C3 epoch match independently;
+        // expiry is a live nonregressed renewal. E1 all three admit; E2 any
+        // mismatch rejects. Rule C1+C2+C3=>E1, every other row=>E2.
+        for same_owner in [false, true] {
+            for same_runtime_incarnation in [false, true] {
+                for same_epoch in [false, true] {
+                    let authorized = realization_lease_facts_authorize(
+                        same_owner,
+                        same_runtime_incarnation,
+                        same_epoch,
+                        2,
+                        1,
+                        1,
+                    );
+                    assert_eq!(
+                        authorized,
+                        same_owner && same_runtime_incarnation && same_epoch
+                    );
+                }
+            }
+        }
+    }
 }

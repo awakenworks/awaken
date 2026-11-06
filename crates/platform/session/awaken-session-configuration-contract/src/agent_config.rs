@@ -380,97 +380,99 @@ pub fn validate_mcp_toolset_pairing(
     Ok(())
 }
 
-#[cfg(kani)]
-/// @obligation runtime_capability.bounded_iterator_uses_the_exact_eight_member_projection
-#[kani::proof]
-#[kani::unwind(9)]
-fn bounded_runtime_capability_iterator_uses_exact_member_projection() {
-    let expected = [
-        BuiltinToolsetMember::Bash,
-        BuiltinToolsetMember::Read,
-        BuiltinToolsetMember::Write,
-        BuiltinToolsetMember::Edit,
-        BuiltinToolsetMember::Glob,
-        BuiltinToolsetMember::Grep,
-        BuiltinToolsetMember::WebFetch,
-        BuiltinToolsetMember::WebSearch,
-    ];
-    let mut projected = bounded_agent_toolset_members();
-    let mut index = 0usize;
-    while index < expected.len() {
-        assert_eq!(projected.next(), Some(expected[index]));
-        index += 1;
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive no input (1) = 1
+    /// @obligation runtime_capability.bounded_iterator_uses_the_exact_eight_member_projection
+    #[test]
+    fn bounded_runtime_capability_iterator_uses_exact_member_projection() {
+        let expected = [
+            BuiltinToolsetMember::Bash,
+            BuiltinToolsetMember::Read,
+            BuiltinToolsetMember::Write,
+            BuiltinToolsetMember::Edit,
+            BuiltinToolsetMember::Glob,
+            BuiltinToolsetMember::Grep,
+            BuiltinToolsetMember::WebFetch,
+            BuiltinToolsetMember::WebSearch,
+        ];
+        let mut projected = bounded_agent_toolset_members();
+        for member in expected {
+            assert_eq!(projected.next(), Some(member));
+        }
+        assert_eq!(projected.next(), None);
     }
-    assert_eq!(projected.next(), None);
-}
 
-#[cfg(kani)]
-/// @obligation runtime_capability.bounded_iterator_uses_the_exact_eight_member_projection
-#[kani::proof]
-fn runtime_capability_member_projection_is_total_exact_and_bounded() {
-    let index: u8 = kani::any();
-    kani::assume(index <= 8);
-    let projected = bounded_agent_toolset_members().nth(usize::from(index));
-    let expected = match index {
-        0 => Some(BuiltinToolsetMember::Bash),
-        1 => Some(BuiltinToolsetMember::Read),
-        2 => Some(BuiltinToolsetMember::Write),
-        3 => Some(BuiltinToolsetMember::Edit),
-        4 => Some(BuiltinToolsetMember::Glob),
-        5 => Some(BuiltinToolsetMember::Grep),
-        6 => Some(BuiltinToolsetMember::WebFetch),
-        7 => Some(BuiltinToolsetMember::WebSearch),
-        _ => None,
-    };
-    assert_eq!(projected, expected);
-}
-
-#[cfg(kani)]
-/// @obligation tool_policy.managed_agent_and_mcp_defaults_are_source_exact_and_configurable
-#[kani::proof]
-fn managed_toolset_default_resolution_is_source_exact_and_configurable() {
-    use awaken_agent_contract::{ToolPermissionRequirement, ToolsetSource};
-
-    // Cause/effect decision table: five symbolic booleans encode source,
-    // enabled presence/value, and permission presence/value (2^5 paths, with
-    // absent-value duplicates). They collapse to the 2 x 3 x 3 = 18 semantic
-    // rules: absent axes inherit source defaults, while present axes replace
-    // only their exact enabled or permission result.
-    let mcp_source: bool = kani::any();
-    let enabled_present: bool = kani::any();
-    let enabled_value: bool = kani::any();
-    let permission_present: bool = kani::any();
-    let permission_ask: bool = kani::any();
-    let source = if mcp_source {
-        ToolsetSource::Mcp {
-            server_name: String::new(),
+    /// @exhaustive index 0..=8 (9) = 9
+    /// @obligation runtime_capability.bounded_iterator_uses_the_exact_eight_member_projection
+    #[test]
+    fn runtime_capability_member_projection_is_total_exact_and_bounded() {
+        for index in 0_u8..=8 {
+            let projected = bounded_agent_toolset_members().nth(usize::from(index));
+            let expected = match index {
+                0 => Some(BuiltinToolsetMember::Bash),
+                1 => Some(BuiltinToolsetMember::Read),
+                2 => Some(BuiltinToolsetMember::Write),
+                3 => Some(BuiltinToolsetMember::Edit),
+                4 => Some(BuiltinToolsetMember::Glob),
+                5 => Some(BuiltinToolsetMember::Grep),
+                6 => Some(BuiltinToolsetMember::WebFetch),
+                7 => Some(BuiltinToolsetMember::WebSearch),
+                _ => None,
+            };
+            assert_eq!(projected, expected);
         }
-    } else {
-        ToolsetSource::Agent
-    };
-    let resolved = toolset_default_policy(
-        &source,
-        enabled_present.then_some(enabled_value),
-        permission_present.then_some(if permission_ask {
-            ToolPermissionRequirement::AlwaysAsk
-        } else {
-            ToolPermissionRequirement::AlwaysAllow
-        }),
-    );
-    let expected_permission = if permission_present {
-        if permission_ask {
-            ToolPermissionRequirement::AlwaysAsk
-        } else {
-            ToolPermissionRequirement::AlwaysAllow
-        }
-    } else if mcp_source {
-        ToolPermissionRequirement::AlwaysAsk
-    } else {
-        ToolPermissionRequirement::AlwaysAllow
-    };
+    }
 
-    assert_eq!(resolved.enabled, !enabled_present || enabled_value);
-    assert_eq!(resolved.permission, expected_permission);
+    /// @exhaustive bool(2)^5 = 32
+    /// @obligation tool_policy.managed_agent_and_mcp_defaults_are_source_exact_and_configurable
+    #[test]
+    fn managed_toolset_default_resolution_is_source_exact_and_configurable() {
+        use awaken_agent_contract::{ToolPermissionRequirement, ToolsetSource};
+        // Cause/effect decision table: five booleans encode source, enabled
+        // presence/value, and permission presence/value (2^5 paths, with
+        // absent-value duplicates). They collapse to the 2 x 3 x 3 = 18 semantic
+        // rules: absent axes inherit source defaults, while present axes replace
+        // only their exact enabled or permission result.
+        for mask in 0_u8..32 {
+            let mcp_source = mask & 1 != 0;
+            let enabled_present = mask & 2 != 0;
+            let enabled_value = mask & 4 != 0;
+            let permission_present = mask & 8 != 0;
+            let permission_ask = mask & 16 != 0;
+            let source = if mcp_source {
+                ToolsetSource::Mcp {
+                    server_name: String::new(),
+                }
+            } else {
+                ToolsetSource::Agent
+            };
+            let resolved = toolset_default_policy(
+                &source,
+                enabled_present.then_some(enabled_value),
+                permission_present.then_some(if permission_ask {
+                    ToolPermissionRequirement::AlwaysAsk
+                } else {
+                    ToolPermissionRequirement::AlwaysAllow
+                }),
+            );
+            let expected_permission = if permission_present {
+                if permission_ask {
+                    ToolPermissionRequirement::AlwaysAsk
+                } else {
+                    ToolPermissionRequirement::AlwaysAllow
+                }
+            } else if mcp_source {
+                ToolPermissionRequirement::AlwaysAsk
+            } else {
+                ToolPermissionRequirement::AlwaysAllow
+            };
+            assert_eq!(resolved.enabled, !enabled_present || enabled_value);
+            assert_eq!(resolved.permission, expected_permission);
+        }
+    }
 }
 
 #[cfg(test)]

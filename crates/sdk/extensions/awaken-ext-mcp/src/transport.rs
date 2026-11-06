@@ -738,20 +738,28 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-/// @obligation credential.mcp_adopted_revocation_removes_accepting_generation_before_new_calls
-#[kani::proof]
-fn mcp_call_admission_requires_both_accepting_observations() {
-    let accepting_before_increment = kani::any::<bool>();
-    let accepting_after_increment = kani::any::<bool>();
-    let admitted = mcp_call_admitted(accepting_before_increment, accepting_after_increment);
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
 
-    assert_eq!(
-        admitted,
-        accepting_before_increment && accepting_after_increment
-    );
-    if !accepting_before_increment || !accepting_after_increment {
-        assert!(!admitted);
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation credential.mcp_adopted_revocation_removes_accepting_generation_before_new_calls
+    #[test]
+    fn mcp_call_admission_requires_both_accepting_observations() {
+        for accepting_before_increment in [false, true] {
+            for accepting_after_increment in [false, true] {
+                let admitted =
+                    mcp_call_admitted(accepting_before_increment, accepting_after_increment);
+
+                assert_eq!(
+                    admitted,
+                    accepting_before_increment && accepting_after_increment
+                );
+                if !accepting_before_increment || !accepting_after_increment {
+                    assert!(!admitted);
+                }
+            }
+        }
     }
 }
 

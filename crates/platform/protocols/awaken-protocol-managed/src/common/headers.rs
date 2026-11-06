@@ -186,39 +186,11 @@ fn arbitrary_idempotency_key_scan(bits: u8) -> IdempotencyKeyScan {
     }
 }
 
-/// Exhausts every prior summary and every byte. This is the inductive step for
-/// arbitrary finite keys: invalid is absorbing, while `Graphic` is reached
-/// exactly when all bytes are visible and one byte is not an ASCII space.
-#[cfg(kani)]
-/// @obligation management_http.idempotency_key_admission_is_exact_and_fail_closed
-/// @kani profile=solver-kissat-v1
-#[kani::proof]
-fn idempotency_key_scan_transition_is_exact_and_invalid_absorbing() {
-    let state = arbitrary_idempotency_key_scan(kani::any());
-    let byte: u8 = kani::any();
-    let next = scan_idempotency_key_byte(state, byte);
-    let visible = (0x20..=0x7e).contains(&byte);
-
-    assert_eq!(
-        next == IdempotencyKeyScan::Invalid,
-        state == IdempotencyKeyScan::Invalid || !visible
-    );
-    assert_eq!(
-        next == IdempotencyKeyScan::Graphic,
-        state != IdempotencyKeyScan::Invalid
-            && visible
-            && (state == IdempotencyKeyScan::Graphic || byte != b' ')
-    );
-    if state == IdempotencyKeyScan::Invalid {
-        assert_eq!(next, IdempotencyKeyScan::Invalid);
-    }
-}
-
 /// Proves the complete terminal policy independently of iteration: precisely
 /// lengths 1..=255 proceed to scanning, and only the `Graphic` summary admits.
 #[cfg(kani)]
 /// @obligation management_http.idempotency_key_admission_is_exact_and_fail_closed
-/// @kani profile=solver-kissat-v1
+/// @kani profile=solver-kissat-v1 tier=nightly
 #[kani::proof]
 fn idempotency_key_length_and_summary_policy_is_exact() {
     let length: usize = kani::any();
@@ -237,34 +209,6 @@ fn idempotency_key_length_and_summary_policy_is_exact() {
     assert_eq!(
         scan_admission == IdempotencyKeyAdmission::InvalidByte,
         scan == IdempotencyKeyScan::Invalid
-    );
-}
-
-/// Exercises the production fold at each fail-closed boundary. Together with
-/// the exhaustive transition proof above, this establishes the accepted byte
-/// language for keys of any length without imposing a smaller proof-only bound.
-#[cfg(kani)]
-/// @obligation management_http.idempotency_key_admission_is_exact_and_fail_closed
-/// @kani profile=solver-kissat-v1
-#[kani::proof]
-fn idempotency_key_admission_rejects_empty_overlong_and_every_invalid_byte() {
-    let byte: u8 = kani::any();
-    let singleton = idempotency_key_admission(&[byte]);
-    assert_eq!(
-        singleton == IdempotencyKeyAdmission::Accepted,
-        (0x21..=0x7e).contains(&byte)
-    );
-    if !(0x20..=0x7e).contains(&byte) {
-        assert_eq!(singleton, IdempotencyKeyAdmission::InvalidByte);
-    }
-
-    assert_eq!(
-        idempotency_key_admission(&[]),
-        IdempotencyKeyAdmission::EmptyOrBlank
-    );
-    assert_eq!(
-        idempotency_key_admission(&[b'k'; MAX_IDEMPOTENCY_KEY_BYTES + 1]),
-        IdempotencyKeyAdmission::TooLong
     );
 }
 
@@ -386,5 +330,88 @@ mod tests {
             parse_idempotency_key_header(&headers_with(non_ascii)),
             Err("Idempotency-Key must be visible ASCII")
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_SCAN: [IdempotencyKeyScan; 3] = [
+        IdempotencyKeyScan::Blank,
+        IdempotencyKeyScan::Graphic,
+        IdempotencyKeyScan::Invalid,
+    ];
+
+    const fn listed_scan(scan: IdempotencyKeyScan) -> usize {
+        match scan {
+            IdempotencyKeyScan::Blank => 0,
+            IdempotencyKeyScan::Graphic => 1,
+            IdempotencyKeyScan::Invalid => 2,
+        }
+    }
+
+    #[test]
+    fn every_idempotency_key_scan_is_listed_once() {
+        for (index, scan) in EVERY_SCAN.into_iter().enumerate() {
+            assert_eq!(listed_scan(scan), index);
+        }
+    }
+
+    /// Exhausts every prior summary and every byte. This is the inductive step for
+    /// arbitrary finite keys: invalid is absorbing, while `Graphic` is reached
+    /// exactly when all bytes are visible and one byte is not an ASCII space.
+    /// @exhaustive IdempotencyKeyScan(3) x u8(256) = 768
+    /// @obligation management_http.idempotency_key_admission_is_exact_and_fail_closed
+    #[test]
+    fn idempotency_key_scan_transition_is_exact_and_invalid_absorbing() {
+        for state in EVERY_SCAN {
+            for byte in u8::MIN..=u8::MAX {
+                let next = scan_idempotency_key_byte(state, byte);
+                let visible = (0x20..=0x7e).contains(&byte);
+
+                assert_eq!(
+                    next == IdempotencyKeyScan::Invalid,
+                    state == IdempotencyKeyScan::Invalid || !visible
+                );
+                assert_eq!(
+                    next == IdempotencyKeyScan::Graphic,
+                    state != IdempotencyKeyScan::Invalid
+                        && visible
+                        && (state == IdempotencyKeyScan::Graphic || byte != b' ')
+                );
+                if state == IdempotencyKeyScan::Invalid {
+                    assert_eq!(next, IdempotencyKeyScan::Invalid);
+                }
+            }
+        }
+    }
+
+    /// Exercises the production fold at each fail-closed boundary. Together with
+    /// the exhaustive transition proof above, this establishes the accepted byte
+    /// language for keys of any length without imposing a smaller proof-only bound.
+    /// @exhaustive u8(256) = 256
+    /// @obligation management_http.idempotency_key_admission_is_exact_and_fail_closed
+    #[test]
+    fn idempotency_key_admission_rejects_empty_overlong_and_every_invalid_byte() {
+        for byte in u8::MIN..=u8::MAX {
+            let singleton = idempotency_key_admission(&[byte]);
+            assert_eq!(
+                singleton == IdempotencyKeyAdmission::Accepted,
+                (0x21..=0x7e).contains(&byte)
+            );
+            if !(0x20..=0x7e).contains(&byte) {
+                assert_eq!(singleton, IdempotencyKeyAdmission::InvalidByte);
+            }
+
+            assert_eq!(
+                idempotency_key_admission(&[]),
+                IdempotencyKeyAdmission::EmptyOrBlank
+            );
+            assert_eq!(
+                idempotency_key_admission(&[b'k'; MAX_IDEMPOTENCY_KEY_BYTES + 1]),
+                IdempotencyKeyAdmission::TooLong
+            );
+        }
     }
 }

@@ -133,39 +133,6 @@ impl MemoryMountRegistry {
     }
 }
 
-#[cfg(kani)]
-/// @obligation memory_participant.live_provider_retains_pending_and_failed_operations
-#[kani::proof]
-fn live_provider_prunes_only_observed_empty_unreferenced_memory_owners() {
-    // This exhausts the exact production pruning predicate. Arc strong-count
-    // observation and Tokio try_lock correctness remain outside this scalar
-    // proof and are cross-checked by the asynchronous owner tests.
-    let has_external_reference: bool = kani::any();
-    let state_is_observable: bool = kani::any();
-    let has_pending_operation: bool = kani::any();
-    let has_mounted_participant: bool = kani::any();
-    let observed_state =
-        state_is_observable.then_some((has_pending_operation, has_mounted_participant));
-    let retained = retain_memory_owner(has_external_reference, observed_state);
-
-    assert_eq!(
-        retained,
-        has_external_reference
-            || !state_is_observable
-            || has_pending_operation
-            || has_mounted_participant
-    );
-    if has_pending_operation || has_mounted_participant {
-        assert!(retained);
-    }
-    if !retained {
-        assert!(!has_external_reference);
-        assert!(state_is_observable);
-        assert!(!has_pending_operation);
-        assert!(!has_mounted_participant);
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct MemoryMountState {
     root: PathBuf,
@@ -473,3 +440,45 @@ impl MemoryMountState {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) = 16
+    /// @obligation memory_participant.live_provider_retains_pending_and_failed_operations
+    #[test]
+    fn live_provider_prunes_only_observed_empty_unreferenced_memory_owners() {
+        // This exhausts the exact production pruning predicate. Arc strong-count
+        // observation and Tokio try_lock correctness remain outside this scalar
+        // proof and are cross-checked by the asynchronous owner tests.
+        for has_external_reference in [false, true] {
+            for state_is_observable in [false, true] {
+                for has_pending_operation in [false, true] {
+                    for has_mounted_participant in [false, true] {
+                        let observed_state = state_is_observable
+                            .then_some((has_pending_operation, has_mounted_participant));
+                        let retained = retain_memory_owner(has_external_reference, observed_state);
+
+                        assert_eq!(
+                            retained,
+                            has_external_reference
+                                || !state_is_observable
+                                || has_pending_operation
+                                || has_mounted_participant
+                        );
+                        if has_pending_operation || has_mounted_participant {
+                            assert!(retained);
+                        }
+                        if !retained {
+                            assert!(!has_external_reference);
+                            assert!(state_is_observable);
+                            assert!(!has_pending_operation);
+                            assert!(!has_mounted_participant);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1008,97 +1008,127 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
-    fn symbolic_state(tag: u8) -> WorkState {
-        match tag % 5 {
-            0 => WorkState::Queued,
-            1 => WorkState::Starting,
-            2 => WorkState::Active,
-            3 => WorkState::Stopping,
-            _ => WorkState::Stopped,
+    const EVERY_WORK_STATE: [WorkState; 5] = [
+        WorkState::Queued,
+        WorkState::Starting,
+        WorkState::Active,
+        WorkState::Stopping,
+        WorkState::Stopped,
+    ];
+
+    const fn listed_work_state(state: WorkState) -> usize {
+        match state {
+            WorkState::Queued => 0,
+            WorkState::Starting => 1,
+            WorkState::Active => 2,
+            WorkState::Stopping => 3,
+            WorkState::Stopped => 4,
         }
     }
 
+    #[test]
+    fn every_work_state_is_listed_once() {
+        for (index, state) in EVERY_WORK_STATE.into_iter().enumerate() {
+            assert_eq!(listed_work_state(state), index);
+        }
+    }
+
+    /// @exhaustive WorkState(5) = 5
     /// @obligation work.single_active_claim
-    #[kani::proof]
+    #[test]
     fn only_queued_work_is_claimable() {
-        let state = symbolic_state(kani::any());
-        assert_eq!(state.is_claimable(), state == WorkState::Queued);
+        for state in EVERY_WORK_STATE {
+            assert_eq!(state.is_claimable(), state == WorkState::Queued);
+        }
     }
 
+    /// @exhaustive WorkState(5) = 5
     /// @obligation work.heartbeat_compare_and_set
-    #[kani::proof]
+    #[test]
     fn only_active_work_accepts_lease_extension() {
-        let state = symbolic_state(kani::any());
-        assert_eq!(state.can_extend_lease(), state == WorkState::Active);
+        for state in EVERY_WORK_STATE {
+            assert_eq!(state.can_extend_lease(), state == WorkState::Active);
+        }
     }
 
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
     /// @obligation work.heartbeat_compare_and_set
-    /// @proof-input-debt free_symbol work_lease_mutation_admission owner_and_epoch_match
-    #[kani::proof]
+    #[test]
     fn work_lease_mutation_requires_present_exact_authority_and_matching_condition() {
-        let present = kani::any::<bool>();
-        let authority = kani::any::<bool>();
-        let condition = kani::any::<bool>();
-        let decision = work_lease_mutation_admission(present, authority, condition);
-        assert_eq!(
-            decision == WorkLeaseMutationAdmission::Applied,
-            present && authority && condition
-        );
-        assert_eq!(decision == WorkLeaseMutationAdmission::NotFound, !present);
+        for present in [false, true] {
+            for authority in [false, true] {
+                for condition in [false, true] {
+                    let decision = work_lease_mutation_admission(present, authority, condition);
+                    assert_eq!(
+                        decision == WorkLeaseMutationAdmission::Applied,
+                        present && authority && condition
+                    );
+                    assert_eq!(decision == WorkLeaseMutationAdmission::NotFound, !present);
+                }
+            }
+        }
     }
 
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x bool(2) x bool(2) = 64 (48 after assume !(active && stopped))
     /// @obligation session_work.release_requires_exact_owner_and_epoch
-    /// @proof-input-debt free_symbol session_work_release_admission authority_is_cleared
-    /// @proof-input-debt free_symbol session_work_release_admission epoch_matches
-    /// @proof-input-debt free_symbol session_work_release_admission identity_matches
-    /// @proof-input-debt free_symbol session_work_release_admission owner_matches
-    /// @proof-input-debt free_symbol session_work_release_admission state_is_active
-    /// @proof-input-debt free_symbol session_work_release_admission state_is_stopped
-    #[kani::proof]
+    #[test]
     fn session_work_release_requires_exact_owner_and_epoch() {
         // Same complete C1-C5/E1-E3 table as the native test. The asserted
         // formula is independent of the production decision implementation.
-        let identity: bool = kani::any();
-        let active: bool = kani::any();
-        let stopped: bool = kani::any();
-        let owner: bool = kani::any();
-        let epoch: bool = kani::any();
-        let cleared: bool = kani::any();
-        kani::assume(!(active && stopped));
-        let decision =
-            session_work_release_admission(identity, active, stopped, owner, epoch, cleared);
-        assert_eq!(
-            decision == SessionWorkReleaseAdmission::Apply,
-            identity && active && owner && epoch
-        );
-        assert_eq!(
-            decision == SessionWorkReleaseAdmission::AlreadyReleased,
-            identity && stopped && epoch && cleared
-        );
+        for identity in [false, true] {
+            for active in [false, true] {
+                for stopped in [false, true] {
+                    if active && stopped {
+                        continue;
+                    }
+                    for owner in [false, true] {
+                        for epoch in [false, true] {
+                            for cleared in [false, true] {
+                                let decision = session_work_release_admission(
+                                    identity, active, stopped, owner, epoch, cleared,
+                                );
+                                assert_eq!(
+                                    decision == SessionWorkReleaseAdmission::Apply,
+                                    identity && active && owner && epoch
+                                );
+                                assert_eq!(
+                                    decision == SessionWorkReleaseAdmission::AlreadyReleased,
+                                    identity && stopped && epoch && cleared
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
+    /// @exhaustive WorkState(5) = 5
     /// @obligation work.terminal_lease_clear
-    #[kani::proof]
+    #[test]
     fn stop_is_absorbing_for_every_work_state() {
-        let state = symbolic_state(kani::any());
-        assert_eq!(state.after_stop(), WorkState::Stopped);
-        assert_eq!(state.after_stop().after_stop(), WorkState::Stopped);
+        for state in EVERY_WORK_STATE {
+            assert_eq!(state.after_stop(), WorkState::Stopped);
+            assert_eq!(state.after_stop().after_stop(), WorkState::Stopped);
+        }
     }
 
+    /// @exhaustive no symbolic input (1) = 1
     /// @obligation work.pre_heartbeat_worker_identity
-    #[kani::proof]
+    #[test]
     fn first_heartbeat_is_authorized_exactly_once() {
         let first = HeartbeatCondition::First;
         assert!(first.permits(None));
         assert!(!first.permits(Some("already-recorded")));
     }
 
+    /// @exhaustive no symbolic input (1) = 1
     /// @obligation work.heartbeat_compare_and_set
-    #[kani::proof]
+    #[test]
     fn matching_heartbeat_rejects_every_other_receipt() {
         let matching = HeartbeatCondition::Matching("expected".into());
         assert!(matching.permits(Some("expected")));

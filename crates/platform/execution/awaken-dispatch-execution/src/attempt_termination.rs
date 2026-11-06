@@ -323,58 +323,6 @@ impl NativeAttemptFootprint {
     }
 }
 
-#[cfg(kani)]
-/// @obligation sandbox.k8s_process_observation_requires_complete_exit
-/// @kani default-features=false
-#[kani::proof]
-#[kani::unwind(8)]
-fn native_attempt_termination_requires_every_closed_surface_fact() {
-    // The pure production fold consumes per-record facts, not precomputed
-    // all-closed booleans. Provider/identity matching and prefix decoding remain
-    // covered by their concrete decision tables; no heap/UTF8 model is needed
-    // to prove occupancy aggregation. Current and historical views share the
-    // same symbolic record; returned calls remove only current occupancy.
-    let covered: bool = kani::any();
-    let models_stopped: bool = kani::any();
-    let model_effects_closed: bool = kani::any();
-    kani::assume(!models_stopped || model_effects_closed);
-    let facts = DomainClosureFacts {
-        worker_contained: kani::any(),
-        controlled_process: kani::any(),
-        matching_receipt: kani::any(),
-    };
-    kani::assume(!(facts.worker_contained && facts.controlled_process));
-    let returned: bool = kani::any();
-    let recorded = [facts];
-    let outstanding: &[_] = if returned { &[] } else { &recorded };
-    let profile = if covered {
-        NativeAttemptCoverage::JournalledV1
-    } else {
-        NativeAttemptCoverage::Unspecified
-    };
-    let result = classify_domain_observations(
-        profile,
-        models_stopped,
-        model_effects_closed,
-        outstanding.iter().copied(),
-        recorded,
-    );
-    let process_closed =
-        facts.worker_contained || (facts.controlled_process && facts.matching_receipt);
-    let invocation_closed = returned || process_closed;
-    assert_eq!(
-        result == NativeAttemptTermination::AllExecutionStopped,
-        covered && models_stopped && invocation_closed && process_closed
-    );
-    assert_eq!(
-        result == NativeAttemptTermination::Unknown,
-        !covered || !model_effects_closed || !invocation_closed
-    );
-    if returned && !process_closed && covered && model_effects_closed {
-        assert_eq!(result, NativeAttemptTermination::ControlledExecutionClosed);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,5 +786,73 @@ mod tests {
             ),
             "T11"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x [bool; 3](8) x bool(2) = 128
+    /// @obligation sandbox.k8s_process_observation_requires_complete_exit
+    #[test]
+    fn native_attempt_termination_requires_every_closed_surface_fact() {
+        // The pure production fold consumes per-record facts, not precomputed
+        // all-closed booleans. Provider/identity matching and prefix decoding remain
+        // covered by their concrete decision tables; no heap/UTF8 model is needed
+        // to check occupancy aggregation. Current and historical views share the
+        // same record; returned calls remove only current occupancy.
+        for covered in [false, true] {
+            for models_stopped in [false, true] {
+                for model_effects_closed in [false, true] {
+                    if models_stopped && !model_effects_closed {
+                        continue;
+                    }
+                    for facts_mask in 0_u8..8 {
+                        let facts = DomainClosureFacts {
+                            worker_contained: facts_mask & 1 != 0,
+                            controlled_process: facts_mask & 2 != 0,
+                            matching_receipt: facts_mask & 4 != 0,
+                        };
+                        if facts.worker_contained && facts.controlled_process {
+                            continue;
+                        }
+                        for returned in [false, true] {
+                            let recorded = [facts];
+                            let outstanding: &[_] = if returned { &[] } else { &recorded };
+                            let profile = if covered {
+                                NativeAttemptCoverage::JournalledV1
+                            } else {
+                                NativeAttemptCoverage::Unspecified
+                            };
+                            let result = classify_domain_observations(
+                                profile,
+                                models_stopped,
+                                model_effects_closed,
+                                outstanding.iter().copied(),
+                                recorded,
+                            );
+                            let process_closed = facts.worker_contained
+                                || (facts.controlled_process && facts.matching_receipt);
+                            let invocation_closed = returned || process_closed;
+                            assert_eq!(
+                                result == NativeAttemptTermination::AllExecutionStopped,
+                                covered && models_stopped && invocation_closed && process_closed
+                            );
+                            assert_eq!(
+                                result == NativeAttemptTermination::Unknown,
+                                !covered || !model_effects_closed || !invocation_closed
+                            );
+                            if returned && !process_closed && covered && model_effects_closed {
+                                assert_eq!(
+                                    result,
+                                    NativeAttemptTermination::ControlledExecutionClosed
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

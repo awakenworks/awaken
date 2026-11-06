@@ -158,56 +158,6 @@ impl From<awaken_session_contract::SessionEnvironmentRejection>
     }
 }
 
-#[cfg(kani)]
-/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
-#[kani::proof]
-fn session_realization_control_failure_disposition_is_total_exact_and_fail_closed() {
-    let selector = kani::any::<u8>() % 9;
-    let failure = match selector {
-        0 => SessionRealizationControlFailure::NotFound,
-        1 => SessionRealizationControlFailure::NotReady,
-        2 => SessionRealizationControlFailure::Retired,
-        3 => SessionRealizationControlFailure::Terminal,
-        4 => SessionRealizationControlFailure::StaleOwnership,
-        5 => SessionRealizationControlFailure::Conflict,
-        6 => SessionRealizationControlFailure::Invalid(String::new()),
-        7 => SessionRealizationControlFailure::Unavailable(String::new()),
-        _ => SessionRealizationControlFailure::Internal(String::new()),
-    };
-    // This oracle is deliberately derived from the symbolic variant selector,
-    // not from `failure.disposition()`: changing the production table cannot
-    // change the expected result at the same time.
-    let expected = match selector {
-        1 => SessionRealizationControlDisposition::NotReady,
-        4 | 5 | 7 => SessionRealizationControlDisposition::Retryable,
-        _ => SessionRealizationControlDisposition::Terminal,
-    };
-
-    assert_eq!(failure.disposition(), expected);
-}
-
-#[cfg(kani)]
-/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
-#[kani::proof]
-fn realization_ownership_loss_proof_is_total_and_exact() {
-    let selector = kani::any::<u8>() % 9;
-    let failure = match selector {
-        0 => SessionRealizationControlFailure::NotFound,
-        1 => SessionRealizationControlFailure::NotReady,
-        2 => SessionRealizationControlFailure::Retired,
-        3 => SessionRealizationControlFailure::Terminal,
-        4 => SessionRealizationControlFailure::StaleOwnership,
-        5 => SessionRealizationControlFailure::Conflict,
-        6 => SessionRealizationControlFailure::Invalid(String::new()),
-        7 => SessionRealizationControlFailure::Unavailable(String::new()),
-        _ => SessionRealizationControlFailure::Internal(String::new()),
-    };
-    assert_eq!(
-        failure.proves_current_realization_cannot_continue(),
-        matches!(selector, 0 | 2 | 3 | 4 | 6 | 8)
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +405,78 @@ mod tests {
                 SessionRealizationControlFailure::from(rejection),
                 expected,
                 "{rule}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// The harness's selector domain: each closed variant once, its string
+    /// payload (where it has one) empty. The disposition reads only the variant.
+    fn failure(selector: u8) -> SessionRealizationControlFailure {
+        match selector {
+            0 => SessionRealizationControlFailure::NotFound,
+            1 => SessionRealizationControlFailure::NotReady,
+            2 => SessionRealizationControlFailure::Retired,
+            3 => SessionRealizationControlFailure::Terminal,
+            4 => SessionRealizationControlFailure::StaleOwnership,
+            5 => SessionRealizationControlFailure::Conflict,
+            6 => SessionRealizationControlFailure::Invalid(String::new()),
+            7 => SessionRealizationControlFailure::Unavailable(String::new()),
+            _ => SessionRealizationControlFailure::Internal(String::new()),
+        }
+    }
+
+    fn listed_failure(failure: &SessionRealizationControlFailure) -> u8 {
+        match failure {
+            SessionRealizationControlFailure::NotFound => 0,
+            SessionRealizationControlFailure::NotReady => 1,
+            SessionRealizationControlFailure::Retired => 2,
+            SessionRealizationControlFailure::Terminal => 3,
+            SessionRealizationControlFailure::StaleOwnership => 4,
+            SessionRealizationControlFailure::Conflict => 5,
+            SessionRealizationControlFailure::Invalid(_) => 6,
+            SessionRealizationControlFailure::Unavailable(_) => 7,
+            SessionRealizationControlFailure::Internal(_) => 8,
+        }
+    }
+
+    #[test]
+    fn every_control_failure_variant_is_listed() {
+        for selector in 0_u8..9 {
+            assert_eq!(listed_failure(&failure(selector)), selector);
+        }
+    }
+
+    /// @exhaustive SessionRealizationControlFailure(9) = 9
+    /// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
+    #[test]
+    fn session_realization_control_failure_disposition_is_total_exact_and_fail_closed() {
+        for selector in 0_u8..9 {
+            // The oracle is derived from the variant selector, not from
+            // `failure.disposition()`: changing the production table cannot
+            // change the expected result at the same time.
+            let expected = match selector {
+                1 => SessionRealizationControlDisposition::NotReady,
+                4 | 5 | 7 => SessionRealizationControlDisposition::Retryable,
+                _ => SessionRealizationControlDisposition::Terminal,
+            };
+            assert_eq!(failure(selector).disposition(), expected, "{selector}");
+        }
+    }
+
+    /// @exhaustive SessionRealizationControlFailure(9) = 9
+    /// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
+    #[test]
+    fn realization_ownership_loss_proof_is_total_and_exact() {
+        for selector in 0_u8..9 {
+            assert_eq!(
+                failure(selector).proves_current_realization_cannot_continue(),
+                matches!(selector, 0 | 2 | 3 | 4 | 6 | 8),
+                "{selector}"
             );
         }
     }

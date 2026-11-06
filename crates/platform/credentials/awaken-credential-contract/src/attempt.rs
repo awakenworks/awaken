@@ -464,101 +464,6 @@ impl CredentialRealizationReceipt {
     }
 }
 
-#[cfg(kani)]
-/// @obligation credential_effect.boundary_preserves_exact_materialization_authority
-#[kani::proof]
-#[kani::unwind(20)]
-fn credential_realization_receipt_requires_every_exact_binding_coordinate() {
-    // Causes: C1 candidate fingerprint; C2 credential id; C3 revision;
-    // C4 holder boundary; C5 trust domain; C6 realization mechanism;
-    // C7 claim epoch; C8 receipt fingerprint. Each cause independently either
-    // matches or differs. Effects: E1 all match => Exact; E2 any C1-C5/C7
-    // mismatch => BindingMismatch; E3 otherwise C6 mismatch =>
-    // MechanismMismatch; E4 otherwise C8 mismatch => FingerprintMismatch.
-    // The precedence is the public error contract. SHA-256 implementation and
-    // durable claim/store linearization remain outside this coordinate proof.
-    let exact = [
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-    ];
-    let binding = AttemptCredentialBinding {
-        candidate_fingerprint: CandidateFingerprint("candidate-a".into()),
-        credential: CredentialRef {
-            id: "credential-a".into(),
-            revision: 7,
-        },
-        selected_plaintext_holder: PlaintextHolder::new(PlaintextBoundary::Worker, "holder-a"),
-        selected_realization_kind: CredentialRealizationKind::WorkerProviderAdapter,
-        claim_epoch: 11,
-    };
-    let receipt = CredentialRealizationReceipt {
-        candidate_fingerprint: CandidateFingerprint(
-            if exact[0] {
-                "candidate-a"
-            } else {
-                "candidate-b"
-            }
-            .into(),
-        ),
-        credential: CredentialRef {
-            id: if exact[1] {
-                "credential-a"
-            } else {
-                "credential-b"
-            }
-            .into(),
-            revision: if exact[2] { 7 } else { 8 },
-        },
-        selected_plaintext_holder: PlaintextHolder::new(
-            if exact[3] {
-                PlaintextBoundary::Worker
-            } else {
-                PlaintextBoundary::Workload
-            },
-            if exact[4] { "holder-a" } else { "holder-b" },
-        ),
-        actual_realization_kind: if exact[5] {
-            CredentialRealizationKind::WorkerProviderAdapter
-        } else {
-            CredentialRealizationKind::WorkerRelay
-        },
-        claim_epoch: if exact[6] { 11 } else { 12 },
-        receipt_fingerprint: if exact[7] { "receipt-a" } else { "receipt-b" }.into(),
-    };
-    let decision = credential_realization_receipt_decision(&binding, &receipt, "receipt-a");
-    let binding_exact = exact[0] && exact[1] && exact[2] && exact[3] && exact[4] && exact[6];
-    let expected = if !binding_exact {
-        CredentialRealizationReceiptDecision::BindingMismatch
-    } else if !exact[5] {
-        CredentialRealizationReceiptDecision::MechanismMismatch
-    } else if !exact[7] {
-        CredentialRealizationReceiptDecision::FingerprintMismatch
-    } else {
-        CredentialRealizationReceiptDecision::Exact
-    };
-    assert_eq!(decision, expected);
-    assert_eq!(
-        credential_realization_persistence_decision(None, &receipt),
-        CredentialRealizationPersistenceDecision::Insert
-    );
-    assert_eq!(
-        credential_realization_persistence_decision(Some(&receipt), &receipt),
-        CredentialRealizationPersistenceDecision::ExactReplay
-    );
-    let mut collision = receipt.clone();
-    collision.claim_epoch = collision.claim_epoch.wrapping_add(1);
-    assert_eq!(
-        credential_realization_persistence_decision(Some(&receipt), &collision),
-        CredentialRealizationPersistenceDecision::Collision
-    );
-}
-
 /// Stable fingerprint used by claim compilation and every execution adapter.
 pub fn candidate_fingerprint(
     candidate: &ResolvedModelCandidate,
@@ -1637,5 +1542,101 @@ mod tests {
                 "claim_epoch": 3
             }),
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive [bool; 8](256) = 256
+    /// @obligation credential_effect.boundary_preserves_exact_materialization_authority
+    #[test]
+    fn credential_realization_receipt_requires_every_exact_binding_coordinate() {
+        // Causes: C1 candidate fingerprint; C2 credential id; C3 revision;
+        // C4 holder boundary; C5 trust domain; C6 realization mechanism;
+        // C7 claim epoch; C8 receipt fingerprint. Each cause independently either
+        // matches or differs. Effects: E1 all match => Exact; E2 any C1-C5/C7
+        // mismatch => BindingMismatch; E3 otherwise C6 mismatch =>
+        // MechanismMismatch; E4 otherwise C8 mismatch => FingerprintMismatch.
+        // The precedence is the public error contract. SHA-256 implementation and
+        // durable claim/store linearization remain outside this coordinate proof.
+        for mask in 0_u16..256 {
+            let exact: [bool; 8] = std::array::from_fn(|bit| mask & (1 << bit) != 0);
+            let binding = AttemptCredentialBinding {
+                candidate_fingerprint: CandidateFingerprint("candidate-a".into()),
+                credential: CredentialRef {
+                    id: "credential-a".into(),
+                    revision: 7,
+                },
+                selected_plaintext_holder: PlaintextHolder::new(
+                    PlaintextBoundary::Worker,
+                    "holder-a",
+                ),
+                selected_realization_kind: CredentialRealizationKind::WorkerProviderAdapter,
+                claim_epoch: 11,
+            };
+            let receipt = CredentialRealizationReceipt {
+                candidate_fingerprint: CandidateFingerprint(
+                    if exact[0] {
+                        "candidate-a"
+                    } else {
+                        "candidate-b"
+                    }
+                    .into(),
+                ),
+                credential: CredentialRef {
+                    id: if exact[1] {
+                        "credential-a"
+                    } else {
+                        "credential-b"
+                    }
+                    .into(),
+                    revision: if exact[2] { 7 } else { 8 },
+                },
+                selected_plaintext_holder: PlaintextHolder::new(
+                    if exact[3] {
+                        PlaintextBoundary::Worker
+                    } else {
+                        PlaintextBoundary::Workload
+                    },
+                    if exact[4] { "holder-a" } else { "holder-b" },
+                ),
+                actual_realization_kind: if exact[5] {
+                    CredentialRealizationKind::WorkerProviderAdapter
+                } else {
+                    CredentialRealizationKind::WorkerRelay
+                },
+                claim_epoch: if exact[6] { 11 } else { 12 },
+                receipt_fingerprint: if exact[7] { "receipt-a" } else { "receipt-b" }.into(),
+            };
+            let decision = credential_realization_receipt_decision(&binding, &receipt, "receipt-a");
+            let binding_exact =
+                exact[0] && exact[1] && exact[2] && exact[3] && exact[4] && exact[6];
+            let expected = if !binding_exact {
+                CredentialRealizationReceiptDecision::BindingMismatch
+            } else if !exact[5] {
+                CredentialRealizationReceiptDecision::MechanismMismatch
+            } else if !exact[7] {
+                CredentialRealizationReceiptDecision::FingerprintMismatch
+            } else {
+                CredentialRealizationReceiptDecision::Exact
+            };
+            assert_eq!(decision, expected, "{exact:?}");
+            assert_eq!(
+                credential_realization_persistence_decision(None, &receipt),
+                CredentialRealizationPersistenceDecision::Insert
+            );
+            assert_eq!(
+                credential_realization_persistence_decision(Some(&receipt), &receipt),
+                CredentialRealizationPersistenceDecision::ExactReplay
+            );
+            let mut collision = receipt.clone();
+            collision.claim_epoch = collision.claim_epoch.wrapping_add(1);
+            assert_eq!(
+                credential_realization_persistence_decision(Some(&receipt), &collision),
+                CredentialRealizationPersistenceDecision::Collision
+            );
+        }
     }
 }

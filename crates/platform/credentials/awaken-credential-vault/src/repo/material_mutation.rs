@@ -981,32 +981,6 @@ mod tests {
 }
 
 #[cfg(kani)]
-/// @obligation credential.managed_material_admission_predicate_requires_owner_and_namespace_match
-/// @obligation credential.material_is_always_published_or_intent_tracked
-/// @obligation credential.visible_row_always_has_material
-/// @proof-input-debt free_symbol credential_material_attempt_admitted writing
-#[kani::proof]
-fn credential_material_attempt_requires_owner_and_exact_physical_namespace() {
-    let writing = kani::any::<bool>();
-    let writes_new_material = kani::any::<bool>();
-    let valid_owner = kani::any::<bool>();
-    let new_refs_bound_to_attempt = kani::any::<bool>();
-    let admitted = credential_material_attempt_admitted(
-        true,
-        writing,
-        writes_new_material,
-        valid_owner,
-        new_refs_bound_to_attempt,
-    );
-    if admitted && (writing || writes_new_material) {
-        assert!(valid_owner);
-    }
-    if admitted && writes_new_material {
-        assert!(new_refs_bound_to_attempt);
-    }
-}
-
-#[cfg(kani)]
 mod phase_proofs {
     use super::*;
 
@@ -1089,77 +1063,6 @@ mod phase_proofs {
             writer_lease_expires_at_unix_ms: expiry,
             ..Default::default()
         }
-    }
-
-    /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
-    #[kani::proof]
-    fn takeover_nonwriting_or_live_never_generates_token() {
-        // T1 causes: a live lease in any phase, or an expired lease in a
-        // non-Writing phase. Effects: no claim and zero token calls. The lease
-        // kernel and executable boundary table own the full time domain;
-        // these rows isolate the state/side-effect precedence.
-        // T1a any phase + live => Ok(None), no factory invocation.
-        // T1b non-Writing + expired => Ok(None), no factory invocation.
-        // A persistent flag observes any unexpected invocation without adding
-        // overflow arithmetic to a branch required never to execute. It stays
-        // false iff the original zero-call assertion holds across both calls.
-        use CredentialMaterialMutationPhase::*;
-        let phase = phase();
-        let input = takeover_fence(phase, 2, None);
-        let mut token_called = false;
-        let result = input.claim_after_expiry_with_token(1, 2, || {
-            token_called = true;
-            String::new()
-        });
-        assert!(matches!(result, Ok(None)), "T1 no claim");
-        assert!(!token_called, "T1 no entropy");
-        if phase != Writing {
-            let expired = takeover_fence(phase, 1, None);
-            let result = expired.claim_after_expiry_with_token(1, 2, || {
-                token_called = true;
-                String::new()
-            });
-            assert!(matches!(result, Ok(None)), "T1 expired non-Writing");
-            assert!(!token_called, "T1 expired non-Writing has no entropy");
-        }
-    }
-
-    /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
-    #[kani::proof]
-    fn takeover_rejects_expired_successor_before_entropy() {
-        // T2 causes: Writing expires at now; the successor is equal to or
-        // earlier than now. Effects: error before token generation or mutation.
-        // The executable boundary table owns zero/MAX time cases.
-        // T2a now=deadline=1 and T2b now=2/deadline=1 both reject before
-        // the factory. The flag spans both rows: any invocation makes the
-        // independent no-entropy observation fail, even if the result is Err.
-        use CredentialMaterialMutationPhase::*;
-        let input = takeover_fence(Writing, 1, None);
-        let mut token_called = false;
-        for (now, deadline) in [(1, 1), (2, 1)] {
-            let result = input.claim_after_expiry_with_token(now, deadline, || {
-                token_called = true;
-                String::new()
-            });
-            assert!(result.is_err(), "T2 invalid successor");
-            assert!(!token_called, "T2 no entropy");
-        }
-    }
-
-    /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
-    #[kani::proof]
-    fn takeover_exhausted_epoch_cannot_wrap() {
-        // T3 causes: expired Writing, live successor deadline, epoch MAX.
-        // Effects: one lazy token call, then exact rejection without wrap.
-        use CredentialMaterialMutationPhase::*;
-        let input = takeover_fence(Writing, 1, Epoch::from_persisted(u64::MAX));
-        let mut calls = 0u8;
-        let result = input.claim_after_expiry_with_token(1, 2, || {
-            calls += 1;
-            "new".into()
-        });
-        assert!(result.is_err(), "T3 exhausted epoch");
-        assert_eq!(calls, 1, "T3 existing entropy order");
     }
 
     /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
@@ -1266,6 +1169,46 @@ mod phase_proofs {
             );
         }
     }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_phase(phase: CredentialMaterialMutationPhase) -> usize {
+        match phase {
+            CredentialMaterialMutationPhase::Writing => 0,
+            CredentialMaterialMutationPhase::Ready => 1,
+            CredentialMaterialMutationPhase::Reclaiming => 2,
+            CredentialMaterialMutationPhase::ReclaimingAbort => 3,
+        }
+    }
+    const EVERY_PHASE: [CredentialMaterialMutationPhase; 4] = [
+        CredentialMaterialMutationPhase::Writing,
+        CredentialMaterialMutationPhase::Ready,
+        CredentialMaterialMutationPhase::Reclaiming,
+        CredentialMaterialMutationPhase::ReclaimingAbort,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_PHASE.into_iter().enumerate() {
+            assert_eq!(listed_phase(value), index);
+        }
+    }
+
+    fn takeover_fence(
+        phase: CredentialMaterialMutationPhase,
+        expiry: u64,
+        epoch: Option<Epoch>,
+    ) -> CredentialMaterialMutationFence {
+        CredentialMaterialMutationFence {
+            phase,
+            writer_epoch: epoch,
+            writer_lease_expires_at_unix_ms: expiry,
+            ..Default::default()
+        }
+    }
 
     fn recovery_fence(
         phase: CredentialMaterialMutationPhase,
@@ -1280,8 +1223,113 @@ mod phase_proofs {
         }
     }
 
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) = 16
+    /// @obligation credential.managed_material_admission_predicate_requires_owner_and_namespace_match
+    /// @obligation credential.material_is_always_published_or_intent_tracked
+    /// @obligation credential.visible_row_always_has_material
+    #[test]
+    fn credential_material_attempt_requires_owner_and_exact_physical_namespace() {
+        for writing in [false, true] {
+            for writes_new_material in [false, true] {
+                for valid_owner in [false, true] {
+                    for new_refs_bound_to_attempt in [false, true] {
+                        let admitted = credential_material_attempt_admitted(
+                            true,
+                            writing,
+                            writes_new_material,
+                            valid_owner,
+                            new_refs_bound_to_attempt,
+                        );
+                        if admitted && (writing || writes_new_material) {
+                            assert!(valid_owner);
+                        }
+                        if admitted && writes_new_material {
+                            assert!(new_refs_bound_to_attempt);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive CredentialMaterialMutationPhase(4) = 4
     /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
-    #[kani::proof]
+    #[test]
+    fn takeover_nonwriting_or_live_never_generates_token() {
+        // T1 causes: a live lease in any phase, or an expired lease in a
+        // non-Writing phase. Effects: no claim and zero token calls. The lease
+        // kernel and executable boundary table own the full time domain;
+        // these rows isolate the state/side-effect precedence.
+        // T1a any phase + live => Ok(None), no factory invocation.
+        // T1b non-Writing + expired => Ok(None), no factory invocation.
+        // A persistent flag observes any unexpected invocation without adding
+        // overflow arithmetic to a branch required never to execute. It stays
+        // false iff the original zero-call assertion holds across both calls.
+        use CredentialMaterialMutationPhase::*;
+        for phase in EVERY_PHASE {
+            let input = takeover_fence(phase, 2, None);
+            let mut token_called = false;
+            let result = input.claim_after_expiry_with_token(1, 2, || {
+                token_called = true;
+                String::new()
+            });
+            assert!(matches!(result, Ok(None)), "T1 no claim");
+            assert!(!token_called, "T1 no entropy");
+            if phase != Writing {
+                let expired = takeover_fence(phase, 1, None);
+                let result = expired.claim_after_expiry_with_token(1, 2, || {
+                    token_called = true;
+                    String::new()
+                });
+                assert!(matches!(result, Ok(None)), "T1 expired non-Writing");
+                assert!(!token_called, "T1 expired non-Writing has no entropy");
+            }
+        }
+    }
+
+    /// @exhaustive no symbolic input (1) = 1
+    /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
+    #[test]
+    fn takeover_rejects_expired_successor_before_entropy() {
+        // T2 causes: Writing expires at now; the successor is equal to or
+        // earlier than now. Effects: error before token generation or mutation.
+        // The executable boundary table owns zero/MAX time cases.
+        // T2a now=deadline=1 and T2b now=2/deadline=1 both reject before
+        // the factory. The flag spans both rows: any invocation makes the
+        // independent no-entropy observation fail, even if the result is Err.
+        use CredentialMaterialMutationPhase::*;
+        let input = takeover_fence(Writing, 1, None);
+        let mut token_called = false;
+        for (now, deadline) in [(1, 1), (2, 1)] {
+            let result = input.claim_after_expiry_with_token(now, deadline, || {
+                token_called = true;
+                String::new()
+            });
+            assert!(result.is_err(), "T2 invalid successor");
+            assert!(!token_called, "T2 no entropy");
+        }
+    }
+
+    /// @exhaustive no symbolic input (1) = 1
+    /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
+    #[test]
+    fn takeover_exhausted_epoch_cannot_wrap() {
+        // T3 causes: expired Writing, live successor deadline, epoch MAX.
+        // Effects: one lazy token call, then exact rejection without wrap.
+        use CredentialMaterialMutationPhase::*;
+        let input = takeover_fence(Writing, 1, Epoch::from_persisted(u64::MAX));
+        let mut calls = 0u8;
+        let result = input.claim_after_expiry_with_token(1, 2, || {
+            calls += 1;
+            "new".into()
+        });
+        assert!(result.is_err(), "T3 exhausted epoch");
+        assert_eq!(calls, 1, "T3 existing entropy order");
+    }
+
+    /// @exhaustive no symbolic input (1) = 1
+    /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
+    #[test]
     fn expired_writing_recovery_reaches_abort_cleanup() {
         // C1 Writing; C2 the lease deadline equals now; C3 abort
         // transition succeeds. E1 claim expired writer for abort; E2 enter
@@ -1307,8 +1355,9 @@ mod phase_proofs {
         );
     }
 
+    /// @exhaustive no symbolic input (1) = 1
     /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
-    #[kani::proof]
+    #[test]
     fn ready_recovery_reaches_published_cleanup() {
         // C1 Ready; C2 material is confirmed complete; C3 publication
         // transition succeeds. E1 inspect then publish; E2 enter Reclaiming;

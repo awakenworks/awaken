@@ -96,35 +96,6 @@ const fn advance_session_reply_receipt(
     }
 }
 
-#[cfg(kani)]
-/// @obligation tool_result.conflicting_delivery_operation_never_reuses_a_receipt
-/// @obligation tool_result.exact_delivery_retry_replays_one_receipt
-#[kani::proof]
-fn resume_receipt_classification_is_exact_and_conflict_absorbing() {
-    // Cause/effect graph: C1 an Event has the expected correlation; C2 it has
-    // the expected operation; C3 an exact receipt was already observed.
-    // Effects: E1 C1+C2 selects Exact; E2 C1+!C2 selects Conflict unless E1 is
-    // already absorbing; E3 !C1 cannot change the accumulated decision.
-    // Decision rules K1=C1+C2=>E1, K2=C1+!C2+!C3=>E2,
-    // K3=!C1=>E3, K4=C3=>Exact. These are the complete Boolean partitions.
-    let current = match kani::any::<u8>() % 3 {
-        0 => SessionReplyReceipt::Absent,
-        1 => SessionReplyReceipt::Conflict,
-        _ => SessionReplyReceipt::Exact,
-    };
-    let same_correlation = kani::any::<bool>();
-    let same_operation = kani::any::<bool>();
-    let next = advance_session_reply_receipt(current, same_correlation, same_operation);
-
-    if current == SessionReplyReceipt::Exact || (same_correlation && same_operation) {
-        assert!(next == SessionReplyReceipt::Exact, "K1/K4");
-    } else if same_correlation {
-        assert!(next == SessionReplyReceipt::Conflict, "K2");
-    } else {
-        assert!(next == current, "K3");
-    }
-}
-
 impl super::CoordinatedThreads {
     /// Classify the committed receipt only after the current active ticket fails
     /// validation. A successful resume intentionally deletes that ticket, while
@@ -170,5 +141,59 @@ impl super::CoordinatedThreads {
             }
         }
         Ok(receipt)
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_RECEIPT: [SessionReplyReceipt; 3] = [
+        SessionReplyReceipt::Absent,
+        SessionReplyReceipt::Conflict,
+        SessionReplyReceipt::Exact,
+    ];
+
+    const fn listed_receipt(receipt: SessionReplyReceipt) -> usize {
+        match receipt {
+            SessionReplyReceipt::Absent => 0,
+            SessionReplyReceipt::Conflict => 1,
+            SessionReplyReceipt::Exact => 2,
+        }
+    }
+
+    #[test]
+    fn every_reply_receipt_is_listed() {
+        for (index, receipt) in EVERY_RECEIPT.into_iter().enumerate() {
+            assert_eq!(listed_receipt(receipt), index);
+        }
+    }
+
+    /// @exhaustive SessionReplyReceipt(3) x bool(2) x bool(2) = 12
+    /// @obligation tool_result.conflicting_delivery_operation_never_reuses_a_receipt
+    /// @obligation tool_result.exact_delivery_retry_replays_one_receipt
+    #[test]
+    fn resume_receipt_classification_is_exact_and_conflict_absorbing() {
+        // K1=C1+C2=>Exact, K2=C1+!C2+!C3=>Conflict, K3=!C1=>unchanged,
+        // K4=C3=>Exact.
+        let mut cases = 0;
+        for current in EVERY_RECEIPT {
+            for same_correlation in [false, true] {
+                for same_operation in [false, true] {
+                    let next =
+                        advance_session_reply_receipt(current, same_correlation, same_operation);
+                    if current == SessionReplyReceipt::Exact || (same_correlation && same_operation)
+                    {
+                        assert!(next == SessionReplyReceipt::Exact, "K1/K4");
+                    } else if same_correlation {
+                        assert!(next == SessionReplyReceipt::Conflict, "K2");
+                    } else {
+                        assert!(next == current, "K3");
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 12);
     }
 }

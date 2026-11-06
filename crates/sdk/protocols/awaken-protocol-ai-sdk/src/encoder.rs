@@ -416,29 +416,6 @@ fn terminal_failure(fact: &Fact) -> Option<(String, String)> {
     }
 }
 
-#[cfg(kani)]
-mod proofs {
-    use super::*;
-
-    /// @obligation ui_stream.terminal_projection_is_exact_fail_closed_and_absorbing
-    #[kani::proof]
-    fn ai_sdk_terminal_category_mapping_is_total_and_exact() {
-        let tag: u8 = kani::any();
-        kani::assume(tag <= 2);
-        let kind = match tag {
-            0 => StreamTerminalKind::Awaiting,
-            1 => StreamTerminalKind::Finished,
-            _ => StreamTerminalKind::Failed,
-        };
-        let projected = ai_sdk_terminal_class(kind);
-        match projected {
-            AiSdkTerminalClass::ToolCalls => assert_eq!(kind, StreamTerminalKind::Awaiting),
-            AiSdkTerminalClass::Stop => assert_eq!(kind, StreamTerminalKind::Finished),
-            AiSdkTerminalClass::Error => assert_eq!(kind, StreamTerminalKind::Failed),
-        }
-    }
-}
-
 /// Project one committed step into an ordered UI Message Stream. Each response is a
 /// self-contained stream: `start` … `finish`.
 pub fn encode_step(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
@@ -1455,5 +1432,29 @@ mod tests {
         let historical_part = encode_history(&messages, None)[0]["parts"][0].clone();
         assert_eq!(historical_part["state"], "input-available");
         assert_eq!(historical_part["providerExecuted"], true);
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive StreamTerminalKind(3) = 3
+    /// @obligation ui_stream.terminal_projection_is_exact_fail_closed_and_absorbing
+    #[test]
+    fn ai_sdk_terminal_category_mapping_is_total_and_exact() {
+        for tag in 0_u8..=2 {
+            let kind = match tag {
+                0 => StreamTerminalKind::Awaiting,
+                1 => StreamTerminalKind::Finished,
+                _ => StreamTerminalKind::Failed,
+            };
+            let projected = ai_sdk_terminal_class(kind);
+            match projected {
+                AiSdkTerminalClass::ToolCalls => assert_eq!(kind, StreamTerminalKind::Awaiting),
+                AiSdkTerminalClass::Stop => assert_eq!(kind, StreamTerminalKind::Finished),
+                AiSdkTerminalClass::Error => assert_eq!(kind, StreamTerminalKind::Failed),
+            }
+        }
     }
 }

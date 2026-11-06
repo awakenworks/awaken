@@ -516,44 +516,48 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    /// @exhaustive bool(2) x Option<(bool, bool)>(5) = 10
     /// @obligation remote_worker.acknowledged_projection_is_monotonic
     /// @obligation remote_worker.committed_truth_is_coordinator_owned
     /// @obligation remote_worker.operation_identity_maps_to_one_hash_and_append
     /// @obligation store_history.exact_retry_and_every_rejection_are_atomic_stutters
     /// @obligation store_history.receipt_refines_one_exact_durable_record
     /// @obligation store_history.recovery_preserves_committed_time_and_receipt_identity
-    /// @proof-input-debt free_symbol classify_operation_identity run_identity_matches
-    #[kani::proof]
+    #[test]
     fn operation_identity_replays_only_the_same_run_and_payload() {
-        let run_identity_matches: bool = kani::any();
-        let receipt_tag: u8 = kani::any();
-        let existing_receipt_matches = match receipt_tag % 4 {
-            0 => None,
-            1 => Some((false, kani::any())),
-            2 => Some((true, false)),
-            _ => Some((true, true)),
-        };
-        let result = classify_operation_identity(run_identity_matches, existing_receipt_matches);
-        assert_eq!(
-            result == Ok(OperationIdentityDisposition::Replay),
-            run_identity_matches && existing_receipt_matches == Some((true, true))
-        );
-        assert_eq!(
-            result == Ok(OperationIdentityDisposition::New),
-            run_identity_matches && existing_receipt_matches.is_none()
-        );
+        let mut every_receipt = vec![None];
+        for operation_matches in [false, true] {
+            for payload_matches in [false, true] {
+                every_receipt.push(Some((operation_matches, payload_matches)));
+            }
+        }
+        for run_identity_matches in [false, true] {
+            for &existing_receipt_matches in &every_receipt {
+                let result =
+                    classify_operation_identity(run_identity_matches, existing_receipt_matches);
+                assert_eq!(
+                    result == Ok(OperationIdentityDisposition::Replay),
+                    run_identity_matches && existing_receipt_matches == Some((true, true))
+                );
+                assert_eq!(
+                    result == Ok(OperationIdentityDisposition::New),
+                    run_identity_matches && existing_receipt_matches.is_none()
+                );
+            }
+        }
     }
 
+    /// @exhaustive record image bits u6(64) = 64
     /// @obligation remote_worker.committed_truth_is_coordinator_owned
     /// @obligation remote_worker.operation_identity_maps_to_one_hash_and_append
     /// @obligation store_history.exact_retry_and_every_rejection_are_atomic_stutters
     /// @obligation store_history.receipt_refines_one_exact_durable_record
     /// @obligation store_history.recovery_preserves_committed_time_and_receipt_identity
-    #[kani::proof]
+    #[test]
     fn operation_replay_binds_stored_thread_and_preserves_identity_precedence() {
         // Causes are concrete operation/receipt fields: C1 operation Run matches
         // its payload; C2 a stored receipt exists; C3 receipt operation id matches;
@@ -565,12 +569,10 @@ mod verification {
         // Select bounded actual records, then call the production replay entry;
         // no free predicate stands in for any comparison it derives. The stale
         // expected version demonstrates receipt replay stays before new CAS.
-        // Every input use reads only bits 0..5: F(v) = F(v & 63).
-        // The original u8 domain therefore contains four copies of these exact
-        // 64 record images. Check every image with the same production call and
-        // assertions; no assume, predicate substitute, or unwind cut is used.
-        // A single local closure owns construction and checks for all images.
-        let check_variant = |variant: u8| {
+        // Every input use reads only bits 0..5, so the 64 record images are the
+        // whole domain. Check every image with the same production call and
+        // assertions.
+        for variant in 0_u8..64 {
             // Allocate each varying field as one byte, then choose its ASCII value:
             // this removes conditional literal pointers from the input construction,
             // while preserving the same field values and production comparisons.
@@ -670,72 +672,13 @@ mod verification {
                 assert_eq!(duplicate.thread_version, receipt.thread_version);
                 assert!(duplicate.duplicate);
             }
-        };
-        check_variant(0);
-        check_variant(1);
-        check_variant(2);
-        check_variant(3);
-        check_variant(4);
-        check_variant(5);
-        check_variant(6);
-        check_variant(7);
-        check_variant(8);
-        check_variant(9);
-        check_variant(10);
-        check_variant(11);
-        check_variant(12);
-        check_variant(13);
-        check_variant(14);
-        check_variant(15);
-        check_variant(16);
-        check_variant(17);
-        check_variant(18);
-        check_variant(19);
-        check_variant(20);
-        check_variant(21);
-        check_variant(22);
-        check_variant(23);
-        check_variant(24);
-        check_variant(25);
-        check_variant(26);
-        check_variant(27);
-        check_variant(28);
-        check_variant(29);
-        check_variant(30);
-        check_variant(31);
-        check_variant(32);
-        check_variant(33);
-        check_variant(34);
-        check_variant(35);
-        check_variant(36);
-        check_variant(37);
-        check_variant(38);
-        check_variant(39);
-        check_variant(40);
-        check_variant(41);
-        check_variant(42);
-        check_variant(43);
-        check_variant(44);
-        check_variant(45);
-        check_variant(46);
-        check_variant(47);
-        check_variant(48);
-        check_variant(49);
-        check_variant(50);
-        check_variant(51);
-        check_variant(52);
-        check_variant(53);
-        check_variant(54);
-        check_variant(55);
-        check_variant(56);
-        check_variant(57);
-        check_variant(58);
-        check_variant(59);
-        check_variant(60);
-        check_variant(61);
-        check_variant(62);
-        check_variant(63);
+        }
     }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
 
     /// @obligation remote_worker.committed_truth_is_coordinator_owned
     /// @obligation remote_worker.operation_identity_maps_to_one_hash_and_append

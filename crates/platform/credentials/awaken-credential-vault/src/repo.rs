@@ -25,7 +25,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 use awaken_credential_contract::ManagedCredentialAdoptionUnavailable;
 use awaken_credential_contract::{
     ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
@@ -51,33 +51,6 @@ pub const fn conjunctive_managed_credential_adoption_progress(
     }
 }
 
-#[cfg(kani)]
-/// @obligation credential.managed_rollout_abstract_ack_requires_every_target_adoption
-/// @obligation credential.managed_rollout_ack_requires_converged_progress
-#[kani::proof]
-fn managed_rollout_ack_requires_converged_progress() {
-    use ManagedCredentialAdoptionProgress::{Converged, Pending};
-
-    assert!(!ManagedCredentialAdoptionProgress::Pending.is_converged());
-    assert!(ManagedCredentialAdoptionProgress::Converged.is_converged());
-    assert_eq!(
-        conjunctive_managed_credential_adoption_progress(Converged, Converged),
-        Converged
-    );
-    assert_eq!(
-        conjunctive_managed_credential_adoption_progress(Converged, Pending),
-        Pending
-    );
-    assert_eq!(
-        conjunctive_managed_credential_adoption_progress(Pending, Converged),
-        Pending
-    );
-    assert_eq!(
-        conjunctive_managed_credential_adoption_progress(Pending, Pending),
-        Pending
-    );
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ManagedCredentialRolloutDeliveryDecision {
     RetainPending,
@@ -96,37 +69,6 @@ fn managed_credential_rollout_delivery_decision(
             ManagedCredentialRolloutDeliveryDecision::RetainPending
         }
     }
-}
-
-#[cfg(kani)]
-/// @obligation credential.managed_rollout_failure_or_busy_session_remains_pending
-#[kani::proof]
-#[kani::unwind(4)]
-fn managed_rollout_delivery_acknowledges_only_exact_convergence() {
-    // Causes: C1 Converged; C2 explicit Pending (including a busy Session);
-    // C3-C6 every closed target failure. Effects: only C1 acknowledges; all
-    // other outcomes retain the existing outbox event. The live reconciler
-    // consumes this decision after awaiting the target. Target correctness,
-    // executor liveness and database acknowledgement remain outside the proof.
-    let case = kani::any::<u8>() % 6;
-    let outcome = match case {
-        0 => Ok(ManagedCredentialAdoptionProgress::Converged),
-        1 => Ok(ManagedCredentialAdoptionProgress::Pending),
-        2 => Err(ManagedCredentialAdoptionError::InvalidEvent("e".into())),
-        3 => Err(ManagedCredentialAdoptionError::IdentityCollision),
-        4 => Err(ManagedCredentialAdoptionError::Unauthorized),
-        _ => Err(ManagedCredentialAdoptionError::Unavailable(
-            ManagedCredentialAdoptionUnavailable::Transport,
-        )),
-    };
-    assert_eq!(
-        managed_credential_rollout_delivery_decision(&outcome),
-        if case == 0 {
-            ManagedCredentialRolloutDeliveryDecision::AcknowledgeExact
-        } else {
-            ManagedCredentialRolloutDeliveryDecision::RetainPending
-        }
-    );
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -652,26 +594,6 @@ const fn managed_retirement_parent_fence(
     exact_parent && (is_delete || parent_accepts_child_mutation)
 }
 
-#[cfg(kani)]
-/// @obligation credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
-/// @proof-input-debt free_symbol managed_retirement_parent_fence is_delete
-/// @proof-input-debt free_symbol managed_retirement_parent_fence parent_accepts_child_mutation
-#[kani::proof]
-fn managed_vault_delete_fence_allows_only_absorbing_child_delete() {
-    let exact_parent = kani::any::<bool>();
-    let parent_accepts_child_mutation = kani::any::<bool>();
-    let is_delete = kani::any::<bool>();
-    let admitted =
-        managed_retirement_parent_fence(exact_parent, parent_accepts_child_mutation, is_delete);
-    assert_eq!(
-        admitted,
-        exact_parent && (is_delete || parent_accepts_child_mutation)
-    );
-    if admitted && !parent_accepts_child_mutation {
-        assert!(exact_parent && is_delete);
-    }
-}
-
 /// Secret-free durable authority for every Managed Credential mutation.
 /// Source and management child are one consistency pair. Plaintext never enters
 /// this fact; only frozen references cross the recovery boundary.
@@ -796,33 +718,34 @@ mod publication_proofs {
         }
     }
 
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation credential.managed_creation_begin_rejects_every_published_source_or_child_identity
+    #[test]
+    fn managed_creation_begin_rejects_every_published_identity() {
+        // C1/C2 independently present current source/child. A creation has
+        // no predecessor pair. R1 both absent => admit; R2 either or both
+        // present => reject. Call the same typed comparator used under the
+        // in-memory/SQLite/PostgreSQL transaction, not a test-only predicate.
+        // Presence is exhaustive; payload identities are the fixed fixture.
+        // validate_for_begin, database read truth and locking remain separate.
+        let pending = pending();
+        for source_present in [false, true] {
+            for child_present in [false, true] {
+                let source = source_present.then_some(&pending.after_source);
+                let child = child_present.then_some(&pending.after_credential);
+                assert_eq!(
+                    pending.is_unpublished_at(source, child),
+                    !(source_present || child_present)
+                );
+            }
+        }
+    }
+
     #[test]
     fn proof_creation_fixture_is_admitted_by_production_validation() {
         // Non-vacuity: the fixed Create fixture used by the presence proof
         // must satisfy actual command validation, not only an abstract shape.
         pending().validate_for_begin(1_000).unwrap();
-    }
-
-    #[cfg(kani)]
-    /// @obligation credential.managed_creation_begin_rejects_every_published_source_or_child_identity
-    #[kani::proof]
-    #[kani::unwind(4)]
-    fn managed_creation_begin_rejects_every_published_identity() {
-        // C1/C2 independently present current source/child. A creation has
-        // no predecessor pair. R1 both absent => admit; R2 either or both
-        // present => reject. Call the same typed comparator used under the
-        // in-memory/SQLite/PostgreSQL transaction, not a cfg(kani) predicate.
-        // Presence is exhaustive; payload identities are the fixed fixture.
-        // validate_for_begin, database read truth and locking remain separate.
-        let pending = pending();
-        let source_present = kani::any::<bool>();
-        let child_present = kani::any::<bool>();
-        let source = source_present.then_some(&pending.after_source);
-        let child = child_present.then_some(&pending.after_credential);
-        assert_eq!(
-            pending.is_unpublished_at(source, child),
-            !(source_present || child_present)
-        );
     }
 
     #[cfg(kani)]
@@ -1307,66 +1230,6 @@ fn invalid_pending_mutation(error: ManagedCredentialMutationError) -> Credential
     }
 }
 
-#[cfg(kani)]
-/// @obligation credential.managed_creation_pair_requires_exact_workspace_source_and_initial_lifecycle
-#[kani::proof]
-fn managed_creation_pair_requires_every_binding_axis() {
-    let axes = [
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-        kani::any::<bool>(),
-    ];
-    let admitted = managed_creation_pair_admitted(
-        axes[0], axes[1], axes[2], axes[3], axes[4], axes[5], axes[6],
-    );
-    assert_eq!(admitted, axes.into_iter().all(|axis| axis));
-    if admitted {
-        assert!(axes.into_iter().all(|axis| axis));
-    }
-}
-
-#[cfg(kani)]
-/// @obligation credential.managed_mutation_requires_exact_source_and_child_successor_fences
-/// @proof-input-debt free_symbol managed_mutation_operation_shape_allowed after_child_active
-/// @proof-input-debt free_symbol managed_mutation_operation_shape_allowed after_child_archived
-/// @proof-input-debt free_symbol managed_mutation_operation_shape_allowed after_child_deleted
-/// @proof-input-debt free_symbol managed_mutation_operation_shape_allowed after_source_active
-/// @proof-input-debt free_symbol managed_mutation_operation_shape_allowed after_source_archived
-/// @proof-input-debt free_symbol managed_mutation_operation_shape_allowed before_child_deleted
-#[kani::proof]
-fn managed_mutation_operation_shape_is_closed_and_delete_is_absorbing() {
-    let operation = kani::any::<u8>();
-    let before_deleted = kani::any::<bool>();
-    let source_active = kani::any::<bool>();
-    let source_archived = kani::any::<bool>();
-    let child_active = kani::any::<bool>();
-    let child_archived = kani::any::<bool>();
-    let child_deleted = kani::any::<bool>();
-    let admitted = managed_mutation_operation_shape_allowed(
-        operation,
-        before_deleted,
-        source_active,
-        source_archived,
-        child_active,
-        child_archived,
-        child_deleted,
-    );
-    if admitted {
-        assert!(operation <= 3);
-        assert!(!before_deleted || child_deleted);
-        match operation {
-            0 | 1 => assert!(source_active && child_active),
-            2 => assert!(source_archived && child_archived),
-            3 => assert!(source_archived && child_deleted),
-            _ => unreachable!(),
-        }
-    }
-}
-
 /// One physical persistence boundary for every Managed Credential command.
 /// Implementations publish Source + child/tombstone and advance the durable
 /// fact to `Reclaiming` in one local transaction.
@@ -1818,3 +1681,157 @@ pub use inventory::*;
 
 #[cfg(test)]
 mod rollout_delivery_tests;
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_progress(progress: ManagedCredentialAdoptionProgress) -> usize {
+        match progress {
+            ManagedCredentialAdoptionProgress::Pending => 0,
+            ManagedCredentialAdoptionProgress::Converged => 1,
+        }
+    }
+    const EVERY_PROGRESS: [ManagedCredentialAdoptionProgress; 2] = [
+        ManagedCredentialAdoptionProgress::Pending,
+        ManagedCredentialAdoptionProgress::Converged,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_PROGRESS.into_iter().enumerate() {
+            assert_eq!(listed_progress(value), index);
+        }
+    }
+
+    /// @exhaustive ManagedCredentialAdoptionProgress(2) x ManagedCredentialAdoptionProgress(2) = 4
+    /// @obligation credential.managed_rollout_abstract_ack_requires_every_target_adoption
+    /// @obligation credential.managed_rollout_ack_requires_converged_progress
+    #[test]
+    fn managed_rollout_ack_requires_converged_progress() {
+        use ManagedCredentialAdoptionProgress::{Converged, Pending};
+
+        assert!(!Pending.is_converged());
+        assert!(Converged.is_converged());
+        for left in EVERY_PROGRESS {
+            for right in EVERY_PROGRESS {
+                assert_eq!(
+                    conjunctive_managed_credential_adoption_progress(left, right),
+                    if left == Converged && right == Converged {
+                        Converged
+                    } else {
+                        Pending
+                    }
+                );
+            }
+        }
+    }
+
+    /// @exhaustive case(6) = 6
+    /// @obligation credential.managed_rollout_failure_or_busy_session_remains_pending
+    #[test]
+    fn managed_rollout_delivery_acknowledges_only_exact_convergence() {
+        // Causes: C1 Converged; C2 explicit Pending (including a busy Session);
+        // C3-C6 every closed target failure. Effects: only C1 acknowledges; all
+        // other outcomes retain the existing outbox event. The live reconciler
+        // consumes this decision after awaiting the target. Target correctness,
+        // executor liveness and database acknowledgement remain outside the test.
+        for case in 0_u8..6 {
+            let outcome = match case {
+                0 => Ok(ManagedCredentialAdoptionProgress::Converged),
+                1 => Ok(ManagedCredentialAdoptionProgress::Pending),
+                2 => Err(ManagedCredentialAdoptionError::InvalidEvent("e".into())),
+                3 => Err(ManagedCredentialAdoptionError::IdentityCollision),
+                4 => Err(ManagedCredentialAdoptionError::Unauthorized),
+                _ => Err(ManagedCredentialAdoptionError::Unavailable(
+                    ManagedCredentialAdoptionUnavailable::Transport,
+                )),
+            };
+            assert_eq!(
+                managed_credential_rollout_delivery_decision(&outcome),
+                if case == 0 {
+                    ManagedCredentialRolloutDeliveryDecision::AcknowledgeExact
+                } else {
+                    ManagedCredentialRolloutDeliveryDecision::RetainPending
+                }
+            );
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
+    #[test]
+    fn managed_vault_delete_fence_allows_only_absorbing_child_delete() {
+        for exact_parent in [false, true] {
+            for parent_accepts_child_mutation in [false, true] {
+                for is_delete in [false, true] {
+                    let admitted = managed_retirement_parent_fence(
+                        exact_parent,
+                        parent_accepts_child_mutation,
+                        is_delete,
+                    );
+                    assert_eq!(
+                        admitted,
+                        exact_parent && (is_delete || parent_accepts_child_mutation)
+                    );
+                    if admitted && !parent_accepts_child_mutation {
+                        assert!(exact_parent && is_delete);
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive [bool; 7](128) = 128
+    /// @obligation credential.managed_creation_pair_requires_exact_workspace_source_and_initial_lifecycle
+    #[test]
+    fn managed_creation_pair_requires_every_binding_axis() {
+        for mask in 0_u8..128 {
+            let axes: [bool; 7] = std::array::from_fn(|bit| mask & (1 << bit) != 0);
+            let admitted = managed_creation_pair_admitted(
+                axes[0], axes[1], axes[2], axes[3], axes[4], axes[5], axes[6],
+            );
+            assert_eq!(admitted, axes.into_iter().all(|axis| axis));
+            if admitted {
+                assert!(axes.into_iter().all(|axis| axis));
+            }
+        }
+    }
+
+    /// @exhaustive u8(256) x [bool; 6](64) = 16384
+    /// @obligation credential.managed_mutation_requires_exact_source_and_child_successor_fences
+    #[test]
+    fn managed_mutation_operation_shape_is_closed_and_delete_is_absorbing() {
+        for operation in u8::MIN..=u8::MAX {
+            for mask in 0_u8..64 {
+                let [
+                    before_deleted,
+                    source_active,
+                    source_archived,
+                    child_active,
+                    child_archived,
+                    child_deleted,
+                ]: [bool; 6] = std::array::from_fn(|bit| mask & (1 << bit) != 0);
+                let admitted = managed_mutation_operation_shape_allowed(
+                    operation,
+                    before_deleted,
+                    source_active,
+                    source_archived,
+                    child_active,
+                    child_archived,
+                    child_deleted,
+                );
+                if admitted {
+                    assert!(operation <= 3);
+                    assert!(!before_deleted || child_deleted);
+                    match operation {
+                        0 | 1 => assert!(source_active && child_active),
+                        2 => assert!(source_archived && child_archived),
+                        3 => assert!(source_archived && child_deleted),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1374,46 +1374,6 @@ mod scoped_tests;
 mod verification {
     use super::*;
 
-    /// @obligation remote_tool.hand_availability_recovery_and_terminal_transitions_are_closed
-    #[kani::proof]
-    fn hand_availability_has_only_explicit_recovery_and_terminal_transitions() {
-        let current = match kani::any::<u8>() % 4 {
-            0 => HandAvailability::Open,
-            1 => HandAvailability::ProjectionUpdate,
-            2 => HandAvailability::Fenced,
-            _ => HandAvailability::Closed,
-        };
-        assert!(!hand_availability_transition_admitted(
-            HandAvailability::Closed,
-            HandAvailability::Open,
-        ));
-        assert!(!hand_availability_transition_admitted(
-            HandAvailability::Fenced,
-            HandAvailability::Open,
-        ));
-        if hand_availability_transition_admitted(current, HandAvailability::Open) {
-            assert_eq!(current, HandAvailability::ProjectionUpdate);
-        }
-    }
-
-    /// @obligation remote_tool.hand_launch_must_cross_a_tracked_starting_phase_before_ready
-    #[kani::proof]
-    fn hand_binding_can_only_become_ready_through_tracked_starting() {
-        let current = match kani::any::<u8>() % 4 {
-            0 => HandBindingPhase::Vacant,
-            1 => HandBindingPhase::Starting,
-            2 => HandBindingPhase::Ready,
-            _ => HandBindingPhase::LaunchFailed,
-        };
-        assert!(!hand_binding_transition_admitted(
-            HandBindingPhase::Vacant,
-            HandBindingPhase::Ready,
-        ));
-        if hand_binding_transition_admitted(current, HandBindingPhase::Ready) {
-            assert_eq!(current, HandBindingPhase::Starting);
-        }
-    }
-
     /// @obligation remote_tool.hand_generation_exhaustion_is_terminal_and_never_wraps
     #[kani::proof]
     fn hand_generation_advance_never_wraps_and_exhaustion_is_terminal() {
@@ -1427,6 +1387,86 @@ mod verification {
         } else {
             assert_eq!(step.next, current + 1);
             assert!(step.next < u64::MAX);
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_AVAILABILITY: [HandAvailability; 4] = [
+        HandAvailability::Open,
+        HandAvailability::ProjectionUpdate,
+        HandAvailability::Fenced,
+        HandAvailability::Closed,
+    ];
+    const EVERY_BINDING_PHASE: [HandBindingPhase; 4] = [
+        HandBindingPhase::Vacant,
+        HandBindingPhase::Starting,
+        HandBindingPhase::Ready,
+        HandBindingPhase::LaunchFailed,
+    ];
+
+    const fn listed_availability(availability: HandAvailability) -> usize {
+        match availability {
+            HandAvailability::Open => 0,
+            HandAvailability::ProjectionUpdate => 1,
+            HandAvailability::Fenced => 2,
+            HandAvailability::Closed => 3,
+        }
+    }
+
+    const fn listed_binding_phase(phase: HandBindingPhase) -> usize {
+        match phase {
+            HandBindingPhase::Vacant => 0,
+            HandBindingPhase::Starting => 1,
+            HandBindingPhase::Ready => 2,
+            HandBindingPhase::LaunchFailed => 3,
+        }
+    }
+
+    #[test]
+    fn every_hand_availability_and_binding_phase_is_listed() {
+        for (index, availability) in EVERY_AVAILABILITY.into_iter().enumerate() {
+            assert_eq!(listed_availability(availability), index);
+        }
+        for (index, phase) in EVERY_BINDING_PHASE.into_iter().enumerate() {
+            assert_eq!(listed_binding_phase(phase), index);
+        }
+    }
+
+    /// @exhaustive HandAvailability(4) = 4
+    /// @obligation remote_tool.hand_availability_recovery_and_terminal_transitions_are_closed
+    #[test]
+    fn hand_availability_has_only_explicit_recovery_and_terminal_transitions() {
+        assert!(!hand_availability_transition_admitted(
+            HandAvailability::Closed,
+            HandAvailability::Open,
+        ));
+        assert!(!hand_availability_transition_admitted(
+            HandAvailability::Fenced,
+            HandAvailability::Open,
+        ));
+        for current in EVERY_AVAILABILITY {
+            if hand_availability_transition_admitted(current, HandAvailability::Open) {
+                assert_eq!(current, HandAvailability::ProjectionUpdate);
+            }
+        }
+    }
+
+    /// @exhaustive HandBindingPhase(4) = 4
+    /// @obligation remote_tool.hand_launch_must_cross_a_tracked_starting_phase_before_ready
+    #[test]
+    fn hand_binding_can_only_become_ready_through_tracked_starting() {
+        assert!(!hand_binding_transition_admitted(
+            HandBindingPhase::Vacant,
+            HandBindingPhase::Ready,
+        ));
+        for current in EVERY_BINDING_PHASE {
+            if hand_binding_transition_admitted(current, HandBindingPhase::Ready) {
+                assert_eq!(current, HandBindingPhase::Starting);
+            }
         }
     }
 }
