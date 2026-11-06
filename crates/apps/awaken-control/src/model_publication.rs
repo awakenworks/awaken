@@ -439,7 +439,12 @@ mod tests {
                 WorkerRegistration {
                     worker_id: format!("worker-{backend_ref}"),
                     incarnation_id: "boot-1".into(),
-                    manifest: WorkerManifest::default(),
+                    manifest: WorkerManifest {
+                        runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                        ),
+                        ..WorkerManifest::default()
+                    },
                     create_ledger: None,
                 },
                 now,
