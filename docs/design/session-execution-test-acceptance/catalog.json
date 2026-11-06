@@ -42,7 +42,7 @@
     }
   },
   "scope_rules": {
-    "current_task": "Historical calibration was native Windows. Later execution follows the platform matrix; historical receipts and slices retain their original scope.",
+    "current_task": "The 2026-11-06 continuation validates local native Linux under AGENTS.md. Historical receipts and slices retain their original source and platform scope. Windows, physical-provider and kernel facets require their own named execution evidence; a component or local-container pass does not qualify them.",
     "full_group_acceptance": "Every applicable case and selected backend/platform facet is qualified, or its non-applicability is justified by a tested capability refusal. All T00/T34/T35/T36 gates hold.",
     "historical_reuse": "Retain original commit/tree/command/log; owner source unchanged alone is insufficient when runtime dependency/feature/config input changed. Record input closure and reviewed delta before inheriting current qualification.",
     "negative_control": "Each scenario declares an invariant-breaking control. No new control/mutation execution is claimed by creating this catalog.",

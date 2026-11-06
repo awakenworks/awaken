@@ -12,32 +12,57 @@ use crate::durable::{DurableEnvironmentImageBuildStore, RecordBackend, Versioned
 /// Test substrate for the same compare-and-swap store used by durable adapters.
 /// Only record IO lives here; claim, replay and terminal rules have one owner.
 #[derive(Default)]
-struct MemoryRecordBackend(LeafLock<BTreeMap<String, VersionedRecord>>);
+struct MemoryRecordBackend(LeafLock<MemoryRecords>);
+
+#[derive(Default)]
+struct MemoryRecords {
+    jobs: BTreeMap<String, VersionedRecord>,
+    bindings: BTreeMap<String, String>,
+}
 
 #[async_trait]
 impl RecordBackend for MemoryRecordBackend {
     async fn insert(
         &self,
         record: &EnvironmentImageBuildRecord,
-    ) -> Result<bool, EnvironmentImageBuildError> {
+        binding_key: Option<&str>,
+    ) -> Result<String, EnvironmentImageBuildError> {
         let mut rows = self.0.lock();
-        if rows.contains_key(&record.demand.build_key) {
-            return Ok(false);
+        if let Some(key) = binding_key.and_then(|key| rows.bindings.get(key)) {
+            return Ok(key.clone());
         }
-        rows.insert(
-            record.demand.build_key.clone(),
-            VersionedRecord {
+        if rows
+            .jobs
+            .get(&record.demand.build_key)
+            .is_some_and(|current| !current.record.demand.same_recipe(&record.demand))
+        {
+            return Err(EnvironmentImageBuildError::Conflict(
+                record.demand.build_key.clone(),
+            ));
+        }
+        rows.jobs
+            .entry(record.demand.build_key.clone())
+            .or_insert(VersionedRecord {
                 version: 0,
                 record: record.clone(),
-            },
-        );
-        Ok(true)
+            });
+        if let Some(binding) = binding_key {
+            rows.bindings
+                .insert(binding.into(), record.demand.build_key.clone());
+        }
+        Ok(record.demand.build_key.clone())
+    }
+    async fn pinned_key(
+        &self,
+        binding_key: &str,
+    ) -> Result<Option<String>, EnvironmentImageBuildError> {
+        Ok(self.0.lock().bindings.get(binding_key).cloned())
     }
     async fn get(&self, key: &str) -> Result<Option<VersionedRecord>, EnvironmentImageBuildError> {
-        Ok(self.0.lock().get(key).cloned())
+        Ok(self.0.lock().jobs.get(key).cloned())
     }
     async fn candidates(&self) -> Result<Vec<VersionedRecord>, EnvironmentImageBuildError> {
-        Ok(self.0.lock().values().cloned().collect())
+        Ok(self.0.lock().jobs.values().cloned().collect())
     }
     async fn compare_and_swap(
         &self,
@@ -45,7 +70,7 @@ impl RecordBackend for MemoryRecordBackend {
         next: &EnvironmentImageBuildRecord,
     ) -> Result<bool, EnvironmentImageBuildError> {
         let mut rows = self.0.lock();
-        let Some(current) = rows.get_mut(&expected.record.demand.build_key) else {
+        let Some(current) = rows.jobs.get_mut(&expected.record.demand.build_key) else {
             return Ok(false);
         };
         if current.version != expected.version {
@@ -86,8 +111,15 @@ impl EnvironmentImageBuildStore for InMemoryEnvironmentImageBuildStore {
         &self,
         demand: EnvironmentImageBuildDemand,
         now_ms: u64,
-    ) -> Result<(), EnvironmentImageBuildError> {
-        self.inner.ensure(demand, now_ms).await
+        binding_key: Option<&str>,
+    ) -> Result<EnvironmentImageBuildDemand, EnvironmentImageBuildError> {
+        self.inner.ensure(demand, now_ms, binding_key).await
+    }
+    async fn pinned_demand(
+        &self,
+        binding_key: &str,
+    ) -> Result<Option<EnvironmentImageBuildDemand>, EnvironmentImageBuildError> {
+        self.inner.pinned_demand(binding_key).await
     }
     async fn get(
         &self,

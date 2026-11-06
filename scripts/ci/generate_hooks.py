@@ -587,7 +587,10 @@ def trigger_patterns(name: str, declarations: dict[str, tuple[str, ...]],
     patterns = sorted(set(declarations[name]))
     if UNIVERSAL in patterns:
         return [UNIVERSAL]
-    prefix = scripts.relative_to(ROOT).as_posix() if scripts.is_relative_to(ROOT) else "scripts/ci"
+    # `scripts` selects the bytes to inspect, including a copied fixture. The
+    # hook's authored coordinate remains scripts/ci in that repository; a
+    # fixture nested under this checkout must not inherit its temporary prefix.
+    prefix = "scripts/ci"
     for module in [name, *local_imports(name, scripts)]:
         own = f"{prefix}/{module}"
         if not any(glob_matches(pattern, own) for pattern in patterns):
@@ -850,6 +853,16 @@ def selftest() -> None:
             "scripts/ci/check_gamma.py"], "I1-I3 trigger"
         assert trigger_patterns("check_gamma.py", {"check_gamma.py": ("scripts/ci/*.py",)}, scripts) == [
             "scripts/ci/*.py"], "I4"
+        # I5-I6 directory relocation cannot change the authored hook coordinate:
+        # inside the generator checkout / outside it -> identical own/helper
+        # paths, with narrow declarations retained. The former conditional
+        # prefix failed I5 when TMPDIR lived under a worktree's target directory.
+        from unittest.mock import patch
+        expected = ["docs/*.md", "scripts/ci/_deep.py", "scripts/ci/_helper.py",
+                    "scripts/ci/_lazy.py", "scripts/ci/check_gamma.py"]
+        for owner in (scripts.parent, scripts / "unrelated-checkout"):
+            with patch.dict(globals(), ROOT=owner):
+                assert trigger_patterns("check_gamma.py", {"check_gamma.py": ("docs/*.md",)}, scripts) == expected, "I5-I6"
     assert glob_matches("types/**/*.rs", "types/top.rs"), "M4 zero directories"
     assert glob_matches("types/**/*.rs", "types/a/b.rs"), "M4 nested"
     assert not glob_matches("docs/*.md", "docs/wiki/a.md"), "M4 * stays in one segment"

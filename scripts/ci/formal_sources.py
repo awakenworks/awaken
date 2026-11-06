@@ -704,8 +704,15 @@ def _selftest_guard_inputs() -> None:
             with patch.dict(os.environ, environment, clear=True):
                 try:
                     tracked_files(disk, allow_nonrepository=True)
-                except subprocess.CalledProcessError as error:
-                    assert error.returncode == 128, "SIO3 dangling repository marker"
+                except (subprocess.CalledProcessError, SourceError) as error:
+                    # Outside any checkout Git refuses with 128; a task-owned
+                    # TMPDIR inside a checkout can discover the parent, which
+                    # the exact-root admission rejects as SourceError. Both
+                    # paths must refuse this dangling marker, never disk-walk.
+                    if isinstance(error, subprocess.CalledProcessError):
+                        assert error.returncode == 128, "SIO3 dangling repository marker"
+                    else:
+                        assert "not an admitted repository top" in str(error), "SIO3 parent-root refusal"
                 else:
                     raise AssertionError("SIO3 dangling .git became a disk fallback")
 

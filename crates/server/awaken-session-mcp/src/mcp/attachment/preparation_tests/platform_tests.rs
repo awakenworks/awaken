@@ -156,6 +156,18 @@ impl awaken_credential_materializer::PlatformMcpEgressAllocation for Allocation 
 struct NoPlaintext;
 #[async_trait::async_trait]
 impl CredentialMaterialResolver for NoPlaintext {
+    async fn validate_reference(
+        &self,
+        request: CredentialMaterialRequest<'_>,
+    ) -> Result<(), CredentialMaterialError> {
+        // This component fixture represents an available external metadata
+        // authority. It checks the selected reference but cannot return secrets.
+        assert_eq!(request.access.credential.id, "platform-credential");
+        assert_eq!(request.access.credential.revision, 7);
+        assert_eq!(request.selected_holder, &holder());
+        request.binding.validate()
+    }
+
     fn material_capabilities(&self) -> BTreeSet<CredentialMaterialCapability> {
         [CredentialMaterialCapability {
             holder: holder(),

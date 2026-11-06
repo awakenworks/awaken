@@ -26,9 +26,10 @@ class CombinedCoverageTests(unittest.TestCase):
             binary = fixture / "bin"
             binary.mkdir()
             target = fixture / "instrumented"
-            target.mkdir()
-            (target / "retained-build").write_text("cache")
-            (target / "old.profraw").write_text("stale")
+            if case != "cold-target":
+                target.mkdir()
+                (target / "retained-build").write_text("cache")
+                (target / "old.profraw").write_text("stale")
             driver = binary / "driver"
             driver.write_text(f"#!{os.sys.executable}\n" + '''
 import json, os, pathlib, subprocess, sys
@@ -43,7 +44,7 @@ if name == 'cargo':
         raise SystemExit(subprocess.call(args[3:]))
     if args[:2] == ['llvm-cov','show-env']: print('export RUSTFLAGS=--cfg=instrumented')
     elif args[:2] == ['llvm-cov','clean']:
-        (target/'old.profraw').unlink()
+        (target/'old.profraw').unlink(missing_ok=True)
     elif args[0] == 'metadata': print('{}')
     elif args[:2] == ['nextest','run'] and case == 'rust-fails': raise SystemExit(31)
     elif args[0] == 'test' and case == 'doc-fails': raise SystemExit(32)
@@ -111,6 +112,17 @@ elif name == 'python3':
                 self.assertTrue(retained)
                 self.assertFalse(any(c["args"][0].endswith("coverage_summary.py") for c in calls if c["name"] == "python3"))
 
+    def test_cold_instrumented_target_can_create_its_evidence_directory(self) -> None:
+        # C1 no build/cache/counters directory exists; C2 full or Rust scope.
+        # E1 create the selected target after counter cleanup, before evidence;
+        # E2 complete the same source-fenced report. Warm-cache preservation is
+        # owned by the earlier table; the mock must not precreate C1 away.
+        for arguments in ([], ["--rust-only"]):
+            with self.subTest(arguments=arguments):
+                status, calls, retained, stale = self.exercise("cold-target", arguments)
+                self.assertEqual((status, retained, stale), (0, False, False))
+                self.assertTrue(any(c["name"] == "python3" and c["args"][0].endswith("coverage_summary.py") for c in calls))
+
     def test_e2e_export_keeps_exact_paths_and_refuses_incomplete_exports(self) -> None:
         # C/E table, using the same original shell fixture (all tool IO mocked):
         # E1 exporter0+one path / E2 exporter0+two paths => exact repeated
@@ -148,6 +160,32 @@ elif name == 'python3':
         self.assertEqual(status, 2)
         self.assertEqual(calls, [])
         self.assertTrue(retained and stale)
+
+    def test_rust_scope_preserves_authored_graph_and_cannot_claim_service_execution(self) -> None:
+        # S1 explicit Rust scope -> original workspace features, native tests,
+        # pinned doctests and source fence, no Node/service build or E2E claim.
+        # S2 no scope keeps the original complete composition (the earlier
+        # positive/failure tables). S3 Rust/doc/source failure -> no report.
+        # S4 conflicting/unknown arguments -> refuse before clearing counters.
+        status, calls, retained, stale = self.exercise("passing", ["--rust-only"])
+        self.assertEqual(status, 0)
+        self.assertTrue(retained)
+        self.assertFalse(stale)
+        self.assertFalse(any(c["name"] in {"node", "npm"} for c in calls))
+        cargo = [c["args"] for c in calls if c["name"] == "cargo"]
+        self.assertTrue(any(a[:2] == ["nextest", "run"] and "--workspace" in a for a in cargo))
+        self.assertTrue(any(a[0] == "test" and "--doc" in a for a in cargo))
+        self.assertFalse(any(a[0] == "build" for a in cargo))
+        summary = next(c["args"] for c in calls if c["name"] == "python3" and c["args"][0].endswith("coverage_summary.py"))
+        self.assertEqual(summary[summary.index("--execution-scope") + 1], "rust-workspace")
+        for case, expected in [("rust-fails",31), ("doc-fails",32), ("source-changes",1)]:
+            with self.subTest(case=case):
+                status, calls, _, _ = self.exercise(case, ["--rust-only"])
+                self.assertEqual(status, expected)
+                self.assertFalse(any(c["args"][0].endswith("coverage_summary.py") for c in calls if c["name"] == "python3"))
+        for arguments in [["--rust-only", "--rust-only"], ["--rust-only", "--quick"]]:
+            status, calls, retained, stale = self.exercise("passing", arguments)
+            self.assertEqual((status, calls, retained, stale), (2, [], True, True))
 
 
 if __name__ == "__main__":

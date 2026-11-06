@@ -21,6 +21,37 @@ use crate::mcp::credential_target::exact_credential_realization_target;
 use crate::mcp::error::run_error;
 use crate::mcp::{McpGenerationAuthority, McpSessions, SessionMcpStates};
 
+async fn validate_platform_reference(
+    injector: &PinnedCredentialMaterializer,
+    access: &awaken_agent_contract::credential::CredentialAccess,
+    holder: &awaken_agent_contract::credential::PlaintextHolder,
+    workspace: &str,
+    target: &awaken_agent_contract::McpTarget,
+) -> Result<(), RunError> {
+    injector
+        .validate_reference_for_workspace(
+            access,
+            holder,
+            awaken_credential_contract::CredentialRealizationKind::PlatformRelay,
+            workspace,
+            exact_credential_realization_target(target),
+        )
+        .await
+        .map_err(|error| {
+            if error == awaken_credential_contract::CredentialMaterialError::Unavailable {
+                RunError::unavailable_classified(
+                    "mcp_material_source_unavailable",
+                    "MCP credential source cannot be validated",
+                )
+            } else {
+                RunError::classified(
+                    credential_rejection_code(&error),
+                    format!("MCP credential reference was refused: {error}"),
+                )
+            }
+        })
+}
+
 fn validate_stdio_credential_binding(
     target: &awaken_agent_contract::McpTarget,
     has_credential: bool,
@@ -480,6 +511,16 @@ impl McpSessions {
                             "a mediated MCP credential requires one canonical HTTP MCP target",
                         ));
                     }
+                    // Reference-only admission must not resolve Platform-held
+                    // plaintext into the Host just to check current revocation.
+                    validate_platform_reference(
+                        injector,
+                        access,
+                        holder,
+                        &request.workspace_id,
+                        &request.target,
+                    )
+                    .await?;
                     staging = Some(McpStagingOwner::begin(
                         slots,
                         &request,
@@ -496,6 +537,17 @@ impl McpSessions {
                             platform_preparation,
                         )
                         .await?;
+                    // Route creation can outlive a credential change. On refusal
+                    // the existing staging owner retains/drains this allocation;
+                    // no server projection can be published from the old read.
+                    validate_platform_reference(
+                        injector,
+                        access,
+                        holder,
+                        &request.workspace_id,
+                        &request.target,
+                    )
+                    .await?;
                     // Nothing is resolved here. The Host is a caller of the
                     // mediator, never a holder of this credential.
                     (None, None, Some(realization_kind), Some(route))
@@ -739,6 +791,30 @@ impl McpSessions {
             } else {
                 None
             };
+        if native_wiring.is_some()
+            && actual_realization_kind == Some(CredentialRealizationKind::PlatformRelay)
+        {
+            // Native initialization is another external wait after provision.
+            // Recheck the same metadata authority before publishing its wiring;
+            // ACP Platform routes have no intervening wait and keep the earlier
+            // check. The original staging owner still owns refused allocations.
+            validate_platform_reference(
+                credentials
+                    .credentials
+                    .expect("Platform staging admitted its materializer"),
+                request
+                    .credential
+                    .as_ref()
+                    .expect("Platform staging admitted its reference"),
+                request
+                    .selected_plaintext_holder
+                    .as_ref()
+                    .expect("Platform staging admitted its holder"),
+                &request.workspace_id,
+                &request.target,
+            )
+            .await?;
+        }
         staging.publish(
             admission,
             self.clock.as_ref(),
