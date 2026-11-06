@@ -121,7 +121,8 @@ D = decision, E = effect, O = observation mapping, P = read projection.
 | `continuation.rs:64` memory preflight; `application.rs:24` topology guard | D (guards) | **moved**: facts `suspend_memory_admitted`, `continuation_topology_supported`; layout validation reads the same `supports_idle_retention` |
 | `realization.rs:32` `environment_admits_realization_effects` (6 callers) | D | **moved**: `SessionEnvironmentState::admits_realization_effects` |
 | `realization/control.rs:245` renew gate | D | **moved**: `RenewRealization` |
-| `realization/control.rs:321`, `:804`, `:13`, `:1089`, `:990` lease grant, expiry, terminal claim and rollback | D (lease axis) | stay with `session_realization_assignment`; not Environment steps |
+| `realization/control.rs:335` `begin_session_realization_inner` lease grant and reuse, Resource-generation admission, the new lease, MCP claim selection and claim ids | D (lease axis) | **moved**: `SessionAssignmentOperations::begin` admits through `BeginRealization`, arbitrates through the unchanged `session_realization_assignment` (now beside it in `awaken-session-contract`, re-exported by the execution contract) and claims; its refusals keep their control failures (`From<SessionRealizationBeginRejection>`). The application loads, pins credentials, commits under the root CAS and drives `next_action` |
+| `realization/control.rs:726` failure expiry; `terminal_cleanup/claims.rs:135` terminal cleanup claim and `:251` rollback | D (lease axis) | stay as lease-axis commands (`assignment().expire`, `claim`, `restore_predecessor`); not Environment steps |
 | `application.rs:1077` binding command | O | **moved**: admission and receipt decide `AdmitMaterialization` / `Materialized` in the aggregate |
 | `resource_reconciliation.rs:635/727` terminal cleanup authorization and disposal records | O | **moved**: `PersistedSession::authorize_terminal_cleanup_effect`, `authorize_terminal_cleanup_disposal_effect` and `record_terminal_cleanup_disposal` decide `RetireForCleanup` / `CleanedUp` after their exact lease-generation check; the application classifies every cleanup refusal through the one `terminal_cleanup_authorization_failure` |
 | application missing-root admission; realization publication ordinary-thread admission | D (absence observation) | **moved**: `SessionEnvironmentEffectAuthorization::admit_unowned` decides `AdmitMaterialization` over explicit absent-root facts; no lease or Session instruction is fabricated |
@@ -244,6 +245,42 @@ state, and the cleanup laws decide through the transition function:
   cannot replace its view. Retry-classified refusals remain quiet and no
   refused continuation is executed. A process restart may signal the still
   blocked root again; this diagnostic grants no authority and persists nothing.
+
+## Resource reconciliation decision
+
+The Resource sub-state follows the same pattern. `SessionResourceReconciliationInstruction::decide(&PersistedSession)`
+projects eight facts (terminal, external Worker Environment, Idle, pending
+generation, Repository retirements, Releasing record, installed inputs,
+activation records) and calls the one pure `next_resource_reconciliation`
+(`state/resource_activation/reconciliation.rs`). It returns a closed
+`SessionResourceReconciliationInstruction`:
+
+| Facts | Instruction |
+|---|---|
+| terminal | `ReleaseTerminal` (terminal cleanup) |
+| live, external, no pending, retirements | `RetireDetachedGeneration` |
+| live, external, otherwise | `Hold` |
+| live, local, not Idle | `Hold` (changes deferred while a Run owns execution) |
+| live, local, Idle, pending | `ApplyLocally(InstallPending)` |
+| … no pending, Releasing record | `ApplyLocally(RefuseReleasingWithoutPending)` |
+| … installed inputs or activation records | `ApplyLocally(ReapplyActive { adopt_legacy })`, `adopt_legacy` when there are no records |
+| … only retirements | `ApplyLocally(RetireDetachedGeneration)` |
+| … nothing | `Hold` |
+
+| Site (main `f34b9ac81f`) | Class | Moves to |
+|---|---|---|
+| session-application `resource_reconciliation.rs` `reconcile_persisted_resources` stack-saving pre-check (not Idle; "the exact no-op branch below") | D | **moved**: returns on `Hold` before the activation/retirement future is built; every other step passes the same value on |
+| `reconcile_prepared_resources` external-Worker branch, `ordinary_reconciliation_gate.rs` and the pending/Releasing/installed case analysis | D | **moved**: one `match` on the instruction; the application reads the aggregate only for effect data (manifests, revisions) and post-commit settlement checks |
+| recovery sweep candidate filter (`needs_resource_reconciliation`, external without retirements) | scheduling | stays: which roots the sweep visits; an external root with a pending generation and retirements is still visited for credential pinning |
+
+The Kani harness `terminal_session_never_enters_ordinary_resource_reconciliation`
+moved with the decision; the contract decision table (rows R1–R17, sweep
+S1–S4 over all 256 fact combinations) covers every branch. Behaviour is
+unchanged on every production path. Only two rows differ, and only when the
+full path is entered without the pre-check (a test does this): a non-Idle
+local root, and an Idle local root with nothing installed or retained. Both
+are now `Hold`. Before, the first reached terminal cleanup and the second
+asked for the effects role.
 
 ## Provider retry hints through the one driver
 

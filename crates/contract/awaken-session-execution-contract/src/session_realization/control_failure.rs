@@ -111,6 +111,27 @@ impl From<SessionRealizationControlFailure> for awaken_session_types::RunError {
 /// The one Control projection of an Environment decision's refusal: a terminal
 /// Session is terminal, a lost lease is stale ownership, movement the Session
 /// may still make is not ready, and every causal refusal is invalid.
+/// The aggregate's begin refusals keep the control failure each carried when
+/// the application decided them: the Environment gate's own mapping, a stale
+/// owner, an invalid claim, and command failures as unavailable.
+impl From<awaken_session_contract::SessionRealizationBeginRejection>
+    for SessionRealizationControlFailure
+{
+    fn from(rejection: awaken_session_contract::SessionRealizationBeginRejection) -> Self {
+        use awaken_session_contract::SessionRealizationBeginRejection as Rejection;
+        match rejection {
+            Rejection::Environment(rejection) => rejection.into(),
+            Rejection::StaleOwnership => Self::StaleOwnership,
+            Rejection::ResourceWorkspaceMismatch
+            | Rejection::ResourceGenerationNotRetained
+            | Rejection::EpochExhausted => Self::Invalid(rejection.to_string()),
+            Rejection::Resources(_) | Rejection::Mcp(_) | Rejection::Assignment(_) => {
+                Self::Unavailable(rejection.to_string())
+            }
+        }
+    }
+}
+
 impl From<awaken_session_contract::SessionEnvironmentRejection>
     for SessionRealizationControlFailure
 {
@@ -361,6 +382,79 @@ mod tests {
                 SessionRealizationControlFailure::from(rejection),
                 SessionRealizationControlFailure::Invalid(rejection.to_string()),
                 "R4 {rejection:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn begin_rejections_keep_the_failure_the_application_returned() {
+        // R1 the Environment gate keeps its own projection; R2 a live foreign
+        // owner => StaleOwnership (retryable); R3 an invalid claim keeps its
+        // exact message; R4 a failed command on the candidate => Unavailable
+        // carrying the command's own message.
+        use awaken_session_contract::SessionEnvironmentRejection as X;
+        use awaken_session_contract::SessionRealizationBeginRejection as B;
+        let resources = awaken_session_contract::ResourceActivationError::Terminal;
+        let mcp = awaken_session_configuration_contract::mcp::McpAttachmentError::InvalidTransition;
+        let assignment =
+            awaken_session_contract::SessionAggregateCommandError::InvalidLeaseGeneration;
+        for (rule, rejection, expected) in [
+            (
+                "R1",
+                B::Environment(X::Terminal),
+                SessionRealizationControlFailure::Terminal,
+            ),
+            (
+                "R1",
+                B::Environment(X::ContinuationInProgress),
+                SessionRealizationControlFailure::NotReady,
+            ),
+            (
+                "R2",
+                B::StaleOwnership,
+                SessionRealizationControlFailure::StaleOwnership,
+            ),
+            (
+                "R3",
+                B::ResourceWorkspaceMismatch,
+                SessionRealizationControlFailure::Invalid(
+                    "claimed Resource Workspace does not match the Session".into(),
+                ),
+            ),
+            (
+                "R3",
+                B::ResourceGenerationNotRetained,
+                SessionRealizationControlFailure::Invalid(
+                    "claimed Resource generation is neither active nor pending".into(),
+                ),
+            ),
+            (
+                "R3",
+                B::EpochExhausted,
+                SessionRealizationControlFailure::Invalid(
+                    "Session realization lease epoch is exhausted".into(),
+                ),
+            ),
+            (
+                "R4",
+                B::Resources(resources.clone()),
+                SessionRealizationControlFailure::Unavailable(resources.to_string()),
+            ),
+            (
+                "R4",
+                B::Mcp(mcp.clone()),
+                SessionRealizationControlFailure::Unavailable(mcp.to_string()),
+            ),
+            (
+                "R4",
+                B::Assignment(assignment.clone()),
+                SessionRealizationControlFailure::Unavailable(assignment.to_string()),
+            ),
+        ] {
+            assert_eq!(
+                SessionRealizationControlFailure::from(rejection),
+                expected,
+                "{rule}"
             );
         }
     }

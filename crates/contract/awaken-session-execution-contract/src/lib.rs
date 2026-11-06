@@ -189,7 +189,7 @@ pub use session_realization::{
     STALE_PROJECTION_CODE, SessionCheckpointArtifactControl, SessionFileReadAuthorization,
     SessionPreparationAssignment, SessionPreparationControl, SessionPreparationPlacement,
     SessionProjectionInstallMode, SessionProjectionSynchronizer, SessionRealizationAction,
-    SessionRealizationAssignment, SessionRealizationControl, SessionRealizationControlDisposition,
+    SessionRealizationControl, SessionRealizationControlDisposition,
     SessionRealizationControlFailure, SessionRealizationDirective, SessionRealizationDriveError,
     SessionRealizationEffectFailure, SessionRealizationExclusionDecision,
     SessionRealizationLeaseReceipt, SessionRealizationPermit, SessionRealizationTarget,
@@ -206,9 +206,9 @@ pub use session_realization::{
     is_permanent_conflict_code, legacy_agent_publication_decision,
     model_candidates_require_opaque_process, project_effective_agent_publication,
     provisioning_disposition, realization_generation_authorizes, requires_local_environment,
-    resolve_canonical_session_projection, session_realization_assignment,
-    session_realization_exclusion_admits, synchronize_or_supersede,
-    terminal_cleanup_worker_requirements, validate_terminal_no_create_witness,
+    resolve_canonical_session_projection, session_realization_exclusion_admits,
+    synchronize_or_supersede, terminal_cleanup_worker_requirements,
+    validate_terminal_no_create_witness,
 };
 pub use source_retention::{
     SourceRetentionSubject, WORKER_SOURCE_RETENTION_SUBJECTS_PATH, WorkerSourceRetentionSubjects,
