@@ -2014,3 +2014,68 @@ async fn model_request_gate_follows_the_session_dispatch_decision_table() {
         "G4: {error}"
     );
 }
+
+#[tokio::test]
+async fn process_environment_observation_uses_the_exact_resident_layout_without_baseline() {
+    // C/E table: R1 a real direct context has no durable baseline but owns a
+    // realized empty-env layout=>its actual empty vector, not an inferred
+    // fallback. R2 no resident=>original typed error; R3 another resident Arc=>
+    // original typed error. No row changes a root, installs another environment,
+    // or decodes a provider payload in the Host.
+    let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .build()
+        .expect("Host");
+    let first = host
+        .run_assembly
+        .ctx_for("process-env-direct-a", None)
+        .await
+        .unwrap();
+    let first_env = first
+        .env
+        .as_ref()
+        .expect("direct eager environment")
+        .clone();
+    assert!(
+        host.realization_executor
+            .sessions()
+            .frozen("process-env-direct-a")
+            .unwrap()
+            .baseline
+            .is_none()
+    );
+    assert_eq!(
+        crate::host::resident_process_environment(
+            &host.realization_executor,
+            "process-env-direct-a",
+            &first_env
+        )
+        .unwrap(),
+        Vec::new(),
+        "R1 actual existing adoption layout"
+    );
+    assert!(
+        crate::host::resident_process_environment(
+            &host.realization_executor,
+            "not-installed",
+            &first_env
+        )
+        .is_err(),
+        "R2 exact resident evidence required"
+    );
+    let second = host
+        .run_assembly
+        .ctx_for("process-env-direct-b", None)
+        .await
+        .unwrap();
+    let second_env = second.env.as_ref().expect("second direct environment");
+    assert!(
+        crate::host::resident_process_environment(
+            &host.realization_executor,
+            "process-env-direct-a",
+            second_env
+        )
+        .is_err(),
+        "R3 another physical owner is not evidence"
+    );
+}

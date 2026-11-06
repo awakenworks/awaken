@@ -152,6 +152,8 @@ container-k8s = ["awaken-execution-composition/k8s"]
 workspace = true
 
 [dev-dependencies]
+# Fixed-source rejection tests construct the protocol-owned Session options.
+awaken-protocol-acp.workspace = true
 # Cross-component suites exercise the existing scenario composition.
 awaken-control = { workspace = true, features = ["test-support"] }
 awaken-coordinator-client = { workspace = true }

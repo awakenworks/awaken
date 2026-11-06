@@ -80,7 +80,7 @@ impl AcpRunExecutor {
         tracing::info!(awaken.run.id = %activation.run_id.0, elapsed_ms = reopen_started.elapsed().as_millis() as u64,
             total_elapsed_ms = started.elapsed().as_millis() as u64, phase = "sdk_reopen",
             "ACP Runtime handoff phase completed");
-        self.apply_session_mcp_projection(&mut session);
+        self.apply_session_mcp_projection(&mut session, &context.tool_capability_narrowing);
         Ok((RunState::Running, Some((prompt_of(&[receipts]), session))))
     }
 }

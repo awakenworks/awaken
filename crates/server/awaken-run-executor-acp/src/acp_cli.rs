@@ -447,6 +447,7 @@ impl AcpCli {
                 },
             }
             return Ok(AcpLaunch {
+                tool_narrowing_check: AcpLaunch::opaque_tool_narrowing,
                 argv,
                 env: env.into_values().collect(),
                 identity: AcpLaunchIdentity::BackendOwned,
@@ -536,6 +537,7 @@ impl AcpCli {
         }
         let Some(d) = d else {
             return Ok(AcpLaunch {
+                tool_narrowing_check: AcpLaunch::opaque_tool_narrowing,
                 argv,
                 env: env.into_values().collect(),
                 identity: AcpLaunchIdentity::Managed,
@@ -652,6 +654,7 @@ impl AcpCli {
         }
 
         Ok(AcpLaunch {
+            tool_narrowing_check: AcpLaunch::opaque_tool_narrowing,
             argv,
             env: env.into_values().collect(),
             identity: AcpLaunchIdentity::Managed,

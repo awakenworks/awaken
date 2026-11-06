@@ -120,6 +120,15 @@ pub struct AgentSession {
 /// call `open` at all.
 #[async_trait]
 pub trait AgentChannelSource: Send + Sync {
+    /// Check the actual source's execution profile before Session-home restore
+    /// or process entry. A backend name is not evidence for this restriction.
+    /// Implementations must reject a restricted Run unless their concrete
+    /// launch and all effective options enforce its original tool ceiling.
+    fn check_tool_narrowing(
+        &self,
+        narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+    ) -> std::result::Result<(), OpenError>;
+
     async fn open(
         &self,
         activation: &RunActivation,
@@ -132,6 +141,19 @@ pub trait AgentChannelSource: Send + Sync {
 #[derive(Debug, thiserror::Error)]
 #[error("agent channel open failed: {0}")]
 pub struct OpenError(pub String);
+
+/// The single fail-closed check for sources without a proven restricted
+/// execution profile. Permission callbacks cannot constrain opaque syscalls.
+pub fn opaque_tool_narrowing(
+    narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+) -> std::result::Result<(), OpenError> {
+    match narrowing.disabled_reason() {
+        Some(reason) => Err(OpenError(format!(
+            "unsupported ACP tool restriction: {reason}"
+        ))),
+        None => Ok(()),
+    }
+}
 
 /// What a [`SessionHomeProvider`] harvests/restores for one run: the config-home env
 /// the CLI reads, the portable session subtree under it, the paths to exclude
@@ -344,8 +366,16 @@ impl AcpRunExecutor {
         }
     }
 
-    fn apply_session_mcp_projection(&self, session: &mut AgentSession) {
-        if let Some(servers) = &self.session_mcp_servers {
+    fn apply_session_mcp_projection(
+        &self,
+        session: &mut AgentSession,
+        narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+    ) {
+        if narrowing.disabled_reason().is_some() {
+            // A successful source preflight proves the concrete program; it
+            // cannot restore Session-configured MCP authority for this Run.
+            session.mcp_session_servers.clear();
+        } else if let Some(servers) = &self.session_mcp_servers {
             session.mcp_session_servers.clone_from(servers);
         }
     }
@@ -562,16 +592,17 @@ impl AcpRunExecutor {
         permission_resume: Option<PermissionResume>,
     ) -> Result<RunState> {
         let mut context = activation.narrow_context(context);
-        if let Some(state) = self.prepare_owned_tools(&activation, &mut context).await? {
+        let prepared = self.prepare_owned_tools(&activation, &mut context).await?;
+        if let Some(state) = prepared.terminal {
             return Ok(state);
         }
-        // An opaque tool-transparent ACP process has no negotiated NoTools
-        // execution profile. Refuse that capability before restoring/launching
-        // it; a permission callback alone cannot attest its native syscalls.
-        if context
-            .tool_capability_narrowing
-            .disabled_reason()
-            .is_some()
+        // The actual source owns enforcement, not a snapshot's backend label.
+        // Unknown/rejected profiles still stop before home restore or launch.
+        if !prepared.original_capability_known
+            || self
+                .source
+                .check_tool_narrowing(&context.tool_capability_narrowing)
+                .is_err()
         {
             let disposition = RunDisposition::ended(
                 activation.run_id.clone(),
@@ -803,7 +834,7 @@ impl AcpRunExecutor {
         );
         cleanup.complete = false;
         let session = cleanup.session.as_mut().expect("opened ACP session");
-        self.apply_session_mcp_projection(session);
+        self.apply_session_mcp_projection(session, &context.tool_capability_narrowing);
 
         // ADR-0054 P4: drive Steps in a boundary loop. After each Step the shared
         // `evaluate_boundary` drains any live-inbox steer; queued input becomes the
@@ -1074,7 +1105,7 @@ impl AcpRunExecutor {
                         }
                     };
                     cleanup.complete = false;
-                    self.apply_session_mcp_projection(session);
+                    self.apply_session_mcp_projection(session, &context.tool_capability_narrowing);
                     continue;
                 }
                 Err(AcpError::PermissionAwait {
@@ -1314,7 +1345,7 @@ impl AcpRunExecutor {
                         }
                     };
                     cleanup.complete = false;
-                    self.apply_session_mcp_projection(session);
+                    self.apply_session_mcp_projection(session, &context.tool_capability_narrowing);
                 }
                 // Operator pause (ADR-0054 P5/U2): commit any in-flight steer that
                 // rode out with the await, then await durably on a no-tool awaiting

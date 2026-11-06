@@ -26,6 +26,37 @@ enabled only by an explicit provider + API dialect + adapter realization. A
 DeepSeek or OpenRouter-compatible endpoint therefore receives no builtin tool
 assumption from its branding alone.
 
+## Run tool ceilings and the fixed Scenario source
+
+The Run restriction and recovery law remains with the Runtime's existing
+permission owner ([ADR-0030](../adr/0030-permission-policy-axis.md)); a source profile
+can only enforce the selected ceiling. The original `AgentChannelSource`
+requires a preflight before Session-home restore or process entry. Opaque
+sources retain their refusal, and a missing legacy input ceiling cannot acquire
+permission from a newly installed source profile.
+
+The Outcome Scenario owns one fixed newline program and its exact interpreter,
+argv, permitted environment lookups, codec and effective configuration checks.
+The bound source verifies the immutable launch before opening and rechecks the
+final projected command before effects. It accepts the restricted program only
+in the supported Namespace with observed empty process defaults and no attached
+tools. The Host obtains those defaults from the exact resident handle through
+the original identity, provider and adoption-layout readers; missing or foreign
+identity is a typed refusal, never an invented empty environment. Child wiring
+observes this data only when the existing ACP execution role is installed.
+No provider API, new environment configuration or lifecycle state is added.
+
+The existing Fixed/newline MCP projection omits configured routes; configuration
+metadata is not an executable route. The original Session projection consumes
+the Run's effective restriction and clears MCP routes under `DenyAll` on first
+open and reopen/continuation paths. Old approval or Session configuration cannot
+restore authority. Ordinary Configured execution retains its existing owners.
+
+The original Worker-by-Judge matrix and negative controls qualify this fixed
+Scenario program and its Run/Session integration. They do not certify a
+production Claude/Codex/Gemini CLI NoTools profile, Windows, whole214 or full13;
+those claims need their own source-bound acceptance.
+
 ## Before and after
 
 Before, an ACP publication could list `write`, while runtime exported only Web,

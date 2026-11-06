@@ -35,9 +35,6 @@ RETIRED_EXECUTION_PATHS = {
 }
 
 RUNTIME_HOST_ERROR_OWNER = "crates/server/awaken-session-executor/src/lib.rs"
-SESSION_RUN_ADMISSION_OWNER = (
-    "crates/server/awaken-session-application/src/run_admission.rs"
-)
 CONTAINER_REPOSITORY_OWNER = (
     "crates/worker/awaken-session-environment/src/container_repositories.rs"
 )
@@ -143,45 +140,20 @@ def _normalized_path(path: str) -> str:
     return PARAMETER.sub(lambda match: "{*}" if match.group(0).startswith("{*") else "{}", path)
 
 
-def _call_end(text: str, opening: int) -> int:
-    """Return the byte after the balanced call beginning at `opening` (`(`).
-
-    Route handler bodies live later in the file and contain method-like words;
-    limiting ownership parsing to the balanced `.route(...)` call prevents those
-    handlers from being attributed to the final route declaration.
-    """
-    depth = 0
-    quote: str | None = None
-    escaped = False
-    for index in range(opening, len(text)):
-        char = text[index]
-        if quote is not None:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == quote:
-                quote = None
-            continue
-        if char in {'"', "'"}:
-            quote = char
-        elif char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-            if depth == 0:
-                return index + 1
-    return len(text)
-
-
 def _owned_routes(path: Path) -> list[tuple[str, str]]:
     text = _crate_boundary_workspace.production_rust(
         path.read_text(encoding="utf-8")
     )
+    syntax = _crate_boundary_workspace.rust_syntax(text)
     owned: list[tuple[str, str]] = []
     for match in ROUTE_START.finditer(text):
         opening = text.find("(", match.start(), match.end())
-        expression = text[match.end() : _call_end(text, opening)]
+        # Path spelling comes from the original literal. Only canonical Rust
+        # syntax can establish that this is a call or name its handler methods.
+        if syntax[opening] != "(":
+            continue
+        end = _crate_boundary_workspace._balanced_end(syntax, opening, "(", ")")
+        expression = syntax[match.end() : len(text) if end is None else end]
         methods = set(METHOD.findall(expression))
         for method in methods:
             owned.append((method.upper(), _normalized_path(match.group("path"))))
@@ -252,16 +224,6 @@ def runtime_host_boundary_violations(sources: dict[str, str]) -> list[str]:
             errors.append(
                 f"{RUNTIME_HOST_ERROR_OWNER}: Host fault classification must use stable origin codes; forbidden {token!r}"
             )
-    admission = sources.get(SESSION_RUN_ADMISSION_OWNER, "")
-    required = (
-        "pub struct SessionRunApplication",
-        "impl RunApplication for SessionRunApplication",
-        "run_admitted_session_for_owner",
-    )
-    if any(symbol not in admission for symbol in required):
-        errors.append(
-            f"{SESSION_RUN_ADMISSION_OWNER}: missing the Session-owned Run command or sole public adapter"
-        )
     return errors
 
 
@@ -465,6 +427,31 @@ def selftest() -> None:
         [("GET", "/x", "a.rs"), ("GET", "/x", "b.rs")]
     ), "E4 distinct owners"
 
+    # Route lexical cause/effect table over the SAME production projection:
+    # C1 a real route call has basic/escaped/char/lifetime/raw handler syntax;
+    # C2 comments or literals contain delimiter/method/route-like text; C3 the
+    # call is unbalanced. E1 only actual methods belong to the named route;
+    # E2 the next route remains independent; E3 unbalanced input retains the
+    # original end-of-input fallback. Basic, escape, char and comments preserve
+    # compatibility; lifetime/raw/literal rows reject the old scan's false
+    # ownership. Expected tuples are independent of the parser implementation.
+    route_cases = [
+        ('L1 basic', 'router.route("/a", get(handler)).route("/b", post(next));', [('GET', '/a'), ('POST', '/b')]),
+        ('L2 escaped_string', 'router.route("/a", get({ let x = "escaped \\\\\\" )"; handler })).route("/b", post(next));', [('GET', '/a'), ('POST', '/b')]),
+        ('L3 char_literal', 'router.route("/a", get({ let x = \')\'; handler })).route("/b", post(next));', [('GET', '/a'), ('POST', '/b')]),
+        ('L4 lifetime', 'router.route("/a", get(handler::<\'a>)).route("/b", post(next));', [('GET', '/a'), ('POST', '/b')]),
+        ('L5 raw_payload', 'router.route("/a", get({ let x = r#"a " )"#; handler })).route("/b", post(next));', [('GET', '/a'), ('POST', '/b')]),
+        ('L6 comment', 'router.route("/a", get({ /* nested /* ) */ ) */ handler })).route("/b", post(next));', [('GET', '/a'), ('POST', '/b')]),
+        ('L7 unbalanced', 'router.route("/a", get(handler)', [('GET', '/a')]),
+        ('L8 literal_route_text', 'const EXAMPLE: &str = r#".route("/fake", post(fake))"#; router.route("/a", get(real));', [('GET', '/a')]),
+        ('L9 literal_method_text', 'router.route("/a", get({ let x = "post(fake)"; real }));', [('GET', '/a')]),
+    ]
+    with TemporaryDirectory(prefix="route-lexer-") as directory:
+        route_source = Path(directory) / "routes.rs"
+        for rule, source, expected in route_cases:
+            route_source.write_text(source, encoding="utf-8")
+            assert _owned_routes(route_source) == expected, rule
+
     # Registry decision table: C5 authoritative owner exists; C6 every execution
     # consumer imports it; C7 a consumer declares its own RawTool HashMap.
     # R1 C5,C6,!C7 -> no violation. R2 C5,C6,C7 -> parallel registry rejected.
@@ -494,22 +481,17 @@ def selftest() -> None:
     assert _is_this_checker(Path(__file__).resolve()), "S1 resolved checker source"
     assert not _is_this_checker(Path(__file__).with_name("peer.py")), "S2 peer fixture"
 
-    # Runtime boundary decision table: B1 Session application owns the admitted
-    # Run command and sole public adapter while Host maps typed codes -> accept;
-    # B2 any required ownership surface is missing -> reject; B3 Host infers
-    # identity from message text -> reject.
+    # Host fault boundary decision table: B1 stable typed codes -> accept;
+    # B2 missing Session admission structure -> no duplicate report here, since
+    # the Managed admission owner checks the complete command/adapter contract;
+    # B3 Host infers identity from message text -> reject. Admission's former B2
+    # refusal is preserved as the independent A2 rows of that owner's self-test.
     boundary = {
         RUNTIME_HOST_ERROR_OWNER: "match error.code { _ => () }",
-        SESSION_RUN_ADMISSION_OWNER: (
-            "pub struct SessionRunApplication; "
-            "impl RunApplication for SessionRunApplication {} "
-            "fn run_admitted_session_for_owner() {}"
-        ),
     }
     assert runtime_host_boundary_violations(boundary) == [], "B1"
-    assert runtime_host_boundary_violations(
-        {RUNTIME_HOST_ERROR_OWNER: boundary[RUNTIME_HOST_ERROR_OWNER]}
-    ), "B2"
+    boundary["crates/server/awaken-session-application/src/run_admission.rs"] = ""
+    assert runtime_host_boundary_violations(boundary) == [], "B2 one admission owner"
     boundary[RUNTIME_HOST_ERROR_OWNER] = 'message.contains("401")'
     assert runtime_host_boundary_violations(boundary), "B3"
 

@@ -31,6 +31,8 @@ use awaken_tool_contract::tool::{ToolError, ToolOutputSpiller};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::*;
+mod counting_source;
+use counting_source::{CountingProcess, CountingSource, counting_executor};
 
 struct FakeProcess;
 
@@ -490,6 +492,13 @@ struct ScriptedSource {
 
 #[async_trait]
 impl AgentChannelSource for ScriptedSource {
+    fn check_tool_narrowing(
+        &self,
+        narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+    ) -> std::result::Result<(), OpenError> {
+        crate::opaque_tool_narrowing(narrowing)
+    }
+
     async fn open(
         &self,
         _activation: &RunActivation,
@@ -556,110 +565,6 @@ impl AttemptOwnershipVerifier for ScriptedOwnership {
             }
         }
     }
-}
-
-struct CountingProcess {
-    polls: Arc<AtomicUsize>,
-    observation: Arc<AtomicUsize>,
-}
-
-#[async_trait]
-impl ProcessHandle for CountingProcess {
-    fn id(&self) -> &str {
-        "counting-process"
-    }
-
-    async fn wait(&self) -> std::result::Result<ExitStatus, SandboxError> {
-        loop {
-            if let Some(status) = self.poll().await? {
-                return Ok(status);
-            }
-            tokio::task::yield_now().await;
-        }
-    }
-
-    async fn poll(&self) -> std::result::Result<Option<ExitStatus>, SandboxError> {
-        self.polls.fetch_add(1, Ordering::SeqCst);
-        match self.observation.load(Ordering::SeqCst) {
-            0 => Ok(Some(ExitStatus {
-                code: Some(0),
-                signaled: false,
-            })),
-            1 => Ok(None),
-            2 => Err(SandboxError::transport("transport unavailable")),
-            _ => std::future::pending().await,
-        }
-    }
-
-    async fn signal(&self, _signal: Signal) -> std::result::Result<(), SandboxError> {
-        Ok(())
-    }
-}
-
-struct CountingSource {
-    opens: Arc<AtomicUsize>,
-    prompts: Arc<AtomicUsize>,
-    process_polls: Arc<AtomicUsize>,
-    observation: Arc<AtomicUsize>,
-}
-
-#[async_trait]
-impl AgentChannelSource for CountingSource {
-    async fn open(
-        &self,
-        _activation: &RunActivation,
-        _context: &RuntimeRunContext,
-        _door: ChannelOpenDoor,
-    ) -> std::result::Result<AgentSession, OpenError> {
-        self.opens.fetch_add(1, Ordering::SeqCst);
-        let (ours, mut theirs) = tokio::io::duplex(4096);
-        let prompts = self.prompts.clone();
-        tokio::spawn(async move {
-            let mut prompt = String::new();
-            let mut reader = BufReader::new(&mut theirs);
-            if reader.read_line(&mut prompt).await.is_ok() && !prompt.is_empty() {
-                prompts.fetch_add(1, Ordering::SeqCst);
-            }
-            let _ = theirs
-                .write_all(b"{\"type\":\"message\",\"text\":\"done\"}\n")
-                .await;
-            let _ = theirs
-                .write_all(b"{\"type\":\"turn_end\",\"reason\":\"natural_end\"}\n")
-                .await;
-            let _ = theirs.flush().await;
-        });
-        Ok(fixture_session(
-            Box::new(ours),
-            Arc::new(CountingProcess {
-                polls: self.process_polls.clone(),
-                observation: self.observation.clone(),
-            }),
-            Codec::Newline,
-            None,
-        ))
-    }
-}
-
-fn counting_executor() -> (
-    AcpRunExecutor,
-    Arc<AtomicUsize>,
-    Arc<AtomicUsize>,
-    Arc<AtomicUsize>,
-) {
-    let opens = Arc::new(AtomicUsize::new(0));
-    let prompts = Arc::new(AtomicUsize::new(0));
-    let process_polls = Arc::new(AtomicUsize::new(0));
-    (
-        AcpRunExecutor::new(Arc::new(CountingSource {
-            opens: opens.clone(),
-            prompts: prompts.clone(),
-            process_polls: process_polls.clone(),
-            observation: Arc::new(AtomicUsize::new(0)),
-        })),
-        opens,
-        prompts,
-        process_polls,
-    )
 }
 
 #[tokio::test]
@@ -2364,6 +2269,13 @@ async fn opening_a_session_retains_the_attempt_observer_until_the_typed_owner_re
     struct PendingOpen(Arc<AtomicBool>);
     #[async_trait]
     impl AgentChannelSource for PendingOpen {
+        fn check_tool_narrowing(
+            &self,
+            narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+        ) -> std::result::Result<(), OpenError> {
+            crate::opaque_tool_narrowing(narrowing)
+        }
+
         async fn open(
             &self,
             _activation: &RunActivation,
@@ -2411,6 +2323,13 @@ struct RecoverableSource {
 }
 #[async_trait]
 impl AgentChannelSource for RecoverableSource {
+    fn check_tool_narrowing(
+        &self,
+        narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+    ) -> std::result::Result<(), OpenError> {
+        crate::opaque_tool_narrowing(narrowing)
+    }
+
     async fn open(
         &self,
         activation: &RunActivation,
@@ -2714,6 +2633,13 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
     }
     #[async_trait]
     impl AgentChannelSource for PersistingSource {
+        fn check_tool_narrowing(
+            &self,
+            narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+        ) -> std::result::Result<(), OpenError> {
+            crate::opaque_tool_narrowing(narrowing)
+        }
+
         async fn open(
             &self,
             _a: &RunActivation,
@@ -3388,6 +3314,13 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
 
     #[async_trait]
     impl AgentChannelSource for PermissionSource {
+        fn check_tool_narrowing(
+            &self,
+            narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+        ) -> std::result::Result<(), OpenError> {
+            crate::opaque_tool_narrowing(narrowing)
+        }
+
         async fn open(
             &self,
             _activation: &RunActivation,
@@ -4415,6 +4348,13 @@ async fn acp_relaunches_the_cli_every_run_so_a_model_switch_takes_effect() {
     struct CountingSource(Arc<AtomicUsize>);
     #[async_trait]
     impl AgentChannelSource for CountingSource {
+        fn check_tool_narrowing(
+            &self,
+            narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+        ) -> std::result::Result<(), OpenError> {
+            crate::opaque_tool_narrowing(narrowing)
+        }
+
         async fn open(
             &self,
             _a: &RunActivation,
@@ -4875,6 +4815,13 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
     struct HangingSource;
     #[async_trait]
     impl AgentChannelSource for HangingSource {
+        fn check_tool_narrowing(
+            &self,
+            narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+        ) -> std::result::Result<(), OpenError> {
+            crate::opaque_tool_narrowing(narrowing)
+        }
+
         async fn open(
             &self,
             _a: &RunActivation,
@@ -5099,6 +5046,13 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
     struct FlakySource(Arc<AtomicUsize>);
     #[async_trait]
     impl AgentChannelSource for FlakySource {
+        fn check_tool_narrowing(
+            &self,
+            narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+        ) -> std::result::Result<(), OpenError> {
+            crate::opaque_tool_narrowing(narrowing)
+        }
+
         async fn open(
             &self,
             _a: &RunActivation,
@@ -5728,7 +5682,7 @@ async fn owned_recovery_selects_only_the_current_runs_exact_execution_owner() {
                 assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
             }
             _ => {
-                assert_eq!(result.unwrap(), None);
+                assert_eq!(result.unwrap().terminal, None);
                 assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
             }
         }

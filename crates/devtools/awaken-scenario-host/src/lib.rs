@@ -15,6 +15,7 @@ mod managed_state;
 mod model_publication;
 mod model_routing;
 mod models;
+mod outcome_acp;
 pub mod realization_observation;
 mod scenario_platform;
 mod web;
@@ -91,25 +92,6 @@ pub use awaken_session_executor::{
 };
 pub use awaken_session_run_delivery::{ThreadEvent, ThreadEventHub};
 
-/// One tool-free ACP stand-in that can act as either Outcome Worker or Judge.
-/// Its prompt classification makes the Worker/Grader backend matrix observable
-/// without provider credentials.
-const FAKE_OUTCOME_ACP_SCRIPT: &str = "read _p; \
-    case \"$_p\" in \
-      *'Evaluate this Outcome input'*'FINAL answer'*) \
-        printf '%s\\n' '{\"type\":\"message\",\"text\":\"{\\\"result\\\":\\\"satisfied\\\",\\\"explanation\\\":\\\"ACP judge accepted evidence\\\"}\"}';; \
-      *'Evaluate this Outcome input'*) \
-        printf '%s\\n' '{\"type\":\"message\",\"text\":\"{\\\"result\\\":\\\"needs_revision\\\",\\\"explanation\\\":\\\"ACP judge requests FINAL\\\"}\"}';; \
-      *'Revise the deliverable'*) \
-        printf '%s\\n' '{\"type\":\"message\",\"text\":\"FINAL answer from ACP worker\"}';; \
-      *'iteration limit was reached'*) \
-        printf '%s\\n' '{\"type\":\"message\",\"text\":\"ACP worker acknowledged remaining feedback\"}';; \
-      *) printf '%s\\n' '{\"type\":\"message\",\"text\":\"a rough draft from ACP worker\"}';; \
-    esac; \
-    printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'; \
-    trap 'exit 0' TERM INT; \
-    while :; do sleep 1; done";
-
 /// Managed Outcome backend matrix: each Session independently selects a Native
 /// or ACP Worker, while `AWAKEN_OUTCOME_JUDGE_RUNTIME` pins the Judge snapshot.
 #[expect(
@@ -120,10 +102,7 @@ pub async fn build_outcome_matrix_router(
     trace_file_present: bool,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
-    let launch = awaken_run_executor_acp::AcpLaunch::custom(
-        scenario_shell_argv(FAKE_OUTCOME_ACP_SCRIPT),
-        vec![],
-    );
+    let launch = outcome_acp::launch();
     let (model, model_ref) = scenario_model(Arc::new(ReviseModel), "outcome-native");
     let judge_backend = match std::env::var("AWAKEN_OUTCOME_JUDGE_RUNTIME").as_deref() {
         Ok("acp") => "acp:claude",

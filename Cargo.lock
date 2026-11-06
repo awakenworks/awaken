@@ -3079,6 +3079,7 @@ dependencies = [
  "awaken-plugin-composition",
  "awaken-process-startup",
  "awaken-protocol-a2a",
+ "awaken-protocol-acp",
  "awaken-protocol-awaken",
  "awaken-protocol-managed",
  "awaken-protocol-managed-testkit",

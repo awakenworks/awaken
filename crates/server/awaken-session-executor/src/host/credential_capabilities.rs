@@ -49,6 +49,26 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
     Some(capabilities)
 }
 
+/// Read the actual resident's process defaults through its existing lifecycle
+/// and adoption owners. This application-side projection retains no state and
+/// never treats an absent baseline or a different resident as empty evidence.
+pub(crate) fn resident_process_environment(
+    realization: &crate::realization_executor::RealizationExecutor,
+    thread: &str,
+    environment: &Arc<crate::session_environment::SessionEnvironment>,
+) -> Result<Vec<awaken_provisioning_contract::EnvVar>, crate::realization_error::RealizationError> {
+    let holding = realization.environments();
+    holding.resident_environment_activity_identity(thread, environment)?;
+    let provider = holding.projected_session_environment_provider(thread, None)?;
+    let spec =
+        holding.session_environment_adoption_spec(realization.peers(), thread, provider, None)?;
+    let layout = provider
+        .adoption()
+        .effective_adoption_layout(&spec, &environment.lifecycle().handle())
+        .map_err(crate::realization_error::RealizationError::from)?;
+    Ok(layout.spec.env)
+}
+
 impl crate::RunCapabilities {
     /// Resolve the one exact inference plaintext holder used by both direct and
     /// dispatched attempts from the immutable candidate publication.
@@ -79,31 +99,39 @@ impl crate::RunCapabilities {
         environment: Arc<crate::session_environment::SessionEnvironment>,
         background: Arc<awaken_session_run_delivery::BackgroundRuns>,
         hosts_application: bool,
+        environment_variables: impl FnOnce() -> Result<
+            Option<Vec<awaken_provisioning_contract::EnvVar>>,
+            crate::realization_error::RealizationError,
+        >,
     ) -> Result<
         crate::agent_runner::ChildExecutionAdapters,
         crate::realization_error::RealizationError,
     > {
+        let acp = match &self.exec.acp {
+            crate::host::capability::AcpBackend::Installed(acp) => {
+                Some((acp.clone(), environment_variables()?))
+            }
+            crate::host::capability::AcpBackend::Absent
+            | crate::host::capability::AcpBackend::Projection(_) => None,
+        }
+        .map(|(acp, environment_variables)| {
+            let process = environment.agent_process().clone();
+            Arc::new(move |backend, permission| {
+                acp.create(awaken_session_environment_contract::AcpSessionExecution {
+                    environment: process.clone(),
+                    environment_variables: environment_variables.clone(),
+                    backend,
+                    permission,
+                    mcp_servers: Vec::new(),
+                    attached_tools: None,
+                    grant_observer: None,
+                    continuation: None,
+                })
+            }) as crate::agent_runner::ChildAcpExecutorFactory
+        });
         Ok(crate::agent_runner::ChildExecutionAdapters {
             session_thread_id: Some(awaken_agent_contract::ThreadId(thread.to_owned())),
-            acp: match &self.exec.acp {
-                crate::host::capability::AcpBackend::Installed(acp) => Some(acp.clone()),
-                crate::host::capability::AcpBackend::Absent
-                | crate::host::capability::AcpBackend::Projection(_) => None,
-            }
-            .map(|acp| {
-                let process = environment.agent_process().clone();
-                Arc::new(move |backend, permission| {
-                    acp.create(awaken_session_environment_contract::AcpSessionExecution {
-                        environment: process.clone(),
-                        backend,
-                        permission,
-                        mcp_servers: Vec::new(),
-                        attached_tools: None,
-                        grant_observer: None,
-                        continuation: None,
-                    })
-                }) as crate::agent_runner::ChildAcpExecutorFactory
-            }),
+            acp,
             remote: self.agent.remote_attempt_executor.clone(),
             credential_capabilities: self.local_credential_realization_capabilities(),
             web_search: Some(self.web_search_plugin(thread, None)?),
@@ -289,11 +317,15 @@ mod tests {
     #[tokio::test]
     async fn child_adapters_preserve_installed_profiles_across_transport_topologies() {
         // Causes: C1 store-owning/database-less Worker role; C2 materializer installed;
-        // C3 ACP adapter installed. Effects: E1 exact Host profile preserved in
+        // C3 ACP role absent/projection/installed; C4 environment read succeeds/fails.
+        // Effects: E1 exact Host profile preserved in
         // both fresh delegation and cold recovery (one constructor); E2 only
         // installed WorkerRelay / ACP process-field profiles are admitted.
         // Table: C1 is independent; !C2 -> neither; C2&&!C3 -> relay only;
-        // C2&&C3 -> both. A remote-only subset loses C2/C3 and must fail.
+        // C2&&C3=installed -> both. A remote-only subset loses C2/C3 and must fail.
+        // R1: C3=absent/projection -> zero environment reads, independent of C4.
+        // R2: C3=installed -> exactly one read; C4=success preserves the factory,
+        // C4=failure returns the original typed error before a factory is built.
         // Root Worker execution is covered by credential_materialization_worker
         // P1/P6 and the Native/Claude real-service journeys, not a fake getter.
         use awaken_sandbox_local::LocalProvider;
@@ -308,63 +340,89 @@ mod tests {
         );
         for database_less_worker in [false, true] {
             for material_access in [false, true] {
-                for acp_installed in [false, true] {
-                    let mut host = crate::SessionExecutorBuilder::ephemeral(
-                        Arc::new(crate::host::MemoryHostModel),
-                        "test-model",
-                    )
-                    .await;
-                    if database_less_worker {
-                        host = host.with_authority(crate::UpstreamAuthority::default());
-                    }
-                    if material_access {
-                        host = host.with_credential_materializer(
+                for acp_role in ["absent", "projection", "installed"] {
+                    for environment_read_succeeds in [false, true] {
+                        let mut host = crate::SessionExecutorBuilder::ephemeral(
+                            Arc::new(crate::host::MemoryHostModel),
+                            "test-model",
+                        )
+                        .await;
+                        if database_less_worker {
+                            host = host.with_authority(crate::UpstreamAuthority::default());
+                        }
+                        if material_access {
+                            host = host.with_credential_materializer(
                             awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
                                 Arc::new(ControlReferenceResolver),
                              awaken_time::system_clock(),),
                         );
-                    }
-                    if acp_installed {
-                        let source =
-                            Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
-                                awaken_run_executor_acp::AcpLaunch::custom(
-                                    vec!["true".into()],
-                                    vec![],
-                                ),
+                        }
+                        if acp_role == "projection" {
+                            host = host.with_acp_projection_policy(
+                                awaken_run_executor_acp::acp_adapter_policy(),
+                            );
+                        }
+                        let acp_installed = acp_role == "installed";
+                        if acp_installed {
+                            let source =
+                                Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
+                                    awaken_run_executor_acp::AcpLaunch::custom(
+                                        vec!["true".into()],
+                                        vec![],
+                                    ),
+                                ));
+                            host = host.with_acp(Arc::new(
+                                awaken_run_executor_acp::AcpRunExecutor::new(source),
                             ));
-                        host = host.with_acp(Arc::new(
-                            awaken_run_executor_acp::AcpRunExecutor::new(source),
-                        ));
-                    }
-                    let host = (host).build().expect("validated Host dependencies");
-                    let adapters = host
-                        .run_assembly
-                        .capabilities
-                        .child_execution_adapters(
+                        }
+                        let host = (host).build().expect("validated Host dependencies");
+                        let environment_reads = std::cell::Cell::new(0);
+                        let adapters = host.run_assembly.capabilities.child_execution_adapters(
                             "profiles",
                             environment.clone(),
                             host.resources.memory.background(),
                             host.run_assembly.authority.hosts_session_application(),
-                        )
-                        .expect("installed Sessions");
-                    assert_eq!(
-                        adapters.credential_capabilities,
-                        host.run_assembly
-                            .capabilities
-                            .local_credential_realization_capabilities()
-                    );
-                    assert_eq!(
-                        has_worker_relay(&adapters.credential_capabilities),
-                        material_access
-                    );
-                    assert_eq!(
-                        has_acp_mcp_client_injection(
-                            &adapters.credential_capabilities,
-                            "acp:claude"
-                        ),
-                        material_access && acp_installed
-                    );
-                    assert_eq!(adapters.acp.is_some(), acp_installed);
+                            || {
+                                environment_reads.set(environment_reads.get() + 1);
+                                if environment_read_succeeds {
+                                    Ok(None)
+                                } else {
+                                    Err(
+                                        crate::realization_error::RealizationError::invalid_request(
+                                            "environment read refused",
+                                        ),
+                                    )
+                                }
+                            },
+                        );
+                        assert_eq!(environment_reads.get(), usize::from(acp_installed));
+                        if acp_installed && !environment_read_succeeds {
+                            assert_eq!(
+                                adapters.err().expect("R2 typed read failure").to_string(),
+                                "environment read refused"
+                            );
+                            continue;
+                        }
+                        let adapters = adapters.expect("R1/R2 original adapters");
+                        assert_eq!(
+                            adapters.credential_capabilities,
+                            host.run_assembly
+                                .capabilities
+                                .local_credential_realization_capabilities()
+                        );
+                        assert_eq!(
+                            has_worker_relay(&adapters.credential_capabilities),
+                            material_access
+                        );
+                        assert_eq!(
+                            has_acp_mcp_client_injection(
+                                &adapters.credential_capabilities,
+                                "acp:claude"
+                            ),
+                            material_access && acp_installed
+                        );
+                        assert_eq!(adapters.acp.is_some(), acp_installed);
+                    }
                 }
             }
         }

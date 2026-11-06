@@ -135,6 +135,13 @@ struct ScriptedAgent {
 
 #[async_trait]
 impl AgentChannelSource for ScriptedAgent {
+    fn check_tool_narrowing(
+        &self,
+        narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+    ) -> std::result::Result<(), awaken_run_executor_acp::OpenError> {
+        awaken_run_executor_acp::opaque_tool_narrowing(narrowing)
+    }
+
     async fn open(
         &self,
         _activation: &RunActivation,
