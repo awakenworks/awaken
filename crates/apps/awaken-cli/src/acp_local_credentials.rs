@@ -241,6 +241,7 @@ fn configured_worker_upstream(
         &deployment.worker,
         upstream,
         awaken_worker::WorkerUpstreamSecurity::Local,
+        awaken_worker::PodIdentity::installed(),
         clock,
     )
 }
