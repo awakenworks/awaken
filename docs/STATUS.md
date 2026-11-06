@@ -39,8 +39,8 @@ consistent vocabulary. This affects the documentation layers differently:
 
 ## Architecture Execution
 
-Current main source `a4fc7d6a3140` (2026-11-06) retains five normally
-committed CI/fixture changes after `8b908ffec6f4`; the rebased combination
+Current main source `a2a855cd2bb6` (2026-11-06) retains six normally
+committed lifecycle/CI/fixture changes after `8b908ffec6f4`; the rebased combination
 still needs its own source-bound qualification. Private checkpoint
 `31645771afd4` earned `verified/20261106-0823` for the original complete
 Linux Rust group: 10,561 passed and 129 skipped, both workspace Clippy
@@ -52,8 +52,8 @@ Plan v5 is in force; the v4 slices below identify their existing owners.
 The automatic Resource receipt and exact concurrent-convergence repairs are
 normally committed and fast-forwarded. The fixed-source ACP continuation `8594ef7915b0`, its conditional child
 observation follow-up `689d604978c8` and guard consolidation `5758bd9fee47`
-are privately received with owning qualification. Their four replayed patches
-and all incoming main afterimages are preserved; the new source, full E2E,
+are privately received with owning qualification. Their replayed patches, the normally committed delegation observer
+`547b6d40ad41` and all incoming main afterimages are preserved; the new source, full E2E,
 formal and downstream results retain their own subjects.
 
 - **Delivered checkpoints.** V4, the E2E continuation, SDK baseline qualifier
@@ -87,6 +87,11 @@ formal and downstream results retain their own subjects.
   the reviewed main checkpoint. The original unmodified Namespace case passed
   live Resource changes, cross-Run reuse, hard-crash adoption and release;
   this single case is not whole214 or physical-cluster qualification.
+- **Shared HTTP encoding.** AG-UI and AI SDK keep their original route
+  classifiers; Coordinator selects the one plain-text encoding in the existing
+  access edge. The duplicate renderers are removed without a new crate or
+  dependency; four owning packages and both original Clippy graphs passed,
+  while final combined qualification remains required.
 - **Source diagnostics.** On `8b908ffec6f4`,
   `python3 scripts/ci/principle_status.py --guards` reports 0 lock-poison panics,
   33 `Weak`, 56 optional borrowed roles, one wire error rendering and 30 contract
@@ -124,7 +129,7 @@ formal and downstream results retain their own subjects.
 | V5 | Keep one short status record and linked design owners | This is the single progress owner; executed details stay in the existing qualification/M5 owners without a second status ledger. |
 | V6 | Every formal gate proof finishes within host resources | The `3eeb9532` full run completed Kani/vacuity and TLAPS before the observation-mutant failure repaired in `395303e5`; the later full attempt returned resource 75. Fresh complete qualification and the existing rerun markers remain open. |
 | V7 | Upgrade the real Cloud/Flow composition cohort | Flow and Cloud retain their incoming main changes in clean rebased candidate trees, still resolving Native `81aef316f004` and `615c885bd4e7` respectively. Final qualified Native pins, the Flow constructor migration, actual fingerprint/BOM and both complete validation graphs remain open. |
-| V8 | Linux, k3d and distributed product acceptance on one final BOM | Whole214 has a retained delegation counterexample on `31645771afd4`; required Provider/Skill journeys, full13, distributed acceptance, final BOM and coverage remain open. The approved minimal historical reference still needs a complete comparison; controlled Provider checks and earlier partial profiles keep their narrower scopes. |
+| V8 | Linux, k3d and distributed product acceptance on one final BOM | Whole214 retains its `31645771afd4` failure; observer `547b6d40ad41` passed focused cases, while the final whole run, required Provider/Skill journeys, full13, distributed acceptance, BOM and coverage remain open. The approved six-file reference `98cbe0a93e9a` is normally committed but still needs complete sampling and comparison; controlled Provider checks and earlier partial profiles keep their narrower scopes. |
 | V9 | G private Task control and L SDK SemVer; retire LocalWorker after V8 | G is delivered; all three original SDK package/artifact/compiler-SemVer qualifiers and their outer wrappers passed on `08eef1f2fb88`, with historical and first-release subjects distinguished. Final source and public publication remain separate; LocalWorker retirement follows V8 and requalifies its changed source. |
 
 ## Document Readiness

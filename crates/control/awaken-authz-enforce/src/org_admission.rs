@@ -20,9 +20,9 @@ use awaken_tenancy::org_admission::{
 use awaken_time::WallClockExt as _;
 use awaken_time::mono::Stopwatch;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, Method};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 
 const MILLIS_PER_SECOND: u64 = 1_000;
 const TOKEN_QUANTA_PER_TOKEN: u64 = 60 * MILLIS_PER_SECOND;
@@ -320,6 +320,53 @@ pub struct OrgAdmissionEncoding {
     /// Bucket state the protocol publishes on every metered response, when it
     /// has a wire shape for it.
     pub annotate: Option<fn(&mut HeaderMap, &OrgAdmissionDecision)>,
+}
+
+impl OrgAdmissionEncoding {
+    /// Select the common plain-text HTTP error shape with a protocol's own
+    /// route classification. This adds no bucket decision or annotation policy.
+    #[must_use]
+    pub const fn plain_text(
+        classify: fn(&Method, &str) -> Option<(OrgOperation, &'static str)>,
+    ) -> Self {
+        Self {
+            classify,
+            scope_missing: plain_text_scope_missing,
+            unavailable: plain_text_unavailable,
+            rejected: plain_text_rejected,
+            annotate: None,
+        }
+    }
+}
+
+fn plain_text_scope_missing(_path: &str) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "request has no trusted Workspace scope",
+    )
+        .into_response()
+}
+
+fn plain_text_unavailable(_path: &str, error: &OrgAdmissionUnavailable) -> Response {
+    (StatusCode::SERVICE_UNAVAILABLE, error.to_string()).into_response()
+}
+
+fn plain_text_rejected(
+    _path: &str,
+    operation: OrgOperation,
+    decision: &OrgAdmissionDecision,
+) -> Response {
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        format!("Org {operation:?} request limit exceeded"),
+    )
+        .into_response();
+    if let Some(retry_after) = decision.retry_after {
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from(retry_after));
+    }
+    response
 }
 
 /// The outcome of admitting one request; the protocol encodes all but
@@ -621,5 +668,79 @@ mod tests {
         assert_eq!(rejected.headers()["x-remaining"], "0", "E3");
         let unscoped = call(app, "/create").await.unwrap();
         assert_eq!(unscoped.status(), StatusCode::SERVICE_UNAVAILABLE, "E4");
+    }
+
+    #[tokio::test]
+    async fn plain_text_org_admission_keeps_the_existing_http_error_shape() {
+        let encoding = OrgAdmissionEncoding::plain_text(probe_classify);
+
+        // Causes: C1 missing trusted scope; C2 unavailable limiter; C3 refused
+        // Create/Read bucket; C4 Retry-After present/absent. All errors retain
+        // the selected plain-text body and Content-Type, not only its status.
+        // | Rule | Cause       | Status | Body                         | Retry |
+        // | E1   | C1          | 503    | exact missing-scope message  | none  |
+        // | E2   | C2          | 503    | exact limiter error          | none  |
+        // | E3   | C3 x C4     | 429    | exact operation-specific text| C4    |
+        // E3 crosses both operations with both optional-header branches.
+        let mut cases = vec![
+            (
+                (encoding.scope_missing)("/create"),
+                StatusCode::SERVICE_UNAVAILABLE,
+                None,
+                "request has no trusted Workspace scope",
+            ),
+            (
+                (encoding.unavailable)(
+                    "/create",
+                    &OrgAdmissionUnavailable {
+                        message: "down".into(),
+                    },
+                ),
+                StatusCode::SERVICE_UNAVAILABLE,
+                None,
+                "Org request limiter is unavailable: down",
+            ),
+        ];
+        for (operation, body) in [
+            (OrgOperation::Create, "Org Create request limit exceeded"),
+            (OrgOperation::Read, "Org Read request limit exceeded"),
+        ] {
+            for retry_after in [Some(20), None] {
+                let decision = OrgAdmissionDecision {
+                    allowed: false,
+                    limit: 3,
+                    remaining: 0,
+                    retry_after,
+                    reset_after: 60,
+                    reset_at_unix_ms: 0,
+                };
+                cases.push((
+                    (encoding.rejected)("/create", operation, &decision),
+                    StatusCode::TOO_MANY_REQUESTS,
+                    retry_after.map(|_| "20"),
+                    body,
+                ));
+            }
+        }
+        for (response, status, retry_after, body) in cases {
+            assert_eq!(response.status(), status, "{body}");
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                "text/plain; charset=utf-8",
+                "{body}"
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::RETRY_AFTER)
+                    .map(|value| value.to_str().unwrap()),
+                retry_after,
+                "{body}",
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(bytes.as_ref(), body.as_bytes(), "exact public error body");
+        }
     }
 }
