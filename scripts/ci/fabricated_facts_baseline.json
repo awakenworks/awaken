@@ -6,8 +6,8 @@
       "expires": "2026-12-31",
       "reason": "Two cases remain. state/constants.rs declares LEGACY_UNRECORDED_AT, the v1 wire compatibility sentinel for historical Session events without a durable time; a versioned read must preserve the underlying unknown observation. official_request_witnesses.rs builds a synthetic pagination cursor whose created_at is a cursor position, not a record's observation. The Models API now reads Control's durable local publication time through the existing Coordinator registration history.",
       "files": {
-        "crates/server/awaken-protocol-managed/src/official_request_witnesses.rs": 1,
-        "crates/server/awaken-protocol-managed/src/state/constants.rs": 1
+        "crates/platform/protocols/awaken-protocol-managed/src/official_request_witnesses.rs": 1,
+        "crates/platform/protocols/awaken-protocol-managed/src/state/constants.rs": 1
       }
     }
   }

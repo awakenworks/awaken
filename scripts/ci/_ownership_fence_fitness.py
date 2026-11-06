@@ -35,7 +35,7 @@ import subprocess
 from pathlib import Path
 
 # The kernel's own sources: `fence.rs` and the `fence/` module directory.
-KERNEL = "crates/contract/awaken-lease-contract/src/fence"
+KERNEL = "crates/sdk/contracts/awaken-lease-contract/src/fence"
 
 FENCE_TYPE = re.compile(
     r"\b(?P<kind>struct|enum|type|trait)\s+(?P<name>\w*(?:Fence|Lease|Tenure|Epoch))\b"

@@ -16,78 +16,78 @@ DDL = re.compile(
     r"ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|SEQUENCE|FUNCTION|TRIGGER|VIEW))\b",
     re.IGNORECASE,
 )
-SESSION_SCHEMA = "crates/stores/awaken-session-store/src/schema.rs"
+SESSION_SCHEMA = "crates/platform/session/awaken-session-store/src/schema.rs"
 
 # Exact immutable receipts observed in the published dispatch ledger. This is
 # a closed compatibility inventory, not a general exemption: one owner must
 # include both frozen bodies and may declare exactly two legacy migrations.
 PUBLISHED_LEGACY_SQL_AUTHORITIES = {
-    "crates/resources/awaken-skill-store/src/migrations/expanded/V0001__skill.sql":
-        "crates/resources/awaken-skill-store/src/schema/expanded.rs",
-    "crates/resources/awaken-skill-store/src/migrations/expanded/V0002__aggregate.sql":
-        "crates/resources/awaken-skill-store/src/schema/expanded.rs",
-    "crates/server/awaken-sandbox-policy-store/src/migrations/expanded/V0001__policy_version.sql":
-        "crates/server/awaken-sandbox-policy-store/src/expanded_schema.rs",
-    "crates/server/awaken-sandbox-policy-store/src/migrations/expanded/V0002__current_policy.sql":
-        "crates/server/awaken-sandbox-policy-store/src/expanded_schema.rs",
-    "crates/server/awaken-sandbox-policy-store/src/migrations/expanded/V0003__environment_binding.sql":
-        "crates/server/awaken-sandbox-policy-store/src/expanded_schema.rs",
-    "crates/control/awaken-config-store/src/migrations/expanded/V0005__publication_sequence.postgres.sql":
-        "crates/control/awaken-config-store/src/schema/expanded.rs",
-    "crates/control/awaken-config-store/src/migrations/expanded/V0005__publication_sequence.sqlite.sql":
-        "crates/control/awaken-config-store/src/schema/expanded.rs",
-    "crates/control/awaken-config-store/src/migrations/expanded/V0009__agent_revision.postgres.sql":
-        "crates/control/awaken-config-store/src/schema/expanded.rs",
-    "crates/control/awaken-config-store/src/migrations/expanded/V0009__agent_revision.sqlite.sql":
-        "crates/control/awaken-config-store/src/schema/expanded.rs",
-    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0001__inference_profile.sql":
-        "crates/control/awaken-admin-config-api/src/schema.rs",
-    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0002__mcp_server.sql":
-        "crates/control/awaken-admin-config-api/src/schema.rs",
-    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0003__agent_mcp.sql":
-        "crates/control/awaken-admin-config-api/src/schema.rs",
-    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0004__agent_resource.sql":
-        "crates/control/awaken-admin-config-api/src/schema.rs",
-    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0005__webhook.sql":
-        "crates/control/awaken-admin-config-api/src/schema.rs",
-    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0006__memory_store.sql":
-        "crates/control/awaken-admin-config-api/src/schema.rs",
-    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0007__webhook_outbox.sql":
-        "crates/control/awaken-admin-config-api/src/schema.rs",
-    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0008__resource_catalog.sql":
-        "crates/control/awaken-admin-config-api/src/schema.rs",
-    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0009__retire_legacy_mcp_config.sql":
-        "crates/control/awaken-admin-config-api/src/schema.rs",
-    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0010__retire_legacy_webhook_outbox.sql":
-        "crates/control/awaken-admin-config-api/src/schema.rs",
-    "crates/control/awaken-admin-config-api/src/migrations/expanded/V0011__webhook_mutation_intent.sql":
-        "crates/control/awaken-admin-config-api/src/schema.rs",
-    "crates/resources/awaken-memory-store/src/migrations/expanded/V0001__blob.sql":
-        "crates/resources/awaken-memory-store/src/schema.rs",
-    "crates/stores/awaken-work-store/src/migrations/expanded/V0001__work_item.sql":
-        "crates/stores/awaken-work-store/src/schema.rs",
-    "crates/stores/awaken-work-store/src/migrations/expanded/V0002__lease_authority.sql":
-        "crates/stores/awaken-work-store/src/schema.rs",
-    "crates/stores/awaken-work-store/src/migrations/expanded/V0003__lease_refresh.sql":
-        "crates/stores/awaken-work-store/src/schema.rs",
-    "crates/stores/awaken-work-store/src/migrations/expanded/V0004__session_projection.sql":
-        "crates/stores/awaken-work-store/src/schema.rs",
-    "crates/stores/awaken-work-store/src/migrations/expanded/V0005__session_token.sql":
-        "crates/stores/awaken-work-store/src/schema.rs",
-    "crates/server/awaken-dispatch/src/migrations/expanded/V0015__delegation_group.sql":
-        "crates/server/awaken-dispatch/src/dispatch_schema.rs",
-    "crates/server/awaken-dispatch/src/migrations/expanded/V0016__drop_legacy_delegation_group.sql":
-        "crates/server/awaken-dispatch/src/dispatch_schema.rs",
+    "crates/platform/resources/awaken-skill-store/src/migrations/expanded/V0001__skill.sql":
+        "crates/platform/resources/awaken-skill-store/src/schema/expanded.rs",
+    "crates/platform/resources/awaken-skill-store/src/migrations/expanded/V0002__aggregate.sql":
+        "crates/platform/resources/awaken-skill-store/src/schema/expanded.rs",
+    "crates/platform/config/awaken-sandbox-policy-store/src/migrations/expanded/V0001__policy_version.sql":
+        "crates/platform/config/awaken-sandbox-policy-store/src/expanded_schema.rs",
+    "crates/platform/config/awaken-sandbox-policy-store/src/migrations/expanded/V0002__current_policy.sql":
+        "crates/platform/config/awaken-sandbox-policy-store/src/expanded_schema.rs",
+    "crates/platform/config/awaken-sandbox-policy-store/src/migrations/expanded/V0003__environment_binding.sql":
+        "crates/platform/config/awaken-sandbox-policy-store/src/expanded_schema.rs",
+    "crates/platform/config/awaken-config-store/src/migrations/expanded/V0005__publication_sequence.postgres.sql":
+        "crates/platform/config/awaken-config-store/src/schema/expanded.rs",
+    "crates/platform/config/awaken-config-store/src/migrations/expanded/V0005__publication_sequence.sqlite.sql":
+        "crates/platform/config/awaken-config-store/src/schema/expanded.rs",
+    "crates/platform/config/awaken-config-store/src/migrations/expanded/V0009__agent_revision.postgres.sql":
+        "crates/platform/config/awaken-config-store/src/schema/expanded.rs",
+    "crates/platform/config/awaken-config-store/src/migrations/expanded/V0009__agent_revision.sqlite.sql":
+        "crates/platform/config/awaken-config-store/src/schema/expanded.rs",
+    "crates/platform/config/awaken-admin-config-api/src/migrations/expanded/V0001__inference_profile.sql":
+        "crates/platform/config/awaken-admin-config-api/src/schema.rs",
+    "crates/platform/config/awaken-admin-config-api/src/migrations/expanded/V0002__mcp_server.sql":
+        "crates/platform/config/awaken-admin-config-api/src/schema.rs",
+    "crates/platform/config/awaken-admin-config-api/src/migrations/expanded/V0003__agent_mcp.sql":
+        "crates/platform/config/awaken-admin-config-api/src/schema.rs",
+    "crates/platform/config/awaken-admin-config-api/src/migrations/expanded/V0004__agent_resource.sql":
+        "crates/platform/config/awaken-admin-config-api/src/schema.rs",
+    "crates/platform/config/awaken-admin-config-api/src/migrations/expanded/V0005__webhook.sql":
+        "crates/platform/config/awaken-admin-config-api/src/schema.rs",
+    "crates/platform/config/awaken-admin-config-api/src/migrations/expanded/V0006__memory_store.sql":
+        "crates/platform/config/awaken-admin-config-api/src/schema.rs",
+    "crates/platform/config/awaken-admin-config-api/src/migrations/expanded/V0007__webhook_outbox.sql":
+        "crates/platform/config/awaken-admin-config-api/src/schema.rs",
+    "crates/platform/config/awaken-admin-config-api/src/migrations/expanded/V0008__resource_catalog.sql":
+        "crates/platform/config/awaken-admin-config-api/src/schema.rs",
+    "crates/platform/config/awaken-admin-config-api/src/migrations/expanded/V0009__retire_legacy_mcp_config.sql":
+        "crates/platform/config/awaken-admin-config-api/src/schema.rs",
+    "crates/platform/config/awaken-admin-config-api/src/migrations/expanded/V0010__retire_legacy_webhook_outbox.sql":
+        "crates/platform/config/awaken-admin-config-api/src/schema.rs",
+    "crates/platform/config/awaken-admin-config-api/src/migrations/expanded/V0011__webhook_mutation_intent.sql":
+        "crates/platform/config/awaken-admin-config-api/src/schema.rs",
+    "crates/platform/resources/awaken-memory-store/src/migrations/expanded/V0001__blob.sql":
+        "crates/platform/resources/awaken-memory-store/src/schema.rs",
+    "crates/platform/environment/awaken-work-store/src/migrations/expanded/V0001__work_item.sql":
+        "crates/platform/environment/awaken-work-store/src/schema.rs",
+    "crates/platform/environment/awaken-work-store/src/migrations/expanded/V0002__lease_authority.sql":
+        "crates/platform/environment/awaken-work-store/src/schema.rs",
+    "crates/platform/environment/awaken-work-store/src/migrations/expanded/V0003__lease_refresh.sql":
+        "crates/platform/environment/awaken-work-store/src/schema.rs",
+    "crates/platform/environment/awaken-work-store/src/migrations/expanded/V0004__session_projection.sql":
+        "crates/platform/environment/awaken-work-store/src/schema.rs",
+    "crates/platform/environment/awaken-work-store/src/migrations/expanded/V0005__session_token.sql":
+        "crates/platform/environment/awaken-work-store/src/schema.rs",
+    "crates/platform/dispatch/awaken-dispatch/src/migrations/expanded/V0015__delegation_group.sql":
+        "crates/platform/dispatch/awaken-dispatch/src/dispatch_schema.rs",
+    "crates/platform/dispatch/awaken-dispatch/src/migrations/expanded/V0016__drop_legacy_delegation_group.sql":
+        "crates/platform/dispatch/awaken-dispatch/src/dispatch_schema.rs",
 }
 PUBLISHED_LEGACY_CONSTRUCTOR_COUNTS = {
-    "crates/control/awaken-admin-config-api/src/schema.rs": (1, 1, 0, 0),
-    "crates/control/awaken-config-store/src/schema/expanded.rs": (0, 0, 0, 2),
-    "crates/resources/awaken-memory-store/src/schema.rs": (1, 0, 0, 0),
-    "crates/resources/awaken-skill-store/src/schema/expanded.rs": (2, 0, 0, 0),
-    "crates/stores/awaken-session-store/src/schema/expanded.rs": (1, 0, 0, 0),
-    "crates/stores/awaken-work-store/src/schema.rs": (1, 0, 0, 0),
-    "crates/server/awaken-dispatch/src/dispatch_schema.rs": (2, 0, 0, 0),
-    "crates/server/awaken-sandbox-policy-store/src/expanded_schema.rs": (3, 0, 0, 0),
+    "crates/platform/config/awaken-admin-config-api/src/schema.rs": (1, 1, 0, 0),
+    "crates/platform/config/awaken-config-store/src/schema/expanded.rs": (0, 0, 0, 2),
+    "crates/platform/resources/awaken-memory-store/src/schema.rs": (1, 0, 0, 0),
+    "crates/platform/resources/awaken-skill-store/src/schema/expanded.rs": (2, 0, 0, 0),
+    "crates/platform/session/awaken-session-store/src/schema/expanded.rs": (1, 0, 0, 0),
+    "crates/platform/environment/awaken-work-store/src/schema.rs": (1, 0, 0, 0),
+    "crates/platform/dispatch/awaken-dispatch/src/dispatch_schema.rs": (2, 0, 0, 0),
+    "crates/platform/config/awaken-sandbox-policy-store/src/expanded_schema.rs": (3, 0, 0, 0),
 }
 PUBLISHED_LEGACY_RUST_AUTHORITIES = set(PUBLISHED_LEGACY_CONSTRUCTOR_COUNTS)
 

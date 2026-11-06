@@ -241,9 +241,9 @@ Unix) sufficient to prove the split end to end.
   [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md),
   a Session gets its `ToolExecutor` only from its realized Environment;
   `LocalToolExecutor` remains the in-process case
-  (`crates/runtime/awaken-runtime/src/engine/tool_execution.rs:756`).
+  (`crates/sdk/runtime/awaken-runtime/src/engine/tool_execution.rs:756`).
 - **Port crate.** `ToolExecutor` now lives in `awaken-tool-contract`
-  (`crates/contract/awaken-tool-contract/src/tool.rs:1170`), not
+  (`crates/sdk/contracts/awaken-tool-contract/src/tool.rs:1170`), not
   `awaken-runtime-contract/src/tool.rs`.
 - **Transport.** D3's `awaken-connection` was not adopted. Per the 2026-09-06
   amendment of [ADR-0045](0045-connection-plan-and-network-topology.md), the

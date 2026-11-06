@@ -189,7 +189,7 @@ claim retention and cleanup rules keep their current owners and behavior.
 
 The Session names no provider of its own. It carries the deployment-selected
 `SandboxProvider` as `SandboxProviderRoles`
-([`awaken-session-environment-contract`](../../crates/contract/awaken-session-environment-contract/src/provider.rs)),
+([`awaken-session-environment-contract`](../../crates/platform/environment/awaken-session-environment-contract/src/provider.rs)),
 one handle per consuming role over the same adapter instance. Readiness and
 installation are provisioning roles; Hand assembly and effective-spec projection
 (`EnvironmentRealizer`), retained-instance rebinding (`EnvironmentAdoption`) and

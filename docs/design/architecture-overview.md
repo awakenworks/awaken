@@ -62,8 +62,8 @@ source-level lifecycle in `awaken-process-startup`, through their independent
 `awaken-control-process` and `awaken-coordinator-process` targets; neither reconstructs a domain
 application. Worker keeps its independent authority-store-free startup.
 
-Package names make the application and adapter roles explicit even though several
-live under the technical `crates/server/` workspace bucket:
+Package names make the application and adapter roles explicit across
+`crates/apps/`, `crates/platform/` and `crates/sdk/protocols/`:
 
 | Package | DDD role | Rule |
 |---|---|---|

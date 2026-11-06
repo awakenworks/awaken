@@ -122,7 +122,7 @@ def main() -> None:
     # test owns the cross-language deployment budget that exposed the crash.
     lifecycle = (
         Path(__file__).parent.parent.parent
-        / "crates" / "bin" / "awaken-worker" / "src" / "lifecycle.rs"
+        / "crates" / "apps" / "awaken-worker" / "src" / "lifecycle.rs"
     ).read_text(encoding="utf-8")
     revocation_budget = int(re.search(
         r"WORKER_REVOCATION_BUDGET[^=]*=.*from_secs\((\d+)\)", lifecycle,

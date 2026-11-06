@@ -5,7 +5,7 @@
 // with a bounded wait, so a pending export never hangs process exit).
 //
 // The inference-metric RECORDING is asserted directly by the Rust tests
-// (`crates/runtime/awaken-runtime/tests/metrics.rs`); this e2e guards the export +
+// (`crates/sdk/runtime/awaken-runtime/tests/metrics.rs`); this e2e guards the export +
 // shutdown wiring around it against a real OTLP/HTTP collector.
 //
 // Run: (from e2e/)  node metrics_export_e2e.mjs

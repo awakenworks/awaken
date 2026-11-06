@@ -45,14 +45,14 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
 # Managed state reaching past the Session application to its raw collaborators
 # (Runtime, repository, credential or Resource sources) is not checked here:
 # the adapter holds only the application's role traits
-# (crates/server/awaken-session-application/src/roles.rs), which expose none of
+# (crates/platform/session/awaken-session-application/src/roles.rs), which expose none of
 # them, and the collaborators are crate-private to the application, so such a
 # call does not compile.
 
 
 # Construction sites are discovered from the production module graph, not
 # enumerated per placement. The port declaration remains one authoritative API.
-COORDINATOR_EXECUTION_PORTS = "crates/server/awaken-coordinator/src/execution_ports.rs"
+COORDINATOR_EXECUTION_PORTS = "crates/apps/awaken-coordinator/src/execution_ports.rs"
 
 
 def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]:
@@ -67,7 +67,7 @@ def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]
                     "use SessionApplication's AdmitSessionRun command"
                 )
     application = sources.get(
-        "crates/server/awaken-session-application/src/run_admission.rs", ""
+        "crates/platform/session/awaken-session-application/src/run_admission.rs", ""
     )
     required = (
         "pub async fn admit_session_run_for_owner",
@@ -101,7 +101,7 @@ def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]
         errors.append(
             "awaken-coordinator: public Run protocols are not wired to SessionApplication admission"
         )
-    coordinator = sources.get("crates/server/awaken-coordinator/src/lib.rs", "")
+    coordinator = sources.get("crates/apps/awaken-coordinator/src/lib.rs", "")
     if "managed_state.session_application()" in _crate_boundary_workspace.production_rust(
         coordinator
     ):
@@ -167,12 +167,12 @@ def official_managed_routes(repo_root: Path) -> set[tuple[str, str]]:
 
 
 def check_managed_route_inventory(repo_root: Path) -> list[str]:
-    compatible_root = repo_root / "crates/server/awaken-protocol-managed/src"
+    compatible_root = repo_root / "crates/platform/protocols/awaken-protocol-managed/src"
     # Awaken's /v1/awaken routes: the Managed-protocol extensions (in the
     # Managed adapter, speaking its envelope) and Awaken's own routes.
     extension_roots = (
         compatible_root / "awaken_extensions",
-        repo_root / "crates/server/awaken-protocol-awaken/src",
+        repo_root / "crates/platform/protocols/awaken-protocol-awaken/src",
     )
     core: set[tuple[str, str]] = set()
     for path in sorted(compatible_root.glob("**/*.rs")):
@@ -332,7 +332,7 @@ def check_projection_input_boundary(repo_root: Path) -> list[str]:
     # walked in full, so a newly split reducer file enters the guard at once.
     module = (
         repo_root
-        / "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs"
+        / "crates/platform/protocols/awaken-protocol-managed/src/state/events/committed_projection.rs"
     )
     record = module.parent.parent / "session_record.rs"
     reducer_paths = sorted(module.with_suffix("").rglob("*.rs"))
@@ -431,22 +431,22 @@ def selftest() -> None:
     # structure error, never a second Host-fault report. Wiring/retired-path rules
     # remain distinct causes with their existing diagnostics and input scopes.
     valid = {
-        "crates/server/awaken-session-application/src/run_admission.rs":
+        "crates/platform/session/awaken-session-application/src/run_admission.rs":
             "pub async fn admit_session_run_for_owner() {} "
             "pub struct SessionRunApplication; "
             "impl Runs for SessionRunApplication {} "
             "fn run_admitted_session_for_owner() {}",
-        "crates/server/awaken-coordinator/src/lib.rs": "let session_runs = execution.session_runs;",
+        "crates/apps/awaken-coordinator/src/lib.rs": "let session_runs = execution.session_runs;",
         **{f"crates/fixture-{placement}/src/lib.rs":
                "let runs = Arc::new(SessionRunApplication::new(runs, sessions)); "
                "let ports = ExecutionPorts { session_runs: runs };"
            for placement in ("local", "registered")},
         COORDINATOR_EXECUTION_PORTS: "pub session_runs: Arc<SessionRunApplication>,",
-        "crates/server/awaken-protocol-managed/src/state/sessions.rs": "",
+        "crates/platform/protocols/awaken-protocol-managed/src/state/sessions.rs": "",
     }
     assert session_admission_ownership_violations(valid) == [], "A1/E8/E9"
     missing = dict(valid)
-    missing["crates/server/awaken-session-application/src/run_admission.rs"] = ""
+    missing["crates/platform/session/awaken-session-application/src/run_admission.rs"] = ""
     structure_error = "awaken-session-application: missing the authoritative Session Run command or adapter"
     assert session_admission_ownership_violations(missing) == [structure_error], "A2 all absent"
     for marker in (
@@ -456,8 +456,8 @@ def selftest() -> None:
         "run_admitted_session_for_owner",
     ):
         missing_one = dict(valid)
-        missing_one["crates/server/awaken-session-application/src/run_admission.rs"] = (
-            valid["crates/server/awaken-session-application/src/run_admission.rs"].replace(marker, "", 1)
+        missing_one["crates/platform/session/awaken-session-application/src/run_admission.rs"] = (
+            valid["crates/platform/session/awaken-session-application/src/run_admission.rs"].replace(marker, "", 1)
         )
         assert session_admission_ownership_violations(missing_one) == [structure_error], f"A2 {marker}"
     # A4 covers each production placement: neither may bypass the one Session
@@ -483,9 +483,9 @@ def selftest() -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(source, encoding="utf-8")
             _crate_boundary_workspace.ensure_fixture_manifest(target)
-        application = repository / "crates/server/awaken-session-application/src/lib.rs"
+        application = repository / "crates/platform/session/awaken-session-application/src/lib.rs"
         application.write_text("mod run_admission;", encoding="utf-8")
-        coordinator = repository / "crates/server/awaken-coordinator/src/lib.rs"
+        coordinator = repository / "crates/apps/awaken-coordinator/src/lib.rs"
         coordinator.write_text(coordinator.read_text() + "mod execution_ports;", encoding="utf-8")
         assert check_session_admission_ownership(repository) == [], "A7 existing constructors"
         extra = repository / "crates/fixture-new/src/nested/factory.rs"
@@ -502,12 +502,12 @@ def selftest() -> None:
     erased[COORDINATOR_EXECUTION_PORTS] = "pub session_runs: Arc<dyn Runs>,"
     assert session_admission_ownership_violations(erased), "A6/!E9 erased port type"
     read_back = dict(valid)
-    read_back["crates/server/awaken-coordinator/src/lib.rs"] += (
+    read_back["crates/apps/awaken-coordinator/src/lib.rs"] += (
         "; let sessions = managed_state.session_application();"
     )
     assert session_admission_ownership_violations(read_back), "A5/!E9"
     duplicate = dict(valid)
-    duplicate["crates/server/awaken-protocol-managed/src/state/sessions.rs"] = (
+    duplicate["crates/platform/protocols/awaken-protocol-managed/src/state/sessions.rs"] = (
         "fn prepare_protocol_session() {}"
     )
     assert session_admission_ownership_violations(duplicate), "A3/E10"
@@ -654,7 +654,7 @@ fn into_delivery_memo(self) {
     ), "P6/E2 warm owner"
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        module = root / "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs"
+        module = root / "crates/platform/protocols/awaken-protocol-managed/src/state/events/committed_projection.rs"
         module.parent.mkdir(parents=True)
         module.write_text(entry, encoding="utf-8")
         (module.parent.parent / "session_record.rs").write_text(record, encoding="utf-8")

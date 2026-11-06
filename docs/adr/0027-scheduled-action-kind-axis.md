@@ -63,5 +63,5 @@ code at the time, not the ADR corpus: [ADR-0004](0004-plugin-factory-contributio
 Amendment A1.2 had already required a bound on `scheduled_actions`. This ADR is
 the implementation of that requirement under the name `action_kinds`; there is
 one axis, not two. Evidence: `CapabilityBound.action_kinds: IdBound`
-(`crates/contract/awaken-runtime-contract/src/plugin/capability.rs:79`) and its
+(`crates/sdk/contracts/awaken-runtime-contract/src/plugin/capability.rs:79`) and its
 check at `capability.rs:166`. Read `scheduled_actions` in ADR-0004 as `action_kinds`.

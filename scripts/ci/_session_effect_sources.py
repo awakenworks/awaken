@@ -1,115 +1,115 @@
 """Canonical source owners and required markers for the Session effect checker."""
 
-SESSION_RUNTIME = "crates/contract/awaken-session-execution-contract/src/session.rs"
-SESSION_RUNTIME_ROLES = "crates/contract/awaken-session-execution-contract/src/session/roles.rs"
-SESSION_CLEANUP = "crates/contract/awaken-session-contract/src/state/terminal_cleanup.rs"
+SESSION_RUNTIME = "crates/platform/session/awaken-session-execution-contract/src/session.rs"
+SESSION_RUNTIME_ROLES = "crates/platform/session/awaken-session-execution-contract/src/session/roles.rs"
+SESSION_CLEANUP = "crates/platform/session/awaken-session-contract/src/state/terminal_cleanup.rs"
 SESSION_REPOSITORY_PUBLICATION = (
-    "crates/contract/awaken-session-contract/src/state/"
+    "crates/platform/session/awaken-session-contract/src/state/"
     "terminal_cleanup/repository_publication.rs"
 )
 SESSION_CLEANUP_DRIVER = (
-    "crates/server/awaken-session-realization-driver/src/terminal_cleanup_driver.rs"
+    "crates/platform/session/awaken-session-realization-driver/src/terminal_cleanup_driver.rs"
 )
 SESSION_CLEANUP_RECOVERY = (
-    "crates/server/awaken-session-realization-driver/src/terminal_cleanup_recovery.rs"
+    "crates/platform/session/awaken-session-realization-driver/src/terminal_cleanup_recovery.rs"
 )
 SESSION_CLEANUP_EFFECTS = (
-    "crates/contract/awaken-session-contract/src/state/terminal_cleanup/effects.rs"
+    "crates/platform/session/awaken-session-contract/src/state/terminal_cleanup/effects.rs"
 )
 SESSION_CLEANUP_PROGRESS = (
-    "crates/contract/awaken-session-contract/src/state/terminal_cleanup/progress.rs"
+    "crates/platform/session/awaken-session-contract/src/state/terminal_cleanup/progress.rs"
 )
 SESSION_REPOSITORY_RECOVERY = (
-    "crates/contract/awaken-session-contract/src/state/session_repo/recovery.rs"
+    "crates/platform/session/awaken-session-contract/src/state/session_repo/recovery.rs"
 )
 SESSION_REPOSITORY_PORT = (
-    "crates/contract/awaken-session-contract/src/repository/repository_port.rs"
+    "crates/platform/session/awaken-session-contract/src/repository/repository_port.rs"
 )
 SESSION_REPOSITORY_MUTATION = (
-    "crates/contract/awaken-session-contract/src/state/session_repo/mutation.rs"
+    "crates/platform/session/awaken-session-contract/src/state/session_repo/mutation.rs"
 )
 SESSION_REPOSITORY_PUBLICATION_AGGREGATE = (
-    "crates/contract/awaken-session-contract/src/state/session_repo/repository_publication.rs"
+    "crates/platform/session/awaken-session-contract/src/state/session_repo/repository_publication.rs"
 )
 SESSION_DELETE_DISPOSITION = (
-    "crates/contract/awaken-session-contract/src/state/session_repo/disposition.rs"
+    "crates/platform/session/awaken-session-contract/src/state/session_repo/disposition.rs"
 )
-SESSION_ROW_CODEC = "crates/stores/awaken-session-store/src/row_codec.rs"
-SESSION_REALIZATION = "crates/contract/awaken-session-execution-contract/src/session_realization.rs"
+SESSION_ROW_CODEC = "crates/platform/session/awaken-session-store/src/row_codec.rs"
+SESSION_REALIZATION = "crates/platform/session/awaken-session-execution-contract/src/session_realization.rs"
 SESSION_REALIZATION_DRIVER = (
-    "crates/server/awaken-session-realization-driver/src/session_realization_driver.rs"
+    "crates/platform/session/awaken-session-realization-driver/src/session_realization_driver.rs"
 )
 SESSION_TERMINAL_AUTHORIZATION = (
-    "crates/contract/awaken-session-execution-contract/src/"
+    "crates/platform/session/awaken-session-execution-contract/src/"
     "session_realization/terminal_cleanup_authorization.rs"
 )
 PROVISIONING_REPOSITORY_PUBLICATION = (
-    "crates/contract/awaken-provisioning-contract/src/"
+    "crates/platform/environment/awaken-provisioning-contract/src/"
     "sandbox/repository_publication.rs"
 )
-RESOURCE_EXECUTION = "crates/contract/awaken-resource-contract/src/execution.rs"
+RESOURCE_EXECUTION = "crates/platform/resources/awaken-resource-contract/src/execution.rs"
 APPLICATION_CLEANUP = (
-    "crates/server/awaken-session-application/src/terminal_cleanup/local_drive.rs"
+    "crates/platform/session/awaken-session-application/src/terminal_cleanup/local_drive.rs"
 )
 APPLICATION_PUBLICATION_CONTROL = (
-    "crates/server/awaken-session-application/src/terminal_cleanup.rs"
+    "crates/platform/session/awaken-session-application/src/terminal_cleanup.rs"
 )
 APPLICATION_EVENT_BATCHES = (
-    "crates/server/awaken-session-application/src/event_batches.rs"
+    "crates/platform/session/awaken-session-application/src/event_batches.rs"
 )
-APPLICATION_TERMINAL = "crates/server/awaken-session-application/src/terminal.rs"
-APPLICATION_LIFECYCLE = "crates/server/awaken-session-application/src/lifecycle.rs"
-APPLICATION_WORK_DISPATCH = "crates/server/awaken-session-application/src/work_assignments.rs"
+APPLICATION_TERMINAL = "crates/platform/session/awaken-session-application/src/terminal.rs"
+APPLICATION_LIFECYCLE = "crates/platform/session/awaken-session-application/src/lifecycle.rs"
+APPLICATION_WORK_DISPATCH = "crates/platform/session/awaken-session-application/src/work_assignments.rs"
 APPLICATION_TERMINAL_RECORDS = (
-    "crates/server/awaken-session-application/src/terminal_cleanup/records.rs"
+    "crates/platform/session/awaken-session-application/src/terminal_cleanup/records.rs"
 )
 APPLICATION_RESOURCE_EFFECT_AUTHORIZATION = (
-    "crates/server/awaken-session-application/src/resource_effect_authorization.rs"
+    "crates/platform/session/awaken-session-application/src/resource_effect_authorization.rs"
 )
-PROTOCOL_SESSIONS = "crates/server/awaken-protocol-managed/src/state/sessions.rs"
-SESSION_STORE = "crates/stores/awaken-session-store/src/lib.rs"
-SQLITE_SESSION_STORE = "crates/stores/awaken-session-store/src/sqlite.rs"
-POSTGRES_SESSION_STORE = "crates/stores/awaken-session-store/src/postgres.rs"
-RUNTIME_HOST = "crates/server/awaken-session-executor/src/run_assembly/roles.rs"
+PROTOCOL_SESSIONS = "crates/platform/protocols/awaken-protocol-managed/src/state/sessions.rs"
+SESSION_STORE = "crates/platform/session/awaken-session-store/src/lib.rs"
+SQLITE_SESSION_STORE = "crates/platform/session/awaken-session-store/src/sqlite.rs"
+POSTGRES_SESSION_STORE = "crates/platform/session/awaken-session-store/src/postgres.rs"
+RUNTIME_HOST = "crates/platform/execution/awaken-session-executor/src/run_assembly/roles.rs"
 REALIZATION_EFFECTS_ROLE = (
-    "crates/server/awaken-session-realization/src/realization_executor/effects_role.rs"
+    "crates/platform/execution/awaken-session-realization/src/realization_executor/effects_role.rs"
 )
 INSTALLED_SESSION_PROJECTION = (
-    "crates/server/awaken-session-executor/src/installed_session/frozen_projection.rs"
+    "crates/platform/execution/awaken-session-executor/src/installed_session/frozen_projection.rs"
 )
 SESSION_REALIZATION_CONTROL_DEADLINE = (
-    "crates/server/awaken-session-realization-driver/src/"
+    "crates/platform/session/awaken-session-realization-driver/src/"
     "control_deadline.rs"
 )
 RUNTIME_REPOSITORY_PUBLICATION = (
-    "crates/server/awaken-session-realization/src/terminal_effects/repository_publication.rs"
+    "crates/platform/execution/awaken-session-realization/src/terminal_effects/repository_publication.rs"
 )
 RUNTIME_HOST_TERMINAL = (
-    "crates/server/awaken-session-realization/src/environment_holding/lifecycle.rs"
+    "crates/platform/execution/awaken-session-realization/src/environment_holding/lifecycle.rs"
 )
-RUNTIME_BOUND_ENVIRONMENT = "crates/server/awaken-session-realization/src/environment_holding/bound_environment.rs"
+RUNTIME_BOUND_ENVIRONMENT = "crates/platform/execution/awaken-session-realization/src/environment_holding/bound_environment.rs"
 RUNTIME_HOST_TERMINAL_PREPARATION = (
-    "crates/server/awaken-session-realization/src/"
+    "crates/platform/execution/awaken-session-realization/src/"
     "terminal_effects/preparation.rs"
 )
 RUNTIME_HOST_TERMINAL_CLEANUP = (
-    "crates/server/awaken-session-realization/src/"
+    "crates/platform/execution/awaken-session-realization/src/"
     "terminal_effects/cleanup.rs"
 )
 GIT_REPOSITORY_PUBLICATION = (
-    "crates/worker/awaken-sandbox-local/src/git_transport.rs"
+    "crates/platform/sandbox/awaken-sandbox-local/src/git_transport.rs"
 )
 WORKER_PUBLICATION_ROUTE = (
-    "crates/server/awaken-dispatch-http/src/"
+    "crates/platform/dispatch/awaken-dispatch-http/src/"
     "worker_dispatch/terminal_repository_publication.rs"
 )
 WORKER_CONTROL_CLIENT = (
-    "crates/server/awaken-coordinator-client/src/worker_control_client.rs"
+    "crates/platform/dispatch/awaken-coordinator-client/src/worker_control_client.rs"
 )
-WORKER_RUNTIME = "crates/bin/awaken-worker/src/lib.rs"
-ARTIFACT_HARVEST = "crates/server/awaken-session-realization/src/artifact_harvest.rs"
+WORKER_RUNTIME = "crates/apps/awaken-worker/src/lib.rs"
+ARTIFACT_HARVEST = "crates/platform/execution/awaken-session-realization/src/artifact_harvest.rs"
 ARTIFACT_TRANSPORT = (
-    "crates/resources/awaken-resource-worker-http/src/artifact_publication_http.rs"
+    "crates/platform/resources/awaken-resource-worker-http/src/artifact_publication_http.rs"
 )
 
 

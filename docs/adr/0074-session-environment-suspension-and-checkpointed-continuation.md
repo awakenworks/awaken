@@ -899,7 +899,7 @@ referenced)` as the sole cross-restart disposal decision in use. It is not wired
 the [ADR-0056](0056-sandbox-reuse-two-orthogonal-volumes.md) amendment of 2026-10-06
 records that it has no production caller and is wired only once that decision is
 shared rather than owned by each provider. Evidence: it is defined at
-`crates/contract/awaken-provisioning-contract/src/lease.rs:246` and called only by
+`crates/platform/environment/awaken-provisioning-contract/src/lease.rs:246` and called only by
 that file's tests. What stays true: lease decisions return only `Keep/Fence`, the
 age reaper is gone, and disposal still requires the durable live reference to be
 absent (the aggregate's preparation and cleanup gate).

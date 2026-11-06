@@ -41,7 +41,7 @@ MCP_TOOL_IDENTITY_EXEMPTIONS: dict[str, str] = {}
 
 MCP_TOOL_IDENTITY_TS_EXEMPTIONS: dict[str, str] = {}
 
-MCP_TOOL_IDENTITY_OWNER = Path("crates/contract/awaken-agent-contract/src/mcp_tool_id.rs")
+MCP_TOOL_IDENTITY_OWNER = Path("crates/sdk/contracts/awaken-agent-contract/src/mcp_tool_id.rs")
 MCP_TOOL_IDENTITY_GRAMMAR = {
     'format!("mcp__': "build it with awaken_agent_contract::McpToolId::new (or ::namespace)",
     'format!("mcp.': "build it with awaken_agent_contract::McpToolId::dotted",

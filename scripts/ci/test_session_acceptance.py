@@ -43,8 +43,8 @@ INPUT_GLOBS: tuple[str, ...] = (
     "docs/design/session-execution-test-acceptance/**", "scripts/ci/*.py", "scripts/ci/*.json",
     "examples/**", "e2e/**", "rust-toolchain.toml", ".cargo/**", "scripts/ci/*.sh", "packages/managed-sdk-oracle/package.json",
 )
-SHARED_CONTRACT = "crates/contract/awaken-provisioning-contract/src/lib.rs"
-OWNED_STATE_FILE = "crates/server/awaken-protocol-managed/src/lib.rs"
+SHARED_CONTRACT = "crates/platform/environment/awaken-provisioning-contract/src/lib.rs"
+OWNED_STATE_FILE = "crates/platform/protocols/awaken-protocol-managed/src/lib.rs"
 
 
 @lru_cache(maxsize=1)
@@ -133,7 +133,7 @@ class BoundaryGateTests(unittest.TestCase):
         }
         self.assertEqual(_session_state_ownership_fitness.session_state_ownership_violations(sources), [])
         bypass = "\nfn restore(mut persisted: Persisted) { persisted.execution = Default::default(); }\n"
-        for path in (OWNED_STATE_FILE, "crates/server/awaken-protocol-managed/src/moved/wrapper.rs"):
+        for path in (OWNED_STATE_FILE, "crates/platform/protocols/awaken-protocol-managed/src/moved/wrapper.rs"):
             with self.subTest(path=path):
                 mutated = dict(sources)
                 mutated[path] = mutated.get(path, "") + bypass
@@ -182,7 +182,7 @@ class ImpactSelectionTests(unittest.TestCase):
         members = {p["name"] for p in metadata["packages"] if p["id"] in metadata["workspace_members"]}
         for path in ("crates/unregistered-crate/src/lib.rs", "newtool/main.rs", "Cargo.lock",
                      ".config/rust-tests.toml", "scripts/ci/crate_test.py",
-                     "crates/contract/awaken-provisioning-contract/Cargo.toml"):
+                     "crates/platform/environment/awaken-provisioning-contract/Cargo.toml"):
             with self.subTest(path=path):
                 selected, reason = rust_test_plan.affected_packages(metadata, [path], ROOT)
                 self.assertEqual(set(selected), members)

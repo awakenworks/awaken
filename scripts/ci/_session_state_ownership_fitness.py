@@ -8,20 +8,20 @@ from pathlib import Path
 import _crate_boundary_workspace
 
 
-SESSION_CONTRACT = "crates/contract/awaken-session-contract/src/state/session_repo.rs"
+SESSION_CONTRACT = "crates/platform/session/awaken-session-contract/src/state/session_repo.rs"
 SESSION_PERSISTED_CONTRACT = (
-    "crates/contract/awaken-session-contract/src/state/session_repo/persisted_session.rs"
+    "crates/platform/session/awaken-session-contract/src/state/session_repo/persisted_session.rs"
 )
 SESSION_DISPOSITION_CONTRACT = (
-    "crates/contract/awaken-session-contract/src/state/session_repo/disposition.rs"
+    "crates/platform/session/awaken-session-contract/src/state/session_repo/disposition.rs"
 )
 SESSION_EXECUTION_STATE_CONTRACT = (
-    "crates/contract/awaken-session-contract/src/state/session_repo/execution_state.rs"
+    "crates/platform/session/awaken-session-contract/src/state/session_repo/execution_state.rs"
 )
 SESSION_MUTATION_ROOTS = (
-    "crates/server/awaken-session-application/src",
-    "crates/server/awaken-protocol-managed/src",
-    "crates/stores/awaken-session-store/src",
+    "crates/platform/session/awaken-session-application/src",
+    "crates/platform/protocols/awaken-protocol-managed/src",
+    "crates/platform/session/awaken-session-store/src",
 )
 
 DIRECT_STATE_WRITE = re.compile(r"\.(?:execution|disposition)\s*=(?!=)")

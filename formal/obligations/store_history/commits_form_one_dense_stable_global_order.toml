@@ -5,7 +5,7 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "crates/stores/awaken-store-postgres/src/migrations/V0002__transactional_dense_commit_order.sql",
+  "crates/platform/committed-truth/awaken-store-postgres/src/migrations/V0002__transactional_dense_commit_order.sql",
   "formal/tla/StoreHistory.cfg",
   "formal/tla/StoreHistory.tla",
 ]

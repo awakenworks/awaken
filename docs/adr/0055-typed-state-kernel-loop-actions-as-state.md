@@ -175,13 +175,13 @@ concrete loop-action keys.
 
 Implemented:
 - `StateKey` in the contract with a fail-closed typed read, `StateKey::load` (not
-  `Store::get_typed`) (`crates/contract/awaken-agent-contract/src/agent/state.rs:476`).
+  `Store::get_typed`) (`crates/sdk/contracts/awaken-agent-contract/src/agent/state.rs:476`).
 - `ContextMessages` as a `Scope::Run` key read at request assembly; its value is keyed by
-  contributing plugin id (`crates/contract/awaken-runtime-contract/src/plugin/phase.rs:93`).
+  contributing plugin id (`crates/sdk/contracts/awaken-runtime-contract/src/plugin/phase.rs:93`).
   The per-plugin `Mutex<HashMap<RunId, _>>` caches are gone.
 - `ToolOutcomeHook` folded into `PhaseHook` through `PhaseHookPoint::AfterTool`
   (`phase.rs:30`); the deciders are `ToolGate` and `RunEndGuard`
-  (`crates/contract/awaken-runtime-contract/src/plugin/guard.rs:51`).
+  (`crates/sdk/contracts/awaken-runtime-contract/src/plugin/guard.rs:51`).
 
 Not implemented:
 - The `ToolFilter` and `InferenceOverride` keys do not exist.
@@ -189,4 +189,4 @@ Not implemented:
   `messages` field for committed messages (`phase.rs:171`).
 - `StateCell` is not a re-export of `StateKey`; it remains a separate untyped helper
   (`state.rs:394`), and the compaction key keeps its `compaction/<run_id>` form
-  (`crates/contract/awaken-runtime-contract/src/compaction.rs:11`).
+  (`crates/sdk/contracts/awaken-runtime-contract/src/compaction.rs:11`).

@@ -446,7 +446,7 @@ responsibilities, and the application binding cell no longer uses `slot`.
 The eight execution roles carry responsibility names: `SessionRuns`,
 `StreamingRuns`, `ChildRunCoordination`, `ThreadReads`, `Outcomes`,
 `BudgetAccounting`, `TerminalCleanup` and `LiveInboxAccess`
-([`awaken-session-execution-contract`](../../crates/contract/awaken-session-execution-contract/src/session/roles.rs));
+([`awaken-session-execution-contract`](../../crates/platform/session/awaken-session-execution-contract/src/session/roles.rs));
 the rename awaits the batched verification. The deployment enum that chooses
 durable foreground delivery is `ForegroundRunDelivery` (formerly `RunIngress`). Responsibility boundaries are reviewed as
 callers settle; function length alone requires no split.

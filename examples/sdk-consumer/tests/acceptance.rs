@@ -313,7 +313,7 @@ fn t02_c01_nc_a_copy_with_a_server_session_dependency_fails_the_closure_check() 
     let mutant = tempfile::tempdir().unwrap();
     let crates = repository_crates();
     let line = format!(
-        "awaken-session-application = {{ path = \"{crates}/server/awaken-session-application\" }}"
+        "awaken-session-application = {{ path = \"{crates}/platform/session/awaken-session-application\" }}"
     );
     let mutant = metadata(&consumer_copy(mutant.path(), Some(&line)), &["--offline"]);
     let (violations, _) = closure_violations(&mutant);

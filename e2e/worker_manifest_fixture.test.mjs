@@ -15,7 +15,7 @@ test('the external Worker fixture explicitly supports the current Rust execution
   // R2 a protocol bump outside C2 -> fail here, before every dependent E2E
   // aborts at registration. Never auto-upgrade a simulated peer to claim an
   // unreviewed protocol. Actual Worker transport tests still own wire admission.
-  const source = fs.readFileSync(new URL('../crates/contract/awaken-worker-contract/src/manifest.rs', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('../crates/platform/dispatch/awaken-worker-contract/src/manifest.rs', import.meta.url), 'utf8');
   const version = source.match(/^pub const CURRENT_RUNTIME_PROTOCOL_VERSION: u32 = ([0-9]+);$/m);
   assert.ok(version, 'the Rust execution protocol constant remains authoritative');
   const current = Number(version[1]);
@@ -29,7 +29,7 @@ test('the Provider capability fixture follows the exact Rust credential codec', 
   // R1 the fixture's version matches Rust and its unsealed profile is explicit
   // -> domain E2Es can enter admission. R2 a codec bump or omitted narrowing
   // field -> fail here before starting any service. Never auto-promote peers.
-  const source = fs.readFileSync(new URL('../crates/contract/awaken-credential-contract/src/realization_capabilities.rs', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('../crates/platform/credentials/awaken-credential-contract/src/realization_capabilities.rs', import.meta.url), 'utf8');
   const version = source.match(/pub const CREDENTIAL_REALIZATION_CAPABILITY_PREFIX: &str =\s*"([^"]+)";/);
   assert.ok(version, 'the Rust capability namespace remains authoritative');
   assert.ok(WORKER_PROVIDER_CREDENTIAL_CAPABILITY.startsWith(version[1]), 'review the peer for the current codec');
@@ -43,7 +43,7 @@ test('the external Worker fixture names the frozen child-toolset format exactly'
   // Workdir Worker opts into their format. Effect: E1 placement may reach the
   // HTTP claim/commit tests only when C2 equals Rust's canonical capability.
   // Rule C1+C2=>E1; a renamed format fails here before either transport E2E.
-  const source = fs.readFileSync(new URL('../crates/contract/awaken-runtime-contract/src/activation.rs', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('../crates/sdk/contracts/awaken-runtime-contract/src/activation.rs', import.meta.url), 'utf8');
   const capability = source.match(/pub const INHERITED_TOOLSETS_CAPABILITY: &str = "([^"]+)";/);
   assert.ok(capability, 'the Rust inherited-toolset capability remains authoritative');
   assert.equal(WORKER_INHERITED_TOOLSETS_CAPABILITY, capability[1]);
@@ -52,7 +52,7 @@ test('the external Worker fixture names the frozen child-toolset format exactly'
 test('the external Worker fixture names the frozen tool-result journal format exactly', () => {
   // A codec change must fail the fast fixture check before any native build.
   // Keep the peer's reviewed literal; never infer support from a newer server.
-  const source = fs.readFileSync(new URL('../crates/contract/awaken-worker-contract/src/manifest.rs', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('../crates/platform/dispatch/awaken-worker-contract/src/manifest.rs', import.meta.url), 'utf8');
   const capability = source.match(/pub const TOOL_RESULT_JOURNAL_CAPABILITY: &str = "([^"]+)";/);
   assert.ok(capability, 'the Rust journal capability remains authoritative');
   assert.equal(WORKER_TOOL_RESULT_JOURNAL_CAPABILITY, capability[1]);
@@ -70,7 +70,7 @@ test('the generic Worker fixture never infers or upgrades journal capability evi
 });
 
 test('the Provider placement fixture replaces only the superseded Host model capability', () => {
-  const source = fs.readFileSync(new URL('../crates/contract/awaken-worker-contract/src/manifest.rs', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('../crates/platform/dispatch/awaken-worker-contract/src/manifest.rs', import.meta.url), 'utf8');
   const host = source.match(/pub const HOST_EXECUTOR_CAPABILITY: &str = "([^"]+)";/);
   assert.ok(host, 'Rust remains the Host model capability authority');
   const independent = ['inherited-toolsets/v1', 'native-runtime', 'session-resources/v1',

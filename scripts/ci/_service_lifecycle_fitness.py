@@ -13,18 +13,18 @@ import re
 import tempfile
 
 
-WORKER_MANIFEST = "crates/bin/awaken-worker/Cargo.toml"
-WORKER_MAIN = "crates/bin/awaken-worker/src/main.rs"
-SERVICE_LIFECYCLE_SOURCE = "crates/server/awaken-service-lifecycle/src/lib.rs"
-CLI_PROCESS_STARTUP = "crates/bin/awaken-process-startup/src/process_startup.rs"
-CLI_MANIFEST = "crates/bin/awaken-cli/Cargo.toml"
-CLI_SERVICE = "crates/bin/awaken-process-startup/src/service.rs"
-CONTROL_MANIFEST = "crates/bin/awaken-control-process/Cargo.toml"
-CONTROL_BIN = "crates/bin/awaken-control-process/src/main.rs"
+WORKER_MANIFEST = "crates/apps/awaken-worker/Cargo.toml"
+WORKER_MAIN = "crates/apps/awaken-worker/src/main.rs"
+SERVICE_LIFECYCLE_SOURCE = "crates/apps/awaken-service-lifecycle/src/lib.rs"
+CLI_PROCESS_STARTUP = "crates/apps/awaken-process-startup/src/process_startup.rs"
+CLI_MANIFEST = "crates/apps/awaken-cli/Cargo.toml"
+CLI_SERVICE = "crates/apps/awaken-process-startup/src/service.rs"
+CONTROL_MANIFEST = "crates/apps/awaken-control-process/Cargo.toml"
+CONTROL_BIN = "crates/apps/awaken-control-process/src/main.rs"
 # The Coordinator executable is its own package so its dependency closure links
 # no Worker-side crate (rule D4 of _dispatch_boundary_fitness.py).
-COORDINATOR_MANIFEST = "crates/bin/awaken-coordinator-process/Cargo.toml"
-COORDINATOR_BIN = "crates/bin/awaken-coordinator-process/src/main.rs"
+COORDINATOR_MANIFEST = "crates/apps/awaken-coordinator-process/Cargo.toml"
+COORDINATOR_BIN = "crates/apps/awaken-coordinator-process/src/main.rs"
 
 
 def _bins(manifest: dict) -> dict:
@@ -112,7 +112,7 @@ def service_runtime_violations(
 def worker_example_sources(repo_root: Path) -> dict[str, str]:
     """Discover actual Worker launchers, including new and relocated examples."""
     sources = {}
-    directory = repo_root / "crates/bin/awaken-cli/examples"
+    directory = repo_root / "crates/apps/awaken-cli/examples"
     for path in sorted(directory.rglob("*.rs")):
         source = path.read_text(encoding="utf-8")
         if re.search(r"\bfn\s+main\s*\(", source) and re.search(r"\b(?:awaken_worker|WorkerNodeBuilder)\b", source):
@@ -409,7 +409,7 @@ def selftest() -> None:
     assert worker_example_runtime_violations({})
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
-        directory = root / "crates/bin/awaken-cli/examples"
+        directory = root / "crates/apps/awaken-cli/examples"
         directory.mkdir(parents=True)
         assert worker_example_runtime_violations(worker_example_sources(root))
         first = directory / "first_worker.rs"

@@ -8,11 +8,11 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
-awaken-tool-contract = { path = "../crates/contract/awaken-tool-contract" }
+awaken-tool-contract = { path = "../crates/sdk/contracts/awaken-tool-contract" }
 libfuzzer-sys = "0.4"
 serde_json = "1"
-awaken-agent-contract = { path = "../crates/contract/awaken-agent-contract" }
-awaken-mcp-wire = { path = "../crates/runtime/awaken-mcp-wire" }
+awaken-agent-contract = { path = "../crates/sdk/contracts/awaken-agent-contract" }
+awaken-mcp-wire = { path = "../crates/sdk/providers/awaken-mcp-wire" }
 
 [[bin]]
 name = "sse_chunks"

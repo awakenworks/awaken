@@ -2,9 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-07-12
-- Implemented: P0-P5, including the bwrap splice (`crates/worker/awaken-sandbox-local/src/namespace.rs:407-412`,
+- Implemented: P0-P5, including the bwrap splice (`crates/platform/sandbox/awaken-sandbox-local/src/namespace.rs:407-412`,
   test `bwrap_splices_a_live_fuse_memory_mount_into_the_namespace` in
-  `crates/worker/awaken-sandbox-local/tests/namespace_provider.rs:1114`); see Amendment 2026-10-09
+  `crates/platform/sandbox/awaken-sandbox-local/tests/namespace_provider.rs:1114`); see Amendment 2026-10-09
 - Amended by: ADR-0063 D7 (`MemoryBlobStore` and one-file copy/harvest removed; one Memory truth)
 - Amended: 2026-10-09 (reconciled with ADR-0063: legacy blob path removed, crate tier, splice delivered)
 - Builds on: [ADR-0038](0038-managed-resource-injection-and-store-organization.md)
@@ -567,11 +567,11 @@ sidecar.
   place" is no longer true. [ADR-0063](0063-resource-input-identity-configuration-pinning-and-lifecycle.md) D7 makes `MemoryRepository` the one Memory
   truth; `MemoryBlobStore` and `harvest_thread_memory` no longer exist in `crates/`. The
   copy fallback that remains reconciles per path through the same `MemoryRepository`
-  (`crates/worker/awaken-sandbox-memoryd/src/mounter.rs:30`).
-- D2's "`server` bucket": the crate is `crates/worker/awaken-sandbox-memoryd`
+  (`crates/platform/sandbox/awaken-sandbox-memoryd/src/mounter.rs:30`).
+- D2's "`server` bucket": the crate is `crates/platform/sandbox/awaken-sandbox-memoryd`
   (`context = "worker"` in its `Cargo.toml`), as the Consequences already say.
 - The "Deferred — bwrap namespace splice (item 2)" bullet is stale: the namespace
   provider binds the live FUSE mount into bwrap
-  (`crates/worker/awaken-sandbox-local/src/namespace.rs:407-412`) and a gated test proves
-  it (`crates/worker/awaken-sandbox-local/tests/namespace_provider.rs:1114`). With every
+  (`crates/platform/sandbox/awaken-sandbox-local/src/namespace.rs:407-412`) and a gated test proves
+  it (`crates/platform/sandbox/awaken-sandbox-local/tests/namespace_provider.rs:1114`). With every
   slice delivered, the status is Accepted.

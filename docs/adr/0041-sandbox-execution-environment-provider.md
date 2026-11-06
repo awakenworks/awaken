@@ -1164,22 +1164,22 @@ as an exit receipt.
   2026-07-04 amendment, and Consequences name foundation `awaken-connection` as
   the one transport. Per the 2026-09-06 amendment of
   [ADR-0045](0045-connection-plan-and-network-topology.md), that adoption did not
-  happen: the duplex is `AgentChannel` (`crates/contract/awaken-agent-channel/src/lib.rs:22`),
+  happen: the duplex is `AgentChannel` (`crates/platform/environment/awaken-agent-channel/src/lib.rs:22`),
   dialed through `awaken-connection-plan::TokioChannelFactory`
-  (`crates/worker/awaken-connection-plan/src/factory.rs:40`). The workspace
+  (`crates/platform/dispatch/awaken-connection-plan/src/factory.rs:40`). The workspace
   `Cargo.toml` has no `awaken-connection` dependency.
 - **`RunEventSink`.** No such type or crate exists in `crates/`. ACP runs as a
-  `RunExecutor` (`crates/contract/awaken-runtime-contract/src/execution.rs:198`)
+  `RunExecutor` (`crates/sdk/contracts/awaken-runtime-contract/src/execution.rs:198`)
   implemented by `awaken-run-executor-acp`, which depends on
   `awaken-runtime-contract`, not on `awaken-runtime`
-  (`crates/server/awaken-run-executor-acp/Cargo.toml:22`); see
+  (`crates/platform/execution/awaken-run-executor-acp/Cargo.toml:22`); see
   [ADR-0054](0054-safe-loop-boundary-shared-seam-and-pause-as-durable-await.md).
   The "gap closed" by one binding crate is closed by that contract boundary instead.
 - **Orphan disposal.** First Slice item 5 and the 2026-07-04 amendment cite the
   durable referenced-set reconciliation of ADR-0074. Per the 2026-10-06
   amendment of [ADR-0056](0056-sandbox-reuse-two-orthogonal-volumes.md),
   `reconcile_adoption` has no production caller (only tests in
-  `crates/contract/awaken-provisioning-contract/src/lease.rs`); it is the agreed
+  `crates/platform/environment/awaken-provisioning-contract/src/lease.rs`); it is the agreed
   design, wired when the disposal decision becomes shared. Today each provider
   owns disposal, with the process-identity reaper of Amendment 11.
 

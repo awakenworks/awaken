@@ -307,7 +307,7 @@ def acp_product_feature_errors(compiler_output: str, root: Path) -> list[str]:
     library artifacts. This boundary reads Cargo's standard JSON directly and
     never reconstructs feature resolution from source or dependency names.
     """
-    manifest = (root / "crates/server/awaken-run-executor-acp/Cargo.toml").resolve()
+    manifest = (root / "crates/platform/execution/awaken-run-executor-acp/Cargo.toml").resolve()
     source = manifest.parent / "src/lib.rs"
     records = []
     finished = []
@@ -356,9 +356,9 @@ def selftest_acp_product_features() -> None:
     # must remain metadata-only. These synthetic JSON tests execute no Cargo.
     root = Path("/fixture")
     artifact = {"reason": "compiler-artifact", "package_id": "fixture-acp",
-                "manifest_path": str(root / "crates/server/awaken-run-executor-acp/Cargo.toml"),
+                "manifest_path": str(root / "crates/platform/execution/awaken-run-executor-acp/Cargo.toml"),
                 "target": {"name": "awaken_run_executor_acp", "kind": ["lib"],
-                           "src_path": str(root / "crates/server/awaken-run-executor-acp/src/lib.rs")},
+                           "src_path": str(root / "crates/platform/execution/awaken-run-executor-acp/src/lib.rs")},
                 "profile": {"test": False}, "features": []}
     done = {"reason": "build-finished", "success": True}
     def output(*records):

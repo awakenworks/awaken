@@ -178,11 +178,11 @@ def validate(value: dict, root: Path = ROOT) -> None:
     scale = by_id["dispatch-scale"]["entry"]["argv"]
     if "--ignored" not in scale or "--nocapture" in scale or "--show-output" not in scale:
         raise ValueError("scale must execute ignored observations with captured output")
-    validate_scale_inventory(value, (root / "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs")
+    validate_scale_inventory(value, (root / "crates/platform/dispatch/awaken-dispatch/tests/dispatch_claim_perf.rs")
                              .read_text(encoding="utf-8"))
     # Inspect the source inventory, not compiler inventory. In particular, a
     # fourth live lifecycle case must not disappear behind the old three-case plan.
-    notify = root / "crates/server/awaken-dispatch/tests/pg_notify_wake.rs"
+    notify = root / "crates/platform/dispatch/awaken-dispatch/tests/pg_notify_wake.rs"
     notify_names = set(re.findall(r"#\[tokio::test[^\]]*\]\s*async fn (\w+)\(", notify.read_text(encoding="utf-8")))
     if {case["name"] for case in by_id["pg-notify"]["cases"]} != notify_names:
         raise ValueError("PgNotify source test inventory drifted")
@@ -294,7 +294,7 @@ class MatrixTests(unittest.TestCase):
 
     def test_a_new_unregistered_source_measurement_cannot_pass(self):
         value = self.fixture()
-        source = (ROOT / "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs").read_text(encoding="utf-8")
+        source = (ROOT / "crates/platform/dispatch/awaken-dispatch/tests/dispatch_claim_perf.rs").read_text(encoding="utf-8")
         source += '\n#[tokio::test]\n#[ignore = "explicit native scale fixture"]\nasync fn new_unregistered_measurement() {}\n'
         with self.assertRaisesRegex(ValueError, "new_unregistered_measurement"):
             validate_scale_inventory(value, source)
@@ -323,7 +323,7 @@ class MatrixTests(unittest.TestCase):
 
     def test_removing_an_ignore_attribute_cannot_reclassify_a_measurement_silently(self):
         value = self.fixture()
-        source = (ROOT / "crates/server/awaken-dispatch/tests/dispatch_claim_perf.rs").read_text(encoding="utf-8")
+        source = (ROOT / "crates/platform/dispatch/awaken-dispatch/tests/dispatch_claim_perf.rs").read_text(encoding="utf-8")
         original = '#[ignore = "requires a live PostgreSQL fixture and intentionally creates a large queue"]'
         self.assertIn(original, source)
         with self.assertRaisesRegex(ValueError, "ignored classification"):
@@ -342,10 +342,10 @@ class MatrixTests(unittest.TestCase):
     def test_quick_selection_retains_service_process_cold_and_scale_obligations(self):
         for paths, layers, cold, scale in [
             (["docs/design/test-validation.md"], {"L0"}, False, False),
-            (["crates/server/awaken-dispatch/src/lease.rs"], {"L0","L1","L2","L3","L4"}, False, True),
-            (["crates/server/awaken-dispatch/Cargo.toml"], {"L0","L1","L2","L3","L4"}, True, True),
+            (["crates/platform/dispatch/awaken-dispatch/src/lease.rs"], {"L0","L1","L2","L3","L4"}, False, True),
+            (["crates/platform/dispatch/awaken-dispatch/Cargo.toml"], {"L0","L1","L2","L3","L4"}, True, True),
             (["e2e/harness.mjs"], {"L0","L2","L3"}, False, False),
-            (["crates/server/awaken-dispatch/src/postgres_claim.rs"], {"L0","L1","L2","L3","L4"}, False, True),
+            (["crates/platform/dispatch/awaken-dispatch/src/postgres_claim.rs"], {"L0","L1","L2","L3","L4"}, False, True),
             (["new-build-input"], {"L0","L1","L2","L3","L4"}, True, True),
         ]:
             with self.subTest(paths=paths):
@@ -381,10 +381,10 @@ class MatrixTests(unittest.TestCase):
 
     def metadata(self):
         entries = [
-            ("work", "awaken-work-store", "crates/stores/awaken-work-store", []),
-            ("runtime", "awaken-runtime", "crates/runtime/awaken-runtime", []),
-            ("kit", "awaken-dispatch-testkit", "crates/server/awaken-dispatch-testkit", ["work", "runtime"]),
-            ("dispatch", "awaken-dispatch", "crates/server/awaken-dispatch", ["kit"]),
+            ("work", "awaken-work-store", "crates/platform/environment/awaken-work-store", []),
+            ("runtime", "awaken-runtime", "crates/sdk/runtime/awaken-runtime", []),
+            ("kit", "awaken-dispatch-testkit", "crates/platform/dispatch/awaken-dispatch-testkit", ["work", "runtime"]),
+            ("dispatch", "awaken-dispatch", "crates/platform/dispatch/awaken-dispatch", ["kit"]),
             ("unrelated", "unrelated-plugin", "sdk/unrelated-plugin", []),
         ]
         return {
@@ -396,9 +396,9 @@ class MatrixTests(unittest.TestCase):
         }
 
     def test_moved_work_authority_and_embedded_readme_use_the_real_consumers(self):
-        for path in ("crates/stores/awaken-work-store/src/lease_book.rs",
-                     "crates/stores/awaken-work-store/src/schema.rs",
-                     "crates/runtime/awaken-runtime/README.md"):
+        for path in ("crates/platform/environment/awaken-work-store/src/lease_book.rs",
+                     "crates/platform/environment/awaken-work-store/src/schema.rs",
+                     "crates/sdk/runtime/awaken-runtime/README.md"):
             with self.subTest(path=path):
                 result = required_layers([path], metadata=self.metadata())
                 self.assertTrue({"L1", "L2", "L3", "L4"} <= set(result["required_layers"]))
@@ -414,14 +414,14 @@ class MatrixTests(unittest.TestCase):
         for node in metadata["resolve"]["nodes"]:
             if node["id"] == "kit":
                 node["deps"] = [{"pkg": "runtime"}]
-        result = required_layers(["crates/stores/awaken-work-store/src/lease_book.rs"], metadata=metadata)
+        result = required_layers(["crates/platform/environment/awaken-work-store/src/lease_book.rs"], metadata=metadata)
         self.assertFalse(result["scale_required"])
-        result = required_layers(["crates/runtime/awaken-runtime/src/lib.rs"], metadata=metadata)
+        result = required_layers(["crates/sdk/runtime/awaken-runtime/src/lib.rs"], metadata=metadata)
         self.assertTrue(result["scale_required"])
 
     def test_missing_graph_and_nonprose_docs_never_claim_narrow_rust_qualification(self):
-        for path in ("crates/stores/awaken-work-store/src/lease_book.rs",
-                     "crates/runtime/awaken-runtime/README.md", "docs/unknown-input.json"):
+        for path in ("crates/platform/environment/awaken-work-store/src/lease_book.rs",
+                     "crates/sdk/runtime/awaken-runtime/README.md", "docs/unknown-input.json"):
             result = required_layers([path])
             self.assertEqual(result["required_layers"], ["L0", "L1", "L2", "L3", "L4"])
             self.assertTrue(result["cold_required"])
@@ -429,13 +429,13 @@ class MatrixTests(unittest.TestCase):
         broken = self.metadata()
         broken["resolve"] = None
         with self.assertRaises(ValueError):
-            required_layers(["crates/stores/awaken-work-store/src/schema.rs"], metadata=broken)
+            required_layers(["crates/platform/environment/awaken-work-store/src/schema.rs"], metadata=broken)
 
     def test_plan_cli_uses_the_canonical_metadata_reader_and_rejects_a_source_race(self):
         import contextlib
         import io
         from unittest import mock
-        paths = ["crates/stores/awaken-work-store/src/schema.rs"]
+        paths = ["crates/platform/environment/awaken-work-store/src/schema.rs"]
         for changed in (False, True):
             output = io.StringIO()
             with self.subTest(changed=changed), mock.patch("rust_test_plan.changed_sources", return_value=paths), \

@@ -25,7 +25,7 @@ class NamedUnionTests(unittest.TestCase):
             "contracts/model-config.d.ts",
             "contracts/model-schemas.generated.json",
             "contracts/anthropic-managed/upstream-oracle.generated.json",
-            "crates/server/awaken-protocol-managed/contracts/sdk-support.generated.json",
+            "crates/platform/protocols/awaken-protocol-managed/contracts/sdk-support.generated.json",
             "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
             "packages/managed-sdk-oracle/src/current-wire.generated.ts",
         ]

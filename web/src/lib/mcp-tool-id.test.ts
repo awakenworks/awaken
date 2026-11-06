@@ -8,7 +8,7 @@ import {
 } from "./mcp-tool-id";
 
 // These vectors are copied from the Rust owner's tests
-// (crates/contract/awaken-agent-contract/src/mcp_tool_id.rs). If the two
+// (crates/sdk/contracts/awaken-agent-contract/src/mcp_tool_id.rs). If the two
 // encoders ever disagree, the console rewrites authored tool references onto
 // ids the runtime never produces.
 const SHARED_VECTORS: Array<[string, string]> = [

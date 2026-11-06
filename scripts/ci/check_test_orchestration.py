@@ -122,14 +122,14 @@ REQUIRED_RELEASE_GROUPS = (
     "e2e",
     "sandbox",
 )
-STORE_CONFORMANCE = "crates/stores/awaken-store-conformance/src/lib.rs"
+STORE_CONFORMANCE = "crates/platform/committed-truth/awaken-store-conformance/src/lib.rs"
 STORE_BACKEND_TESTS = (
-    "crates/runtime/awaken-store-inmem/tests/conformance.rs",
-    "crates/stores/awaken-store-fs/tests/conformance.rs",
-    "crates/stores/awaken-store-sqlite/tests/checkpoint_reader.rs",
-    "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
+    "crates/sdk/runtime/awaken-store-inmem/tests/conformance.rs",
+    "crates/platform/committed-truth/awaken-store-fs/tests/conformance.rs",
+    "crates/platform/committed-truth/awaken-store-sqlite/tests/checkpoint_reader.rs",
+    "crates/platform/committed-truth/awaken-store-postgres/tests/postgres_live.rs",
 )
-INGRESS_CONFORMANCE = "crates/server/awaken-dispatch/tests/dispatch_conformance.rs"
+INGRESS_CONFORMANCE = "crates/platform/dispatch/awaken-dispatch/tests/dispatch_conformance.rs"
 # A test may wait, but it must say how long. The runner's deadline stops a
 # stuck test from taking the suite with it; it cannot tell you what the test
 # was waiting for, and it spends five minutes not telling you. The debt is
@@ -141,7 +141,7 @@ UNBOUNDED_WAIT_BASELINE = 0
 # request never scheduled, and parked forever. `support::Call` makes that a
 # type error -- it has no accessor that yields the body alone -- so every
 # helper returns one and the status-tuple shape is refused outright.
-MANAGED_HTTP_TESTS = "crates/server/awaken-protocol-managed/tests"
+MANAGED_HTTP_TESTS = "crates/platform/protocols/awaken-protocol-managed/tests"
 TUPLE_HELPER_BASELINE = 0
 HTTP_HELPER_RETURN = re.compile(r"->\s*\(StatusCode,\s*Value\)")
 RUST_FN = re.compile(r"\bfn\s+(\w+)")
