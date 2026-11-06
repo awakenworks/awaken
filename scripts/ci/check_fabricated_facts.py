@@ -179,6 +179,7 @@ COMPOSITION_ROOTS: frozenset[str] = frozenset(
         # runtime and chooses the clock its commit store stamps with.
         "crates/devtools/awaken-runtime-examples/examples/direct_runtime.rs",
         "crates/devtools/awaken-runtime-examples/examples/hello_agent.rs",
+        "crates/devtools/awaken-sdk-server/src/main.rs",
         # Standalone Worker example programs: each `main` composes one Worker
         # process and chooses the clock its Host and request assertions share.
         "crates/bin/awaken-cli/examples/credential_reference_worker.rs",

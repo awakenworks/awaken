@@ -701,6 +701,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-conversation"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-protocol-a2a",
+ "awaken-protocol-ag-ui",
+ "awaken-protocol-ai-sdk",
+ "awaken-protocol-mcp",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "awaken-store-inmem",
+ "awaken-sync",
+ "awaken-time",
+ "awaken-tool-contract",
+ "axum",
+ "http-body-util",
+ "serde_json",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "awaken-coordinator"
 version = "1.0.0"
 dependencies = [
@@ -3133,6 +3156,26 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "thiserror",
+]
+
+[[package]]
+name = "awaken-sdk-server"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-conversation",
+ "awaken-protocol-a2a",
+ "awaken-protocol-ag-ui",
+ "awaken-protocol-ai-sdk",
+ "awaken-protocol-mcp",
+ "awaken-runtime",
+ "awaken-store-inmem",
+ "awaken-time",
+ "axum",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

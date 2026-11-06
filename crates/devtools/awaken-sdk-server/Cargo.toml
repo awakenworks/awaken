@@ -1,0 +1,34 @@
+[package]
+name = "awaken-sdk-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.awaken]
+context = "devtools"
+product = "devtools"
+layer = "tooling"
+authority = "sdk-protocol-server"
+separation = "process"
+
+[dependencies]
+awaken-conversation.workspace = true
+awaken-runtime.workspace = true
+awaken-agent-contract.workspace = true
+awaken-store-inmem.workspace = true
+awaken-time.workspace = true
+awaken-protocol-ag-ui.workspace = true
+awaken-protocol-ai-sdk.workspace = true
+awaken-protocol-a2a.workspace = true
+awaken-protocol-mcp.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["net", "signal"] }
+axum = "0.8"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true
