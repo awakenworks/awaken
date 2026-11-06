@@ -80,6 +80,7 @@ pub(super) fn managed_resource_error(
 ///     let _ = ResourcesRouterInput {
 ///         resources: resources.clone(),
 ///         credentials: Arc::new(UnavailableRepositoryCredentialValidator),
+///         sessions: None,
 ///     };
 /// }
 /// ```
