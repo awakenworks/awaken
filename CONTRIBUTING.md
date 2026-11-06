@@ -96,21 +96,14 @@ add `--run` to execute the printed plan. Selection includes changed owners and
 transitive consumers, including development and build dependencies. The authored
 whole compilation graph and companion binaries remain unchanged.
 
-Only two static data files can avoid widening local Rust execution:
-`scripts/ci/test_inventory.txt` may increase each original test-name occurrence
-floor, and `scripts/ci/modularity_baseline.json` may decrease known numeric
-ceilings without changing keys, reasons or exemptions. Both base-to-index and
-index-to-working-tree transitions must qualify. Unknown shapes, duplicate JSON
-keys, deleted files, symlinks, weakened counts and other inputs retain the
-conservative fallback. A qualifying plan runs the complete `static` group before
-any Rust tests; a static failure prevents Rust execution. A static-only change
-runs that group without claiming Rust execution or a full-gate pass.
-
-`python3 scripts/ci/rust_test_plan.py --execution-scope --base HEAD` prints the
-source-bound execution scope and whole-static requirement without executing it.
-The canonical `--gate-scope`, public API qualification, push hooks and whole
-compile policy remain conservative. Neither selection nor a cache hit transfers
-an old receipt to a new source revision.
+`python3 scripts/ci/rust_test_plan.py --gate-scope --base HEAD --explain` prints
+the Rust gate's scope (`none`, `packages` or `whole`), the gate scripts a change
+reaches, and why each changed path counts. A CI script the gate never runs and a
+document are not Rust inputs. A change to the selector itself (this planner,
+`crate_test.py`, `generate_hooks.py`, `check-rust.sh` or a helper they import or
+source), a manifest, the lockfile or an unowned Rust input keeps the whole run.
+Neither selection nor a cache hit transfers an old receipt to a new source
+revision.
 
 CLI cross-component composition and Coordinator scenario suites live in the
 existing `awaken-scenario-host` test package. CLI and Coordinator unit targets

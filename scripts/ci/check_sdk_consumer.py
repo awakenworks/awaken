@@ -35,7 +35,7 @@ from generate_hooks import gate_mode_source, glob_matches
 # graph from the workspace. The existing Rust gate/generator owns their union.
 INPUT_GLOBS = (
     "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", "crates/**",
-    "examples/sdk-consumer/**", "scripts/ci/*.py", "scripts/ci/check-rust.sh",
+    "examples/sdk-consumer/**", "scripts/ci/check-rust.sh",
 )
 
 ROOT = Path(__file__).resolve().parents[2]

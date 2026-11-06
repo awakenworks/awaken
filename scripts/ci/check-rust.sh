@@ -188,10 +188,14 @@ if [ "$mode" = "--self-test" ]; then
   exit 0
 fi
 
-source scripts/ci/_build_observation.sh
 export AWAKEN_BUILD_WORKLOAD_KIND="${AWAKEN_BUILD_WORKLOAD_KIND:-feedback}"
 export AWAKEN_BUILD_OBSERVATION_KIND="${AWAKEN_BUILD_OBSERVATION_KIND:-project}"
-awaken_begin_build_observation "rust:$mode" || exit $?
+# Performance telemetry is opt-in (AWAKEN_BUILD_OBSERVE=1, or a caller that
+# already owns an observation run); it never decides or delays the gate.
+if [ "${AWAKEN_BUILD_OBSERVE:-0}" = 1 ] || [ -n "${AWAKEN_BUILD_RUN_DIRECTORY:-}" ]; then
+  . scripts/ci/_build_observation.sh
+  awaken_begin_build_observation "rust:$mode" || exit $?
+fi
 
 # A full run builds the whole workspace plus every test binary. When the target
 # filesystem cannot hold that, the first symptom is a linker or codegen error on
@@ -203,20 +207,93 @@ fi
 # These are diagnostics, never a full-gate qualification receipt. Every run
 # retains its own source/patch, argv, original output and elapsed/status rows.
 mkdir -p "$CARGO_TARGET_DIR/test-timings" || exit 1
-rust_step_evidence=$(mktemp -d "$AWAKEN_BUILD_RUN_DIRECTORY/rust-gate.XXXXXX") || exit 1
-git rev-parse HEAD > "$rust_step_evidence/source.txt" || exit 1
-git -c core.fsmonitor=false diff --binary HEAD > "$rust_step_evidence/working-tree.patch" || exit 1
-printf '%s\n' "$mode" > "$rust_step_evidence/mode.txt" || exit 1
-printf 'stage\telapsed_seconds\texit_code\n' > "$rust_step_evidence/timings.tsv" || exit 1
-echo "Rust stage evidence: $rust_step_evidence"
+if [ -n "${AWAKEN_RUST_GATE_EVIDENCE:-}" ]; then
+  # The admitted Cargo half of this same run keeps the first half's record.
+  rust_step_evidence="$AWAKEN_RUST_GATE_EVIDENCE"
+else
+  rust_step_evidence=$(mktemp -d "${AWAKEN_BUILD_RUN_DIRECTORY:-$CARGO_TARGET_DIR/test-timings}/rust-gate.XXXXXX") || exit 1
+  git rev-parse HEAD > "$rust_step_evidence/source.txt" || exit 1
+  git -c core.fsmonitor=false diff --binary HEAD > "$rust_step_evidence/working-tree.patch" || exit 1
+  printf '%s\n' "$mode" > "$rust_step_evidence/mode.txt" || exit 1
+  printf 'stage\telapsed_seconds\texit_code\n' > "$rust_step_evidence/timings.tsv" || exit 1
+  echo "Rust stage evidence: $rust_step_evidence"
+fi
 
-step "dependency-sources" "use an allowlisted HTTPS Git repository and pin a full 40-character rev" \
+# Scope of every step below (decision table in rust_test_plan.py gate_plan).
+# S1 --full -> every step runs. S2 --quick compares HEAD with the index and
+# working tree; --push compares the merge-base with origin/main, i.e. every
+# commit about to leave the machine. S3 "none" -> nothing to do. "packages"
+# -> a step runs when its root, or a package it consumes, is a changed owner or
+# a transitive consumer of one. S4 "whole", an unknown base, a planner refusal
+# or a change to the selector itself -> every step runs. S5 a changed gate
+# script (script= lines) also runs every step whose command executes it.
+scope_base=""
+if [ -n "${AWAKEN_RUST_GATE_PLAN:-}" ]; then
+  scope_plan="$AWAKEN_RUST_GATE_PLAN"
+  scope_base="${AWAKEN_RUST_GATE_BASE:-HEAD}"
+else
+  scope_plan=$'scope=whole\nreason=full gate'
+  if [ "$mode" = "--push" ]; then
+    # Without an origin/main merge-base, the root commit is the base: every
+    # path counts as changed, so the plan stays whole.
+    scope_base=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null) \
+      || scope_base=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+  else
+    scope_base=HEAD
+  fi
+  if [ "$mode" = "--full" ]; then
+    :
+  else
+    plan_mode="$mode"
+    scope_plan=$(python3 scripts/ci/rust_test_plan.py --gate-scope --base "$scope_base" --mode "$plan_mode" --explain) \
+      || scope_plan=$'scope=whole\nreason=gate scope unavailable; every step runs'
+  fi
+  echo "Rust gate scope: $(printf '%s\n' "$scope_plan" | sed -n 's/^scope=//p') ($(printf '%s\n' "$scope_plan" | sed -n 's/^reason=//p'))"
+fi
+scope=$(printf '%s\n' "$scope_plan" | sed -n 's/^scope=//p')
+scope_reason=$(printf '%s\n' "$scope_plan" | sed -n 's/^reason=//p')
+reached_scripts=$(printf '%s\n' "$scope_plan" | sed -n 's/^script=//p')
+scoped_packages=$(printf '%s\n' "$scope_plan" | grep -v '=' || true)
+rust_changed=0
+if [ "$scope" = whole ] || [ -n "$scoped_packages" ]; then
+  rust_changed=1
+fi
+
+# runs_reached <command...>: whether a step's command (or the shell function it
+# names) executes a gate script this change reached.
+runs_reached() {
+  [ -n "$reached_scripts" ] || return 1
+  local text="$*" script
+  if declare -F "$1" >/dev/null; then
+    text="$text $(declare -f "$1")"
+  fi
+  while IFS= read -r script; do
+    if [ -n "$script" ] && [[ "$text" == *"scripts/ci/$script"* ]]; then
+      return 0
+    fi
+  done <<< "$reached_scripts"
+  return 1
+}
+
+# gate_step "<label>" "<fix hint>" <command...>: a step every Rust change needs;
+# a gate-script-only change runs it only when the step executes that script.
+gate_step() {
+  local label="$1"
+  if [ "$rust_changed" -eq 1 ] || runs_reached "${@:3}"; then
+    step "$@"
+  else
+    echo "↷ $label (unaffected: $scope_reason)"
+  fi
+}
+
+if [ "${AWAKEN_RUST_GATE_PHASE:-}" != cargo ]; then
+gate_step "dependency-sources" "use an allowlisted HTTPS Git repository and pin a full 40-character rev" \
   python3 scripts/ci/check_dependency_sources.py
-step "trust-roots" "keep the immutable compatibility shim connected to patched certificate data" \
+gate_step "trust-roots" "keep the immutable compatibility shim connected to patched certificate data" \
   python3 scripts/ci/check_trust_roots.py
-step "authority-arithmetic" "replace lossy or saturating authority arithmetic with checked conversions" \
+gate_step "authority-arithmetic" "replace lossy or saturating authority arithmetic with checked conversions" \
   python3 scripts/ci/check_authority_arithmetic.py
-step "feature-matrix" "add the crate to [workspace.members] or register the feature's substitute verifier" \
+gate_step "feature-matrix" "add the crate to [workspace.members] or register the feature's substitute verifier" \
   python3 scripts/ci/check_feature_matrix.py
 
 # The sole Rust gate runs toolchain-independent checks even without Cargo.
@@ -239,42 +316,13 @@ if [ "$mode" = "--full" ] && ! cargo nextest --version >/dev/null 2>&1; then
   exit 1
 fi
 
-step "fmt-batch-self-test" "fix the native workspace formatting planner" \
+gate_step "fmt-batch-self-test" "fix the native workspace formatting planner" \
   python3 scripts/ci/check_rustfmt.py --self-test
-step "fmt" "cargo fmt -p <reported-package>" \
+gate_step "fmt" "cargo fmt -p <reported-package>" \
   python3 scripts/ci/check_rustfmt.py
 
-# Scope of the separate-graph steps below (decision table in rust_test_plan.py
-# gate_scope). S1 --full -> every step runs. S2 --quick compares HEAD with the
-# index and working tree; --push compares the merge-base with origin/main, i.e.
-# every commit about to leave the machine. S3 "none" -> the step is skipped and
-# says so; "packages" -> it runs when its root, or a package it consumes, is a
-# changed owner or a transitive consumer of one. S4 "whole", an unknown base or
-# a planner refusal -> every step runs, exactly as before scoping existed.
-scope="whole"
-scope_reason="full gate"
-scoped_packages=""
-scope_base=""
-if [ "$mode" = "--full" ]; then
-  echo "Rust gate scope: whole (full gate)"
-else
-  if [ "$mode" = "--push" ]; then
-    # Without an origin/main merge-base, the root commit is the base: every
-    # path counts as changed, so the plan stays whole.
-    scope_base=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null) \
-      || scope_base=$(git rev-list --max-parents=0 HEAD | tail -n 1)
-  else
-    scope_base=HEAD
-  fi
-  if scope_plan=$(python3 scripts/ci/rust_test_plan.py --gate-scope --base "$scope_base"); then
-    scope=$(printf '%s\n' "$scope_plan" | sed -n 's/^scope=//p')
-    scope_reason=$(printf '%s\n' "$scope_plan" | sed -n 's/^reason=//p')
-    scoped_packages=$(printf '%s\n' "$scope_plan" | sed '1,2d')
-  else
-    scope_reason="gate scope unavailable; every step runs"
-  fi
-  echo "Rust gate scope: $scope ($scope_reason)"
 fi
+
 
 # affects <package>... : whether a step rooted at these packages can observe the change.
 affects() {
@@ -298,7 +346,7 @@ scoped_step() {
   local label="$1" fix="$2" packages="$3"
   shift 3
   # shellcheck disable=SC2086 # the root package list is space separated
-  if affects $packages; then
+  if affects $packages || runs_reached "$@"; then
     step "$label" "$fix" "$@"
   else
     echo "↷ $label (unaffected: $scope_reason)"
@@ -395,14 +443,18 @@ case "$mode" in
     # Both lanes plan the same check against their own base (S2 above); the
     # planner keeps the whole argv whenever it cannot prove a narrower one,
     # including when nothing changed (an incremental no-op after pre-commit).
-    if [ "$mode" = "--quick" ]; then
-      step "check" "fix the compile errors shown above" \
-        python3 scripts/ci/rust_test_plan.py --base HEAD --run --check-command \
-        cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}" --timings
+    if [ "$rust_changed" -eq 0 ]; then
+      echo "↷ check (unaffected: $scope_reason)"
     else
-      step "check" "fix the compile errors shown above" \
-        python3 scripts/ci/rust_test_plan.py --base "$scope_base" --run --check-command \
-        cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}" --timings
+      if [ "$mode" = "--quick" ]; then
+        step "check" "fix the compile errors shown above" \
+          python3 scripts/ci/rust_test_plan.py --base HEAD --run --check-command \
+          cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}" --timings
+      else
+        step "check" "fix the compile errors shown above" \
+          python3 scripts/ci/rust_test_plan.py --base "$scope_base" --run --check-command \
+          cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}" --timings
+      fi
     fi
     if [ "$mode" = "--push" ]; then
       # A dev dependency may enable the upstream Host variant while the CLI's
@@ -437,7 +489,7 @@ case "$mode" in
       # enables every member's features, so a package subset resolves a
       # different unified graph and cannot stand in for it. Only S3 "none"
       # (nothing it compiles changed since the push base) skips it.
-      if [ "$scope" = none ]; then
+      if [ "$rust_changed" -eq 0 ]; then
         echo "↷ lint-all-features (unaffected: $scope_reason)"
       else
         step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
@@ -445,14 +497,14 @@ case "$mode" in
         step "lint-production" "$lint_production_fix" \
           cargo clippy --workspace "${production_selection[@]}" --lib --bins "${locked[@]}" -- -D warnings
       fi
-      step "formal-coverage" "fix the harness anchors/@kani tags or formal/obligations/ as shown above" \
+      gate_step "formal-coverage" "fix the harness anchors/@kani tags or formal/obligations/ as shown above" \
         python3 scripts/ci/check_formal_coverage.py
       # The formal-evidence pre-commit hook now triggers on every production
       # Rust file and answers the same question incrementally (--staged), so an
       # unclassified module is refused at the commit that introduces it. This
       # whole-tree run stays here because the coverage *ratio* it reports is
       # global: only a full walk can show a surface that lost its last owner.
-      step "formal-surface" "classify the new source in its own opening lines (// @formal surface ... with a // @formal reason:)" \
+      gate_step "formal-surface" "classify the new source in its own opening lines (// @formal surface ... with a // @formal reason:)" \
         python3 scripts/ci/check_formal_surface.py --require-complete
     fi
     ;;

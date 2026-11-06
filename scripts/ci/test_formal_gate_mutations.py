@@ -11,7 +11,7 @@ import formal_sources
 
 # The private Git trees are generated fixtures; repository inputs are the CI
 # Python helpers imported by this test and the checker that invokes it.
-INPUT_GLOBS: tuple[str, ...] = ("scripts/ci/*.py",)
+INPUT_GLOBS: tuple[str, ...] = ("scripts/ci/test_formal_gate_mutations.py",)
 
 
 @unittest.skipUnless(os.name == "nt", "native Windows fixture admission")

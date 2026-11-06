@@ -19,7 +19,7 @@ import check_native_services as gate
 from _native_service_receipt_fixture import FIXTURE_OWNER, postgres_receipts
 from _native_postgres_scopes import postgres_plan
 
-INPUT_GLOBS = ("scripts/ci/**", ".github/workflows/windows-native-services.yml")
+INPUT_GLOBS = (".github/workflows/windows-native-services.yml", "scripts/ci/pg_tests.sh")
 PACKAGES = ("awaken-sql-storage", "awaken-session-store", "awaken-config-store",
             "awaken-store-postgres", "awaken-env-store", "awaken-file-store",
             "awaken-store-schema", "awaken-store-sqlite")
