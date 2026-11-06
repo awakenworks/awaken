@@ -45,6 +45,18 @@ enum ResourceSettlement {
     RetryableFailure(String),
 }
 
+/// Only the exact completed generation can satisfy a competing driver. The
+/// attempted watermark alone is not the active pair after rollback.
+fn resource_generation_is_active(
+    resources: &awaken_session_contract::SessionResourceState,
+    revision: u64,
+    desired: &ResolvedSessionResources,
+) -> bool {
+    resources.revision == revision
+        && resources.pending.is_none()
+        && resources.active_generation() == (revision, desired)
+}
+
 /// Root-CAS retries may advance only this command's credential pin/observation,
 /// never rebind a completed Vault effect to another Resource identity/config.
 fn repository_rotation_target_matches(before: &ResolvedInput, after: &ResolvedInput) -> bool {
@@ -176,6 +188,11 @@ impl SessionResourceReconciliation {
                 .session_aggregate(session_id)
                 .await
                 .map_err(repository_preparation)?;
+            if matches!(&settlement, ResourceSettlement::Commit)
+                && resource_generation_is_active(&current.resources, resource_revision, desired)
+            {
+                return Ok(current);
+            }
             if current.resources.revision != resource_revision
                 || current.resources.pending.as_ref() != Some(desired)
             {
@@ -205,9 +222,23 @@ impl SessionResourceReconciliation {
                 .resource_references
                 .commit(owner_scope, current, operation, Vec::new())
                 .await
-            {
+                .and_then(|commit| {
+                    crate::mutation::aggregate_from_snapshot(commit.into_session())
+                        .map_err(crate::mutation::repository_failure)
+                }) {
                 Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
+                }
+                Ok(committed)
+                    if matches!(&settlement, ResourceSettlement::Commit)
+                        && !resource_generation_is_active(
+                            &committed.resources,
+                            resource_revision,
+                            desired,
+                        ) =>
+                {
+                    // A replay may reload a newer root than its own receipt.
+                    return Err(SessionPreparationError::Conflict);
                 }
                 result => return result.map_err(mutation_failure),
             }
@@ -223,6 +254,9 @@ impl SessionResourceReconciliation {
     ) -> Result<SessionAggregate, SessionPreparationError> {
         let resource_revision = session.resources.revision;
         for attempt in 0..ROOT_CAS_ATTEMPTS {
+            if resource_generation_is_active(&session.resources, resource_revision, desired) {
+                return Ok(session);
+            }
             if session.resources.revision != resource_revision
                 || session.resources.pending.as_ref() != Some(desired)
             {
@@ -239,8 +273,23 @@ impl SessionResourceReconciliation {
                     Vec::new(),
                 )
                 .await
-            {
-                Ok(committed) => return Ok(committed),
+                .and_then(|commit| {
+                    crate::mutation::aggregate_from_snapshot(commit.into_session())
+                        .map_err(crate::mutation::repository_failure)
+                }) {
+                Ok(committed) => {
+                    if (committed.resources.revision == resource_revision
+                        && committed.resources.pending.as_ref() == Some(desired))
+                        || resource_generation_is_active(
+                            &committed.resources,
+                            resource_revision,
+                            desired,
+                        )
+                    {
+                        return Ok(committed);
+                    }
+                    return Err(SessionPreparationError::Conflict);
+                }
                 Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     session = self
                         .mutations
@@ -465,6 +514,10 @@ impl SessionResourceReconciliation {
                 session = self
                     .start_resource_reconciliation(owner_scope, session, &desired)
                     .await?;
+                if session.resources.pending.is_none() {
+                    // The competing driver already installed this exact pair.
+                    return self.retire_detached_generation(owner_scope, session).await;
+                }
                 if let Err(error) = effects_runtime
                     .apply_session_inputs(session_id.as_str(), &transition)
                     .await
@@ -536,6 +589,10 @@ impl SessionResourceReconciliation {
                     .resource_references
                     .commit(owner_scope, session, "resource-adopt-legacy", Vec::new())
                     .await
+                    .and_then(|commit| {
+                        crate::mutation::aggregate_from_snapshot(commit.into_session())
+                            .map_err(crate::mutation::repository_failure)
+                    })
                     .map_err(mutation_failure)?;
             }
             return self.retire_detached_generation(owner_scope, session).await;
