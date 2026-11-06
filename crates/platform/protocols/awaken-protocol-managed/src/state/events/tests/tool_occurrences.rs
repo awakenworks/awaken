@@ -101,7 +101,7 @@ async fn wire_tool_identity_and_permission_use_the_exact_selected_message_or_pen
     let mut record = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .clone();
@@ -252,7 +252,10 @@ async fn client_result_index_is_occurrence_exact_when_runtime_call_ids_repeat() 
     let first = managed_tool_event_id(&public_thread, "source-1", "same-call");
     let second = managed_tool_event_id(&public_thread, "source-2", "same-call");
     let mut record = {
-        let mut records = state.sessions.lock().unwrap();
+        let mut records = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = records.get_mut(&session.id).unwrap();
         record.events.extend([
             Event {

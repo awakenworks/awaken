@@ -28,6 +28,15 @@ impl EffectAuthority {
             current: InvariantLock::new(None),
         }
     }
+
+    /// Install, renew or revoke the grant. A poisoned fixture is the test's
+    /// own failure, so this panics with the refusal's text.
+    pub fn set(&self, grant: Option<(SandboxEffectFence, Duration)>) {
+        *self
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}")) = grant;
+    }
 }
 
 impl CurrentExecutionAuthority for EffectAuthority {

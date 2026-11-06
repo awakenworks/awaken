@@ -1487,7 +1487,10 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
         std::task::Poll::Ready(())
     })
     .await;
-    *authority.current.lock().unwrap() = None;
+    *authority
+        .current
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
     drop(memory_locked);
     assert!(waiting.await.is_err(), "N7 recheck after wait");
     assert_eq!(
@@ -1760,7 +1763,7 @@ async fn physical_disposal_rechecks_current_authority_before_delete_release_and_
                 .lifecycle
                 .staging
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
                 .as_ref()
                 .unwrap()
                 .path()
@@ -1822,7 +1825,10 @@ async fn physical_disposal_rechecks_current_authority_before_delete_release_and_
             if change == "replace" {
                 current.reassign();
             }
-            *authority.current.lock().unwrap() = if change == "revoke" {
+            *authority
+                .current
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}")) = if change == "revoke" {
                 None
             } else {
                 Some((
@@ -1874,7 +1880,10 @@ async fn physical_disposal_rechecks_current_authority_before_delete_release_and_
                     2
                 );
                 assert_eq!(std::fs::read(&retained).unwrap(), b"synthetic-resource");
-                *authority.current.lock().unwrap() =
+                *authority
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
                     Some((authorization.effect_fence().clone(), Duration::from_secs(1)));
                 sandbox
                     .dispose_for_effect(&authorization, &authority)
@@ -1892,7 +1901,10 @@ async fn physical_disposal_rechecks_current_authority_before_delete_release_and_
                 vec![SandboxObservationPurpose::TerminalCleanup; observations as usize],
                 "R6 {boundary}/{change}"
             );
-            *authority.current.lock().unwrap() = None;
+            *authority
+                .current
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
             assert!(
                 sandbox
                     .dispose_for_effect(&authorization, &authority)
@@ -1972,7 +1984,10 @@ async fn disposal_preparation_rechecks_current_authority_after_each_credential_w
                 successor.reassign();
             }
             if change != "cancel" {
-                *authority.current.lock().unwrap() = if change == "revoke" {
+                *authority
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}")) = if change == "revoke" {
                     None
                 } else {
                     Some((successor, std::time::Duration::from_secs(1)))
@@ -2004,7 +2019,10 @@ async fn disposal_preparation_rechecks_current_authority_after_each_credential_w
             *broker.writeback_response_gate.lock().unwrap() = None;
             // Retry only under restored exact fixture authority, not a new
             // Sandbox or invented successful preparation after the rejection.
-            *authority.current.lock().unwrap() =
+            *authority
+                .current
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
                 Some((fence.clone(), std::time::Duration::from_secs(1)));
             sandbox
                 .prepare_disposal_for_effect(&fence, &authority)
@@ -2624,7 +2642,10 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
                 })
                 .await;
                 {
-                    let mut current = authority.current.lock().unwrap();
+                    let mut current = authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                     match change {
                         "revoke" => *current = None,
                         "replace" => current.as_mut().unwrap().0.reassign(),
@@ -2679,7 +2700,10 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
                 }
                 assert_eq!(std::fs::read(&source).unwrap(), bytes, "retained bytes");
                 assert!(broker.writes.lock().unwrap().is_empty());
-                *authority.current.lock().unwrap() =
+                *authority
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
                     Some((terminal.clone(), Duration::from_secs(1)));
                 let replay = recover(
                     &provider,
@@ -3128,7 +3152,10 @@ async fn container_checkpoint_projection_preserves_exact_handle_and_current_auth
         .await;
         assert_eq!(runtime.st.lock().unwrap().checkpoint_calls, 1);
         {
-            let mut current = authority.current.lock().unwrap();
+            let mut current = authority
+                .current
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
             match change {
                 "renew" => current.as_mut().unwrap().0.renew(),
                 "revoke" => *current = None,
@@ -4320,7 +4347,10 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                         .unwrap();
                 let authority = pc::test_support::EffectAuthority::new(&fence);
                 let change_authority = || {
-                    *authority.current.lock().unwrap() = match change {
+                    *authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}")) = match change {
                         "revoke" => None,
                         "replace" => Some((
                             fence.with_persisted(|w| w.epoch = 4).unwrap(),
@@ -5633,7 +5663,10 @@ async fn restored_adoption_rechecks_original_authority_after_each_query_response
                     })
                     .await;
                     {
-                        let mut current = authority.current.lock().unwrap();
+                        let mut current = authority
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                         match change {
                             "revoke" => *current = None,
                             "replace" => current.as_mut().unwrap().0.reassign(),
@@ -5671,7 +5704,10 @@ async fn restored_adoption_rechecks_original_authority_after_each_query_response
                         state.restore_query_gate = None;
                         state.restore_queries.clear();
                     }
-                    *authority.current.lock().unwrap() =
+                    *authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
                         Some((fence.clone(), Duration::from_secs(1)));
                     assert_eq!(call(&authority).await.unwrap(), handle, "R4 exact retry");
                     let state = runtime.st.lock().unwrap();
@@ -5799,7 +5835,10 @@ async fn terminal_restored_container_disposal_rechecks_current_authority_across_
                 })
                 .await;
                 {
-                    let mut current = authority.current.lock().unwrap();
+                    let mut current = authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                     match change {
                         "revoke" => *current = None,
                         "replace" => current.as_mut().unwrap().0.reassign(),

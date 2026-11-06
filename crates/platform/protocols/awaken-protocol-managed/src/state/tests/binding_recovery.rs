@@ -148,7 +148,11 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
         "D2"
     );
     profiles.0.store(8, std::sync::atomic::Ordering::SeqCst);
-    state.sessions.lock().unwrap().remove(&created.id);
+    state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .remove(&created.id);
     state.ensure_session(&created.id).await.unwrap();
     assert_eq!(
         refresh.calls.load(std::sync::atomic::Ordering::SeqCst),

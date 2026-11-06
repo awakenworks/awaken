@@ -648,7 +648,10 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             .disposal_authorization(&disposal_effect)
             .unwrap();
 
-        *worker.current.lock().unwrap() = None;
+        *worker
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
         assert!(
             managed
                 .realization_executor
@@ -658,7 +661,10 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             "TR5 entry denial"
         );
         assert!(provider.restored_disposals.lock().unwrap().is_empty());
-        *worker.current.lock().unwrap() =
+        *worker
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
             Some((worker_fence.clone(), std::time::Duration::from_secs(60)));
         let mut pending = Box::pin(
             managed
@@ -676,9 +682,20 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             "TR4 committed exact call before response"
         );
         match change {
-            "worker-revoke" => *worker.current.lock().unwrap() = None,
+            "worker-revoke" => {
+                *worker
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None
+            }
             "worker-expire" => {
-                worker.current.lock().unwrap().as_mut().unwrap().1 = std::time::Duration::ZERO
+                worker
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                    .as_mut()
+                    .unwrap()
+                    .1 = std::time::Duration::ZERO
             }
             "session-revoke" => host
                 .run_assembly
@@ -735,7 +752,10 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         // proof; production renewal cannot revive a revoked incarnation.
         provider.restored_disposals.lock().unwrap().clear();
         events.lock().unwrap().truncate(1);
-        *worker.current.lock().unwrap() =
+        *worker
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
             Some((worker_fence.clone(), std::time::Duration::from_secs(60)));
         host.run_assembly
             .installed_sessions

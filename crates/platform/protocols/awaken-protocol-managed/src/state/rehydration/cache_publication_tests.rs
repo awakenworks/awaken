@@ -160,14 +160,20 @@ async fn racing_cold_candidate_preserves_the_already_published_complete_entry() 
         .await
         .unwrap();
     let winner = {
-        let mut sessions = state.sessions.lock().unwrap();
+        let mut sessions = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = sessions.get_mut(id).unwrap();
         record.advance_cache_revision().unwrap();
         record.clone()
     };
     release.notify_one();
     first.await.unwrap();
-    let sessions = state.sessions.lock().unwrap();
+    let sessions = state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"));
     crate::state::session_record::assert_record_frame_eq(sessions.get(id).unwrap(), &winner);
     assert_eq!(sessions.get(id).unwrap().owner_scope(), "workspace-a");
     assert_eq!(reads.count("session"), 2, "one read per cold candidate");
@@ -194,7 +200,13 @@ async fn failed_cold_reads_never_publish_content_or_an_orphan_owner() {
             state.hydrate_session_record(id, purpose).await,
             Err(StateError::Run(error)) if error.kind == RunErrorKind::Unavailable
         ));
-        assert!(state.sessions.lock().unwrap().is_empty());
+        assert!(
+            state
+                .sessions
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                .is_empty()
+        );
         assert!(state.owner_scope(id).is_none());
         assert!(
             state
@@ -235,7 +247,12 @@ async fn eviction_removes_only_the_disposable_owner_with_its_record() {
             .unwrap()
             .is_empty()
     );
-    state.sessions.lock().unwrap().remove(&created.id).unwrap();
+    state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .remove(&created.id)
+        .unwrap();
     assert!(
         state.owner_scope(&created.id).is_none(),
         "no orphan owner after eviction"

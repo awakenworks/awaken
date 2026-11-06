@@ -600,12 +600,26 @@ mod tests {
                         None
                     };
                     match change {
-                        "revoke" => *authority.current.lock().unwrap() = None,
+                        "revoke" => {
+                            *authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None
+                        }
                         "expire" => {
-                            authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
+                            authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                                .as_mut()
+                                .unwrap()
+                                .1 = Duration::ZERO
                         }
                         "operation" => {
-                            let mut guard = authority.current.lock().unwrap();
+                            let mut guard = authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                             guard
                                 .as_mut()
                                 .unwrap()
@@ -613,7 +627,10 @@ mod tests {
                                 .tamper(|w| w.operation_id.push('x'));
                         }
                         "generation" => {
-                            let mut guard = authority.current.lock().unwrap();
+                            let mut guard = authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                             guard.as_mut().unwrap().0.reassign();
                         }
                         _ => {}
@@ -703,16 +720,33 @@ mod tests {
                 assert_eq!(store.puts.load(Ordering::SeqCst), 1);
                 assert_eq!(store.objects.lock().unwrap().len(), 1);
                 match change {
-                    "revoke" => *authority.current.lock().unwrap() = None,
+                    "revoke" => {
+                        *authority
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None
+                    }
                     "replace" => {
-                        let mut guard = authority.current.lock().unwrap();
+                        let mut guard = authority
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                         guard.as_mut().unwrap().0.reassign();
                     }
                     "expire" => {
-                        authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
+                        authority
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                            .as_mut()
+                            .unwrap()
+                            .1 = Duration::ZERO
                     }
                     "renew" => {
-                        let mut guard = authority.current.lock().unwrap();
+                        let mut guard = authority
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                         guard.as_mut().unwrap().0.renew();
                     }
                     _ => {}
@@ -742,7 +776,10 @@ mod tests {
                 drop(guard);
                 *store.pause.lock().unwrap() = None;
                 // Explicit test recovery, not revival of production revoked roots.
-                *authority.current.lock().unwrap() =
+                *authority
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
                     Some((suspend.clone(), Duration::from_secs(1)));
                 let receipt = pc::CheckpointingSandbox::checkpoint_for_effect(
                     &sandbox, &request, &store, &suspend, &authority,
@@ -870,23 +907,42 @@ mod tests {
                     assert_eq!(store.puts.load(Ordering::SeqCst), initial_puts);
                     assert_eq!(store.deletes.load(Ordering::SeqCst), initial_deletes);
                     match change {
-                        "revoke" => *authority.current.lock().unwrap() = None,
+                        "revoke" => {
+                            *authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None
+                        }
                         "replace" => {
-                            authority.current.lock().unwrap().as_mut().unwrap().0 =
-                                pc::SandboxEffectFence::new(
-                                    "terminal",
-                                    "replacement",
-                                    "runtime",
-                                    2,
-                                    u64::MAX,
-                                )
+                            authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                                .as_mut()
                                 .unwrap()
+                                .0 = pc::SandboxEffectFence::new(
+                                "terminal",
+                                "replacement",
+                                "runtime",
+                                2,
+                                u64::MAX,
+                            )
+                            .unwrap()
                         }
                         "expire" => {
-                            authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
+                            authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                                .as_mut()
+                                .unwrap()
+                                .1 = Duration::ZERO
                         }
                         "renew" => {
-                            let mut guard = authority.current.lock().unwrap();
+                            let mut guard = authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                             guard
                                 .as_mut()
                                 .unwrap()
@@ -956,7 +1012,10 @@ mod tests {
                     *store.pause.lock().unwrap() = None;
                     // Reinstall explicit test authority to inspect exact retry;
                     // this is not a production renewal of a revoked incarnation.
-                    *authority.current.lock().unwrap() =
+                    *authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
                         Some((terminal.clone(), Duration::from_secs(1)));
                     pc::CheckpointingSandbox::cleanup_checkpoint_for_terminal(
                         &sandbox, &request, &store, &suspend, &terminal, &authority,
@@ -984,7 +1043,10 @@ mod tests {
                         "R5"
                     );
                     assert!(store.objects.lock().unwrap().is_empty(), "R5");
-                    *authority.current.lock().unwrap() = None;
+                    *authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
                     assert!(
                         pc::CheckpointingSandbox::cleanup_checkpoint_for_terminal(
                             &sandbox, &request, &store, &suspend, &terminal, &authority,
@@ -995,7 +1057,10 @@ mod tests {
                     );
                     assert_eq!(store.puts.load(Ordering::SeqCst), puts, "R6");
                     assert_eq!(store.deletes.load(Ordering::SeqCst), deletes, "R6");
-                    *authority.current.lock().unwrap() =
+                    *authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
                         Some((terminal.clone(), Duration::from_secs(1)));
                     pc::Sandbox::prepare_disposal_for_effect(&sandbox, &terminal, &authority)
                         .await

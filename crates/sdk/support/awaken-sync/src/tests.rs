@@ -15,12 +15,23 @@
 //! | L4  | leaf rw         | healthy                            | `read`/`write` return the value                    |
 //! | L5  | leaf rw         | a writer panicked mid-update       | the value as the writer left it is recovered       |
 //! | L6  | leaf rw         | write-held / poisoned              | `try_*` is `None` / recovers the guard             |
-//! | E1  | refusal         | any poisoned invariant lock        | names the guarded type; is a `std::error::Error`   |
+//! | E1  | refusal         | any poisoned invariant lock        | names the guarded type; is not `Debug`, so not unwrappable |
 //! | E2  | refusal         | two locks over the same type       | equal refusals; the crate maps the class once      |
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::*;
+
+/// The guard of a healthy invariant lock. `LockPoisoned` is not `Debug`, so the
+/// test panics with the refusal's own text instead of unwrapping it.
+fn healthy<G>(acquired: Result<G, LockPoisoned>) -> G {
+    acquired.unwrap_or_else(|poisoned| panic!("{poisoned}"))
+}
+
+/// The guard of an uncontended, healthy invariant lock.
+fn free<G>(acquired: Result<G, TryLockFailure>) -> G {
+    acquired.unwrap_or_else(|_| panic!("the invariant lock is held or poisoned"))
+}
 
 /// Poison by the only route production has: a holder panics while holding.
 fn panic_while_holding(hold: impl FnOnce()) {
@@ -31,74 +42,71 @@ fn panic_while_holding(hold: impl FnOnce()) {
 #[test]
 fn i1_healthy_invariant_lock_returns_the_value() {
     let mut lock = InvariantLock::new(vec![1]);
-    lock.lock().expect("healthy").push(2);
+    healthy(lock.lock()).push(2);
     assert!(!lock.is_poisoned());
-    lock.get_mut().expect("healthy").push(3);
-    assert_eq!(lock.try_lock().expect("free").as_slice(), &[1, 2, 3]);
-    assert_eq!(lock.into_inner(), Ok(vec![1, 2, 3]));
+    healthy(lock.get_mut()).push(3);
+    assert_eq!(free(lock.try_lock()).as_slice(), &[1, 2, 3]);
+    assert!(lock.into_inner() == Ok(vec![1, 2, 3]));
 }
 
 #[test]
 fn i2_poisoned_invariant_lock_refuses_every_access() {
     let mut lock = InvariantLock::new(vec![1]);
     panic_while_holding(|| {
-        let mut held = lock.lock().expect("healthy before the panic");
+        let mut held = healthy(lock.lock());
         held.push(2);
         panic!("holder panics between two halves of an update");
     });
     let refusal = LockPoisoned::of::<Vec<i32>>();
     assert!(lock.is_poisoned());
-    assert_eq!(lock.lock().err(), Some(refusal));
-    assert_eq!(
-        lock.try_lock().err(),
-        Some(TryLockFailure::Poisoned(refusal))
-    );
-    assert_eq!(lock.get_mut().err(), Some(refusal));
-    assert_eq!(lock.into_inner(), Err(refusal));
+    assert!(lock.lock().err() == Some(refusal));
+    assert!(lock.try_lock().err() == Some(TryLockFailure::Poisoned(refusal)));
+    assert!(lock.get_mut().err() == Some(refusal));
+    assert!(lock.into_inner() == Err(refusal));
 }
 
 #[test]
 fn i3_held_invariant_lock_would_block_without_poison() {
     let lock = InvariantLock::new(0_u8);
-    let _held = lock.lock().expect("healthy");
-    assert_eq!(lock.try_lock().err(), Some(TryLockFailure::WouldBlock));
+    let _held = healthy(lock.lock());
+    assert!(lock.try_lock().err() == Some(TryLockFailure::WouldBlock));
 }
 
 #[test]
 fn i4_healthy_invariant_rw_lock_returns_the_value() {
     let mut lock = InvariantRwLock::new(1_u32);
-    *lock.write().expect("healthy") += 1;
-    assert_eq!(*lock.read().expect("healthy"), 2);
-    *lock.get_mut().expect("healthy") += 1;
+    *healthy(lock.write()) += 1;
+    assert_eq!(*healthy(lock.read()), 2);
+    *healthy(lock.get_mut()) += 1;
     assert!(!lock.is_poisoned());
-    assert_eq!(lock.into_inner(), Ok(3));
+    assert!(lock.into_inner() == Ok(3));
 }
 
 #[test]
 fn i5_writer_panic_poisons_the_invariant_rw_lock() {
     let mut lock = InvariantRwLock::new(String::from("a"));
     panic_while_holding(|| {
-        lock.write().expect("healthy").push('b');
-        let _held = lock.write().expect("healthy");
+        healthy(lock.write()).push('b');
+        let _held = healthy(lock.write());
         panic!("writer panics mid-update");
     });
     let refusal = LockPoisoned::of::<String>();
     assert!(lock.is_poisoned());
-    assert_eq!(lock.read().err(), Some(refusal));
-    assert_eq!(lock.write().err(), Some(refusal));
-    assert_eq!(lock.get_mut().err(), Some(refusal));
-    assert_eq!(lock.into_inner(), Err(refusal));
+    assert!(lock.read().err() == Some(refusal));
+    assert!(lock.write().err() == Some(refusal));
+    assert!(lock.get_mut().err() == Some(refusal));
+    assert!(lock.into_inner() == Err(refusal));
 }
 
 #[test]
 fn i6_reader_panic_leaves_the_invariant_rw_lock_healthy() {
     let lock = InvariantRwLock::new(5_u8);
     panic_while_holding(|| {
-        let _read = lock.read().expect("healthy");
+        let _read = healthy(lock.read());
         panic!("reader panics");
     });
     assert!(!lock.is_poisoned());
-    assert_eq!(*lock.read().expect("a read cannot poison"), 5);
+    assert_eq!(*healthy(lock.read()), 5);
 }
 
 #[test]
@@ -156,10 +164,10 @@ fn l5_poisoned_leaf_rw_lock_recovers_the_value_the_writer_left() {
 }
 
 #[test]
-fn e1_refusal_names_the_guarded_state_and_is_an_error() {
+fn e1_refusal_names_the_guarded_state() {
     let lock = InvariantLock::new(std::collections::BTreeMap::<String, u8>::new());
     panic_while_holding(|| {
-        let _held = lock.lock().expect("healthy");
+        let _held = healthy(lock.lock());
         panic!("poison");
     });
     let refusal = lock.lock().expect_err("poisoned");
@@ -169,8 +177,6 @@ fn e1_refusal_names_the_guarded_state_and_is_an_error() {
         message.contains("BTreeMap") && message.contains("poisoned"),
         "{message}"
     );
-    let error: &dyn std::error::Error = &refusal;
-    assert!(error.source().is_none());
 }
 
 #[test]
@@ -178,21 +184,21 @@ fn e2_refusals_over_the_same_state_are_equal() {
     let first = InvariantLock::new(1_u64);
     let second = InvariantRwLock::new(2_u64);
     panic_while_holding(|| {
-        let _held = first.lock().expect("healthy");
+        let _held = healthy(first.lock());
         panic!("poison");
     });
     panic_while_holding(|| {
-        let _held = second.write().expect("healthy");
+        let _held = healthy(second.write());
         panic!("poison");
     });
-    assert_eq!(first.lock().err(), second.read().err());
+    assert!(first.lock().err() == second.read().err());
 }
 
 #[test]
 fn conveniences_construct_like_the_std_locks() {
     let invariant: InvariantLock<Vec<u8>> = InvariantLock::default();
     let leaf: LeafRwLock<u8> = 7.into();
-    assert!(invariant.lock().expect("healthy").is_empty());
+    assert!(healthy(invariant.lock()).is_empty());
     assert_eq!(*leaf.read(), 7);
     assert!(format!("{invariant:?}").contains("Mutex"));
     assert!(format!("{leaf:?}").contains("RwLock"));
@@ -202,17 +208,17 @@ fn conveniences_construct_like_the_std_locks() {
 fn i7_invariant_rw_try_acquisition_tells_contention_from_poison() {
     let lock = InvariantRwLock::new(1_u8);
     {
-        let _writer = lock.write().expect("healthy");
-        assert_eq!(lock.try_read().err(), Some(TryLockFailure::WouldBlock));
-        assert_eq!(lock.try_write().err(), Some(TryLockFailure::WouldBlock));
+        let _writer = healthy(lock.write());
+        assert!(lock.try_read().err() == Some(TryLockFailure::WouldBlock));
+        assert!(lock.try_write().err() == Some(TryLockFailure::WouldBlock));
     }
     panic_while_holding(|| {
-        let _writer = lock.write().expect("healthy");
+        let _writer = healthy(lock.write());
         panic!("writer panics mid-update");
     });
     let poisoned = TryLockFailure::Poisoned(LockPoisoned::of::<u8>());
-    assert_eq!(lock.try_read().err(), Some(poisoned));
-    assert_eq!(lock.try_write().err(), Some(poisoned));
+    assert!(lock.try_read().err() == Some(poisoned));
+    assert!(lock.try_write().err() == Some(poisoned));
 }
 
 #[test]

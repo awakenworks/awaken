@@ -208,7 +208,10 @@ async fn physical_disposal_rechecks_current_authority_after_every_retained_wait(
             if change == "replace" {
                 current = current.with_persisted(|w| w.epoch += 1).unwrap();
             }
-            *authority.current.lock().unwrap() = if change == "revoke" {
+            *authority
+                .current
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}")) = if change == "revoke" {
                 None
             } else {
                 Some((
@@ -247,7 +250,10 @@ async fn physical_disposal_rechecks_current_authority_after_every_retained_wait(
                 assert!(sandbox.terminal_removal.lock().await.is_some());
                 assert_eq!(sandbox.memory_mounts.lock().await.len(), 2);
                 assert_eq!(drops.load(Ordering::SeqCst), 0);
-                *authority.current.lock().unwrap() =
+                *authority
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
                     Some((authorization.effect_fence().clone(), Duration::from_secs(1)));
                 sandbox
                     .dispose_for_effect(&authorization, &authority)
@@ -312,7 +318,10 @@ async fn terminal_preparation_requires_current_authority_before_creating_or_reus
                 "generation" => current = current.with_persisted(|w| w.epoch += 1).unwrap(),
                 _ => {}
             }
-            *authority.current.lock().unwrap() = if change == "revoke" {
+            *authority
+                .current
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}")) = if change == "revoke" {
                 None
             } else {
                 Some((current, std::time::Duration::from_secs(1)))
@@ -442,10 +451,18 @@ async fn terminal_cleanup_uses_current_proof_not_provider_wall_time() {
                             .unwrap();
                     let authority = pc::test_support::EffectAuthority::new(&terminal);
                     if proof == "revoked" {
-                        *authority.current.lock().unwrap() = None;
+                        *authority
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
                     } else if proof == "exhausted" {
-                        authority.current.lock().unwrap().as_mut().unwrap().1 =
-                            std::time::Duration::ZERO;
+                        authority
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                            .as_mut()
+                            .unwrap()
+                            .1 = std::time::Duration::ZERO;
                     }
                     let root = crate::sandbox_dir(tmp.path(), &spec.scope);
                     let secret = root.join("synthetic-retained");

@@ -313,7 +313,7 @@ fn kill(pool: WarmContainerPool<FakeDaemon>) {
 fn ready_scopes(pool: &WarmContainerPool<FakeDaemon>) -> BTreeSet<String> {
     pool.warm
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .values()
         .flat_map(|entry| entry.ready.iter().map(|sandbox| sandbox.id.clone()))
         .collect()

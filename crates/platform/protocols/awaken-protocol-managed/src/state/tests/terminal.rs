@@ -326,7 +326,10 @@ async fn child_thread_archive_uses_durable_disposition_and_survives_cache_loss()
     );
 
     {
-        let mut sessions = state.sessions.lock().unwrap();
+        let mut sessions = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let child = sessions
             .get_mut(&session.id)
             .unwrap()
@@ -1482,7 +1485,10 @@ async fn archive_terminal_cleanup_tears_down_each_unique_runtime_once() {
         .expect("create")
         .id;
     {
-        let mut sessions = state.sessions.lock().unwrap();
+        let mut sessions = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = sessions.get_mut(&id).unwrap();
         record.child_threads.push(ManagedState::child_thread(
             &record.session,

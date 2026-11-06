@@ -895,16 +895,23 @@ pub(crate) mod tests {
         // inactive Threads. Rules P1=C1+C3 -> E1+E3, P2=C2+C3 -> E2.
         let registry = LocalCommitSlots::default();
         let idle_slot = registry.slot("idle".into()).unwrap();
-        *idle_slot.lock().unwrap() = Some(test_local_commit());
+        *idle_slot
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}")) = Some(test_local_commit());
         drop(idle_slot);
         let active = test_local_commit();
         let active_slot = registry.slot("active".into()).unwrap();
-        *active_slot.lock().unwrap() = Some(active.clone());
+        *active_slot
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}")) = Some(active.clone());
         drop(active_slot);
         for index in 0..32 {
             drop(registry.slot(format!("cold-{index}")).unwrap());
         }
-        let slots = registry.slots.lock().unwrap();
+        let slots = registry
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         assert!(!slots.by_thread.contains_key("idle"), "P1/E1");
         assert!(slots.by_thread.contains_key("active"), "P2/E2");
         assert!(slots.by_thread.len() < 32, "P1/E3");

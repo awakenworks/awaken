@@ -214,7 +214,10 @@ fn asserted() -> pc::SandboxEffectFence {
 fn stale_authority(row: &str) -> pc::test_support::EffectAuthority {
     let authority = pc::test_support::EffectAuthority::new(&asserted());
     {
-        let mut current = authority.current.lock().unwrap();
+        let mut current = authority
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let (current_fence, remaining) = current.as_mut().unwrap();
         match row {
             "expired" => *remaining = Duration::ZERO,

@@ -97,12 +97,22 @@ fn one_aggregate_opening_per_interval(history: &[DurableEvent]) -> Result<(), St
 /// Refresh one replica. A refresh that fails is a property violation: the
 /// committed prefix did not project on that replica.
 async fn refresh(state: &ManagedState, session_id: &str, damaged: bool) -> Result<(), String> {
-    let before = state.sessions.lock().unwrap().get(session_id).cloned();
+    let before = state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .get(session_id)
+        .cloned();
     let result = state.refresh_committed_events(session_id).await;
     match (result, damaged) {
         (Ok(()), false) => Ok(()),
         (Err(error), true) if error.is_projection_recovery_required() => {
-            let after = state.sessions.lock().unwrap().get(session_id).cloned();
+            let after = state
+                .sessions
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                .get(session_id)
+                .cloned();
             match (before, after) {
                 (Some(before), Some(after))
                     if before.cache_revision == after.cache_revision
@@ -185,7 +195,7 @@ async fn compare_with_cold<T: Timeline>(
         state
             .sessions
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get(timeline.session_id())
             .map(|record| {
                 (
@@ -1339,7 +1349,7 @@ async fn repeated_message_identity<T: Timeline>(
         .warm()
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(timeline.session_id())
         .cloned()
         .unwrap();
@@ -1354,7 +1364,7 @@ async fn repeated_message_identity<T: Timeline>(
         .warm()
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(timeline.session_id())
         .cloned()
         .unwrap();
@@ -1851,7 +1861,10 @@ async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
 
     state.refresh_committed_events(&session.id).await.unwrap();
     {
-        let record = state.sessions.lock().unwrap();
+        let record = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = record.get(&session.id).unwrap();
         assert_eq!(
             record
@@ -1877,7 +1890,10 @@ async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
     state.refresh_committed_events(&session.id).await.unwrap();
     state.refresh_committed_events(&session.id).await.unwrap();
 
-    let record = state.sessions.lock().unwrap();
+    let record = state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"));
     let record = record.get(&session.id).unwrap();
     assert_eq!(
         record

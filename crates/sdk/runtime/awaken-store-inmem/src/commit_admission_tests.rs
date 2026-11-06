@@ -67,7 +67,12 @@ async fn prefix(
         )
         .await
         .unwrap();
-    let receipts = store.state.lock().unwrap().receipts.clone();
+    let receipts = store
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .receipts
+        .clone();
     (snapshot, receipts)
 }
 
@@ -171,7 +176,11 @@ async fn exact_operation_replay_never_reenters_future_append_admission() {
         .commit_operation_at(operation.clone(), Some(41))
         .await
         .unwrap();
-    store.state.lock().unwrap().sequence = u64::MAX;
+    store
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .sequence = u64::MAX;
     let before = prefix(&store).await;
     assert!(
         store.inspect_commit(&candidate).is_err(),
@@ -291,9 +300,18 @@ async fn poisoned_reference_state_refuses_inspection_and_apply_without_recovery(
         .commit_operation_at(operation.clone(), Some(41))
         .await
         .unwrap();
-    let before = format!("{:?}", *store.state.lock().unwrap());
+    let before = format!(
+        "{:?}",
+        *store
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+    );
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = store.state.lock().unwrap();
+        let _guard = store
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         panic!("exercise the existing poisoned-authority rejection");
     }));
     assert!(poisoned.is_err(), "P2");

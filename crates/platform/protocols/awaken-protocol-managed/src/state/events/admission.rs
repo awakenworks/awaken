@@ -20,7 +20,7 @@ impl ManagedState {
     ) -> Result<RunLifecycleCursor, StateError> {
         self.sessions
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get(session_id)
             .map(|record| record.checkpoint.source.lifecycle_cursor)
             .ok_or(StateError::NotFound)

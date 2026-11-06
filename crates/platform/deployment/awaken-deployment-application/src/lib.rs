@@ -1267,7 +1267,11 @@ mod tests {
                 error: None,
             };
             let launch = launch_for(&deployment.record, &deployment.id, run_id, &run.trigger);
-            application.runs.lock().unwrap().insert(run_id.into(), run);
+            application
+                .runs
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                .insert(run_id.into(), run);
             let completed = application.launch_run(run_id, launch).await.unwrap();
             let current = application
                 .get("workspace-a", &deployment.id)
@@ -1390,7 +1394,13 @@ mod tests {
             0,
             "A4"
         );
-        assert!(application.runs.lock().unwrap().is_empty());
+        assert!(
+            application
+                .runs
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1663,7 +1673,7 @@ mod tests {
         application
             .deployments
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get_mut(&deployment.id)
             .unwrap()
             .revision = MAX_DEPLOYMENT_REVISION;
@@ -1689,7 +1699,10 @@ mod tests {
         let deployment = scheduled.create(command(true)).await.unwrap();
         let scheduled_at = now_ms().saturating_sub(MAX_JITTER_BOUND_MS);
         {
-            let mut deployments = scheduled.deployments.lock().unwrap();
+            let mut deployments = scheduled
+                .deployments
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
             let record = deployments.get_mut(&deployment.id).unwrap();
             record.revision = MAX_DEPLOYMENT_REVISION;
             record.next_fire_ms = Some(scheduled_at);
@@ -1701,7 +1714,14 @@ mod tests {
             ),
             "R3"
         );
-        assert!(scheduled.runs.lock().unwrap().is_empty(), "R3 no run");
+        assert!(
+            scheduled
+                .runs
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                .is_empty(),
+            "R3 no run"
+        );
         let current = scheduled.get("workspace-a", &deployment.id).await.unwrap();
         assert_eq!(current.record.last_run_at, None, "R3 no cursor mutation");
         assert_eq!(current.record.next_fire_ms, Some(scheduled_at), "R3");

@@ -457,7 +457,11 @@ mod tests {
                 if callback {
                     let _ = f.authority.with_current(&mut |_| panic!("callback failed"));
                 } else {
-                    let _installed_session = f.installed_sessions.test_map().lock().unwrap();
+                    let _installed_session = f
+                        .installed_sessions
+                        .test_map()
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                     panic!("installed Session writer failed");
                 }
             }));

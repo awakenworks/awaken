@@ -648,14 +648,33 @@ mod memory_mount_release_tests {
             .await;
             assert_eq!(drops.load(Ordering::SeqCst), 0, "W wait");
             match rule {
-                "revoked" => *authority.current.lock().unwrap() = None,
-                "zero" => authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO,
+                "revoked" => {
+                    *authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None
+                }
+                "zero" => {
+                    authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                        .as_mut()
+                        .unwrap()
+                        .1 = Duration::ZERO
+                }
                 "replaced" => {
-                    let mut guard = authority.current.lock().unwrap();
+                    let mut guard = authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                     guard.as_mut().unwrap().0.reassign();
                 }
                 "renewed" => {
-                    let mut guard = authority.current.lock().unwrap();
+                    let mut guard = authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                     guard
                         .as_mut()
                         .unwrap()
@@ -681,7 +700,10 @@ mod memory_mount_release_tests {
             );
             assert_eq!(teardowns.load(Ordering::SeqCst), 0, "W1/W2");
             if allowed {
-                *authority.current.lock().unwrap() = None;
+                *authority
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
                 assert!(
                     super::acknowledge_memory_reconciliation(
                         &ack,

@@ -4,7 +4,8 @@ Plan v4 D3 and principles P6/P7. `awaken-session-realization` reports every
 failure as a `RealizationError`, whose `disposition()` is the one decision of
 what a caller does next. Two regressions would silently undo that, and the
 compiler cannot see either (a poisoned lock read through `.expect` is refused
-by clippy.toml and `_poisoned_lock_fitness.py` across all production code).
+by clippy.toml for `std` locks and by the compiler for `awaken_sync` locks,
+whose `LockPoisoned` is not `Debug`).
 The executor's `SessionExecutionError` cannot appear in the realization at all:
 the executor depends on the realization, so Cargo refuses the reverse edge.
 

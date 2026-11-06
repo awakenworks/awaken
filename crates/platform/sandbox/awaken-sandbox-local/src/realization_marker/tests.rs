@@ -1092,7 +1092,13 @@ fn exhausted_current_proof_is_zero_write_for_absent_and_ready() {
     let terminal =
         pc::SandboxEffectFence::new("terminal-expired", "owner", "runtime", 2, u64::MAX).unwrap();
     let authority = pc::test_support::EffectAuthority::new(&terminal);
-    authority.current.lock().unwrap().as_mut().unwrap().1 = std::time::Duration::ZERO;
+    authority
+        .current
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .as_mut()
+        .unwrap()
+        .1 = std::time::Duration::ZERO;
     assert!(
         pc::with_current_sandbox_effect(&terminal, &authority, |_| begin_terminal_takeover(
             &absent_root,

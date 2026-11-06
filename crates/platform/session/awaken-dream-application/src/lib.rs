@@ -1673,7 +1673,10 @@ mod tests {
         );
         application.bind_model_readiness(executor.clone());
         let poisoned = std::panic::catch_unwind(|| {
-            let _guard = store.0.lock().unwrap();
+            let _guard = store
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
             panic!("F test-only store-access tripwire");
         });
         assert!(poisoned.is_err(), "original store tripwire installed");

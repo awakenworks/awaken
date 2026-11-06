@@ -661,7 +661,7 @@ async fn managed_update_rejects_a_conflicting_rollout_id_before_publishing_the_p
     };
     repo.state
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .managed_rollouts
         .insert(conflicting.id.clone(), conflicting.clone().into());
 
@@ -897,7 +897,7 @@ async fn malformed_ready_managed_recovery_performs_zero_secret_store_io() {
     malformed.after_credential.workspace_id = "forged-workspace".into();
     repo.state
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .managed_mutations
         .insert(malformed.after_source.id.0.clone(), malformed.clone());
 
@@ -948,7 +948,7 @@ async fn managed_recovery_rejects_a_mismatched_durable_key_before_secret_io() {
         .unwrap();
     repo.state
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .managed_mutations
         .insert("wrong-managed-row-key".into(), ready.clone());
 
@@ -963,7 +963,7 @@ async fn managed_recovery_rejects_a_mismatched_durable_key_before_secret_io() {
     assert_eq!(
         repo.state
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .managed_mutations
             .values()
             .cloned()
@@ -1034,7 +1034,7 @@ async fn legacy_writing_json_without_attempt_or_writer_fields_is_claimed_and_abo
         .unwrap();
     repo.state
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .managed_mutations
         .insert(legacy.after_source.id.0.clone(), legacy.clone());
 
