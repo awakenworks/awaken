@@ -102,6 +102,22 @@ class DependencyFetchTests(unittest.TestCase):
                     errors = fetch.workflow_errors(workflow[:match.start()] + bad + workflow[match.end():])
                     self.assertIn(job + " must bootstrap the pinned Python before its first checker", errors)
 
+    def test_observation_conditions_cannot_suppress_cold_verification(self):
+        workflow = (fetch.ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+        self.assertEqual(fetch.workflow_errors(workflow), [])
+        condition = "        if: always() && env.AWAKEN_BUILD_RUN_ID != ''\n"
+        command = "        run: python scripts/ci/check_dependency_fetch.py --output target/test-timings/dependency-fetch\n"
+        finish = '        run: python3 scripts/ci/ci_performance.py finish --conclusion "${{ job.status }}"\n'
+        for mutated in (
+            workflow.replace(command, condition + command, 1),
+            workflow.replace(finish, finish.rstrip() + " && python scripts/ci/check_dependency_fetch.py --git-only\n", 1),
+            workflow.replace(finish, command, 1),
+            workflow.replace(condition, "        if: false\n", 1),
+        ):
+            with self.subTest(mutation=mutated):
+                self.assertIn("cold dependency tier must not restore caches or suppress verification",
+                              fetch.workflow_errors(mutated))
+
     def test_native_ci_refuses_warm_unpublished_dependency_regression(self):
         workflow = (fetch.ROOT / ".github/workflows/windows-native-services.yml").read_text(encoding="utf-8")
         self.assertEqual(fetch.native_workflow_errors(workflow), [])

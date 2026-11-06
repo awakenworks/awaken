@@ -231,7 +231,7 @@ class ReliabilityCheckerTests(unittest.TestCase):
         return subprocess.run(
             [sys.executable, str(scripts / "deadline.py"), str(budget), "--",
              bash_executable(), str(scripts / "check-reliability.sh"), "--require-tools"],
-            env=environment, capture_output=True, text=True, timeout=budget + 15,
+            env=environment, capture_output=True, text=True, encoding="utf-8", timeout=budget + 15,
         )
 
     @staticmethod

@@ -110,6 +110,17 @@ def self_test() -> None:
         assert not [e for e in errors if e.startswith("scripts/ci/good.sh")], "C1/E1"
         assert [e for e in errors if e.startswith("scripts/ci/moved.sh:2:")], "C2/E2 names file:line"
         assert not [e for e in errors if e.startswith("scripts/ci/nested.sh")], "C3/E1"
+        # Product/context nesting must keep both positive and missing-target
+        # rows visible to the same source-reference matcher.
+        deep = root / "crates/sdk/contracts/awaken-x/src/utc.rs"
+        deep.parent.mkdir(parents=True)
+        deep.write_text("")
+        errors = dangling_references(root, {
+            "scripts/ci/deep.sh": "cargo mutants --file crates/sdk/contracts/awaken-x/src/utc.rs\n",
+            "scripts/ci/deep-missing.sh": "cargo mutants --file crates/platform/session/awaken-x/src/missing.rs\n",
+        })
+        assert not [e for e in errors if e.startswith("scripts/ci/deep.sh")], "C1 nested product path"
+        assert [e for e in errors if e.startswith("scripts/ci/deep-missing.sh:1:")], "C2 nested missing target"
     tracked = [
         "scripts/ci/check-reliability.sh",
         "scripts/e2e/sub/run.sh",

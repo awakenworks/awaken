@@ -155,7 +155,7 @@ def selftest() -> None:
     with tempfile.TemporaryDirectory() as directory:
         repo_root = Path(directory)
         crates = repo_root / "crates"
-        source = crates / "runtime" / "awaken-provider-genai" / "src"
+        source = crates / "sdk" / "providers" / "awaken-provider-genai" / "src"
         source.mkdir(parents=True)
         target = source / "lib.rs"
         _crate_boundary_workspace.ensure_fixture_manifest(target)

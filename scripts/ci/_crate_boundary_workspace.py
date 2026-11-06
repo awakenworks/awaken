@@ -64,6 +64,16 @@ def crate_manifest(crate_name: str, crates: Path = CRATES) -> Path | None:
     return next((path for path in crate_manifests(crates) if path.parent.name == crate_name), None)
 
 
+def production_crate_manifests(crates: Path = CRATES) -> list[Path]:
+    """Product sources, excluding explicitly declared tools and test harnesses."""
+    result = []
+    for path in crate_manifests(crates):
+        metadata = load_manifest(path).get("package", {}).get("metadata", {}).get("awaken", {})
+        if metadata.get("product") != "devtools" and metadata.get("layer") != "tooling":
+            result.append(path)
+    return result
+
+
 def crate_source_files(crates: Path = CRATES, tree: str = "src") -> list[Path]:
     """Every `.rs` file under the `tree` directory of every crate."""
     return sorted(
@@ -860,6 +870,21 @@ def _selftest_crate_discovery() -> None:
         assert "private" not in names, "D4 node_modules is not a crate"
         assert crate_manifest("deep", crates) == crates / "product/context/deep/Cargo.toml", "D2"
         assert len(crate_source_files(crates)) == 2, "D1/D2 sources; D3/D4 excluded"
+        # Metadata owns production scope even after a move. A product under a
+        # directory called devtools must stay guarded; SDK teaching tools stay out.
+        product = crates / "devtools/product/Cargo.toml"
+        product.parent.mkdir(parents=True)
+        product.write_text('[package]\nname = "product"\n[package.metadata.awaken]\n'
+                           'product = "apps"\nlayer = "bootstrap"\n')
+        tool = crates / "sdk/examples/teaching/Cargo.toml"
+        tool.parent.mkdir(parents=True)
+        tool.write_text('[package]\nname = "teaching"\n[package.metadata.awaken]\n'
+                        'product = "sdk"\nlayer = "tooling"\n')
+        assert product in production_crate_manifests(crates), "D6 path cannot hide a product"
+        assert tool not in production_crate_manifests(crates), "D7 SDK teaching role"
+        # Restore the original workspace-consistency fixture below.
+        product.unlink()
+        tool.unlink()
         (root / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/group/*"]\n')
         errors = check_crate_manifests_match_workspace(root)
         assert errors == ["crates/product/context/deep: crate under crates/ is not a workspace member"], errors

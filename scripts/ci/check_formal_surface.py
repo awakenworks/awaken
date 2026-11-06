@@ -218,15 +218,9 @@ SIGNAL_GROUPS: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
     ),
 }
 
-PRODUCTION_ROOTS = (
-    ROOT / "crates" / "contract",
-    ROOT / "crates" / "control",
-    ROOT / "crates" / "resources",
-    ROOT / "crates" / "runtime",
-    ROOT / "crates" / "server",
-    ROOT / "crates" / "stores",
-    ROOT / "crates" / "worker",
-    ROOT / "crates" / "bin",
+PRODUCTION_ROOTS = tuple(
+    manifest.parent
+    for manifest in _crate_boundary_workspace.production_crate_manifests(ROOT / "crates")
 )
 
 FORMAL_EVIDENCE_STATUSES = {"model_linked", "kernel_proved"}
