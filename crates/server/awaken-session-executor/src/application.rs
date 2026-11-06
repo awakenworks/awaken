@@ -182,7 +182,7 @@ impl crate::RunAssembly {
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
         now_unix_ms: u64,
-    ) -> Result<bool, awaken_session_types::RunError> {
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         Ok(self
             .mcp_generation_root_authority(generation)?
             // Direct realization executor callers can present a live Control assertion
@@ -200,7 +200,7 @@ impl crate::RunAssembly {
     pub(crate) fn mcp_generation_root_authority(
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
-    ) -> Result<Option<bool>, awaken_session_types::RunError> {
+    ) -> Result<Option<bool>, awaken_runtime_contract::runs::RunError> {
         use awaken_session_mcp::McpGenerationAuthority as _;
         self.mcp_root_authority
             .mcp_generation_root_authority(generation)
@@ -446,7 +446,7 @@ mod terminal_cleanup_drive_error_tests {
             session_id: Some("session-a".into()),
             error: TerminalRecoveryError::Drive(
                 awaken_session_execution_contract::SessionRealizationDriveError::Effect(
-                    awaken_session_types::RunError::unavailable_classified(
+                    awaken_runtime_contract::runs::RunError::unavailable_classified(
                         "terminal_provider_retry",
                         "provider is temporarily unavailable",
                     )
@@ -551,7 +551,7 @@ pub struct TerminalRecoveryOrigin {
 
 fn terminal_recovery_run_error(
     error: impl Into<crate::SessionExecutionError>,
-) -> awaken_session_types::RunError {
+) -> awaken_runtime_contract::runs::RunError {
     crate::session_execution_error::to_run_error(error.into())
 }
 
@@ -580,7 +580,7 @@ impl awaken_session_realization_driver::TerminalRecoveryProjections for crate::R
     fn capture_terminal_origin(
         &self,
         session_id: &awaken_session_types::SessionId,
-    ) -> Result<Option<TerminalRecoveryOrigin>, awaken_session_types::RunError> {
+    ) -> Result<Option<TerminalRecoveryOrigin>, awaken_runtime_contract::runs::RunError> {
         // One read, never creating an installed Session; an unreadable foreground record
         // refuses the whole recovery.
         self.installed_sessions
@@ -602,12 +602,12 @@ impl awaken_session_realization_driver::TerminalRecoveryProjections for crate::R
         &self,
         session_id: &awaken_session_types::SessionId,
         lease: &crate::session_resource::SessionRealizationLease,
-    ) -> Result<bool, awaken_session_types::RunError> {
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         self.realization_executor
             .effects()
             .retire_completed_terminal_cleanup_projection(&self.mcp, session_id.as_str(), lease)
             .await
-            .map_err(awaken_session_types::RunError::from)
+            .map_err(awaken_runtime_contract::runs::RunError::from)
     }
 
     fn interrupt_origin_runs(&self, origin: &TerminalRecoveryOrigin) {
@@ -621,7 +621,7 @@ impl awaken_session_realization_driver::TerminalRecoveryProjections for crate::R
         session_id: &awaken_session_types::SessionId,
         lease: &crate::session_resource::SessionRealizationLease,
         origin: &TerminalRecoveryOrigin,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         let Some(selected) = self
             .installed_sessions
             .close_realization_generation(session_id.as_str(), lease, &origin.phase)
@@ -638,7 +638,7 @@ impl awaken_session_realization_driver::TerminalRecoveryProjections for crate::R
     async fn revoke_settled_projection(
         &self,
         session_id: &awaken_session_types::SessionId,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.revoke_session_realization(session_id.as_str(), None)
             .await
             .map(drop)
@@ -655,7 +655,7 @@ fn terminal_recovery_error(
     let error = match error {
         awaken_session_realization_driver::TerminalRecoveryError::Drive(
             awaken_session_execution_contract::SessionRealizationDriveError::Effect(error),
-        ) => awaken_session_types::RunError::from(error),
+        ) => awaken_runtime_contract::runs::RunError::from(error),
         awaken_session_realization_driver::TerminalRecoveryError::Projection(error) => error,
         error => return crate::SessionExecutionError::internal(error.to_string()),
     };

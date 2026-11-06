@@ -174,7 +174,9 @@ async fn call_in_workspace_with_headers(
     if let Some(workspace_id) = workspace_id {
         request
             .extensions_mut()
-            .insert(awaken_tenancy::WorkspaceScope(workspace_id.to_string()));
+            .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                workspace_id.to_string(),
+            ));
     }
     let resp = app.clone().oneshot(request).await.unwrap();
     let status = resp.status();

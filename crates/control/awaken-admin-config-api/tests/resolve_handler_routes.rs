@@ -134,7 +134,9 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     // the Workspace it addresses.
     request
         .extensions_mut()
-        .insert(awaken_tenancy::WorkspaceScope(workspace));
+        .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+            workspace,
+        ));
     let resp = app.clone().oneshot(request).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();

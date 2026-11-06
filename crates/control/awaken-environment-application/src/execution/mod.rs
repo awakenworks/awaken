@@ -294,9 +294,9 @@ impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
     }
 }
 
-fn session_work_unavailable(error: WorkQueueError) -> awaken_session_types::RunError {
+fn session_work_unavailable(error: WorkQueueError) -> awaken_runtime_contract::runs::RunError {
     let WorkQueueError::Storage(detail) = error;
-    awaken_session_types::RunError::unavailable(detail.to_string())
+    awaken_runtime_contract::runs::RunError::unavailable(detail.to_string())
 }
 
 #[async_trait::async_trait]
@@ -307,7 +307,7 @@ impl awaken_session_application_contract::SessionWorkerAssignment
         &self,
         environment_id: &str,
         session_id: &awaken_session_types::SessionId,
-    ) -> Result<String, awaken_session_types::RunError> {
+    ) -> Result<String, awaken_runtime_contract::runs::RunError> {
         self.work
             .assignment
             .enqueue_session(environment_id, session_id)
@@ -319,7 +319,7 @@ impl awaken_session_application_contract::SessionWorkerAssignment
         &self,
         environment_id: &str,
         session_id: &awaken_session_types::SessionId,
-    ) -> Result<String, awaken_session_types::RunError> {
+    ) -> Result<String, awaken_runtime_contract::runs::RunError> {
         self.work
             .assignment
             .wake_session(environment_id, session_id)
@@ -331,7 +331,7 @@ impl awaken_session_application_contract::SessionWorkerAssignment
         &self,
         environment_id: &str,
         session_id: &awaken_session_types::SessionId,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.work
             .assignment
             .retire_session(environment_id, session_id)
@@ -346,7 +346,7 @@ impl awaken_session_application_contract::SessionWorkerLeases for EnvironmentExe
     async fn release_session(
         &self,
         lease: &awaken_session_types::SessionWorkLease,
-    ) -> Result<bool, awaken_session_types::RunError> {
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         self.work
             .worker_leases
             .release_session(lease)
@@ -359,8 +359,10 @@ impl awaken_session_application_contract::SessionWorkerLeases for EnvironmentExe
         environment_id: &str,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
-    ) -> Result<Option<awaken_session_types::SessionWorkLease>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_session_types::SessionWorkLease>,
+        awaken_runtime_contract::runs::RunError,
+    > {
         self.work
             .worker_leases
             .acquire_session(environment_id, session_id, worker_owner)
@@ -371,7 +373,7 @@ impl awaken_session_application_contract::SessionWorkerLeases for EnvironmentExe
     async fn release_owner(
         &self,
         worker_owner: &str,
-    ) -> Result<usize, awaken_session_types::RunError> {
+    ) -> Result<usize, awaken_runtime_contract::runs::RunError> {
         self.work
             .worker_leases
             .release_owner(worker_owner)
@@ -1575,10 +1577,11 @@ mod tests {
 
     #[tokio::test]
     async fn session_ports_classify_storage_outages_without_widening_error_conversions() {
+        use awaken_runtime_contract::runs::RunErrorClassification;
         use awaken_session_application_contract::{
             SessionWorkerAssignment as Assignment, SessionWorkerLeases as Leases,
         };
-        use awaken_session_types::{RunErrorClassification, SessionId, SessionWorkLease};
+        use awaken_session_types::{SessionId, SessionWorkLease};
 
         // E1 each Session operation preserves storage unavailability and its
         // operation-specific detail. E2 no failure grants authority or creates

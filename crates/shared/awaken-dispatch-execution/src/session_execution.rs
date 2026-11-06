@@ -85,7 +85,7 @@ pub trait ClaimedSessionInstallation: Send + Sync {
         session: &str,
         manifest: &SessionResourceManifest,
         claim: &RunClaim,
-    ) -> Result<(), awaken_session_types::RunError>;
+    ) -> Result<(), awaken_runtime_contract::runs::RunError>;
     /// Observe the installed projection; an absent Session is `None`.
     fn observe_projection(
         &self,
@@ -228,7 +228,7 @@ pub trait RunMcpAttachments: awaken_session_execution_contract::McpAttachmentRea
         session: &str,
     ) -> Result<
         Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     >;
 }
 

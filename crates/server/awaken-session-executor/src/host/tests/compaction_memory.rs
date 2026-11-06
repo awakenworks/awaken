@@ -972,7 +972,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
         "a different store remains untouched"
     );
 
-    let reply = |outcome: &awaken_session_application_contract::StepOutcome| {
+    let reply = |outcome: &awaken_runtime_contract::runs::StepOutcome| {
         outcome
             .new_messages
             .iter()

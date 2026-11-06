@@ -360,7 +360,7 @@ fn archive_command(session: &str) -> SessionArchiveWithRepositoryPublicationComm
 async fn authorize(
     app: &SessionApplication,
     session_id: &SessionId,
-) -> Result<crate::SessionAccess, awaken_session_types::RunError> {
+) -> Result<crate::SessionAccess, awaken_runtime_contract::runs::RunError> {
     Ok(crate::SessionRootReads::authorize(&*app.queries(), INTRUDER, session_id).await?)
 }
 
@@ -389,7 +389,7 @@ async fn invoke(row: &str, app: &SessionApplication, session: &str) -> String {
                         &access,
                         "t06-resume",
                         "t06-tool-use",
-                        awaken_session_application_contract::RunResume::Permission(
+                        awaken_runtime_contract::runs::RunResume::Permission(
                             awaken_agent_contract::agent::awaiting::PermissionDecision::Allow {
                                 note: None,
                             },

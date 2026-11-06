@@ -6,7 +6,9 @@
 //! bucket decision is the access edge's; a composition root mounts it over this
 //! router with these functions.
 
-use awaken_tenancy::org_admission::{OrgAdmissionDecision, OrgAdmissionUnavailable, OrgOperation};
+use awaken_runtime_contract::runs::request::{
+    OrgAdmissionDecision, OrgAdmissionUnavailable, OrgOperation,
+};
 use axum::Json;
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};

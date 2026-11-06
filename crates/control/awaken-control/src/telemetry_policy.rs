@@ -22,7 +22,7 @@ use awaken_data_governance_contract::{
     TelemetryCeiling, TelemetryNarrowing, TelemetryNarrowingSource, TelemetryPolicyError,
 };
 use awaken_runtime_contract::ContentCapture;
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::{
     Json, Router,
     extract::{Extension, State},

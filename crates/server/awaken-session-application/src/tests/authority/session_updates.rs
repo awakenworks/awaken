@@ -224,7 +224,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
     };
     assert_eq!(
         failure.kind,
-        awaken_session_types::RunErrorKind::Unavailable,
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable,
         "M1/E2"
     );
     assert_eq!(committed.command_revision, command_revision, "M1/E1");

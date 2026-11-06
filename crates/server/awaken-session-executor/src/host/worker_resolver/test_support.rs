@@ -487,12 +487,12 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Toggle
         intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         let binding = self.binding.lock().unwrap().clone();
         match binding {
             Some(_) if self.fail.swap(false, Ordering::SeqCst) => {
-                Err(awaken_session_types::RunError::unavailable(
+                Err(awaken_runtime_contract::runs::RunError::unavailable(
                     "injected Session binding failure during readback",
                 ))
             }
@@ -513,12 +513,14 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Toggle
     async fn persist(
         &self,
         receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentState,
+        awaken_runtime_contract::runs::RunError,
+    > {
         self.calls.fetch_add(1, Ordering::SeqCst);
         *self.binding.lock().unwrap() = Some(receipt.binding.clone());
         if self.fail.load(Ordering::SeqCst) {
-            Err(awaken_session_types::RunError::unavailable(
+            Err(awaken_runtime_contract::runs::RunError::unavailable(
                 "injected Session binding failure",
             ))
         } else {
@@ -573,7 +575,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Blocki
         intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         // Cancellation fixture rule: C1 the aggregate authorizes the effect;
         // E1 only the following persist await may be cancelled and retried.
@@ -592,8 +594,10 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Blocki
     async fn persist(
         &self,
         receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentState,
+        awaken_runtime_contract::runs::RunError,
+    > {
         self.calls.fetch_add(1, Ordering::SeqCst);
         // Fault schedules share one blocking seam. With a delegate, the real
         // fixture root owns authorization and commitment; cancellation before

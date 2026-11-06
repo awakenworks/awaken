@@ -7,9 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_a2a::router;
-use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{Pending, RunError, RunResume, Runs, StepOutcome};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -19,14 +17,14 @@ use tower::ServiceExt;
 struct NoopRuntime;
 
 #[async_trait]
-impl RunApplication for NoopRuntime {
+impl Runs for NoopRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         Ok(StepOutcome::ended(
             vec![Message::text(
                 awaken_agent_contract::agent::message::Id("a1".into()),
@@ -43,15 +41,15 @@ impl RunApplication for NoopRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -141,15 +139,15 @@ async fn agent_card_advertises_transport_protocol_and_skills() {
 struct FailingRuntime;
 
 #[async_trait]
-impl RunApplication for FailingRuntime {
+impl Runs for FailingRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
-        Err(RunApplicationError::internal("boom"))
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::internal("boom"))
     }
     async fn resume(
         &self,
@@ -157,13 +155,13 @@ impl RunApplication for FailingRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
     fn model(&self) -> String {

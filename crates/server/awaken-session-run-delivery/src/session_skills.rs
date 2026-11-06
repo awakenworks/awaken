@@ -15,11 +15,11 @@ use awaken_ext_skills::{
 };
 use awaken_resource_contract::SkillVersion;
 use awaken_runtime_contract::ExecutableAgentSnapshot;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::SessionToolConfiguration;
 use awaken_session_configuration_contract::skill_delivery::{
     delivered_skill_content, delivered_skill_directory,
 };
-use awaken_session_types::RunError;
 
 /// The tools a filesystem-disclosed Skill can be read with.
 const FILESYSTEM_TOOLS: [&str; 6] = ["bash", "read", "write", "edit", "glob", "grep"];

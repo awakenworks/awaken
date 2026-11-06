@@ -20,9 +20,9 @@ use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_protocol_managed::{router, tunnels_router};
 use awaken_protocol_managed_testkit::EmptyManagedTunnelApplication;
-use awaken_session_application_contract::StepOutcome;
+use awaken_runtime_contract::runs::{RunError, StepOutcome};
+
 use awaken_session_execution_contract::{OutcomeDrive, SessionRuns};
-use awaken_session_types::RunError;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -86,7 +86,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
         &self,
     ) -> Result<
         awaken_lease_contract::authority::AuthorityProofStarted,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_protocol_managed_testkit::observe_realization_request()
     }
@@ -102,7 +102,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-    ) -> Result<usize, awaken_session_types::RunError> {
+    ) -> Result<usize, awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
             .await
@@ -131,7 +131,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
         &self,
         thread: &str,
         lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
             .await
@@ -147,7 +147,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
         &self,
         thread: &str,
         lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
@@ -165,7 +165,10 @@ impl awaken_session_execution_contract::ThreadReads for AcceptingFake {
     /// MUST answer without materializing any per-thread state (no context
     /// build, no cache entry) — probing must be free of side effects. The
     /// default reports nothing, so an ephemeral host mints densely from 0.
-    async fn owns_thread(&self, thread: &str) -> Result<bool, awaken_session_types::RunError> {
+    async fn owns_thread(
+        &self,
+        thread: &str,
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .owns_thread(thread)
             .await
@@ -180,8 +183,10 @@ impl awaken_session_execution_contract::ThreadReads for AcceptingFake {
     async fn committed_messages(
         &self,
         thread: &str,
-    ) -> Result<Vec<awaken_agent_contract::agent::message::Message>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Vec<awaken_agent_contract::agent::message::Message>,
+        awaken_runtime_contract::runs::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .committed_messages(thread)
             .await
@@ -219,7 +224,7 @@ impl awaken_session_execution_contract::ThreadReads for AcceptingFake {
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<
         Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_session_execution_contract::select_recovery_snapshot_run(
             self.session_thread_recovery_snapshot(session_id, thread_id)
@@ -237,7 +242,8 @@ impl awaken_session_execution_contract::ThreadReads for AcceptingFake {
         &self,
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_agent_contract::ThreadDisposition, awaken_session_types::RunError> {
+    ) -> Result<awaken_agent_contract::ThreadDisposition, awaken_runtime_contract::runs::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .session_thread_disposition(session_id, thread_id)
             .await
@@ -251,14 +257,14 @@ impl awaken_session_execution_contract::ThreadReads for AcceptingFake {
     /// Read one exact terminal Outcome projection from committed Thread truth.
     /// `None` means the id is absent or still active. Implementations must not
     /// resume the Outcome or reconstruct a terminal from an in-process
-    /// [`awaken_session_application_contract::StepOutcome`].
+    /// [`awaken_runtime_contract::runs::StepOutcome`].
     async fn committed_outcome_projection(
         &self,
         thread: &str,
         outcome_id: &str,
     ) -> Result<
         Option<awaken_session_execution_contract::CommittedOutcomeProjection>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .committed_outcome_projection(thread, outcome_id)
@@ -280,7 +286,7 @@ impl awaken_session_execution_contract::Outcomes for AcceptingFake {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<u64, awaken_session_types::RunError> {
+    ) -> Result<u64, awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
             .await
@@ -308,7 +314,7 @@ impl awaken_session_execution_contract::Outcomes for AcceptingFake {
         executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
     ) -> Result<
         Option<awaken_session_execution_contract::OutcomeDrive>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread, executor)
@@ -409,22 +415,18 @@ async fn an_empty_edge_stamp_is_indistinguishable_from_an_absent_one() {
     // Same table as above with C1 refined: C1a absent, C1b present-but-blank,
     // C1c present and non-empty. R1a/R1b => E1; R1c => E2.
     for blank in ["", "   ", "\t"] {
-        let app = managed()
-            .await
-            .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-                blank.to_string(),
-            )));
+        let app = managed().await.layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope(blank.to_string()),
+        ));
         assert_eq!(
             status_of(&app, "GET", "/v1/sessions", None).await,
             StatusCode::NOT_FOUND,
             "R1b a blank stamp ({blank:?}) is refused"
         );
     }
-    let app = managed()
-        .await
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            "wrkspc_real".into(),
-        )));
+    let app = managed().await.layer(axum::Extension(
+        awaken_runtime_contract::runs::scope::WorkspaceScope("wrkspc_real".into()),
+    ));
     assert_ne!(
         status_of(&app, "GET", "/v1/sessions", None).await,
         StatusCode::NOT_FOUND,

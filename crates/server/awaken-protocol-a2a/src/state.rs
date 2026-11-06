@@ -4,7 +4,7 @@
 // @formal reason: A2A task/application state implementation.
 //! Router-scoped A2A task projections, live subscribers, and push subscriptions.
 //!
-//! Runtime truth remains behind `RunApplication`; this state only caches the A2A
+//! Runtime truth remains behind `Runs`; this state only caches the A2A
 //! wire projection needed by resubscribe and webhook delivery. It is shared by all
 //! routes mounted from one router and never enters the neutral runtime.
 
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 use awaken_outbound_http::{GuardedHttpSender, HttpSender};
-use awaken_session_application_contract::RunApplication;
+use awaken_runtime_contract::runs::Runs;
 
 use crate::types::{PushNotificationConfig, StreamResponse, Task, TaskStatusUpdateEvent};
 
@@ -56,7 +56,7 @@ pub(crate) enum PushProtocolVersion {
 
 #[derive(Clone)]
 pub(crate) struct A2aState {
-    pub runtime: Arc<dyn RunApplication>,
+    pub runtime: Arc<dyn Runs>,
     clock: Arc<dyn WallClock>,
     inner: Arc<RwLock<Inner>>,
     push_sender: Arc<dyn HttpSender>,
@@ -108,7 +108,7 @@ struct PersistentState {
 
 impl A2aState {
     pub(crate) fn new(
-        runtime: Arc<dyn RunApplication>,
+        runtime: Arc<dyn Runs>,
         persistence_path: Option<PathBuf>,
         clock: Arc<dyn WallClock>,
     ) -> Result<Self, StateError> {
@@ -116,7 +116,7 @@ impl A2aState {
     }
 
     fn with_persistence_path(
-        runtime: Arc<dyn RunApplication>,
+        runtime: Arc<dyn Runs>,
         persistence_path: Option<PathBuf>,
         clock: Arc<dyn WallClock>,
     ) -> Result<Self, StateError> {
@@ -720,22 +720,20 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use awaken_agent_contract::agent::message::Message;
-    use awaken_session_application_contract::{
-        Pending, RunApplicationError, RunResume, StepOutcome,
-    };
+    use awaken_runtime_contract::runs::{Pending, RunError, RunResume, StepOutcome};
     use std::sync::atomic::AtomicU64;
 
     struct Runtime;
 
     #[async_trait]
-    impl RunApplication for Runtime {
+    impl Runs for Runtime {
         async fn run(
             &self,
             _operation_id: &str,
             _: &str,
             _: Option<String>,
             _: Vec<Message>,
-        ) -> Result<StepOutcome, RunApplicationError> {
+        ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
         async fn resume(
@@ -744,13 +742,13 @@ mod tests {
             _: &str,
             _: &str,
             _: RunResume,
-        ) -> Result<StepOutcome, RunApplicationError> {
+        ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
-        async fn pending(&self, _: &str) -> Result<Option<Pending>, RunApplicationError> {
+        async fn pending(&self, _: &str) -> Result<Option<Pending>, RunError> {
             Ok(None)
         }
-        async fn history(&self, _: &str) -> Result<Vec<Message>, RunApplicationError> {
+        async fn history(&self, _: &str) -> Result<Vec<Message>, RunError> {
             Ok(Vec::new())
         }
         fn model(&self) -> String {

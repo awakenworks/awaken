@@ -3,12 +3,13 @@
 //! Scope one existing Session/Run before its original physical Dispatch read.
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_dispatch_contract::{DispatchExecutionReads, DispatchOperationalFeed};
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_application::{
     ProfiledSessionCommands, SessionApplication, SessionProjectionRecoveryError,
 };
 use awaken_session_application_contract::SessionRunDispatchObservation;
 use awaken_session_application_contract::SessionRunDispatchQueries;
-use awaken_session_types::{RunError, SessionId};
+use awaken_session_types::SessionId;
 use std::sync::Arc;
 #[derive(Clone)]
 pub(super) struct SessionRunDispatchReads {

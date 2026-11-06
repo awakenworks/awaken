@@ -97,9 +97,9 @@ fn profiled_router(state: std::sync::Arc<ManagedState>, workspace: &str) -> Rout
         ),
     )
     .with_state(state);
-    extensions.layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-        workspace.to_string(),
-    )))
+    extensions.layer(axum::Extension(
+        awaken_runtime_contract::runs::scope::WorkspaceScope(workspace.to_string()),
+    ))
 }
 
 fn input(
@@ -1476,7 +1476,7 @@ async fn budgeted_session_backends_follow_the_exact_publication_decision_table()
             };
             assert_eq!(
                 error.kind,
-                awaken_session_types::RunErrorKind::BadRequest,
+                awaken_runtime_contract::runs::RunErrorKind::BadRequest,
                 "{}",
                 rule.id
             );

@@ -169,7 +169,7 @@ impl From<SessionStateViolation> for SessionMutationError {
     }
 }
 
-impl From<SessionMutationError> for awaken_session_types::RunError {
+impl From<SessionMutationError> for awaken_runtime_contract::runs::RunError {
     fn from(error: SessionMutationError) -> Self {
         match error {
             SessionMutationError::NotFound => Self::bad_request("Session was not found"),

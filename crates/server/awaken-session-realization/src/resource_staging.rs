@@ -77,7 +77,7 @@ impl ResourceStaging {
     ///     staging: &ResourceStaging,
     ///     input: &ResolvedInput,
     ///     manifest: &SessionResourceManifest,
-    /// ) -> Result<(), awaken_session_types::RunError> {
+    /// ) -> Result<(), awaken_runtime_contract::runs::RunError> {
     ///     // R1: either resolved or frozen input uses the same selected compiler;
     ///     // both operations remain available without retaining the staging owner.
     ///     let compiler = staging.memory_binding_compiler();

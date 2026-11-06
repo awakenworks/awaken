@@ -51,10 +51,10 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::ResumeCommand;
 #[cfg(test)]
 use awaken_runtime_contract::resume::ResumeResult;
+#[cfg(test)]
+use awaken_runtime_contract::runs::Pending;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-#[cfg(test)]
-use awaken_session_application_contract::Pending;
 use awaken_session_execution_contract::SessionApplicationBinding;
 
 use awaken_ext_compact::CompactConfig;

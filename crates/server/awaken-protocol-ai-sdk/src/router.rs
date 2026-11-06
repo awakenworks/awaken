@@ -1,5 +1,5 @@
 // @formal evidence tool_result.only_matching_call_is_accepted
-//! The axum router: AI SDK v6 UI Message Stream routes over a `RunApplication`.
+//! The axum router: AI SDK v6 UI Message Stream routes over a `Runs`.
 //!
 //! Handlers decode the request, drive one turn or resume through the port, and
 //! project the committed step into a UI Message Stream SSE response. No runtime or
@@ -26,18 +26,17 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_api_contract::CursorPage;
-use awaken_session_application_contract::{
-    EventForwardingSink, OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError,
-    RunMode, RunResume, paginate_history,
+use awaken_runtime_contract::runs::scope::{ResolvedResourceId, WorkspaceScope};
+use awaken_runtime_contract::runs::{
+    EventForwardingSink, OwnedRuns, Pending, RunError, RunMode, RunResume, Runs, paginate_history,
 };
-use awaken_tenancy::{ResolvedResourceId, WorkspaceScope};
 
 use crate::encoder::{AiSdkEncoder, encode_history};
 use crate::request::{DecisionKind, process_request, result_text};
 use crate::types::{AiSdkChatRequest, UIStreamEvent, attach_usage};
 
-type Runtime = Arc<dyn RunApplication>;
-type ScopedRuntime = Arc<dyn OwnerScopedRunApplication>;
+type Runtime = Arc<dyn Runs>;
+type ScopedRuntime = Arc<dyn OwnedRuns>;
 type RuntimeState = (Runtime, RunMode);
 
 struct RequestOwner {
@@ -75,9 +74,7 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         match Json::<T>::from_request(req, state).await {
             Ok(Json(value)) => Ok(Self(value)),
-            Err(rejection) => Err(sse_error(RunApplicationError::bad_request(
-                rejection.body_text(),
-            ))),
+            Err(rejection) => Err(sse_error(RunError::bad_request(rejection.body_text()))),
         }
     }
 }
@@ -92,7 +89,7 @@ pub fn router(runtime: Runtime, local_workspace: String) -> Router {
 /// all handlers below remain the same protocol and Session admission path.
 pub fn router_with_owner_scope<T>(runtime: Arc<T>) -> Router
 where
-    T: OwnerScopedRunApplication + 'static,
+    T: OwnedRuns + 'static,
 {
     let unscoped: Runtime = runtime.clone();
     let scoped: ScopedRuntime = runtime;
@@ -150,7 +147,7 @@ async fn interrupt_threaded(
         .map(|Extension(thread)| thread.0)
         .unwrap_or(thread_id);
     if thread.trim().is_empty() {
-        return query_error(RunApplicationError::bad_request("thread id is required"));
+        return query_error(RunError::bad_request("thread id is required"));
     }
     match rt.stop(&thread).await {
         Ok(receipt) => (StatusCode::ACCEPTED, Json(receipt)).into_response(),
@@ -186,7 +183,7 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest, owner: RequestOwner) -> Res
 
     let processed = match process_request(payload, &committed_history) {
         Ok(processed) => processed,
-        Err(error) => return sse_error(RunApplicationError::bad_request(error.to_string())),
+        Err(error) => return sse_error(RunError::bad_request(error.to_string())),
     };
     let thread = processed.thread_id.clone();
     let operation_id = processed.operation_id.clone();
@@ -216,7 +213,7 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest, owner: RequestOwner) -> Res
             owner,
         )
     } else {
-        sse_error(RunApplicationError::bad_request(
+        sse_error(RunError::bad_request(
             "AI SDK request contains neither a turn nor a tool decision",
         ))
     }
@@ -456,14 +453,14 @@ async fn resume_command(
     decisions: &crate::request::Decisions,
 ) -> Result<StreamCommand, Response> {
     let Some(pending) = rt.pending(thread).await.map_err(sse_error)? else {
-        return Err(sse_error(RunApplicationError::bad_request(
+        return Err(sse_error(RunError::bad_request(
             "no awaiting run to resume",
         )));
     };
     let decision = decisions
         .for_tool_call(&pending.tool_use_id)
         .ok_or_else(|| {
-            sse_error(RunApplicationError::bad_request(format!(
+            sse_error(RunError::bad_request(format!(
                 "no tool decision matches the awaiting tool {} (the request addressed {:?})",
                 pending.tool_use_id,
                 decisions.addressed_tool_calls()
@@ -595,7 +592,7 @@ fn sse_response(events: Vec<UIStreamEvent>) -> Response {
 }
 
 /// The AI SDK error tail (`error` + `finish("error")`).
-fn error_events(err: RunApplicationError) -> Vec<UIStreamEvent> {
+fn error_events(err: RunError) -> Vec<UIStreamEvent> {
     let message = driver_error_message(err);
     vec![
         UIStreamEvent::error(message),
@@ -603,17 +600,17 @@ fn error_events(err: RunApplicationError) -> Vec<UIStreamEvent> {
     ]
 }
 
-fn driver_error_message(err: RunApplicationError) -> String {
+fn driver_error_message(err: RunError) -> String {
     err.message
 }
 
 /// A single buffered SSE error stream (AI SDK errors use `errorText`).
-fn sse_error(err: RunApplicationError) -> Response {
+fn sse_error(err: RunError) -> Response {
     sse_response(error_events(err))
 }
 
-fn query_error(error: RunApplicationError) -> Response {
-    use awaken_session_types::RunErrorKind;
+fn query_error(error: RunError) -> Response {
+    use awaken_runtime_contract::runs::RunErrorKind;
 
     let status = match error.kind {
         RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
@@ -627,7 +624,7 @@ fn query_error(error: RunApplicationError) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_session_application_contract::StepOutcome;
+    use awaken_runtime_contract::runs::StepOutcome;
 
     /* Idle-stream cause/effect decision table. Causes: C1 the run is live but
      * its best-effort AgentEvent sink closes before the authoritative turn;
@@ -647,14 +644,14 @@ mod tests {
             complete: Arc<tokio::sync::Notify>,
         }
         #[async_trait::async_trait]
-        impl RunApplication for DelayedSilent {
+        impl Runs for DelayedSilent {
             async fn run(
                 &self,
                 _operation_id: &str,
                 _thread: &str,
                 _agent: Option<String>,
                 _messages: Vec<Message>,
-            ) -> Result<StepOutcome, RunApplicationError> {
+            ) -> Result<StepOutcome, RunError> {
                 unreachable!()
             }
 
@@ -665,7 +662,7 @@ mod tests {
                 _agent: Option<String>,
                 _messages: Vec<Message>,
                 sink: Arc<dyn StreamSink>,
-            ) -> Result<StepOutcome, RunApplicationError> {
+            ) -> Result<StepOutcome, RunError> {
                 drop(sink);
                 self.complete.notified().await;
                 Ok(StepOutcome::ended(
@@ -684,15 +681,15 @@ mod tests {
                 _thread: &str,
                 _tool_use_id: &str,
                 _resume: RunResume,
-            ) -> Result<StepOutcome, RunApplicationError> {
+            ) -> Result<StepOutcome, RunError> {
                 unreachable!()
             }
 
-            async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+            async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
                 Ok(None)
             }
 
-            async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+            async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
                 Ok(Vec::new())
             }
 

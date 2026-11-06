@@ -47,9 +47,11 @@ pub(crate) fn admitted(
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use awaken_tenancy::org_admission::{
-        OrgAdmissionDecision, OrgAdmissionRequest, OrgAdmissionUnavailable, OrgOperation,
+    use awaken_runtime_contract::runs::request::{
+        OrgAdmissionDecision, OrgAdmissionUnavailable, OrgOperation,
     };
+    use awaken_runtime_contract::runs::scope::WorkspaceScope;
+    use awaken_tenancy::org_admission::OrgAdmissionRequest;
     use axum::body::{Body, to_bytes};
     use axum::http::{Method, Request, StatusCode, header};
     use axum::routing::{get, post};
@@ -149,7 +151,7 @@ mod tests {
             });
             let mut app = admitted(router, Some(&limiter), encoding);
             if scoped {
-                app = app.layer(axum::Extension(awaken_tenancy::WorkspaceScope("ws".into())));
+                app = app.layer(axum::Extension(WorkspaceScope("ws".into())));
             }
             let (method, path) = match operation {
                 None => (Method::POST, "/free"),

@@ -758,7 +758,7 @@ async fn local_activity_combination_keeps_real_poison_fault_order() {
     use awaken_agent_contract::agent::delegation::DelegationStatus as Status;
     use futures_util::FutureExt;
     use std::panic::{AssertUnwindSafe, catch_unwind};
-    let relationship = |child: &str, status| awaken_session_application_contract::DelegatedRun {
+    let relationship = |child: &str, status| awaken_runtime_contract::runs::DelegatedRun {
         run_id: awaken_agent_contract::agent::run::Id(child.into()),
         parent_call_id: "query-call".into(),
         agent_id: "query-agent".into(),

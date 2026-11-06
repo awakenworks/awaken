@@ -14,12 +14,12 @@
 
 use std::sync::Arc;
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_contract::SessionRepository;
 use awaken_session_contract::{
     SessionEnvironmentState, SessionExecutionState, SessionTerminalCleanupAction,
 };
 use awaken_session_execution_contract::{SourceRetentionSubject, WorkerSourceRetentionSubjects};
-use awaken_session_types::RunError;
 use awaken_worker_contract::WorkerIdentity;
 
 use crate::session_repository_error;

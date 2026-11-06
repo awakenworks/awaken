@@ -4,9 +4,8 @@
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_session_application_contract::{
-    OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume,
-    StepOutcome, blocks_text,
+use awaken_runtime_contract::runs::{
+    OwnedRuns, Pending, RunError, RunResume, Runs, StepOutcome, blocks_text,
 };
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
@@ -16,14 +15,14 @@ use tower::ServiceExt;
 struct NoAwaitingRuntime;
 
 #[async_trait::async_trait]
-impl RunApplication for NoAwaitingRuntime {
+impl Runs for NoAwaitingRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         Ok(StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
@@ -36,15 +35,15 @@ impl RunApplication for NoAwaitingRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("nothing is awaiting, so resume must never be reached")
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -60,14 +59,14 @@ struct ReplayRecordingRuntime {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for ReplayRecordingRuntime {
+impl Runs for ReplayRecordingRuntime {
     async fn run(
         &self,
         operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         self.runs
             .lock()
             .unwrap()
@@ -84,15 +83,15 @@ impl RunApplication for ReplayRecordingRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("a known turn replay is a Run admission, not a tool resume")
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(vec![Message::text(Id("u1".into()), Role::User, "original")])
     }
 
@@ -102,7 +101,7 @@ impl RunApplication for ReplayRecordingRuntime {
 }
 
 #[async_trait::async_trait]
-impl OwnerScopedRunApplication for ReplayRecordingRuntime {
+impl OwnedRuns for ReplayRecordingRuntime {
     async fn run_streaming_for_owner(
         &self,
         owner_scope: &str,
@@ -111,7 +110,7 @@ impl OwnerScopedRunApplication for ReplayRecordingRuntime {
         agent: Option<String>,
         messages: Vec<Message>,
         _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         self.owners.lock().unwrap().push(owner_scope.to_string());
         self.run(operation_id, thread, agent, messages).await
     }
@@ -123,7 +122,7 @@ impl OwnerScopedRunApplication for ReplayRecordingRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("replay recording never resumes")
     }
 }
@@ -290,7 +289,9 @@ async fn authenticated_workspace_scope_reaches_the_same_ai_sdk_run_admission() {
                 .method("POST")
                 .uri("/v1/ai-sdk/threads/t1/runs")
                 .header("content-type", "application/json")
-                .extension(awaken_tenancy::WorkspaceScope("exact-workspace".into()))
+                .extension(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                    "exact-workspace".into(),
+                ))
                 .body(Body::from(body.to_string()))
                 .unwrap(),
         )
@@ -359,14 +360,14 @@ struct AwaitingRuntime {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for AwaitingRuntime {
+impl Runs for AwaitingRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("this test only drives the resume path")
     }
 
@@ -376,7 +377,7 @@ impl RunApplication for AwaitingRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         use awaken_agent_contract::agent::message::{Id, Role};
         Ok(StepOutcome::ended(
             vec![Message::text(Id("a1".into()), Role::Assistant, "done")],
@@ -384,7 +385,7 @@ impl RunApplication for AwaitingRuntime {
         ))
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(Some(Pending {
             tool_use_id: "c1".into(),
             name: "write".into(),
@@ -393,7 +394,7 @@ impl RunApplication for AwaitingRuntime {
         }))
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -403,7 +404,7 @@ impl RunApplication for AwaitingRuntime {
 }
 
 #[async_trait::async_trait]
-impl OwnerScopedRunApplication for AwaitingRuntime {
+impl OwnedRuns for AwaitingRuntime {
     async fn run_streaming_for_owner(
         &self,
         _owner_scope: &str,
@@ -412,7 +413,7 @@ impl OwnerScopedRunApplication for AwaitingRuntime {
         _agent: Option<String>,
         _messages: Vec<Message>,
         _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("awaiting runtime never admits a new Run")
     }
 
@@ -423,7 +424,7 @@ impl OwnerScopedRunApplication for AwaitingRuntime {
         thread: &str,
         tool_use_id: &str,
         resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         if let Some(owners) = &self.owners {
             owners.lock().unwrap().push(owner_scope.to_string());
         }
@@ -492,7 +493,9 @@ async fn authenticated_workspace_scope_reaches_ai_sdk_tool_resume() {
                 .method("POST")
                 .uri("/v1/ai-sdk/threads/t1/runs")
                 .header("content-type", "application/json")
-                .extension(awaken_tenancy::WorkspaceScope("exact-workspace".into()))
+                .extension(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                    "exact-workspace".into(),
+                ))
                 .body(Body::from(matching_tool_decision_body().to_string()))
                 .unwrap(),
         )
@@ -508,14 +511,14 @@ async fn authenticated_workspace_scope_reaches_ai_sdk_tool_resume() {
 struct PanickingRuntime;
 
 #[async_trait::async_trait]
-impl RunApplication for PanickingRuntime {
+impl Runs for PanickingRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         panic!("the turn task died");
     }
     async fn resume(
@@ -524,13 +527,13 @@ impl RunApplication for PanickingRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
     fn model(&self) -> String {
@@ -584,14 +587,14 @@ impl AwaitingC2Runtime {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for AwaitingC2Runtime {
+impl Runs for AwaitingC2Runtime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("this test drives only the resume path")
     }
 
@@ -601,7 +604,7 @@ impl RunApplication for AwaitingC2Runtime {
         _thread: &str,
         tool_use_id: &str,
         resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         self.resumes
             .lock()
             .unwrap()
@@ -612,7 +615,7 @@ impl RunApplication for AwaitingC2Runtime {
         ))
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(Some(Pending {
             tool_use_id: "c2".into(),
             name: "bash".into(),
@@ -621,7 +624,7 @@ impl RunApplication for AwaitingC2Runtime {
         }))
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 

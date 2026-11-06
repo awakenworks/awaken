@@ -8,8 +8,7 @@
 
 use std::sync::Arc;
 
-use awaken_session_application_contract::StepOutcome;
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::{RunError, StepOutcome};
 
 use super::ChildRunCoordination;
 use crate::session_execution_error::to_run_error;

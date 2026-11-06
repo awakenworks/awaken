@@ -1,6 +1,6 @@
 //! Repository binding failures mapped at the Managed resource boundary.
 use awaken_resource_contract::RepositoryBindingVerifierError;
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 pub(in crate::resource_staging) fn repository_binding_run_error(
     error: RepositoryBindingVerifierError,
@@ -20,7 +20,7 @@ fn repository_binding_failure_controls_run_retry_semantics() {
     // and existing Run projection. Effects include the literal public code,
     // message and Display, so consolidation cannot erase retry or text semantics.
     // This pure mapping has no IO, lock, state mutation or poison precondition.
-    use awaken_session_types::RunErrorKind as K;
+    use awaken_runtime_contract::runs::RunErrorKind as K;
     let cases = [
         (
             RepositoryBindingVerifierError::InvalidRequest { detail: "x".into() },

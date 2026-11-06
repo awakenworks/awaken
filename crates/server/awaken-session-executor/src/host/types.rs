@@ -26,7 +26,7 @@ pub enum HostResume {
 }
 
 /// A Host resume is the protocol-neutral Run resume it names.
-impl From<HostResume> for awaken_session_application_contract::RunResume {
+impl From<HostResume> for awaken_runtime_contract::runs::RunResume {
     fn from(resume: HostResume) -> Self {
         match resume {
             HostResume::Permission(decision) => Self::Permission(decision),

@@ -223,7 +223,9 @@ mod tests {
                 .unwrap();
             request
                 .extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope("workspace".into()));
+                .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                    "workspace".into(),
+                ));
             let response = router.clone().oneshot(request).await.unwrap();
             assert_ne!(
                 response.status(),

@@ -9,12 +9,13 @@ use awaken_time::WallClockExt as _;
 use std::collections::BTreeMap;
 
 use awaken_agent_contract::stable_fingerprint;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::SessionToolConfiguration;
 use awaken_session_configuration_contract::mcp::McpAttachmentState;
 use awaken_session_configuration_contract::resource::realization_lease_is_live_at;
 use awaken_session_contract::{IdempotencyRecord, PersistedSession, SessionExecutionState};
 use awaken_session_contract::{SessionFieldUpdate, SessionUpdateChanges};
-use awaken_session_types::{RunError, SessionRevision};
+use awaken_session_types::SessionRevision;
 
 use std::sync::Arc;
 
@@ -733,7 +734,9 @@ impl SessionUpdateCommands {
                 .await
             {
                 Ok(disposition) => disposition,
-                Err(source) if source.kind == awaken_session_types::RunErrorKind::BadRequest => {
+                Err(source)
+                    if source.kind == awaken_runtime_contract::runs::RunErrorKind::BadRequest =>
+                {
                     // The runtime definitively rejected this exact delivery
                     // before executing it. Reclaim the just-opened activity;
                     // dependency/internal failures remain active because their

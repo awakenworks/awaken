@@ -6,8 +6,8 @@
 
 use super::*;
 use crate::project::{decode_managed_tool_event_id, managed_tool_event_id};
+use awaken_runtime_contract::runs::RunErrorKind;
 use awaken_session_application::SessionEventBatchIdempotency;
-use awaken_session_types::RunErrorKind;
 
 /// Every durable or driven effect a rejected batch must leave untouched.
 #[derive(Debug, PartialEq)]

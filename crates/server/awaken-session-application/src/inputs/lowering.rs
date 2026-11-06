@@ -8,7 +8,7 @@
 
 use super::PreparedSessionInputs;
 use crate::{SessionInputTarget, SessionRepositoryParticipants};
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 impl PreparedSessionInputs {
     /// Configure the Repository/Vault participants for one already-validated

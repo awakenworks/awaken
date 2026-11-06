@@ -15,9 +15,9 @@ use awaken_session_application_contract::{
 use crate::SessionInputRequest;
 use crate::mutation::session_owner;
 use crate::session_input::{normalize_session_input_mounts, plan_session_input_attachments};
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_contract::SessionRepositoryReads;
 use awaken_session_execution_contract::LiveInboxAccess;
-use awaken_session_types::RunError;
 use std::sync::Arc;
 
 mod lowering;
@@ -32,7 +32,7 @@ mod lowering;
 /// ```
 /// use std::sync::Arc;
 /// use awaken_session_application::SessionInputs;
-/// use awaken_session_application_contract::LiveInboxApplication;
+/// use awaken_session_application_contract::{LiveInboxApplication};
 /// fn selected(inputs: Arc<SessionInputs>) -> Arc<dyn LiveInboxApplication> {
 ///     inputs
 /// }
@@ -44,7 +44,7 @@ mod lowering;
 /// ```compile_fail,E0277
 /// use std::sync::Arc;
 /// use awaken_session_application::SessionApplication;
-/// use awaken_session_application_contract::LiveInboxApplication;
+/// use awaken_session_application_contract::{LiveInboxApplication};
 /// fn old_forwarder(app: Arc<SessionApplication>) -> Arc<dyn LiveInboxApplication> {
 ///     app
 /// }

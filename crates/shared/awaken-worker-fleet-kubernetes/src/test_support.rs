@@ -1,3 +1,7 @@
+// @formal surface exclude=test_fixture
+// @formal owner crates/shared/awaken-worker-fleet-kubernetes/src/create_ledger/isolation.rs
+// @formal reason: The opt-in in-process API fixture exposes observations and fault injection for
+// @formal reason: tests of the production isolation guard; it grants no production admission authority.
 //! Test support: an in-process Kubernetes API that serves the Create
 //! isolation policy, one Pod and one PVC, for the isolation guard's own tests
 //! and for the Sandbox adapter's guarded-claim tests that join the same guard.

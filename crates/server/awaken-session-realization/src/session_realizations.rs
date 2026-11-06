@@ -14,7 +14,7 @@ use crate::realization_error::{RealizationError, RealizationLock};
 use std::sync::Arc;
 
 use crate::frozen_inputs::FrozenSessionInputs;
-use awaken_session_application_contract::DelegatedRun;
+use awaken_runtime_contract::runs::DelegatedRun;
 
 pub mod dispatch_operations;
 use crate::realization_state::{SessionRealization, SessionRealizationAuthority};

@@ -16,7 +16,8 @@
 //! | none (missing) | owner | `NotFound`, byte-equal to the foreign row |
 //! | dependency outage / invalid durable state | owner | `Unavailable` / `Internal` |
 
-use awaken_session_types::{RunError, RunErrorKind, SessionId};
+use awaken_runtime_contract::runs::{RunError, RunErrorKind};
+use awaken_session_types::SessionId;
 
 /// Proof that the native ownership port admitted one existing Session. A
 /// Workspace-only request cannot obtain this proof for a private Session.

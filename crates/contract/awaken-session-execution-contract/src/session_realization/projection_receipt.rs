@@ -206,7 +206,7 @@ mod tests {
         let stale = RunError::from(stale);
         assert_eq!(
             stale.kind,
-            awaken_session_types::RunErrorKind::Unavailable,
+            awaken_runtime_contract::runs::RunErrorKind::Unavailable,
             "R3 retryable"
         );
         assert_eq!(stale.code, "session_projection_stale", "R3 code");

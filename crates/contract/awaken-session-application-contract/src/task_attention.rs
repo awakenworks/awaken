@@ -12,7 +12,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 /// The registered Worker route that delivers a [`TaskAttention`].
 pub const WORKER_TASK_ATTENTION_PATH: &str = "/v1/worker/task/attention";

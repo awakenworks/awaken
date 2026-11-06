@@ -8,7 +8,7 @@
 //! collaborator, preventing a second orchestration boundary in protocol state.
 
 use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 /// One transitive count law; callers lend their already selected direct values.
 /// The resolver owns exact/current selection, never an implicit pin fallback.
@@ -113,8 +113,8 @@ mod input_error_tests {
         // -> Internal; R3 invalid caller binding -> BadRequest. Identical
         // diagnostic text in every row proves the type owns the decision.
         use awaken_resource_contract::ResourceRegistryError;
+        use awaken_runtime_contract::runs::RunErrorKind;
         use awaken_session_configuration_contract::resource::SessionInputError;
-        use awaken_session_types::RunErrorKind;
         for (error, expected) in [
             (
                 SessionInputError::Registry(ResourceRegistryError::AuthorityUnavailable {

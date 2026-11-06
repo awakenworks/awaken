@@ -10,6 +10,7 @@
 //! This module alone owns the subsequent insert, finalization, realization,
 //! activation, lifecycle-fact commit, and WorkQueue projection ordering.
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::mcp::SessionMcpAttachmentSet;
 use awaken_session_configuration_contract::{
     CompiledSessionCreation, SessionCreationIntent, SessionToolConfiguration,
@@ -21,7 +22,6 @@ use awaken_session_contract::{
 };
 use awaken_session_execution_contract::SessionRealizationControlDisposition;
 use awaken_session_execution_contract::SessionRealizationDriveError;
-use awaken_session_types::RunError;
 
 use std::sync::Arc;
 

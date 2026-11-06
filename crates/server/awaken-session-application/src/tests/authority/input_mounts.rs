@@ -273,7 +273,7 @@ async fn input_mount_normalization_is_shared_by_creation_and_manifest_roles() {
         .expect("N5 duplicate typed mounts reject");
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "N5 typed collision"
     );
     assert_eq!(

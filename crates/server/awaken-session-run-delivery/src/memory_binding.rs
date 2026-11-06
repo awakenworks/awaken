@@ -14,7 +14,7 @@
 //! wraps a binding with its process-wide `MemoryRuntime`.
 
 use crate::DeliveryLock;
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 use awaken_sync::InvariantRwLock;
 use std::sync::Arc;
 
@@ -112,7 +112,7 @@ impl MemoryBinding {
     ) -> Result<(), awaken_ext_memory::MemoryExtractionError> {
         self.validate_live_resource().await.map_err(|error| {
             use awaken_ext_memory::MemoryExtractionError;
-            use awaken_session_types::RunErrorKind;
+            use awaken_runtime_contract::runs::RunErrorKind;
             match error.kind {
                 RunErrorKind::Unavailable | RunErrorKind::Conflict => {
                     MemoryExtractionError::Unavailable(error.message)
@@ -186,7 +186,7 @@ mod tests {
         // registry or error-text classifier is introduced for extraction.
         use awaken_ext_memory::{MemoryExtractionError, MemoryStoreHandle as _};
         use awaken_resource_contract::{ResourceRegistryError, ResourceState};
-        use awaken_session_types::RunErrorKind;
+        use awaken_runtime_contract::runs::RunErrorKind;
         for (fault, kind) in [
             (
                 ResourceRegistryError::AuthorityUnavailable {
@@ -320,7 +320,7 @@ mod tests {
         for error in [read_error, write_error] {
             assert_eq!(
                 error.kind,
-                awaken_session_types::RunErrorKind::Unavailable,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable,
                 "B3"
             );
             assert_eq!(error.code, "session_realization_lock_poisoned", "B3");

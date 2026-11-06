@@ -3,8 +3,8 @@
 // @formal reason: before persistence or effects; it does not interpret extension-owned fields.
 //! Neutral compilation for effective Session tool configuration.
 use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::SessionToolConfiguration;
-use awaken_session_types::RunError;
 use awaken_tool_contract::tool_configuration::compile_toolset_configurations;
 /// Apply the Profile's original inheritance rule to already selected Runtime
 /// defaults. An empty Profile client roster clears host clients; it never

@@ -5,9 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_a2a::router;
-use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{Pending, RunError, RunResume, Runs, StepOutcome};
 use axum::{Router, body::Body, http::Request};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -16,14 +14,14 @@ use tower::ServiceExt;
 struct Runtime;
 
 #[async_trait]
-impl RunApplication for Runtime {
+impl Runs for Runtime {
     async fn run(
         &self,
         _operation_id: &str,
         _: &str,
         _: Option<String>,
         _: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         Ok(StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
@@ -35,13 +33,13 @@ impl RunApplication for Runtime {
         _: &str,
         _: &str,
         _: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
-    async fn pending(&self, _: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
-    async fn history(&self, _: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
     fn model(&self) -> String {
@@ -319,17 +317,15 @@ async fn missing_task_has_the_same_rest_classification_in_both_versions() {
 
 struct AuditUnavailableRuntime;
 #[async_trait]
-impl RunApplication for AuditUnavailableRuntime {
+impl Runs for AuditUnavailableRuntime {
     async fn run(
         &self,
         _: &str,
         _: &str,
         _: Option<String>,
         _: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
-        Err(RunApplicationError::unavailable(
-            "audit temporary upstream outage",
-        ))
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::unavailable("audit temporary upstream outage"))
     }
     async fn resume(
         &self,
@@ -337,15 +333,13 @@ impl RunApplication for AuditUnavailableRuntime {
         _: &str,
         _: &str,
         _: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
-        Err(RunApplicationError::unavailable(
-            "audit temporary upstream outage",
-        ))
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::unavailable("audit temporary upstream outage"))
     }
-    async fn pending(&self, _: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
-    async fn history(&self, _: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
     fn model(&self) -> String {

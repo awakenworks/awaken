@@ -106,8 +106,8 @@ where
     ) -> Result<Self, Self::Rejection> {
         match parts
             .extensions
-            .get::<awaken_tenancy::WorkspaceScope>()
-            .and_then(awaken_tenancy::WorkspaceScope::non_empty)
+            .get::<awaken_runtime_contract::runs::scope::WorkspaceScope>()
+            .and_then(awaken_runtime_contract::runs::scope::WorkspaceScope::non_empty)
         {
             Some(workspace) => Ok(Self(workspace.to_owned())),
             None => Err(problem(
@@ -363,9 +363,9 @@ mod tests {
             move |mut request: axum::extract::Request, next: axum::middleware::Next| {
                 let workspace = workspace.clone();
                 async move {
-                    request
-                        .extensions_mut()
-                        .insert(awaken_tenancy::WorkspaceScope(workspace));
+                    request.extensions_mut().insert(
+                        awaken_runtime_contract::runs::scope::WorkspaceScope(workspace),
+                    );
                     next.run(request).await
                 }
             },

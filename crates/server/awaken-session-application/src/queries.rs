@@ -9,6 +9,7 @@ use crate::{SessionMutationError, SessionRootReads, mutation::session_owner};
 use awaken_executable_agent_contract::{
     ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
 };
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::AgentCapabilities;
 use awaken_session_contract::SessionRepositoryReads;
 use awaken_session_contract::{
@@ -18,7 +19,6 @@ use awaken_session_contract::{
 use awaken_session_execution_contract::{
     CapabilityRuntime, SessionExecutor, SessionProjectionSource, ThreadReads,
 };
-use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
 use std::sync::Arc;
 
@@ -57,7 +57,7 @@ mod projection_evidence;
 /// use awaken_session_application::SessionQueries;
 /// use awaken_session_contract::PersistedSession;
 /// use awaken_session_execution_contract::ThreadReads;
-/// use awaken_session_types::RunError;
+/// use awaken_runtime_contract::runs::{RunError};
 /// async fn frozen(q: &SessionQueries, s: &PersistedSession)
 ///     -> Result<awaken_session_execution_contract::FrozenSessionProjection, RunError> {
 ///     q.frozen_session_projection("w".into(), s, true).await

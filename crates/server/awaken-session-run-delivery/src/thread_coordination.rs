@@ -38,10 +38,11 @@ use awaken_dispatch_execution::DispatchPublication;
 use awaken_dispatch_execution::coordinated_run_activation;
 use awaken_dispatch_execution::durable_control::DurableRunControl;
 use awaken_dispatch_execution::session_dispatch::DispatchPreparation;
+use awaken_runtime_contract::runs::{DelegatedRun, Pending, RunError};
+
 use awaken_runtime_contract::{
     CancellationToken, ExecutableAgentSnapshot, PublishedAgentSnapshotSource, RunActivation,
 };
-use awaken_session_application_contract::{DelegatedRun, Pending};
 use awaken_session_configuration_contract::resource::SessionResourceManifest;
 use awaken_session_configuration_contract::{SessionBaseline, SessionToolConfiguration};
 use awaken_session_execution_contract::{
@@ -49,7 +50,6 @@ use awaken_session_execution_contract::{
     SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
     coordinated_thread_closed,
 };
-use awaken_session_types::RunError;
 
 use crate::{CommittedReads, session_thread_reply_result};
 

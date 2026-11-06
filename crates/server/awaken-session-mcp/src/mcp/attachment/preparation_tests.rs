@@ -369,7 +369,10 @@ async fn stdio_preserves_the_original_environment_failure_kind_and_code() {
         .unwrap()
         .unwrap_err();
     assert_eq!(error.code, "fixture_realization_pending");
-    assert_eq!(error.kind, awaken_session_types::RunErrorKind::Unavailable);
+    assert_eq!(
+        error.kind,
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable
+    );
     let removed = mcp
         .projection(slots.as_ref(), &request.generation)
         .unwrap()

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::event::{Fact, ToolDisposition};
-use awaken_session_application_contract::Pending;
+use awaken_runtime_contract::runs::Pending;
 
 /// The (Run, step, response) coordinate of every assistant Message owned by
 /// one of `run_ids`, keyed by Message id. A response ordinal encoded in the

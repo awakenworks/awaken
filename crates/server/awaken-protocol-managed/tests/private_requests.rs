@@ -8,7 +8,7 @@ use awaken_protocol_managed::{AdmittedPrivateSessionRequest, ManagedState, route
 use awaken_protocol_managed_testkit::RehydrateFake;
 use awaken_session_contract::{SessionPrivateBinding, SessionRepositoryReads};
 use awaken_session_types::SessionId;
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::{Extension, Router};

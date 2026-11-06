@@ -6,8 +6,8 @@
 //! release effects execute on RealizationExecutor after these participants drain.
 
 use crate::session_execution_error::to_run_error;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::mcp as session_mcp;
-use awaken_session_types::RunError;
 use std::time::Duration;
 
 impl crate::RunAssembly {
@@ -28,7 +28,7 @@ impl crate::RunAssembly {
             .acquire_realization_with(thread, |_| ())
             .await
             .map_err(|error| {
-                awaken_session_types::RunError::from(
+                awaken_runtime_contract::runs::RunError::from(
                     crate::realization_error::RealizationError::from(error),
                 )
             })?

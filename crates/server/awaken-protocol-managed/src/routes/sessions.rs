@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use std::collections::HashSet;
 
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::extract::{Path, RawQuery, Request};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -37,7 +37,7 @@ use crate::types::{
     SendEventsResponse, Session, SessionCreateParams, SessionThread,
 };
 use crate::types::{Event, StreamFrame};
-use awaken_session_types::{RunError, RunErrorKind};
+use awaken_runtime_contract::runs::{RunError, RunErrorKind};
 
 mod content_capture;
 mod event_admission;
@@ -1651,7 +1651,7 @@ mod managed_json_tests {
     };
     use crate::routes::extractors::managed_json_message;
     use crate::state::StateError;
-    use awaken_session_types::RunError;
+    use awaken_runtime_contract::runs::RunError;
 
     #[test]
     fn history_time_header_selects_only_one_exact_version_and_rejects_sse_v2() {

@@ -340,14 +340,14 @@ mod tests {
         assert_eq!(
             claim_outcome(&awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
                 awaken_session_execution_contract::SessionRealizationDriveError::Effect((
-                    awaken_session_types::RunError::internal("unclassified")).into()),
+                    awaken_runtime_contract::runs::RunError::internal("unclassified")).into()),
             )),
             "relinquish"
         );
         assert_eq!(
             claim_outcome(&awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
                 awaken_session_execution_contract::SessionRealizationDriveError::Effect((
-                    awaken_session_types::RunError::classified(
+                    awaken_runtime_contract::runs::RunError::classified(
                         awaken_session_execution_contract::ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
                         "mislabelled",
                     )).into()),
@@ -373,7 +373,7 @@ mod tests {
         let retryable_effect =
             awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error(
                 awaken_session_execution_contract::SessionRealizationDriveError::Effect(
-                    awaken_session_types::RunError::unavailable_classified(
+                    awaken_runtime_contract::runs::RunError::unavailable_classified(
                         "mcp_material_source_unavailable",
                         "materializer unavailable",
                     )
@@ -410,7 +410,7 @@ mod tests {
 
         for permanent in [
             awaken_session_execution_contract::SessionRealizationDriveError::Effect(
-                awaken_session_types::RunError::classified(
+                awaken_runtime_contract::runs::RunError::classified(
                     "mcp_credential_revision_mismatch",
                     "invalid revision",
                 )
@@ -589,7 +589,7 @@ mod tests {
             (
                 "stale Run lease",
                 || {
-                    awaken_session_types::RunError::unavailable_classified(
+                    awaken_runtime_contract::runs::RunError::unavailable_classified(
                         "session_realization_stale",
                         "stale",
                     )
@@ -609,19 +609,19 @@ mod tests {
             ),
             (
                 "Run conflict",
-                || awaken_session_types::RunError::conflict("raced").into(),
+                || awaken_runtime_contract::runs::RunError::conflict("raced").into(),
                 "relinquish",
             ),
             (
                 "unclassified internal",
-                || awaken_session_types::RunError::internal("unknown").into(),
+                || awaken_runtime_contract::runs::RunError::internal("unknown").into(),
                 "relinquish",
             ),
         ];
         for (rule, failure, expected) in rows {
             let claim =
                 map_admission_error(crate::host::dispatch_execution::admission_error(failure()));
-            let synchronizer = awaken_session_types::RunError::from(failure());
+            let synchronizer = awaken_runtime_contract::runs::RunError::from(failure());
             let driver = map_session_realization_drive_error(
                 awaken_session_execution_contract::SessionRealizationDriveError::Effect(
                     awaken_session_execution_contract::SessionRealizationEffectFailure::from(

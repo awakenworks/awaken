@@ -12,7 +12,7 @@
 //! binding an input replaces, Repository participants) is decided here, so no
 //! two protocols can freeze different layouts for the same request.
 
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 /// Most File inputs one Session carries.
 pub(crate) const MAX_SESSION_FILE_RESOURCES: usize = 500;

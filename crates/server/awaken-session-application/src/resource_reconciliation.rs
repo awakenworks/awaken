@@ -14,6 +14,7 @@ use crate::repository_participants::RepositoryRetirementCause;
 use awaken_credential_contract::{
     CredentialMaterialInput, CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand,
 };
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::resource::{
     ResolvedInput, ResolvedInputSource, ResolvedSessionResources,
 };
@@ -21,7 +22,6 @@ use awaken_session_contract::{
     PersistedSession, SessionAggregate, SessionExecutionState, SessionResourceLocalApply,
     SessionResourceReconciliationInstruction,
 };
-use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
 use std::sync::Arc;
@@ -800,7 +800,7 @@ mod placement_regression_tests {
             &self,
             _: &str,
             _: &awaken_session_configuration_contract::SessionSandboxLayout,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             panic!("no layout effect")
         }
         async fn resolve_session_skills(
@@ -809,7 +809,7 @@ mod placement_regression_tests {
             _: &[awaken_agent_contract::AgentSkillBinding],
         ) -> Result<
             Vec<awaken_session_configuration_contract::resource::ResolvedSkillBinding>,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             panic!("no Skill effect")
         }
@@ -817,7 +817,7 @@ mod placement_regression_tests {
             &self,
             _: &str,
             _: awaken_session_configuration_contract::SessionToolConfiguration,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             panic!("no tool effect")
         }
     }

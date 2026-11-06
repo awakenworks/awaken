@@ -7,7 +7,7 @@
 //! role, served by the realization executor: the effects a Session application
 //! asks for that need no Session context, Memory, MCP or delegated-Run fact.
 
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use super::RealizationExecutor;
 

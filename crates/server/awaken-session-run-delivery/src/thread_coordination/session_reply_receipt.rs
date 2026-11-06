@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::awaiting::{AwaitTarget, ResumeTicket};
 use awaken_agent_contract::agent::state::{StateKey as _, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource as _;
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SessionReplyReceipt {

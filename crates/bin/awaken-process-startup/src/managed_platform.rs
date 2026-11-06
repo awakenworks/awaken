@@ -686,9 +686,11 @@ mod tests {
                         .to_string(),
                     ))
                     .unwrap();
-                request
-                    .extensions_mut()
-                    .insert(awaken_tenancy::WorkspaceScope("workspace-rollout".into()));
+                request.extensions_mut().insert(
+                    awaken_runtime_contract::runs::scope::WorkspaceScope(
+                        "workspace-rollout".into(),
+                    ),
+                );
                 let response = app.clone().oneshot(request).await.unwrap();
                 let status = response.status();
                 let body = to_bytes(response.into_body(), 32 * 1024).await.unwrap();

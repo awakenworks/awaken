@@ -87,7 +87,10 @@ async fn creation_finalization_preserves_resolution_skill_and_pin_failure_stages
             }
             SessionCreateRequestError::Rejected(error) => {
                 assert_ne!(rule, "F4");
-                assert_eq!(error.kind, awaken_session_types::RunErrorKind::BadRequest);
+                assert_eq!(
+                    error.kind,
+                    awaken_runtime_contract::runs::RunErrorKind::BadRequest
+                );
                 assert!(if missing {
                     error.message.contains("missing-finalizer-memory")
                 } else {

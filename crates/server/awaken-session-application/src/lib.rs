@@ -15,11 +15,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use awaken_environment_contract::EnvItem;
 #[cfg(test)]
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::EnvironmentSnapshot;
 use awaken_session_contract::SessionEnvironmentFacts;
 use awaken_session_contract::SessionRepository;
 use awaken_session_execution_contract::SessionEnvironmentBindingSink;
-use awaken_session_types::RunError;
 use {
     awaken_session_contract::{PersistedSession, SessionScan},
     awaken_session_types::SessionRecoveryQuarantine,

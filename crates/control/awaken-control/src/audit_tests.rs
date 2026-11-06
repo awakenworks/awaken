@@ -12,7 +12,7 @@ use awaken_config_service::{
 use awaken_config_store::SqliteConfigStore;
 use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::middleware::Next;
 use axum::routing::post;
 use http_body_util::BodyExt as _;

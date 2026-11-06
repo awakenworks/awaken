@@ -1,3 +1,6 @@
+// @formal surface requirement=session.multiagent.thread_authority
+// @formal reason: This adapter lowers committed coordination identity into SDK activation inputs;
+// @formal reason: Session remains the Thread authority. This classification makes no proof claim.
 //! Execution lowers Session coordination commands into the SDK activation.
 //! The same immutable input rules bind an original accepted activation without
 //! selecting current model, resource or inherited tool configuration.

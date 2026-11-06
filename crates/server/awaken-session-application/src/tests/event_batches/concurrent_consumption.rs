@@ -153,7 +153,7 @@ async fn consumption_table(prefix: &str, store_a: Store, store_b: Store) -> Vec<
             .expect("C1/C2 one rejection");
         assert_eq!(
             rejection.kind,
-            awaken_session_types::RunErrorKind::BadRequest,
+            awaken_runtime_contract::runs::RunErrorKind::BadRequest,
             "C1/C2/O0 the loser is an occupancy rejection"
         );
         let winner_index = usize::from(outcomes[0].is_err());

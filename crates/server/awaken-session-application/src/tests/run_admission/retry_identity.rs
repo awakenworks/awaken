@@ -316,11 +316,11 @@ async fn write_outcome_classification_table(fixture: &Fixture, before: &str, aft
         .expect_err("lost committed response");
     assert_eq!(
         not_admitted.kind,
-        awaken_session_types::RunErrorKind::Unavailable
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable
     );
     assert_eq!(
         unknown.kind,
-        awaken_session_types::RunErrorKind::Unavailable
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable
     );
     assert_eq!(not_admitted.code, "session_run_not_admitted");
     assert_eq!(unknown.code, "session_run_admission_pending");

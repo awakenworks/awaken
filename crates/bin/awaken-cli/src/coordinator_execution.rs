@@ -16,8 +16,9 @@
 use std::sync::Arc;
 
 use awaken_process_startup::SessionCommitOwner;
+use awaken_runtime_contract::runs::Runs;
 use awaken_session_application::{SessionApplication, SessionRunApplication};
-use awaken_session_application_contract::{RunApplication, SessionRunBackgroundApplication};
+use awaken_session_application_contract::SessionRunBackgroundApplication;
 use awaken_session_execution_contract::{SessionApplicationBindingError, SessionApplications};
 
 use awaken_session_executor::{AgentCoordinationInstallError, ExecutorComponents};
@@ -57,7 +58,7 @@ pub fn coordinator_execution(
 ) -> Result<awaken_coordinator::ExecutionPorts, CoordinatorExecutionError> {
     let dispatch = host.coordination().dispatch_observation_source()?;
     verify_composition(host.dispatch(), &dispatch, sessions)?;
-    let runs: Arc<dyn RunApplication> = host.session_runs().clone();
+    let runs: Arc<dyn Runs> = host.session_runs().clone();
     let (workspace, projected_agent) = host.capabilities().session_run_projection_callbacks();
     let session_runs = Arc::new(SessionRunApplication::new(
         runs,

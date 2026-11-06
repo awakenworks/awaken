@@ -9,7 +9,7 @@
 use awaken_provisioning_contract as pc;
 use awaken_session_configuration_contract::resource as session_resource;
 
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use crate::sandbox_layout::resource_mount_is_create_time;
 use crate::staged_resources::EnvironmentResourceReconciliation;
@@ -137,7 +137,7 @@ impl crate::resource_staging::ResourceStaging {
             realizations.update_realization(thread, |r| {
                 r.validate_preparation_publication(realization_lease)?;
                 r.staging_mut().skills = Some(versions);
-                Ok::<_, awaken_session_types::RunError>(())
+                Ok::<_, awaken_runtime_contract::runs::RunError>(())
             })??;
             return Ok(());
         }
@@ -487,7 +487,7 @@ impl crate::resource_staging::ResourceStaging {
                         Some(&source_binding))?,
                     )
                     .await
-                    .map_err(awaken_session_types::RunError::from)?;
+                    .map_err(awaken_runtime_contract::runs::RunError::from)?;
                 match &effect.authorization {
                     awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                         binding,
@@ -512,7 +512,7 @@ impl crate::resource_staging::ResourceStaging {
                         environments.persist_authorized_environment_binding(peers, thread, binding, &effect)
                             .await
                             .map_err(|failure| {
-                                awaken_session_types::RunError::from(failure.error)
+                                awaken_runtime_contract::runs::RunError::from(failure.error)
                             })?;
                     }
                 }

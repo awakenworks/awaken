@@ -8,12 +8,12 @@
 // @formal reason: a direct formal-proof claim.
 //! Runtime execution of the one aggregate-derived terminal Repository effect.
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_contract::{
     SessionRepositoryPublicationCommand, SessionRepositoryPublicationEffect,
     SessionRepositoryPublicationReceipt, SessionRepositoryPublicationRejection,
 };
-use awaken_session_types::RunError;
 
 use crate::terminal_effects::TerminalEffects;
 
@@ -53,14 +53,14 @@ impl TerminalEffects {
             .await?;
         let mut current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         let staged = staging
             .stage_terminal_repository_publication_input(&workspace, &command, &current_lease)
             .await?;
 
         current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         let (assignment, resolved_resources) = self
             .sessions
             .read_realization(command.session_id.as_str(), |r| {
@@ -98,11 +98,11 @@ impl TerminalEffects {
                 crate::session_environment::BoundEnvironmentPreparationMode::TerminalRepositoryPublication,
             )
             .await
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         if let Some(observation) = prepared.publication_source_closure() {
             cleanup
                 .authorize_lease(&command.session_id, lease)
-                .map_err(awaken_session_types::RunError::from)?;
+                .map_err(awaken_runtime_contract::runs::RunError::from)?;
             let rejection = SessionRepositoryPublicationRejection::source_closed(
                 &command,
                 binding,
@@ -119,7 +119,7 @@ impl TerminalEffects {
         }
         current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         let environment = prepared
             .environment
             .map(|(environment, _)| environment)
@@ -143,7 +143,7 @@ impl TerminalEffects {
             .await;
         cleanup
             .authorize_lease(&command.session_id, lease)
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         match effect {
             Ok(effect_receipt) => Ok(SessionRepositoryPublicationEffect::Published(
                 SessionRepositoryPublicationReceipt::new(&command, effect_receipt),
@@ -155,7 +155,7 @@ impl TerminalEffects {
                     .map_err(crate::realization_error::RealizationError::from)?,
             )),
             Err(crate::staged_resources::RepositoryPublicationActivationError::Failed(error)) => {
-                Err(awaken_session_types::RunError::from(error))
+                Err(awaken_runtime_contract::runs::RunError::from(error))
             }
         }
     }

@@ -8,12 +8,12 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_session_application_contract::DelegatedRun;
+use awaken_runtime_contract::runs::{DelegatedRun, RunError};
+
 use awaken_session_contract::SessionUsage;
 use awaken_session_execution_contract::{
     BudgetAccounting, ChildRunCoordination, SessionCoordinationReads, ThreadReads,
 };
-use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
 use crate::SessionProjectionReads as _;

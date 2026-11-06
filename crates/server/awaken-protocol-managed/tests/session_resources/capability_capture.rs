@@ -1,6 +1,7 @@
 //! Managed capability capture keeps its original position among creation awaits.
 use super::*;
 use awaken_protocol_managed_testkit::RehydrateFake;
+use awaken_runtime_contract::runs::{RunError, RunErrorKind};
 use awaken_session_contract::{
     ManagedListPriceError, ManagedListPriceProvider, ManagedListPriceRequest,
     ManagedListPriceSnapshot,
@@ -9,7 +10,6 @@ use awaken_session_contract::{SessionScanQuery, SessionUpdateHistory};
 use awaken_session_execution_contract::{
     EnvironmentRuntime, SessionExecutionRoles, SessionExecutor,
 };
-use awaken_session_types::{RunError, RunErrorKind};
 use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},

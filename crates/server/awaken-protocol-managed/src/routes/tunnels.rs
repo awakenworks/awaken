@@ -275,7 +275,7 @@ async fn archive_certificate(
 mod tests {
     use std::sync::Mutex;
 
-    use awaken_tenancy::WorkspaceScope;
+    use awaken_runtime_contract::runs::scope::WorkspaceScope;
     use axum::extract::Extension;
 
     use axum::body::{Body, to_bytes};

@@ -5,26 +5,26 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 326,
+        "line": 324,
         "file_sha256": "9c4a44d78ce1567a3759856e33278c2c7a9d87a4640c3c752cd9b6a6e3e7f06b"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 331
+        "line": 329
       },
       {
         "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 336
+        "line": 334
       },
       {
         "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 337
+        "line": 335
       },
       {
         "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 342
+        "line": 340
       }
     ],
     "execution_witnesses": [
@@ -59,26 +59,26 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 367,
+        "line": 365,
         "file_sha256": "9c4a44d78ce1567a3759856e33278c2c7a9d87a4640c3c752cd9b6a6e3e7f06b"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 374
+        "line": 372
       },
       {
         "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 379
+        "line": 377
       },
       {
         "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 384
+        "line": 382
       },
       {
         "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 390
+        "line": 388
       }
     ],
     "execution_witnesses": [
@@ -112,18 +112,18 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs",
-        "line": 120,
+        "line": 119,
         "file_sha256": "dc73013b422632866a32a7095ceffe0866678b01232eeedcf5507b6e486ced54"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs",
-        "line": 123
+        "line": 122
       },
       {
         "path": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs",
-        "line": 124
+        "line": 123
       }
     ],
     "execution_witnesses": [

@@ -9,8 +9,9 @@ use crate::state::test_support::{
     ephemeral_session_repo,
 };
 use crate::state::tests::sample_persisted;
+use awaken_runtime_contract::runs::RunErrorKind;
 use awaken_session_application::SessionAccessError;
-use awaken_session_types::{RunErrorKind, SessionId};
+use awaken_session_types::SessionId;
 use std::time::Duration;
 
 fn cold_state(repo: Arc<dyn awaken_session_application::SessionStore>) -> ManagedState {

@@ -32,7 +32,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_dispatch_execution::DispatchPublication;
 use awaken_resource_contract::{LiveResourceBindingVerifier, RepositoryBindingVerifier};
-use awaken_session_application_contract::StepOutcome;
+use awaken_runtime_contract::runs::{RunError, StepOutcome};
+
 use awaken_session_configuration_contract::SkillBundleSource;
 use awaken_session_configuration_contract::resource::binding_checks::verify_manifest_bindings;
 use awaken_session_configuration_contract::skill_delivery::{
@@ -43,7 +44,6 @@ use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
     SessionRunReservation,
 };
-use awaken_session_types::RunError;
 
 use crate::session_run_activation::{activate_session_run_reservation, read_settled_phase};
 use crate::session_run_reservation::{
@@ -668,7 +668,10 @@ mod tests {
             if !allowed {
                 for result in [direct, adapter] {
                     let error = result.err().expect("R2 refuses an observer");
-                    assert_eq!(error.kind, awaken_session_types::RunErrorKind::BadRequest);
+                    assert_eq!(
+                        error.kind,
+                        awaken_runtime_contract::runs::RunErrorKind::BadRequest
+                    );
                     assert_eq!(error.code, "invalid_request");
                     assert_eq!(
                         error.message,
@@ -1083,7 +1086,7 @@ mod tests {
                 .await
                 .unwrap_err()
                 .kind,
-            awaken_session_types::RunErrorKind::Unavailable,
+            awaken_runtime_contract::runs::RunErrorKind::Unavailable,
             "R2"
         );
         delivery
@@ -1205,7 +1208,7 @@ mod tests {
                         .await
                         .unwrap_err()
                         .kind,
-                    awaken_session_types::RunErrorKind::Conflict,
+                    awaken_runtime_contract::runs::RunErrorKind::Conflict,
                     "R4 axis={axis} completed={completed}"
                 );
                 assert_eq!(
@@ -1471,7 +1474,7 @@ mod tests {
             .resume_thread(
                 "flat",
                 "call",
-                awaken_session_application_contract::RunResume::Permission(
+                awaken_runtime_contract::runs::RunResume::Permission(
                     awaken_agent_contract::agent::awaiting::PermissionDecision::Allow {
                         note: None,
                     },
@@ -2572,7 +2575,7 @@ mod tests {
                 .await
                 .unwrap_err()
                 .kind,
-            awaken_session_types::RunErrorKind::Unavailable,
+            awaken_runtime_contract::runs::RunErrorKind::Unavailable,
             "A2 fresh source demand is Unknown"
         );
         for payload in [None, Some("{}"), Some("broken-json")] {
@@ -2603,7 +2606,7 @@ mod tests {
                     .await
                     .unwrap_err()
                     .kind,
-                awaken_session_types::RunErrorKind::Unavailable,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable,
                 "A3 no current fallback"
             );
             assert!(

@@ -5,7 +5,8 @@
 #[cfg(any(test, kani))]
 use crate::RetainedEventAdmission;
 use crate::{DeletedSessionEventAdmissions, SessionEventBatch};
-use awaken_session_types::{RunError, RunErrorKind, SessionRevision};
+use awaken_runtime_contract::runs::{RunError, RunErrorKind};
+use awaken_session_types::SessionRevision;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionEventAdmission {

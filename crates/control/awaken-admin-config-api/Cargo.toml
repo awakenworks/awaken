@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["axum", "sqlx"]
 
 [dependencies]
+awaken-runtime-contract.workspace = true
 awaken-sql-storage = { workspace = true, optional = true }
 awaken-model-catalog.workspace = true
 awaken-credential-vault.workspace = true
@@ -26,7 +27,6 @@ awaken-config-resolver.workspace = true
 # Shared provider-neutral Repository mount-path admission.
 awaken-provisioning-contract.workspace = true
 awaken-agent-config.workspace = true
-awaken-tenancy.workspace = true
 # The one wall-clock port: availability, manual attribute and discovery stamps.
 awaken-time.workspace = true
 serde.workspace = true
@@ -46,7 +46,6 @@ awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] 
 
 [dev-dependencies]
 # The telemetry storage fixtures use the SDK's ContentCapture value.
-awaken-runtime-contract.workspace = true
 awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tower = { version = "0.5", features = ["util"] }

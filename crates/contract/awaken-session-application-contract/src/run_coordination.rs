@@ -5,18 +5,9 @@
 // @formal reason: authorization decision. Runtime and Session owners consume these values.
 //! Runtime-owned child Run and budget-resume coordination projections.
 
-use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::run::Id as RunId;
 
-/// Stable child-Run relationship projected at a session boundary. Runtime owns
-/// the relationship; Managed and other adapters only render it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DelegatedRun {
-    pub run_id: RunId,
-    pub parent_call_id: String,
-    pub agent_id: String,
-    pub status: DelegationStatus,
-}
+use awaken_runtime_contract::runs::DelegatedRun;
 
 /// Stable view of the runtime-owned delegation authority after the parent Run
 /// has crossed a terminal fence and reached quiescence.

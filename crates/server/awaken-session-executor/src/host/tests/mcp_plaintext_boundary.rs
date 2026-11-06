@@ -327,7 +327,7 @@ async fn platform_mcp_receipt_projection_and_refusal_carry_no_plaintext() {
     assert_eq!(refused.code, "mcp_gateway_route_unavailable", "P2");
     assert_eq!(
         refused.kind,
-        awaken_session_types::RunErrorKind::Unavailable,
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable,
         "P2 retryable"
     );
     assert_eq!(

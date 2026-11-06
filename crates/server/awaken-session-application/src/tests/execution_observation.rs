@@ -798,7 +798,7 @@ async fn update_history_uses_validated_root_prefix_after_replay_and_noop_checks(
     };
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::Internal,
+        awaken_runtime_contract::runs::RunErrorKind::Internal,
         "U1"
     );
     assert_eq!(
@@ -965,7 +965,7 @@ async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged(
             .unwrap_err();
         assert_eq!(
             error.kind,
-            awaken_session_types::RunErrorKind::Internal,
+            awaken_runtime_contract::runs::RunErrorKind::Internal,
             "R3/E3 whole foreign prefix refused"
         );
     }
@@ -979,7 +979,7 @@ async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged(
         .unwrap_err();
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::Internal,
+        awaken_runtime_contract::runs::RunErrorKind::Internal,
         "R3/E3 exact Run cannot come from a foreign logical Thread"
     );
     for conflicting in [false, true] {
@@ -997,7 +997,7 @@ async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged(
             .unwrap_err();
         assert_eq!(
             error.kind,
-            awaken_session_types::RunErrorKind::Internal,
+            awaken_runtime_contract::runs::RunErrorKind::Internal,
             "R3/E3 equal/conflicting duplicates are never deduplicated"
         );
     }
@@ -1011,7 +1011,7 @@ async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged(
             .await
             .unwrap_err()
             .kind,
-        awaken_session_types::RunErrorKind::Internal,
+        awaken_runtime_contract::runs::RunErrorKind::Internal,
         "R3/E3 blank selected owner"
     );
     assert_eq!(
@@ -1393,7 +1393,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
     };
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::Internal,
+        awaken_runtime_contract::runs::RunErrorKind::Internal,
         "R7"
     );
     let Err(SessionProjectionRecoveryError::Rejected(error)) = application
@@ -1405,7 +1405,7 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
     };
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::Internal,
+        awaken_runtime_contract::runs::RunErrorKind::Internal,
         "R8"
     );
 }

@@ -8,21 +8,20 @@ license.workspace = true
 workspace = true
 
 [package.metadata.awaken]
+api_snapshot = true
 context = "shared"
-product = "platform"
-bounded_context = "protocols"
+product = "sdk"
+bounded_context = "agent-runtime"
 layer = "interface"
 authority = "protocol-a2a"
 separation = "protocol"
 protocol = "a2a"
 
 [dependencies]
+awaken-runtime-contract.workspace = true
 awaken-sync.workspace = true
 awaken-agent-contract.workspace = true
-awaken-session-application-contract.workspace = true
-awaken-session-types.workspace = true
 # The Org admission vocabulary this adapter classifies and encodes.
-awaken-tenancy.workspace = true
 awaken-outbound-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true

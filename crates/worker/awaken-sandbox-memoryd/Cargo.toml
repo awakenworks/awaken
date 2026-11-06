@@ -39,6 +39,7 @@ fuser = { version = "0.16", default-features = false, optional = true }
 libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
+awaken-runtime-contract.workspace = true
 
 awaken-lease-testkit.workspace = true
 tempfile = "3"

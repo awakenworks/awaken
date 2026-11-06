@@ -22,9 +22,9 @@ use awaken_ext_goal::grader::{
 use awaken_ext_goal::outcome::{Definition, Grade, Grader, GraderError, GradingInput, Id};
 use awaken_ext_goal::run_settlement::{OutcomeRuns, RunSettlement};
 use awaken_ext_goal::state::{Binding, grader_thread_id};
+use awaken_runtime_contract::runs::RunError;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use awaken_session_execution_contract::OutcomeDrive;
-use awaken_session_types::RunError;
 
 use super::WorkerPlacedSessions;
 use super::dispatched_runs::DispatchedRuns;
@@ -448,7 +448,7 @@ mod admission_adapter_tests {
                     "owner_admission",
                     RunAdmissionFailure::new(
                         disposition,
-                        awaken_session_types::RunError::unavailable("owner evidence"),
+                        awaken_runtime_contract::runs::RunError::unavailable("owner evidence"),
                     ),
                 )
                 .into()),

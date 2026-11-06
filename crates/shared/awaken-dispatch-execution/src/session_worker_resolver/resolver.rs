@@ -1,3 +1,7 @@
+// @formal surface exclude=composition_wiring
+// @formal owner crates/shared/awaken-dispatch-execution/src/session_worker_resolver.rs
+// @formal reason: Constructors retain the Coordinator and Worker roles selected by composition;
+// @formal reason: claim resolution and reconciliation remain in the owning resolver operations.
 //! The resolver's constructions: a Coordinator resolves no claimed execution
 //! and scans committed terminals; a Worker resolves claimed execution; a
 //! co-located process does both. Each role is given once, at construction.

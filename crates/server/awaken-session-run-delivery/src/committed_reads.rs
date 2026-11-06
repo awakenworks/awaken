@@ -39,9 +39,9 @@ use awaken_agent_contract::thread::read::recovery::{
 };
 use awaken_ext_goal::controller::{CommittedOutcome, Controller};
 use awaken_ext_goal::outcome::Id;
-use awaken_session_application_contract::{DelegatedRun, Pending};
+use awaken_runtime_contract::runs::{DelegatedRun, Pending, RunError};
+
 use awaken_session_execution_contract::ApplicationError;
-use awaken_session_types::RunError;
 
 use crate::SessionCommit;
 
@@ -50,7 +50,7 @@ use crate::SessionCommit;
 /// message's.
 #[must_use]
 pub fn application_error(error: RunError) -> ApplicationError {
-    use awaken_session_types::RunErrorKind;
+    use awaken_runtime_contract::runs::RunErrorKind;
     match error.kind {
         RunErrorKind::BadRequest => ApplicationError::invalid(error.message),
         RunErrorKind::Conflict => ApplicationError::conflict(error.message),

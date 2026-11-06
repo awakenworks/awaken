@@ -15,7 +15,7 @@
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource as _};
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use super::committed_links::apply_lifecycle_latest_runs;
 use super::{CommittedReads, CoordinationReadPurpose, project_committed_coordination};

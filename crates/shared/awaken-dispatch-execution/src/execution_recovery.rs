@@ -505,7 +505,8 @@ mod tests {
     use awaken_agent_contract::agent::run::{EndCause, Record as RunRecord, RunState};
     use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
     use awaken_dispatch_contract::{AttemptClosureEvent, DispatchOperationalEvent};
-    use awaken_session_types::{RunError, SessionId};
+    use awaken_runtime_contract::runs::RunError;
+    use awaken_session_types::SessionId;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},

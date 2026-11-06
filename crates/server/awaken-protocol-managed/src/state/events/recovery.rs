@@ -598,7 +598,7 @@ mod interrupt_target_tests {
     use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Record, RunState};
     use awaken_agent_contract::agent::state::Action as StateAction;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_session_types::RunErrorKind;
+    use awaken_runtime_contract::runs::RunErrorKind;
 
     fn link(thread_id: &str, target: CoordinatedThreadTarget) -> CoordinatedThreadLink {
         CoordinatedThreadLink {

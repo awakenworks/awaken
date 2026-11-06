@@ -14,7 +14,7 @@ use axum::extract::{Path, Query, State};
 
 use super::{WireErr, error_response, session_projection_error};
 use crate::state::{ManagedState, StateError};
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 fn exact_receipt(
     session_id: &str,
@@ -142,7 +142,7 @@ mod tests {
 
     use super::exact_receipt;
     use crate::routes::sessions::session_projection_error;
-    use awaken_session_types::RunError;
+    use awaken_runtime_contract::runs::RunError;
 
     #[test]
     fn receipt_is_checked_before_activation_linkage() {

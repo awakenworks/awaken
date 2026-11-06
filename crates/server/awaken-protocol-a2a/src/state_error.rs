@@ -1,7 +1,6 @@
 //! One A2A wire mapping for projection/config/delivery state failures.
 
-use awaken_session_application_contract::RunApplicationError;
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -13,7 +12,7 @@ use crate::state::StateError;
 use crate::types::{Message, StreamResponse, TaskState, TaskStatus, TaskStatusUpdateEvent};
 use crate::version::ProtocolVersion;
 
-pub(crate) fn state_run_error(error: StateError) -> RunApplicationError {
+pub(crate) fn state_run_error(error: StateError) -> RunError {
     match error {
         StateError::Invalid(message) | StateError::NotFound(message) => {
             RunError::bad_request(message)

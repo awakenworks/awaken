@@ -7,8 +7,7 @@
 
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_session_application_contract::{Pending, StepOutcome};
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::{Pending, RunError, StepOutcome};
 
 use super::SessionRuns;
 use crate::HostResume;

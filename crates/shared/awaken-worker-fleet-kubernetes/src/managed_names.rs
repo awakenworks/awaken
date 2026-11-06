@@ -1,3 +1,6 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: This Kubernetes adapter owns forward and inverse managed-object identity
+// @formal reason: projection. The classification is not a proof of collision resistance or isolation.
 //! Managed Kubernetes names: the runtime identity a Sandbox scope encodes to,
 //! and the Pod, continuation claim, ConfigMap and Secret names derived from it.
 //!

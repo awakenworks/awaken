@@ -192,7 +192,7 @@ async fn cold_child_report_projects_frozen_root_and_files_before_continuation() 
         if fail_projection {
             assert_eq!(
                 result.unwrap_err().kind,
-                awaken_session_types::RunErrorKind::Unavailable,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable,
                 "CR2 retryable"
             );
             assert!(runtime.continuations.lock().unwrap().is_empty(), "CR2/E3");
@@ -307,7 +307,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         .expect_err("S0 source mismatch");
     assert_eq!(
         invalid_source_error.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "S0/E0"
     );
     assert!(
@@ -398,7 +398,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         .expect_err("S1U unknown stays pending");
     assert_eq!(
         unknown.kind,
-        awaken_session_types::RunErrorKind::Unavailable
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable
     );
     assert_eq!(
         repo.get(&SessionId::from("send-accepted")).await.unwrap(),
@@ -438,7 +438,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         .expect_err("S2 definitive rejection");
     assert_eq!(
         rejected_error.kind,
-        awaken_session_types::RunErrorKind::BadRequest
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest
     );
     assert!(
         repo.get(&SessionId::from("send-rejected"))
@@ -507,7 +507,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         .expect_err("S4 mismatched receipt");
     assert_eq!(
         mismatch_error.kind,
-        awaken_session_types::RunErrorKind::Internal
+        awaken_runtime_contract::runs::RunErrorKind::Internal
     );
     let mismatch_epoch = mismatch_runtime.admissions.lock().unwrap()[0]
         .session_activity_epoch
@@ -679,7 +679,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         .expect_err("S7M settled Missing");
     assert_eq!(
         missing.kind,
-        awaken_session_types::RunErrorKind::Unavailable
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable
     );
     assert_eq!(
         repo.get(&SessionId::from("send-accepted")).await.unwrap(),

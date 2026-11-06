@@ -173,16 +173,16 @@ fn admit_attention_records(attention: &TaskAttention) -> Result<(), ApplicationE
 
 /// Map the application's refusal once: a definitive refusal stays definitive
 /// (the Worker stops retrying, row K4); anything else is retryable (K5).
-fn attention_failure(error: awaken_session_types::RunError) -> ApplicationError {
+fn attention_failure(error: awaken_runtime_contract::runs::RunError) -> ApplicationError {
     match error.kind {
-        awaken_session_types::RunErrorKind::BadRequest => {
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest => {
             ApplicationError::invalid(error.to_string())
         }
-        awaken_session_types::RunErrorKind::Conflict => {
+        awaken_runtime_contract::runs::RunErrorKind::Conflict => {
             ApplicationError::conflict(error.to_string())
         }
-        awaken_session_types::RunErrorKind::Internal
-        | awaken_session_types::RunErrorKind::Unavailable => {
+        awaken_runtime_contract::runs::RunErrorKind::Internal
+        | awaken_runtime_contract::runs::RunErrorKind::Unavailable => {
             ApplicationError::unavailable(error.to_string())
         }
     }
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn a_definitive_application_refusal_stays_definitive() {
         // K4 BadRequest stays a refusal; K5 every other kind is retryable.
-        use awaken_session_types::RunError;
+        use awaken_runtime_contract::runs::RunError;
         let invalid = attention_failure(RunError::bad_request("gone"));
         assert_eq!(
             invalid.kind,

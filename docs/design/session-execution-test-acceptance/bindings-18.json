@@ -391,7 +391,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs",
-        "line": 132,
+        "line": 131,
         "file_sha256": "b92134e70ef5e62587c84cb1356daa077ee8463be895ba14d47d5a01b9e8ad46"
       }
     ],
@@ -414,7 +414,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 399,
+        "line": 397,
         "file_sha256": "218e1f64ef1a8230a2abb597a515f4d3913137e0cf585588180e5f0990d91ba4"
       }
     ],

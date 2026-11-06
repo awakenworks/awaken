@@ -6,7 +6,7 @@
 
 use awaken_session_configuration_contract::{AgentCapabilities, BuiltinTool, CustomTool};
 
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use super::RunCapabilities;
 

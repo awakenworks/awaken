@@ -7,8 +7,8 @@
 // @formal reason: crates/server/awaken-session-executor/src/outcome_controller.rs.
 //! Managed Session projection for the Host-owned Outcome controller.
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_execution_contract::OutcomeDrive;
-use awaken_session_types::RunError;
 
 use crate::outcome_report::progress;
 use crate::session_execution_error::to_run_error;

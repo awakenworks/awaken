@@ -20,8 +20,8 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_realization::realization_error::POISONED_CODE;
-use awaken_session_types::RunError;
 
 const SESSION: &str = "poisoned-session";
 
@@ -236,7 +236,10 @@ async fn poisoned_registry_refuses_session_run_projection_callbacks_before_fallb
             workspace(thread).map(|_| ()).unwrap_err(),
             agent(thread).map(|_| ()).unwrap_err(),
         ] {
-            assert_eq!(error.kind, awaken_session_types::RunErrorKind::Unavailable);
+            assert_eq!(
+                error.kind,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable
+            );
             assert_poisoned(error, "P4/P5 original poison, no fallback");
         }
     }

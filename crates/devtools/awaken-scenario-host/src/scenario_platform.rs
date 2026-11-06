@@ -192,9 +192,9 @@ pub(super) async fn mount_with_environments_and_agent_source(
             ),
         ),
     )
-    .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-        local_workspace,
-    )))
+    .layer(axum::Extension(
+        awaken_runtime_contract::runs::scope::WorkspaceScope(local_workspace),
+    ))
     .merge(awaken_protocol_awaken::environment_extensions_router(
         environment_authoring.clone(),
         Some(sandbox_policies),

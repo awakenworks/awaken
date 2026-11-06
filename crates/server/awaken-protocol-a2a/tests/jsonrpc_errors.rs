@@ -7,9 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_a2a::router;
-use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{Pending, RunError, RunResume, Runs, StepOutcome};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -21,14 +19,14 @@ struct NoopRuntime {
 }
 
 #[async_trait]
-impl RunApplication for NoopRuntime {
+impl Runs for NoopRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         Ok(StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
@@ -41,19 +39,19 @@ impl RunApplication for NoopRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("resume is not exercised by these error-path tests")
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         if self.pending_unavailable {
-            Err(RunApplicationError::unavailable("pending store offline"))
+            Err(RunError::unavailable("pending store offline"))
         } else {
             Ok(None)
         }
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -189,18 +187,18 @@ struct FaultingRuntime {
 }
 
 #[async_trait]
-impl RunApplication for FaultingRuntime {
+impl Runs for FaultingRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(if self.internal {
-            RunApplicationError::internal("upstream is down")
+            RunError::internal("upstream is down")
         } else {
-            RunApplicationError::bad_request("empty message")
+            RunError::bad_request("empty message")
         })
     }
 
@@ -210,15 +208,15 @@ impl RunApplication for FaultingRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -227,7 +225,7 @@ impl RunApplication for FaultingRuntime {
     }
 }
 
-async fn rpc_on(rt: Arc<dyn RunApplication>, body: Value) -> Value {
+async fn rpc_on(rt: Arc<dyn Runs>, body: Value) -> Value {
     let app = router(rt, awaken_time::system_clock());
     let resp = app
         .oneshot(

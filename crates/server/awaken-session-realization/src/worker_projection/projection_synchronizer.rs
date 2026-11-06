@@ -97,7 +97,10 @@ where
         awaken_session_execution_contract::SessionRealizationEffectFailure,
     > {
         awaken_authority_clock::authority_proof_started().map_err(|error| {
-            awaken_session_types::RunError::unavailable(format!("authority clock: {error}")).into()
+            awaken_runtime_contract::runs::RunError::unavailable(format!(
+                "authority clock: {error}"
+            ))
+            .into()
         })
     }
 
@@ -141,14 +144,14 @@ where
             | awaken_session_execution_contract::FrozenAgentPublicationDecision::OptionalMissing
             | awaken_session_execution_contract::FrozenAgentPublicationDecision::Exact => {}
             awaken_session_execution_contract::FrozenAgentPublicationDecision::MissingRequired => {
-                return Err((awaken_session_types::RunError::classified(
+                return Err((awaken_runtime_contract::runs::RunError::classified(
                     "session_runtime_publication_missing",
                     "Worker Session realization requires its exact frozen Agent publication",
                 ))
                 .into());
             }
             awaken_session_execution_contract::FrozenAgentPublicationDecision::Mismatch => {
-                return Err((awaken_session_types::RunError::classified(
+                return Err((awaken_runtime_contract::runs::RunError::classified(
                     "session_runtime_publication_conflict",
                     "Worker Agent publication does not match the frozen Session identity, revision, or runtime",
                 )).into());
@@ -182,7 +185,7 @@ where
             let has_environment_binding = self.claimed_environment_binding.is_some()
                 || projection.environment.binding().is_some();
             if a2a_only && (has_environment_binding || has_local_environment_owner) {
-                return Err((awaken_session_types::RunError::classified(
+                return Err((awaken_runtime_contract::runs::RunError::classified(
                     "session_runtime_remote_environment_conflict",
                     "remote A2A Session realization cannot consume a local Environment binding or owner",
                 )).into());
@@ -258,7 +261,7 @@ where
             && published_snapshot.is_none()
             && !runtime_authority_resident
         {
-            return Err((awaken_session_types::RunError::classified(
+            return Err((awaken_runtime_contract::runs::RunError::classified(
                 "session_runtime_publication_missing",
                 "sandbox stdio MCP realization requires the exact claimed Agent snapshot before effects",
             )).into());
@@ -368,14 +371,14 @@ impl<T: SessionProjectionExecution> awaken_session_execution_contract::McpAttach
     async fn stage_mcp_attachment(
         &self,
         request: session_mcp::StageMcpAttachment,
-    ) -> Result<session_mcp::McpRealizationReceipt, awaken_session_types::RunError> {
+    ) -> Result<session_mcp::McpRealizationReceipt, awaken_runtime_contract::runs::RunError> {
         self.0.mcp_effects().stage_mcp_attachment(request).await
     }
 
     async fn publish_mcp_generation(
         &self,
         generation: session_mcp::McpGenerationRef,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.0
             .mcp_effects()
             .publish_mcp_generation(generation)
@@ -385,7 +388,7 @@ impl<T: SessionProjectionExecution> awaken_session_execution_contract::McpAttach
     async fn drain_mcp_generation(
         &self,
         generation: session_mcp::McpGenerationRef,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.0.mcp_effects().drain_mcp_generation(generation).await
     }
 }
@@ -395,7 +398,7 @@ impl<T: SessionProjectionExecution> awaken_session_execution_contract::McpAttach
 fn validate_claimed_publication(
     projection: &awaken_session_execution_contract::FrozenSessionProjection,
     claimed: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-) -> Result<(), awaken_session_types::RunError> {
+) -> Result<(), awaken_runtime_contract::runs::RunError> {
     if let Some(claimed) = claimed
         && !matches!(
             awaken_session_execution_contract::frozen_agent_publication_decision(
@@ -406,7 +409,7 @@ fn validate_claimed_publication(
                 | awaken_session_execution_contract::FrozenAgentPublicationDecision::Exact
         )
     {
-        return Err(awaken_session_types::RunError::classified(
+        return Err(awaken_runtime_contract::runs::RunError::classified(
             "session_runtime_publication_conflict",
             "claimed Run does not match the frozen Session Agent publication",
         ));

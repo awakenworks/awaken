@@ -21,9 +21,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_session_application_contract::{
-    OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{OwnedRuns, Pending, RunError, RunResume, Runs, StepOutcome};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -101,14 +99,14 @@ impl ProbeRun {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for ProbeRun {
+impl Runs for ProbeRun {
     async fn run(
         &self,
         _: &str,
         _: &str,
         _: Option<String>,
         _: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("T32-C01 drives only the streaming Run")
     }
 
@@ -119,7 +117,7 @@ impl RunApplication for ProbeRun {
         _: Option<String>,
         _: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         Ok(self.drive(None, sink).await)
     }
 
@@ -129,11 +127,11 @@ impl RunApplication for ProbeRun {
         _: &str,
         _: &str,
         _: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
 
-    async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
+    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
         self.events
             .send(Probe::Interrupted(thread.to_owned()))
             .unwrap();
@@ -141,11 +139,11 @@ impl RunApplication for ProbeRun {
         Ok(())
     }
 
-    async fn pending(&self, _: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -155,7 +153,7 @@ impl RunApplication for ProbeRun {
 }
 
 #[async_trait::async_trait]
-impl OwnerScopedRunApplication for ProbeRun {
+impl OwnedRuns for ProbeRun {
     async fn run_streaming_for_owner(
         &self,
         owner_scope: &str,
@@ -164,7 +162,7 @@ impl OwnerScopedRunApplication for ProbeRun {
         _: Option<String>,
         _: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         Ok(self.drive(Some(owner_scope.to_owned()), sink).await)
     }
 
@@ -175,14 +173,14 @@ impl OwnerScopedRunApplication for ProbeRun {
         _: &str,
         _: &str,
         _: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
 }
 
 fn owner_scoped_app(run: Arc<ProbeRun>) -> Router {
     awaken_protocol_ai_sdk::router::router_with_owner_scope(run).layer(axum::Extension(
-        awaken_tenancy::WorkspaceScope(OWNER.into()),
+        awaken_runtime_contract::runs::scope::WorkspaceScope(OWNER.into()),
     ))
 }
 
@@ -399,7 +397,7 @@ async fn t32_c01_negative_control_socket_close_as_terminal_is_detected() {
 async fn t32_c01_explicit_stop_returns_an_independent_receipt() {
     // O2: an explicit cancel must carry its own attributable receipt, distinct
     // per command, like the Managed `user.interrupt` event id/processed_at.
-    // RunApplication::stop answers each accepted Stop with its own receipt.
+    // Runs::stop answers each accepted Stop with its own receipt.
     let (run, _receiver) = ProbeRun::new();
     let app = owner_scoped_app(run);
     let mut receipts = Vec::new();

@@ -120,7 +120,7 @@ pub fn fixture_thread_audit(
 
 /// The target a Runtime tool batch records when it pauses on `pending`.
 pub fn tool_call_target(
-    pending: awaken_session_application_contract::Pending,
+    pending: awaken_runtime_contract::runs::Pending,
     reason: awaken_agent_contract::agent::awaiting::ToolAwaitReason,
 ) -> awaken_agent_contract::agent::awaiting::AwaitTarget {
     use awaken_agent_contract::agent::awaiting::{AwaitTarget, PendingTool, ToolCallAuthority};

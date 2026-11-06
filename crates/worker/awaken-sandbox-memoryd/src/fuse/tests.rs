@@ -1119,7 +1119,9 @@ fn managed_api_writes_invalidate_the_same_mounter_without_waiting_for_cache_ttl(
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
         req.extensions_mut()
-            .insert(awaken_tenancy::WorkspaceScope("cache-workspace".into()));
+            .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                "cache-workspace".into(),
+            ));
         req.extensions_mut()
             .insert(AuthenticatedMemoryActor(MemoryActor::ApiActor {
                 api_key_id: "cache-api".into(),
@@ -1378,9 +1380,10 @@ fn managed_api_writes_invalidate_actual_kernel_mount_without_cache_ttl() {
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
-        req.extensions_mut().insert(awaken_tenancy::WorkspaceScope(
-            "kernel-cache-workspace".into(),
-        ));
+        req.extensions_mut()
+            .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                "kernel-cache-workspace".into(),
+            ));
         req.extensions_mut()
             .insert(AuthenticatedMemoryActor(MemoryActor::ApiActor {
                 api_key_id: "kernel-cache-api".into(),

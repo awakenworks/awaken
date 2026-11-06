@@ -119,9 +119,9 @@ mod tests {
             super::get_session_content_capture,
         )
         .with_state(state.clone())
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            workspace.to_owned(),
-        )));
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope(workspace.to_owned()),
+        ));
         let mut request = Request::get(format!("/v1/awaken/sessions/{session}/content-capture"));
         if let Some(subject) = subject {
             request = request.header("anthropic-user-profile-id", subject);

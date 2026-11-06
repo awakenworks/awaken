@@ -1735,7 +1735,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .expect_err("R2 completed operation change conflicts");
     assert_eq!(
         completed_operation_error.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "R2/E6 Completed"
     );
     let mut completed_added_capability = empty_capabilities;
@@ -1750,7 +1750,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .expect_err("R3 completed empty-to-present capability change conflicts");
     assert_eq!(
         completed_capability_error.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "R3/E6 Completed"
     );
 }
