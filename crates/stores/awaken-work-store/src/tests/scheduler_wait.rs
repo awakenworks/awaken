@@ -111,21 +111,34 @@ async fn closing_the_pool_ends_a_queued_authority_waiter_and_peers_progress() {
     assert_eq!(peer_lease.session_id(), "session", "E3");
 }
 
-/// An authority waiter queued behind a wedged connection must fail within one
-/// Session lease TTL; the pool's admission wait is 24 hours.
 #[tokio::test]
-#[ignore = "product gap: SQLite admission wait is 24h (awaken-sqlite-pool pool.rs:29), far beyond the Session lease TTL"]
 async fn a_wedged_connection_fails_authority_waiters_within_one_lease_ttl() {
-    let queue = Arc::new(q().await);
-    let _wedged = queue.pool.acquire().await.expect("wedged connection");
-    let waiter = tokio::spawn({
-        let queue = Arc::clone(&queue);
-        async move { queue.acquire_session("env", &session(), "owner").await }
-    });
-    let bounded = tokio::time::timeout(Duration::from_millis(LEASE_TTL_MS + 5_000), waiter).await;
-    let outcome = bounded.expect("the waiter itself reaches its deadline");
+    // Causes: C1 the sole connection stays held; C2 its admission deadline;
+    // C3 the held connection is returned. R1 C1+C2 => a typed storage refusal
+    // before one Session lease TTL, without creating a lease. R2 C3 => the
+    // same queue admits that Session normally. Use the product lease bound,
+    // not a second copy of the SQLite owner's admission timeout. The timeout
+    // owns the acquire future directly, so failure cannot detach a waiter.
+    let queue = q().await;
+    let wedged = queue.pool.acquire().await.expect("C1 wedged connection");
+    let outcome = tokio::time::timeout(
+        Duration::from_millis(LEASE_TTL_MS),
+        queue.acquire_session("env", &session(), "owner"),
+    )
+    .await
+    .expect("R1 admission fails before the Session lease expires");
     assert!(
-        matches!(outcome, Ok(Err(WorkQueueError::Storage(_)))),
-        "the waiter fails with a typed storage error"
+        matches!(outcome, Err(WorkQueueError::Storage(_))),
+        "R1 the waiter fails with a typed storage error"
     );
+    drop(wedged);
+    let lease = tokio::time::timeout(
+        Duration::from_secs(5),
+        queue.acquire_session("env", &session(), "owner"),
+    )
+    .await
+    .expect("R2 the pool is usable after release")
+    .expect("R2 acquire")
+    .expect("R2 no phantom lease from the refused waiter");
+    assert_eq!(lease.session_id(), "session", "R2");
 }

@@ -28,6 +28,7 @@ use awaken_coordinator::worker_create_broker::{K8sCreateBroker, seal_worker_requ
 pub(super) fn assemble(
     client: kube::Client,
     namespace: &str,
+    sandbox_namespace: &str,
     service_account: &str,
     audience: &str,
     provider_id: &str,
@@ -47,6 +48,7 @@ pub(super) fn assemble(
             client.clone(),
             create_control_namespace,
             namespace,
+            sandbox_namespace,
             provider_id,
         )
         .map_err(|error| error.to_string())?,
@@ -54,6 +56,7 @@ pub(super) fn assemble(
     let create_broker = Arc::new(K8sCreateBroker::new(
         create_ledger.clone(),
         namespace,
+        sandbox_namespace,
         provider_id,
     ));
     let stopper = Arc::new(PodProcessStopper::new(

@@ -28,11 +28,13 @@ async fn current_private_wire_refuses_missing_or_wrong_version_before_provider_e
                 client.clone(),
                 "control-ns",
                 "sandbox-ns",
+                "sandbox-ns",
                 "provider-a",
             )
             .unwrap();
             let router = Arc::new(K8sCreateBroker::new(
                 Arc::new(ledger),
+                "sandbox-ns",
                 "sandbox-ns",
                 "provider-a",
             ))

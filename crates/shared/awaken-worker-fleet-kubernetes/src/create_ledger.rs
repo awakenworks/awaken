@@ -48,6 +48,7 @@ const CAS_ATTEMPTS: usize = 8;
 pub struct K8sWorkerCreateLedger {
     client: Client,
     control_namespace: String,
+    worker_namespace: String,
     sandbox_namespace: String,
     provider_id: String,
     configuration_fingerprint: String,
@@ -57,20 +58,24 @@ impl K8sWorkerCreateLedger {
     pub fn new(
         client: Client,
         control_namespace: impl Into<String>,
+        worker_namespace: impl Into<String>,
         sandbox_namespace: impl Into<String>,
         provider_id: impl Into<String>,
     ) -> Result<Self, RuntimeError> {
         let control_namespace = control_namespace.into();
+        let worker_namespace = worker_namespace.into();
         let sandbox_namespace = sandbox_namespace.into();
         let provider_id = provider_id.into();
         if [
             control_namespace.as_str(),
+            worker_namespace.as_str(),
             sandbox_namespace.as_str(),
             provider_id.as_str(),
         ]
         .into_iter()
         .any(|part| part.trim().is_empty() || part.trim() != part)
             || control_namespace == sandbox_namespace
+            || control_namespace == worker_namespace
         {
             return Err(backend(
                 "Kubernetes Create ledger requires a separate exact control namespace",
@@ -87,6 +92,7 @@ impl K8sWorkerCreateLedger {
         Ok(Self {
             client,
             control_namespace,
+            worker_namespace,
             sandbox_namespace,
             provider_id,
             configuration_fingerprint,
@@ -207,7 +213,7 @@ impl K8sWorkerCreateLedger {
         ]
         .into_iter()
         .any(|v| v.trim().is_empty() || v.trim() != v)
-            || worker_namespace != self.sandbox_namespace
+            || worker_namespace != self.worker_namespace
         {
             return Err(backend(
                 "Kubernetes Create ledger Worker Pod identity is invalid",
@@ -289,7 +295,7 @@ impl K8sWorkerCreateLedger {
     }
 
     fn expected(&self, binding: K8sLedgerBinding<'_>) -> Result<ConfigMap, RuntimeError> {
-        if binding.worker_namespace != self.sandbox_namespace
+        if binding.worker_namespace != self.worker_namespace
             || binding.configuration_fingerprint != self.configuration_fingerprint
             || binding.ledger_uid.trim().is_empty()
             || binding.ledger_uid.trim() != binding.ledger_uid
@@ -685,6 +691,7 @@ mod tests {
                 Client::new(service, "awaken-control"),
                 "awaken-control",
                 "awaken-system",
+                "awaken-system",
                 "provider-a",
             )
             .unwrap(),
@@ -769,8 +776,8 @@ mod tests {
     #[tokio::test]
     async fn registration_ledger_rejects_unseparated_or_foreign_worker_scope() {
         // C1 control namespace equals Sandbox namespace -> constructor fails
-        // before I/O; C2 Worker Pod names another Sandbox namespace -> no
-        // Create request. Both effects keep the control ledger off the Worker
+        // before I/O; C2 Worker Pod names another configured Worker namespace
+        // -> no Create request, independently from the Sandbox target. Both effects keep the control ledger off the Worker
         // ServiceAccount's Sandbox mutation domain.
         let Fixture { ledger, calls, .. } = fixture(false);
         assert!(
@@ -785,10 +792,89 @@ mod tests {
                 ledger.client.clone(),
                 "awaken-system",
                 "awaken-system",
+                "awaken-system",
                 "provider-a"
             )
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn worker_identity_and_sandbox_targets_keep_separate_exact_namespaces() {
+        // N1 configured Worker, Sandbox and control namespace roles are exact
+        // and control differs from both -> original anchor initialization and
+        // frozen-binding lookup succeed, retaining both namespace annotations.
+        // N2 a Sandbox/foreign namespace offered as Worker identity -> reject
+        // before API I/O. N3 control overlaps either role -> constructor rejects.
+        // The existing CAS fixture owns persistence; no alternate ledger exists.
+        let Fixture {
+            ledger,
+            stored,
+            calls,
+            ..
+        } = fixture(false);
+        let isolated = K8sWorkerCreateLedger::new(
+            ledger.client.clone(),
+            "awaken-control",
+            "worker-control",
+            "tenant-sandboxes",
+            "provider-a",
+        )
+        .unwrap();
+        let (name, uid) = isolated
+            .initialize("worker-control", "worker", "pod-uid", "pod-uid")
+            .await
+            .unwrap();
+        let observed = stored.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            observed["metadata"]["annotations"][WORKER_NAMESPACE], "worker-control",
+            "N1 Worker"
+        );
+        assert_eq!(
+            observed["metadata"]["annotations"][SANDBOX_NAMESPACE], "tenant-sandboxes",
+            "N1 Sandbox"
+        );
+        let binding = K8sLedgerBinding {
+            worker_namespace: "worker-control",
+            worker_name: "worker",
+            worker_uid: "pod-uid",
+            worker_incarnation: "pod-uid",
+            ledger_name: &name,
+            ledger_uid: &uid,
+            configuration_fingerprint: isolated.configuration_fingerprint(),
+        };
+        assert!(isolated.expected(binding).is_ok(), "N1 original binding");
+        let count = calls.lock().unwrap().len();
+        assert!(
+            isolated
+                .initialize("tenant-sandboxes", "worker", "pod-uid", "pod-uid")
+                .await
+                .is_err(),
+            "N2 no confusion"
+        );
+        assert!(
+            isolated
+                .expected(K8sLedgerBinding {
+                    worker_namespace: "tenant-sandboxes",
+                    ..binding
+                })
+                .is_err(),
+            "N2 frozen identity"
+        );
+        assert_eq!(calls.lock().unwrap().len(), count, "N2 no API I/O");
+        for control in ["worker-control", "tenant-sandboxes"] {
+            assert!(
+                K8sWorkerCreateLedger::new(
+                    ledger.client.clone(),
+                    control,
+                    "worker-control",
+                    "tenant-sandboxes",
+                    "provider-a"
+                )
+                .is_err(),
+                "N3 {control}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -924,9 +1010,14 @@ mod tests {
 
         let client = ledger.client.clone();
         drop(ledger);
-        let cold =
-            K8sWorkerCreateLedger::new(client, "awaken-control", "awaken-system", "provider-a")
-                .unwrap();
+        let cold = K8sWorkerCreateLedger::new(
+            client,
+            "awaken-control",
+            "awaken-system",
+            "awaken-system",
+            "provider-a",
+        )
+        .unwrap();
         for cause in [
             "complete",
             "empty",

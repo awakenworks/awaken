@@ -1198,3 +1198,17 @@ production use and bounded proof. It adds no create record, job store, phase,
 repository, scheduler, or compatibility path. Database atomicity, physical
 realization, and the wake delivery remain covered by their existing adapter and
 deployment boundaries; cloud Managed acceptance is specified in ADR-0083.
+
+### Kubernetes namespace roles (2026-11-06)
+
+Worker Pod identity and Sandbox effect targets consume their existing separate
+deployment coordinates. TokenReview, Pod observation and stop remain bound to
+`worker_kubernetes.namespace`; Create paths and object namespaces remain bound
+to the deployment Sandbox `k8s_namespace`. The retained Create ledger control
+namespace is separate from both. The existing provider configuration fingerprint
+continues to own control scope, Sandbox targets and provider; the original
+Worker anchor independently pins the exact Worker namespace/name/UID. Existing
+co-located deployments keep their provider fingerprint. The broker and ledger
+compare Worker identity with the Worker namespace, not with the Sandbox namespace. Every original identity, UID,
+Registry, ticket-CAS and exact-target check remains required; no namespace is
+discovered from an untrusted request and no second Create authority is added.

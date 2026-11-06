@@ -184,25 +184,31 @@ impl RecipientKeyEnvelope {
         {
             return Err(CredentialMaterialError::RecipientMismatch);
         }
-        // ACP's exact MCP Authorization Bearer is also a scalar. It enters the
-        // already-declared private process protocol field, never an environment
-        // variable or a Worker-held relay. Do not widen the general scalar
-        // process predicate: other callers use it for Provider/env publication.
-        let acp_mcp_client = holder.boundary == PlaintextBoundary::Workload
-            && access
-                .target
-                .as_ref()
-                .is_some_and(|target| target.purpose == CredentialPurpose::McpAuthorization)
+        // One exact MCP bearer shape reaches the already-selected consumer:
+        // Native Worker relay or ACP Workload protocol field. These remain
+        // distinct mechanisms; the scalar Provider/env predicate is unchanged.
+        let mcp_bearer = access
+            .target
+            .as_ref()
+            .is_some_and(|target| target.purpose == CredentialPurpose::McpAuthorization)
             && matches!(&access.usage, CredentialUsage::HttpHeader { name, scheme }
                 if name.eq_ignore_ascii_case("authorization")
                     && scheme.as_deref().is_some_and(|value| value.eq_ignore_ascii_case("Bearer")));
-        if access.refresh.is_some()
-            || !(access.usage.is_scalar_process_delivery() || acp_mcp_client)
-        {
+        if access.refresh.is_some() || !(access.usage.is_scalar_process_delivery() || mcp_bearer) {
             return Err(CredentialMaterialError::MaterialKindMismatch);
         }
-        let realization = if acp_mcp_client {
-            awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField
+        let realization = if mcp_bearer {
+            match holder.boundary {
+                PlaintextBoundary::Worker => {
+                    awaken_credential_contract::CredentialRealizationKind::WorkerRelay
+                }
+                PlaintextBoundary::Workload => {
+                    awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField
+                }
+                PlaintextBoundary::Platform => {
+                    return Err(CredentialMaterialError::RecipientMismatch);
+                }
+            }
         } else {
             match holder.boundary {
                 PlaintextBoundary::Worker => {
