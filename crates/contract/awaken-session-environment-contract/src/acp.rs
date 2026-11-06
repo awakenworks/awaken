@@ -22,6 +22,10 @@ use crate::AgentProcessEnvironment;
 /// backend, creates a Session, or commits a Run.
 pub struct AcpSessionExecution {
     pub environment: Arc<dyn AgentProcessEnvironment>,
+    /// Read-only observation of this exact resident's effective adoption-layout env.
+    /// `None` is unrecorded provenance, never evidence of an empty environment.
+    /// This value constrains a source profile and never configures the process.
+    pub environment_variables: Option<Vec<awaken_provisioning_contract::EnvVar>>,
     pub backend: Backend,
     pub permission: Arc<dyn ToolPermissionPolicy>,
     pub mcp_servers: Vec<SessionMcpServer>,

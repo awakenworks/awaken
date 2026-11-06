@@ -634,6 +634,81 @@ Windows/MSVC checks run where a Windows host exists. Source candidates, bound
 runtime results, normal commits, protected fast-forwards and full13
 qualification are separate claims.
 
+- **Private combined Rust checkpoint (`31645771afd4`, 2026-11-06).** The original
+  complete `bash scripts/ci/check-all.sh --group rust` and outer wrapper returned
+  0 in 490.952 seconds: 10,561 nextest cases passed and 129 were skipped, both
+  workspace Clippy graphs and doctests passed, and the unchanged default-stack
+  two-Run/Vault MCP case passed in 0.384 seconds. Root/SDK/index facts stayed
+  exact and 70 original owner files matched their retained copies; annotated
+  `verified/20261106-0823` binds only this Linux Rust scope. The earlier attempt
+  returned resource 75 before nextest admission at memory PSI 6.32% over the
+  unchanged 5% ceiling; its partial checks were not combined with the fresh run.
+- **Main CI reception (`a4fc7d6a3140` plus the private continuation).** A separate
+  clean worktree rebased the four private units onto this main source with
+  `git rebase --no-fork-point`: `8594ef7915b0` to `d195371672`,
+  `689d604978c8` to `97ab01003a`, `5758bd9fee47` to `ada6520d36`, and
+  `31645771afd4` to `ed32e67a5d`. Every range-diff row is equal; all 35 Native
+  and 27 incoming main path afterimages and modes are preserved, with no
+  overlapping path or conflict resolution. These are source-preservation facts;
+  the new combination needs its own normal checks and same-SHA qualification,
+  while each earlier unit receipt keeps its original SHA and scope.
+- **Original whole214 counterexample (`31645771afd4`).** The original prebuild
+  and source/lock/four-binary manifest validator returned 0. Nine commands
+  passed before command ten, `node managed_delegation_e2e.mjs`, failed its
+  unchanged M10/E1 assertion: the event list gained two entries after a rejected
+  batch; 204 commands were unexecuted. The exact failing assertion and evidence
+  remain unchanged, with cause still under investigation; this is not whole214
+  qualification or evidence for the rebased combination.
+- **Main Resource continuation (`8b908ffec6f4`, 2026-11-06).** The original
+  `bash scripts/ci/check-all.sh --group rust` completed with exit 0 on the clean
+  SHA: 10,553 nextest cases passed and 129 were skipped; both original workspace
+  Clippy graphs and doctests passed. The default-stack two-Run/Vault MCP case
+  and all four Resource concurrency regressions actually ran and passed.
+  `verified/20261106-0345` is annotated and peels to this source; original and
+  retained owner evidence matched across 70 files. The normal automatic-receipt
+  repair `26fb6bd3406c` and exact-generation convergence repair `8b908ffec6f4`
+  were fast-forwarded to main with no push.
+- **Original Namespace case (`8b908ffec6f4`).** The unchanged SDK fixture passed
+  Skill/Memory projection, live File/Repository changes, cross-Run sandbox reuse,
+  hard-crash adoption and terminal release. The independent Resource unit passed
+  1,160 cases with no skips, both original Clippy graphs and the default-stack
+  MCP case before its normal commit; prior four genuine race failures, the
+  shared-cache empty selection and launch-preparation failures remain failures
+  in their own records. This is one original E2E case, not whole214/full13.
+- **Fixed-source ACP continuation (`8594ef7915b0`).** The private normal commit
+  passed ten focused cases, the original complete Native/ACP Worker-by-Judge
+  Outcome matrix and its budget/definition boundaries, six complete owning
+  Rust package groups (1,238 passed, 34 skipped), both original workspace
+  Clippy graphs and the unchanged default-stack MCP case. Thirty normal hook
+  records passed; the existing acceptance binding changed only shifted source
+  coordinates/hash and its original 18 self-tests passed. The retained scope is
+  the exact Scenario program, Namespace and observed empty process environment;
+  it does not qualify an opaque production CLI, Windows, whole214 or full13.
+- **Conditional ACP child observation (`689d604978c8`).** The normal private
+  follow-up moves the existing resident-environment read inside the installed
+  ACP role: absent/projection roles perform no read, the installed role reads
+  once, and its failure remains typed. Seven focused cases, including the
+  24-row role/authority/read-result table, the same six complete owning package
+  groups (1,238 passed, 34 skipped), both workspace Clippy graphs and the
+  unchanged default-stack MCP case passed; all 25 normal hook records passed.
+  This is owning qualification, not final combined-source or opaque-CLI acceptance.
+- **Guard consolidation (`5758bd9fee47`).** The normal private commit gives
+  Managed one complete public Run-admission structure predicate and reuses the
+  canonical offset-preserving Rust lexer/delimiter projection for route calls.
+  The original two self-tests and nine lexical cause/effect rows passed after
+  an actual old-parser lifetime counterexample; the complete 45-file, 277-tuple
+  route inventory retained its contents and order. The original complete
+  boundary checker and documentation gate passed, followed by all 34 normal
+  pre-commit records and commit-message validation; no baseline, threshold or
+  Rust production behavior changed.
+- **SDK checkpoint (`08eef1f2fb88`).** The three original package, artifact and
+  compiler-SemVer owners and their outer wrappers completed with exit 0 on that
+  source. Default and all-feature packaging each retained 24 archives; artifact
+  qualification retained 27 archives and 13 real consumers, while forced-major
+  and first-release results retained their original classifications. These
+  source-bound local receipts are not public-registry publication or qualification
+  of a newer Native/Cloud/Flow combination.
+
 - **Linux Rust / normal source (2026-11-01).** `bash scripts/ci/check-rust.sh --full`
   recorded 10,419 passed / 134 skipped, both Clippy passes and doctests;
   `check_public_api.sh`, `check_sdk_semver.py` (24-package floor), generated

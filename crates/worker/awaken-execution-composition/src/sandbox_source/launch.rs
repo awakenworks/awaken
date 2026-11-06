@@ -144,6 +144,19 @@ pub enum LaunchSource {
 }
 
 impl LaunchSource {
+    pub(super) fn check_tool_narrowing(
+        &self,
+        codec: awaken_run_executor_acp::Codec,
+        narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+    ) -> Result<(), OpenError> {
+        match self {
+            Self::Fixed(launch) | Self::FixedAcp(launch) => {
+                launch.check_tool_narrowing(codec, narrowing)
+            }
+            Self::Projected(_) => awaken_run_executor_acp::opaque_tool_narrowing(narrowing),
+        }
+    }
+
     pub(crate) fn credential_realization_capabilities(
         &self,
         backend: &awaken_runtime_contract::resolved::Backend,

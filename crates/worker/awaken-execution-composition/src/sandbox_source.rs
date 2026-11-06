@@ -23,6 +23,9 @@ pub use launch::{AcpLaunchRegistry, LaunchSource};
 pub(crate) struct BoundLocalChannelSource {
     sandbox: Arc<dyn awaken_session_environment_contract::AgentProcessEnvironment>,
     launch: LaunchSource,
+    // Immutable observation of the exact resident's original adoption layout;
+    // never an alternate environment configuration or a permission grant.
+    environment_variables: Option<Vec<pc::EnvVar>>,
     codec: awaken_run_executor_acp::Codec,
     backend: awaken_runtime_contract::resolved::Backend,
     mcp_servers: Vec<awaken_acp_contract::SessionMcpServer>,
@@ -86,6 +89,7 @@ impl BoundLocalChannelSource {
         launch: LaunchSource,
         backend: awaken_runtime_contract::resolved::Backend,
         mcp_servers: Vec<awaken_acp_contract::SessionMcpServer>,
+        environment_variables: Option<Vec<pc::EnvVar>>,
     ) -> Self {
         let codec = match &launch {
             LaunchSource::Fixed(_) => awaken_run_executor_acp::Codec::Newline,
@@ -96,6 +100,7 @@ impl BoundLocalChannelSource {
         Self {
             sandbox,
             launch,
+            environment_variables,
             codec,
             backend,
             mcp_servers,
@@ -127,12 +132,34 @@ impl BoundLocalChannelSource {
 
 #[async_trait]
 impl AgentChannelSource for BoundLocalChannelSource {
+    fn check_tool_narrowing(
+        &self,
+        narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+    ) -> Result<(), OpenError> {
+        if narrowing.disabled_reason().is_some()
+            && (self.sandbox.is_container()
+                || self.sandbox.supports_host_identity()
+                || !self
+                    .environment_variables
+                    .as_ref()
+                    .is_some_and(Vec::is_empty)
+                || self.attached_tools.is_some())
+        {
+            return Err(OpenError(
+                "restricted fixed ACP source requires its proven Namespace/empty-env configuration"
+                    .into(),
+            ));
+        }
+        self.launch.check_tool_narrowing(self.codec, narrowing)
+    }
+
     async fn open(
         &self,
         activation: &RunActivation,
         context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
         _door: ChannelOpenDoor,
     ) -> Result<AgentSession, OpenError> {
+        self.check_tool_narrowing(&context.tool_capability_narrowing)?;
         let resolved = self
             .launch
             .resolve(activation, &self.backend, context)
@@ -208,6 +235,10 @@ impl AgentChannelSource for BoundLocalChannelSource {
                 });
             }
         }
+        // Fixed-profile preflight names the immutable source. Recheck the actual
+        // final argv/env/options after projection and before any instruction,
+        // credential, MCP or process side effect.
+        launch.check_tool_narrowing(self.codec, &context.tool_capability_narrowing)?;
         // A file-routed instruction lives in the Session-owned config home:
         // HOME itself for a managed launch, a private directory beside the
         // user's untouched home for a backend-owned one.
@@ -339,6 +370,7 @@ fn launch_command(launch: &awaken_run_executor_acp::AcpLaunch, cwd: &str) -> pc:
 #[cfg(test)]
 mod tests {
     mod attached;
+    mod tool_narrowing;
     use super::*;
     use awaken_run_executor_acp::{AcpLaunch, LaunchResolver};
     use std::sync::Mutex;
@@ -655,6 +687,7 @@ mod tests {
     ) -> BoundLocalChannelSource {
         let cli = awaken_run_executor_acp::acp_cli(cli_id).expect("known ACP CLI");
         BoundLocalChannelSource {
+            environment_variables: None,
             sandbox,
             launch: LaunchSource::Projected(AcpLaunchRegistry::single(
                 *cli,
@@ -685,6 +718,7 @@ mod tests {
     ) -> BoundLocalChannelSource {
         let cli = awaken_run_executor_acp::acp_cli(cli_id).expect("known ACP CLI");
         BoundLocalChannelSource {
+            environment_variables: None,
             sandbox,
             launch: LaunchSource::Projected(AcpLaunchRegistry::single(
                 *cli,
@@ -877,6 +911,7 @@ mod tests {
         assert_eq!(default.protocol_cwd, "/workspace", "E1 ACP");
         let cli = *awaken_run_executor_acp::acp_cli("codex").unwrap();
         let source = BoundLocalChannelSource {
+            environment_variables: None,
             sandbox: sandbox.clone(),
             launch: LaunchSource::Projected(AcpLaunchRegistry::single(
                 cli,
@@ -1043,6 +1078,7 @@ mod tests {
         let sandbox = Arc::new(CapturingAgentSandbox::default());
         let cli = *awaken_run_executor_acp::acp_cli("codex").expect("Codex ACP profile");
         let source = BoundLocalChannelSource {
+            environment_variables: None,
             sandbox: sandbox.clone(),
             launch: LaunchSource::Projected(AcpLaunchRegistry::single(
                 cli,
@@ -1125,6 +1161,7 @@ mod tests {
                 });
                 let launch = Box::new(AcpLaunch::custom(vec!["fixture".into()], vec![]));
                 let source = BoundLocalChannelSource {
+                    environment_variables: None,
                     sandbox: sandbox.clone(),
                     launch: if official_acp {
                         LaunchSource::FixedAcp(launch)
@@ -1192,6 +1229,7 @@ mod tests {
             let sandbox = Arc::new(CapturingAgentSandbox::default());
             let launch = AcpLaunch::custom(vec!["fixture".into()], vec![]);
             let source = BoundLocalChannelSource {
+                environment_variables: None,
                 sandbox,
                 launch: if official_acp {
                     LaunchSource::FixedAcp(Box::new(launch))

@@ -144,10 +144,10 @@ impl awaken_session_environment_contract::AgentProcessEnvironment for Sandbox {
     }
 }
 
-struct Exporter {
-    calls: AtomicUsize,
-    drops: Arc<AtomicUsize>,
-    fail: bool,
+pub(super) struct Exporter {
+    pub(super) calls: AtomicUsize,
+    pub(super) drops: Arc<AtomicUsize>,
+    pub(super) fail: bool,
 }
 struct Lease {
     drops: Arc<AtomicUsize>,

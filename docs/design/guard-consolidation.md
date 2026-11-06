@@ -550,3 +550,37 @@ required method from a default body. Nested functions, associated-constant
 bodies, comments and literal text cannot introduce extra trait methods.
 The decision table lives beside the shared projection's existing self-tests,
 and the original consumer tests continue to own their separate refusal rules.
+
+### Public Run admission structure
+
+`_managed_protocol_boundary.session_admission_ownership_violations` owns the
+complete public Run-admission structure and wiring check. Its one structure
+predicate requires both `admit_session_run_for_owner` and
+`run_admitted_session_for_owner`, the `SessionRunApplication` declaration and
+its `RunApplication` implementation. The former partial copy in
+`_execution_ownership_fitness.runtime_host_boundary_violations` is removed;
+that function keeps Host error-code classification. The Managed self-test's
+A2 rows remove each required surface independently and preserve one diagnostic
+when several are missing. Execution's B1/B3 rows retain the distinct Host fault
+policy and B2 proves it does not repeat the admission report.
+
+This consolidates an overlapping predicate, not the two modules' other rules:
+protocol translation, route inventory, committed-projection inputs, retired
+execution vocabulary and Repository effects keep their existing owners and
+source scopes.
+
+### Route-call delimiter projection
+
+The execution route inventory no longer carries its own quote/parenthesis
+scanner. `_owned_routes` keeps the original production input selection,
+`ROUTE_START` literal-path grammar, path normalization and method-set policy,
+while `_crate_boundary_workspace.rust_syntax` and `_balanced_end` provide the
+single offset-preserving syntax/delimiter mechanism. Literal text cannot declare
+a route or a handler method; lifetimes, raw strings and character literals cannot
+extend a call into the next route. An unbalanced call keeps its previous
+end-of-input fallback.
+
+The existing execution self-test owns the L1–L9 cause/effect rows, including the
+old parser's lifetime/raw/literal counterexamples. Before/after comparison of the
+current route corpus preserves its complete method/path/owner tuples and order;
+this does not expand the accepted route literal grammar.

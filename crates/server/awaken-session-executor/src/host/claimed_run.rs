@@ -44,6 +44,14 @@ pub(super) async fn construct_claimed_child(
             environment.clone(),
             host.resources.memory.background(),
             host.authority.hosts_session_application(),
+            || {
+                crate::host::resident_process_environment(
+                    &host.realization_executor,
+                    &session_thread_id.0,
+                    &environment,
+                )
+                .map(Some)
+            },
         )
         .map_err(|error| {
             awaken_dispatch_execution::session_execution::execution_error(error.to_string())
