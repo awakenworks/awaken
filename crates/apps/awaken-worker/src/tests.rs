@@ -1386,7 +1386,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
     acp.acp = Some(
         awaken_acp_contract::AcpWorkerProfile::new(
             ["claude".to_string(), "codex".to_string()],
-            awaken_run_executor_acp::acp_adapter_policy(),
+            awaken_acp_catalog::acp_adapter_policy(),
         )
         .expect("mixed ACP profile"),
     );
@@ -1909,7 +1909,7 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
     config.acp = Some(
         awaken_acp_contract::AcpWorkerProfile::new(
             vec!["gemini".into()],
-            awaken_run_executor_acp::acp_adapter_policy(),
+            awaken_acp_catalog::acp_adapter_policy(),
         )
         .unwrap(),
     );
@@ -1933,7 +1933,7 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
     config.acp = Some(
         awaken_acp_contract::AcpWorkerProfile::new(
             vec!["gemini".into()],
-            awaken_run_executor_acp::acp_adapter_policy(),
+            awaken_acp_catalog::acp_adapter_policy(),
         )
         .unwrap(),
     );
@@ -1960,11 +1960,11 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
     assert!(configured_container_acp_targets(&config).is_err(), "R4");
 
     config.container_image = Some("image@sha256:exact".into());
-    let catalog = awaken_run_executor_acp::known_acp_clis();
+    let catalog = awaken_acp_catalog::known_acp_clis();
     config.acp = Some(
         awaken_acp_contract::AcpWorkerProfile::new(
             catalog.iter().map(|cli| cli.id.to_owned()),
-            awaken_run_executor_acp::acp_adapter_policy(),
+            awaken_acp_catalog::acp_adapter_policy(),
         )
         .unwrap(),
     );

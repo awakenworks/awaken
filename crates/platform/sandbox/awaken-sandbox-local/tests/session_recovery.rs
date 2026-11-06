@@ -10,7 +10,7 @@
 //!
 //! Cross-*directory* / cross-*machine* ACP session recovery (harvest a CLI's session
 //! subtree from config home A, restore into config home B via a shared blob store) is
-//! covered deterministically in `awaken-run-executor-acp/src/session_home.rs`.
+//! covered deterministically in `awaken-run-executor-acp/src/session_home.rs` and `awaken-acp-catalog/src/session_blob.rs`.
 
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};

@@ -476,7 +476,7 @@ fn standard_manifest_is_derived_from_builder_topology() {
     deployment.acp = Some(
         awaken_acp_contract::AcpWorkerProfile::new(
             vec!["codex".to_string()],
-            awaken_run_executor_acp::acp_adapter_policy(),
+            awaken_acp_catalog::acp_adapter_policy(),
         )
         .expect("valid ACP profile"),
     );

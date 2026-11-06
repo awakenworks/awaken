@@ -1279,7 +1279,7 @@ fn configured_container_acp_targets(
     profile
         .cli_ids()
         .map(|id| {
-            let cli = awaken_run_executor_acp::acp_cli(id)
+            let cli = awaken_acp_catalog::acp_cli(id)
                 .ok_or_else(|| format!("configured ACP capability has unknown adapter `{id}`"))?;
             acp_capability::ConfiguredAcpCapabilityTarget::new(
                 id,

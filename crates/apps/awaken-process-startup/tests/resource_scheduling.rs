@@ -227,7 +227,7 @@ struct UnusedHandFactory;
 impl awaken_session_environment_contract::HandExecutorFactory for UnusedHandFactory {
     fn bind(
         &self,
-        _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
+        _channel: Box<dyn awaken_agent_channel::AgentChannel>,
         _operation_scope: &str,
         _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
     ) -> awaken_session_environment_contract::HandExecutorBinding {

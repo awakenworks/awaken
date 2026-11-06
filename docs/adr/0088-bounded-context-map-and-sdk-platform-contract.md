@@ -953,7 +953,8 @@ rebinding, terminal readability, effect claims and restore codecs are unchanged.
 `awaken-acp-application` registers non-secret WorkerLocal intent and projects
 credential metadata using the existing `AcpPublicationCapability` view supplied
 by composition. The executable `AcpCli` catalog and its publication projector
-remain one owner in `awaken-run-executor-acp`. The existing binding record and
+remain one owner, `awaken-acp-catalog` (moved out of `awaken-run-executor-acp`
+on 2026-11-06). The existing binding record and
 host observations belong to `awaken-acp-contract`; neither the application nor
 the host adapter keeps a compatibility re-export of those moved values.
 
@@ -963,22 +964,20 @@ host discovery, installer, negotiator, process, filesystem or resolver facade.
 An unknown catalog id fails closed; registration retains its original per-row
 idempotent transaction boundary rather than inventing a cross-row transaction.
 
-The same backend package also owns valid opaque durable session-blob custody.
-Coordinator startup retains that store and catalog facts with no implementation
-features. Existing executor code is compiled only by `execution`, and host
-preparation only by `host-preparation`. Physical CLI/Worker and test consumers
-explicitly retain the original execution, host and real-ACP wire roles. No
-second catalog, byte store, provider or process package is introduced; the
+The catalog and the opaque durable session-blob custody are one crate,
+`awaken-acp-catalog` (amended 2026-11-06; it replaces the `execution` and
+`host-preparation` features that used to separate them inside
+`awaken-run-executor-acp`). Coordinator and Control startup depend on that crate
+only; the executor depends on it and is linked by Worker and CLI compositions.
+No second catalog, byte store, provider or process package is introduced; the
 separately owned Control-only process uses the same startup boundary.
 
-Cargo features are additive. The existing D4 package-set guard therefore remains
-separate from its ACP isolated-product feature check: Cargo supplies the actual
-compiler-artifact feature records from a successful isolated product check, and
-the canonical backend must compile without ACP implementation features. Backend no-default compile contracts refuse physical executor/host
-names while accepting the original catalog and blob port. The same subject-
-scoped blob erasure/retry case runs in that graph, and the original full/default
-executor tests remain required. A combined workspace build cannot substitute
-for isolated-product evidence, and source checks do not claim native acceptance.
+The boundary is a dependency edge, so the metadata-derived D4 rule of
+`scripts/ci/_dispatch_boundary_fitness.py` proves it without a build: the
+executor is a Worker-side crate, and the closure of the package that declares
+the `awaken-coordinator` or `awaken-control` binary must not reach it. The
+isolated-product feature builds and the no-default compile contracts this
+paragraph used to require are removed with the features they checked.
 
 
 ## Amendment 2026-10-30: one Session contract and responsibility-named roles

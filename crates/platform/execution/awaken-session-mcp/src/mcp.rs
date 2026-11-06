@@ -425,7 +425,7 @@ mod acp_projection_tests {
                 &exact_request,
                 None,
                 &exact,
-                awaken_run_executor_acp::acp_adapter_policy(),
+                awaken_acp_catalog::acp_adapter_policy(),
                 backend,
             )
             .expect("P1 exact ClientInjection");
@@ -460,7 +460,7 @@ mod acp_projection_tests {
                         &rejected_request,
                         None,
                         &rejected,
-                        awaken_run_executor_acp::acp_adapter_policy(),
+                        awaken_acp_catalog::acp_adapter_policy(),
                         backend,
                     )
                     .is_err(),
@@ -475,7 +475,7 @@ mod acp_projection_tests {
                     &exact_request,
                     None,
                     &tampered,
-                    awaken_run_executor_acp::acp_adapter_policy(),
+                    awaken_acp_catalog::acp_adapter_policy(),
                     backend
                 )
                 .is_err(),
@@ -488,7 +488,7 @@ mod acp_projection_tests {
                 &exact_request,
                 None,
                 &exact,
-                awaken_run_executor_acp::acp_adapter_policy(),
+                awaken_acp_catalog::acp_adapter_policy(),
                 "opencode",
             )
             .is_err()
@@ -548,7 +548,7 @@ mod acp_projection_tests {
                 &request,
                 None,
                 &receipt,
-                awaken_run_executor_acp::acp_adapter_policy(),
+                awaken_acp_catalog::acp_adapter_policy(),
                 "codex"
             )
             .is_err()
@@ -564,7 +564,7 @@ mod acp_projection_tests {
                 &anonymous,
                 None,
                 &receipt,
-                awaken_run_executor_acp::acp_adapter_policy(),
+                awaken_acp_catalog::acp_adapter_policy(),
                 "codex"
             )
             .is_ok()
@@ -596,7 +596,7 @@ mod acp_projection_tests {
             &request,
             None,
             &receipt,
-            awaken_run_executor_acp::acp_adapter_policy(),
+            awaken_acp_catalog::acp_adapter_policy(),
             "codex",
         )
         .unwrap();
@@ -619,7 +619,7 @@ mod acp_projection_tests {
             &request,
             Some(&relay),
             &receipt,
-            awaken_run_executor_acp::acp_adapter_policy(),
+            awaken_acp_catalog::acp_adapter_policy(),
             "codex",
         )
         .unwrap();

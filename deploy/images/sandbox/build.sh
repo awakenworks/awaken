@@ -303,7 +303,7 @@ prepare_current_inputs() {
   # The Rust ACP catalog is the only package/argv/auth authority. Generate its
   # image projection immediately before admission/build so neither path can
   # consume a stale hand-maintained mirror.
-  (cd "$repo" && cargo run --quiet -p awaken-run-executor-acp --example image_runtime_contract) \
+  (cd "$repo" && cargo run --quiet -p awaken-acp-catalog --example image_runtime_contract) \
     >"$generated_contract"
   make_public_build_input "$generated_contract"
   current_input_fingerprint=$(

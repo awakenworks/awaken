@@ -200,10 +200,8 @@ mod tests {
         let mut instructions = original.clone();
         instructions
             .project_instructions(
-                awaken_run_executor_acp::InstructionsDelivery {
-                    replace: Some(
-                        awaken_run_executor_acp::InstructionsChannel::SessionMetaSystemPrompt,
-                    ),
+                awaken_acp_catalog::InstructionsDelivery {
+                    replace: Some(awaken_acp_catalog::InstructionsChannel::SessionMetaSystemPrompt),
                     append: None,
                 },
                 "replacement",

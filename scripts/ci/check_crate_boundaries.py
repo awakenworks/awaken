@@ -116,6 +116,7 @@ OPAQUE_BACKEND_CONFIG_CRATES = {
     "awaken-ext-permission",
 }
 FORBIDDEN_BACKEND_CONFIG_DEPS = {
+    "awaken-acp-catalog",
     "awaken-acp-contract",
     "awaken-protocol-acp",
     "awaken-run-executor-acp",

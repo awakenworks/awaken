@@ -502,7 +502,7 @@ fn resolve_model_services(
         .control
         .as_ref()
         .expect("model publication requires Control stores");
-    let acp_capabilities = Arc::new(awaken_run_executor_acp::known_acp_publication_capabilities());
+    let acp_capabilities = Arc::new(awaken_acp_catalog::known_acp_publication_capabilities());
     let direct_resolver = || {
         awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
             control.catalog.clone(),

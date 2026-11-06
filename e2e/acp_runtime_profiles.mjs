@@ -82,7 +82,7 @@ function loadAcpRuntimeContract() {
   try {
     raw = execFileSync(
       process.env.CARGO || 'cargo',
-      ['run', '--quiet', '-p', 'awaken-run-executor-acp', '--example', 'image_runtime_contract'],
+      ['run', '--quiet', '-p', 'awaken-acp-catalog', '--example', 'image_runtime_contract'],
       { cwd: repositoryRoot, encoding: 'utf8', env: checkoutLocalCargoEnvironment(repositoryRoot) },
     );
   } catch (cause) {

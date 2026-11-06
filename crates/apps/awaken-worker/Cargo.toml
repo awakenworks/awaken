@@ -92,7 +92,8 @@ awaken-worker-contract = { workspace = true }
 awaken-acp-contract = { workspace = true }
 awaken-time.workspace = true
 awaken-protocol-acp = { workspace = true }
-awaken-run-executor-acp = { workspace = true, features = ["execution", "host-preparation", "real-acp"] }
+awaken-acp-catalog.workspace = true
+awaken-run-executor-acp = { workspace = true, features = ["real-acp"] }
 awaken-provisioning-contract = { workspace = true }
 async-trait = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }

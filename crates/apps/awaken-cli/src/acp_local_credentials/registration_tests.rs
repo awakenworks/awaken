@@ -4,6 +4,7 @@
 
 use super::*;
 use async_trait::async_trait;
+use awaken_acp_catalog::AcpCli;
 use awaken_acp_contract::{
     AcpCapabilityObservationSource, AcpCapabilityObservationState, AcpDetectionState,
     AcpHostObservation, AcpLocalCredentialBinding,
@@ -14,7 +15,6 @@ use awaken_credential_vault::{
     CredentialStatus, WorkerLocalBinding,
     repo::{InMemoryCredentialRepo, ensure_worker_local},
 };
-use awaken_run_executor_acp::AcpCli;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
