@@ -152,7 +152,7 @@ share `formal_model_mutation_runner.py`.
 | `_native_test_launcher` | 50 | - | lib(check_product_release,check_reliability…) | - | tool: test |  |
 | `_nextest_policy_fitness` | 232 | P8 | lib(check_test_orchestration) | - | tool: test |  |
 | `_receive_hook_tests` | 134 | P9 | lib(install_receive_hooks) | - | tool: hooks |  |
-| `_required_build_context` | 112 | - | lib(check_native_postgres_e2e,check_rust_test_execution…) | - | tool: test |  |
+| `_required_build_context` | 112 | - | lib(check_native_postgres_e2e) | - | tool: test |  |
 | `_sdk_archives` | 200 | - | lib(check_sdk_consumer) | - | tool: release |  |
 | `_sdk_compiler_input` | 144 | - | lib(check_sdk_consumer) | - | tool: release |  |
 | `_sdk_semver_evidence` | 1058 | - | lib(check_sdk_consumer,sdk_semver_tests) | - | tool: release |  |
@@ -189,7 +189,6 @@ share `formal_model_mutation_runner.py`.
 | `check_reliability` | 632 | - | all sh:check-reliability.sh | - | tool: test |  |
 | `check_repository_hygiene` | 287 | P9 | PC all | - | tool: repo |  |
 | `check_role_catalogs` | 204 | - | PC docs | - | tool: docs |  |
-| `check_rust_test_execution` | 1662 | P8 | PC all sh:_rust_test_execution.sh | - | tool: test |  |
 | `check_rustfmt` | 137 | - | rust | - | tool: repo |  |
 | `check_sandbox_image_release` | 1149 | - | PC all GH | - | tool: release |  |
 | `check_scan_scope` | 785 | P9 | PC all | 47 | tool: meta | one of four trigger/scope deciders |
@@ -241,7 +240,7 @@ share `formal_model_mutation_runner.py`.
 | `install_receive_hooks` | 101 | P9 | PP all GH | - | tool: repo |  |
 | `install_windows_services` | 127 | - | GH | - | tool: native |  |
 | `native_services` | 115 | - | lib(_native_postgres,_native_recovery_bundle…) | - | tool: native |  |
-| `nextest_execution` | 221 | - | all | - | tool: test |  |
+| `nextest_execution` | 326 | P8 | PC all sh:_rust_test_execution.sh | - | tool: test |  |
 | `parallel_check` | 35 | - | sh:_parallel_checks.sh | - | tool: test |  |
 | `principle_status` | 239 | S3 | PC all | - | tool: meta | informational report (S3) |
 | `public_api_selection` | 57 | - | sh:check_public_api.sh | - | tool: release |  |
@@ -280,6 +279,19 @@ Every rule that leaves Python has exactly one replacement; nothing is dropped.
 | R18 | `_poisoned_lock_fitness` L1 | `disallowed-methods` on the `std::sync` lock methods; the V2 sync module holds the only `#[expect]` | wider: all production code instead of two crates (640 sites, V2) | M6 |
 | R19 | `_poisoned_lock_fitness` L2 (poison-naming `.expect`) | the V2 lock API returns a typed refusal; until V2 ends, the one pattern moves into the merged error module | none | M6 |
 | R20 | retired-name tombstones in `_execution_ownership_fitness` (22), `_service_data_ownership_fitness`, `_session_state_ownership_fitness`, `check_crate_boundaries` (tools, `TypedTool`) | one retired-vocabulary table in `_naming_fitness` | none | M7 |
+| R21 | `check_rust_test_execution` empty selection (libtest `--list` parse) | `cargo nextest run --no-tests=fail` plus `nextest_execution.qualify` "no test ran" | none | nextest |
+| R22 | `check_rust_test_execution` required case listed, executed and passed (`--require-case`) | `nextest_execution.qualify` reads the JUnit report of the `required` nextest profile | none | nextest |
+| R23 | `check_rust_test_execution` ignored case inside the selection | `nextest list --run-ignored all` JSON: a matching `ignored` case is refused unless the run asked for `--ignored`/`--include-ignored` | none | nextest |
+| R24 | `check_rust_test_execution` listed ≠ executed by name and occurrence; nested libtest scopes; summary/count consistency | nextest is the runner: its list JSON and JUnit `testcase` names are compared as a multiset; nested child output is just captured text | the libtest text grammar (scopes, `should panic`, summaries) is gone with the parser | nextest |
+| R25 | `check_rust_test_execution` failed case with exit 0 through a pipe | any JUnit child other than `system-out`/`system-err` (`failure`, `error`, `skipped`, `flakyFailure`, `rerunFailure`) is refused whatever the exit status | wider: retries and flaky passes are refused | nextest |
+| R26 | `check_rust_test_execution` printed fixture skip (`SKIP…`, `[skip]`) | same line-start marker on each case's JUnit `system-out`/`system-err` (`store-success-output = true`) | none | nextest |
+| R27 | `check_rust_test_execution` exit status kept through the shell (23/75/143) and deadline kill leaves a `running` receipt | `nextest_execution.run` returns nextest's own status first; `_rust_test_execution.sh` returns it | none | nextest |
+| R28 | `check_rust_test_execution` source drift and fixture/backend identity during the run | `nextest_execution.run` binds `working_subject()` and `execution_inputs()` before and checks them after | the per-command fences of the two-command libtest sequence collapse into before/after of one run | nextest |
+| R29 | `check_rust_test_execution` build receipt (`required-libtest-build`, compile-context drift) | build under its own budget with `cargo nextest run --no-run`; the run's own Cargo invocation rebuilds anything stale, so the tested graph is the run's graph | the separate build receipt and `verify_preparation` are gone; nothing consumed them but the native-service reconciler | nextest |
+| R30 | `check_rust_test_execution` uncaptured output (`--nocapture`, `RUST_TEST_NOCAPTURE`) | `required_command` refuses capture/list/profile/retry flags; `run` refuses `NEXTEST_NO_CAPTURE` | none | nextest |
+| R31 | `check_rust_test_execution` Windows self-test worker launch/cancellation (`_execution_self_tests.py`, `_execution_self_test_fixtures.py`) | none needed: the new self-tests are pure fixture reports and start no worker | removed with the 1,717-line self-test harness | nextest |
+| R32 | `nextest_execution` human-output regexes (`PASS`, `Summary`, `SKIPPED`, `LEAK`) and `benchmark_rust_build.executed_cases` | JUnit and list JSON; a leak is a nextest failure (`leak-timeout result = "fail"`) and appears as a JUnit `failure` | the benchmark's reader was dead code (its execution is pending) | nextest |
+| R33 | hook job `rust-execution-framework` (143 s, glob `scripts/ci/**`) | hook job `nextest-evidence`: the reader's fixture self-tests, glob generated from its import closure | sub-second; no Cargo fixture process | nextest |
 
 Rules that stay (b) and how each retires:
 
