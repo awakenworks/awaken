@@ -12,6 +12,7 @@ use super::*;
 use awaken_credential_contract::CredentialMaterialInput;
 mod capacity_budget;
 mod cleanup_timing;
+mod concurrent_reconciliation;
 mod initial_preparation;
 mod partial_preparation;
 mod replacement_crash;
@@ -27,7 +28,6 @@ use awaken_session_execution_contract::{
     SessionTerminalDisposalControl, SessionTerminalMemoryControl,
     SessionTerminalPreparationControl, SessionTerminalRepositoryPublicationControl,
 };
-
 /// A fresh ephemeral durable Session repository; `expect` names it in the
 /// failure message when the in-memory database cannot be opened.
 pub(crate) async fn sqlite_session_repository(
