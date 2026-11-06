@@ -609,11 +609,11 @@ class ExecutionTests(unittest.TestCase):
         cargo = binary / "cargo"
         cargo.write_text('''#!/usr/bin/env bash
 if [ "$1" = awaken-ci-deadline ]; then
-  [ "${QUEUE_DELAY:-0}" = 0 ] || sleep "$QUEUE_DELAY"
+  delay="${QUEUE_DELAY:-0}"
+  case " $* " in *" --run "*) delay="${EXECUTION_QUEUE_DELAY:-$delay}" ;; esac
+  [ "$delay" = 0 ] || sleep "$delay"
   [ "${ADMISSION_STATUS:-0}" = 0 ] || exit "$ADMISSION_STATUS"
   [ -z "${DEADLINE_COORDINATE:-}" ] || printf '%s\\n' "$$" > "$DEADLINE_COORDINATE"
-  # The host's real rustup proxy, when named, enters the job exactly as an
-  # admitted Cargo does: it injects its toolchain/home selection first.
   [ -z "${RUSTUP_PROXY_CARGO:-}" ] || exec "$RUSTUP_PROXY_CARGO" "$@"
   entry=$(command -v "cargo-$1"); exec "$entry" "$@"
 fi
@@ -1067,8 +1067,8 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 
     @unittest.skipIf(os.name == "nt", "POSIX real deadline fixture; Windows runs build/source/receipt rows")
     def test_cold_build_does_not_consume_or_extend_shared_execution_deadline(self) -> None:
-        # Build6s > list/run4s: separate12s preparation succeeds. A real6s test
-        # still times out124 inside that same4s list/run deadline, with time for real process startup.
+        # Build16s > list/run15s: preparation succeeds on its own budget.
+        # A slow execution with warm preparation still returns 124.
         for slow, expected in ((False, 0), (True, 124)):
             with self.subTest(slow=slow), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary); self.runner_fixture(fixture)
@@ -1078,10 +1078,10 @@ case "$*" in *--list*) echo 'critical: test'; exit 0 ;; esac
 echo 'test critical ... ok'
 echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 ''')
-                values.update(PREPARATION_DELAY="6", TEST_DELAY="6" if slow else "0",
-                              AWAKEN_REQUIRED_TEST_BUILD_TIMEOUT_SECONDS="12", AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="4")
+                values.update(PREPARATION_DELAY="0" if slow else "16", TEST_DELAY="16" if slow else "0",
+                              AWAKEN_REQUIRED_TEST_BUILD_TIMEOUT_SECONDS="26", AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="15")
                 result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical --require-case=critical"],
-                                        cwd=fixture, env=values, capture_output=True, text=True, timeout=40)
+                                        cwd=fixture, env=values, capture_output=True, text=True, timeout=45)
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
                 builds = list((fixture / "target/test-timings").glob("rust-execution.*/build.json"))
                 self.assertEqual(len(builds), 1); self.assertEqual(json.loads(builds[0].read_text())["status"], "built")
@@ -1091,10 +1091,10 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 
     @unittest.skipIf(os.name == "nt", "POSIX admitted shell composition")
     def test_shared_budget_starts_after_queued_admission(self) -> None:
-        # E9: queue4.3s > execution4s, while admitted list/run fit4s. The
+        # E9: execution admission waits 16s, longer than the 15s list/run budget. The
         # actual shell must return child0/23, not charge waiting and return124.
         # Queue refusal75 starts no Cargo test or source-bound body. Only the
-        # fixture Cargo protocol delays; the real deadline owns the clock.
+        # fixture Cargo protocol delays the execution admission; the build queues normally.
         # Revision/index/patch share the initial canonical capture; later
         # fences stay fresh. Allow startup headroom for the real Git and Python processes.
         for status in (0, 23, 75):
@@ -1108,10 +1108,10 @@ echo 'test critical ... ok'
 echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 exit "$RESULT_STATUS"
 ''')
-                values.update(QUEUE_DELAY="4.3", AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="4",
+                values.update(EXECUTION_QUEUE_DELAY="16", AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="15",
                               ADMISSION_STATUS="75" if status == 75 else "0", RESULT_STATUS=str(status))
                 result = subprocess.run(["bash", "-c", "source scripts/ci/_rust_test_execution.sh; run_required_rust_tests -p critical --lib critical"],
-                                        cwd=fixture, env=values, capture_output=True, text=True, timeout=30)
+                                        cwd=fixture, env=values, capture_output=True, text=True, timeout=50)
                 self.assertEqual(result.returncode, status, result.stdout + result.stderr)
                 calls = fixture / "target/calls"
                 self.assertEqual(calls.exists(), status != 75)
