@@ -23,7 +23,6 @@ import generate_hooks
 from _nextest_policy_fitness import (
     NEXTEST_CONFIG, test_deadline_errors, self_test as nextest_policy_self_test,
 )
-from _lefthook_fitness import hook_entry_errors, self_test as hook_entry_self_test
 from test_trusted_host_portability import self_test as trusted_host_portability_self_test
 from shared_conformance import (TEST_ATTRIBUTE, shared_conformance_errors,
                                 self_test as shared_conformance_self_test)
@@ -907,13 +906,7 @@ def validate(root: Path) -> list[str]:
         (root / "lefthook.yml").read_text(encoding="utf-8"),
         (root / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"),
     ))
-    errors.extend(hook_entry_errors((root / "lefthook.yml").read_text(encoding="utf-8")))
-    errors.extend(
-        generate_hooks.generated_hook_glob_errors(
-            (root / "lefthook.yml").read_text(encoding="utf-8"),
-            generate_hooks.declared_input_globs(root / "scripts/ci"),
-        )
-    )
+    # Hook shape, bootstrap and generated triggers: generate_hooks.py --check.
     errors.extend(
         test_deadline_errors(
             (root / NEXTEST_CONFIG).read_text(encoding="utf-8"),
@@ -970,7 +963,6 @@ def validate(root: Path) -> list[str]:
 
 
 def self_test() -> None:
-    hook_entry_self_test(ROOT)
     nextest_policy_self_test(ROOT)
     # Unbounded waits (plain deny). W1 a test waits on a signal without a
     # deadline -> reject; W2 the test bounds the wait itself -> accept; W3 a
