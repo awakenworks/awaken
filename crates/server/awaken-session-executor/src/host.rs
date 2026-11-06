@@ -97,6 +97,7 @@ mod claimed_run;
 mod completion;
 mod coordination;
 mod credential_capabilities;
+pub(crate) use credential_capabilities::resident_process_environment;
 pub(crate) mod dispatch_execution;
 pub(crate) use dispatch_execution::session_worker_resolver;
 #[cfg(test)]

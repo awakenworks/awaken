@@ -107,12 +107,21 @@ pub(super) fn bind_runtime_execution(call: &mut ToolCall, staged: &[Message]) ->
     }
 }
 
+/// Ephemeral result of the existing committed-input read. Keeping provenance
+/// beside its effective ceiling prevents an unknown legacy Run from inheriting
+/// a newly installed source profile; this is not persisted Runtime state.
+#[derive(Debug)]
+pub(super) struct OwnedToolsPreparation {
+    pub(super) terminal: Option<RunState>,
+    pub(super) original_capability_known: bool,
+}
+
 impl AcpRunExecutor {
     pub(super) async fn prepare_owned_tools(
         &self,
         activation: &RunActivation,
         context: &mut RuntimeRunContext,
-    ) -> Result<Option<RunState>> {
+    ) -> Result<OwnedToolsPreparation> {
         use awaken_runtime_contract::permission::RunToolCapability;
         let commands = context
             .reader
@@ -131,6 +140,7 @@ impl AcpRunExecutor {
             .reader
             .as_ref()
             .is_none_or(|reader| reader.run(&activation.run_id).is_none());
+        let original_capability_known = fresh || recorded.is_some();
         context.tool_capability_narrowing = RunToolCapability::effective(
             &store,
             context.tool_capability_narrowing,
@@ -172,7 +182,10 @@ impl AcpRunExecutor {
                         .recover(activation.clone(), context.clone())
                         .await?;
                     if state != RunState::Running {
-                        return Ok(Some(state));
+                        return Ok(OwnedToolsPreparation {
+                            terminal: Some(state),
+                            original_capability_known,
+                        });
                     }
                 }
             }
@@ -182,7 +195,10 @@ impl AcpRunExecutor {
                 context.request_context.push(receipts);
             }
         }
-        Ok(None)
+        Ok(OwnedToolsPreparation {
+            terminal: None,
+            original_capability_known,
+        })
     }
 }
 

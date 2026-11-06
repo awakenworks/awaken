@@ -56,6 +56,7 @@ impl AcpSessionExecutorFactory for BoundAcpSessionFactory {
                 self.launch.clone(),
                 request.backend,
                 request.mcp_servers,
+                request.environment_variables,
             )
             .with_attached_tools(request.attached_tools),
         );

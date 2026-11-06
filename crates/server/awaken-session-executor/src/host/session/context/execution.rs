@@ -222,6 +222,16 @@ pub(super) async fn prepare(
         SessionExecutionError::internal(format!("RUNTIME_CONFIGURATION: {error}"))
     })?;
     let runtime = Arc::new(runtime);
+    // Only the original ACP factory branch needs this read. The exact
+    // resident's historical layout, not baseline absence, owns process defaults.
+    let environment_variables = match (host.capabilities.exec.acp.installed(), env.as_ref()) {
+        (Some(_), Some(environment)) => Some(crate::host::resident_process_environment(
+            &host.realization_executor,
+            &resources.thread_id.0,
+            environment,
+        )?),
+        _ => None,
+    };
     let acp_executor = host
         .capabilities
         .exec
@@ -241,6 +251,7 @@ pub(super) async fn prepare(
             });
             acp.create(awaken_session_environment_contract::AcpSessionExecution {
                 environment: env.agent_process().clone(),
+                environment_variables,
                 backend: execution_backend.clone(),
                 permission,
                 mcp_servers: acp_mcp_servers,

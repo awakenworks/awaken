@@ -120,6 +120,13 @@ struct LiveSource {
 }
 #[async_trait]
 impl AgentChannelSource for LiveSource {
+    fn check_tool_narrowing(
+        &self,
+        narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+    ) -> std::result::Result<(), awaken_run_executor_acp::OpenError> {
+        awaken_run_executor_acp::opaque_tool_narrowing(narrowing)
+    }
+
     async fn open(
         &self,
         activation: &RunActivation,

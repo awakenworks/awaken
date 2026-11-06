@@ -49,6 +49,26 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
     Some(capabilities)
 }
 
+/// Read the actual resident's process defaults through its existing lifecycle
+/// and adoption owners. This application-side projection retains no state and
+/// never treats an absent baseline or a different resident as empty evidence.
+pub(crate) fn resident_process_environment(
+    realization: &crate::realization_executor::RealizationExecutor,
+    thread: &str,
+    environment: &Arc<crate::session_environment::SessionEnvironment>,
+) -> Result<Vec<awaken_provisioning_contract::EnvVar>, crate::realization_error::RealizationError> {
+    let holding = realization.environments();
+    holding.resident_environment_activity_identity(thread, environment)?;
+    let provider = holding.projected_session_environment_provider(thread, None)?;
+    let spec =
+        holding.session_environment_adoption_spec(realization.peers(), thread, provider, None)?;
+    let layout = provider
+        .adoption()
+        .effective_adoption_layout(&spec, &environment.lifecycle().handle())
+        .map_err(crate::realization_error::RealizationError::from)?;
+    Ok(layout.spec.env)
+}
+
 impl crate::RunCapabilities {
     /// Resolve the one exact inference plaintext holder used by both direct and
     /// dispatched attempts from the immutable candidate publication.
@@ -79,6 +99,7 @@ impl crate::RunCapabilities {
         environment: Arc<crate::session_environment::SessionEnvironment>,
         background: Arc<awaken_session_run_delivery::BackgroundRuns>,
         hosts_application: bool,
+        environment_variables: Option<Vec<awaken_provisioning_contract::EnvVar>>,
     ) -> Result<
         crate::agent_runner::ChildExecutionAdapters,
         crate::realization_error::RealizationError,
@@ -95,6 +116,7 @@ impl crate::RunCapabilities {
                 Arc::new(move |backend, permission| {
                     acp.create(awaken_session_environment_contract::AcpSessionExecution {
                         environment: process.clone(),
+                        environment_variables: environment_variables.clone(),
                         backend,
                         permission,
                         mcp_servers: Vec::new(),
@@ -345,6 +367,7 @@ mod tests {
                             environment.clone(),
                             host.resources.memory.background(),
                             host.run_assembly.authority.hosts_session_application(),
+                            None,
                         )
                         .expect("installed Sessions");
                     assert_eq!(

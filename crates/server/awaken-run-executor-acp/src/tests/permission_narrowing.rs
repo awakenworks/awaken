@@ -174,3 +174,130 @@ async fn resumed_acp_permissions_intersect_the_current_run_ceiling() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn legacy_missing_ceiling_cannot_reach_a_new_restricted_source_profile() {
+    // Causes: C1 a durable Running row lacks original RuntimeInputs; C2 a newly
+    // installed source would accept the effective DenyAll; C3 home/open are
+    // effect boundaries. Effect: legacy unknown remains CapabilityBound before
+    // even consulting C2, with zero restore/open/prompt/poll and no provenance
+    // backfill. Rule U1=C1+C2=>refuse before C3. The accepting preflight is only
+    // a mutation-sensitive negative-control input; no unproven process runs.
+    struct NewProfile {
+        inner: Arc<dyn AgentChannelSource>,
+        checks: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl AgentChannelSource for NewProfile {
+        fn check_tool_narrowing(
+            &self,
+            _narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+        ) -> std::result::Result<(), OpenError> {
+            self.checks.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn open(
+            &self,
+            activation: &RunActivation,
+            context: &RuntimeRunContext,
+            door: ChannelOpenDoor,
+        ) -> std::result::Result<AgentSession, OpenError> {
+            self.inner.open(activation, context, door).await
+        }
+    }
+    let (original_executor, opens, prompts, polls) = counting_executor();
+    let checks = Arc::new(AtomicUsize::new(0));
+    let source = Arc::new(NewProfile {
+        inner: original_executor.source.clone(),
+        checks: checks.clone(),
+    });
+    let home = Arc::new(RecordingSessionHome::default());
+    let executor = AcpRunExecutor::new(source).with_session_home(home.clone());
+    let activation = activation();
+    let run_id = activation.run_id.clone();
+    let thread_id = activation.thread_id.clone();
+    let committed = Arc::new(RecordingCoordinator::default());
+    committed
+        .commit(ThreadCommit::assemble(
+            thread_id.clone(),
+            RunDisposition::running(run_id.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    let state = executor
+        .execute(
+            activation,
+            RuntimeRunContext::new().with_store(committed.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        state,
+        RunState::Ended(EndCause::Error(Failure::CapabilityBound))
+    );
+    assert_eq!(
+        checks.load(Ordering::SeqCst),
+        0,
+        "U1 no new profile can replace missing original evidence"
+    );
+    assert_eq!(opens.load(Ordering::SeqCst), 0);
+    assert_eq!(prompts.load(Ordering::SeqCst), 0);
+    assert_eq!(polls.load(Ordering::SeqCst), 0);
+    assert!(home.calls.lock().unwrap().is_empty());
+    let commands = awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::committed_state(committed.as_ref(), &thread_id);
+    assert_eq!(
+        awaken_runtime_contract::permission::RunToolCapability::recorded(&commands, &run_id)
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn restricted_session_projection_cannot_restore_configured_mcp_routes() {
+    // C1 a source/session or Host carries configured routes; C2 current Run
+    // ceiling is Configured or DenyAll. E1 Configured keeps the exact Host
+    // override; E2 DenyAll yields no effective routes, including after reopen.
+    // R1=C1+Configured=>E1; R2=C1+DenyAll=>E2. This does not authorize an opaque
+    // source: its independent preflight must have succeeded before open.
+    let (executor, _, _, _) = counting_executor();
+    let route = SessionMcpServer {
+        name: "configured".into(),
+        command: None,
+        args: Vec::new(),
+        url: Some("http://127.0.0.1:1".into()),
+        auth: None,
+    };
+    let executor = executor.for_session_servers(
+        Arc::new(FixedPolicy(ToolPermissionVerdict::Allow)),
+        std::slice::from_ref(&route),
+    );
+    for capability in [
+        awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
+        awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
+    ] {
+        let (channel, _peer) = tokio::io::duplex(16);
+        let mut session = fixture_session(
+            Box::new(channel),
+            Arc::new(CountingProcess {
+                polls: Arc::new(AtomicUsize::new(0)),
+                observation: Arc::new(AtomicUsize::new(0)),
+            }),
+            Codec::Newline,
+            None,
+        );
+        session.mcp_session_servers = vec![route.clone()];
+        executor.apply_session_mcp_projection(&mut session, &capability);
+        assert_eq!(
+            session.mcp_session_servers,
+            if capability.is_configured() {
+                vec![route.clone()]
+            } else {
+                Vec::new()
+            }
+        );
+    }
+}

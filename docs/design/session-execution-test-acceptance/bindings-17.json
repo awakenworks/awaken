@@ -589,26 +589,26 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 268,
-        "file_sha256": "8966185f68f1f821b2047f14aeb4249b570c15566a3bd2368c1bd674ecf1d668"
+        "line": 275,
+        "file_sha256": "1be2c6f75607a822026880cd6de226ccf4e43a68027e9bd14361da23d482db9a"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 271
+        "line": 278
       },
       {
         "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 277
+        "line": 284
       },
       {
         "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 279
+        "line": 286
       },
       {
         "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 281
+        "line": 288
       }
     ],
     "execution_witnesses": [

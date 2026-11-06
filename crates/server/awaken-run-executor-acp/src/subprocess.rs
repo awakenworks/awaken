@@ -22,11 +22,15 @@ use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::activation::RunActivation;
 use tokio::process::Command;
 
-use crate::{AcpCli, AgentChannelSource, AgentSession, ChannelOpenDoor, OpenError, ResolvedModel};
+use crate::{
+    AcpCli, AgentChannelSource, AgentSession, ChannelOpenDoor, Codec, OpenError, ResolvedModel,
+};
 
 #[cfg(test)]
 #[path = "subprocess/host_identity_tests.rs"]
 mod host_identity_tests;
+#[path = "subprocess/restriction.rs"]
+mod restriction;
 
 /// A resolved launch for an ACP CLI: the argv plus the env to set (model, base
 /// URL, key). Runtime-specific projection lives only in the [`AcpCli`] catalog;
@@ -48,6 +52,14 @@ pub struct AcpLaunch {
     pub session_config_options: Vec<awaken_protocol_acp::SessionConfigOptionSelection>,
     pub session_working_directory: Option<String>,
     pub expected_capability: Option<awaken_protocol_acp::AcpCapabilityExpectation>,
+    /// Source-owned validation of the actual launch, wire and Run restriction.
+    /// Custom/catalog launches remain opaque unless their owning code supplies
+    /// a concrete check for a proven fixed program. This never grants tools.
+    pub tool_narrowing_check: fn(
+        &AcpLaunch,
+        Codec,
+        &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+    ) -> Result<(), OpenError>,
     /// How the frozen Agent instructions reach this adapter's system prompt.
     pub instructions: crate::AcpInstructions,
 }
@@ -88,6 +100,7 @@ impl AcpLaunch {
             session_config_options: Vec::new(),
             session_working_directory: None,
             expected_capability: None,
+            tool_narrowing_check: AcpLaunch::opaque_tool_narrowing,
             instructions: crate::AcpInstructions::default(),
         }
     }
@@ -269,7 +282,9 @@ async fn spawn(
     launch: &AcpLaunch,
     codec: awaken_protocol_acp::Codec,
     broker: Option<&Arc<dyn pc::SecretBroker>>,
+    narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
 ) -> std::result::Result<AgentSession, OpenError> {
+    launch.check_tool_narrowing(codec, narrowing)?;
     let (program, args) = launch
         .argv
         .split_first()
@@ -287,6 +302,13 @@ async fn spawn(
         AcpLaunchIdentity::Managed => with_local_host_launch_environment(launch.env.clone()),
         AcpLaunchIdentity::BackendOwned => with_backend_owned_host_environment(launch.env.clone()),
     };
+    // Reuse the same check after the only ambient projection and before any
+    // credential materialization/spawn; a preflight cannot attest other bytes.
+    let effective = AcpLaunch {
+        env: env.clone(),
+        ..launch.clone()
+    };
+    effective.check_tool_narrowing(codec, narrowing)?;
     let mut planned = pc::Command::new(launch.argv.clone());
     planned.env = env;
     planned.stdio = pc::Stdio::Piped;
@@ -361,13 +383,26 @@ pub(crate) const CLI_CODEC: awaken_protocol_acp::Codec = {
 
 #[async_trait]
 impl AgentChannelSource for SubprocessChannelSource {
+    fn check_tool_narrowing(
+        &self,
+        narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+    ) -> Result<(), OpenError> {
+        self.launch.check_tool_narrowing(self.codec, narrowing)
+    }
+
     async fn open(
         &self,
         _activation: &RunActivation,
-        _context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
         _door: ChannelOpenDoor,
     ) -> std::result::Result<AgentSession, OpenError> {
-        spawn(&self.launch, self.codec, self.secret_broker.as_ref()).await
+        spawn(
+            &self.launch,
+            self.codec,
+            self.secret_broker.as_ref(),
+            &context.tool_capability_narrowing,
+        )
+        .await
     }
 }
 
@@ -685,18 +720,32 @@ mod mcp_wiring_tests {
 
 #[async_trait]
 impl AgentChannelSource for ProjectingChannelSource {
+    fn check_tool_narrowing(
+        &self,
+        narrowing: &awaken_runtime_contract::permission::ToolCapabilityNarrowing,
+    ) -> Result<(), OpenError> {
+        crate::opaque_tool_narrowing(narrowing)
+    }
+
     async fn open(
         &self,
         activation: &RunActivation,
         context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
         _door: ChannelOpenDoor,
     ) -> std::result::Result<AgentSession, OpenError> {
+        self.check_tool_narrowing(&context.tool_capability_narrowing)?;
         // A real CLI speaks official ACP JSON-RPC.
         let launch = self.plan(activation, context).await?;
         let plugin_config = &activation.snapshot.resolved_spec.plugin_config;
         let mcp_session_servers = mcp_session_servers_from_plugin_config(plugin_config);
         let broker = self.resolver.secret_broker();
-        let mut session = spawn(&launch, CLI_CODEC, broker.as_ref()).await?;
+        let mut session = spawn(
+            &launch,
+            CLI_CODEC,
+            broker.as_ref(),
+            &context.tool_capability_narrowing,
+        )
+        .await?;
         // Every production adapter carries MCP through official `session/new`;
         // the driver reads this typed list from the Session into the Run config.
         session.mcp_session_servers = mcp_session_servers;
@@ -958,9 +1007,14 @@ mod tests {
             vec![("MY_PROJECTED".to_string(), "projected-value".to_string())],
         );
 
-        let session = spawn(&launch, awaken_protocol_acp::Codec::Newline, None)
-            .await
-            .expect("spawn the real child");
+        let session = spawn(
+            &launch,
+            awaken_protocol_acp::Codec::Newline,
+            None,
+            &awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
+        )
+        .await
+        .expect("spawn the real child");
         let mut channel = session.channel;
         channel
             .write_all(b"go\n")
@@ -1052,6 +1106,7 @@ mod tests {
             session_config_options: Vec::new(),
             session_working_directory: None,
             expected_capability: None,
+            tool_narrowing_check: AcpLaunch::opaque_tool_narrowing,
             instructions: crate::AcpInstructions::default(),
         };
         let debug = format!("{launch:?}");
@@ -1059,17 +1114,27 @@ mod tests {
         assert!(!debug.contains("process-only-value"));
 
         assert!(
-            spawn(&launch, awaken_protocol_acp::Codec::Newline, None)
-                .await
-                .is_err(),
+            spawn(
+                &launch,
+                awaken_protocol_acp::Codec::Newline,
+                None,
+                &awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured
+            )
+            .await
+            .is_err(),
             "A2 missing broker fails before spawn"
         );
 
         let broker = Arc::new(Broker(AtomicUsize::new(0)));
         let erased: Arc<dyn pc::SecretBroker> = broker.clone();
-        let mut session = spawn(&launch, awaken_protocol_acp::Codec::Newline, Some(&erased))
-            .await
-            .expect("A1 brokered spawn");
+        let mut session = spawn(
+            &launch,
+            awaken_protocol_acp::Codec::Newline,
+            Some(&erased),
+            &awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
+        )
+        .await
+        .expect("A1 brokered spawn");
         let mut output = String::new();
         session.channel.read_to_string(&mut output).await.unwrap();
         assert_eq!(output, "process-only-value");

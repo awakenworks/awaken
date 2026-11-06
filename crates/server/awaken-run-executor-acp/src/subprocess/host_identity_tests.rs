@@ -81,9 +81,14 @@ fn identity_child() {
                     ],
                 );
                 launch.identity = AcpLaunchIdentity::BackendOwned;
-                let session = spawn(&launch, awaken_protocol_acp::Codec::Newline, None)
-                    .await
-                    .unwrap();
+                let session = spawn(
+                    &launch,
+                    awaken_protocol_acp::Codec::Newline,
+                    None,
+                    &awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
+                )
+                .await
+                .unwrap();
                 let mut channel = session.channel;
                 let mut output = String::new();
                 channel.read_to_string(&mut output).await.unwrap();

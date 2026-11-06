@@ -95,6 +95,11 @@ impl ChildRunLauncher {
             sandbox.clone(),
             self.background.clone(),
             self.authority.hosts_session_application(),
+            Some(crate::host::resident_process_environment(
+                &self.realization_executor,
+                thread,
+                &sandbox,
+            )?),
         )?;
         adapters.background_commit = Some(commit.for_independent_child());
         let service = crate::delegate::HostRunDelegationService::new(
