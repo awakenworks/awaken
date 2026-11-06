@@ -106,7 +106,12 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
             WorkerRegistration {
                 worker_id: "k8s:ns:worker:uid-a".into(),
                 incarnation_id: "uid-a".into(),
-                manifest: awaken_worker_contract::WorkerManifest::default(),
+                manifest: awaken_worker_contract::WorkerManifest {
+                    runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                        awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                    ),
+                    ..awaken_worker_contract::WorkerManifest::default()
+                },
                 create_ledger: None,
             },
             100,

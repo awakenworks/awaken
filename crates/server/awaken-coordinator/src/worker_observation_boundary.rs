@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_worker_contract::WorkerStanding;
 use awaken_worker_registry::{
     RegisteredWorker, RegistryError, WorkerDirectory, WorkerObservationSource,
 };
@@ -338,8 +339,7 @@ async fn handle_relay_destination(
     let registered = match state.directory.current(&worker_id).await {
         Ok(Some(registered))
             if registered.snapshot.identity.worker_id == worker_id
-                && registered.snapshot.state.accepts_work()
-                && registered.snapshot.expires_at_ms > now
+                && matches!(registered.snapshot.standing(now), WorkerStanding::Ready)
                 && registered.process_exit.is_none() =>
         {
             registered
@@ -962,7 +962,12 @@ mod tests {
                         awaken_worker_contract::WorkerRegistration {
                             worker_id: worker_id.into(),
                             incarnation_id: "racing-registration".into(),
-                            manifest: Default::default(),
+                            manifest: awaken_worker_contract::WorkerManifest {
+                                runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                                    awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                                ),
+                                ..awaken_worker_contract::WorkerManifest::default()
+                            },
                             create_ledger: None,
                         },
                         1,
@@ -1021,7 +1026,12 @@ mod tests {
                         awaken_worker_contract::WorkerRegistration {
                             worker_id: id.into(),
                             incarnation_id: "original".into(),
-                            manifest: Default::default(),
+                            manifest: awaken_worker_contract::WorkerManifest {
+                                runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                                    awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                                ),
+                                ..awaken_worker_contract::WorkerManifest::default()
+                            },
                             create_ledger: None,
                         },
                         1,

@@ -259,14 +259,20 @@ impl SessionRealizationTarget {
             .manifest
             .fingerprint()
             .map_err(|error| SessionRealizationControlFailure::Unavailable(error.to_string()))?;
-        if worker.identity.lease_owner() != self.runtime_incarnation
-            || worker.expires_at_ms <= now
+        // A realization is held by a live incarnation that is serving or
+        // finishing work; this context adds the lease bound, the exact
+        // incarnation, the capability fingerprint and the protocol floor.
+        let serving = match worker.standing(now) {
+            awaken_worker_contract::WorkerStanding::Ready
+            | awaken_worker_contract::WorkerStanding::Draining => true,
+            awaken_worker_contract::WorkerStanding::Starting
+            | awaken_worker_contract::WorkerStanding::Quiesced
+            | awaken_worker_contract::WorkerStanding::Expired
+            | awaken_worker_contract::WorkerStanding::Dead => false,
+        };
+        if !serving
+            || worker.identity.lease_owner() != self.runtime_incarnation
             || self.lease_expires_at_unix_ms > worker.expires_at_ms
-            || !matches!(
-                worker.state,
-                awaken_worker_contract::WorkerState::Ready
-                    | awaken_worker_contract::WorkerState::Draining
-            )
             || fingerprint != worker.capability_fingerprint
             || !worker.manifest.supports_current_runtime_protocol()
         {
@@ -590,5 +596,111 @@ impl From<SessionRealizationDriveError> for RunError {
                 Self::unavailable("Session realization did not converge")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod worker_observation_tests {
+    use super::SessionRealizationTarget;
+    use awaken_worker_contract::{
+        CURRENT_RUNTIME_PROTOCOL_VERSION, RegisteredWorker, VersionRange, WorkerIdentity,
+        WorkerManifest, WorkerSnapshot, WorkerState,
+    };
+
+    fn registered(state: WorkerState, expires_at_ms: u64) -> RegisteredWorker {
+        let manifest = WorkerManifest {
+            runtime_protocol: VersionRange::exact(CURRENT_RUNTIME_PROTOCOL_VERSION),
+            ..WorkerManifest::default()
+        };
+        RegisteredWorker {
+            snapshot: WorkerSnapshot {
+                identity: WorkerIdentity::new("worker", "boot", 1),
+                state,
+                capability_fingerprint: manifest.fingerprint().unwrap(),
+                manifest,
+                in_flight: 0,
+                warm_environment_shapes: Default::default(),
+                credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
+                expires_at_ms,
+            },
+            heartbeat_sequence: 0,
+            observation_sequence: 0,
+            registered_at_ms: 0,
+            heartbeat_at_ms: 0,
+            drain_deadline_ms: None,
+            process_exit: None,
+            create_ledger: None,
+            source_retention: Default::default(),
+        }
+    }
+
+    fn target(lease_expires_at_unix_ms: u64) -> SessionRealizationTarget {
+        SessionRealizationTarget {
+            owner: "worker".into(),
+            runtime_incarnation: WorkerIdentity::new("worker", "boot", 1).lease_owner(),
+            lease_expires_at_unix_ms,
+            reassign_existing_lease: false,
+        }
+    }
+
+    #[test]
+    fn realization_worker_is_a_serving_standing_plus_this_context() {
+        // Standing: only Ready and Draining serve a realization; a lapsed lease
+        // (Expired) or Dead never does. Context rows: L the requested lease must
+        // end no later than the Registry lease; I the exact incarnation; F the
+        // persisted fingerprint; P the current protocol floor.
+        let now = 100;
+        for (state, live, serving) in [
+            (WorkerState::Starting, true, false),
+            (WorkerState::Ready, true, true),
+            (WorkerState::Draining, true, true),
+            (WorkerState::Quiesced, true, false),
+            (WorkerState::Dead, true, false),
+            (WorkerState::Ready, false, false),
+            (WorkerState::Draining, false, false),
+        ] {
+            let expires = if live { 200 } else { now };
+            let observed = target(expires)
+                .worker_from_registry_observation(vec![registered(state, expires)], now)
+                .unwrap();
+            assert_eq!(observed.is_some(), serving, "{state:?} live={live}");
+        }
+        let ready = || registered(WorkerState::Ready, 200);
+        assert!(
+            target(201)
+                .worker_from_registry_observation(vec![ready()], now)
+                .unwrap()
+                .is_none(),
+            "L lease beyond the Registry lease"
+        );
+        let mut other = target(150);
+        other.runtime_incarnation = WorkerIdentity::new("worker", "boot", 2).lease_owner();
+        assert!(
+            other
+                .worker_from_registry_observation(vec![ready()], now)
+                .unwrap()
+                .is_none(),
+            "I another incarnation"
+        );
+        let mut forged = ready();
+        forged.snapshot.capability_fingerprint = "sha256:other".into();
+        assert!(
+            target(150)
+                .worker_from_registry_observation(vec![forged], now)
+                .unwrap()
+                .is_none(),
+            "F fingerprint mismatch"
+        );
+        let mut legacy = ready();
+        legacy.snapshot.manifest.runtime_protocol = VersionRange::ANY;
+        legacy.snapshot.capability_fingerprint = legacy.snapshot.manifest.fingerprint().unwrap();
+        assert!(
+            target(150)
+                .worker_from_registry_observation(vec![legacy], now)
+                .unwrap()
+                .is_none(),
+            "P protocol floor"
+        );
     }
 }

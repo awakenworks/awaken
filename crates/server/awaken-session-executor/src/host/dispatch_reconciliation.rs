@@ -123,7 +123,12 @@ mod tests {
                         awaken_worker_contract::WorkerRegistration {
                             worker_id: id.into(),
                             incarnation_id: "boot".into(),
-                            manifest: Default::default(),
+                            manifest: awaken_worker_contract::WorkerManifest {
+                                runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                                    awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                                ),
+                                ..awaken_worker_contract::WorkerManifest::default()
+                            },
                             create_ledger: None,
                         },
                         0,
@@ -284,7 +289,12 @@ mod tests {
                 awaken_worker_contract::WorkerRegistration {
                     worker_id: "graceful-idle".into(),
                     incarnation_id: "boot".into(),
-                    manifest: Default::default(),
+                    manifest: awaken_worker_contract::WorkerManifest {
+                        runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                        ),
+                        ..awaken_worker_contract::WorkerManifest::default()
+                    },
                     create_ledger: None,
                 },
                 100,
@@ -398,7 +408,12 @@ mod tests {
                 awaken_worker_contract::WorkerRegistration {
                     worker_id: "unknown-idle".into(),
                     incarnation_id: "boot".into(),
-                    manifest: Default::default(),
+                    manifest: awaken_worker_contract::WorkerManifest {
+                        runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                        ),
+                        ..awaken_worker_contract::WorkerManifest::default()
+                    },
                     create_ledger: None,
                 },
                 0,
@@ -492,7 +507,12 @@ mod tests {
                         awaken_worker_contract::WorkerRegistration {
                             worker_id: id.into(),
                             incarnation_id: "boot".into(),
-                            manifest: Default::default(),
+                            manifest: awaken_worker_contract::WorkerManifest {
+                                runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                                    awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                                ),
+                                ..awaken_worker_contract::WorkerManifest::default()
+                            },
                             create_ledger: None,
                         },
                         0,

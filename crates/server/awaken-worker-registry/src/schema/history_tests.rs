@@ -10,8 +10,17 @@ use awaken_worker_contract::{
     WorkerRegistration, WorkerSnapshot, WorkerState,
 };
 
+fn current_manifest() -> WorkerManifest {
+    WorkerManifest {
+        runtime_protocol: awaken_worker_contract::VersionRange::exact(
+            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+        ),
+        ..WorkerManifest::default()
+    }
+}
+
 fn expected(generation: u64) -> RegisteredWorker {
-    let manifest = WorkerManifest::default();
+    let manifest = current_manifest();
     RegisteredWorker {
         snapshot: WorkerSnapshot {
             identity: WorkerIdentity::new("migrated", "A", generation),
@@ -73,7 +82,7 @@ async fn assert_migrated(directory: &dyn WorkerDirectory, generation: u64) {
     let registration = |worker: &str, incarnation: &str| WorkerRegistration {
         worker_id: worker.into(),
         incarnation_id: incarnation.into(),
-        manifest: WorkerManifest::default(),
+        manifest: current_manifest(),
         create_ledger: None,
     };
     assert_eq!(

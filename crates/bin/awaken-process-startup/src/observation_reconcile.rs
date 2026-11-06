@@ -114,8 +114,7 @@ mod tests {
 
     use awaken_agent_contract::credential::CredentialRef;
     use awaken_worker_contract::{
-        RegistryMutation, WorkerCredentialObservation, WorkerHeartbeat, WorkerManifest,
-        WorkerRegistration,
+        RegistryMutation, WorkerCredentialObservation, WorkerHeartbeat, WorkerRegistration,
     };
 
     struct FlakySource(AtomicBool);
@@ -244,7 +243,12 @@ mod tests {
                 WorkerRegistration {
                     worker_id: "worker-aba".into(),
                     incarnation_id: "boot-a".into(),
-                    manifest: WorkerManifest::default(),
+                    manifest: awaken_worker_contract::WorkerManifest {
+                        runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                        ),
+                        ..awaken_worker_contract::WorkerManifest::default()
+                    },
                     create_ledger: None,
                 },
                 1,

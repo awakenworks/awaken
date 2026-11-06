@@ -667,6 +667,14 @@ pub enum RegistryError {
     InvalidCreateLedger,
     #[error("a Worker incarnation cannot replace or backfill its Create ledger")]
     CreateLedgerChanged,
+    #[error("Worker manifest does not explicitly support the current runtime protocol")]
+    UnsupportedRuntimeProtocol,
+    #[error("worker registration requires a bootstrap credential")]
+    BootstrapCredentialRequired,
+    #[error(
+        "Worker registration requires the provider-observed incarnation of its execution domain"
+    )]
+    ProviderIncarnationRequired,
 }
 
 /// Secret-free read projection of the one Worker Registry authority.
@@ -910,12 +918,12 @@ impl WorkerIncarnationGuard {
 impl WorkerSnapshot {
     #[must_use]
     pub fn accepts(&self, requirements: &PlacementRequirements, now_ms: u64) -> bool {
-        let process_and_static_eligible = self.state.accepts_work()
-            && self.expires_at_ms > now_ms
-            && self.in_flight < self.manifest.capacity.max_concurrent
-            && self.manifest.fingerprint().ok().as_deref()
-                == Some(self.capability_fingerprint.as_str())
-            && can_claim(&self.manifest, requirements).is_ok();
+        let process_and_static_eligible =
+            matches!(self.standing(now_ms), crate::WorkerStanding::Ready)
+                && self.in_flight < self.manifest.capacity.max_concurrent
+                && self.manifest.fingerprint().ok().as_deref()
+                    == Some(self.capability_fingerprint.as_str())
+                && can_claim(&self.manifest, requirements).is_ok();
         let credential_evidence_satisfied =
             requirements.required_credentials.iter().all(|required| {
                 self.credential_observations

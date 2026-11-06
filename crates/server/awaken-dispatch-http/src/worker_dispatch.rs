@@ -1260,34 +1260,18 @@ fn verify_worker_id(
     Ok(())
 }
 
-/// A restarted process re-registers under the same Worker ID. Expire the
-/// previous incarnation once its lease has lapsed and record its process end:
-/// the exact exit when the provider still holds it (e.g. Kubernetes
-/// `lastState`), else its supersession by the registering newer instance of
-/// the same process slot. Otherwise it stays Unknown and its occupied attempts
-/// keep their existing recovery. A live lease is left alone: the Registry then
-/// refuses the new incarnation.
-async fn settle_previous_incarnation(
+/// The Coordinator's Worker Registry commands over this service's ports.
+fn registry_commands(
     service: &WorkerDispatchService,
-    previous: &WorkerIdentity,
-) -> Result<(), ApplicationError> {
-    let Some(source) = &service.execution_stops else {
-        return Ok(());
-    };
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        awaken_dispatch::reconcile_closed_idle_worker_evidence(
-            service.dispatch.as_ref(),
-            directory(service)?.as_ref(),
-            source.as_ref(),
-            previous,
-            service.clock.now_ms(),
-        ),
-    )
-    .await
-    .map_err(|_| {
-        ApplicationError::unavailable("previous Worker incarnation settlement timed out")
-    })?
+) -> Result<awaken_dispatch::WorkerRegistryCommands<'_>, ApplicationError> {
+    Ok(awaken_dispatch::WorkerRegistryCommands {
+        directory: directory(service)?.as_ref(),
+        dispatch: service.dispatch.as_ref(),
+        bindings: service.execution_bindings.as_deref(),
+        stops: service.execution_stops.as_deref(),
+        clock: service.clock.as_ref(),
+        ttl_ms: service.registry_ttl_ms,
+    })
 }
 
 /// Closure and final physical admission share the Registry exclusion. A closed
@@ -1296,21 +1280,12 @@ async fn release_closed_idle_worker_evidence(
     service: &WorkerDispatchService,
     identity: &WorkerIdentity,
 ) -> Result<(), ApplicationError> {
-    let Some(source) = &service.execution_stops else {
+    if service.execution_stops.is_none() {
         return Ok(());
-    };
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        awaken_dispatch::release_closed_idle_worker_evidence(
-            service.dispatch.as_ref(),
-            directory(service)?.as_ref(),
-            source.as_ref(),
-            identity,
-            service.clock.now_ms(),
-        ),
-    )
-    .await
-    .map_err(|_| ApplicationError::unavailable("idle Worker evidence release timed out"))?
+    }
+    registry_commands(service)?
+        .release_closed_idle_evidence(identity)
+        .await
 }
 
 async fn settle(

@@ -316,8 +316,10 @@ compensate the request's Repository participants, and validate layout inside
 the application (`resource_commands`). Archive and profiled release derive
 their time and `session.terminated` fact from the application clock and the
 owner; profiled release selects its first archive admission from the root.
-Create receipts (`SessionCreateReceipt`), profiled Run admission and the
-budget-pause fact (`PersistedSession::is_budget_paused`) have one owner each.
+Create receipts (`SessionCreateReceipt`), profiled Run admission, the
+budget-pause fact (`session_is_budget_paused`) and the budget-pause interrupt
+law (`session_budget_pause_absorbs_interrupt`, applied by the Event application
+to interrupt-only and mixed batches alike) have one owner each.
 `_protocol_translation_fitness.py` refuses, in every protocol crate, the
 persistence port, constructed write vocabulary, state-machine evaluation, raw
 lifecycle-variant selection and Resource manifest editing; it holds at zero.
