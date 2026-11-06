@@ -205,7 +205,10 @@ impl SessionResourceReconciliation {
                 .resource_references
                 .commit(owner_scope, current, operation, Vec::new())
                 .await
-            {
+                .and_then(|commit| {
+                    crate::mutation::aggregate_from_snapshot(commit.into_session())
+                        .map_err(crate::mutation::repository_failure)
+                }) {
                 Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
@@ -239,7 +242,10 @@ impl SessionResourceReconciliation {
                     Vec::new(),
                 )
                 .await
-            {
+                .and_then(|commit| {
+                    crate::mutation::aggregate_from_snapshot(commit.into_session())
+                        .map_err(crate::mutation::repository_failure)
+                }) {
                 Ok(committed) => return Ok(committed),
                 Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
                     session = self
@@ -536,6 +542,10 @@ impl SessionResourceReconciliation {
                     .resource_references
                     .commit(owner_scope, session, "resource-adopt-legacy", Vec::new())
                     .await
+                    .and_then(|commit| {
+                        crate::mutation::aggregate_from_snapshot(commit.into_session())
+                            .map_err(crate::mutation::repository_failure)
+                    })
                     .map_err(mutation_failure)?;
             }
             return self.retire_detached_generation(owner_scope, session).await;

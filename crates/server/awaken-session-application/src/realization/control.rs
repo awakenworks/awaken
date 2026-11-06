@@ -631,6 +631,10 @@ impl SessionRealizations {
                     Vec::new(),
                 )
                 .await
+                .and_then(|commit| {
+                    crate::mutation::aggregate_from_snapshot(commit.into_session())
+                        .map_err(crate::mutation::repository_failure)
+                })
                 .map_err(|error| match error {
                     SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
                     error => unavailable(error),

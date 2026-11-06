@@ -24,7 +24,6 @@ use awaken_session_contract::{
 
 use crate::credentials::internal;
 use crate::credentials::repository_preparation;
-use crate::mutation::repository_failure;
 use crate::resource_reconciliation::resource_targets;
 use crate::{SessionMutationError, SessionMutations, SessionPreparationError, SnapshotCommit};
 
@@ -81,23 +80,22 @@ impl SessionResourceReferences {
     /// CAS failure repairs the projection from repository truth. This ordering
     /// makes additions fail closed against reclamation; removals remain safe
     /// because [`crate::SessionResourcePurgeGuard`] still observes the pre-CAS
-    /// aggregate.
+    /// aggregate. Automatic and explicit records return the same original
+    /// snapshot receipt; only a caller that does not report it may discard it.
     pub(crate) async fn commit(
         &self,
         owner_scope: &str,
         candidate: SessionAggregate,
         operation: &str,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<SessionAggregate, SessionMutationError> {
+    ) -> Result<SnapshotCommit, SessionMutationError> {
         let idempotency =
             crate::mutation::compile_session_snapshot_idempotency(&candidate, operation);
         // Keep the complete aggregate-owning Resource bracket on the heap.
         // Its references and root CAS are polled inline by this same caller;
         // no task or cancellation owner is detached.
-        let commit =
-            Box::pin(self.commit_with_record(owner_scope, candidate, idempotency, lifecycle_facts))
-                .await?;
-        crate::mutation::aggregate_from_snapshot(commit.into_session()).map_err(repository_failure)
+        Box::pin(self.commit_with_record(owner_scope, candidate, idempotency, lifecycle_facts))
+            .await
     }
 
     pub(crate) async fn commit_with_record(

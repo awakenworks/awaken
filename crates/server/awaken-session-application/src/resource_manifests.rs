@@ -328,16 +328,11 @@ impl SessionResourceManifests {
             })?;
         }
 
-        let (session, command_applied, command_revision) = match command_record {
+        let commit = match command_record {
             Some(record) => {
-                let commit = self
-                    .resource_references
+                self.resource_references
                     .commit_with_record(&owner_scope, session, record, Vec::new())
                     .await
-                    .map_err(SessionResourceManifestError::mutation)?;
-                let applied = commit.transitioned();
-                let committed_revision = commit.committed_revision();
-                (commit.into_session(), applied, committed_revision)
             }
             None if unchanged => {
                 let revision = session.revision;
@@ -348,8 +343,7 @@ impl SessionResourceManifests {
                 });
             }
             None => {
-                let session = self
-                    .resource_references
+                self.resource_references
                     .commit(
                         &owner_scope,
                         session,
@@ -357,14 +351,13 @@ impl SessionResourceManifests {
                         Vec::new(),
                     )
                     .await
-                    .map_err(SessionResourceManifestError::mutation)?
-                    .into_snapshot();
-                let committed_revision = session.revision;
-                (session, true, committed_revision)
             }
-        };
+        }
+        .map_err(SessionResourceManifestError::mutation)?;
+        let command_applied = commit.transitioned();
+        let command_revision = commit.committed_revision();
         Ok(SessionResourceManifestOutcome {
-            session,
+            session: commit.into_session(),
             command_revision,
             command_applied,
         })

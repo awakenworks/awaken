@@ -73,10 +73,11 @@ async fn concurrent_replacement_follows_the_root_and_never_frees_the_winner() {
         .unwrap();
 
     // C1: the winner commits.
-    bracket(&app)
+    let _ = bracket(&app)
         .commit("workspace", winner, "replacement-winner", Vec::new())
         .await
-        .expect("C1 winner commits");
+        .expect("C1 winner commits")
+        .into_session();
     let committed = durable.get(&id).await.unwrap();
 
     // C2: the loser publishes its edge and is held at its root CAS.
@@ -86,7 +87,7 @@ async fn concurrent_replacement_follows_the_root_and_never_frees_the_winner() {
         bracket(&subject)
             .commit("workspace", loser, "replacement-loser", Vec::new())
             .await
-            .map(crate::SessionAggregate::into_snapshot)
+            .map(crate::SnapshotCommit::into_session)
     });
     tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
         .await

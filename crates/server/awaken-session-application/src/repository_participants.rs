@@ -512,6 +512,10 @@ impl SessionRepositoryParticipants {
                         Vec::new(),
                     )
                     .await
+                    .and_then(|commit| {
+                        crate::mutation::aggregate_from_snapshot(commit.into_session())
+                            .map_err(crate::mutation::repository_failure)
+                    })
                     .map_err(mutation_failure)?;
                 continue;
             }
@@ -560,7 +564,10 @@ impl SessionRepositoryParticipants {
                     Vec::new(),
                 )
                 .await
-            {
+                .and_then(|commit| {
+                    crate::mutation::aggregate_from_snapshot(commit.into_session())
+                        .map_err(crate::mutation::repository_failure)
+                }) {
                 Ok(committed) => session = committed,
                 Err(SessionMutationError::Conflict) => {
                     let latest = self
@@ -612,6 +619,10 @@ impl SessionRepositoryParticipants {
                     Vec::new(),
                 )
                 .await
+                .and_then(|commit| {
+                    crate::mutation::aggregate_from_snapshot(commit.into_session())
+                        .map_err(crate::mutation::repository_failure)
+                })
                 .map_err(mutation_failure)?;
         }
         session = self

@@ -293,6 +293,7 @@ impl SessionTerminalCleanups {
                         Vec::new(),
                     )
                     .await
+                    .map(crate::SnapshotCommit::into_session)
                 {
                     Ok(_) => {}
                     Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
@@ -403,6 +404,7 @@ impl SessionTerminalCleanups {
                     Vec::new(),
                 )
                 .await
+                .map(crate::SnapshotCommit::into_session)
             {
                 Ok(_) => {
                     self.lifecycle.request_reconciliation();
@@ -459,6 +461,7 @@ impl SessionTerminalCleanups {
                     Vec::new(),
                 )
                 .await
+                .map(crate::SnapshotCommit::into_session)
             {
                 Ok(_) => {
                     self.lifecycle.request_reconciliation();

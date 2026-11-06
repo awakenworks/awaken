@@ -33,9 +33,10 @@ fn bracket(app: &crate::SessionApplication) -> &super::SessionResourceReferences
 /// R4-R8 extend the same rule across automatic and explicit records: rejected
 /// references prevent CAS; a real CAS conflict repairs from root truth; failed
 /// repair preserves that first Conflict and remains recoverable; Applied and
-/// Replayed keep exact root/receipt identity. Replay advances only a legal title
-/// update with unchanged Resource targets, not the separately unproved target
-/// drift partition. The existing SQLite, index and pause fixture own all IO.
+/// Replayed keep exact root/receipt identity in both record modes, including the
+/// returned Applied/Replayed flag and original receipt revision. Replay advances
+/// only a legal title update with unchanged Resource targets, not the separately
+/// unproved target drift partition. The existing SQLite, index and pause fixture own all IO.
 ///
 /// | Rule | Record | Index | CAS/result | Repair | Required effect |
 /// |---|---|---|---|---|---|
@@ -142,7 +143,7 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
             skill_resources("new"),
         )
         .unwrap();
-    bracket(&application)
+    let _ = bracket(&application)
         .commit(
             "workspace",
             awaken_session_contract::SessionAggregate::try_from(accepted)
@@ -151,7 +152,8 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
             Vec::new(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .into_session();
     assert_eq!(
         ids(),
         BTreeSet::from(["new".to_string(), "old".to_string()]),
@@ -202,7 +204,7 @@ async fn reference_bracket_rejection_rules(explicit: bool) {
                 bracket(&subject)
                     .commit("workspace", candidate, &operation, Vec::new())
                     .await
-                    .map(crate::SessionAggregate::into_snapshot)
+                    .map(crate::SnapshotCommit::into_session)
             }
         });
         if rule == "R4" {
@@ -325,24 +327,22 @@ async fn reference_bracket_success_rules(explicit: bool) {
     let operation = "reference-receipt-command";
     let record = crate::mutation::compile_session_snapshot_idempotency(&candidate, operation);
     let first = if explicit {
-        let commit = bracket(&app)
+        bracket(&app)
             .commit_with_record("workspace", candidate.clone(), record.clone(), Vec::new())
             .await
-            .unwrap();
-        assert!(commit.transitioned(), "R7 explicit Applied");
-        assert_eq!(
-            commit.committed_revision(),
-            commit.session().revision,
-            "R7 receipt"
-        );
-        commit.into_session()
     } else {
         bracket(&app)
             .commit("workspace", candidate.clone(), operation, Vec::new())
             .await
-            .unwrap()
-            .into_snapshot()
-    };
+    }
+    .unwrap();
+    assert!(first.transitioned(), "R7 Applied/{explicit}");
+    assert_eq!(
+        first.committed_revision(),
+        first.session().revision,
+        "R7 receipt/{explicit}"
+    );
+    let first = first.into_session();
     let receipt = durable
         .idempotency_receipt(&id, &record.key)
         .await
@@ -383,29 +383,27 @@ async fn reference_bracket_success_rules(explicit: bool) {
         "R8 newer reload/{explicit}"
     );
     let replay = if explicit {
-        let commit = bracket(&app)
+        bracket(&app)
             .commit_with_record("workspace", candidate, record.clone(), Vec::new())
             .await
-            .unwrap();
-        assert!(!commit.transitioned(), "R8 actual Replayed");
-        assert_eq!(
-            commit.committed_revision(),
-            receipt.committed_revision,
-            "R8 original receipt"
-        );
-        assert_eq!(
-            commit.session().revision,
-            newer.revision,
-            "R8 newer returned root"
-        );
-        commit.into_session()
     } else {
         bracket(&app)
             .commit("workspace", candidate, operation, Vec::new())
             .await
-            .unwrap()
-            .into_snapshot()
-    };
+    }
+    .unwrap();
+    assert!(!replay.transitioned(), "R8 actual Replayed/{explicit}");
+    assert_eq!(
+        replay.committed_revision(),
+        receipt.committed_revision,
+        "R8 original receipt/{explicit}"
+    );
+    assert_eq!(
+        replay.session().revision,
+        newer.revision,
+        "R8 newer returned root/{explicit}"
+    );
+    let replay = replay.into_session();
     assert_eq!(replay, newer, "R8 exact newer root/{explicit}");
     assert_eq!(
         durable.idempotency_receipt(&id, &record.key).await.unwrap(),
@@ -457,7 +455,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
         .commit("workspace", later, "reference-later-targets", Vec::new())
         .await
         .unwrap()
-        .into_snapshot();
+        .into_session();
     assert!(later.revision > newer.revision, "R10 later root CAS");
     let expected_targets = BTreeSet::from(["later".to_string(), "old".to_string()]);
     assert_eq!(
@@ -491,7 +489,7 @@ async fn reference_bracket_success_rules(explicit: bool) {
         let original_revision = target_replay_receipt.committed_revision;
         let original_record = record.clone();
         let task = tokio::spawn(async move {
-            if explicit {
+            let result = if explicit {
                 bracket(&subject)
                     .commit_with_record(
                         "workspace",
@@ -500,21 +498,20 @@ async fn reference_bracket_success_rules(explicit: bool) {
                         Vec::new(),
                     )
                     .await
-                    .map(|commit| {
-                        assert!(!commit.transitioned(), "R10-R12 accepted explicit replay");
-                        assert_eq!(
-                            commit.committed_revision(),
-                            original_revision,
-                            "R10-R12 exact accepted receipt"
-                        );
-                        commit.into_session()
-                    })
             } else {
                 bracket(&subject)
                     .commit("workspace", target_replay_candidate, operation, Vec::new())
                     .await
-                    .map(crate::SessionAggregate::into_snapshot)
-            }
+            };
+            result.map(|commit| {
+                assert!(!commit.transitioned(), "R10-R12 accepted replay/{explicit}");
+                assert_eq!(
+                    commit.committed_revision(),
+                    original_revision,
+                    "R10-R12 exact accepted receipt/{explicit}"
+                );
+                commit.into_session()
+            })
         });
         tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
             .await
