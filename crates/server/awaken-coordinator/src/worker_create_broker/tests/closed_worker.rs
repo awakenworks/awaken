@@ -198,7 +198,12 @@ async fn closed_predecessor_without_original_ledger_stays_unknown() {
             WorkerRegistration {
                 worker_id: "k8s:sandbox-ns:old-worker:old-uid".into(),
                 incarnation_id: "old-uid".into(),
-                manifest: WorkerManifest::default(),
+                manifest: awaken_worker_contract::WorkerManifest {
+                    runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                        awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                    ),
+                    ..awaken_worker_contract::WorkerManifest::default()
+                },
                 create_ledger: None,
             },
             100,

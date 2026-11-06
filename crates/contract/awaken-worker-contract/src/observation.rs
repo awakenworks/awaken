@@ -176,8 +176,7 @@ fn worker_accepts_dynamic_evidence(
     credential: Option<&CredentialRef>,
     now_ms: u64,
 ) -> bool {
-    worker.state.accepts_work()
-        && worker.expires_at_ms > now_ms
+    matches!(worker.standing(now_ms), crate::WorkerStanding::Ready)
         && credential.is_none_or(|credential| {
             worker
                 .credential_observations

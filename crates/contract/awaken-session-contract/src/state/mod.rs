@@ -115,6 +115,7 @@ pub use session_repo::{
     SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
     SessionRunActivityAdmissionRecord, SessionScan, SessionScanCursor, SessionScanQuery,
     SessionTombstone, SessionWorkerObligation, session_activity_settlement_plan,
+    session_budget_pause_absorbs_interrupt, session_budget_pause_may_absorb_interrupt,
     session_can_adopt_mcp_credential_lifecycle, session_is_budget_paused, session_is_terminal,
     session_is_unattempted_profiled_preparation, validate_complete_run_activity,
 };

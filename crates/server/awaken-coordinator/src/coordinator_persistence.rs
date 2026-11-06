@@ -199,7 +199,7 @@ async fn open_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_worker_registry::{WorkerManifest, WorkerRegistration};
+    use awaken_worker_registry::WorkerRegistration;
 
     use crate::runtime_authority::tests::test_storage;
 
@@ -313,7 +313,12 @@ mod tests {
                 WorkerRegistration {
                     worker_id: "worker-a".into(),
                     incarnation_id: "boot-a".into(),
-                    manifest: WorkerManifest::default(),
+                    manifest: awaken_worker_contract::WorkerManifest {
+                        runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                        ),
+                        ..awaken_worker_contract::WorkerManifest::default()
+                    },
                     create_ledger: None,
                 },
                 10,

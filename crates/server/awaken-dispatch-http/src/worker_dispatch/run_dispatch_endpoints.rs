@@ -403,12 +403,9 @@ async fn admit_attempt(
                 ApplicationError::invalid("Worker incarnation changed before physical admission")
             })?;
         let snapshot = guard.snapshot();
-        if snapshot.expires_at_ms <= service.clock.now_ms()
-            || matches!(
-                snapshot.state,
-                awaken_dispatch::WorkerState::Quiesced | awaken_dispatch::WorkerState::Dead
-            )
-        {
+        // Physical admission starts work only for an incarnation that still
+        // holds authority: drained, expired and dead incarnations are fenced.
+        if !snapshot.standing(service.clock.now_ms()).holds_authority() {
             guard
                 .release()
                 .await
@@ -729,7 +726,12 @@ mod admission_cancellation_tests {
                 WorkerRegistration {
                     worker_id: "cancelled-admission".into(),
                     incarnation_id: "boot".into(),
-                    manifest: Default::default(),
+                    manifest: awaken_worker_contract::WorkerManifest {
+                        runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                        ),
+                        ..Default::default()
+                    },
                     create_ledger: None,
                 },
                 100,

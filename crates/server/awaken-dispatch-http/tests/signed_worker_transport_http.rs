@@ -1057,6 +1057,24 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("incarnation-bound assertion heartbeats");
     assert_eq!(heartbeat.mutation, RegistryMutation::Applied);
     assert_eq!(heartbeat.lease_ttl_ms, Some(30_000));
+    // B1 only the bootstrap credential registers: an incarnation-bound
+    // assertion is refused before the Registry, whatever it proposes.
+    let before = directory.0.lock().unwrap().clone();
+    let refused = WorkerControlClient::new(upstream.clone())
+        .register_classified("signed-http-reboot", current_dispatch_codec_manifest())
+        .await;
+    assert!(
+        matches!(
+            refused,
+            Err(awaken_coordinator_client::WorkerRegistrationError::Rejected(_))
+        ),
+        "B1 incarnation credential cannot register: {refused:?}"
+    );
+    assert_eq!(
+        *directory.0.lock().unwrap(),
+        before,
+        "B1 no Registry mutation"
+    );
     assert_eq!(
         session_work.reconciliation_requests.load(Ordering::SeqCst),
         1,

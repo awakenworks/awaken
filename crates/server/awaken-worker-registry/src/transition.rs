@@ -31,6 +31,7 @@ pub(crate) fn register(
     if registration.worker_id.trim().is_empty() || registration.incarnation_id.trim().is_empty() {
         return Err(RegistryError::InvalidIdentity);
     }
+    awaken_worker_contract::require_current_runtime_protocol(&registration.manifest)?;
     if let Some(ledger) = &registration.create_ledger {
         ledger.validate()?;
     }
@@ -163,9 +164,12 @@ pub(crate) fn heartbeat(
     heartbeat: WorkerHeartbeat,
     now_ms: u64,
     ttl_ms: u64,
-) -> (Option<RegisteredWorker>, RegistryMutation) {
+) -> Result<(Option<RegisteredWorker>, RegistryMutation), RegistryError> {
+    // The immutable manifest cannot gain protocol support by heartbeat: an
+    // exact pre-upgrade incarnation is refused before any other admission.
+    awaken_worker_contract::worker_heartbeat_protocol_admission(current, identity)?;
     let Some(current) = current else {
-        return (
+        return Ok((
             None,
             awaken_worker_contract::worker_heartbeat_admission(
                 false,
@@ -174,7 +178,7 @@ pub(crate) fn heartbeat(
                 false,
                 WorkerState::Dead,
             ),
-        );
+        ));
     };
     // Expiry is an authority boundary, not a late-renewal grace period. The
     // contract table is shared with replacement admission, so a record can
@@ -187,7 +191,7 @@ pub(crate) fn heartbeat(
         current.snapshot.state,
     );
     if admission != RegistryMutation::Applied {
-        return (None, admission);
+        return Ok((None, admission));
     }
     let observations_changed = current.snapshot.credential_observations
         != heartbeat.credential_observations
@@ -199,7 +203,7 @@ pub(crate) fn heartbeat(
             observations_changed,
         )
     else {
-        return (None, RegistryMutation::StaleSequence);
+        return Ok((None, RegistryMutation::StaleSequence));
     };
     let mut next = current.clone();
     if !matches!(next.snapshot.state, WorkerState::Draining) {
@@ -218,7 +222,7 @@ pub(crate) fn heartbeat(
     next.snapshot.expires_at_ms = now_ms.saturating_add(ttl_ms);
     next.heartbeat_sequence = heartbeat.sequence;
     next.heartbeat_at_ms = now_ms;
-    (Some(next), RegistryMutation::Applied)
+    Ok((Some(next), RegistryMutation::Applied))
 }
 
 pub(crate) fn begin_drain(
@@ -337,11 +341,20 @@ mod tests {
         complete: true,
     };
 
+    fn current_manifest() -> WorkerManifest {
+        WorkerManifest {
+            runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            ),
+            ..WorkerManifest::default()
+        }
+    }
+
     fn registration(incarnation: &str) -> WorkerRegistration {
         WorkerRegistration {
             worker_id: "worker-a".to_string(),
             incarnation_id: incarnation.to_string(),
-            manifest: WorkerManifest::default(),
+            manifest: current_manifest(),
             create_ledger: None,
         }
     }
@@ -390,7 +403,8 @@ mod tests {
             },
             20,
             100,
-        );
+        )
+        .unwrap();
         assert_eq!(result, RegistryMutation::Applied);
         assert_eq!(updated.unwrap().snapshot.state, WorkerState::Draining);
     }
@@ -412,11 +426,12 @@ mod tests {
             acp_capability_observations: Default::default(),
             source_retention: Default::default(),
         };
-        let (at_boundary, result) = heartbeat(Some(&first), &identity, late.clone(), 110, 100);
+        let (at_boundary, result) =
+            heartbeat(Some(&first), &identity, late.clone(), 110, 100).unwrap();
         assert!(at_boundary.is_none());
         assert_eq!(result, RegistryMutation::StaleIncarnation);
 
-        let (before_boundary, result) = heartbeat(Some(&first), &identity, late, 109, 100);
+        let (before_boundary, result) = heartbeat(Some(&first), &identity, late, 109, 100).unwrap();
         assert_eq!(result, RegistryMutation::Applied);
         assert_eq!(before_boundary.unwrap().snapshot.expires_at_ms, 209);
     }
@@ -445,7 +460,8 @@ mod tests {
             },
             20,
             100,
-        );
+        )
+        .unwrap();
         assert_eq!(result, RegistryMutation::Applied);
         let updated = updated.unwrap();
         assert_eq!(updated.observation_sequence, 1);
@@ -468,7 +484,8 @@ mod tests {
             },
             21,
             100,
-        );
+        )
+        .unwrap();
         assert_eq!(result, RegistryMutation::Applied);
         assert_eq!(unchanged.unwrap().observation_sequence, 1);
     }
@@ -505,7 +522,8 @@ mod tests {
             },
             20,
             100,
-        );
+        )
+        .unwrap();
         assert!(updated.is_none(), "C1+C2+C3 no rewrite");
         assert_eq!(result, RegistryMutation::StaleSequence, "C1+C2+C3 reject");
     }
@@ -538,10 +556,12 @@ mod tests {
             heartbeat_with(1, &["shape-a", "shape-b"]),
             20,
             100,
-        );
+        )
+        .unwrap();
         assert_eq!(result, RegistryMutation::Applied, "H1");
         let current = current.unwrap();
-        let (stale, result) = heartbeat(Some(&current), &identity, heartbeat_with(1, &[]), 21, 100);
+        let (stale, result) =
+            heartbeat(Some(&current), &identity, heartbeat_with(1, &[]), 21, 100).unwrap();
         assert!(stale.is_none(), "H2");
         assert_eq!(result, RegistryMutation::StaleSequence, "H2");
         let (replaced, result) = heartbeat(
@@ -550,12 +570,70 @@ mod tests {
             heartbeat_with(2, &["shape-b"]),
             22,
             100,
-        );
+        )
+        .unwrap();
         assert_eq!(result, RegistryMutation::Applied, "H1 replace");
         assert_eq!(
             replaced.unwrap().snapshot.warm_environment_shapes,
             std::collections::BTreeSet::from(["shape-b".into()]),
             "H1 replace"
         );
+    }
+
+    #[test]
+    fn protocol_admission_is_part_of_register_and_heartbeat() {
+        // Causes: C1 manifest explicitly supports the current protocol; C2 the
+        // heartbeat names the exact current incarnation. Effects:
+        // | Rule | Op        | C1 | C2 | Effect                               |
+        // | P1   | register  | 0  | -  | refuse, no record                    |
+        // | P2   | register  | 1  | -  | Starting record                      |
+        // | P3   | heartbeat | 0  | 1  | refuse before expiry/sequence checks |
+        // | P4   | heartbeat | 0  | 0  | ordinary StaleIncarnation, no write  |
+        // | P5   | heartbeat | 1  | 1  | Applied                              |
+        let mut legacy = registration("boot-1");
+        legacy.manifest = WorkerManifest::default();
+        assert!(
+            matches!(
+                register(None, FRESH, legacy.clone(), 10, 100),
+                Err(RegistryError::UnsupportedRuntimeProtocol)
+            ),
+            "P1"
+        );
+        let (current, changed) = register(None, FRESH, registration("boot-1"), 10, 100).unwrap();
+        assert!(changed, "P2");
+        assert_eq!(current.snapshot.state, WorkerState::Starting, "P2");
+
+        // A pre-upgrade row persisted before the floor existed.
+        let mut persisted = current.clone();
+        persisted.snapshot.manifest = legacy.manifest;
+        persisted.snapshot.capability_fingerprint =
+            persisted.snapshot.manifest.fingerprint().unwrap();
+        let identity = persisted.snapshot.identity.clone();
+        let beat = |sequence| WorkerHeartbeat {
+            sequence,
+            ready: true,
+            in_flight: 0,
+            warm_environment_shapes: Default::default(),
+            credential_observations: Default::default(),
+            acp_capability_observations: Default::default(),
+            source_retention: Default::default(),
+        };
+        for (sequence, now) in [(1, 20), (0, 20), (1, 500)] {
+            assert!(
+                matches!(
+                    heartbeat(Some(&persisted), &identity, beat(sequence), now, 100),
+                    Err(RegistryError::UnsupportedRuntimeProtocol)
+                ),
+                "P3 seq={sequence} now={now}"
+            );
+        }
+        let mut stale = identity.clone();
+        stale.generation += 1;
+        let (next, outcome) = heartbeat(Some(&persisted), &stale, beat(1), 20, 100).unwrap();
+        assert!(next.is_none(), "P4");
+        assert_eq!(outcome, RegistryMutation::StaleIncarnation, "P4");
+        let (next, outcome) = heartbeat(Some(&current), &identity, beat(1), 20, 100).unwrap();
+        assert_eq!(outcome, RegistryMutation::Applied, "P5");
+        assert_eq!(next.unwrap().snapshot.state, WorkerState::Ready, "P5");
     }
 }
