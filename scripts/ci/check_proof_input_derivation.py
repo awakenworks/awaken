@@ -119,18 +119,8 @@ def is_derived(expression: str) -> bool:
 
 def balanced(source: str, start: int, opening: str, closing: str) -> int:
     """Index just past the delimiter matching the one at ``start``."""
-    depth = 0
-    index = start
-    while index < len(source):
-        character = source[index]
-        if character == opening:
-            depth += 1
-        elif character == closing:
-            depth -= 1
-            if depth == 0:
-                return index + 1
-        index += 1
-    return len(source)
+    end = _crate_boundary_workspace._balanced_end(source, start, opening, closing)
+    return len(source) if end is None else end
 
 
 def arguments(source: str) -> list[str]:
