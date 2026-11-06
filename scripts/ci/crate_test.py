@@ -113,26 +113,6 @@ def full_graph_metadata(features: list[str], *, root: Path = ROOT,
     ))
 
 
-def native_graph_reason(root: Path, values: dict[str, str]) -> str:
-    """Whether this metadata owner's host filter can describe the compile.
-
-    Stable Cargo offers no effective-config oracle. Do not interpret configs
-    ourselves: their existence, or an explicit compiler/target override, means
-    the affected compile caller must retain the original whole command. Paths
-    and variable names explain refusal without revealing configuration values.
-    The single-crate test helper's existing profile behavior is unchanged.
-    """
-    if any(values.get(name) for name in COMPILE_ENVIRONMENT_OVERRIDES):
-        return "unconfirmed compile target/compiler environment"
-    cargo_home = Path(values.get("CARGO_HOME", str(Path.home() / ".cargo")))
-    if not cargo_home.is_absolute():
-        cargo_home = root / cargo_home
-    directories = [*(parent / ".cargo" for parent in (root.resolve(), *root.resolve().parents)), cargo_home]
-    if any((directory / name).exists() for directory in directories for name in ("config", "config.toml")):
-        return "unconfirmed repository/ancestor/CARGO_HOME Cargo configuration"
-    return ""
-
-
 def _members(metadata: dict) -> dict[str, dict]:
     member_ids = metadata["workspace_members"]
     members = set(member_ids)
@@ -195,19 +175,6 @@ def _closure(metadata: dict, package_id: str) -> set[str]:
                 reached.add(dependency)
                 pending.append(dependency)
     return reached
-
-
-def peer_packages(metadata: dict, roots: set[str]) -> list[str]:
-    """The existing compile fixed point: every potentially shared-unit peer."""
-    packages = _members(metadata)
-    retained = {packages[name]["id"] for name in roots}
-    closures = {p["id"]: _closure(metadata, p["id"]) for p in packages.values()}
-    while True:
-        dependencies = set().union(*(closures[identity] for identity in retained))
-        peers = {identity for identity, closure in closures.items() if closure & dependencies}
-        if peers <= retained:
-            return sorted(p["name"] for p in packages.values() if p["id"] in retained)
-        retained |= peers
 
 
 def _profile_flags(passthrough: list[str]) -> list[str]:
@@ -537,7 +504,6 @@ class CrateTestPlan(unittest.TestCase):
             {"id": "shared", "features": ["rich"], "deps": []},
             {"id": "peer", "features": [], "deps": [{"pkg": "shared"}]},
         ))
-        self.assertEqual(peer_packages(metadata, {"leaf"}), ["leaf", "peer", "shared"])
         command = plan_packages(metadata, self.features, [], ["leaf"], [])[-1]
         self.assertIn("--workspace", command)
         self.assertEqual(command[command.index("--features") + 1], ",".join(self.features))
@@ -753,31 +719,6 @@ class CrateTestPlan(unittest.TestCase):
                     mock.patch(__name__ + ".full_graph_metadata", side_effect=subprocess.CalledProcessError(original, ["cargo", "metadata"])), \
                     mock.patch.object(subprocess, "run", side_effect=AssertionError("dependent execution started")):
                 self.assertEqual(main(["-p", "awaken-cli"]), expected)
-
-    def test_compile_host_admission_never_guesses_effective_configuration(self) -> None:
-        # B8: no configuration/override -> native host may be used. A target
-        # environment, root/ancestor config or CARGO_HOME config -> explicit
-        # unknown; the caller widens before compiling. No contents/secret values
-        # are interpreted or printed, and the test helper's profile is separate.
-        with tempfile.TemporaryDirectory() as directory:
-            outer = Path(directory)
-            root, home = outer / "repository/subdirectory", outer / "cargo-home"
-            root.mkdir(parents=True)
-            home.mkdir()
-            values = {"CARGO_HOME": str(home)}
-            self.assertEqual(native_graph_reason(root, values), "")
-            self.assertIn("environment", native_graph_reason(root, {**values, "CARGO_BUILD_TARGET": "private-value"}))
-            for config in (root / ".cargo/config.toml", root.parent / ".cargo/config", home / "config.toml"):
-                config.parent.mkdir(exist_ok=True)
-                config.write_text("[build]\ntarget = 'private-value'\n")
-                reason = native_graph_reason(root, values)
-                self.assertIn("configuration", reason)
-                self.assertNotIn("private-value", reason)
-                config.unlink()
-            relative_home = root / "relative-home"
-            relative_home.mkdir()
-            (relative_home / "config.toml").write_text("[build]\ntarget='private-value'\n")
-            self.assertIn("configuration", native_graph_reason(root, {"CARGO_HOME": "relative-home"}))
 
     def test_p8_stale_companion_rows(self) -> None:
         rows = [{"package": "leaf", "binary": "hand-bin", "launcher": "gone"}]

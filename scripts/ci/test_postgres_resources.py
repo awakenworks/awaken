@@ -17,7 +17,7 @@ from _native_service_receipt_fixture import FIXTURE_OWNER, postgres_receipts
 from _native_postgres_scopes import postgres_plan
 import _native_postgres_scopes as policy
 
-INPUT_GLOBS = ("scripts/ci/**", ".github/workflows/windows-native-services.yml")
+INPUT_GLOBS = (".github/workflows/windows-native-services.yml", "scripts/ci/pg_tests.sh")
 
 PACKAGES=('awaken-admin-config-api','awaken-resource-store','awaken-resource-persistence',
     'awaken-session-application','awaken-protocol-managed','awaken-sandbox-policy-store',

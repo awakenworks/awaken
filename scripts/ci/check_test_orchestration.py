@@ -674,9 +674,9 @@ def execution_framework_hook_errors(hooks: str) -> list[str]:
     """Keep impact planning and expensive runner fixtures independently triggered."""
     blocks=generate_hooks.command_blocks(hooks)
     framework=blocks.get("nextest-evidence", "")
-    planner=blocks.get("affected-rust-plan", "")
-    expected={"affected-rust-plan":"python3 scripts/ci/rust_test_plan.py --self-test",
-              "nextest-evidence":"python3 scripts/ci/benchmark_rust_build.py --self-test "
+    # The impact planner's own fixtures run through generate_hooks.py
+    # --script-tests whenever its closure changes, not on every Rust edit.
+    expected={"nextest-evidence":"python3 scripts/ci/benchmark_rust_build.py --self-test "
                   "&& python3 scripts/ci/nextest_execution.py --self-test"}
     errors=[]
     for name,command in expected.items():
@@ -684,8 +684,7 @@ def execution_framework_hook_errors(hooks: str) -> list[str]:
         if actual!=[command] or sum(block.count(command) for block in blocks.values())!=1:
             errors.append("test framework must keep one canonical fixture owner: "+name)
     for block,paths in ((framework,("scripts/ci/nextest_execution.py", "scripts/ci/crate_test.py",
-                            ".config/nextest.toml", ".config/rust-tests.toml")),
-                       (planner,("crates/example/src/lib.rs", "crates/example/Cargo.toml"))):
+                            ".config/nextest.toml", ".config/rust-tests.toml")),):
         pattern=re.search(r'(?m)^      glob: "([^"\n]+)"$',block)
         if pattern is None or any(not generate_hooks.glob_matches(pattern.group(1),path) for path in paths):
             errors.append("test framework trigger omits a required input")
@@ -1007,8 +1006,8 @@ def self_test() -> None:
     for replacement in ("python3 scripts/ci/check_test_orchestration.py --self-test",
                         "python3 scripts/ci/check_test_orchestration.py", "true"):
         assert rust_hook_errors(hooks.replace(orchestration, replacement), gate), "O1 missing live scan or fixtures"
-    duplicate = hooks.replace("    affected-rust-plan:\n",
-                              "    duplicate:\n      run: " + orchestration + "\n\n    affected-rust-plan:\n")
+    duplicate = hooks.replace("    nextest-evidence:\n",
+                              "    duplicate:\n      run: " + orchestration + "\n\n    nextest-evidence:\n")
     assert rust_hook_errors(duplicate, gate), "O2 duplicate orchestration owner"
     assert not execution_framework_hook_errors(hooks), "F1 independently triggered fixtures"
     fixture_command="python3 scripts/ci/nextest_execution.py --self-test"

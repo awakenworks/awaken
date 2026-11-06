@@ -14,7 +14,7 @@ from unittest import mock
 import check_native_services as gate
 import rust_test_plan
 
-INPUT_GLOBS = ("scripts/ci/**", ".github/workflows/windows-native-services.yml")
+INPUT_GLOBS = (".github/workflows/windows-native-services.yml",)
 
 
 class NativeRecordingTests(unittest.TestCase):

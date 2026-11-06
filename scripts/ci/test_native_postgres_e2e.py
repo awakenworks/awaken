@@ -17,7 +17,7 @@ import check_native_postgres_e2e as gate
 import _required_build_context
 import rust_test_plan
 
-INPUT_GLOBS=("scripts/ci/**","e2e/**",".github/workflows/windows-native-services.yml")
+INPUT_GLOBS=("e2e/**",".github/workflows/windows-native-services.yml")
 
 
 class ServedPostgresTests(unittest.TestCase):

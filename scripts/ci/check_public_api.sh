@@ -147,14 +147,15 @@ fi
 # changed since the origin/main merge-base: report it and compare nothing. A3
 # "packages" -> a surface is recomputed when its crate is a changed owner or a
 # transitive consumer of one (a dependency can move a re-exported item). A4
-# "whole", no merge-base or a planner refusal -> every selected crate. The
+# "whole", no merge-base, a planner refusal or a change to this gate's own
+# scripts -> every selected crate. The
 # orphan check above always covers every snapshot.
 compared_crates="$crates"
 if [ "$affected_upstream" = 1 ] && [ "$bless" = 0 ]; then
   scope="whole"
   scope_reason="no origin/main merge-base"
   if scope_base=$(git merge-base HEAD refs/remotes/origin/main 2>/dev/null); then
-    if scope_plan=$(python3 scripts/ci/rust_test_plan.py --gate-scope --base "$scope_base"); then
+    if scope_plan=$(python3 scripts/ci/rust_test_plan.py --gate-scope --base "$scope_base" --entry check_public_api.sh); then
       scope=$(printf '%s\n' "$scope_plan" | sed -n 's/^scope=//p')
       scope_reason=$(printf '%s\n' "$scope_plan" | sed -n 's/^reason=//p')
     else
@@ -168,7 +169,7 @@ if [ "$affected_upstream" = 1 ] && [ "$bless" = 0 ]; then
       exit 0
       ;;
     packages)
-      compared_crates=$(printf '%s\n' $crates | grep -Fxf <(printf '%s\n' "$scope_plan" | sed '1,2d') || true)
+      compared_crates=$(printf '%s\n' $crates | grep -Fxf <(printf '%s\n' "$scope_plan" | grep -v '=') || true)
       if [ -z "$compared_crates" ]; then
         echo "✓ public API: no snapshotted crate is affected since ${scope_base:0:10}; 0 of $selected_count snapshots needed recomputing"
         exit 0
