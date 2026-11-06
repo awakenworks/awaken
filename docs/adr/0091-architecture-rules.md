@@ -394,9 +394,9 @@ count at zero.
    `From<LockPoisoned>`) or a documented fail-closed answer, never a panic;
    a leaf lock recovers it ([Lock poisoning](../design/lock-poisoning.md)).
    `clippy.toml` denies the `std::sync` lock methods in all production code
-   outside `awaken-sync`, and `scripts/ci/_poisoned_lock_fitness.py` refuses
-   `L1` (an `InvariantLock` acquisition followed by `.expect`/`.unwrap`) and
-   `L2` (an `.expect` naming the poison) in all production code.
+   outside `awaken-sync`, and `awaken_sync::LockPoisoned` is not `Debug`, so
+   `.expect`/`.unwrap` on an `InvariantLock` refusal does not compile anywhere,
+   tests included.
 
 5. **The Session aggregate decides every Environment transition.** Changes go
    through `transition_environment` in `awaken-session-contract`, or a

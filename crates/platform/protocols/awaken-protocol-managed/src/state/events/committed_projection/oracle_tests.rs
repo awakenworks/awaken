@@ -102,7 +102,13 @@ impl ManagedState {
         {
             return;
         }
-        let Some(warm) = self.sessions.lock().unwrap().get(session_id).cloned() else {
+        let Some(warm) = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .get(session_id)
+            .cloned()
+        else {
             return;
         };
         let cold = match self.cold_rebuild(session_id).await {
@@ -225,7 +231,7 @@ async fn candidate_uses_committed_prefix_even_when_warm_progress_is_poisoned() {
     let base = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(session_id)
         .cloned()
         .unwrap();

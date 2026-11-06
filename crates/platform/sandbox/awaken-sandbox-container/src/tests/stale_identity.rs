@@ -158,7 +158,10 @@ fn stale_authority(row: &str) -> pc::test_support::EffectAuthority {
         ),
         _ => unreachable!("{row}"),
     };
-    *authority.current.lock().unwrap() = Some(current);
+    *authority
+        .current
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}")) = Some(current);
     authority
 }
 

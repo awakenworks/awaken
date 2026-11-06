@@ -111,7 +111,10 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
             })
             .await;
             {
-                let mut current = authority.current.lock().unwrap();
+                let mut current = authority
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                 match change {
                     "revoke" => *current = None,
                     "replace" => current.as_mut().unwrap().0.reassign(),

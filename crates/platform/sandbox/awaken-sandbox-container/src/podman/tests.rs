@@ -79,7 +79,10 @@ async fn restored_disposal_keeps_immutable_id_and_current_authority_at_each_adap
                 _ => panic!("unexpected command: {args:?}"),
             };
             if selected == boundary {
-                let mut current = changing.current.lock().unwrap();
+                let mut current = changing
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                 match change {
                     "revoke" => *current = None,
                     "replace" => current.as_mut().unwrap().0.reassign(),

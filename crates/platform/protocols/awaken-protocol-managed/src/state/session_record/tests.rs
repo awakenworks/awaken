@@ -218,7 +218,7 @@ async fn owner_is_part_of_projection_equality_without_changing_the_wire_dto() {
     let original = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&created.id)
         .unwrap()
         .clone();

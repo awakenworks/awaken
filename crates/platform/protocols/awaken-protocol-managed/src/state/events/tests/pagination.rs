@@ -29,7 +29,13 @@ async fn history_time_v2_uses_typed_root_and_event_evidence_without_changing_v1(
     // bytes unchanged; R2 v2 retains the date; R3 503 before pagination;
     // R4 a complete known-only page. Cursor order is the existing paginator.
     let (state, id) = page_state().await;
-    let mut record = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+    let mut record = state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .get(&id)
+        .unwrap()
+        .clone();
     record.session.created_at = LEGACY_UNRECORDED_AT.into();
     record.session.updated_at = LEGACY_UNRECORDED_AT.into();
     record.root_time = RootTimeEvidence::default();
@@ -203,7 +209,11 @@ async fn history_time_v2_uses_typed_root_and_event_evidence_without_changing_v1(
         ("unknown".into(), "child".into()),
     ]);
     record.rebuild_event_page_index();
-    state.sessions.lock().unwrap().insert(id.clone(), record);
+    state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .insert(id.clone(), record);
     let threads = state.list_threads_with_time(&id).unwrap();
     let primary = threads
         .iter()
@@ -452,7 +462,13 @@ async fn indexed_pages_match_filtered_directional_visibility_and_cursor_rules() 
         message("tail"),
     ];
     for action_owner in [None, Some(id.as_str()), Some("child")] {
-        let mut record = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+        let mut record = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .get(&id)
+            .unwrap()
+            .clone();
         record.events = events.clone();
         record.event_thread_owners = HashMap::from([
             ("hidden".into(), "child".into()),
@@ -573,9 +589,21 @@ async fn page_index_tracks_published_references_owners_replacement_and_order() {
             Ok(())
         })
         .unwrap();
-    let original = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+    let original = state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .get(&id)
+        .unwrap()
+        .clone();
     for change in 0..6 {
-        let before = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+        let before = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .get(&id)
+            .unwrap()
+            .clone();
         let result = state.publish_projection_update(&id, |record| {
             match change {
                 0 => {
@@ -619,7 +647,13 @@ async fn page_index_tracks_published_references_owners_replacement_and_order() {
         } else {
             result.unwrap();
         }
-        let current = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+        let current = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .get(&id)
+            .unwrap()
+            .clone();
         if (2..=4).contains(&change) {
             refresh_failure::assert_record_frame_eq(&current, &before);
         }
@@ -653,7 +687,13 @@ async fn page_index_tracks_published_references_owners_replacement_and_order() {
             }
         }
     }
-    let current = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+    let current = state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .get(&id)
+        .unwrap()
+        .clone();
     state.publish_projection_update(&id, |_| Ok(())).unwrap();
     assert!(
         state
@@ -670,6 +710,12 @@ async fn page_index_tracks_published_references_owners_replacement_and_order() {
             .publish_projection_candidate(&id, original.cache_revision, original)
             .unwrap()
     );
-    let after = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+    let after = state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .get(&id)
+        .unwrap()
+        .clone();
     refresh_failure::assert_record_frame_eq(&after, &current);
 }

@@ -243,16 +243,33 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                     .await;
                     assert_eq!(source.calls.load(Ordering::SeqCst), 1);
                     match change {
-                        "revoke" => *authority.current.lock().unwrap() = None,
+                        "revoke" => {
+                            *authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None
+                        }
                         "replace" => {
-                            let mut guard = authority.current.lock().unwrap();
+                            let mut guard = authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                             guard.as_mut().unwrap().0.reassign();
                         }
                         "exhaust" => {
-                            authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
+                            authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                                .as_mut()
+                                .unwrap()
+                                .1 = Duration::ZERO
                         }
                         "renew" => {
-                            let mut guard = authority.current.lock().unwrap();
+                            let mut guard = authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                             guard.as_mut().unwrap().0.renew();
                         }
                         _ => {}
@@ -273,7 +290,10 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                         change == "renew",
                         "response is not mutation authority"
                     );
-                    *authority.current.lock().unwrap() =
+                    *authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
                         Some((fence.clone(), Duration::from_secs(1)));
                     if change == "cancel" {
                         source.gate.add_permits(1);
@@ -1869,7 +1889,13 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
     // Exhaust current proof while keeping successor order valid; an old
     // regressing timestamp would test identity rejection instead of liveness.
     let exhausted = awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal);
-    exhausted.current.lock().unwrap().as_mut().unwrap().1 = std::time::Duration::ZERO;
+    exhausted
+        .current
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .as_mut()
+        .unwrap()
+        .1 = std::time::Duration::ZERO;
     assert!(
         terminal_sandbox
             .cleanup_checkpoint_for_terminal(&request, &store, &suspend, &terminal, &exhausted)

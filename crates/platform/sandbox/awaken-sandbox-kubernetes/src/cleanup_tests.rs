@@ -1236,7 +1236,10 @@ async fn late_read_only_absence_cannot_acknowledge_a_revoked_disposal_grant() {
         if change == 'c' {
             task.abort();
         } else {
-            let mut grant = authority.current.lock().unwrap();
+            let mut grant = authority
+                .current
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
             match change {
                 's' => {}
                 'r' => grant.as_mut().unwrap().0.renew(),
@@ -2025,7 +2028,10 @@ async fn exact_deletion_wait_rechecks_current_authority_before_accepting_absence
                 if change == 'c' {
                     task.abort();
                 } else {
-                    let mut current = authority.current.lock().unwrap();
+                    let mut current = authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                     match change {
                         's' => {}
                         'r' => current.as_mut().unwrap().0.renew(),
@@ -2077,7 +2083,10 @@ async fn exact_deletion_wait_rechecks_current_authority_around_polling_sleep() {
             let admissions = AtomicUsize::new(0);
             let admit = || {
                 if admissions.fetch_add(1, Ordering::SeqCst) + 1 == deny_at {
-                    *authority.current.lock().unwrap() = None;
+                    *authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
                 }
                 pc::with_current_sandbox_effect(&fence, &authority, |_| Ok(())).map_err(backend)
             };
@@ -2494,7 +2503,10 @@ async fn checkpoint_current_authority_is_reentered_after_each_http_response() {
                 if change == 'c' {
                     task.abort();
                 } else {
-                    let mut current = authority.current.lock().unwrap();
+                    let mut current = authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                     match change {
                         'r' => current.as_mut().unwrap().0.renew(),
                         'v' => *current = None,
@@ -2857,7 +2869,10 @@ async fn current_authority_is_required_after_every_kubernetes_cleanup_response()
                     if *change == 'c' {
                         task.abort();
                     } else {
-                        let mut current = authority.current.lock().unwrap();
+                        let mut current = authority
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                         match change {
                             'r' => current.as_mut().unwrap().0.renew(),
                             'v' => *current = None,

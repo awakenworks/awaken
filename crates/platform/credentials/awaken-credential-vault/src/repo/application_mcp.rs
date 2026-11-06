@@ -532,7 +532,7 @@ mod tests {
         assert!(
             repo.state
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
                 .managed_rollouts
                 .remove(&lost.id)
                 .is_some()

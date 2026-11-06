@@ -172,7 +172,11 @@ mod tests {
         let panicking = job.clone();
         assert!(
             std::thread::spawn(move || {
-                let _held = panicking.0.termination.lock().unwrap();
+                let _held = panicking
+                    .0
+                    .termination
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                 panic!("injected observation failure");
             })
             .join()

@@ -1114,7 +1114,13 @@ mod tests {
                     assert_eq!(commit.commit_count(), before);
                     assert!(calls.lock().unwrap().is_empty());
                     assert!(commit.resume_ticket(&run_id).is_some());
-                    assert!(exports.pending.lock().unwrap().is_empty());
+                    assert!(
+                        exports
+                            .pending
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                            .is_empty()
+                    );
                     continue;
                 }
                 assert_eq!(result.unwrap(), RunState::Running);
@@ -1157,7 +1163,13 @@ mod tests {
                         .to_string()
                         .contains("TOOL_APPROVAL_REQUIRED")
                 );
-                assert!(exports.pending.lock().unwrap().is_empty());
+                assert!(
+                    exports
+                        .pending
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                        .is_empty()
+                );
                 assert_eq!(calls.lock().unwrap().len(), usize::from(allow));
             }
         }

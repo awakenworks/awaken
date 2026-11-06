@@ -50,7 +50,10 @@ async fn exhausted_projection_cache_revision_preserves_complete_warm_frame() {
         ),
     )]);
     let before = {
-        let mut sessions = state.sessions.lock().unwrap();
+        let mut sessions = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let current = sessions.get_mut(&session.id).unwrap();
         current.cache_revision = u64::MAX;
         current.clone()
@@ -67,7 +70,12 @@ async fn exhausted_projection_cache_revision_preserves_complete_warm_frame() {
         "R1 exact final publication failure: {error}"
     );
     assert_record_frame_eq(
-        state.sessions.lock().unwrap().get(&session.id).unwrap(),
+        state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .get(&session.id)
+            .unwrap(),
         &before,
     );
     assert!(
@@ -240,7 +248,13 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
             for competing in [false, true] {
                 let (runtime, state, id) = read_cut_fixture(with_child).await;
                 state.disable_warm_cold_oracle();
-                let entry = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+                let entry = state
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                    .get(&id)
+                    .unwrap()
+                    .clone();
                 let (_, mut live) = state.stream_subscribe(&id).unwrap();
                 runtime.reads.fail_at(cut);
                 let (entered, release) = runtime.reads.pause_at(cut);
@@ -257,7 +271,15 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                     expected[..=cut],
                     "R1 exact prefix before pause"
                 );
-                assert_record_frame_eq(state.sessions.lock().unwrap().get(&id).unwrap(), &entry);
+                assert_record_frame_eq(
+                    state
+                        .sessions
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                        .get(&id)
+                        .unwrap(),
+                    &entry,
+                );
                 if competing {
                     state
                         .update_session(
@@ -277,7 +299,13 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                         )
                         .await
                         .expect("R1 competing durable update succeeds independently");
-                    let current = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+                    let current = state
+                        .sessions
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                        .get(&id)
+                        .unwrap()
+                        .clone();
                     assert!(
                         current.cache_revision > entry.cache_revision,
                         "R1 actual competing publisher advances cache"
@@ -343,7 +371,13 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                         );
                     }
                 }
-                let before_failure = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+                let before_failure = state
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                    .get(&id)
+                    .unwrap()
+                    .clone();
                 let reads_before_release = runtime.reads.trace();
                 release.notify_one();
                 let error = tokio::time::timeout(std::time::Duration::from_secs(5), refresh)
@@ -363,7 +397,12 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                     "R1 error terminates this refresh without later reads"
                 );
                 assert_record_frame_eq(
-                    state.sessions.lock().unwrap().get(&id).unwrap(),
+                    state
+                        .sessions
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                        .get(&id)
+                        .unwrap(),
                     &before_failure,
                 );
                 assert!(
@@ -378,12 +417,26 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
                     .refresh_committed_events(&id)
                     .await
                     .expect("R2 fault removal recovers without restart");
-                let repaired = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+                let repaired = state
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                    .get(&id)
+                    .unwrap()
+                    .clone();
                 state
                     .refresh_committed_events(&id)
                     .await
                     .expect("R2 repaired prefix replays");
-                assert_record_frame_eq(state.sessions.lock().unwrap().get(&id).unwrap(), &repaired);
+                assert_record_frame_eq(
+                    state
+                        .sessions
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                        .get(&id)
+                        .unwrap(),
+                    &repaired,
+                );
                 checked_rules += 1;
             }
         }
@@ -418,7 +471,11 @@ async fn aggregate_usage_reuses_fenced_snapshots_without_independent_accounting_
             runtime.reads.fail("usage", true);
             runtime.reads.fail("child_usage", true);
             if cold {
-                state.sessions.lock().unwrap().remove(&id);
+                state
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                    .remove(&id);
             }
             state.refresh_committed_events(&id).await.unwrap();
             let session = state.get_session(&id).unwrap();
@@ -565,7 +622,7 @@ async fn historical_usage_prefix_failure_preserves_warm_frame_and_repair_rebuild
     let before = warm
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .clone();
@@ -580,7 +637,11 @@ async fn historical_usage_prefix_failure_preserves_warm_frame_and_repair_rebuild
         "U1: {error}"
     );
     assert_record_frame_eq(
-        warm.sessions.lock().unwrap().get(&session.id).unwrap(),
+        warm.sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .get(&session.id)
+            .unwrap(),
         &before,
     );
     *runtime.state_cursors.lock().unwrap() = vec![20, 30];

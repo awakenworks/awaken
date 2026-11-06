@@ -308,7 +308,10 @@ mod tests {
             "B2"
         );
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _held = binding.extraction_commit.write().unwrap();
+            let _held = binding
+                .extraction_commit
+                .write()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
             panic!("poison the original extraction commit lock");
         }));
         assert!(binding.extraction_commit.is_poisoned());

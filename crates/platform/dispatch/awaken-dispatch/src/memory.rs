@@ -1939,7 +1939,10 @@ mod admission_observation_tests {
         // backend/conformance cases without adding a public injection port.
         let store = MemoryDispatchStore::new(awaken_time::system_clock());
         let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = store.state.lock().unwrap();
+            let _guard = store
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
             panic!("poison original dispatch State for O9");
         }));
         assert!(poisoned.is_err());

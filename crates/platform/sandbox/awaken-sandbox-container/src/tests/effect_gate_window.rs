@@ -153,7 +153,7 @@ async fn create_with_change_at(
             "{port}/{barrier}/{change:?}: barrier entered"
         );
     }
-    *authority.current.lock().unwrap() = changed(&fence, change);
+    authority.set(changed(&fence, change));
     gate.add_permits(1);
     let result = pending.await;
     let state = runtime.st.lock().unwrap();
@@ -236,7 +236,7 @@ async fn t28_c02_cached_or_unbound_disposal_never_widens_authority() {
             (state.observations, state.removals.len())
         };
         assert_eq!(removals, 1, "D1 one physical removal");
-        *authority.current.lock().unwrap() = changed(authorization.effect_fence(), change);
+        authority.set(changed(authorization.effect_fence(), change));
         let replay = sandbox.dispose_for_effect(&authorization, &authority).await;
         assert!(
             replay.is_err(),
@@ -274,7 +274,7 @@ async fn t28_c02_cached_or_unbound_disposal_never_widens_authority() {
             (state.observations, state.removals.len())
         };
         let authority = pc::test_support::EffectAuthority::new(authorization.effect_fence());
-        *authority.current.lock().unwrap() = changed(authorization.effect_fence(), change);
+        authority.set(changed(authorization.effect_fence(), change));
         assert!(
             sandbox
                 .dispose_for_effect(&authorization, &authority)

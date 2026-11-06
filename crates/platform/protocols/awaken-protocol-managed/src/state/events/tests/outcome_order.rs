@@ -391,7 +391,7 @@ async fn terminal_committing_between_outcome_query_and_root_read_cannot_backfill
     let cache_revision = warm
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session_id)
         .unwrap()
         .cache_revision;
@@ -408,7 +408,7 @@ async fn terminal_committing_between_outcome_query_and_root_read_cannot_backfill
     assert_eq!(
         warm.sessions
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get(&session_id)
             .unwrap()
             .cache_revision,

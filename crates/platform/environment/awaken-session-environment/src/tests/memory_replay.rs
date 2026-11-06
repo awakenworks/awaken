@@ -936,7 +936,10 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                 .await;
                 assert_eq!(mounts.load(Ordering::SeqCst), pause_at);
                 {
-                    let mut current = authority.current.lock().unwrap();
+                    let mut current = authority
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                     match change {
                         "revoke" => *current = None,
                         "replace" => current.as_mut().unwrap().0.reassign(),
@@ -968,7 +971,10 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                 }
                 *mounter.response_gate.lock().unwrap() = None;
                 gate.add_permits(1); // the retained cancelled future still owns this gate
-                *authority.current.lock().unwrap() =
+                *authority
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
                     Some((terminal.clone(), std::time::Duration::from_secs(1)));
                 let replay = provider
                     .terminal()

@@ -688,7 +688,10 @@ mod tests {
             .unwrap();
         let poisoned = refreshed.clone();
         let _ = std::thread::spawn(move || {
-            let _guard = poisoned.state.write().unwrap();
+            let _guard = poisoned
+                .state
+                .write()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
             panic!("poison refreshed Environment catalog lock");
         })
         .join();

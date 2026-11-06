@@ -150,7 +150,10 @@ async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
                         )
                         .unwrap();
                         {
-                            let mut current = authority.current.lock().unwrap();
+                            let mut current = authority
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                             match change {
                                 "revoke" => *current = None,
                                 "replace" => current.as_mut().unwrap().0.reassign(),
@@ -185,7 +188,10 @@ async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
                             operation != "create" || change == "renew",
                             "lost proof cannot admit the next file write"
                         );
-                        *authority.current.lock().unwrap() =
+                        *authority
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
                             Some((fence.clone(), Duration::from_secs(1)));
                         if change == "cancel" {
                             mounter.mount_gate.add_permits(1);

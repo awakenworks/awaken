@@ -15,11 +15,22 @@ async fn dropping_the_guard_removes_the_registration() {
     let (rx, guard) = registry
         .register(&RunId("r".into()), None)
         .expect("healthy registry");
-    assert_eq!(registry.waiters.lock().unwrap().len(), 1);
+    assert_eq!(
+        registry
+            .waiters
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .len(),
+        1
+    );
     drop(guard);
     drop(rx);
     assert!(
-        registry.waiters.lock().unwrap().is_empty(),
+        registry
+            .waiters
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .is_empty(),
         "the guard removed the leaked waiter"
     );
 }
@@ -34,7 +45,13 @@ async fn settled_delivers_the_state_and_clears_the_slot() {
         .expect("healthy registry");
     registry.settled(&RunId("r".into()), &RunState::Awaiting);
     assert!(matches!(rx.await, Ok(RunState::Awaiting)));
-    assert!(registry.waiters.lock().unwrap().is_empty());
+    assert!(
+        registry
+            .waiters
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -103,7 +120,7 @@ async fn session_user_run_observation_covers_activation_and_peer_recovery() {
                     activation_registry
                         .waiters
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
                         .get(&activation_run.0)
                         .map(Vec::len),
                     Some(1),
@@ -126,7 +143,14 @@ async fn session_user_run_observation_covers_activation_and_peer_recovery() {
             matches!(state, RunState::Awaiting | RunState::Ended(_)),
             "{rule}/E4"
         );
-        assert!(registry.waiters.lock().unwrap().is_empty(), "{rule}");
+        assert!(
+            registry
+                .waiters
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                .is_empty(),
+            "{rule}"
+        );
     }
 }
 
@@ -161,14 +185,21 @@ async fn dropping_session_user_run_observation_releases_only_its_waiter() {
         registry
             .waiters
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get(&run_id.0)
             .map(Vec::len),
         Some(1),
         "D1/E1"
     );
     drop(observation);
-    assert!(registry.waiters.lock().unwrap().is_empty(), "D1/E2");
+    assert!(
+        registry
+            .waiters
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .is_empty(),
+        "D1/E2"
+    );
 }
 
 #[tokio::test]
@@ -190,7 +221,7 @@ async fn exact_run_replay_observers_do_not_replace_each_other() {
         registry
             .waiters
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get(&run_id.0)
             .map(Vec::len),
         Some(2),
@@ -203,7 +234,7 @@ async fn exact_run_replay_observers_do_not_replace_each_other() {
         registry
             .waiters
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get(&run_id.0)
             .map(Vec::len),
         Some(1),
@@ -211,7 +242,14 @@ async fn exact_run_replay_observers_do_not_replace_each_other() {
     );
     registry.settled(&run_id, &RunState::Awaiting);
     assert!(matches!(second.await, Ok(RunState::Awaiting)), "M3/E3");
-    assert!(registry.waiters.lock().unwrap().is_empty(), "M3/E3");
+    assert!(
+        registry
+            .waiters
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .is_empty(),
+        "M3/E3"
+    );
 }
 
 #[tokio::test]

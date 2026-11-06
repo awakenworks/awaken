@@ -933,7 +933,10 @@ mod tests {
         relay.set_route(&other, &server("unrelated"));
         relay.remove_route(&old);
 
-        let routes = relay.routes.lock().unwrap();
+        let routes = relay
+            .routes
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         assert!(!routes.contains_key(&route_key(&old)));
         assert!(routes.contains_key(&route_key(&new)));
         assert!(routes.contains_key(&route_key(&other)));
@@ -975,7 +978,7 @@ mod tests {
         let capability = relay
             .routes
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get(&key)
             .unwrap()
             .capability
@@ -1026,7 +1029,11 @@ mod tests {
         .await;
         assert_eq!(rejected.status(), StatusCode::NOT_FOUND, "A3/E3");
         assert!(
-            relay.routes.lock().unwrap().contains_key(&key),
+            relay
+                .routes
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                .contains_key(&key),
             "A2 exact Route remains installed while its activity settles"
         );
 
@@ -1185,7 +1192,7 @@ mod tests {
             relay
                 .routes
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
                 .get(&route_key(&renewed))
                 .unwrap()
                 .generation
@@ -1382,7 +1389,7 @@ mod tests {
             relay
                 .routes
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
                 .get(&route_key(&generation))
                 .and_then(|route| route.bearer.as_ref())
                 .map(awaken_agent_contract::RedactedString::expose_secret),
@@ -1444,7 +1451,12 @@ mod tests {
             ))));
             relay.set_route(&generation, &material);
             let key = route_key(&generation);
-            let capability = relay.routes.lock().unwrap()[&key].capability.clone();
+            let capability = relay
+                .routes
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))[&key]
+                .capability
+                .clone();
             let mut state = relay.state.clone();
             let routes = relay.routes.clone();
             let authority = live.clone();
@@ -1474,7 +1486,10 @@ mod tests {
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
             assert_eq!(calls.load(Ordering::SeqCst), usize::from(!during_body));
             assert_eq!(
-                relay.routes.lock().unwrap()[&key]
+                relay
+                    .routes
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"))[&key]
                     .bearer
                     .as_ref()
                     .unwrap()

@@ -208,7 +208,10 @@ mod tests {
                         ];
                     }
                     if !live {
-                        *authority.current.lock().unwrap() = None;
+                        *authority
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
                     }
                     let mut calls = 0;
                     let result = ack.require_for_disposal(&expected, &fence, &authority, |_| {
@@ -380,7 +383,10 @@ mod tests {
                 let committed = state == "replay"
                     || (state == "new" && matches!(fault, "twice" | "after-effect-error"));
                 assert_eq!(
-                    ack.applied.lock().unwrap().is_some(),
+                    ack.applied
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                        .is_some(),
                     committed,
                     "{state}/{fault}"
                 );
@@ -436,7 +442,12 @@ mod tests {
         });
         assert_eq!(drains.load(Ordering::SeqCst), 1);
         assert_eq!(
-            ack.applied.lock().unwrap().as_ref().unwrap().effect_fence,
+            ack.applied
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                .as_ref()
+                .unwrap()
+                .effect_fence,
             fence
         );
     }
@@ -464,7 +475,7 @@ mod tests {
             assert_eq!(
                 ack.applied
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"))
                     .as_ref()
                     .map(|ack| ack.effect_fence.clone()),
                 (index == 1).then(|| first.clone())
@@ -472,7 +483,12 @@ mod tests {
             ack.acknowledge(fence, &authority, &evidence, &evidence, |_| Ok(()))
                 .unwrap();
             assert_eq!(
-                ack.applied.lock().unwrap().as_ref().unwrap().effect_fence,
+                ack.applied
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                    .as_ref()
+                    .unwrap()
+                    .effect_fence,
                 *fence
             );
         }

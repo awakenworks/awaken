@@ -119,17 +119,23 @@ impl ForegroundRunRecord {
     /// Hold the record's lock, for fixtures that poison it by panicking.
     #[cfg(test)]
     pub(crate) fn hold_for_test(&self) -> std::sync::MutexGuard<'_, ForegroundRun> {
-        self.0.lock().expect("test foreground record")
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("test foreground record: {poisoned}"))
     }
 
     /// Install a foreground identity without an attempt signal, replacing the
     /// whole record, for fixtures that model an admitted Run directly.
     #[cfg(test)]
     pub(crate) fn install_for_test(&self, run: Option<RunId>) {
-        *self.0.lock().expect("test foreground record") = ForegroundRun {
-            run,
-            cancellation: None,
-        };
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("test foreground record: {poisoned}")) =
+            ForegroundRun {
+                run,
+                cancellation: None,
+            };
     }
 }
 

@@ -173,9 +173,20 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                         host.run_assembly.installed_sessions.remove(thread);
                         install();
                     }
-                    "worker-close" => *worker.current.lock().unwrap() = None,
+                    "worker-close" => {
+                        *worker
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None
+                    }
                     "worker-expire" => {
-                        worker.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
+                        worker
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                            .as_mut()
+                            .unwrap()
+                            .1 = Duration::ZERO
                     }
                     "renew" => {
                         let mut renewed = lease.clone();
@@ -190,7 +201,10 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                             )
                         }).expect("installed Sessions");
                         {
-                            let mut guard = worker.current.lock().unwrap();
+                            let mut guard = worker
+                                .current
+                                .lock()
+                                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                             guard.as_mut().unwrap().0.renew();
                         };
                     }
@@ -219,7 +233,11 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     // Independent fresh retry after denial; renewal rows retain
                     // their newer live receipt, proving expiry is not a WAL key.
                     install();
-                    *worker.current.lock().unwrap() = Some((fence, Duration::from_secs(1)));
+                    *worker
+                        .current
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
+                        Some((fence, Duration::from_secs(1)));
                 }
                 managed
                     .realization_executor
@@ -300,7 +318,10 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         );
         let (state, _, _) =
             disposing_terminal_environment(thread, &lease, &handle, "exact-checkpoint");
-        *worker.current.lock().unwrap() = None;
+        *worker
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
         assert!(
             host.realization_executor
                 .effects()
@@ -316,7 +337,11 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
             "R1"
         );
         assert!(events.lock().unwrap().is_empty(), "R1");
-        *worker.current.lock().unwrap() = Some((fence.clone(), Duration::from_secs(1)));
+        *worker
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
+            Some((fence.clone(), Duration::from_secs(1)));
         let mut pending = Box::pin(
             host.realization_executor
                 .effects()
@@ -335,8 +360,21 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         }
         assert_eq!(events.lock().unwrap().as_slice(), &["delete-checkpoint"]);
         match change {
-            "worker-revoke" => *worker.current.lock().unwrap() = None,
-            "worker-expire" => worker.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO,
+            "worker-revoke" => {
+                *worker
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None
+            }
+            "worker-expire" => {
+                worker
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                    .as_mut()
+                    .unwrap()
+                    .1 = Duration::ZERO
+            }
             "session-revoke" => host
                 .run_assembly
                 .installed_sessions
@@ -381,7 +419,11 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         );
         // Reset only the fixture for exact-object retry; production renewal
         // cannot revive a closed/replaced Worker or Session incarnation.
-        *worker.current.lock().unwrap() = Some((fence.clone(), Duration::from_secs(1)));
+        *worker
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
+            Some((fence.clone(), Duration::from_secs(1)));
         host.run_assembly
             .installed_sessions
             .realizations()

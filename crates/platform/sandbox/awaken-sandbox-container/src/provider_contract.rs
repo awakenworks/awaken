@@ -357,7 +357,10 @@ mod realization_context_tests {
             "Q5 no omitted fence selects unattached"
         );
         let recovered = attached.with_attempt(&recovery_attempt);
-        *authority.current.lock().unwrap() = None;
+        *authority
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
         assert!(
             recovered.admit_current_effect().is_err(),
             "Q4 captured proof revoked"

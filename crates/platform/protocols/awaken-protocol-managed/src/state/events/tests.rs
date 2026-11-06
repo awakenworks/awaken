@@ -1091,7 +1091,11 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
             .collect(),
     };
 
-    state.sessions.lock().unwrap().remove(&session.id);
+    state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .remove(&session.id);
     runtime.reads.fail("recovery", true);
     let reads_before = runtime.reads.count("recovery");
     let replay = state
@@ -1114,7 +1118,11 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
         "IR1/E1 no cold Runtime read"
     );
     assert!(
-        !state.sessions.lock().unwrap().contains_key(&session.id),
+        !state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .contains_key(&session.id),
         "IR1/E1 no disposable cache publication"
     );
     let unchanged = state
@@ -1191,7 +1199,11 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
             )
             .await
             .unwrap();
-        state.sessions.lock().unwrap().remove(&session.id);
+        state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .remove(&session.id);
         let request = SendEventsRequest {
             events: vec![InboundEvent::UserMessage {
                 content: vec![ContentBlock::text("original intent")],
@@ -1277,7 +1289,12 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
         };
         let root_before = repository.get(&SessionId::from(&session.id)).await.unwrap();
         let outbox_before = repository.pending_lifecycle().await.unwrap();
-        let cache_before = state.sessions.lock().unwrap().get(&session.id).cloned();
+        let cache_before = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .get(&session.id)
+            .cloned();
         let reads_before = runtime.reads.count("recovery");
         assert!(reads_before > 0, "IR3 pre-win recovery I/O is real");
         runtime.reads.fail("recovery", true);
@@ -1346,7 +1363,12 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
             outbox_before,
             "IR3-IR7 outbox frame"
         );
-        let cache_after = state.sessions.lock().unwrap().get(&session.id).cloned();
+        let cache_after = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .get(&session.id)
+            .cloned();
         let cache_unchanged = match (&cache_before, &cache_after) {
             (None, None) => true,
             (Some(before), Some(after)) => {
@@ -1510,7 +1532,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
                 !warm
                     .sessions
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"))
                     .get(session_id)
                     .unwrap()
                     .committed_projection_ready,
@@ -3084,7 +3106,10 @@ async fn qualified_event_id_routes_every_child_tool_reply_variant() {
             "R1-R3/E4 primary routing hint {label}"
         );
         let committed_event = {
-            let sessions = state.sessions.lock().unwrap();
+            let sessions = state
+                .sessions
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
             sessions[&session_id]
                 .events
                 .iter()
@@ -3512,7 +3537,7 @@ async fn running_dto_and_aggregate_event_publish_as_one_candidate() {
     let first_cache_revision = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .cache_revision;
@@ -3531,7 +3556,7 @@ async fn running_dto_and_aggregate_event_publish_as_one_candidate() {
         state
             .sessions
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get(&session.id)
             .unwrap()
             .cache_revision,
@@ -3569,7 +3594,10 @@ async fn concurrent_stable_projection_readers_are_all_no_ops() {
         .unwrap();
     state.refresh_committed_events(&session.id).await.unwrap();
     let before = {
-        let sessions = state.sessions.lock().unwrap();
+        let sessions = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = sessions.get(&session.id).unwrap();
         (record.cache_revision, record.events.clone())
     };
@@ -3585,7 +3613,10 @@ async fn concurrent_stable_projection_readers_are_all_no_ops() {
     }
 
     let after = {
-        let sessions = state.sessions.lock().unwrap();
+        let sessions = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = sessions.get(&session.id).unwrap();
         (record.cache_revision, record.events.clone())
     };
@@ -3634,7 +3665,7 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
         let before = state
             .sessions
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get(&session.id)
             .unwrap()
             .clone();
@@ -3664,7 +3695,7 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
         let after = state
             .sessions
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get(&session.id)
             .unwrap()
             .clone();
@@ -3748,7 +3779,11 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
                         .is_some_and(|reason| reason == "root_thread_prefix")
                 }));
                 let expected_events = serde_json::to_value(&after.events).unwrap();
-                state.sessions.lock().unwrap().remove(&session.id);
+                state
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                    .remove(&session.id);
                 runtime
                     .projection_version_changes
                     .store(reads + 12, Ordering::SeqCst);
@@ -3756,7 +3791,10 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
                     .refresh_committed_events(&session.id)
                     .await
                     .expect("R6 cold convergence");
-                let sessions = state.sessions.lock().unwrap();
+                let sessions = state
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                 let recovered = sessions.get(&session.id).unwrap();
                 assert_eq!(
                     recovered.checkpoint.source.root_thread_version,
@@ -3861,7 +3899,7 @@ async fn cross_replica_pagination_never_rejects_a_cursor_using_an_older_prefix()
         let old = lagging
             .sessions
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get(&session.id)
             .unwrap()
             .clone();
@@ -3927,7 +3965,7 @@ async fn cross_replica_pagination_never_rejects_a_cursor_using_an_older_prefix()
             lagging
                 .sessions
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
                 .insert(session.id.clone(), old.clone());
             runtime.reads.reset();
             runtime
@@ -4005,7 +4043,7 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
     let before = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .clone();
@@ -4028,7 +4066,7 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
     let after = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .clone();
@@ -4142,7 +4180,7 @@ async fn committed_completion_is_broadcast_and_indexed_once_without_payload_repl
     let before = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .clone();
@@ -4157,7 +4195,12 @@ async fn committed_completion_is_broadcast_and_indexed_once_without_payload_repl
         "R2"
     );
     refresh_failure::assert_record_frame_eq(
-        state.sessions.lock().unwrap().get(&session.id).unwrap(),
+        state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .get(&session.id)
+            .unwrap(),
         &before,
     );
     // R4 a delayed empty observation retains GET, CAS and delivery state;
@@ -4174,7 +4217,12 @@ async fn committed_completion_is_broadcast_and_indexed_once_without_payload_repl
         })
         .unwrap();
     refresh_failure::assert_record_frame_eq(
-        state.sessions.lock().unwrap().get(&session.id).unwrap(),
+        state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .get(&session.id)
+            .unwrap(),
         &before,
     );
     for change_payload in [false, true] {
@@ -4197,7 +4245,12 @@ async fn committed_completion_is_broadcast_and_indexed_once_without_payload_repl
             "R3 axis={change_payload}"
         );
         refresh_failure::assert_record_frame_eq(
-            state.sessions.lock().unwrap().get(&session.id).unwrap(),
+            state
+                .sessions
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                .get(&session.id)
+                .unwrap(),
             &before,
         );
         assert!(
@@ -4243,7 +4296,10 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         .await
         .expect("commit newer root");
     let projection_candidate = |persisted: &PersistedSession| {
-        let sessions = state.sessions.lock().unwrap();
+        let sessions = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = sessions.get(&session.id).unwrap();
         let mut candidate = record.clone();
         ManagedState::apply_persisted_session(&mut candidate, persisted)
@@ -4259,7 +4315,10 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         "newer root publishes through the sole CAS owner"
     );
     let before = {
-        let sessions = state.sessions.lock().unwrap();
+        let sessions = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = sessions.get(&session.id).unwrap();
         (
             record.cache_revision,
@@ -4284,7 +4343,10 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         "R1 stale source is rejected by the canonical publisher"
     );
     let after_older = {
-        let sessions = state.sessions.lock().unwrap();
+        let sessions = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = sessions.get(&session.id).unwrap();
         (
             record.cache_revision,
@@ -4296,7 +4358,10 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
 
     state.publish_persisted_session(&current).unwrap();
     let after_equal = {
-        let sessions = state.sessions.lock().unwrap();
+        let sessions = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = sessions.get(&session.id).unwrap();
         (
             record.cache_revision,
@@ -4373,7 +4438,7 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
     let before = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .clone();
@@ -4389,7 +4454,12 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
         "A1/E1 preserves the actionable correlation failure: {error}"
     );
     refresh_failure::assert_record_frame_eq(
-        state.sessions.lock().unwrap().get(&session.id).unwrap(),
+        state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .get(&session.id)
+            .unwrap(),
         &before,
     );
     assert!(
@@ -4402,7 +4472,7 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
     let warm_after_failure = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .clone();
@@ -4455,7 +4525,7 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
     let recovered_source = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .checkpoint
@@ -4555,7 +4625,10 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
 
     state.refresh_committed_events(&session.id).await.unwrap();
     {
-        let records = state.sessions.lock().unwrap();
+        let records = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = records.get(&session.id).unwrap();
         assert!(
             record
@@ -4592,7 +4665,10 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
     ]);
     state.refresh_committed_events(&session.id).await.unwrap();
     {
-        let records = state.sessions.lock().unwrap();
+        let records = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = records.get(&session.id).unwrap();
         assert!(
             record
@@ -4615,7 +4691,10 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
         .expect("S3 settles the exact activity epoch");
     state.refresh_committed_events(&session.id).await.unwrap();
     state.refresh_committed_events(&session.id).await.unwrap();
-    let records = state.sessions.lock().unwrap();
+    let records = state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"));
     let record = records.get(&session.id).unwrap();
     let idle_reasons = record
         .events
@@ -7689,7 +7768,10 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
         "T1/E1"
     );
     assert!(
-        !warm.sessions.lock().unwrap()[&session.id]
+        !warm
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))[&session.id]
             .message_was_projected(child_id, &tool_message.id.0),
         "T1/E1 withheld sibling retains the source"
     );
@@ -7780,7 +7862,9 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
         "T2/E2 strict results reference their preceding public occurrences"
     );
     assert!(
-        warm.sessions.lock().unwrap()[&session.id]
+        warm.sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))[&session.id]
             .message_was_projected(child_id, &tool_message.id.0),
         "T2/E2 fully classified source is consumed"
     );
@@ -7852,7 +7936,9 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
         "T3/E3 cold identity"
     );
     assert!(
-        cold.sessions.lock().unwrap()[&session.id]
+        cold.sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))[&session.id]
             .message_was_projected(child_id, &tool_message.id.0),
         "T3/E2 cold source consumed"
     );
@@ -8046,7 +8132,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
     let warm_thread_times = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .child_threads
@@ -8207,7 +8293,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
     let cold_thread_times = restarted
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .child_threads
@@ -9351,7 +9437,10 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
     // changing the already visible frame. An index over all types must not
     // weaken the original per-Event type check or silently reclassify history.
     {
-        let mut sessions = peer.sessions.lock().unwrap();
+        let mut sessions = peer
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = sessions.get_mut(&session.id).unwrap();
         let message = record
             .events
@@ -9363,7 +9452,7 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
     let before = peer
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .clone();
@@ -9374,7 +9463,7 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
     let after = peer
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .unwrap()
         .clone();
@@ -9673,7 +9762,11 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
     runtime.coordinated.lock()[0].target = CoordinatedThreadTarget::Advisor {
         model: String::new(),
     };
-    state.sessions.lock().unwrap().remove(&session.id);
+    state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .remove(&session.id);
     state.ensure_session(&session.id).await.unwrap();
     let recovered = state.get_thread(&session.id, child_id).unwrap();
     assert_eq!(recovered.status, SessionThreadStatus::Terminated, "A4/E5");
@@ -9943,7 +10036,11 @@ async fn advisor_failed_or_cancelled_terminal_never_delivers_partial_advice() {
 
     state.refresh_committed_events(&session.id).await.unwrap();
     assert_projection(&state, "T1-T2 warm");
-    state.sessions.lock().unwrap().remove(&session.id);
+    state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .remove(&session.id);
     state.ensure_session(&session.id).await.unwrap();
     assert_projection(&state, "T3 cold");
 }
@@ -10367,7 +10464,11 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
         .list_events(&session.id, None, None, false)
         .unwrap()
         .data;
-    state.sessions.lock().unwrap().remove(&session.id);
+    state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .remove(&session.id);
     state.ensure_session(&session.id).await.unwrap();
     let cold_history = state
         .list_events(&session.id, None, None, false)
@@ -10641,7 +10742,11 @@ async fn synthetic_pending_tool_uses_the_awaiting_commit_as_its_projection_ancho
         "S1/E2"
     );
 
-    state.sessions.lock().unwrap().remove(&session.id);
+    state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .remove(&session.id);
     state.refresh_committed_events(&session.id).await.unwrap();
     let cold = state
         .list_events(&session.id, None, None, false)
@@ -10968,7 +11073,11 @@ async fn closed_remote_wait_projects_its_answerable_event_before_terminal_histor
         "H1/E1-E2 causal order"
     );
 
-    state.sessions.lock().unwrap().remove(&session.id);
+    state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .remove(&session.id);
     state.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         state
@@ -11246,7 +11355,11 @@ async fn committed_lifecycle_closes_cross_protocol_managed_projection_once() {
             RunState::Awaiting,
         ),
     ]);
-    state.sessions.lock().unwrap().remove(&thread);
+    state
+        .sessions
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .remove(&thread);
     // A real atomic prefix includes the current Run record. Awaiting without
     // its answerable ticket is a recovery-required failure, not a valid partial
     // snapshot with its Run metadata omitted by a separate fixture feed.
@@ -11402,7 +11515,10 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         "O1/E1 no inferred tool disposition or terminal"
     );
     assert!(
-        !state.sessions.lock().unwrap()[&session.id]
+        !state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))[&session.id]
             .message_was_projected(&session.id, &tool_message.id.0),
         "O1/E1 source remains revisitable"
     );
@@ -11490,7 +11606,10 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         "O2/E2 Thread and aggregate reference the exact answerable Event"
     );
     assert!(
-        !state.sessions.lock().unwrap()[&session.id]
+        !state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))[&session.id]
             .message_was_projected(&session.id, &tool_message.id.0),
         "O2/E2 unresolved sibling retains the source Message"
     );
@@ -11618,7 +11737,10 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
         "O4/E4 first result exact-once"
     );
     assert!(
-        state.sessions.lock().unwrap()[&session.id]
+        state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))[&session.id]
             .message_was_projected(&session.id, &tool_message.id.0),
         "O4/E4 fully classified source advances exactly once"
     );
@@ -11861,7 +11983,10 @@ async fn model_request_spans_are_paired_and_keep_required_zero_usage_on_error() 
         next_commit_ordinal: 1,
     };
     let child_events = {
-        let mut sessions = state.sessions.lock().unwrap();
+        let mut sessions = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
         let record = sessions.get_mut(&session.id).unwrap();
         ManagedState::append_run_observation_projections(record, &session.id, &snapshot).unwrap();
         let once = record.events.len();

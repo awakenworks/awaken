@@ -88,21 +88,21 @@ cargo clippy --workspace --all-features --all-targets --locked -- -D warnings \
 cargo clippy --workspace --all-features --lib --bins --locked -- -D warnings
 ```
 
-## `_poisoned_lock_fitness.py`
+## The refusal is not `Debug` (2026-11-06)
 
-The clippy rule replaces the guard's L1 for `std` locks across the whole
-workspace, wider than the guard's executor-and-realization scope. It does not
-replace two semantic spellings: an `InvariantLock` refusal unwrapped with
-`.lock().expect(..)` / `.unwrap()` (L1 on the new type), and a typed refusal
-expected away with a poison-naming message (L2). Clippy cannot tell those
-apart from a legitimate `Result::expect`, so the guard stays, now as a
-no-baseline deny over all production code except `awaken-sync`, naming
-`InvariantLock` in its messages. A Clippy annotation may permit a foreign
-API's required `std` lock representation; it never exempts the item's poison
-handling from L1 or L2. A direct poison expect matching both rules produces
-one L1 diagnostic. An independent or indirect poison expect still produces
-L2, including on the same line. The guard retires when an invariant refusal
-can be unwrapped only through a typed route.
+The clippy rule holds `std` locks across the whole workspace. An
+`InvariantLock` refusal is held by its type: `LockPoisoned` and
+`TryLockFailure` implement neither `Debug` nor `std::error::Error`, and
+`Result::expect`/`unwrap` need `E: Debug`, so unwrapping a poison refusal
+away does not compile, in production or in tests (the `compile_fail`
+doctests on both types are the negative examples). An owner converts the
+refusal once with `From<LockPoisoned>`, storing its `guarded()` type name or
+its `Display` text; a test that must panic states it with
+`unwrap_or_else(|poisoned| panic!("{poisoned}"))`. This retired
+`_poisoned_lock_fitness.py`, whose L1/L2 regexes read production code only.
+Not held any more: a poison-naming `.expect` on something that is not a
+lock acquisition (`lock.lock().ok().expect("poisoned")`), which is a
+deliberate conversion rather than the accidental unwrap the rule targeted.
 
 ## Classification
 
