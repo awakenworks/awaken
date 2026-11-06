@@ -74,24 +74,18 @@ pub struct GenaiExecutor {
 }
 
 impl GenaiExecutor {
-    /// Use an explicitly configured client. Product composition must prefer
-    /// [`Self::from_materialized_endpoint`]; this constructor exists for adapters/tests with
-    /// another explicit `ServiceTargetResolver`. There is intentionally no
-    /// `Default`/`new` path because the SDK default reads ambient provider env.
-    pub fn with_client(client: Client) -> Self {
-        Self::with_client_and_adapter(client, None)
-    }
-
     /// Construct from a custom client while retaining the provider dialect
     /// needed to replay provider-specific assistant continuation blocks.
+    ///
+    /// Product composition uses [`Self::from_materialized_endpoint`]. There is
+    /// intentionally no `Default`/`new` path, because the SDK's
+    /// `genai::Client::default()` reads ambient provider env; naming a
+    /// `genai::Client` at all requires a direct `genai` dependency, which
+    /// `deny.toml` admits only for this adapter and the devtools example.
     pub fn with_client_for_adapter(client: Client, adapter: AdapterKind) -> Self {
-        Self::with_client_and_adapter(client, Some(adapter))
-    }
-
-    fn with_client_and_adapter(client: Client, adapter: Option<AdapterKind>) -> Self {
         Self {
             client,
-            adapter,
+            adapter: Some(adapter),
             provider_kind: None,
             unspecified_reasoning: Default::default(),
         }

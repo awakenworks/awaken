@@ -1,19 +1,16 @@
-"""Keep ambient provider construction outside shipped execution paths.
+"""Keep the GenAI transport adapter on transport-ready facts.
 
 Environment reads moved to the compiler: the workspace `clippy.toml` denies
-`std::env::{var, var_os, vars, vars_os}` in production code, and a composition
-root states its read with a reviewed `#[expect(clippy::disallowed_methods)]`
-(docs/design/guard-consolidation.md R11; wider than the provider-variable name
-list this guard held). Two rules stay here because clippy cannot name them:
+`std::env::{var, var_os, vars, vars_os}` in production code (R11). The ambient
+SDK default moved to Cargo (R12): `deny.toml` admits a direct `genai`
+dependency only for `awaken-provider-genai` and the devtools example, so no
+other crate can name `genai::Client` (or its `Default`), and `GenaiExecutor`
+has no `Default`/`new`. One rule stays here because no tool can name it: the
+GenAI transport adapter consumes only transport-ready facts (no Control,
+access, custody, placement or scope vocabulary) and exposes one materialized
+constructor.
 
-* an ambient SDK default: `genai::Client::default()` or `GenaiExecutor::default()`
-  resolves to the trait method `Default::default`, which a disallowed-methods
-  path cannot single out (R12);
-* the GenAI transport adapter consumes only transport-ready facts and exposes one
-  materialized constructor.
-
-Retires when the GenAI SDK client has no `Default` implementation reachable from
-the workspace, and the transport rule moves into the adapter's types.
+Retires when the transport rule moves into the adapter's types.
 """
 
 from __future__ import annotations
@@ -23,10 +20,6 @@ from pathlib import Path
 
 import _crate_boundary_workspace
 
-
-AMBIENT_SDK_CONSTRUCTOR = re.compile(
-    r"(?:GenaiExecutor::(?:new|default)|genai::Client::default)\s*\("
-)
 
 GENAI_PARALLEL_CONSTRUCTOR = re.compile(
     r"(?:pub\s+fn\s+(?:anthropic_compatible|vertex_gemini|new_for_provider)\b|"
@@ -123,23 +116,9 @@ def _genai_transport_errors(repo_root: Path, crates: Path) -> list[str]:
 
 
 def check_all(repo_root: Path, crates: Path) -> list[str]:
-    """Reject ambient provider SDK construction in shipped Rust code.
+    """Reject control-plane vocabulary and parallel constructors in the adapter."""
 
-    Devtools and test targets remain explicit fixtures and are never product
-    composition roots.
-    """
-
-    errors: list[str] = []
-    for path in crates.glob("**/*.rs"):
-        relative = path.relative_to(crates)
-        if relative.parts[0] == "devtools" or "tests" in relative.parts:
-            continue
-        if AMBIENT_SDK_CONSTRUCTOR.search(path.read_text(encoding="utf-8")):
-            errors.append(
-                f"{path.relative_to(repo_root)}: ambient provider SDK defaults are "
-                "forbidden; construct the adapter from published endpoint and credential facts"
-            )
-    return errors + _genai_transport_errors(repo_root, crates)
+    return _genai_transport_errors(repo_root, crates)
 
 
 def selftest() -> None:

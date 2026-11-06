@@ -58,6 +58,18 @@ deny = [
         "opentelemetry-http",
         "opentelemetry-otlp",
     ] },
+    # The GenAI SDK's `Client::default()` reads ambient provider environment
+    # variables, and clippy cannot single out a `Default::default` path. A crate
+    # that cannot name `genai` cannot build that client, so the adapter's one
+    # materialized constructor (`GenaiExecutor::from_materialized_endpoint`) is
+    # the only route; `GenaiExecutor` itself has no `Default`/`new`.
+    { crate = "genai", reason = "construct a GenaiExecutor from a materialized endpoint (awaken-provider-genai)", wrappers = [
+        # The GenAI transport adapter.
+        "awaken-provider-genai",
+        # A devtools example program that builds its own compatible-gateway
+        # client; it is its own process root and is never shipped.
+        "awaken-runtime-examples",
+    ] },
     { crate = "rustls", reason = "only the transport authority selects the rustls provider", wrappers = [
         "awaken-outbound-http",
         # Third-party TLS clients and connectors.
