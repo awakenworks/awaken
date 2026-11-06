@@ -168,7 +168,7 @@ fn execution_builder(
     .with_skill_bundle_source(inputs.skill_bundles.clone())
     .with_skill_catalog_application(inputs.skill_catalog.clone())
     .with_web_search_provider_registry(inputs.web_search.clone())
-    .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
+    .with_acp_tool_exporter(Arc::new(awaken_execution_composition::SessionToolExporter))
     .with_remote_attempt_executor(crate::a2a_attempt_executor(credentials.clone()))
     .with_agent_publications(inputs.agent_publications.clone())
     .with_capture_sink(inputs.capture_sink.clone())
