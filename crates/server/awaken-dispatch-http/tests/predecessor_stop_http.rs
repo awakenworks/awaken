@@ -2379,6 +2379,60 @@ async fn reported_local_entry_closure_recovers_without_stopping_a_healthy_worker
 }
 
 #[tokio::test]
+async fn quiesced_exact_incarnation_still_reports_its_entry_closure() {
+    // Q1 a drained incarnation that published quiescence holds no other
+    // authority, yet the exact quiescence ACK of its own physical attempt is
+    // still admitted: closure needs no current/Ready/TTL standing.
+    let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 1_000, 5_000).await;
+    let old_worker = f.binding.worker().clone();
+    let heartbeat = WorkerHeartbeat {
+        sequence: 2,
+        ready: true,
+        in_flight: 0,
+        warm_environment_shapes: Default::default(),
+        credential_observations: Default::default(),
+        acp_capability_observations: Default::default(),
+        source_retention: Default::default(),
+    };
+    assert_eq!(
+        f.directory
+            .heartbeat(&old_worker, heartbeat, 200, 10_000)
+            .await
+            .unwrap(),
+        awaken_dispatch::RegistryMutation::Applied,
+        "Q0 live Worker premise"
+    );
+    assert_eq!(
+        f.directory.begin_drain(&old_worker, 10_000).await.unwrap(),
+        awaken_dispatch::RegistryMutation::Applied
+    );
+    assert_eq!(
+        f.directory.mark_quiesced(&old_worker).await.unwrap(),
+        awaken_dispatch::RegistryMutation::Applied
+    );
+    let _probe = AttemptStopProbe::install(&f);
+    let reply = reqwest::Client::new()
+        .post(format!("{}/v1/worker/dispatch/attempt/close", f.address))
+        .header("x-awaken-worker-id", &old_worker.worker_id)
+        .json(&json!({"identity": old_worker, "claim": f.old}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reply.status(), reqwest::StatusCode::OK, "Q1");
+    assert_eq!(reply.json::<Value>().await.unwrap()["closed"], true, "Q1");
+    assert_eq!(
+        f.directory
+            .incarnation(&old_worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .snapshot
+            .state,
+        WorkerState::Quiesced
+    );
+}
+
+#[tokio::test]
 async fn committed_terminal_stop_rejects_unproven_or_changed_originals() {
     // Causes: C1 exact committed Ended Run/Thread; C2 exact occupied original
     // summary/live slot consistent; C3 original binding present; C4 Registry expired/closed, including

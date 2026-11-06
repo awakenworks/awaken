@@ -32,6 +32,17 @@ pub enum WorkerStanding {
     Dead,
 }
 
+impl WorkerStanding {
+    /// Whether the incarnation may still exercise authority it already holds
+    /// (renew, commit, Session realization, Resource access) and start the
+    /// physical attempt of a claim it holds. Quiesced has published that it
+    /// holds nothing; Expired and Dead hold no authority at all.
+    #[must_use]
+    pub const fn holds_authority(self) -> bool {
+        matches!(self, Self::Starting | Self::Ready | Self::Draining)
+    }
+}
+
 impl WorkerSnapshot {
     /// The one decision of what this incarnation may do at `now_ms`.
     #[must_use]
@@ -182,6 +193,23 @@ mod tests {
                 expected,
                 "{state:?} live={live}"
             );
+        }
+    }
+
+    #[test]
+    fn held_authority_decision_table() {
+        // Only a live incarnation that has not published quiescence keeps the
+        // authority it holds; a drained, lapsed or dead one keeps none.
+        use WorkerStanding as S;
+        for (standing, holds) in [
+            (S::Starting, true),
+            (S::Ready, true),
+            (S::Draining, true),
+            (S::Quiesced, false),
+            (S::Expired, false),
+            (S::Dead, false),
+        ] {
+            assert_eq!(standing.holds_authority(), holds, "{standing:?}");
         }
     }
 

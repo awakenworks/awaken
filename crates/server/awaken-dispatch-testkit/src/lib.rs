@@ -143,12 +143,20 @@ pub mod worker_http {
     }
 
     pub async fn ready_worker(worker_id: &str) -> (Arc<CurrentWorkerDirectory>, WorkerIdentity) {
+        worker_in_state(worker_id, WorkerState::Ready).await
+    }
+
+    /// The same fixed live incarnation in another lifecycle state.
+    pub async fn worker_in_state(
+        worker_id: &str,
+        state: WorkerState,
+    ) -> (Arc<CurrentWorkerDirectory>, WorkerIdentity) {
         let manifest = current_dispatch_codec_manifest();
         let identity = WorkerIdentity::new(worker_id, format!("{worker_id}-boot"), 1);
         let registered = RegisteredWorker {
             snapshot: WorkerSnapshot {
                 identity: identity.clone(),
-                state: WorkerState::Ready,
+                state,
                 capability_fingerprint: manifest
                     .fingerprint()
                     .expect("fixture manifest fingerprints"),

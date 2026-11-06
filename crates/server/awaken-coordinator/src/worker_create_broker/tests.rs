@@ -605,13 +605,14 @@ async fn private_seal_route_allows_draining_without_create_admission() {
 
 #[tokio::test]
 async fn private_seal_route_uses_existing_non_ready_control_admission() {
-    // The canonical non-Ready control policy also admits Starting and Quiesced
-    // when the exact authenticated registration and lease remain live. P1 a
-    // real ready=false heartbeat -> Starting; P2 begin_drain -> mark_quiesced.
-    // Both -> Seal200/Unknown with the original capture profile, Create400 and
-    // zero API. Ready and Draining are S1/S3 above; Dead, exact expiry and wrong
-    // authority are N1..N8 below. This covers every Worker lifecycle state
-    // without adding another state-policy table or treating Unknown as closure.
+    // The canonical held-authority policy admits Starting but not Quiesced,
+    // even while the exact authenticated registration and lease remain live.
+    // P1 a real ready=false heartbeat -> Starting -> Seal200/Unknown with the
+    // original capture profile. P2 begin_drain -> mark_quiesced -> Seal400: a
+    // Quiesced incarnation has published that it holds nothing. Both ->
+    // Create400 and zero API. Ready and Draining are S1/S3 above; Dead, exact
+    // expiry and wrong authority are N1..N8 below. This covers every Worker
+    // lifecycle state without treating Unknown as closure.
     for cause in ["starting", "quiesced"] {
         let (fixture, identity) = fixture::ready_route_fixture().await;
         if cause == "starting" {
@@ -657,7 +658,15 @@ async fn private_seal_route_uses_existing_non_ready_control_admission() {
             .oneshot(request(SEAL_PATH, fixture::seal_body(&identity)))
             .await
             .unwrap();
-        fixture::assert_unknown_seal(response, cause).await;
+        if cause == "starting" {
+            fixture::assert_unknown_seal(response, cause).await;
+        } else {
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "P2 Seal/{cause}"
+            );
+        }
         assert_eq!(fixture.api_calls.load(Ordering::SeqCst), 0, "Seal/{cause}");
     }
 }

@@ -134,13 +134,13 @@ pub fn verify_registered_worker_identity(
     if &snapshot.identity != identity {
         return Err("worker incarnation is stale".into());
     }
-    let admitted = match snapshot.standing(now_ms) {
-        WorkerStanding::Ready => true,
-        // Authority the incarnation already holds needs only a live lease.
-        WorkerStanding::Starting | WorkerStanding::Draining | WorkerStanding::Quiesced => {
-            !require_ready
-        }
-        WorkerStanding::Expired | WorkerStanding::Dead => false,
+    let standing = snapshot.standing(now_ms);
+    // New work needs Ready; authority the incarnation already holds needs a
+    // live incarnation that has not published quiescence.
+    let admitted = if require_ready {
+        standing == WorkerStanding::Ready
+    } else {
+        standing.holds_authority()
     };
     if !admitted {
         return Err("worker is not ready or its registry lease expired".into());
@@ -1285,9 +1285,10 @@ mod tests {
     #[test]
     fn registered_worker_record_admission_has_one_identity_liveness_and_ready_law() {
         // Cause/effect graph: C1 all three subject coordinates match; C2 lease
-        // expiry is strictly after now; C3 state is not Dead; C4 this caller
-        // requires Ready. R1 !C1 -> the original stale error, before any state
-        // error; R2 C1 + (!C2 || !C3 || (C4 && state!=Ready)) -> the original
+        // expiry is strictly after now; C3 state is neither Dead nor Quiesced
+        // (a Quiesced incarnation has published that it holds nothing); C4 this
+        // caller requires Ready. R1 !C1 -> the original stale error, before any
+        // state error; R2 C1 + (!C2 || !C3 || (C4 && state!=Ready)) -> the original
         // liveness error; R3 otherwise -> admission. Cross all five states,
         // expiry before/equal/after now, four subject rows and both caller modes
         // (120 rules). Other placement/capacity axes stay fixed: they are not
@@ -1331,6 +1332,7 @@ mod tests {
                             Err("worker incarnation is stale".into())
                         } else if expires_at_ms <= 100
                             || state == WorkerState::Dead
+                            || state == WorkerState::Quiesced
                             || (require_ready && state != WorkerState::Ready)
                         {
                             Err("worker is not ready or its registry lease expired".into())

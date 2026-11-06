@@ -265,3 +265,53 @@ async fn remote_skill_source_requires_resource_authority_and_custom_kind() {
         .expect_err("built-in Skill stays runtime-owned");
     assert!(wrong_kind.to_string().contains("custom Skill"));
 }
+
+/// S8 a live exact incarnation that published quiescence holds no Resource
+/// authority: even its own live claim is refused before the Skill source.
+#[tokio::test]
+async fn quiesced_incarnation_cannot_read_a_skill_bundle_with_its_own_claim() {
+    let stored = version("review", 1, b"---\ndescription: exact\n---\nREVIEW");
+    let frozen = binding(&stored);
+    let store = Arc::new(InMemorySkillStore::new());
+    store
+        .create(
+            SkillDefinition {
+                id: "review".into(),
+                workspace_id: "workspace-skill".into(),
+                display_title: None,
+                latest_version: 1,
+                last_version: 1,
+                timestamps: Default::default(),
+            },
+            stored,
+        )
+        .await
+        .unwrap();
+    let (directory, identity) = support::worker_in_state(
+        "worker-skill-quiesced",
+        awaken_worker_contract::WorkerState::Quiesced,
+    )
+    .await;
+    let dispatch = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
+    let claim = claimed_dispatch(&dispatch, &frozen, &identity.lease_owner()).await;
+    let service = Arc::new(WorkerSkillBundleService::new(
+        Arc::new(StoreSkillBundleSource::new(store)),
+        dispatch,
+        Arc::new(HeaderWorkerAuthenticator),
+        directory,
+        awaken_time::system_clock(),
+    ));
+    let address = support::serve(worker_skill_bundle_router(service)).await;
+    let source = HttpSkillBundleSource::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity),
+    );
+    let refused = source
+        .load(
+            "workspace-skill",
+            &frozen,
+            Some(&ResourceOperationFence::Run(claim)),
+        )
+        .await
+        .expect_err("S8 a Quiesced incarnation holds no Resource authority");
+    assert!(refused.to_string().contains("403"), "S8: {refused}");
+}
