@@ -5,11 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
+api_snapshot = true
 context = "shared"
-product = "platform"
-bounded_context = "protocols"
+product = "sdk"
+bounded_context = "agent-runtime"
 layer = "interface"
 authority = "mcp-server-core"
+separation = "publish"
 description = "Runtime-neutral MCP server lifecycle, dispatch, and Streamable HTTP semantics"
 
 [dependencies]

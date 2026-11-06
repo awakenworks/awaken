@@ -14,6 +14,10 @@ authority = "execution-composition"
 separation = "process"
 
 [dependencies]
+axum = "0.8"
+awaken-tool-contract.workspace = true
+awaken-agent-channel.workspace = true
+awaken-protocol-mcp.workspace = true
 awaken-deployment-config.workspace = true
 awaken-credential-contract.workspace = true
 # The Session owner whose container-tier provider this crate selects and installs.
@@ -62,6 +66,8 @@ podman = ["awaken-sandbox-container/podman", "dep:awaken-package-image", "awaken
 k8s = ["dep:awaken-sandbox-kubernetes", "dep:awaken-worker-fleet-kubernetes", "dep:awaken-package-image", "awaken-package-image/k8s"]
 
 [dev-dependencies]
+awaken-mcp-wire.workspace = true
+awaken-ext-mcp.workspace = true
 awaken-tool-contract.workspace = true
 # Test access to the adapters behind the installed role handles (`at_root`).
 awaken-session-environment = { workspace = true, features = ["test-support"] }

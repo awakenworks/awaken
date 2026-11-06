@@ -55,7 +55,6 @@ awaken-session-environment-contract.workspace = true
 # Assembles the container-tier Session environment the deployment names.
 awaken-execution-composition.workspace = true
 awaken-container-contract.workspace = true
-awaken-protocol-mcp.workspace = true
 # The neutral host substrate: ExecutorComponents, the dispatch pool, and the worker dispatch
 # store that routes the drain over HTTP to the cell server.
 awaken-dispatch-execution.workspace = true

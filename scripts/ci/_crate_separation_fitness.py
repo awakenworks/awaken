@@ -118,7 +118,6 @@ UNJUSTIFIED: frozenset[str] = frozenset(
         "awaken-dream-application",
         "awaken-durable-projection",
         "awaken-environment-package-image-builder",
-        "awaken-mcp-server-core",
         "awaken-model-catalog",
         "awaken-resource-reclaimer",
         "awaken-sandbox-control-transport",

@@ -33,9 +33,6 @@
       "awaken_runtime_contract::compaction": 3,
       "awaken_runtime_contract::model_operation": 1
     },
-    "awaken-protocol-mcp": {
-      "awaken_runtime_contract::plugin": 1
-    },
     "awaken-dispatch": {
       "awaken_agent_contract::stream::checkpoint": 4,
       "awaken_agent_contract::stream::sink": 1,
