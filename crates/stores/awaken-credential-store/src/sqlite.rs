@@ -1075,6 +1075,67 @@ impl SealedBlobStore for SqliteSealedBlobStore {
     }
 }
 
+impl SqliteCredentialRepo {
+    async fn replace_source_mutation_snapshot(
+        &self,
+        intent: &CredentialMutationIntent,
+        next: CredentialMutationIntent,
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        let p = NS;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage)?;
+        let durable_data: Option<String> = sqlx::query_scalar(&format!(
+            "SELECT data FROM {p}_creation_intent WHERE source_id = ?1"
+        ))
+        .bind(&intent.after.id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let durable: CredentialMutationIntent = durable_data
+            .map(|data| serde_json::from_str(&data).map_err(storage))
+            .transpose()?
+            .ok_or_else(|| {
+                CredentialError::MutationConflict(
+                    "credential material mutation has no durable pending fact".into(),
+                )
+            })?;
+        if &durable != intent {
+            return Err(CredentialError::MutationConflict(
+                "credential ready transition does not match its durable Writing owner".into(),
+            ));
+        }
+        if let Some(before) = next.acquisition_dispatch_predecessor() {
+            let data: Option<String> =
+                sqlx::query_scalar(&format!("SELECT data FROM {NS}_source WHERE id = ?1"))
+                    .bind(&before.id.0)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(storage)?;
+            let current = data
+                .map(|data| {
+                    let current: CredentialSource = serde_json::from_str(&data).map_err(storage)?;
+                    Ok::<_, CredentialError>(current)
+                })
+                .transpose()?;
+            next.validate_acquisition_dispatch_source(current.as_ref())?;
+        }
+        let data = serde_json::to_string(&next).map_err(storage)?;
+        sqlx::query(&format!(
+            "UPDATE {p}_creation_intent SET data = ?2 WHERE source_id = ?1"
+        ))
+        .bind(&intent.after.id.0)
+        .bind(data)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(next)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1542,66 +1603,5 @@ mod tests {
         repo.complete_managed_mutation(&reclaiming).await.unwrap();
         assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
         repo.complete_managed_mutation(&reclaiming).await.unwrap();
-    }
-}
-
-impl SqliteCredentialRepo {
-    async fn replace_source_mutation_snapshot(
-        &self,
-        intent: &CredentialMutationIntent,
-        next: CredentialMutationIntent,
-    ) -> Result<CredentialMutationIntent, CredentialError> {
-        let p = NS;
-        let mut tx = self
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(storage)?;
-        let durable_data: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_creation_intent WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?;
-        let durable: CredentialMutationIntent = durable_data
-            .map(|data| serde_json::from_str(&data).map_err(storage))
-            .transpose()?
-            .ok_or_else(|| {
-                CredentialError::MutationConflict(
-                    "credential material mutation has no durable pending fact".into(),
-                )
-            })?;
-        if &durable != intent {
-            return Err(CredentialError::MutationConflict(
-                "credential ready transition does not match its durable Writing owner".into(),
-            ));
-        }
-        if let Some(before) = next.acquisition_dispatch_predecessor() {
-            let data: Option<String> =
-                sqlx::query_scalar(&format!("SELECT data FROM {NS}_source WHERE id = ?1"))
-                    .bind(&before.id.0)
-                    .fetch_optional(&mut *tx)
-                    .await
-                    .map_err(storage)?;
-            let current = data
-                .map(|data| {
-                    let current: CredentialSource = serde_json::from_str(&data).map_err(storage)?;
-                    Ok::<_, CredentialError>(current)
-                })
-                .transpose()?;
-            next.validate_acquisition_dispatch_source(current.as_ref())?;
-        }
-        let data = serde_json::to_string(&next).map_err(storage)?;
-        sqlx::query(&format!(
-            "UPDATE {p}_creation_intent SET data = ?2 WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .bind(data)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
-        tx.commit().await.map_err(storage)?;
-        Ok(next)
     }
 }
