@@ -47,7 +47,14 @@ impl ResourcePurgeGuard for ResourceLifecycleGuard {
                     "memory:{:?}:config:{}",
                     definition.state, definition.current_config_version.0
                 )),
-                None => None,
+                None => {
+                    return Err(ResourcePurgeError::IncompleteReferenceObservation {
+                        detail: format!(
+                            "MemoryStore `{}` has no lifecycle definition in Workspace `{}`",
+                            target.resource_id, target.workspace_id
+                        ),
+                    });
+                }
             },
             ResourceKind::Repository => self
                 .registry

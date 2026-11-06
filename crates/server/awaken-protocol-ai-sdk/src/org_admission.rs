@@ -102,32 +102,75 @@ mod tests {
         assert_eq!(org_admission_class(&Method::GET, "/v1/ag-ui/x"), None, "S3");
     }
 
-    #[test]
-    fn a_refused_request_keeps_the_adapter_plain_text_error_shape() {
-        let decision = OrgAdmissionDecision {
-            allowed: false,
-            limit: 3,
-            remaining: 0,
-            retry_after: Some(20),
-            reset_after: 60,
-            reset_at_unix_ms: 0,
-        };
-        let response = org_admission_rejected("/", OrgOperation::Create, &decision);
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(response.headers()[header::RETRY_AFTER], "20");
-        assert_eq!(
-            org_admission_scope_missing("/").status(),
-            StatusCode::SERVICE_UNAVAILABLE
-        );
-        assert_eq!(
-            org_admission_unavailable(
-                "/",
-                &OrgAdmissionUnavailable {
-                    message: "down".into()
-                }
-            )
-            .status(),
-            StatusCode::SERVICE_UNAVAILABLE
-        );
+    #[tokio::test]
+    async fn a_refused_request_keeps_the_adapter_plain_text_error_shape() {
+        use http_body_util::BodyExt as _;
+
+        // Causes: C1 missing trusted scope; C2 unavailable limiter; C3 refused
+        // Create/Read bucket; C4 Retry-After present/absent. All errors retain
+        // this adapter's plain-text body and Content-Type, not only its status.
+        // | Rule | Cause       | Status | Body                         | Retry |
+        // | E1   | C1          | 503    | exact missing-scope message  | none  |
+        // | E2   | C2          | 503    | exact limiter error          | none  |
+        // | E3   | C3 x C4     | 429    | exact operation-specific text| C4    |
+        // E3 crosses both operations with both optional-header branches.
+        let mut cases = vec![
+            (
+                org_admission_scope_missing("/v1/ai-sdk/chat"),
+                StatusCode::SERVICE_UNAVAILABLE,
+                None,
+                "request has no trusted Workspace scope",
+            ),
+            (
+                org_admission_unavailable(
+                    "/v1/ai-sdk/chat",
+                    &OrgAdmissionUnavailable {
+                        message: "down".into(),
+                    },
+                ),
+                StatusCode::SERVICE_UNAVAILABLE,
+                None,
+                "Org request limiter is unavailable: down",
+            ),
+        ];
+        for (operation, body) in [
+            (OrgOperation::Create, "Org Create request limit exceeded"),
+            (OrgOperation::Read, "Org Read request limit exceeded"),
+        ] {
+            for retry_after in [Some(20), None] {
+                let decision = OrgAdmissionDecision {
+                    allowed: false,
+                    limit: 3,
+                    remaining: 0,
+                    retry_after,
+                    reset_after: 60,
+                    reset_at_unix_ms: 0,
+                };
+                cases.push((
+                    org_admission_rejected("/v1/ai-sdk/chat", operation, &decision),
+                    StatusCode::TOO_MANY_REQUESTS,
+                    retry_after.map(|_| "20"),
+                    body,
+                ));
+            }
+        }
+        for (response, status, retry_after, body) in cases {
+            assert_eq!(response.status(), status, "{body}");
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                "text/plain; charset=utf-8",
+                "{body}"
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::RETRY_AFTER)
+                    .map(|value| value.to_str().unwrap()),
+                retry_after,
+                "{body}",
+            );
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(bytes.as_ref(), body.as_bytes(), "exact public error body");
+        }
     }
 }

@@ -129,6 +129,29 @@ impl BuiltInDreamAgent {
         }
     }
 
+    async fn validate_source(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
+        self.catalog
+            .resolve_memory_store(&request.workspace_id, &request.source_memory_store_id)
+            .await
+            .map(|_| ())
+            .map_err(|error| DreamFailure::new("input_memory_store_unavailable", error.to_string()))
+    }
+
+    async fn source_snapshot(&self, request: &DreamRequest) -> Result<Vec<Memory>, DreamFailure> {
+        self.validate_source(request).await?;
+        let files = self
+            .snapshots
+            .snapshot_heads(&request.source_memory_store_id)
+            .await
+            .map_err(|error| {
+                DreamFailure::new("input_memory_store_unavailable", error.to_string())
+            })?;
+        // Snapshot IO can outlive a lifecycle change. Do not clone or publish
+        // its bytes if the original scoped authority was revoked while reading.
+        self.validate_source(request).await?;
+        Ok(files)
+    }
+
     async fn export_transcripts(
         &self,
         request: &DreamRequest,
@@ -360,12 +383,7 @@ impl DreamExecutor for BuiltInDreamAgent {
                 .validate_profiled_agent(&request.workspace_id, &request.agent_id)
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         }
-        self.catalog
-            .resolve_memory_store(&request.workspace_id, &request.source_memory_store_id)
-            .await
-            .map_err(|error| {
-                DreamFailure::new("input_memory_store_unavailable", error.to_string())
-            })?;
+        self.validate_source(request).await?;
         for session_id in &request.session_ids {
             self.sessions
                 .queries()
@@ -420,6 +438,10 @@ impl DreamExecutor for BuiltInDreamAgent {
                 transcript_file_ids: Vec::new(),
             });
         }
+        // A completed preparation already owns its independent frozen input.
+        // New preparation must resolve the source before changing private data,
+        // then revalidate across the later snapshot IO through the same owner.
+        self.validate_source(request).await?;
         // A crash before the result catalog record commits may leave a partial
         // deterministic clone. No Agent could have received it yet, so reclaim it
         // and rebuild from one fresh atomic source snapshot.
@@ -469,13 +491,7 @@ impl DreamExecutor for BuiltInDreamAgent {
         }
         let snapshot = MemoryStoreContentSnapshot {
             snapshot_memory_store_id: snapshot_id.clone(),
-            files: self
-                .snapshots
-                .snapshot_heads(&request.source_memory_store_id)
-                .await
-                .map_err(|error| {
-                    DreamFailure::new("input_memory_store_unavailable", error.to_string())
-                })?,
+            files: self.source_snapshot(request).await?,
         };
         validate_input_memory_size(&snapshot.files, DREAM_INPUT_MEMORY_LIMIT_BYTES)?;
         for head in &snapshot.files {

@@ -2,19 +2,27 @@
 //! store's authorization boundary.
 use super::*;
 use awaken_resource_contract::MemErr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Counts every source snapshot read while delegating to the real selected source.
 struct CountingSnapshots {
     original: Arc<dyn MemorySnapshotSource>,
     reads: AtomicUsize,
+    pause_after_read: AtomicBool,
+    captured: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
 }
 
 #[async_trait::async_trait]
 impl MemorySnapshotSource for CountingSnapshots {
     async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        self.original.snapshot_heads(store).await
+        let files = self.original.snapshot_heads(store).await?;
+        if self.pause_after_read.swap(false, Ordering::SeqCst) {
+            self.captured.notify_one();
+            self.resume.notified().await;
+        }
+        Ok(files)
     }
 }
 
@@ -66,6 +74,9 @@ async fn fixture() -> Fixture {
     let counter = Arc::new(CountingSnapshots {
         original: authorities.memory_snapshot_source(),
         reads: AtomicUsize::new(0),
+        pause_after_read: AtomicBool::new(false),
+        captured: tokio::sync::Notify::new(),
+        resume: tokio::sync::Notify::new(),
     });
     agent.snapshots = counter.clone();
     Fixture {
@@ -131,11 +142,12 @@ async fn an_unauthorized_dream_source_is_refused_before_any_snapshot_read() {
     );
 }
 
-/// The source is authorized by `validate_inputs`, then deleted before
-/// `prepare`. `prepare` must refuse before reading the deleted source.
 #[tokio::test]
-#[ignore = "product gap: Dream prepare reads the source snapshot without re-resolving its authority (dream.rs:436)"]
 async fn prepare_re_resolves_the_source_before_its_snapshot_read() {
+    // C1 validation saw an Active source; C2 deletion commits before prepare.
+    // R1 C1+C2 => input_memory_store_unavailable, zero source reads, no private
+    // catalog entries and no newly admitted Session. Earlier validation is not
+    // an authorization receipt that survives a later lifecycle change.
     let fixture = fixture().await;
     let request = request("auth-toctou", "dream-source");
     fixture.agent.validate_inputs(&request).await.unwrap();
@@ -155,5 +167,166 @@ async fn prepare_re_resolves_the_source_before_its_snapshot_read() {
     assert!(
         matches!(&result, Err(failure) if failure.kind == "input_memory_store_unavailable"),
         "prepare refuses the deleted source"
+    );
+    for store in ["mem_snapshot_auth-toctou", "mem_result_auth-toctou"] {
+        assert!(
+            fixture
+                .resources
+                .memory_stores()
+                .get("default", store)
+                .await
+                .unwrap()
+                .is_none(),
+            "R1 no private catalog entry"
+        );
+    }
+    assert!(
+        fixture
+            .agent
+            .sessions
+            .queries()
+            .session_transcript("default", "sesn_dream_auth-toctou")
+            .await
+            .is_err(),
+        "R1 no Session admitted"
+    );
+}
+
+#[tokio::test]
+async fn source_snapshot_requires_a_current_active_source_in_the_request_workspace() {
+    // | Rule | definition | Workspace | lifecycle | Effect                 |
+    // | S1   | exists     | exact     | Active    | one complete snapshot  |
+    // | S2   | exists     | exact     | Suspended | refusal, zero reads    |
+    // | S3   | exists     | foreign   | Active    | refusal, zero reads    |
+    // | S4   | absent     | exact     | -         | refusal, zero reads    |
+    // Source reads use the same resolver as validate_inputs and prepare.
+    for (rule, source, workspace, state, allowed) in [
+        ("S1", "dream-source", "default", ResourceState::Active, true),
+        (
+            "S2",
+            "dream-source",
+            "default",
+            ResourceState::Suspended,
+            false,
+        ),
+        (
+            "S3",
+            "dream-source",
+            "foreign",
+            ResourceState::Active,
+            false,
+        ),
+        ("S4", "missing", "default", ResourceState::Active, false),
+    ] {
+        let fixture = fixture().await;
+        if state != ResourceState::Active {
+            fixture
+                .resources
+                .memory_stores()
+                .set_state("default", "dream-source", state)
+                .await
+                .unwrap();
+        }
+        let mut request = request(rule, source);
+        request.workspace_id = workspace.into();
+        let snapshot = fixture.agent.source_snapshot(&request).await;
+        if allowed {
+            let files = snapshot.expect("S1 source remains authorized across the read");
+            assert_eq!(files.len(), 1, "{rule}");
+            assert_eq!(
+                files[0].content.as_deref(),
+                Some("source sentinel"),
+                "{rule}"
+            );
+        } else {
+            assert_eq!(
+                snapshot.unwrap_err().kind,
+                "input_memory_store_unavailable",
+                "{rule}"
+            );
+        }
+        assert_eq!(
+            fixture.counter.reads.load(Ordering::SeqCst),
+            usize::from(allowed),
+            "{rule}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_source_revoked_while_its_snapshot_is_read_is_not_cloned() {
+    // C1 the real content snapshot is captured; C2 its return is held while
+    // deletion commits; C3 the captured bytes return to prepare. R1 C1+C2+C3
+    // => typed refusal before any clone/output/Session, and a private snapshot
+    // remains Suspended. Notify barriers order the race without a timed sleep.
+    let fixture = fixture().await;
+    let request = request("auth-during-read", "dream-source");
+    fixture
+        .counter
+        .pause_after_read
+        .store(true, Ordering::SeqCst);
+    let (prepared, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(fixture.agent.prepare(&request), async {
+            fixture.counter.captured.notified().await;
+            fixture
+                .resources
+                .memory_stores()
+                .delete("default", "dream-source", 1)
+                .await
+                .unwrap();
+            fixture.counter.resume.notify_one();
+        })
+    })
+    .await
+    .expect("R1 both sides of the controlled revocation settle");
+    assert_eq!(
+        prepared.unwrap_err().kind,
+        "input_memory_store_unavailable",
+        "R1"
+    );
+    assert_eq!(
+        fixture.counter.reads.load(Ordering::SeqCst),
+        1,
+        "R1 one held source read"
+    );
+    let stores = fixture.resources.memory_stores();
+    assert_eq!(
+        stores
+            .get("default", "mem_snapshot_auth-during-read")
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ResourceState::Suspended,
+        "R1 no visible partial input"
+    );
+    assert!(
+        stores
+            .get("default", "mem_result_auth-during-read")
+            .await
+            .unwrap()
+            .is_none(),
+        "R1 no output"
+    );
+    assert!(
+        fixture
+            .resources
+            .authorities()
+            .memory_snapshot_source()
+            .snapshot_heads("mem_snapshot_auth-during-read")
+            .await
+            .unwrap()
+            .is_empty(),
+        "R1 no unauthorized bytes cloned"
+    );
+    assert!(
+        fixture
+            .agent
+            .sessions
+            .queries()
+            .session_transcript("default", "sesn_dream_auth-during-read")
+            .await
+            .is_err(),
+        "R1 no Session admitted"
     );
 }
