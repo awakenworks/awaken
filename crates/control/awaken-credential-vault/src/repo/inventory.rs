@@ -73,6 +73,7 @@ pub async fn inspect_credential_inventory(
                 .iter()
                 .flat_map(CredentialSource::material_refs)
                 .chain(intent.after.material_refs())
+                .chain(&intent.superseded_material_refs)
                 .map(|reference| reference.0.clone())
         })
         .chain(managed_pending.iter().flat_map(|mutation| {
@@ -131,6 +132,72 @@ pub async fn reconcile_credential_inventory(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn superseded_acquisition_material_remains_in_the_original_pending_inventory() {
+        // I1 explicit write supersedes an in-flight exchange, but cleanup has
+        // not run -> exact canceled refs are still WAL-owned, never orphans.
+        // I2 a new writer/source uses disjoint refs; inventory never broadens
+        // protection to an unrelated value (the existing decision table).
+        use crate::repo::{
+            CredentialMutationIntent, CredentialRepo, InMemoryCredentialRepo,
+            claim_token_publication,
+        };
+        use crate::{
+            CredentialCreateParams, CredentialKind, CredentialStatus, InMemorySecretStore,
+            SecretStore,
+        };
+        use awaken_agent_contract::RedactedString;
+        use awaken_time::WallClockExt as _;
+        let repo = InMemoryCredentialRepo::new();
+        let store = InMemorySecretStore::new();
+        let clock = awaken_time::system_clock();
+        let source = crate::repo::enter_credential(
+            CredentialCreateParams {
+                workspace_id: "inventory".into(),
+                kind: CredentialKind::Vault,
+                provider_id: None,
+                env_key: None,
+                secret: Some(RedactedString::new("original")),
+                oauth_command: None,
+            },
+            &store,
+            &repo,
+            clock.as_ref(),
+        )
+        .await
+        .unwrap();
+        let pending = claim_token_publication(
+            &source,
+            None,
+            "profile".into(),
+            false,
+            &repo,
+            clock.as_ref(),
+        )
+        .await
+        .unwrap();
+        for reference in pending.after.material_refs() {
+            store
+                .put(reference, RedactedString::new("candidate"))
+                .await
+                .unwrap();
+        }
+        let mut retired = source.clone();
+        retired.version += 1;
+        retired.status = CredentialStatus::Archived;
+        retired.material_ref = None;
+        retired.auxiliary_material_refs.clear();
+        let replacement =
+            CredentialMutationIntent::prepare(Some(source), retired, clock.now_ms()).unwrap();
+        let owned = repo
+            .supersede_acquisition(&pending, replacement, clock.now_ms())
+            .await
+            .unwrap();
+        assert!(!owned.superseded_material_refs.is_empty());
+        let inventory = inspect_credential_inventory(&store, &repo).await.unwrap();
+        assert!(inventory.orphaned_detected.is_empty());
+    }
 
     #[test]
     fn inventory_decision_table_preserves_every_protected_or_foreign_reference() {

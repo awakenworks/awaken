@@ -223,6 +223,10 @@ pub struct CredentialDescriptor {
     pub subject: Option<CredentialSubjectRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_unix_ms: Option<u64>,
+    /// Immutable acquisition configuration. Issued lifetimes/material stay in
+    /// the same Vault generation; this field never carries token values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquisition: Option<crate::CredentialTokenExchangeProfile>,
 }
 
 impl CredentialDescriptor {
@@ -239,6 +243,7 @@ impl CredentialDescriptor {
             permissions: BTreeSet::new(),
             subject: None,
             expires_at_unix_ms: None,
+            acquisition: None,
         }
     }
 
@@ -268,6 +273,22 @@ impl CredentialDescriptor {
     }
 
     pub fn validate(&self) -> Result<(), CredentialDescriptorError> {
+        if self
+            .acquisition
+            .as_ref()
+            .is_some_and(|v| v.validate().is_err())
+        {
+            return Err(CredentialDescriptorError::InvalidMetadata);
+        }
+        if let (Some(profile), CredentialMaterialDescriptor::Structured { fields, .. }) =
+            (&self.acquisition, &self.material)
+            && profile
+                .access_field
+                .as_ref()
+                .is_none_or(|field| !fields.contains(field))
+        {
+            return Err(CredentialDescriptorError::InvalidMetadata);
+        }
         if !valid_metadata_ref(&self.provider.0)
             || !valid_metadata_ref(&self.material.type_id().0)
             || self.targets.is_empty()

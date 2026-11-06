@@ -156,10 +156,82 @@ impl CredentialRepo for InMemoryCredentialRepo {
                 "credential changed before its material mutation was prepared".into(),
             ));
         }
+        if intent.acquisition.is_some()
+            && state.intents.values().any(|pending| {
+                pending.acquisition.is_some()
+                    && pending.before.as_ref().map(|v| &v.id)
+                        == intent.before.as_ref().map(|v| &v.id)
+            })
+        {
+            return Err(CredentialError::MutationConflict(
+                "this source already owns a token acquisition".into(),
+            ));
+        }
         state.intents.insert(intent.after.id.0.clone(), intent);
         Ok(true)
     }
 
+    async fn transition_acquisition(
+        &self,
+        intent: &CredentialMutationIntent,
+        phase: CredentialAcquisitionPhase,
+        now_unix_ms: u64,
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        let next = intent.transition_acquisition(phase, now_unix_ms)?;
+        let mut state = self.state()?;
+        next.validate_acquisition_dispatch_source(
+            next.acquisition_dispatch_predecessor()
+                .and_then(|before| state.rows.get(&before.id.0)),
+        )?;
+        let current = state.intents.get_mut(&intent.after.id.0).ok_or_else(|| {
+            CredentialError::MutationConflict("acquisition has no durable owner".into())
+        })?;
+        if current != intent {
+            return Err(CredentialError::MutationConflict(
+                "acquisition owner changed".into(),
+            ));
+        }
+        *current = next.clone();
+        Ok(next)
+    }
+
+    async fn supersede_acquisition(
+        &self,
+        intent: &CredentialMutationIntent,
+        replacement: CredentialMutationIntent,
+        now_unix_ms: u64,
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        let next = intent.supersede_acquisition(replacement, now_unix_ms)?;
+        let mut state = self.state()?;
+        let current = state.intents.get_mut(&intent.after.id.0).ok_or_else(|| {
+            CredentialError::MutationConflict("acquisition has no durable owner".into())
+        })?;
+        if current != intent {
+            return Err(CredentialError::MutationConflict(
+                "acquisition owner changed".into(),
+            ));
+        }
+        *current = next.clone();
+        Ok(next)
+    }
+
+    async fn pending_acquisition(
+        &self,
+        id: &CredentialSourceId,
+    ) -> Result<Option<CredentialMutationIntent>, CredentialError> {
+        let state = self.state()?;
+        let mut values = state
+            .intents
+            .values()
+            .filter(|v| v.acquisition.is_some() && v.before.as_ref().is_some_and(|b| b.id == *id));
+        let value = values.next().cloned();
+        if values.next().is_some() {
+            return Err(CredentialError::Storage(
+                "source has competing acquisition owners".into(),
+            ));
+        }
+        Ok(value)
+    }
     async fn mark_mutation_ready(
         &self,
         intent: &CredentialMutationIntent,
@@ -206,6 +278,17 @@ impl CredentialRepo for InMemoryCredentialRepo {
             .intents
             .insert(intent.after.id.0.clone(), plan.reclaiming_mutation.clone());
         Ok(plan.reclaiming_mutation)
+    }
+
+    async fn pending_mutation(
+        &self,
+        id: &CredentialSourceId,
+    ) -> Result<Option<CredentialMutationIntent>, CredentialError> {
+        let value = self.state()?.intents.get(&id.0).cloned();
+        if let Some(intent) = &value {
+            intent.validate_durable_key(&id.0)?;
+        }
+        Ok(value)
     }
 
     async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
