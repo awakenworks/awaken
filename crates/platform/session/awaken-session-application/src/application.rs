@@ -264,8 +264,9 @@ impl SessionPersistence {
 ///
 /// ```
 /// use awaken_session_application::{SessionApplication, SessionObservation};
+/// use awaken_runtime_contract::runs::RunError;
 /// use awaken_session_execution_contract::SessionThreadLiveSubscription;
-/// use awaken_runtime_contract::runs::{RunError};
+/// use awaken_session_types::SessionId;
 /// fn selected(application: &SessionApplication) -> std::sync::Arc<dyn SessionObservation> {
 ///     application.observations()
 /// }
@@ -381,7 +382,8 @@ impl SessionPersistence {
 ///
 /// ```
 /// use awaken_session_execution_contract::SessionCoordinationReads;
-/// /// async fn existing_role(reads: &dyn SessionCoordinationReads, session: &SessionId) {
+/// use awaken_session_types::SessionId;
+/// async fn existing_role(reads: &dyn SessionCoordinationReads, session: &SessionId) {
 ///     let _ = reads.coordinated_threads(session, None).await;
 /// }
 /// ```
@@ -390,7 +392,8 @@ impl SessionPersistence {
 ///
 /// ```
 /// use awaken_session_execution_contract::ThreadReads;
-/// /// async fn existing_role(reads: &dyn ThreadReads, session: &SessionId) {
+/// use awaken_session_types::SessionId;
+/// async fn existing_role(reads: &dyn ThreadReads, session: &SessionId) {
 ///     let _ = reads.session_thread_disposition(session, "thread").await;
 ///     let _ = reads.committed_outcome_projection("thread", "outcome").await;
 /// }
