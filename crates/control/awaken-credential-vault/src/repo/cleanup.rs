@@ -57,6 +57,7 @@ async fn reclaim_material(
     distinct: bool,
     before: Option<&CredentialSource>,
     after: &CredentialSource,
+    superseded: &std::collections::BTreeSet<crate::SecretRef>,
     store: &dyn crate::SecretStore,
 ) -> Result<(), CredentialError> {
     use std::collections::BTreeSet;
@@ -72,14 +73,18 @@ async fn reclaim_material(
             "credential material cleanup requires a terminal cleanup phase".into(),
         )
     })?;
-    let references = before.union(&after).copied().filter(|reference| {
-        reclamation_selected(
-            phase,
-            distinct,
-            before.contains(reference),
-            after.contains(reference),
-        ) == Some(true)
-    });
+    let references = before
+        .union(&after)
+        .copied()
+        .filter(|reference| {
+            reclamation_selected(
+                phase,
+                distinct,
+                before.contains(reference),
+                after.contains(reference),
+            ) == Some(true)
+        })
+        .chain(superseded);
     for reference in references {
         store.delete(reference).await?;
         match store.get(reference).await {
@@ -148,6 +153,7 @@ impl CredentialMutationIntent {
             self.is_distinct_replacement(),
             self.before.as_ref(),
             &self.after,
+            &self.superseded_material_refs,
             store,
         )
         .await
@@ -208,6 +214,7 @@ impl PendingManagedCredentialMutation {
             false,
             self.before_source.as_ref(),
             &self.after_source,
+            &std::collections::BTreeSet::new(),
             store,
         )
         .await
@@ -514,6 +521,7 @@ pub(super) mod tests {
                             distinct,
                             Some(&with_refs(before)),
                             &with_refs(after),
+                            &std::collections::BTreeSet::new(),
                             &store,
                         )
                         .await;

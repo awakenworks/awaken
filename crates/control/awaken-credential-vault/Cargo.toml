@@ -31,7 +31,7 @@ schemars = { version = "1", optional = true }
 serde_json.workspace = true
 # Feature `oauth-command`: refresh OAuth access tokens by running a helper
 # (e.g. `gcloud auth print-access-token`) — needs tokio's process API.
-tokio = { workspace = true, optional = true, features = ["process"] }
+tokio = { workspace = true, optional = true, features = ["process", "sync"] }
 
 [dev-dependencies]
 awaken-lease-testkit.workspace = true
@@ -44,6 +44,7 @@ default = []
 test-support = []
 schema = ["dep:schemars"]
 oauth-command = ["dep:tokio"]
+token-acquisition = ["dep:tokio"]
 
 [[test]]
 name = "material_set_lifecycle"

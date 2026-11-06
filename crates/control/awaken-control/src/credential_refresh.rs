@@ -3,29 +3,27 @@
 // @formal reason: Refresh path preserves revision-bound credential identity.
 //! Exact OAuth refresh and Vault rotation adapter.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::credential::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_agent_contract::credential::{CredentialRefreshAccess, TokenEndpointAuth};
 use awaken_credential_contract::CredentialRefreshFactory;
 use awaken_credential_contract::CredentialSourceId;
-use awaken_credential_vault::repo::{
-    CredentialMaterialPatch, CredentialRepo, rotate_credential_materials_exact,
-};
+use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{
-    CredentialStatus, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
+    CredentialStatus, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore,
 };
 use awaken_session_configuration_contract::{
     CredentialRefreshExchange, ProbeHttpResponse, RefreshExchangeOutcome, RefreshExchangeStatus,
 };
 use base64::Engine as _;
 
+#[derive(Clone)]
 pub struct VaultRefreshFactory {
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
     clock: Arc<dyn awaken_time::WallClock>,
+    coordinator: Arc<awaken_credential_vault::token_acquisition::TokenAcquisitionCoordinator>,
 }
 
 impl VaultRefreshFactory {
@@ -36,6 +34,11 @@ impl VaultRefreshFactory {
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
+            coordinator: Arc::new(
+                awaken_credential_vault::token_acquisition::TokenAcquisitionCoordinator::new(
+                    clock.clone(),
+                ),
+            ),
             credentials,
             secrets,
             clock,
@@ -49,12 +52,10 @@ impl CredentialRefreshFactory for VaultRefreshFactory {
         credential_id: CredentialSourceId,
         access: CredentialRefreshAccess,
     ) -> Arc<dyn CredentialRefresher> {
-        Arc::new(VaultRefresher::new(
+        Arc::new(VaultRefresher::from_factory(
             credential_id,
             access,
-            self.credentials.clone(),
-            self.secrets.clone(),
-            self.clock.clone(),
+            self.clone(),
         ))
     }
 
@@ -96,12 +97,8 @@ impl CredentialRefresher for VaultBearerReloader {
 pub struct VaultRefresher {
     credential_id: CredentialSourceId,
     access: tokio::sync::Mutex<CredentialRefreshAccess>,
-    credentials: Arc<dyn CredentialRepo>,
-    secrets: Arc<dyn SecretStore>,
-    clock: Arc<dyn awaken_time::WallClock>,
-    http: reqwest::Client,
+    factory: VaultRefreshFactory,
 }
-
 impl VaultRefresher {
     #[must_use]
     pub fn new(
@@ -111,15 +108,174 @@ impl VaultRefresher {
         secrets: Arc<dyn SecretStore>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
-        let http = http_client_for(&access.token_endpoint);
+        Self::from_factory(
+            credential_id,
+            access,
+            VaultRefreshFactory::new(credentials, secrets, clock),
+        )
+    }
+    fn from_factory(
+        credential_id: CredentialSourceId,
+        access: CredentialRefreshAccess,
+        factory: VaultRefreshFactory,
+    ) -> Self {
         Self {
             credential_id,
             access: tokio::sync::Mutex::new(access),
-            credentials,
-            secrets,
-            clock,
-            http,
+            factory,
         }
+    }
+}
+
+mod acquisition;
+use awaken_credential_contract::{CredentialTokenAcquisition, TokenAcquisitionError};
+use awaken_time::WallClockExt as _;
+
+fn access_for_source(
+    source: &awaken_credential_vault::CredentialSource,
+    old: &CredentialRefreshAccess,
+    expiry: Option<u64>,
+) -> CredentialRefreshAccess {
+    CredentialRefreshAccess::new(
+        u64::try_from(source.version).unwrap_or(0),
+        old.token_endpoint.clone(),
+        old.client_id.clone(),
+        old.token_endpoint_auth,
+        source
+            .auxiliary_material_ref(OAUTH_CLIENT_SECRET_SLOT)
+            .map(|v| v.0.clone()),
+        source
+            .auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT)
+            .map(|v| v.0.clone())
+            .unwrap_or_default(),
+        source
+            .material_ref
+            .as_ref()
+            .map(|v| v.0.clone())
+            .unwrap_or_default(),
+        old.scope.clone(),
+        old.resource.clone(),
+    )
+    .with_provider_metadata(old.account_id.clone(), old.account_plan.clone(), expiry)
+}
+
+impl VaultRefreshFactory {
+    /// Observe only one exact described generation; no token material leaves
+    /// this authority and no observation dispatches an issuer request.
+    pub async fn inspect_described(
+        &self,
+        workspace: &str,
+        reference: &awaken_agent_contract::credential::CredentialRef,
+        min_validity_ms: u64,
+    ) -> Result<Option<awaken_credential_contract::CredentialRenewalStatus>, TokenAcquisitionError>
+    {
+        use awaken_credential_contract::CredentialRenewalStatus as Status;
+        use awaken_credential_vault::repo::CredentialAcquisitionPhase as Phase;
+        let source = self
+            .credentials
+            .get(&CredentialSourceId(reference.id.clone()))
+            .await
+            .map_err(|_| TokenAcquisitionError::AuthorityDenied)?;
+        if source.workspace_id != workspace
+            || source.status != CredentialStatus::Active
+            || u64::try_from(source.version).ok() != Some(reference.revision)
+        {
+            return Err(TokenAcquisitionError::AuthorityDenied);
+        }
+        let Some(profile) = source
+            .descriptor
+            .as_ref()
+            .and_then(|v| v.acquisition.as_ref())
+        else {
+            return Ok(None);
+        };
+        if let Some(pending) = self
+            .credentials
+            .pending_acquisition(&source.id)
+            .await
+            .map_err(|_| TokenAcquisitionError::PublicationFailed)?
+        {
+            let acquisition = pending
+                .acquisition
+                .as_ref()
+                .ok_or(TokenAcquisitionError::PublicationFailed)?;
+            return Ok(Some(match acquisition.phase {
+                Phase::Rejected => Status::NeedsAuthorization,
+                Phase::OutcomeUnknown => Status::OutcomeUnknown,
+                Phase::Dispatched
+                    if pending.material_fence.writer_lease_expires_at_unix_ms
+                        <= self.clock.now_ms() =>
+                {
+                    Status::OutcomeUnknown
+                }
+                _ => Status::InProgress,
+            }));
+        }
+        let state =
+            awaken_credential_vault::repo::token_publication_state(&source, self.secrets.as_ref())
+                .await
+                .map_err(|_| TokenAcquisitionError::PublicationFailed)?;
+        let Some(state) = state else {
+            return Ok(Some(Status::Due));
+        };
+        if profile.fingerprint().ok().as_ref() != Some(&state.profile_fingerprint) {
+            return Err(TokenAcquisitionError::AuthorityDenied);
+        }
+        let now = self.clock.now_ms();
+        if state.refresh_expires_at_unix_ms.is_some_and(|at| at <= now) {
+            return Ok(Some(Status::NeedsAuthorization));
+        }
+        if state.access_expires_at_unix_ms.is_none() {
+            return Ok(Some(Status::ExpiryUnknown));
+        }
+        Ok(Some(
+            if state.access_expires_at_unix_ms.is_none_or(|at| {
+                at <= now.saturating_add(min_validity_ms.max(profile.response.refresh_margin_ms))
+            }) {
+                Status::Due
+            } else {
+                Status::Ready
+            },
+        ))
+    }
+    /// Renew one described grant into an exact replacement for its governance
+    /// owner. The caller receives only a source receipt, never issued material.
+    pub async fn renew_described(
+        &self,
+        workspace_id: &str,
+        source_ref: &awaken_agent_contract::credential::CredentialRef,
+        replacement: CredentialSourceId,
+    ) -> Result<awaken_credential_vault::CredentialSource, TokenAcquisitionError> {
+        let source = self
+            .credentials
+            .get(&CredentialSourceId(source_ref.id.clone()))
+            .await
+            .map_err(|_| TokenAcquisitionError::AuthorityDenied)?;
+        if source.workspace_id != workspace_id
+            || u64::try_from(source.version).ok() != Some(source_ref.revision)
+            || source.status != CredentialStatus::Active
+        {
+            return Err(TokenAcquisitionError::AuthorityDenied);
+        }
+        let profile = source
+            .descriptor
+            .as_ref()
+            .and_then(|v| v.acquisition.clone())
+            .ok_or(TokenAcquisitionError::InvalidContract)?;
+        let port = acquisition::VaultAcquisitionPort::new(
+            self,
+            source,
+            profile.clone(),
+            Some(replacement),
+        )?;
+        self.coordinator
+            .acquire(None, &profile.response, &port)
+            .await?;
+        Ok(port.source.lock().await.clone())
+    }
+    #[must_use]
+    pub fn token_acquisition(&self) -> Arc<dyn CredentialTokenAcquisition> {
+        self.coordinator.clone()
     }
 }
 
@@ -190,160 +346,95 @@ impl VaultRefresher {
         {
             return ExchangeReport::failed(None);
         }
-        let Ok(source) = self.credentials.get(&self.credential_id).await else {
+        let Ok(source) = self.factory.credentials.get(&self.credential_id).await else {
             return ExchangeReport::failed(None);
         };
-        if source.status != CredentialStatus::Active
-            || u64::try_from(source.version).ok() != Some(access.credential_revision)
-            || source.material_ref.as_ref().map(|reference| &reference.0)
-                != Some(&access.access_token_ref)
-            || source
-                .auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT)
-                .map(|reference| &reference.0)
-                != Some(&access.refresh_token_ref)
-            || access.client_secret_ref.as_ref()
-                != source
-                    .auxiliary_material_ref(OAUTH_CLIENT_SECRET_SLOT)
-                    .map(|reference| &reference.0)
-        {
+        if source.status != CredentialStatus::Active {
             return ExchangeReport::failed(None);
         }
-        let Ok(refresh_token) = self
-            .secrets
-            .get(&SecretRef(access.refresh_token_ref.clone()))
-            .await
-        else {
+        let profile = source
+            .descriptor
+            .as_ref()
+            .and_then(|v| v.acquisition.clone())
+            .unwrap_or_else(|| acquisition::standard_profile(&access));
+        if profile.token_endpoint != access.token_endpoint {
             return ExchangeReport::failed(None);
-        };
-        let client_secret = match access.token_endpoint_auth {
-            TokenEndpointAuth::ClientSecretBasic | TokenEndpointAuth::ClientSecretPost => {
-                let Some(reference) = access.client_secret_ref.as_ref() else {
+        }
+        let exact = u64::try_from(source.version).ok() == Some(access.credential_revision)
+            && source.material_ref.as_ref().map(|v| &v.0) == Some(&access.access_token_ref)
+            && source
+                .auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT)
+                .map(|v| &v.0)
+                == Some(&access.refresh_token_ref)
+            && access.client_secret_ref.as_ref()
+                == source
+                    .auxiliary_material_ref(OAUTH_CLIENT_SECRET_SLOT)
+                    .map(|v| &v.0);
+        if !exact {
+            // Explicit refresh adoption requires a direct publication receipt;
+            // a newer row alone never authorizes reading another generation.
+            let state = awaken_credential_vault::repo::token_publication_state(
+                &source,
+                self.factory.secrets.as_ref(),
+            )
+            .await
+            .ok()
+            .flatten();
+            let parent = awaken_agent_contract::credential::CredentialRef {
+                id: self.credential_id.0.clone(),
+                revision: access.credential_revision,
+            };
+            if !state.as_ref().is_some_and(|v| {
+                v.predecessor.as_ref() == Some(&parent)
+                    && profile.fingerprint().ok().as_ref() == Some(&v.profile_fingerprint)
+            }) {
+                return ExchangeReport::failed(None);
+            }
+            let expiry = state.as_ref().and_then(|v| v.access_expires_at_unix_ms);
+            *access = access_for_source(&source, &access, expiry);
+            if expiry.is_none_or(|at| at > self.factory.clock.now_ms()) {
+                let Ok(port) =
+                    acquisition::VaultAcquisitionPort::new(&self.factory, source, profile, None)
+                else {
                     return ExchangeReport::failed(None);
                 };
-                let Ok(secret) = self.secrets.get(&SecretRef(reference.clone())).await else {
-                    return ExchangeReport::failed(None);
-                };
-                Some(secret)
-            }
-            TokenEndpointAuth::None => None,
-        };
-        let mut form = vec![
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token.expose_secret()),
-        ];
-        let mut request = self.http.post(&access.token_endpoint);
-        match (access.token_endpoint_auth, client_secret.as_ref()) {
-            (TokenEndpointAuth::None, _) => form.push(("client_id", access.client_id.as_str())),
-            (TokenEndpointAuth::ClientSecretBasic, Some(secret)) => {
-                request = request.header(
-                    reqwest::header::AUTHORIZATION,
-                    basic_client_auth(&access.client_id, secret.expose_secret()),
-                );
-            }
-            (TokenEndpointAuth::ClientSecretPost, Some(secret)) => {
-                form.push(("client_id", access.client_id.as_str()));
-                form.push(("client_secret", secret.expose_secret()));
-            }
-            (TokenEndpointAuth::ClientSecretBasic | TokenEndpointAuth::ClientSecretPost, None) => {
+                if let Ok(token) = port.access_token(&port.source.lock().await.clone()).await {
+                    return ExchangeReport {
+                        outcome: RefreshExchangeOutcome {
+                            status: RefreshExchangeStatus::Succeeded,
+                            http_response: None,
+                        },
+                        bearer: Some(token.expose_secret().to_owned()),
+                    };
+                }
                 return ExchangeReport::failed(None);
             }
         }
-        if let Some(scope) = &access.scope {
-            form.push(("scope", scope.as_str()));
-        }
-        if let Some(resource) = &access.resource {
-            form.push(("resource", resource.as_str()));
-        }
-        let Ok(response) = request.form(&form).send().await else {
-            return ExchangeReport::connect_error();
-        };
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let Ok(bytes) = response.bytes().await else {
-            return ExchangeReport::connect_error();
-        };
-        let body: Option<serde_json::Value> = serde_json::from_slice(&bytes).ok();
-        let issued = |field: &str| {
-            body.as_ref()
-                .and_then(|value| value.get(field))
-                .and_then(|value| value.as_str())
-                .map(str::to_owned)
-        };
-        let access_token = issued("access_token");
-        let rotated_refresh_token = issued("refresh_token");
-        let mut scrub: Vec<&str> = vec![refresh_token.expose_secret()];
-        scrub.extend(client_secret.as_ref().map(RedactedString::expose_secret));
-        scrub.extend(access_token.as_deref());
-        scrub.extend(rotated_refresh_token.as_deref());
-        let http_response = ProbeHttpResponse::scrubbed(
-            status.as_u16(),
-            content_type.as_deref(),
-            &String::from_utf8_lossy(&bytes),
-            false,
-            &scrub,
-        );
-        if !status.is_success() {
-            return ExchangeReport::failed(Some(http_response));
-        }
-        let Some(access_token) = access_token else {
-            return ExchangeReport::failed(Some(http_response));
-        };
-        let mut auxiliary = BTreeMap::new();
-        if let Some(rotated) = rotated_refresh_token {
-            auxiliary.insert(
-                OAUTH_REFRESH_TOKEN_SLOT.to_owned(),
-                Some(RedactedString::new(rotated)),
-            );
-        }
-        let Ok(expected_version) = i64::try_from(access.credential_revision) else {
-            return ExchangeReport::failed(Some(http_response));
-        };
-        let Ok(rotated) = rotate_credential_materials_exact(
-            &self.credential_id,
-            expected_version,
-            CredentialMaterialPatch {
-                primary: Some(RedactedString::new(access_token.clone())),
-                auxiliary,
-                descriptor: None,
-            },
-            self.secrets.as_ref(),
-            self.credentials.as_ref(),
-            self.clock.as_ref(),
-        )
-        .await
+        let Ok(port) =
+            acquisition::VaultAcquisitionPort::new(&self.factory, source, profile.clone(), None)
         else {
-            return ExchangeReport::failed(Some(http_response));
+            return ExchangeReport::failed(None);
         };
-        let (Ok(revision), Some(refresh_ref), Some(access_ref)) = (
-            u64::try_from(rotated.version),
-            rotated.auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT),
-            rotated.material_ref.as_ref(),
-        ) else {
-            return ExchangeReport::failed(Some(http_response));
-        };
-        *access = CredentialRefreshAccess::new(
-            revision,
-            access.token_endpoint.clone(),
-            access.client_id.clone(),
-            access.token_endpoint_auth,
-            rotated
-                .auxiliary_material_ref(OAUTH_CLIENT_SECRET_SLOT)
-                .map(|reference| reference.0.clone()),
-            refresh_ref.0.clone(),
-            access_ref.0.clone(),
-            access.scope.clone(),
-            access.resource.clone(),
-        );
-        ExchangeReport {
-            outcome: RefreshExchangeOutcome {
-                status: RefreshExchangeStatus::Succeeded,
-                http_response: Some(http_response),
+        let result = self
+            .factory
+            .coordinator
+            .acquire(None, &profile.response, &port)
+            .await;
+        let published = port.source.lock().await.clone();
+        if published.version > i64::try_from(access.credential_revision).unwrap_or(i64::MAX) {
+            let expiry = result.as_ref().ok().and_then(|v| v.expires_at_unix_ms);
+            *access = access_for_source(&published, &access, expiry);
+        }
+        match result {
+            Ok(token) => ExchangeReport {
+                outcome: RefreshExchangeOutcome {
+                    status: RefreshExchangeStatus::Succeeded,
+                    http_response: port.probe(),
+                },
+                bearer: Some(token.access_token.expose_secret().to_owned()),
             },
-            bearer: Some(access_token),
+            Err(TokenAcquisitionError::IssuerUnavailable) => ExchangeReport::connect_error(),
+            Err(_) => ExchangeReport::failed(port.probe()),
         }
     }
 }
@@ -377,6 +468,8 @@ impl CredentialRefreshExchange for VaultRefreshFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::RedactedString;
+    use awaken_credential_vault::SecretRef;
 
     #[tokio::test]
     async fn tampered_exact_refresh_configuration_fails_before_secret_or_network_access() {

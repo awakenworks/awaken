@@ -73,12 +73,26 @@ pub struct MaterialEntry {
 
 mod access;
 mod credential_refresh;
+mod http_authentication;
+mod token_acquisition;
+mod token_profile;
 pub use access::{
     CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialInput,
     CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand, CredentialPlaintext,
     SessionCredentialAccessRequest, SessionCredentialSource,
 };
 pub use credential_refresh::CredentialRefreshFactory;
+pub use http_authentication::{CredentialHttpAuthentication, TokenDestination};
+pub use token_acquisition::{
+    AcquiredCredentialToken, CredentialTokenAcquisition, CredentialTokenIssuer,
+    IssuedCredentialTokens, RefreshTokenPolicy, TokenAcquisitionError, TokenEndpointResponse,
+    TokenExpiryUnit, TokenResponseCondition, TokenResponseSpec,
+};
+pub use token_profile::{
+    CredentialGrantLifetime, CredentialRenewalStatus, CredentialTokenExchangeProfile,
+    OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, TOKEN_ACQUISITION_STATE_SLOT,
+    TokenClientBasicAuth, TokenRequestEncoding, TokenRequestMethod, TokenSourceField,
+};
 
 mod attempt;
 pub use attempt::{

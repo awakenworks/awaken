@@ -1,5 +1,61 @@
 # Credentials, Vaults, And Availability
 
+## 2026-11-06 public acquisition implementation slice
+
+This implementation consolidates platform-owned token acquisition before
+adding another Connector integration. Protocol facts are versioned data; no
+provider name, account schema, reporting rule or provider-specific conditional
+belongs to the acquisition executor. Static keys and HMAC retain their existing
+consumption paths. Account login remains IAM-owned.
+
+| Treatment | Owner | Responsibility |
+|---|---|---|
+| Reuse | CredentialRepo, SecretStore, material mutation WAL/fence and exact CredentialAccess | One storage/publication/admission authority, including both supported SQL adapters. |
+| Modify | Existing credential contract | Closed token response/condition/destination/acquisition declarations and private ports; old wire defaults remain readable. |
+| Modify | Credential Vault application | One acquisition coordinator for exact partitions, expiry, single-flight, publication and uncertain outcomes. |
+| Modify | Control VaultRefreshFactory / VaultRefresher | Normalize existing RFC OAuth into that coordinator; retain exact-source and private probe boundaries. |
+| New within those owners | Versioned exchange profile, sealed token state and acquisition effect metadata | Provider-independent encoding, response paths, rotation policy, persisted pre-dispatch ownership and result reconciliation. No acquisition repository, scheduler or credential-selection fallback. |
+
+Static dependency direction is consumer -> credential SPI -> Vault coordinator
+-> admitted exchange/material-publication ports. Flow cannot become a Vault
+owner, and Native cannot depend on Flow. The existing neutral HTTP material
+reference and placement contract remains the only secret-reference grammar.
+
+Dynamic sequence: authorize exact sources and target; check a bounded disposable
+cache; serialize the exact acquisition; claim rotating-grant work durably before
+external dispatch; admit the exact predecessor and dispatch marker in the same
+repository transaction; exchange through the admitted HTTP boundary; validate the
+complete response; recheck authority; seal/publish the complete token generation;
+return a private token lease and a secret-free publication receipt. The consumer
+adopts a successor only through its original reference owner. A cached token does
+not bypass revocation or grant new authority.
+
+The material WAL is extended rather than supplemented for external acquisition:
+the acquisition marker distinguishes an unattempted request, dispatched request,
+confirmed-unsent request, explicit rejection and uncertain result. A lost response after durable Ready/publication is
+looked up; a dispatched exchange without a recoverable result must not silently
+redeem a rotating refresh token again. Existing material-only recovery semantics
+stay intact. Complete bytes without Ready do not confer publication authority:
+expired acquisition Writing remains outcome-unknown even when material is present.
+Ready recovery publishes through the original CAS. Explicit new private material
+or retirement can preempt the exact acquisition WAL; its canceled references stay
+in that WAL's existing cleanup and inventory responsibility. Expired writers
+never acquire permission to promote another writer's unfinished generation.
+
+The first closed protocol profiles cover form/root responses and JSON/nested
+responses, optional and required refresh-token rotation, numeric/string TTLs and
+legacy transient multi-field captures with seconds or milliseconds. HTTPS is
+required outside loopback fixtures; method/body encoding and bounded response
+paths are declarations. Grant expiry is not access-token expiry: issued access
+and refresh lifetimes travel with the same sealed generation. A missing expiry
+remains explicitly unknown and does not create an inferred recurring schedule.
+The owning tests carry their cause/effect rules for cache admission, expiry,
+isolation, concurrency, malformed responses, revoked sources and uncertain IO.
+Native MCP and Flow's request authentication and legacy Exchange callers use
+the same response/cache kernel. Flow's current automatic recruitment actions
+move their duplicated issuance declarations onto the named Transport. Source fixtures
+and controlled HTTP execution do not establish any SaaS-account acceptance.
+
 > The complete consolidated model — agent config + model catalog + provider +
 > vault/credential + the runtime-unaware secret seam + security layers + staging —
 > is decided in [ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md).

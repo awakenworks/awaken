@@ -118,7 +118,7 @@ pub async fn enter_credential_idempotent(
     enter_prepared_credential_idempotent(expected, secret, store, repo, clock).await
 }
 
-fn prepare_described_source(
+pub(super) fn prepare_described_source(
     id: Option<CredentialSourceId>,
     params: CredentialCreateParams,
     protocol_endpoint_id: Option<String>,
@@ -184,11 +184,21 @@ pub async fn enter_credential_idempotent_described(
     repo: &dyn CredentialRepo,
     clock: &dyn WallClock,
 ) -> Result<CredentialEntry, CredentialError> {
-    let (source, secret) =
-        prepare_described_source(Some(id), params, protocol_endpoint_id, descriptor)?;
-    let expected_material = secret.clone();
-    let entry = enter_prepared_credential_idempotent(source, secret, store, repo, clock).await?;
-    verify_idempotent_material(entry, expected_material.as_ref(), store).await
+    super::described_entry::enter_described_credential(
+        super::described_entry::DescribedCredentialEntryCommand {
+            id,
+            params,
+            protocol_endpoint_id,
+            descriptor,
+            replacement_of: None,
+            auxiliary_materials: BTreeMap::new(),
+            lifetime: None,
+        },
+        store,
+        repo,
+        clock,
+    )
+    .await
 }
 
 /// Create a distinct described source while atomically fencing the exact active
@@ -210,90 +220,21 @@ pub async fn enter_credential_replacement_idempotent_described(
     repo: &dyn CredentialRepo,
     clock: &dyn WallClock,
 ) -> Result<CredentialEntry, CredentialError> {
-    if replacement_of.id.trim().is_empty() || replacement_of.revision == 0 {
-        return Err(CredentialError::InvalidSource(
-            "replacement_of requires a source id and positive revision".into(),
-        ));
-    }
-    if replacement_of.id == replacement_id.0 {
-        return Err(CredentialError::InvalidSource(
-            "credential replacement requires a distinct source id".into(),
-        ));
-    }
-    let (mut expected, secret) = prepare_described_source(
-        Some(replacement_id),
-        params,
-        protocol_endpoint_id,
-        descriptor,
-    )?;
-    expected.replacement_of = Some(replacement_of.clone());
-    expected.validate_authority()?;
-    let expected_material = secret.clone();
-
-    // Exact durable replay wins even if the predecessor was retired after this
-    // replacement committed. The stable id plus public source projection and
-    // sealed-byte verification remain the idempotency authority.
-    match repo.get(&expected.id).await {
-        Ok(source) => {
-            validate_idempotent_source(&source, &expected)?;
-            return verify_idempotent_material(
-                CredentialEntry {
-                    source,
-                    created: false,
-                },
-                expected_material.as_ref(),
-                store,
-            )
-            .await;
-        }
-        Err(CredentialError::SourceNotFound(_)) => {}
-        Err(error) => return Err(error),
-    }
-
-    let predecessor_id = CredentialSourceId(replacement_of.id.clone());
-    let before = repo.get(&predecessor_id).await?;
-    if before.workspace_id != expected.workspace_id {
-        return Err(CredentialError::SourceNotFound(replacement_of.id.clone()));
-    }
-    let expected_version = i64::try_from(replacement_of.revision).map_err(|_| {
-        CredentialError::InvalidSource("replacement_of revision exceeds i64".into())
-    })?;
-    if before.version != expected_version {
-        return Err(CredentialError::MutationConflict(
-            "credential revision changed before replacement creation".into(),
-        ));
-    }
-    if before.status != CredentialStatus::Active {
-        return Err(CredentialError::NotActive(before.id.0.clone()));
-    }
-    let before_descriptor = before.descriptor.as_ref().ok_or_else(|| {
-        CredentialError::InvalidSource(
-            "described replacement requires a described predecessor".into(),
-        )
-    })?;
-    let replacement_descriptor = expected.descriptor.as_ref().ok_or_else(|| {
-        CredentialError::InvalidSource("replacement source must remain described".into())
-    })?;
-    if before_descriptor.provider != replacement_descriptor.provider {
-        return Err(CredentialError::InvalidSource(
-            "described replacement cannot change the canonical provider".into(),
-        ));
-    }
-    if !before.auxiliary_material_refs.is_empty() {
-        return Err(CredentialError::InvalidSource(
-            "primary-only described replacement does not admit auxiliary material slots".into(),
-        ));
-    }
-    let entry = enter_prepared_credential_idempotent_with_before(
-        expected,
-        secret,
-        Some(before),
+    super::described_entry::enter_described_credential(
+        super::described_entry::DescribedCredentialEntryCommand {
+            id: replacement_id,
+            params,
+            protocol_endpoint_id,
+            descriptor,
+            replacement_of: Some(replacement_of.clone()),
+            auxiliary_materials: BTreeMap::new(),
+            lifetime: None,
+        },
         store,
         repo,
         clock,
     )
-    .await?;
-    verify_idempotent_material(entry, expected_material.as_ref(), store).await
+    .await
 }
 
 /// Enter one stable Vault credential and verify that every replay names the
@@ -313,7 +254,7 @@ pub async fn enter_credential_idempotent_verified(
     verify_idempotent_material(entry, expected_material.as_ref(), store).await
 }
 
-async fn verify_idempotent_material(
+pub(super) async fn verify_idempotent_material(
     entry: CredentialEntry,
     expected_material: Option<&awaken_agent_contract::RedactedString>,
     store: &dyn SecretStore,
@@ -341,18 +282,34 @@ pub(super) async fn enter_prepared_credential_idempotent(
     repo: &dyn CredentialRepo,
     clock: &dyn WallClock,
 ) -> Result<CredentialEntry, CredentialError> {
-    enter_prepared_credential_idempotent_with_before(expected, secret, None, store, repo, clock)
-        .await
+    enter_prepared_credential_idempotent_with_before(
+        expected,
+        secret,
+        BTreeMap::new(),
+        None,
+        store,
+        repo,
+        clock,
+    )
+    .await
 }
 
-async fn enter_prepared_credential_idempotent_with_before(
-    expected: CredentialSource,
+pub(super) async fn enter_prepared_credential_idempotent_with_before(
+    mut expected: CredentialSource,
     secret: Option<awaken_agent_contract::RedactedString>,
+    auxiliary: BTreeMap<String, awaken_agent_contract::RedactedString>,
     before: Option<CredentialSource>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
     clock: &dyn WallClock,
 ) -> Result<CredentialEntry, CredentialError> {
+    validate_material_slots(auxiliary.keys().map(String::as_str))?;
+    for slot in auxiliary.keys() {
+        expected.auxiliary_material_refs.insert(
+            slot.clone(),
+            material_ref_for(&expected.id, expected.version, slot),
+        );
+    }
     match repo.get(&expected.id).await {
         Ok(source) => {
             validate_idempotent_source(&source, &expected)?;
@@ -368,7 +325,7 @@ async fn enter_prepared_credential_idempotent_with_before(
     match enter_prepared_credential_inner(
         expected.clone(),
         secret,
-        BTreeMap::new(),
+        auxiliary,
         before,
         store,
         repo,
@@ -916,6 +873,12 @@ fn prepare_managed_source_update(
     after.version = version;
     let mut materials = Vec::new();
     if let Some(material) = patch.primary {
+        // A manually supplied generation has no issuer lifetime receipt unless
+        // the same command explicitly supplies one. Never retain a receipt
+        // whose successor still names the prior source revision.
+        after
+            .auxiliary_material_refs
+            .remove(awaken_credential_contract::TOKEN_ACQUISITION_STATE_SLOT);
         let reference = material_ref_for(&before.id, version, "primary");
         after.material_ref = Some(reference.clone());
         materials.push((reference, material));
@@ -1222,16 +1185,51 @@ async fn execute_source_mutation(
         &intent.after,
         &mut materials,
     )?;
-    if !repo
+    match repo
         .begin_mutation(intent.clone(), credential_material_now_unix_ms(clock)?)
-        .await?
+        .await
     {
-        return Err(CredentialError::MutationConflict(
+        Ok(true) => {}
+        result => {
+            let pending = repo.pending_mutation(&intent.after.id).await?;
+            if let Some(pending) = pending.filter(|v| v.acquisition.is_some()) {
+                // Explicit writes/revocation preempt the exact acquisition
+                // owner. Its unpublished refs stay tracked in THIS WAL, and
+                // stale network completion loses every subsequent CAS.
+                intent = repo
+                    .supersede_acquisition(
+                        &pending,
+                        intent,
+                        credential_material_now_unix_ms(clock)?,
+                    )
+                    .await?;
+            } else {
+                result?;
+                return Err(CredentialError::MutationConflict(
             "credential command is pending under its durable material attempt; retry after publication or recovery"
                 .into(),
-        ));
+                ));
+            }
+        }
     }
 
+    complete_owned_source_mutation(intent, store, materials, repo).await
+}
+
+/// Finish an already claimed source intent through the original material
+/// writer/publication/reclamation path. Acquisition ports use the same owner.
+pub(super) async fn complete_owned_source_mutation(
+    mut intent: CredentialMutationIntent,
+    store: Option<&dyn SecretStore>,
+    mut materials: Vec<(crate::SecretRef, awaken_agent_contract::RedactedString)>,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialMutationIntent, CredentialError> {
+    fence_material_writes(
+        &intent.material_fence,
+        intent.before.as_ref(),
+        &intent.after,
+        &mut materials,
+    )?;
     for (reference, material) in materials {
         // Only `Stored` carries materials, so a write always has its store.
         let Some(store) = store else { break };
@@ -1293,7 +1291,11 @@ fn validate_material_slots<'a>(
     Ok(())
 }
 
-fn material_ref_for(id: &CredentialSourceId, version: i64, slot: &str) -> crate::SecretRef {
+pub(super) fn material_ref_for(
+    id: &CredentialSourceId,
+    version: i64,
+    slot: &str,
+) -> crate::SecretRef {
     crate::SecretRef(format!("sec:{}:r{version}:{slot}", id.0))
 }
 
@@ -1791,7 +1793,7 @@ async fn abort_source_mutation_before_cleanup(
     reclaim_and_complete_source_mutation(&abort, store, repo).await
 }
 
-async fn reclaim_and_complete_source_mutation(
+pub(super) async fn reclaim_and_complete_source_mutation(
     pending: &CredentialMutationIntent,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
@@ -1858,13 +1860,46 @@ async fn recover_credential_mutations_at(
     first_error.map_or(Ok(recovered), Err)
 }
 
-async fn recover_credential_mutation(
+pub(super) async fn recover_credential_mutation(
     pending: &CredentialMutationIntent,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
     now_unix_ms: u64,
 ) -> Result<bool, CredentialError> {
     pending.validate()?;
+    // A token exchange is a second external participant, not a retryable
+    // SecretStore write. Complete sealed generations may publish; a dispatched
+    // request without that witness must retain its uncertainty across restart.
+    if let Some(acquisition) = pending.acquisition.as_ref()
+        && pending.material_fence.phase == CredentialMaterialMutationPhase::Writing
+        && !matches!(
+            acquisition.phase,
+            CredentialAcquisitionPhase::Prepared | CredentialAcquisitionPhase::ConfirmedUnsent
+        )
+    {
+        if pending.material_fence.writer_lease_expires_at_unix_ms > now_unix_ms {
+            return Ok(false);
+        }
+        if let Some(before) = pending.before.as_ref()
+            && repo.get(&before.id).await? != *before
+        {
+            let abort = repo.abort_mutation(pending).await?;
+            reclaim_and_complete_source_mutation(&abort, store, repo).await?;
+            return Ok(true);
+        }
+        // Complete bytes are not a durable Ready authority. Preserve the
+        // ORIGINAL fence law: an expired replacement writer may abort, never
+        // promote another writer's unfinished frame merely by reading bytes.
+        if acquisition.phase == CredentialAcquisitionPhase::Dispatched {
+            repo.transition_acquisition(
+                pending,
+                CredentialAcquisitionPhase::OutcomeUnknown,
+                now_unix_ms,
+            )
+            .await?;
+        }
+        return Ok(false);
+    }
     let mutation = match credential_material_recovery_plan(
         &pending.material_fence,
         now_unix_ms,

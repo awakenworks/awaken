@@ -1238,6 +1238,21 @@ impl CredentialRepo for PostgresCredentialRepo {
                 "credential changed before its material mutation was prepared".into(),
             ));
         }
+        // The exact predecessor row is locked above (SQLite IMMEDIATE / PG
+        // FOR UPDATE). Cross-id candidates cannot redeem one refresh grant in
+        // parallel merely by choosing different replacement identities.
+        if intent.acquisition.is_some() {
+            let predecessor = intent.before.as_ref().ok_or_else(|| {
+                CredentialError::InvalidSource("acquisition has no predecessor".into())
+            })?;
+            let pending:Option<String>=sqlx::query_scalar(&format!("SELECT source_id FROM {NS}_creation_intent WHERE data->'before'->>'id' = $1 AND data->'acquisition' IS NOT NULL AND data->'acquisition' <> 'null'::jsonb LIMIT 1"))
+                .bind(&predecessor.id.0).fetch_optional(&mut *tx).await.map_err(storage)?;
+            if pending.is_some() {
+                return Err(CredentialError::MutationConflict(
+                    "this source already owns a token acquisition".into(),
+                ));
+            }
+        }
         let inserted = sqlx::query(&format!(
             "INSERT INTO {NS}_creation_intent (source_id, data) VALUES ($1, $2) \
              ON CONFLICT (source_id) DO NOTHING"
@@ -1270,41 +1285,57 @@ impl CredentialRepo for PostgresCredentialRepo {
         Ok(true)
     }
 
+    async fn pending_acquisition(
+        &self,
+        id: &CredentialSourceId,
+    ) -> Result<Option<CredentialMutationIntent>, CredentialError> {
+        let rows:Vec<Json<CredentialMutationIntent>>=sqlx::query_scalar(&format!("SELECT data FROM {NS}_creation_intent WHERE data->'before'->>'id' = $1 AND data->'acquisition' IS NOT NULL AND data->'acquisition' <> 'null'::jsonb LIMIT 2"))
+            .bind(&id.0).fetch_all(&self.pool).await.map_err(storage)?;
+        if rows.len() > 1 {
+            return Err(CredentialError::Storage(
+                "source has competing acquisition owners".into(),
+            ));
+        }
+        rows.into_iter()
+            .next()
+            .map(|data| {
+                let Json(intent): Json<CredentialMutationIntent> = data;
+                intent.validate()?;
+                Ok(intent)
+            })
+            .transpose()
+    }
     async fn mark_mutation_ready(
         &self,
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
         intent.validate()?;
-        let ready = intent.with_material_ready()?;
-        let mut tx = self.pool.begin().await.map_err(storage)?;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_optional(&mut *tx)
+        self.replace_source_mutation_snapshot(intent, intent.with_material_ready()?)
+            .await
+    }
+    async fn transition_acquisition(
+        &self,
+        intent: &CredentialMutationIntent,
+        phase: awaken_credential_vault::repo::CredentialAcquisitionPhase,
+        now_unix_ms: u64,
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        self.replace_source_mutation_snapshot(
+            intent,
+            intent.transition_acquisition(phase, now_unix_ms)?,
+        )
         .await
-        .map_err(storage)?
-        .ok_or_else(|| {
-            CredentialError::MutationConflict(
-                "credential material mutation has no durable pending fact".into(),
-            )
-        })?;
-        let Json(durable): Json<CredentialMutationIntent> = row.try_get("data").map_err(storage)?;
-        if durable != *intent {
-            return Err(CredentialError::MutationConflict(
-                "credential ready transition does not match its durable Writing owner".into(),
-            ));
-        }
-        sqlx::query(&format!(
-            "UPDATE {NS}_creation_intent SET data = $2 WHERE source_id = $1"
-        ))
-        .bind(&intent.after.id.0)
-        .bind(Json(&ready))
-        .execute(&mut *tx)
+    }
+    async fn supersede_acquisition(
+        &self,
+        intent: &CredentialMutationIntent,
+        replacement: CredentialMutationIntent,
+        now_unix_ms: u64,
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        self.replace_source_mutation_snapshot(
+            intent,
+            intent.supersede_acquisition(replacement, now_unix_ms)?,
+        )
         .await
-        .map_err(storage)?;
-        tx.commit().await.map_err(storage)?;
-        Ok(ready)
     }
 
     async fn apply_mutation(
@@ -1416,6 +1447,25 @@ impl CredentialRepo for PostgresCredentialRepo {
         .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(plan.reclaiming_mutation)
+    }
+
+    async fn pending_mutation(
+        &self,
+        id: &CredentialSourceId,
+    ) -> Result<Option<CredentialMutationIntent>, CredentialError> {
+        let data: Option<Json<CredentialMutationIntent>> = sqlx::query_scalar(&format!(
+            "SELECT data FROM {NS}_creation_intent WHERE source_id = $1"
+        ))
+        .bind(&id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?;
+        data.map(|data| {
+            let Json(intent): Json<CredentialMutationIntent> = data;
+            intent.validate_durable_key(&id.0)?;
+            Ok(intent)
+        })
+        .transpose()
     }
 
     async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
@@ -1712,5 +1762,59 @@ impl SealedBlobStore for PostgresSealedBlobStore {
         .await
         .map_err(storage)
         .map(|keys| keys.into_iter().map(SecretRef).collect())
+    }
+}
+
+impl PostgresCredentialRepo {
+    async fn replace_source_mutation_snapshot(
+        &self,
+        intent: &CredentialMutationIntent,
+        next: CredentialMutationIntent,
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let row = sqlx::query(&format!(
+            "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"
+        ))
+        .bind(&intent.after.id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?
+        .ok_or_else(|| {
+            CredentialError::MutationConflict(
+                "credential material mutation has no durable pending fact".into(),
+            )
+        })?;
+        let Json(durable): Json<CredentialMutationIntent> = row.try_get("data").map_err(storage)?;
+        if durable != *intent {
+            return Err(CredentialError::MutationConflict(
+                "credential ready transition does not match its durable Writing owner".into(),
+            ));
+        }
+        if let Some(before) = next.acquisition_dispatch_predecessor() {
+            let data: Option<Json<CredentialSource>> = sqlx::query_scalar(&format!(
+                "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
+            ))
+            .bind(&before.id.0)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage)?;
+            let current = data
+                .map(|data| {
+                    let Json(current): Json<CredentialSource> = data;
+                    Ok::<_, CredentialError>(current)
+                })
+                .transpose()?;
+            next.validate_acquisition_dispatch_source(current.as_ref())?;
+        }
+        sqlx::query(&format!(
+            "UPDATE {NS}_creation_intent SET data = $2 WHERE source_id = $1"
+        ))
+        .bind(&intent.after.id.0)
+        .bind(Json(&next))
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(next)
     }
 }

@@ -144,6 +144,14 @@ use crate::{
 
 mod application_mcp;
 pub(crate) use application_mcp::prepare_application_mcp_bearer_rotation_with_receipt_recovery;
+mod described_entry;
+pub use described_entry::{DescribedCredentialEntryCommand, enter_described_credential};
+mod token_publication;
+pub use token_publication::{
+    TOKEN_ACQUISITION_STATE_SLOT, TokenPublicationState, abandon_token_publication,
+    claim_token_publication, publish_acquired_tokens, recover_token_publication,
+    token_publication_state,
+};
 mod cleanup;
 pub use application_mcp::{
     APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand, PreparedApplicationMcpBearerRotation,
@@ -175,6 +183,31 @@ pub struct CredentialMutationIntent {
     pub before: Option<CredentialSource>,
     #[serde(alias = "source")]
     pub after: CredentialSource,
+    /// External token issuance is fenced by this same material WAL. Its
+    /// dispatch state survives a crash before any issued material was sealed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquisition: Option<CredentialAcquisitionEffect>,
+    /// Exact unpublished references retained when an explicit credential write
+    /// or retirement preempts a token exchange. The same WAL owns their cleanup.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub superseded_material_refs: std::collections::BTreeSet<crate::SecretRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialAcquisitionPhase {
+    Prepared,
+    Dispatched,
+    ConfirmedUnsent,
+    Rejected,
+    OutcomeUnknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialAcquisitionEffect {
+    pub profile_fingerprint: String,
+    pub phase: CredentialAcquisitionPhase,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +248,34 @@ fn credential_mutation_publication_decision(
 }
 
 impl CredentialMutationIntent {
+    /// A new dispatch marker must serialize with an exact predecessor change.
+    /// Failure/cleanup/Ready transitions retain their existing CAS rules.
+    #[must_use]
+    pub fn acquisition_dispatch_predecessor(&self) -> Option<&CredentialSource> {
+        (self.material_fence.phase == CredentialMaterialMutationPhase::Writing
+            && self
+                .acquisition
+                .as_ref()
+                .is_some_and(|a| a.phase == CredentialAcquisitionPhase::Dispatched))
+        .then_some(self.before.as_ref())
+        .flatten()
+    }
+
+    pub fn validate_acquisition_dispatch_source(
+        &self,
+        current: Option<&CredentialSource>,
+    ) -> Result<(), CredentialError> {
+        if self
+            .acquisition_dispatch_predecessor()
+            .is_some_and(|before| Some(before) != current)
+        {
+            return Err(CredentialError::MutationConflict(
+                "credential changed before token dispatch was admitted".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Validate the physical repository key before a decoded recovery envelope
     /// can reach the external SecretStore participant. The JSON payload owns
     /// the command identity; the table/map key may only index that exact id.
@@ -237,9 +298,106 @@ impl CredentialMutationIntent {
             material_fence,
             before,
             after,
+            acquisition: None,
+            superseded_material_refs: Default::default(),
         };
         intent.validate_for_begin(now_unix_ms)?;
         Ok(intent)
+    }
+
+    pub fn with_acquisition(
+        mut self,
+        profile_fingerprint: String,
+    ) -> Result<Self, CredentialError> {
+        if profile_fingerprint.is_empty()
+            || profile_fingerprint.len() > 256
+            || self.before.is_none()
+            || self.material_fence.phase != CredentialMaterialMutationPhase::Writing
+        {
+            return Err(CredentialError::InvalidSource(
+                "token acquisition requires one exact prepared rotation".into(),
+            ));
+        }
+        self.acquisition = Some(CredentialAcquisitionEffect {
+            profile_fingerprint,
+            phase: CredentialAcquisitionPhase::Prepared,
+        });
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn supersede_acquisition(
+        &self,
+        mut replacement: Self,
+        now: u64,
+    ) -> Result<Self, CredentialError> {
+        self.validate()?;
+        replacement.validate_for_begin(now)?;
+        if self.acquisition.is_none()
+            || replacement.acquisition.is_some()
+            || self.before != replacement.before
+            || self.after.id != replacement.after.id
+            || !matches!(
+                self.material_fence.phase,
+                CredentialMaterialMutationPhase::Writing | CredentialMaterialMutationPhase::Ready
+            )
+        {
+            return Err(CredentialError::MutationConflict(
+                "only an exact explicit write may supersede an unpublished acquisition".into(),
+            ));
+        }
+        replacement
+            .superseded_material_refs
+            .extend(self.superseded_material_refs.iter().cloned());
+        replacement
+            .superseded_material_refs
+            .extend(new_material_refs(self.before.as_ref(), &self.after).cloned());
+        replacement.validate()?;
+        Ok(replacement)
+    }
+
+    /// One acquisition-phase reducer; persistence adapters compare the entire
+    /// durable owner before storing its result. Only an expired supervisor may
+    /// record uncertainty without a live writer lease.
+    pub fn transition_acquisition(
+        &self,
+        phase: CredentialAcquisitionPhase,
+        now: u64,
+    ) -> Result<Self, CredentialError> {
+        self.validate()?;
+        let acquisition = self.acquisition.as_ref().ok_or_else(|| {
+            CredentialError::MutationConflict("material mutation has no acquisition".into())
+        })?;
+        let allowed = matches!(
+            (acquisition.phase, phase),
+            (
+                CredentialAcquisitionPhase::Prepared,
+                CredentialAcquisitionPhase::Dispatched
+            ) | (
+                CredentialAcquisitionPhase::Prepared,
+                CredentialAcquisitionPhase::ConfirmedUnsent
+            ) | (
+                CredentialAcquisitionPhase::Dispatched,
+                CredentialAcquisitionPhase::ConfirmedUnsent
+                    | CredentialAcquisitionPhase::Rejected
+                    | CredentialAcquisitionPhase::OutcomeUnknown
+            )
+        ) || acquisition.phase == phase;
+        if !allowed
+            || self.material_fence.phase != CredentialMaterialMutationPhase::Writing
+            || (phase != CredentialAcquisitionPhase::OutcomeUnknown
+                && self.material_fence.writer_lease_expires_at_unix_ms <= now)
+        {
+            return Err(CredentialError::MutationConflict(
+                "token acquisition phase or writer lease changed".into(),
+            ));
+        }
+        let mut next = self.clone();
+        next.acquisition
+            .as_mut()
+            .expect("checked acquisition")
+            .phase = phase;
+        Ok(next)
     }
 
     /// Whether this intent creates a distinct replacement instead of changing
@@ -260,6 +418,11 @@ impl CredentialMutationIntent {
     pub fn matches_logical_command(&self, candidate: &Self) -> bool {
         self.before == candidate.before
             && logical_credential_source_matches(&self.after, &candidate.after)
+            && self.acquisition.as_ref().map(|v| &v.profile_fingerprint)
+                == candidate
+                    .acquisition
+                    .as_ref()
+                    .map(|v| &v.profile_fingerprint)
     }
 
     /// Validate the invariant that lets every repository adapter interpret a
@@ -268,6 +431,15 @@ impl CredentialMutationIntent {
     /// A higher application layer owns provider/descriptor replacement policy.
     pub fn validate_for_begin(&self, now_unix_ms: u64) -> Result<(), CredentialError> {
         self.validate()?;
+        if self
+            .acquisition
+            .as_ref()
+            .is_some_and(|v| v.phase != CredentialAcquisitionPhase::Prepared)
+        {
+            return Err(CredentialError::MutationConflict(
+                "new acquisition must start before dispatch".into(),
+            ));
+        }
         let (writes_new_material, new_refs_bound_to_attempt) = self
             .material_fence
             .material_input_facts(self.before.as_ref(), &self.after);
@@ -279,6 +451,27 @@ impl CredentialMutationIntent {
     }
 
     pub fn validate(&self) -> Result<(), CredentialError> {
+        if self.superseded_material_refs.iter().any(|r| {
+            self.after.material_refs().any(|v| v == r)
+                || self
+                    .before
+                    .iter()
+                    .flat_map(CredentialSource::material_refs)
+                    .any(|v| v == r)
+        }) {
+            return Err(CredentialError::InvalidSource(
+                "superseded material must be disjoint from retained generations".into(),
+            ));
+        }
+        if self.acquisition.as_ref().is_some_and(|v| {
+            v.profile_fingerprint.is_empty()
+                || v.profile_fingerprint.len() > 256
+                || self.before.is_none()
+        }) {
+            return Err(CredentialError::InvalidSource(
+                "invalid acquisition intent".into(),
+            ));
+        }
         self.after.validate_authority()?;
         let Some(before) = self.before.as_ref() else {
             if self.after.replacement_of.is_some() {
@@ -719,6 +912,8 @@ mod publication_proofs {
             },
             before: Some(before.clone()),
             after: after.clone(),
+            acquisition: None,
+            superseded_material_refs: Default::default(),
         };
         let mut reclaiming = ready.clone();
         reclaiming.material_fence.phase = CredentialMaterialMutationPhase::Reclaiming;
@@ -1517,6 +1712,41 @@ pub trait CredentialRepo: Send + Sync {
         intent: CredentialMutationIntent,
         now_unix_ms: u64,
     ) -> Result<bool, CredentialError>;
+    async fn transition_acquisition(
+        &self,
+        _intent: &CredentialMutationIntent,
+        _phase: CredentialAcquisitionPhase,
+        _now_unix_ms: u64,
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        Err(CredentialError::Storage(
+            "credential acquisition transitions are unavailable".into(),
+        ))
+    }
+    async fn supersede_acquisition(
+        &self,
+        _intent: &CredentialMutationIntent,
+        _replacement: CredentialMutationIntent,
+        _now_unix_ms: u64,
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        Err(CredentialError::Storage(
+            "credential acquisition supersession is unavailable".into(),
+        ))
+    }
+    async fn pending_acquisition(
+        &self,
+        source_id: &CredentialSourceId,
+    ) -> Result<Option<CredentialMutationIntent>, CredentialError> {
+        let mut pending = self.pending_mutations().await?.into_iter().filter(|v| {
+            v.acquisition.is_some() && v.before.as_ref().is_some_and(|b| b.id == *source_id)
+        });
+        let value = pending.next();
+        if pending.next().is_some() {
+            return Err(CredentialError::Storage(
+                "source has competing acquisition owners".into(),
+            ));
+        }
+        Ok(value)
+    }
     /// Fence a completed external write before publication.
     async fn mark_mutation_ready(
         &self,
@@ -1529,6 +1759,19 @@ pub trait CredentialRepo: Send + Sync {
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError>;
     async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError>;
+
+    /// Exact-key recovery lookup. Durable adapters override this to avoid
+    /// enumerating unrelated workspaces' material envelopes on a hot path.
+    async fn pending_mutation(
+        &self,
+        id: &CredentialSourceId,
+    ) -> Result<Option<CredentialMutationIntent>, CredentialError> {
+        Ok(self
+            .pending_mutations()
+            .await?
+            .into_iter()
+            .find(|v| v.after.id == *id))
+    }
     async fn claim_expired_mutation(
         &self,
         intent: &CredentialMutationIntent,
