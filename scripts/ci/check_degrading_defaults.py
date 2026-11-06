@@ -192,19 +192,19 @@ FAIL_OPEN_READ = re.compile(r"\.await\s*(?://[^\n]*)?\s*\.unwrap_or_default\(\)"
 # reported, and the read is a documented best-effort enrichment whose absence
 # the caller already handles identically.
 FAIL_OPEN_READ_EXEMPTIONS: dict[str, str] = {
-    "crates/control/awaken-control/src/admin_assistant.rs": (
+    "crates/apps/awaken-control/src/admin_assistant.rs": (
         "the assistant's platform-capability projection is best-effort by "
         "design at its only call site, which already answers an unreachable "
         "config plane with the same empty inventory (`Err(_) => Vec::new()` "
         "beside it). Both halves therefore degrade identically, and no caller "
         "can distinguish the two"
     ),
-    "crates/server/awaken-coordinator-client/src/dispatch_client.rs": (
+    "crates/platform/dispatch/awaken-coordinator-client/src/dispatch_client.rs": (
         "the defaulted read is the body of a response already known to be an "
         "error; an unreadable body makes the detail string empty, and the error "
         "itself is raised either way"
     ),
-    "crates/runtime/awaken-ext-memory/src/plugin.rs": (
+    "crates/sdk/extensions/awaken-ext-memory/src/plugin.rs": (
         "recall is fail-soft by design (ADR-0055): a memory-store outage must "
         "not fail the turn, and an empty recall is the documented degraded "
         "behaviour the caller already handles"

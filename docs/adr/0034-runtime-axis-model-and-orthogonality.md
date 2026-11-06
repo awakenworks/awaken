@@ -190,7 +190,7 @@ kernel call an injected `ToolExecutor` for every authorized call, and
 [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md)
 makes the Session Environment the only source of a remote Hand. The kernel still
 names no placement, address, or relay: it sees only the port. Evidence: port at
-`crates/contract/awaken-tool-contract/src/tool.rs:1170`; kernel use at
-`crates/runtime/awaken-runtime/src/engine/tool_execution.rs:527` (`LocalToolExecutor`)
+`crates/sdk/contracts/awaken-tool-contract/src/tool.rs:1170`; kernel use at
+`crates/sdk/runtime/awaken-runtime/src/engine/tool_execution.rs:527` (`LocalToolExecutor`)
 and `:561` (`executor.invoke`). The ADR-0007 citation in D6 ("where a call runs is
 a `RawTool` detail") is likewise amended by ADR-0044/0073.

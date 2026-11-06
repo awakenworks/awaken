@@ -5,7 +5,7 @@ tcb_assumptions = [
   "external.orchestrator_correctness",
 ]
 evidence = [
-  "crates/server/awaken-worker-registry/src/migrations/V0003__retain_worker_process_exit.sql",
+  "crates/platform/dispatch/awaken-worker-registry/src/migrations/V0003__retain_worker_process_exit.sql",
   "e2e/k3d/distributed_control_driver.test.ts",
   "e2e/k3d/distributed_control_driver.ts",
   "e2e/k3d/distributed_control_e2e.sh",

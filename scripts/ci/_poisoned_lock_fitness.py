@@ -130,7 +130,7 @@ def selftest() -> None:
         "P5": "fn f() { let _ = r.frozen(t).expect(\"session runtime slots mutex poisoned\"); }\n",
     }
     for rule, source in rejected.items():
-        for crate in ("crates/server/awaken-session-executor/src/a.rs", "crates/devtools/x-testkit/src/b.rs"):
+        for crate in ("crates/platform/execution/awaken-session-executor/src/a.rs", "crates/devtools/x-testkit/src/b.rs"):
             assert len(poisoned_lock_violations({crate: source})) == 1, (rule, "P9")
     commented = "// m.lock().expect(\"x\") and .expect(\"poisoned\")\nfn f() {}\n"
     assert poisoned_lock_violations({path: commented}) == [], "P6"

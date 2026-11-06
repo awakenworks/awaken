@@ -363,15 +363,15 @@ responses against its committed awaiting state and idempotency identity.
   the Agent ([ADR-0030](0030-permission-policy-axis.md),
   [ADR-0037](0037-managed-capability-advertisement-wire-alignment.md) D2,
   [ADR-0079](0079-one-tool-authorization-vocabulary-and-opaque-backend-configuration.md)):
-  `AgentToolPermissionPolicy` (`crates/contract/awaken-session-configuration-contract/src/agent_config.rs:67`),
+  `AgentToolPermissionPolicy` (`crates/platform/session/awaken-session-configuration-contract/src/agent_config.rs:67`),
   evaluated by `awaken-ext-permission`, which links no IAM crate. IAM authorizes
   platform API routes only; an IAM `RequireApproval` is collapsed to Deny/403
-  (`crates/control/awaken-authz-enforce/src/lib.rs:613-618`,
-  `crates/control/awaken-control/src/authz.rs:1178`). The front-door confirmation
+  (`crates/platform/access/awaken-authz-enforce/src/lib.rs:613-618`,
+  `crates/apps/awaken-control/src/authz.rs:1178`). The front-door confirmation
   gates D5 lists remain the projection of that one Agent-policy decision.
 - **Project.** Per the ADR-0048 2026-07-10 amendment, tenancy is Org → Workspace
   only. D4a's and D6's Project tier and the 2026-07-05 `/projects/{id}` Amendment
   are superseded; `/v1/config/projects` routes are absent and fail closed
-  (`crates/control/awaken-control/src/authz_tests.rs:1156-1161`). D6's
+  (`crates/apps/awaken-control/src/authz_tests.rs:1156-1161`). D6's
   "Organization is cloud-only" stands.
 - `awaken-coordinator-local` is now `awaken-coordinator`.

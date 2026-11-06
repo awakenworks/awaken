@@ -4,7 +4,7 @@
 
 ## T28 物理副作用前的授权
 
-责任组件：各 effect executor 及当前 authority fence。入口：[源码或现有门禁](../../crates/worker/awaken-sandbox-container/src/tests.rs)。风险基准：P0。类型：行为域。
+责任组件：各 effect executor 及当前 authority fence。入口：[源码或现有门禁](../../crates/platform/sandbox/awaken-sandbox-container/src/tests.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。为每个副作用定义授权线性化点和不确定性边界，而非宣称任意时刻撤权可追溯取消已发出的请求。
 
@@ -36,7 +36,7 @@
 
 ## T29 进程 文件 资源和产物
 
-责任组件：Native ProcessHandle、Sandbox 和 resource staging。入口：[源码或现有门禁](../../crates/worker/awaken-sandbox-memoryd/src/mounter.rs)。风险基准：P0。类型：行为域。
+责任组件：Native ProcessHandle、Sandbox 和 resource staging。入口：[源码或现有门禁](../../crates/platform/sandbox/awaken-sandbox-memoryd/src/mounter.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。增加文件系统与 Windows 路径边界；生命周期、产物来源和数据责任分别观察。
 
@@ -106,7 +106,7 @@
 
 ## T31 持久投影与公开身份
 
-责任组件：Managed committed projector。入口：[源码或现有门禁](../../crates/server/awaken-protocol-managed/src/state/events/tests.rs)。风险基准：P0。类型：行为域。
+责任组件：Managed committed projector。入口：[源码或现有门禁](../../crates/platform/protocols/awaken-protocol-managed/src/state/events/tests.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。区分组件级 active-active 与真实多进程，公开身份由持久坐标决定。
 
@@ -138,7 +138,7 @@
 
 ## T32 连接与恢复策略
 
-责任组件：Managed SSE/outbox 与 Run cancellation owner。入口：[源码或现有门禁](../../crates/server/awaken-coordinator/src/managed_lifecycle.rs)。风险基准：P0。类型：行为域。
+责任组件：Managed SSE/outbox 与 Run cancellation owner。入口：[源码或现有门禁](../../crates/apps/awaken-coordinator/src/managed_lifecycle.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。断开连接不默认取消业务；分别验证部署明确选择的断连策略与显式取消。
 
@@ -170,7 +170,7 @@
 
 ## T33 错误分类与重试
 
-责任组件：应用错误和协议/执行适配。入口：[源码或现有门禁](../../crates/server/awaken-session-mcp/src/mcp/error.rs)。风险基准：P0。类型：行为域。
+责任组件：应用错误和协议/执行适配。入口：[源码或现有门禁](../../crates/platform/execution/awaken-session-mcp/src/mcp/error.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。区分接纳失败、确定回滚、提交成功丢响应和副作用结果未知四类。
 
@@ -298,7 +298,7 @@
 
 ## T37 持久格式迁移与跨版本恢复
 
-责任组件：各 schema bundle、immutable id allocator 和 codecs。入口：[源码或现有门禁](../../crates/stores/awaken-work-store/src/schema.rs)。风险基准：P0。类型：行为域。
+责任组件：各 schema bundle、immutable id allocator 和 codecs。入口：[源码或现有门禁](../../crates/platform/environment/awaken-work-store/src/schema.rs)。风险基准：P0。类型：行为域。
 
 校准：新增。原清单未把迁移/已发布历史/高水位与非法持久行列为独立风险域。
 
@@ -330,7 +330,7 @@
 
 ## T38 容量 背压和故障隔离
 
-责任组件：dispatch pool、inbox、registration 与 SQL adapters。入口：[源码或现有门禁](../../crates/stores/awaken-work-store/src/lib.rs)。风险基准：P0。类型：行为域。
+责任组件：dispatch pool、inbox、registration 与 SQL adapters。入口：[源码或现有门禁](../../crates/platform/environment/awaken-work-store/src/lib.rs)。风险基准：P0。类型：行为域。
 
 校准：新增。正确性清单缺少积压、慢依赖、非饥饿和资源耗尽下的有界行为。
 
@@ -362,7 +362,7 @@
 
 ## T39 Environment 镜像与软件包交付
 
-责任组件：Environment image application、build store 和 worker。入口：[源码或现有门禁](../../crates/server/awaken-environment-image-build/src/application.rs)。风险基准：P0。类型：行为域。
+责任组件：Environment image application、build store 和 worker。入口：[源码或现有门禁](../../crates/platform/environment/awaken-environment-image-build/src/application.rs)。风险基准：P0。类型：行为域。
 
 校准：新增。原 T20/T21 只覆盖定义与投递，不能覆盖包到冻结镜像的异步构建状态机。
 
@@ -394,7 +394,7 @@
 
 ## T40 Memory 缓存与投影能力边界
 
-责任组件：Resources invalidator 与 MemoryStoreMounter。入口：[源码或现有门禁](../../crates/contract/awaken-resource-contract/src/memory_invalidation.rs)。风险基准：P1。类型：行为域。
+责任组件：Resources invalidator 与 MemoryStoreMounter。入口：[源码或现有门禁](../../crates/platform/resources/awaken-resource-contract/src/memory_invalidation.rs)。风险基准：P1。类型：行为域。
 
 校准：新增。区分同进程 FUSE 失效、远端 CopyOnly 和未来分布式实时一致性；不默认要求实现新网络总线。
 
@@ -426,7 +426,7 @@
 
 ## T41 可诊断性与恢复操作
 
-责任组件：各现有 readiness、健康、错误和恢复入口。入口：[源码或现有门禁](../../crates/control/awaken-control/src/registration_supervisor.rs)。风险基准：P1。类型：行为域。
+责任组件：各现有 readiness、健康、错误和恢复入口。入口：[源码或现有门禁](../../crates/apps/awaken-control/src/registration_supervisor.rs)。风险基准：P1。类型：行为域。
 
 校准：新增。开发者体验不仅是命名，还需要知道操作是否提交、谁负责恢复及哪些能力未就绪。
 

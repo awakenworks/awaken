@@ -305,10 +305,10 @@ the catalog explicitly shared per the decision above) suffices.
   in full. [ADR-0061](0061-selectable-identity-and-platform-managed-resource-scopes.md) (2026-09-09 amendment) decides it: a protocol endpoint has an
   optional Workspace owner and every read goes through one scoped projection; only
   unowned operator-authored or brokered endpoints stay shared
-  (`crates/control/awaken-model-catalog/src/lib.rs:151-155`, `for_workspace` at `:645`,
-  used by publication at `crates/control/awaken-control/src/model_publication.rs:209`).
+  (`crates/platform/config/awaken-model-catalog/src/lib.rs:151-155`, `for_workspace` at `:645`,
+  used by publication at `crates/apps/awaken-control/src/model_publication.rs:209`).
 - Still current: the opaque `ScopeId` value object
-  (`crates/contract/awaken-agent-contract/src/scope.rs:17`, re-exported by
+  (`crates/sdk/contracts/awaken-agent-contract/src/scope.rs:17`, re-exported by
   `awaken-tenancy`), D6 (no `awaken-scope` crate remains) and D7. Where a self-hosted
   deployment has no Org, the deployment operator is the controller
   ([ADR-0050](0050-telemetry-content-capture-consent-and-gdpr-erasure.md)). ADRs that cite this one for the opaque `ScopeId` (0052, 0059,

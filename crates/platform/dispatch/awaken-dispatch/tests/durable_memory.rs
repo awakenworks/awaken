@@ -1,0 +1,2905 @@
+// @formal evidence live_inbox.attempt_scope_is_local_current_capability_gated_and_never_carried_over
+// @formal evidence remote_worker.committed_terminal_recovery_skips_execution_and_settles_dispatch
+// @formal evidence run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
+//! Durable ingress over the in-memory dispatch store and commit coordinator.
+//!
+//! These prove the durable slice end to end without a database: a durable submit
+//! persists then runs a fresh run; the durable-only operation fails closed on
+//! direct ingress (G5); enqueue and pending append are idempotent; an awaiting run
+//! resumes through delivered input (#4); and an expired lease is recovered.
+
+mod harness;
+#[path = "../../../../sdk/runtime/awaken-runtime/tests/harness/run_input.rs"]
+mod run_input;
+use run_input::MarkPlugin;
+
+use awaken_time::system_clock;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use awaken_agent_contract::agent::message::Role;
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::audit::kind::Kind as AuditKind;
+use awaken_dispatch::PlacementRequirements;
+use awaken_dispatch::{
+    ContinuationAdmission, DEFAULT_LEASE_MS, DispatchOutcome, DispatchSettlementError,
+    DispatchSettlementObserver, DispatchTestHarness, DispatchWorker, Inbox, MemoryDispatchStore,
+    PendingInput, RunClaim, RunDispatch, SessionChildAdmission,
+};
+use awaken_dispatch_contract::SessionContinuationOutbox as _;
+use awaken_dispatch_testkit::ConformanceClock as _;
+use awaken_lease_testkit::ManualClock;
+use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::execution::{
+    Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
+};
+use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_store_inmem::MemoryCommitCoordinator;
+
+use harness::{
+    FP, RecordingMetrics, SNAP, THREAD, TICKET, activation, activation_on, counting_text_runtime,
+    schedule_runtime, text_runtime, text_runtime_with_metrics, tool_runtime,
+};
+
+struct RecordingSettlementObserver {
+    fail_remaining: AtomicUsize,
+    observed: Mutex<Vec<(String, String, RunState, bool)>>,
+}
+
+impl RecordingSettlementObserver {
+    fn new(fail_remaining: usize) -> Self {
+        Self {
+            fail_remaining: AtomicUsize::new(fail_remaining),
+            observed: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DispatchSettlementObserver for RecordingSettlementObserver {
+    async fn before_settle(
+        &self,
+        dispatch: &RunDispatch,
+        claim: &RunClaim,
+        committed_state: &RunState,
+        cancellation_requested: bool,
+    ) -> Result<(), DispatchSettlementError> {
+        self.observed.lock().unwrap().push((
+            dispatch.run_id().0.clone(),
+            claim.run_id.0.clone(),
+            committed_state.clone(),
+            cancellation_requested,
+        ));
+        if self
+            .fail_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(DispatchSettlementError("injected report outage".into()));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn coordinated_settlement_observer_follows_the_durable_boundary_decision_table() {
+    // Cause/effect graph: C1 dispatch has/omits an activity epoch; C2 committed
+    // boundary is Awaiting/Ended; C3 observer succeeds/fails; C4 failed claim is
+    // recovered after lease expiry; C5 an Awaiting coordinated Run is cancelled.
+    // Effects: E1 ordinary Runs bypass the hook;
+    // E2 coordinated boundaries deliver trusted dispatch+claim+committed state
+    // before queue settlement; E3 observer failure retains the leased row and
+    // committed Run evidence; E4 recovery redelivers without re-execution and
+    // only then removes Done; E5 cancellation is observed as trusted provenance,
+    // the Awaiting tool receives the fixed interruption error, the model
+    // is not resumed, and the row reaches Done. The row plus committed Run are the sole retry
+    // evidence—there is no CompletionSink task or observer receipt map.
+    //
+    // | Rule | Epoch | State | Cancel | Observer/recovery | Effect |
+    // |---|---|---|---|---|---|
+    // | S1 | none | Ended | no | would fail/no | E1, Done |
+    // | S2 | some | Awaiting | no | success/no | E2, Awaiting |
+    // | S3 | some | Ended | no | fail/no | E2+E3, Leased |
+    // | S4 | some | Ended committed | no | success/yes | E4, Done |
+    // | S5 | some | Awaiting | yes | success/no | E5, Done |
+    // Constraint/Invariant: the dispatch row plus committed Run are the sole
+    // retry evidence; no observer receipt or completion task is authoritative.
+    // Decision rule: S1-S5 cover epoch presence, both boundaries, observer
+    // success/failure, recovery, and cancellation.
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let ordinary_store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let ordinary_observer = Arc::new(RecordingSettlementObserver::new(1));
+    let ordinary = DispatchWorker::new(
+        text_runtime(),
+        ordinary_store.clone(),
+        Arc::new(MemoryCommitCoordinator::new(system_clock())),
+        "ordinary-worker",
+    )
+    .with_settlement_observer(ordinary_observer.clone());
+    assert!(
+        ordinary
+            .start_run(
+                RunDispatch::new(activation("ordinary-observer")),
+                harness::at(&clock, 0),
+            )
+            .await
+            .expect("S1 ordinary drive")
+            .is_some()
+    );
+    assert!(
+        ordinary_observer.observed.lock().unwrap().is_empty(),
+        "S1/E1"
+    );
+    assert!(
+        ordinary
+            .start_run(
+                RunDispatch::new(activation("ordinary-session-child"))
+                    .for_session(ThreadId("parent-session".into())),
+                harness::at(&clock, 1),
+            )
+            .await
+            .expect("S1 ordinary session-affined child drive")
+            .is_some()
+    );
+    assert!(
+        ordinary_observer.observed.lock().unwrap().is_empty(),
+        "S1/E1 session affinity alone does not classify coordination"
+    );
+
+    let awaiting_clock = Arc::new(ManualClock::new(0));
+    let awaiting_store = Arc::new(MemoryDispatchStore::new(awaiting_clock.clone()));
+    let awaiting_observer = Arc::new(RecordingSettlementObserver::new(0));
+    let (awaiting_runtime, awaiting_tool_runs) = tool_runtime();
+    let awaiting_commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let awaiting = DispatchWorker::new(
+        awaiting_runtime,
+        awaiting_store.clone(),
+        awaiting_commit.clone(),
+        "awaiting-worker",
+    )
+    .with_settlement_observer(awaiting_observer.clone());
+    awaiting_store
+        .enqueue_session_child(
+            RunDispatch::new(activation("coordinated-awaiting"))
+                .for_session(ThreadId("parent-session".into()))
+                .with_session_activity_epoch(7),
+            SessionChildAdmission::new(25, Vec::new()),
+        )
+        .await
+        .expect("S2 admit child");
+    let awaiting_result = awaiting
+        .tick(awaiting_clock.clone())
+        .await
+        .expect("S2 coordinated drive")
+        .expect("S2 applied");
+    assert_eq!(awaiting_result.1, RunState::Awaiting, "S2/E2");
+    assert_eq!(awaiting_observer.observed.lock().unwrap().len(), 1, "S2/E2");
+    assert_eq!(
+        awaiting_store.list_dispatches().await.unwrap()[0].state,
+        awaken_dispatch::DispatchState::Awaiting,
+        "S2/E2"
+    );
+    assert_eq!(
+        awaiting_store
+            .cancel(&RunId("coordinated-awaiting".into()))
+            .await
+            .expect("S5 durable cancellation"),
+        Some(ThreadId(THREAD.into())),
+        "S5 cancellation targets the trusted dispatch Thread"
+    );
+    awaiting_clock.set(1);
+    let interrupted = awaiting
+        .tick(awaiting_clock.clone())
+        .await
+        .expect("S5 cancellation drive")
+        .expect("S5 applied");
+    assert_eq!(
+        interrupted.1,
+        RunState::Ended(EndCause::NaturalEnd),
+        "S5/E5 Awaiting-tool interruption ends without resampling"
+    );
+    assert_eq!(awaiting_tool_runs.load(Ordering::SeqCst), 0, "S5/E5");
+    assert!(
+        awaiting_store.list_dispatches().await.unwrap().is_empty(),
+        "S5/E5"
+    );
+    let interrupted_results = awaiting_commit
+        .committed()
+        .messages
+        .into_iter()
+        .flat_map(|message| message.content)
+        .filter_map(|block| match block {
+            awaken_agent_contract::agent::content::ContentBlock::ToolResult {
+                content,
+                is_error,
+                ..
+            } => Some((
+                awaken_agent_contract::agent::content::extract_text(&content),
+                is_error,
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        interrupted_results,
+        vec![(
+            "Tool execution was interrupted before completion. Please retry.".into(),
+            true,
+        )],
+        "S5/E5 fixed ToolResult"
+    );
+    {
+        let awaiting_observed = awaiting_observer.observed.lock().unwrap();
+        assert_eq!(awaiting_observed.len(), 2, "S2+S5");
+        assert!(!awaiting_observed[0].3, "S2/E2");
+        assert!(awaiting_observed[1].3, "S5/E5 trusted cancellation");
+    }
+
+    let terminal_clock = Arc::new(ManualClock::new(0));
+    let terminal_store = Arc::new(MemoryDispatchStore::new(terminal_clock.clone()));
+    let terminal_commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let terminal_observer = Arc::new(RecordingSettlementObserver::new(1));
+    let executor = Arc::new(RecordingAttemptExecutor::default());
+    let terminal = DispatchWorker::new(
+        text_runtime(),
+        terminal_store.clone(),
+        terminal_commit,
+        "terminal-worker",
+    )
+    .with_settlement_observer(terminal_observer.clone());
+    terminal.install_attempt_executor(executor.clone());
+    let request = RunDispatch::new(activation("coordinated-terminal"))
+        .for_session(ThreadId("parent-session".into()))
+        .with_session_activity_epoch(8);
+    terminal_store
+        .enqueue_session_child(request, SessionChildAdmission::new(25, Vec::new()))
+        .await
+        .expect("S3 admit child");
+    assert!(
+        terminal.tick(terminal_clock.clone()).await.is_err(),
+        "S3/E3"
+    );
+    let retained = terminal_store.list_dispatches().await.unwrap();
+    assert_eq!(retained.len(), 1, "S3/E3");
+    assert_eq!(
+        retained[0].state,
+        awaken_dispatch::DispatchState::Leased,
+        "S3/E3"
+    );
+
+    terminal_clock.set(30_001);
+    let recovered = terminal
+        .tick(terminal_clock.clone())
+        .await
+        .expect("S4 recovery")
+        .expect("S4 redelivered terminal");
+    assert!(matches!(recovered.1, RunState::Ended(_)), "S4/E4");
+    assert!(
+        terminal_store.list_dispatches().await.unwrap().is_empty(),
+        "S4/E4"
+    );
+    assert_eq!(executor.executes.load(Ordering::SeqCst), 1, "S4 no replay");
+    let observed = terminal_observer.observed.lock().unwrap();
+    assert_eq!(observed.len(), 2, "S3+S4 exact redelivery");
+    assert!(
+        observed
+            .iter()
+            .all(|(dispatch_run, claim_run, state, cancelled)| {
+                dispatch_run == claim_run && matches!(state, RunState::Ended(_)) && !cancelled
+            })
+    );
+}
+
+#[tokio::test]
+async fn stale_coordinated_settlement_uses_the_canonical_fenced_metric_exit() {
+    // Cause/effect graph: C1=the Run is Session-coordinated; C2=attempt A owns
+    // epoch 1; C3=its lease expires and attempt B owns epoch 2; C4=B commits and
+    // settles; C5=A reaches the coordinated pre-observer ownership check late;
+    // C6=an attempt instead loses ownership at an executor boundary before any
+    // terminal commit is readable. Effects: E1=B alone invokes the observer and
+    // applies settlement; E2=A does not invoke the observer; E3=both late paths
+    // are classified by the same canonical fenced metrics exit; E4=in-flight
+    // returns to zero; E5=the uncommitted row remains recoverable.
+    //
+    // | Rule | C1 | C3 | Current attempt | Observer | Settlement metric |
+    // |---|---|---|---|---|---|
+    // | F1 | T | F | A | once | applied=1, fenced=0 |
+    // | F2 | T | T | B | once | applied=1, fenced=0 |
+    // | F3 | T | T | stale A | never | applied=1, fenced=1 |
+    // | F4 | T | T/C6 | stale pre-commit A | never | applied=0, fenced=1 |
+    //
+    // Constraint: the pre-observer check must prevent stale Session effects,
+    // but it must not create a second unmetered terminal path. F2+F3 exercises
+    // the replacement-after-terminal race; F4 covers the pre-terminal executor
+    // error partition. Ordinary F1 is covered by the existing terminal-drive
+    // metrics test.
+    let metrics = Arc::new(RecordingMetrics::default());
+    let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let observer = Arc::new(RecordingSettlementObserver::new(0));
+    let worker = DispatchWorker::new(
+        runtime,
+        store.clone(),
+        Arc::new(MemoryCommitCoordinator::new(system_clock())),
+        "coordinated-driver",
+    )
+    .with_settlement_observer(observer.clone());
+
+    store
+        .enqueue_session_child(
+            RunDispatch::new(activation("coordinated-fenced"))
+                .for_session(ThreadId("parent-session".into()))
+                .with_session_activity_epoch(9),
+            SessionChildAdmission::new(25, Vec::new()),
+        )
+        .await
+        .expect("admit coordinated child");
+    clock.set(0);
+    let stale = store
+        .claim("attempt-a", 10, &Default::default())
+        .await
+        .expect("claim attempt A")
+        .expect("attempt A");
+    clock.set(11);
+    let current = store
+        .claim("attempt-b", 10, &Default::default())
+        .await
+        .expect("reclaim attempt B")
+        .expect("attempt B");
+
+    worker
+        .drive_claimed(current, harness::at(&clock, 11))
+        .await
+        .expect("drive current attempt")
+        .expect("current attempt applied");
+    assert!(
+        worker
+            .drive_claimed(stale, harness::at(&clock, 11))
+            .await
+            .expect("classify stale attempt")
+            .is_none(),
+        "stale coordinated settlement is fenced"
+    );
+
+    assert_eq!(observer.observed.lock().unwrap().len(), 1, "F2/E1+F3/E2");
+    assert_eq!(metrics.commits_applied.load(Ordering::SeqCst), 1, "F2/E1");
+    assert_eq!(metrics.fenced.load(Ordering::SeqCst), 1, "F3/E3");
+    assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 0, "F3/E4");
+
+    let precommit_metrics = Arc::new(RecordingMetrics::default());
+    let precommit_clock = Arc::new(ManualClock::new(0));
+    let precommit_store = Arc::new(MemoryDispatchStore::new(precommit_clock.clone()));
+    let precommit_observer = Arc::new(RecordingSettlementObserver::new(0));
+    let expiring = Arc::new(ExpiringOwnershipAttemptExecutor {
+        clock: precommit_clock.clone(),
+        effects: AtomicUsize::new(0),
+    });
+    let precommit_worker = DispatchWorker::new(
+        text_runtime_with_metrics(precommit_metrics.clone() as Arc<_>),
+        precommit_store.clone(),
+        Arc::new(MemoryCommitCoordinator::new(system_clock())),
+        "precommit-driver",
+    )
+    .with_settlement_observer(precommit_observer.clone());
+    precommit_worker.install_attempt_executor(expiring.clone());
+    precommit_store
+        .enqueue_session_child(
+            RunDispatch::new(activation("coordinated-precommit-fenced"))
+                .for_session(ThreadId("parent-session".into()))
+                .with_session_activity_epoch(10),
+            SessionChildAdmission::new(25, Vec::new()),
+        )
+        .await
+        .expect("admit pre-commit coordinated child");
+
+    assert!(
+        precommit_worker
+            .tick(precommit_clock)
+            .await
+            .expect("stale pre-commit attempt is classified")
+            .is_none(),
+        "F4 abandons the stale attempt"
+    );
+    assert_eq!(
+        expiring.effects.load(Ordering::SeqCst),
+        0,
+        "F4 pre-effect fence"
+    );
+    assert!(
+        precommit_observer.observed.lock().unwrap().is_empty(),
+        "F4/E2"
+    );
+    assert_eq!(
+        precommit_metrics.commits_applied.load(Ordering::SeqCst),
+        0,
+        "F4/E5"
+    );
+    assert_eq!(precommit_metrics.fenced.load(Ordering::SeqCst), 1, "F4/E3");
+    assert_eq!(
+        precommit_metrics.in_flight.load(Ordering::SeqCst),
+        0,
+        "F4/E4"
+    );
+    assert_eq!(
+        precommit_store.list_dispatches().await.unwrap().len(),
+        1,
+        "F4/E5"
+    );
+}
+
+#[tokio::test]
+async fn an_unclaimable_parent_mediated_run_remains_scheduled_for_a_compatible_worker() {
+    // Cause/effect graph and decision table:
+    // C1 placement is locally claimable -> E1 start_run claims and drives it;
+    // C2 placement is RemoteRequired -> E2 local start returns None and the one
+    // durable queue retains the exact pending Run for a registered Worker;
+    // C3 the same stable request is retried -> E3 enqueue remains idempotent.
+    // R1=C1/E1 is covered by `a_persisted_frozen_candidate_routes_through_the_gateway`.
+    // R2=C2/E2 and R3=C2+C3/E2+E3 are owned here. FMECA: dropping C2 after a
+    // failed local claim leaves a parent waiting for a child boundary that no
+    // Worker can ever observe; the pending-row assertion detects that loss.
+    // Constraint/Invariant: inability to claim locally cannot delete or fork the
+    // one durable dispatch. Decision rule: execute R2 and its idempotent retry R3;
+    // R1 remains covered by the named local-routing test.
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let worker = DispatchWorker::new(
+        text_runtime(),
+        store.clone(),
+        Arc::new(MemoryCommitCoordinator::new(system_clock())),
+        "parent-worker",
+    );
+    let request = RunDispatch::new(activation("remote-child"))
+        .with_placement(PlacementRequirements::remote_required())
+        .with_worker_codec_requirements();
+
+    assert!(
+        worker
+            .start_run(request.clone(), harness::clock(0))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        worker
+            .start_run(request, harness::clock(1))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let rows = store.list_dispatches().await.unwrap();
+    assert_eq!(rows.len(), 1, "R2+R3/E2+E3");
+    assert_eq!(rows[0].run_id.0, "remote-child");
+    assert_eq!(rows[0].state, awaken_dispatch::DispatchState::Pending);
+}
+
+#[derive(Default)]
+struct RecordingAttemptExecutor {
+    executes: AtomicUsize,
+    resumes: AtomicUsize,
+    cancels: AtomicUsize,
+}
+
+struct LiveBoundaryAttemptExecutor {
+    entered: tokio::sync::mpsc::UnboundedSender<awaken_runtime_contract::live_inbox::LiveInbox>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+struct OwnershipCheckingAttemptExecutor {
+    verified: AtomicUsize,
+}
+
+#[derive(Default)]
+struct CredentialCheckingCancelExecutor {
+    bindings: Mutex<Vec<awaken_credential_contract::AttemptCredentialBinding>>,
+}
+
+struct ExpiringOwnershipAttemptExecutor {
+    clock: Arc<ManualClock>,
+    effects: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for OwnershipCheckingAttemptExecutor {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        context
+            .ownership
+            .as_ref()
+            .expect("claimed attempt receives ownership authority")
+            .verify_current()
+            .await
+            .expect("fresh exact claim remains current");
+        self.verified.fetch_add(1, Ordering::SeqCst);
+        RecordingAttemptExecutor::finish(&activation, &context).await
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for OwnershipCheckingAttemptExecutor {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        _command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        self.execute(activation, context).await
+    }
+
+    async fn cancel(
+        &self,
+        _activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<()> {
+        context
+            .ownership
+            .as_ref()
+            .expect("claimed cancellation receives ownership authority")
+            .verify_current()
+            .await
+            .expect("fresh exact claim remains current");
+        self.verified.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for CredentialCheckingCancelExecutor {
+    async fn execute(
+        &self,
+        _activation: RunActivation,
+        _context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        Err(ExecutionError::Execution(
+            "credential cancellation fixture must not execute".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for CredentialCheckingCancelExecutor {
+    async fn resume(
+        &self,
+        _activation: RunActivation,
+        _command: ResumeCommand,
+        _context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        Err(ExecutionError::Execution(
+            "credential cancellation fixture must not resume".into(),
+        ))
+    }
+
+    async fn cancel(
+        &self,
+        _activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<()> {
+        awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
+            .await?;
+        let realization =
+            awaken_credential_contract::AttemptCredentialRealization::from_context(&context)
+                .ok_or_else(|| {
+                    ExecutionError::Execution(
+                        "authenticated cancellation has no exact credential realization".into(),
+                    )
+                })?;
+        self.bindings
+            .lock()
+            .unwrap()
+            .extend_from_slice(realization.bindings());
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for ExpiringOwnershipAttemptExecutor {
+    async fn execute(
+        &self,
+        _activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        self.clock.set(DEFAULT_LEASE_MS + 1);
+        awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
+            .await?;
+        self.effects.fetch_add(1, Ordering::SeqCst);
+        Ok(RunState::Ended(EndCause::NaturalEnd))
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for ExpiringOwnershipAttemptExecutor {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        _command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        self.execute(activation, context).await
+    }
+}
+
+impl RecordingAttemptExecutor {
+    async fn finish(
+        activation: &RunActivation,
+        context: &RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        let disposition = awaken_agent_contract::thread::commit::RunDisposition::ended(
+            activation.run_id.clone(),
+            EndCause::NaturalEnd,
+        );
+        if let Some(commit) = &context.commit {
+            awaken_agent_contract::thread::commit::commit_run(
+                commit.as_ref(),
+                &activation.thread_id,
+                disposition,
+                Vec::new(),
+                Vec::new(),
+            )
+            .await
+            .map_err(|error| ExecutionError::Commit(error.to_string()))?;
+        }
+        Ok(RunState::Ended(EndCause::NaturalEnd))
+    }
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for RecordingAttemptExecutor {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        self.executes.fetch_add(1, Ordering::SeqCst);
+        Self::finish(&activation, &context).await
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for RecordingAttemptExecutor {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        _command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        self.resumes.fetch_add(1, Ordering::SeqCst);
+        Self::finish(&activation, &context).await
+    }
+
+    async fn cancel(
+        &self,
+        _activation: RunActivation,
+        _context: RuntimeRunContext,
+    ) -> ExecutionResult<()> {
+        self.cancels.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for LiveBoundaryAttemptExecutor {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        let inbox = context
+            .live_inbox
+            .clone()
+            .expect("safe-boundary executor receives an attempt-local inbox");
+        self.entered
+            .send(inbox)
+            .expect("test receiver remains available");
+        self.release
+            .acquire()
+            .await
+            .expect("test release remains open")
+            .forget();
+        let fold = match awaken_runtime_contract::boundary::evaluate_boundary(
+            &context,
+            &activation.run_id,
+            &[],
+        ) {
+            awaken_runtime_contract::boundary::BoundaryOutcome::Continue { fold }
+            | awaken_runtime_contract::boundary::BoundaryOutcome::Await { fold, .. } => fold,
+            awaken_runtime_contract::boundary::BoundaryOutcome::Idle => Vec::new(),
+        };
+        let disposition = awaken_agent_contract::thread::commit::RunDisposition::ended(
+            activation.run_id.clone(),
+            EndCause::NaturalEnd,
+        );
+        awaken_agent_contract::thread::commit::commit_run(
+            context.commit.as_ref().expect("claimed commit").as_ref(),
+            &activation.thread_id,
+            disposition,
+            fold,
+            Vec::new(),
+        )
+        .await
+        .map_err(|error| ExecutionError::Commit(error.to_string()))?;
+        Ok(RunState::Ended(EndCause::NaturalEnd))
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for LiveBoundaryAttemptExecutor {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        _command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        self.execute(activation, context).await
+    }
+}
+
+fn provider_candidate(
+    reference: &str,
+) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+    awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
+        awaken_runtime_contract::ModelBinding::new("provider@1", "gateway-model", "genai"),
+        "provider@1",
+        "route@1",
+        "workspace-a",
+        Some(
+            awaken_agent_contract::credential::CredentialAccess::new(
+                awaken_agent_contract::credential::CredentialRef {
+                    id: reference.into(),
+                    revision: 1,
+                },
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                awaken_agent_contract::credential::CredentialUsage::ProviderAdapter,
+                awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(
+                ),
+            )
+            .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
+                "provider",
+            )),
+        ),
+        awaken_runtime_contract::InferenceEndpoint {
+            adapter_kind: "openai".into(),
+            api_dialect: "open_ai_chat".into(),
+            base_url: "https://gateway.invalid/v1".into(),
+            upstream_model: "gateway-model".into(),
+            processing_placement: None,
+        },
+    )
+    .expect("coherent durable provider candidate")
+}
+
+fn remote_credential_activation(run_id: &str) -> RunActivation {
+    let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Worker,
+        awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    );
+    let mut activation = activation(run_id);
+    activation.snapshot.resolved_spec.model_binding =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(
+            awaken_runtime_contract::ModelBinding::new(
+                "",
+                "",
+                "a2a:https://agent.example",
+            ),
+            "workspace-a",
+            Some(
+                awaken_agent_contract::credential::CredentialAccess::new(
+                    awaken_agent_contract::credential::CredentialRef {
+                        id: "remote-cancel-token".into(),
+                        revision: 7,
+                    },
+                    awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                    awaken_agent_contract::credential::CredentialUsage::HttpHeader {
+                        name: "authorization".into(),
+                        scheme: Some("Bearer".into()),
+                    },
+                    awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
+                        holder.clone(),
+                        awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
+                    ),
+                )
+                .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                    awaken_agent_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
+                    "https://agent.example",
+                )),
+            ),
+            "sha256:agent-card",
+        )
+        .expect("coherent authenticated remote cancellation candidate");
+    activation
+}
+
+fn remote_credential_capabilities() -> awaken_credential_contract::CredentialRealizationCapabilities
+{
+    let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Worker,
+        awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    );
+    awaken_credential_contract::CredentialRealizationCapabilities {
+        holders: [holder].into_iter().collect(),
+        material_sources: [
+            awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+        ]
+        .into_iter()
+        .collect(),
+        realization_kinds: [awaken_credential_contract::CredentialRealizationKind::WorkerRelay]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    }
+}
+
+fn remote_credential_dispatch(run_id: &str) -> RunDispatch {
+    let mut request = RunDispatch::new(remote_credential_activation(run_id));
+    request.inference_plaintext_holder =
+        Some(awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
+            awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        ));
+    request
+}
+
+fn allow_command() -> ResumeCommand {
+    ResumeCommand {
+        operation_id: None,
+        correlation_id: TICKET.to_string(),
+        run_id: RunId("run-1".to_string()),
+        thread_id: ThreadId(THREAD.to_string()),
+        snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId(SNAP.to_string()),
+        catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(FP.to_string()),
+        result: ResumeResult::allow(),
+        context_messages: Vec::new(),
+        now_ms: 0,
+    }
+}
+
+/// Pending input answering the gate's ticket (the common case).
+fn pending(message_id: &str, run: &str, result: ResumeResult) -> PendingInput {
+    pending_for(message_id, run, TICKET, result)
+}
+
+/// Pending input answering a specific ticket correlation.
+fn pending_for(
+    message_id: &str,
+    run: &str,
+    correlation: &str,
+    result: ResumeResult,
+) -> PendingInput {
+    harness::pending(message_id, run, correlation, result)
+}
+
+#[tokio::test]
+async fn durable_submit_persists_then_runs_to_completion() {
+    // C1 fresh durable input + C2 one successful model invocation -> E1 one
+    // input commit, E2 Entered/Returned evidence for ordinal 1, E3 one terminal
+    // commit and dispatch removal. R1=C1+C2 requires all four commits; the
+    // evidence phases distinguish durable observation from duplicate execution.
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
+
+    let state = ingress
+        .submit_background(activation("run-1"))
+        .await
+        .expect("durable submit");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+
+    // C1 fresh durable input -> E1 one exchange and one actual invocation,
+    // E2 settled dispatch removed. M1 checks the exact invocation journal;
+    // commit batching is not a proxy for duplicate execution.
+    harness::assert_completed_model_invocations(commit.as_ref(), 1);
+    assert_eq!(
+        commit
+            .committed()
+            .events
+            .iter()
+            .filter(|event| event.kind == AuditKind::ModelRequestCompleted)
+            .count(),
+        1
+    );
+    let messages = commit.committed().messages;
+    assert_eq!(
+        messages.len(),
+        2,
+        "one exchange, independent of commit batching"
+    );
+    assert_eq!(messages[0].text_content(), "go");
+    assert_eq!(messages.last().unwrap().text_content(), "done");
+    assert_eq!(store.dispatch_count(), 0, "a finished dispatch is removed");
+}
+
+#[tokio::test]
+async fn installed_attempt_executor_drives_a_fresh_durable_run() {
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(text_runtime(), store, commit, system_clock());
+    let selected = Arc::new(RecordingAttemptExecutor::default());
+    ingress.install_attempt_executor(selected.clone());
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-selected"))
+            .await
+            .expect("selected executor completes"),
+        RunState::Ended(EndCause::NaturalEnd)
+    );
+    assert_eq!(selected.executes.load(Ordering::SeqCst), 1);
+    assert_eq!(selected.resumes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn claimed_attempt_receives_live_exact_ownership_authority() {
+    // Clock-authority cause/effect table. C1 is the one edge ManualClock, C2 is
+    // claim eligibility, and C3 is its value at the pre-effect verifier. E1 is
+    // claim+verify on one timeline, E2 is one external effect, and E3 is a
+    // fail-closed attempt with no effect.
+    //
+    // | Rule | Claim time | Verify time | Expected effect |
+    // |---|---|---|---|
+    // | CA1 | 7 | 7 (live) | E1+E2 |
+    // | CA2 | 0 | lease+1 (expired) | E1+E3 |
+    //
+    // CA1 specifically prevents a Worker-private SystemClock from judging a
+    // deterministic edge claim as already expired. CA2 below proves the inverse:
+    // advancing that same source is observed by the verifier before any effect.
+    // Constraint/Invariant: claim and pre-effect verification read the same live
+    // Clock authority. Decision rule: this test owns CA1; the adjacent expiry
+    // test owns complementary rule CA2.
+    // Ownership is verified against the store's own clock, so the claim and the
+    // pre-effect verification must read the one edge clock this test drives.
+    let clock = Arc::new(ManualClock::new(7));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let selected = Arc::new(OwnershipCheckingAttemptExecutor {
+        verified: AtomicUsize::new(0),
+    });
+    let worker = DispatchWorker::new(text_runtime(), store.clone(), commit, "worker");
+    worker.install_attempt_executor(selected.clone());
+    store
+        .enqueue(RunDispatch::new(activation("ownership-run")))
+        .await
+        .expect("dispatch enqueued");
+
+    assert_eq!(
+        worker.tick(clock).await.expect("claimed attempt completes"),
+        Some((
+            RunId("ownership-run".to_string()),
+            RunState::Ended(EndCause::NaturalEnd)
+        ))
+    );
+    assert_eq!(selected.verified.load(Ordering::SeqCst), 1, "CA1/E1+E2");
+}
+
+#[tokio::test]
+async fn advancing_the_drive_clock_expires_ownership_before_any_effect() {
+    // Causes: CA2 claims at time zero, then the executor advances the exact Clock
+    // past lease expiry. Effects: the claim-bound verifier rejects and the
+    // external-effect count remains zero; the ordinary execution error is
+    // preserved while the one fenced-settlement metric records lost authority.
+    // Constraint/Invariant: verification and claim share one Clock authority,
+    // and metrics do not turn an ordinary execution fault into success. Decision
+    // rule: execute complementary CA2 from the adjacent clock table and require
+    // fail-closed pre-effect behavior plus the complete metric vector.
+    let metrics = Arc::new(RecordingMetrics::default());
+    // Ownership is verified against the store's own clock, so the executor that
+    // advances time past the lease must advance that exact clock.
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let selected = Arc::new(ExpiringOwnershipAttemptExecutor {
+        clock: clock.clone(),
+        effects: AtomicUsize::new(0),
+    });
+    let worker = DispatchWorker::new(
+        text_runtime_with_metrics(metrics.clone() as Arc<_>),
+        store.clone(),
+        commit,
+        "worker",
+    );
+    worker.install_attempt_executor(selected.clone());
+    store
+        .enqueue(RunDispatch::new(activation("expired-ownership-run")))
+        .await
+        .expect("dispatch enqueued");
+
+    let error = worker
+        .tick(clock)
+        .await
+        .expect_err("CA2 expired ownership fails closed");
+    assert!(
+        error
+            .to_string()
+            .contains("no longer owns external execution"),
+        "CA2/E3: {error}"
+    );
+    assert_eq!(selected.effects.load(Ordering::SeqCst), 0, "CA2/E3");
+    assert_eq!(metrics.fenced.load(Ordering::SeqCst), 1, "CA2/E3");
+    assert_eq!(metrics.commits_applied.load(Ordering::SeqCst), 0, "CA2/E3");
+    assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 0, "CA2/E3");
+}
+
+#[tokio::test]
+async fn a_worker_routes_inference_through_the_resolved_model_executor() {
+    // Cause: the worker carries a model resolver that maps the run's binding model_ref
+    // to a labeled executor. Effect: the drive routes inference through THAT executor,
+    // not the runtime's bound default — the committed reply is the resolved model's
+    // ("RESOLVED"), never the runtime default ("done"). This is the per-run provider
+    // seam a database-less worker uses to run the run's own configured model.
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+
+    struct Labeled;
+    #[async_trait::async_trait]
+    impl LlmExecutor for Labeled {
+        async fn infer(
+            &self,
+            _r: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text("RESOLVED"),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let resolver: awaken_dispatch::InferenceMaterializerFn =
+        Arc::new(|_activation, _context| Ok(Some(Arc::new(Labeled) as Arc<dyn LlmExecutor>)));
+    let ingress = DispatchTestHarness::with_owner_and_resolver(
+        text_runtime(), // its bound model would reply "done"
+        store.clone(),
+        commit.clone(),
+        "owner",
+        None,
+        Some(resolver),
+        system_clock(),
+    );
+
+    let state = ingress
+        .submit_background(activation("run-resolved"))
+        .await
+        .expect("durable submit");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+
+    let messages = commit.committed().messages;
+    assert_eq!(
+        messages.last().unwrap().text_content(),
+        "RESOLVED",
+        "the worker ran the resolved model, not the runtime's bound default"
+    );
+}
+
+#[tokio::test]
+async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
+    // Test design. Causes: C1 the Worker has no provider secret; C2 the frozen
+    // candidate carries snapshot-pinned gateway access; C3 a resolver observes
+    // that access. Effects: E1 C2+C3 materializes the gateway executor; E2 the
+    // Run returns gateway output without ambient credentials. Constraint/
+    // Invariant: credentials come only from the frozen access descriptor, never
+    // Worker environment fallback. Decision rule: exercise the secretless,
+    // descriptor-present branch and assert both observed access and output.
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+
+    struct Gateway;
+    #[async_trait::async_trait]
+    impl LlmExecutor for Gateway {
+        async fn infer(
+            &self,
+            _request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text("GATEWAY"),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    let seen = Arc::new(Mutex::new(None));
+    let capture = seen.clone();
+    let resolver: awaken_dispatch::InferenceMaterializerFn =
+        Arc::new(move |activation, _context| {
+            *capture.lock().expect("grant capture mutex") =
+                Some(activation.snapshot.resolved_spec.model_binding.clone());
+            Ok(Some(Arc::new(Gateway) as Arc<dyn LlmExecutor>))
+        });
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Worker,
+        awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    );
+    let ingress = DispatchTestHarness::with_owner_and_resolver(
+        text_runtime(),
+        store,
+        commit.clone(),
+        "secretless-worker",
+        None,
+        Some(resolver),
+        system_clock(),
+    )
+    .with_local_credential_capabilities(
+        awaken_credential_contract::CredentialRealizationCapabilities {
+            holders: [holder.clone()].into_iter().collect(),
+            material_sources: [
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+            ]
+            .into_iter()
+            .collect(),
+            realization_kinds: [
+                awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            ]
+            .into_iter()
+            .collect(),
+            recipient_bound_envelopes: false,
+            envelope_required: false,
+            extension_consumers: Default::default(),
+            alternatives: Vec::new(),
+        },
+    );
+    let candidate = provider_candidate("grant-17");
+    let mut activation = activation("run-gateway");
+    activation.snapshot.resolved_spec.model_binding = candidate.clone();
+    let request = RunDispatch::new(activation).with_inference_plaintext_holder(holder);
+    let (_, state) = ingress
+        .worker()
+        .start_run(request, harness::clock(0))
+        .await
+        .expect("worker drive succeeds")
+        .expect("new run is claimed");
+
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(*seen.lock().expect("grant capture mutex"), Some(candidate));
+    assert_eq!(
+        commit
+            .committed()
+            .messages
+            .last()
+            .expect("assistant reply")
+            .text_content(),
+        "GATEWAY"
+    );
+}
+
+#[tokio::test]
+async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
+    // R5, end to end on the worker path: a run selects the already-published `alt`
+    // candidate and resolves it to a different executor than the primary binding.
+    // This proves the per-Run switch reaches the materialization seam without
+    // allowing an arbitrary model ref outside the immutable snapshot.
+    use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+
+    struct Fixed(&'static str);
+    #[async_trait::async_trait]
+    impl LlmExecutor for Fixed {
+        async fn infer(
+            &self,
+            _r: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            Ok(ChatResponse {
+                output: AssistantOutput::text(self.0),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let resolver: awaken_dispatch::InferenceMaterializerFn =
+        Arc::new(
+            |activation, _context| match activation.effective_model_ref() {
+                "alt" => Ok(Some(Arc::new(Fixed("ALT")) as Arc<dyn LlmExecutor>)),
+                _ => Ok(Some(Arc::new(Fixed("BOUND")) as Arc<dyn LlmExecutor>)),
+            },
+        );
+    let ingress = DispatchTestHarness::with_owner_and_resolver(
+        text_runtime(),
+        store.clone(),
+        commit.clone(),
+        "owner",
+        None,
+        Some(resolver),
+        system_clock(),
+    );
+
+    let mut over = activation("run-override");
+    over.snapshot.resolved_spec.model_candidates.push(
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+            awaken_runtime_contract::resolved::ModelBinding::new("alt", "alt", "stub"),
+        ),
+    );
+    let over = over.with_model_ref_override(Some("alt".into()));
+    let state = ingress
+        .submit_background(over)
+        .await
+        .expect("durable submit");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+
+    let messages = commit.committed().messages;
+    assert_eq!(
+        messages.last().unwrap().text_content(),
+        "ALT",
+        "the per-run override selected the model, overriding the snapshot binding"
+    );
+}
+
+#[tokio::test]
+async fn durable_worker_opens_one_fresh_live_inbox_per_physical_attempt() {
+    // Cause/effect graph: C1 a durable dispatch is queued but unclaimed; C2 its
+    // exact local claim crosses physical-attempt admission; C3 the executor
+    // supports safe-boundary input; C4 an external message is offered before the
+    // boundary; C5 the scope returns; C6 a second attempt starts on the same
+    // Thread. Effects: E1 C1 exposes no inbox; E2 C2+C3 exposes exactly the
+    // executor's inbox; E3 C4 commits once at the boundary; E4 C5 closes it and
+    // rejects later offers; E5 C6 receives a different empty inbox.
+    //
+    // | Rule | claimed/current | supports live | scope | effect |
+    // |---|---|---|---|---|
+    // | L1 | no | yes | absent | E1 |
+    // | L2 | yes | yes | open | E2+E3 |
+    // | L3 | settled | yes | closed | E4 |
+    // | L4 | next claim | yes | fresh | E5 |
+    //
+    // Constraint: no Session, ingress façade, WorkerContext, or prior attempt
+    // retains an inbox; reliable input remains the durable Session-event path.
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message};
+    use awaken_runtime_contract::live_inbox::{MessageOrigin, Offer};
+
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = Arc::new(DispatchTestHarness::new(
+        runtime.clone(),
+        store,
+        commit.clone(),
+        system_clock(),
+    ));
+    let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    ingress.install_attempt_executor(Arc::new(LiveBoundaryAttemptExecutor {
+        entered: entered_tx,
+        release: release.clone(),
+    }));
+
+    assert!(
+        runtime
+            .active_attempt_live_inbox(&ThreadId(THREAD.into()))
+            .await
+            .is_none(),
+        "L1/E1"
+    );
+
+    let first_ingress = ingress.clone();
+    let first = tokio::spawn(async move {
+        first_ingress
+            .submit_background(activation("live-first"))
+            .await
+    });
+    let first_inbox = tokio::time::timeout(std::time::Duration::from_secs(30), entered_rx.recv())
+        .await
+        .expect("timed out waiting for entered_rx.recv()")
+        .expect("L2 executor entered");
+    let discovered = runtime
+        .active_attempt_live_inbox(&ThreadId(THREAD.into()))
+        .await
+        .expect("L2/E2 exact local inbox");
+    assert!(matches!(
+        discovered.offer_as(
+            MessageOrigin::External,
+            Message::text(MessageId("external-live".into()), Role::User, "steer")
+        ),
+        Offer::Accepted(_)
+    ));
+    assert_eq!(first_inbox.list().len(), 1, "L2/E2 same inbox identity");
+    release.add_permits(1);
+    assert_eq!(
+        first.await.expect("L2 join").expect("L2 drive"),
+        RunState::Ended(EndCause::NaturalEnd)
+    );
+    assert!(
+        matches!(
+            first_inbox.offer(Message::text(
+                MessageId("late-live".into()),
+                Role::User,
+                "late"
+            )),
+            Offer::Closed
+        ),
+        "L3/E4"
+    );
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|message| message.id.0 == "live-first-inbox-0"),
+        "L2/E3"
+    );
+
+    let second_ingress = ingress.clone();
+    let second = tokio::spawn(async move {
+        second_ingress
+            .submit_background(activation("live-second"))
+            .await
+    });
+    let second_inbox = tokio::time::timeout(std::time::Duration::from_secs(30), entered_rx.recv())
+        .await
+        .expect("timed out waiting for entered_rx.recv()")
+        .expect("L4 executor entered");
+    assert!(second_inbox.list().is_empty(), "L4/E5 no carry-over");
+    assert!(
+        matches!(
+            second_inbox.offer(Message::text(
+                MessageId("second-live".into()),
+                Role::User,
+                "fresh"
+            )),
+            Offer::Accepted(_)
+        ),
+        "L4/E5 replacement inbox is fresh and open"
+    );
+    release.add_permits(1);
+    second.await.expect("L4 join").expect("L4 drive");
+}
+
+#[tokio::test]
+async fn durable_submit_is_idempotent_per_run() {
+    // R1 fresh Run -> one model call plus durable input/evidence/terminal;
+    // R2 replay the same settled Run -> same outcome, no additional model call
+    // or commit of any kind. Compare the observed prefix instead of equating
+    // number of infrastructure evidence commits with number of executions.
+    let (runtime, calls) = counting_text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store, commit.clone(), system_clock());
+
+    ingress
+        .submit_background(activation("run-1"))
+        .await
+        .expect("first submit");
+    let first_commit_count = commit.commit_count();
+    harness::assert_completed_model_invocations(commit.as_ref(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "R1 executes once");
+    // Re-submitting the same run id is a no-op: the dispatch was already settled,
+    // and re-enqueue does not create a second run or a second commit.
+    let state = ingress
+        .submit_background(activation("run-1"))
+        .await
+        .expect("second submit");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    // C1 settled Run + C2 same identity -> E1 zero additional commits/effects.
+    // D2 replay adds no input, invocation journal, or terminal commit.
+    assert_eq!(
+        commit.commit_count(),
+        first_commit_count,
+        "re-submit adds no commit"
+    );
+    harness::assert_completed_model_invocations(commit.as_ref(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "R2 does not execute again");
+}
+
+#[tokio::test]
+async fn awaiting_run_resumes_through_delivered_input() {
+    // Test design. Causes: C1 a Run commits Awaiting with an exact correlation;
+    // C2 matching input is delivered; C3 the Worker ticks again. Effects: E1 no
+    // tool runs before C2; E2 C2+C3 resumes once and commits terminal output; E3
+    // dispatch and pending input settle away. Constraint/Invariant: committed
+    // ticket identity, not queue presence alone, admits resume. Decision rule:
+    // cover pre-input Awaiting and matching-input terminal transitions.
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
+
+    // A durable submit awaits on the gate.
+    let state = ingress
+        .submit_background(activation("run-1"))
+        .await
+        .expect("submit awaits");
+    assert_eq!(state, RunState::Awaiting);
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "tool must not run while awaiting"
+    );
+    assert_eq!(
+        store.dispatch_count(),
+        1,
+        "the awaiting dispatch is retained"
+    );
+
+    // Delivering an allow decision wakes and resumes the run to completion.
+    let resumed = ingress
+        .deliver_resume(
+            pending("msg-1", "run-1", ResumeResult::allow()),
+            harness::clock(0),
+        )
+        .await
+        .expect("resume");
+    assert_eq!(resumed, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "allow runs the pending tool once"
+    );
+    assert_eq!(
+        store.dispatch_count(),
+        0,
+        "the finished dispatch is removed"
+    );
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.text_content().contains("echoed"))
+    );
+}
+
+#[tokio::test]
+async fn installed_attempt_executor_drives_the_durable_resume_path() {
+    // Test design. Causes: C1 the native first attempt commits Awaiting; C2 an
+    // alternate attempt executor is installed before matching input arrives.
+    // Effects: E1 the retained dispatch/ticket selects resume on C2; E2 only the
+    // installed executor records the resumed attempt. Constraint/Invariant:
+    // replacing execution does not replace durable resume authority. Decision rule:
+    // execute one attempt before and one after replacement, then distinguish
+    // execute versus resume counters.
+    let (runtime, _) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store, commit, system_clock());
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .expect("native first attempt awaits"),
+        RunState::Awaiting
+    );
+
+    // Model a worker/backend replacement between attempts. The retained dispatch
+    // and ticket remain authoritative; only attempt execution is replaced.
+    let selected = Arc::new(RecordingAttemptExecutor::default());
+    ingress.install_attempt_executor(selected.clone());
+    assert_eq!(
+        ingress
+            .deliver_resume(
+                pending("resume-selected", "run-1", ResumeResult::allow(),),
+                harness::clock(1),
+            )
+            .await
+            .expect("selected executor resumes"),
+        RunState::Ended(EndCause::NaturalEnd)
+    );
+    assert_eq!(selected.executes.load(Ordering::SeqCst), 0);
+    assert_eq!(selected.resumes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn duplicate_pending_delivery_is_idempotent() {
+    let store = MemoryDispatchStore::new(system_clock());
+    let input = pending("msg-1", "run-1", ResumeResult::Input("hi".to_string()));
+    assert!(
+        store.append(input.clone()).await.unwrap(),
+        "first append stores"
+    );
+    assert!(
+        !store.append(input).await.unwrap(),
+        "a duplicate message id is a no-op"
+    );
+    assert_eq!(store.pending_count(&RunId("run-1".to_string())), 1);
+}
+
+#[tokio::test]
+async fn expired_lease_is_reclaimable_for_recovery() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    store
+        .enqueue(RunDispatch::new(activation("run-1")))
+        .await
+        .unwrap();
+
+    // First claim takes a 1000ms lease at t=0.
+    clock.set(0);
+    assert!(
+        store
+            .claim("worker-a", 1_000, &Default::default())
+            .await
+            .unwrap()
+            .is_some(),
+        "a fresh run is claimable"
+    );
+    // While the lease holds, the run is not re-claimable.
+    clock.set(500);
+    assert!(
+        store
+            .claim("worker-b", 1_000, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
+        "a held lease blocks a second claim"
+    );
+    // After the lease expires, recovery reclaims it.
+    clock.set(1_001);
+    let recovered = store
+        .claim("worker-b", 1_000, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered.map(|c| c.lease.owner().to_owned()),
+        Some("worker-b".to_string()),
+        "an expired lease is reclaimed by the next worker"
+    );
+}
+
+#[tokio::test]
+async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
+    // Cause/effect graph: C1 a worker dies after its first claim and before any
+    // Thread commit; C2 the lease expires; C3 a replacement claim executes the
+    // same Run. Effects: E1 recovery durably records one neutral reschedule
+    // observation before execution; E2 input/running and terminal each commit
+    // exactly once, plus the model enter/return receipts; E3 the dispatch is removed; E4 the successful logical model
+    // request is recorded once in the terminal commit. Decision rule
+    // R1=C1+C2+C3 => E1+E2+E3+E4. The audit-kind order distinguishes the
+    // intentional recovery and model observation from duplicate execution, so
+    // this test does not use a stale commit count as a proxy for exactly-once
+    // behavior.
+    // Constraint/Invariant: the same durable Run is recovered; lifecycle and
+    // request audit facts remain the sole evidence. Decision rule: R1 is the
+    // crash-before-first-commit partition and must yield E1-E4 exactly once.
+    let runtime = text_runtime();
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
+
+    // Simulate a worker that claimed a run, then crashed before executing it:
+    // enqueue and claim directly, leaving a held lease and no committed run.
+    store
+        .enqueue(RunDispatch::new(activation("run-1")))
+        .await
+        .unwrap();
+    clock.set(0);
+    assert!(
+        store
+            .claim("dead-worker", 1_000, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        commit.commit_count(),
+        0,
+        "the crashed attempt committed nothing"
+    );
+
+    // Recovery after the lease expires reclaims and completes the run.
+    let processed = ingress
+        .recover(harness::at(&clock, 2_000))
+        .await
+        .expect("recover");
+    assert_eq!(
+        processed,
+        vec![(
+            RunId("run-1".to_string()),
+            RunState::Ended(EndCause::NaturalEnd)
+        )]
+    );
+    harness::assert_completed_model_invocations(commit.as_ref(), 1);
+    assert_eq!(
+        commit
+            .committed()
+            .events
+            .into_iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            AuditKind::RunRescheduled,
+            AuditKind::RunStateChanged,
+            AuditKind::StateChanged, // invocation intent before model entry
+            AuditKind::StateChanged, // returned observation before terminal
+            AuditKind::RunStateChanged,
+            AuditKind::ModelRequestCompleted,
+        ],
+        "R1/E1-E2+E4: recovery and the logical model request are observed once"
+    );
+    assert_eq!(store.dispatch_count(), 0);
+}
+
+#[tokio::test]
+async fn settle_done_clears_pending_and_dispatch() {
+    // A store-level invariant: settling Done removes the dispatch and any pending.
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    store
+        .enqueue(RunDispatch::new(activation("run-1")))
+        .await
+        .unwrap();
+    store
+        .append(pending(
+            "msg-1",
+            "run-1",
+            ResumeResult::Input("x".to_string()),
+        ))
+        .await
+        .unwrap();
+    // Settle is authority-bearing: obtain the exact claim epoch first. Epoch 0
+    // means "never claimed" and is not execution authority.
+    clock.set(0);
+    let claimed = store
+        .claim_run(
+            &RunId("run-1".to_string()),
+            "settle-test",
+            1_000,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("claim before settle");
+    store
+        .settle(
+            &RunId("run-1".to_string()),
+            claimed.lease.epoch(),
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.dispatch_count(), 0);
+    assert_eq!(store.pending_count(&RunId("run-1".to_string())), 0);
+}
+
+#[tokio::test]
+async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
+    // Test design. Causes: C1 a correlated resume commits and clears its ticket;
+    // C2 the Worker crashes before settling, leaving the row Running and input
+    // present; C3 recovery reclaims after expiry. Effects: E1 C3 settles from
+    // committed terminal truth; E2 the tool is not run again; E3 pending input is
+    // consumed. Constraint/Invariant: cleared committed ticket dominates stale
+    // queue payload. Decision rule: reproduce C1+C2+C3 and require one tool run.
+    // Model the crash window: a resume commits, but the worker dies before it
+    // settles. The dispatch is left 'running' with the pending input still
+    // present and the ticket already cleared. Recovery must NOT re-run the tool.
+    let (runtime, ran) = tool_runtime();
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(
+        runtime.clone(),
+        store.clone(),
+        commit.clone(),
+        system_clock(),
+    );
+
+    // Await, then deliver input WITHOUT driving (just append).
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .unwrap(),
+        RunState::Awaiting
+    );
+    store
+        .append(pending("msg-1", "run-1", ResumeResult::allow()))
+        .await
+        .unwrap();
+
+    // Worker got partway: it claimed (took a lease) and committed the resume,
+    // then crashed before settle. Drive those two steps by hand.
+    clock.set(0);
+    let _claimed = store
+        .claim("dead-worker", 1_000, &Default::default())
+        .await
+        .unwrap();
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let state = runtime
+        .resume(allow_command(), commit.as_ref(), context)
+        .await
+        .expect("resume commits");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "the tool ran once before the crash"
+    );
+
+    // Recovery after the lease expires: the committed run is terminal, so the
+    // worker settles it without re-running the tool, and clears the pending.
+    let processed = ingress
+        .recover(harness::at(&clock, 2_000))
+        .await
+        .expect("recover");
+    assert_eq!(
+        processed,
+        vec![(
+            RunId("run-1".to_string()),
+            RunState::Ended(EndCause::NaturalEnd)
+        )]
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "recovery did not re-apply the resume"
+    );
+    assert_eq!(store.dispatch_count(), 0);
+    assert_eq!(store.pending_count(&RunId("run-1".to_string())), 0);
+}
+
+/// Cause/effect decision table for a legacy quiescent delivery row:
+///
+/// | Rule | Dispatch | Committed Run | Expected effect |
+/// |------|----------|---------------|-----------------|
+/// | R1 | Awaiting, no input | absent/nonterminal | keep row; no completion |
+/// | R2 | Awaiting, no input | Ended | fenced Done; emit tombstone; never execute |
+/// | R3 | R1 precedes R2 and limit=1 | mixed | inspect R1; next page repairs R2 |
+/// | R4 | expired Running recovery claim | Ended | reclaim; fenced Done; never execute |
+///
+/// Constraints: committed Run truth is the only terminal cause; queue order is
+/// not outcome evidence; the limit bounds inspected IDs, not repaired terminals;
+/// a reconciliation-process crash cannot strand its own expired claim.
+/// Decision rule: execute R1-R4 together so the cursor advances beyond a
+/// nonterminal prefix without exceeding the per-cycle read budget.
+#[tokio::test]
+async fn reconciliation_repairs_committed_terminal_awaiting_and_expired_rows() {
+    let (runtime, ran) = tool_runtime();
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(
+        runtime.clone(),
+        store.clone(),
+        commit.clone(),
+        system_clock(),
+    );
+
+    // R1 is deliberately first so it consumes exactly one inspection budget.
+    let mut control = activation("run-control");
+    control.thread_id = ThreadId("thread-control".to_string());
+    store
+        .enqueue(RunDispatch::new(control))
+        .await
+        .expect("enqueue nonterminal control");
+    clock.set(0);
+    let control_claim = store
+        .claim("setup", 1_000, &Default::default())
+        .await
+        .expect("claim nonterminal control")
+        .expect("control is runnable");
+    store
+        .settle(
+            control_claim.lease.run_id(),
+            control_claim.lease.epoch(),
+            DispatchOutcome::Awaiting,
+            &[],
+        )
+        .await
+        .expect("make control quiescent");
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-terminal"))
+            .await
+            .expect("terminal candidate reaches await"),
+        RunState::Awaiting
+    );
+    let mut command = allow_command();
+    command.run_id = RunId("run-terminal".to_string());
+    let state = runtime
+        .resume(
+            command,
+            commit.as_ref(),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect("model historical commit-before-settle gap");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+
+    clock.set(1_000);
+    store
+        .claim_for_terminal_recovery(&RunId("run-terminal".to_string()), "crashed-reconciler", 10)
+        .await
+        .expect("claim terminal before modeled crash")
+        .expect("terminal awaiting row is claimable");
+
+    // R4: the modeled reconciler crash left its own claim leased until 1_010.
+    // The store's own clock decides that expiry now, so advance that one clock
+    // past it rather than handing the scan a private reading.
+    clock.set(2_000);
+    assert!(
+        ingress
+            .reconcile_committed_terminals(1)
+            .await
+            .expect("R3 first inspection consumes the page budget")
+            .is_empty()
+    );
+    let reconciled = ingress
+        .reconcile_committed_terminals(1)
+        .await
+        .expect("reconcile committed terminal");
+    assert_eq!(
+        reconciled,
+        vec![(
+            RunId("run-terminal".to_string()),
+            RunState::Ended(EndCause::NaturalEnd),
+        )]
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "R2/R4 never re-execute");
+
+    let rows = store.list_dispatches().await.expect("remaining rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].run_id, RunId("run-control".to_string()), "R1");
+    let completions = store
+        .completion_events_after(0, 10)
+        .await
+        .expect("completion tombstone");
+    assert_eq!(completions.len(), 1);
+    assert_eq!(
+        completions[0].run_id,
+        RunId("run-terminal".to_string()),
+        "R2"
+    );
+}
+
+#[tokio::test]
+async fn reconciliation_repairs_released_pending_terminal_without_execution() {
+    use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
+
+    // Causes: C1 terminal commit exists; C2 post-commit queue settlement failed;
+    // C3 the now-quiescent mutation claim was released to Pending. Effects: E1
+    // the canonical terminal reconciler claims immediately without lease expiry;
+    // E2 it settles Done once; E3 no executor call occurs.
+    //
+    // | committed | row | physical slot | effect |
+    // |---|---|---|---|
+    // | terminal | Pending | empty | E1 + E2 + E3 |
+    let (runtime, infers) = counting_text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
+    let activation = activation_on("released-terminal", "released-terminal-thread");
+    store
+        .enqueue(RunDispatch::new(activation.clone()))
+        .await
+        .expect("C2/C3 released row");
+    commit_run(
+        commit.as_ref(),
+        &activation.thread_id,
+        RunDisposition::ended(activation.run_id.clone(), EndCause::NaturalEnd),
+        Vec::new(),
+        Vec::new(),
+    )
+    .await
+    .expect("C1 terminal truth");
+
+    assert_eq!(
+        ingress
+            .reconcile_committed_terminals(1)
+            .await
+            .expect("E1 reconcile"),
+        vec![(activation.run_id, RunState::Ended(EndCause::NaturalEnd))],
+    );
+    assert_eq!(store.dispatch_count(), 0, "E2");
+    assert_eq!(infers.load(Ordering::SeqCst), 0, "E3");
+}
+
+#[tokio::test]
+async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
+    // Test design. Causes: C1 a Run owns committed ticket correlation A; C2 input
+    // arrives with stale correlation B; C3 matching A later arrives. Effects: E1
+    // C2 is dropped and the Run remains Awaiting; E2 C3 resumes once. Constraint/
+    // Invariant: only exact committed correlation can authorize delivery.
+    // Decision rule: exercise stale and matching partitions in that order.
+    // Input whose correlation does not match the run's committed ticket is stale;
+    // it is dropped without delivery, and the run stays awaiting until the right
+    // input arrives.
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit, system_clock());
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .unwrap(),
+        RunState::Awaiting
+    );
+
+    // Stale input (wrong correlation) does not resume the run.
+    let state = ingress
+        .deliver_resume(
+            pending_for("stale", "run-1", "some-old-ticket", ResumeResult::allow()),
+            harness::clock(0),
+        )
+        .await
+        .expect("stale delivery");
+    assert_eq!(
+        state,
+        RunState::Awaiting,
+        "a stale input leaves the run awaiting"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "the tool did not run");
+    assert_eq!(
+        store.pending_count(&RunId("run-1".to_string())),
+        0,
+        "the stale input was dropped"
+    );
+
+    // The correctly-correlated input resumes the run.
+    let state = ingress
+        .deliver_resume(
+            pending("good", "run-1", ResumeResult::allow()),
+            harness::clock(0),
+        )
+        .await
+        .expect("good delivery");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn pending_edit_and_retract_are_revision_guarded() {
+    // M3a: the in-memory store is the spec for revision-guarded pending ops.
+    harness::assert_pending_revision_cas(&MemoryDispatchStore::new(system_clock())).await;
+}
+
+#[tokio::test]
+async fn cross_thread_outbox_store_spec() {
+    harness::assert_cross_thread_outbox(&MemoryDispatchStore::new(system_clock())).await;
+}
+
+#[tokio::test]
+async fn message_idempotency_conflicts_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_message_idempotency_conflicts(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn staged_delivery_relays_and_resumes_an_awaiting_run() {
+    // Test design. Causes: C1 a Run is Awaiting; C2 cross-Thread input is staged
+    // in the authoritative Outbox; C3 relay runs. Effects: E1 C2 alone is not yet
+    // pending; E2 C3 moves it once into pending; E3 the Run resumes and settles.
+    // Constraint/Invariant: Outbox-to-Inbox relay is the only cross-Thread path.
+    // Decision rule: observe state before relay, after relay, and after drive.
+    // M3b end to end: an awaiting run is resumed by a cross-thread delivery that is
+    // staged in the outbox and relayed to its pending input.
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .unwrap(),
+        RunState::Awaiting
+    );
+
+    // Stage the delivery (as if from another thread); it is not pending yet.
+    let staged = ingress
+        .stage_cross_thread(pending("x1", "run-1", ResumeResult::allow()))
+        .await
+        .unwrap();
+    assert!(staged);
+    assert_eq!(store.pending_count(&RunId("run-1".to_string())), 0);
+
+    // Relay moves it to pending and drives the run to completion.
+    let processed = ingress
+        .relay_outbox(harness::clock(0))
+        .await
+        .expect("relay");
+    assert_eq!(
+        processed,
+        vec![(
+            RunId("run-1".to_string()),
+            RunState::Ended(EndCause::NaturalEnd)
+        )]
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn scheduled_delivery_due_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_scheduled_due(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn millis_boundaries_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_millis_boundaries(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn dead_letter_budget_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_dead_letter(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn cancel_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_cancel(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn cancel_durable_commits_cancelled_for_an_awaiting_run() {
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-1"))
+            .await
+            .unwrap(),
+        RunState::Awaiting
+    );
+    assert!(
+        commit
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_some()
+    );
+
+    // Durable cancel commits a terminal Cancelled and clears the ticket.
+    assert!(
+        ingress
+            .cancel_durable(&RunId("run-1".to_string()))
+            .await
+            .unwrap()
+    );
+    let record =
+        awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(
+            commit.as_ref(),
+            &RunId("run-1".to_string()),
+        )
+        .expect("run record");
+    assert_eq!(record.state, RunState::Ended(EndCause::Cancelled));
+    assert!(
+        commit
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_none()
+    );
+    assert_eq!(store.dispatch_count(), 0);
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn dispatch_harness_cancel_is_durable_for_a_queued_run() {
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
+
+    // Enqueue without driving, then cancel: a terminal Cancelled is committed
+    // even though the run never executed.
+    store
+        .enqueue(RunDispatch::new(activation("run-1")))
+        .await
+        .unwrap();
+    ingress
+        .cancel(&RunId("run-1".to_string()))
+        .await
+        .expect("unified cancel");
+    let record =
+        awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(
+            commit.as_ref(),
+            &RunId("run-1".to_string()),
+        )
+        .expect("run record");
+    assert_eq!(record.state, RunState::Ended(EndCause::Cancelled));
+    assert_eq!(store.dispatch_count(), 0);
+
+    // Cancelling again fails closed as no longer active/queued.
+    assert_eq!(
+        ingress.cancel(&RunId("run-1".to_string())).await,
+        Err(awaken_runtime_contract::control::Error::NotActive)
+    );
+}
+
+#[tokio::test]
+async fn durable_cancel_invokes_the_selected_executor_before_terminal_commit() {
+    // Cause/effect graph: C1 one queued activation owns accepted input; C2 a
+    // durable cancel is claimed before ordinary execution; C3 the selected
+    // backend cancel succeeds. Effects: E1 C3 runs once; E2 input and Cancelled
+    // commit together; E3 the model is never needed. This integration guards
+    // the Worker wiring; Runtime's control suite owns the commit primitive.
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
+    let selected = Arc::new(RecordingAttemptExecutor::default());
+    ingress.install_attempt_executor(selected.clone());
+    store
+        .enqueue(RunDispatch::new(activation("run-1")))
+        .await
+        .unwrap();
+
+    ingress
+        .cancel(&RunId("run-1".to_string()))
+        .await
+        .expect("durable cancellation");
+
+    assert_eq!(selected.cancels.load(Ordering::SeqCst), 1);
+    assert_eq!(commit.committed().messages.len(), 1, "C1/E2");
+    assert_eq!(commit.committed().messages[0].id.0, "m1", "C1/E2");
+    assert_eq!(
+        awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(
+            commit.as_ref(),
+            &RunId("run-1".to_string()),
+        )
+        .expect("terminal record")
+        .state,
+        RunState::Ended(EndCause::Cancelled)
+    );
+}
+
+#[tokio::test]
+async fn committed_cancel_is_settled_without_duplicate_after_crash() {
+    // Test design. Causes: C1 cancel intent is claimed and commits Cancelled; C2
+    // the Worker crashes before settling; C3 an ordinary pool claim wins the
+    // recovery race after expiry; C4 a backend cancel executor is installed.
+    // Effects: E1 C3 settles Done from committed cancellation; E2 C4 is never
+    // entered; E3 no second cancel commit or model execution occurs.
+    // Constraint/Invariant: committed terminal truth dominates the still-leased
+    // dispatch before every physical effect.
+    //
+    // | Rule | committed terminal | ordinary recovery claim | backend present | Expected |
+    // |---|---|---|---|---|
+    // | TC1 | yes | yes | yes | E1 + E2 + E3 |
+    //
+    // Decision rule TC1 reproduces the exact post-commit/pre-settle crash and
+    // makes the generic pool route, rather than the dedicated terminal scanner,
+    // own the replacement claim.
+    let runtime = text_runtime();
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let run = RunId("cancel-crash".to_string());
+
+    store
+        .enqueue(RunDispatch::new(activation("cancel-crash")))
+        .await
+        .unwrap();
+    store.cancel(&run).await.unwrap().expect("intent persisted");
+    clock.set(0);
+    let crashed = store
+        .claim("dead-worker", 1_000, &Default::default())
+        .await
+        .unwrap()
+        .expect("intent claimed");
+    assert!(crashed.cancellation_requested);
+
+    // Model the exact crash window: the fenced worker commits Cancelled, but the
+    // process dies before settling/removing the dispatch row.
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    assert_eq!(
+        runtime
+            .cancel_run(run.clone(), ThreadId(THREAD.to_string()), context)
+            .await
+            .expect("terminal cancel commit"),
+        RunState::Ended(EndCause::Cancelled)
+    );
+    assert_eq!(store.dispatch_count(), 1, "crash left intent for recovery");
+
+    let selected = Arc::new(RecordingAttemptExecutor::default());
+    let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "restarted-worker");
+    worker.install_attempt_executor(selected.clone());
+    assert_eq!(
+        worker
+            .tick(harness::at(&clock, 1_001))
+            .await
+            .expect("recovery"),
+        Some((run.clone(), RunState::Ended(EndCause::Cancelled)))
+    );
+    assert_eq!(selected.cancels.load(Ordering::SeqCst), 0, "TC1/E2");
+    assert_eq!(selected.executes.load(Ordering::SeqCst), 0, "TC1/E3");
+    assert_eq!(store.dispatch_count(), 0);
+    let record =
+        awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(
+            commit.as_ref(),
+            &run,
+        )
+        .expect("single terminal record");
+    assert_eq!(record.state, RunState::Ended(EndCause::Cancelled));
+}
+
+#[tokio::test]
+async fn cancellation_does_not_materialize_model_provider_credentials() {
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let materializations = Arc::new(AtomicUsize::new(0));
+    let seen = materializations.clone();
+    let resolver: awaken_dispatch::InferenceMaterializerFn =
+        Arc::new(move |_activation, _context| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        });
+    let ingress = DispatchTestHarness::with_owner_and_resolver(
+        text_runtime(),
+        store.clone(),
+        commit.clone(),
+        "cancel-owner",
+        None,
+        Some(resolver),
+        system_clock(),
+    );
+    let run = RunId("cancel-with-provider-down".to_string());
+    store
+        .enqueue(RunDispatch::new(activation("cancel-with-provider-down")))
+        .await
+        .unwrap();
+
+    assert!(ingress.cancel_durable(&run).await.unwrap());
+    assert_eq!(
+        materializations.load(Ordering::SeqCst),
+        0,
+        "terminal control must not depend on the unavailable execution provider"
+    );
+    assert_eq!(
+        awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(
+            commit.as_ref(),
+            &run
+        )
+        .unwrap()
+        .state,
+        RunState::Ended(EndCause::Cancelled)
+    );
+}
+
+#[tokio::test]
+async fn authenticated_remote_cancellation_receives_only_its_current_claim_binding() {
+    // Cause-effect graph: C1 durable cancellation targets authenticated Remote
+    // A2A; C2 the claiming Worker has/omits exact WorkerRelay capability; C3
+    // the claim binding is current/empty/stale; C4 executor verifies current
+    // ownership. Effects: E1 persist exactly one secret-free transport binding
+    // and pass it to cancel; E2 commit Cancelled only after that cancel returns;
+    // E3 reject before executor entry and retain the durable intent. No provider
+    // materializer or model route is consulted.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // |---|---|---|---|---|---|
+    // | R1 | yes | exact | current | current | E1+E2 |
+    // | R2 | yes | missing | none | - | E3 |
+    // | R3 | yes | exact | empty/stale | - | E3 (contract verifier suite) |
+    // | R4 | yes | exact | current | lost | E3 (ownership suite) |
+    // Constraint: credential material remains behind the A2A resolver. This
+    // Worker test observes only the same claim-bound projection that resolver
+    // consumes; it cannot create an anonymous transport fallback.
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let executor = Arc::new(CredentialCheckingCancelExecutor::default());
+    let run = RunId("authenticated-remote-cancel".into());
+    let request = remote_credential_dispatch(&run.0);
+    store.enqueue(request.clone()).await.expect("enqueue R1");
+    store
+        .cancel(&run)
+        .await
+        .expect("cancel R1")
+        .expect("known R1");
+    let worker = DispatchWorker::new(
+        text_runtime(),
+        store.clone(),
+        commit.clone(),
+        "credential-cancel-worker",
+    )
+    .with_local_credential_capabilities(remote_credential_capabilities());
+    worker.install_attempt_executor(executor.clone());
+
+    let (_, state) = worker
+        .tick(harness::at(&clock, 0))
+        .await
+        .expect("R1 drive")
+        .expect("R1 applied");
+    assert_eq!(state, RunState::Ended(EndCause::Cancelled), "R1/E2");
+    {
+        let bindings = executor.bindings.lock().unwrap();
+        assert_eq!(bindings.len(), 1, "R1/E1");
+        assert_eq!(bindings[0].credential.id, "remote-cancel-token", "R1/E1");
+        assert_eq!(bindings[0].credential.revision, 7, "R1/E1");
+        assert_eq!(bindings[0].claim_epoch, 1, "R1/E1");
+        assert_eq!(
+            bindings[0].selected_realization_kind,
+            awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
+            "R1/E1"
+        );
+    }
+    assert_eq!(store.dispatch_count(), 0, "R1/E2");
+
+    let rejected_store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    rejected_store
+        .enqueue(remote_credential_dispatch("missing-cancel-capability"))
+        .await
+        .expect("enqueue R2");
+    let rejected_run = RunId("missing-cancel-capability".into());
+    rejected_store
+        .cancel(&rejected_run)
+        .await
+        .expect("cancel R2")
+        .expect("known R2");
+    clock.set(0);
+    let error = rejected_store
+        .claim_run(
+            &rejected_run,
+            "credential-free-worker",
+            DEFAULT_LEASE_MS,
+            &Default::default(),
+        )
+        .await
+        .expect_err("R2 cannot anonymously claim authenticated cancellation");
+    assert!(
+        error
+            .to_string()
+            .contains("credential claim admission failed"),
+        "R2/E3: {error}"
+    );
+    let retained = rejected_store.list_dispatches().await.expect("R2 retained");
+    assert_eq!(retained.len(), 1, "R2/E3");
+    assert_eq!(retained[0].state, awaken_dispatch::DispatchState::Pending);
+}
+
+#[tokio::test]
+async fn priority_dedupe_gc_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_priority_dedupe_gc(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn lease_renewal_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_lease_renewal(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn local_wake_signal_delivers_a_held_hint() {
+    use awaken_dispatch::LocalWakeSignal;
+    use awaken_dispatch_contract::WakeSignal;
+    let wake = LocalWakeSignal::new();
+    // A hint published before anyone waits is held (one permit), so wait returns.
+    wake.publish().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), wake.wait())
+        .await
+        .expect("the wake hint was delivered");
+}
+
+#[tokio::test]
+async fn dispatch_harness_dead_letter_and_purge_ops() {
+    let runtime = text_runtime();
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit, system_clock());
+
+    // A crashed run explicitly quarantined through the ingress API.
+    store
+        .enqueue(RunDispatch::new(activation("run-1")))
+        .await
+        .unwrap();
+    clock.set(0);
+    assert!(
+        store
+            .claim("w", 1, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(ingress.quarantine_retry_exhausted(0, 100).await.unwrap(), 1);
+    assert_eq!(
+        ingress.dead_letters().await.unwrap(),
+        vec![RunId("run-1".to_string())]
+    );
+
+    // Requeue, quarantine again, then GC through the ingress API.
+    assert!(ingress.requeue(&RunId("run-1".to_string())).await.unwrap());
+    assert!(ingress.dead_letters().await.unwrap().is_empty());
+    clock.set(0);
+    assert!(
+        store
+            .claim("w", 1, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(ingress.quarantine_retry_exhausted(0, 200).await.unwrap(), 1);
+    assert_eq!(ingress.purge_dead_letters().await.unwrap(), 1);
+    assert!(ingress.dead_letters().await.unwrap().is_empty());
+
+    // Cancelling a run that no longer exists is false.
+    assert!(
+        !ingress
+            .cancel_durable(&RunId("run-1".to_string()))
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn daemon_performs_a_scheduled_action_to_completion() {
+    // RS-SCH-001 over the dispatch: a durably-submitted run whose gate defers the
+    // tool awaits on a committed ScheduledAction; the worker performs it in-process
+    // (no external input) and the run settles Done.
+    let (runtime, ran) = schedule_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    // RI10 real claimed execution and automatic ScheduledAction must retain
+    // the same original go window across both inferences, without input append
+    // or a second model/physical driver. Original effect/settlement checks stay.
+    let (probe, inputs) = MarkPlugin::recording();
+    let original = activation("run-1");
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit, system_clock())
+        .with_context(RuntimeRunContext::new().with_session_plugin(probe));
+
+    let state = ingress.submit_background(original.clone()).await.unwrap();
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "the scheduled action ran once"
+    );
+    assert_eq!(
+        store.dispatch_count(),
+        0,
+        "the run settled Done, not Awaiting"
+    );
+    assert_eq!(
+        *inputs.lock().unwrap(),
+        vec![original.input.clone(), original.input],
+        "RI10 initial and same-drive scheduled windows"
+    );
+}
+
+#[tokio::test]
+async fn a_recovered_scheduled_action_is_performed() {
+    // Test design. Causes: C1 a ScheduledAction is committed Awaiting; C2 the
+    // dispatch crashes Running before performing it; C3 recovery claims after
+    // lease expiry. Effects: E1 C3 reconstructs and performs the committed action
+    // once; E2 the row settles Done. Constraint/Invariant: the committed request,
+    // not lost process memory, owns scheduled recovery. Decision rule: execute
+    // the C1+C2+C3 recovery partition and assert one effect plus no dispatch.
+    // RS-SCH-006: a run that committed a ScheduledAction await and then crashed
+    // before performing it (dispatch left 'running' with an expired lease) is
+    // recovered by another worker and performed from the committed request.
+    let (runtime, ran) = schedule_runtime();
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+
+    // The run awaiting on a committed ScheduledAction (the action has not run).
+    let ctx = RuntimeRunContext::new().with_commit(commit.clone());
+    let state = runtime.execute(activation("run-1"), ctx).await.unwrap();
+    assert_eq!(state, RunState::Awaiting);
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+
+    // Its dispatch is a crashed in-flight claim: 'running', lease expired at 10,
+    // never settled.
+    store
+        .enqueue(RunDispatch::new(activation("run-1")))
+        .await
+        .unwrap();
+    clock.set(0);
+    store
+        .claim("dead-worker", 10, &Default::default())
+        .await
+        .unwrap();
+
+    // A live worker recovers it after the lease expires and performs the action.
+    // RI11 the recovered ScheduledAction branch supplies the durable request's
+    // exact go window to Native continuation. The original committed await and
+    // expired claim remain the authority; this adds only a read-only hook.
+    let (probe, inputs) = MarkPlugin::recording();
+    let original = activation("run-1");
+    let worker = DispatchWorker::new(runtime, store.clone(), commit, "live-worker")
+        .with_context(RuntimeRunContext::new().with_session_plugin(probe));
+    let processed = worker.tick(harness::at(&clock, 100)).await.unwrap();
+    assert_eq!(
+        processed,
+        Some((
+            RunId("run-1".to_string()),
+            RunState::Ended(EndCause::NaturalEnd)
+        ))
+    );
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        1,
+        "the recovered action ran once"
+    );
+    assert_eq!(store.dispatch_count(), 0, "settled Done after recovery");
+    assert_eq!(
+        *inputs.lock().unwrap(),
+        vec![original.input],
+        "RI11 recovered supplied window"
+    );
+}
+
+#[tokio::test]
+async fn fresh_continuation_identity_is_stable_without_a_parallel_message_command() {
+    // Cause/effect graph: C0 the continuation has no inline input, so
+    // PendingInput is the sole message owner; C1 the same canonical PendingInput and fresh dispatch
+    // are replayed; C2 their canonical message/Run identities differ; C3 one
+    // message identity is reused with changed payload. Effects: E0 C0 admits
+    // the canonical atomic shape; E1 C1 dedupes to
+    // one pending input and dispatch; E2 C2 remains distinct; E3 C3 fails with
+    // an idempotency conflict before mutating either aggregate.
+    //
+    // | Rule | message/Run identity | payload | effect |
+    // | R0 | canonical + no inline input | any | E0 |
+    // | R1 | same | same | E1 |
+    // | R2 | different | any | E2 |
+    // | R3 | same | changed | E3 |
+    //
+    // Constraint: `Outbox::relay_and_enqueue` is the sole atomic continuation
+    // authority. The Thread-owned SEND_MESSAGE command supplies its canonical
+    // PendingInput; run-ingress owns no generic sender or identity algorithm.
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let continuation = |run: &str| {
+        let mut request = RunDispatch::new(activation(run));
+        request.activation.input.clear();
+        request
+    };
+    let input = |message_id: &str, run: &str, content: &str| {
+        harness::pending(
+            message_id,
+            run,
+            "",
+            ResumeResult::Input(content.to_string()),
+        )
+    };
+
+    let stable_run = continuation("fresh-stable");
+    assert!(stable_run.activation.input.is_empty(), "R0/E0");
+    let stable_input = input("fresh-stable-message", "fresh-stable", "retry");
+    store
+        .relay_and_enqueue(
+            stable_input.clone(),
+            stable_run.clone(),
+            ContinuationAdmission::Root,
+        )
+        .await
+        .expect("R1 first admission");
+    store
+        .relay_and_enqueue(
+            stable_input.clone(),
+            stable_run,
+            ContinuationAdmission::Root,
+        )
+        .await
+        .expect("R1 exact replay");
+    store
+        .relay_and_enqueue(
+            input("fresh-different-message", "fresh-different", "second"),
+            continuation("fresh-different"),
+            ContinuationAdmission::Root,
+        )
+        .await
+        .expect("R2 distinct continuation");
+
+    let conflict = store
+        .relay_and_enqueue(
+            input("fresh-stable-message", "fresh-stable", "changed"),
+            continuation("fresh-stable"),
+            ContinuationAdmission::Root,
+        )
+        .await
+        .expect_err("R3 changed payload under one identity must conflict");
+    assert!(conflict.to_string().contains("idempotency key"), "R3/E3");
+
+    let messages = store.list(&ThreadId(THREAD.to_string())).await.unwrap();
+    assert_eq!(messages.len(), 2, "R1-R2/E1-E2 and R3 no mutation");
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.input.run_id.0.is_empty()),
+        "every continuation remains exact-Run bound"
+    );
+}
+
+#[tokio::test]
+async fn supersession_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_supersession(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
+    // Cause/effect graph: C1 claim epoch is current/stale; C2 commit Run matches
+    // the guarded dispatch; C3 commit Thread matches it; C4 a dispatch exists.
+    // Effects: E1 apply exactly one commit; E2 reject before durable commit.
+    // Constraint: the queue's CommitEpochGuard remains held across validation
+    // and commit, so recovery cannot change the authoritative dispatch mid-write.
+    //
+    // | Rule | C1      | C2 | C3 | C4 | effect |
+    // | R1   | stale   | -  | -  | Y  | E2     |
+    // | R2   | current | N  | Y  | Y  | E2     |
+    // | R3   | current | Y  | N  | Y  | E2     |
+    // | R4   | current | Y  | Y  | Y  | E1     |
+    // | R5   | any     | -  | -  | N  | E2     |
+    // Decision rule: R1-R5 exhaust epoch, Run, Thread, and dispatch-presence
+    // validation while the one guard is held.
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+    use awaken_dispatch::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, RunClaim};
+
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
+    let inner = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+
+    store
+        .enqueue(RunDispatch::new(activation("run-1")))
+        .await
+        .unwrap();
+    // Owner A claims (epoch 1); its lease lapses; owner B reclaims (epoch 2).
+    clock.set(0);
+    let a = store
+        .claim("owner-a", 100, &Default::default())
+        .await
+        .unwrap()
+        .expect("A claims");
+    clock.set(200);
+    let b = store
+        .claim("owner-b", 100, &Default::default())
+        .await
+        .unwrap()
+        .expect("B reclaims");
+    assert_eq!((a.lease.epoch(), b.lease.epoch()), (1, 2));
+
+    let plan = |run: &RunId, thread: &str| {
+        ThreadCommit::assemble(
+            ThreadId(thread.to_string()),
+            RunDisposition::running(run.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+    };
+    let run = RunId("run-1".to_string());
+
+    // A (stale epoch 1) is fenced — nothing reaches the durable boundary.
+    let service: Arc<dyn ClaimedRunCommit> =
+        Arc::new(GuardedRunCommit::new(inner.clone(), store.clone()));
+    let fenced_a = ClaimedCommitCoordinator::new(service.clone(), RunClaim::from(&a.lease));
+    assert!(
+        fenced_a.commit(plan(&run, THREAD)).await.is_err(),
+        "R1/E2 a superseded owner's commit must be fenced"
+    );
+    assert_eq!(
+        inner.commit_count(),
+        0,
+        "R1/E2 the fenced commit never reached the boundary"
+    );
+
+    // B has the current epoch, but its authority is still limited to the exact
+    // Run and logical Thread recorded by the guarded dispatch.
+    let fenced_b = ClaimedCommitCoordinator::new(service.clone(), RunClaim::from(&b.lease));
+    assert!(
+        fenced_b
+            .commit(plan(&RunId("other-run".into()), THREAD))
+            .await
+            .is_err(),
+        "R2/E2 a live claim cannot commit another Run"
+    );
+    assert!(
+        fenced_b.commit(plan(&run, "other-thread")).await.is_err(),
+        "R3/E2 a live claim cannot commit another Thread"
+    );
+    assert_eq!(inner.commit_count(), 0, "R2/R3 reject before commit");
+
+    fenced_b
+        .commit(plan(&run, THREAD))
+        .await
+        .expect("R4 the exact current owner commits");
+    assert_eq!(inner.commit_count(), 1, "R4/E1");
+
+    // Fail-closed: a run with no live dispatch has no execution capability.
+    let ghost = RunId("ghost".to_string());
+    let fenced_ghost = ClaimedCommitCoordinator::new(
+        service,
+        RunClaim {
+            run_id: ghost.clone(),
+            owner: "ghost-owner".to_string(),
+            epoch: 7,
+        },
+    );
+    assert!(fenced_ghost.commit(plan(&ghost, THREAD)).await.is_err());
+    assert_eq!(
+        inner.commit_count(),
+        1,
+        "R5/E2 the unauthorized commit was fenced"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_recovery_yields_one_winner_on_memory() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    harness::assert_concurrent_recovery_yields_one_winner(
+        std::sync::Arc::new(MemoryDispatchStore::new(clock.clock())),
+        &clock,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn submit_superseding_abandons_prior_thread_work() {
+    // Cause/effect graph: C1=an older Run is Awaiting; C2=a foreground
+    // superseding submit claims the same Thread; C3=both attempts use the live
+    // claim Clock. Effects: E1=the old Run is superseded; E2=only the new Run is
+    // driven; E3=recovery cannot wake the old Run. Decision rule
+    // R1=C1+C2+C3 -> E1+E2+E3. This also owns the superseding half of the
+    // foreground-clock boundary; the Any/SQLite test owns ordinary submit.
+    // Constraint/Invariant: supersession mutates the existing queue authority and
+    // cannot leave the old Awaiting Run wakeable. Decision rule: R1 covers the
+    // only same-Thread superseding branch and requires E1-E3.
+    let (runtime, _ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
+
+    // An older run awaits on the thread.
+    assert_eq!(
+        ingress.submit_background(activation("old")).await.unwrap(),
+        RunState::Awaiting
+    );
+    // A superseding submit on the same thread abandons the awaiting run.
+    ingress
+        .submit_superseding(activation("new"))
+        .await
+        .expect("superseding submit");
+    assert_eq!(
+        ingress.superseded().await.unwrap(),
+        vec![RunId("old".to_string())],
+        "the prior awaiting run is superseded"
+    );
+    // The superseded run is never woken again: recovery does not process it.
+    assert!(
+        !ingress
+            .recover(harness::clock(0))
+            .await
+            .unwrap()
+            .iter()
+            .any(|(run, _)| run.0 == "old"),
+        "a superseded run is not claimable"
+    );
+}
+
+#[tokio::test]
+async fn dead_letter_ttl_gc_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_dead_letter_ttl_gc(&store, &clock).await;
+    harness::attempt_retirement::assert_purge_retains_occupied(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn relinquish_claim_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_relinquish_claim(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn defer_claim_is_request_local_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_defer_claim_is_request_local(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn blocked_reclaims_spend_no_budget_within_the_window_on_memory() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::blocked_reclaim::assert_blocked_reclaims_spend_no_budget_within_the_window(
+        &store, &clock,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn capacity_deferrals_hand_off_without_spending_budget_on_memory() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::capacity_deferral::assert_capacity_deferrals_hand_off_without_spending_budget(
+        &store, &clock,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn defer_claim_uses_the_store_clock_and_exact_deadline_on_memory() {
+    let clock = Arc::new(ManualClock::new(100));
+    let store = MemoryDispatchStore::new(clock.clone());
+    harness::assert_defer_claim_deadline_edge(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn physical_attempt_admission_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_physical_attempt_admission(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn list_dispatches_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_list_dispatches(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn dedupe_ignores_dead_lettered_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_dedupe_ignores_dead_lettered(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn wake_suppressed_while_thread_running_store_spec() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::assert_wake_suppressed_while_thread_running(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn dispatch_harness_lists_dispatches_and_purges_aged_dead_letters() {
+    // Covers the DispatchTestHarness query + time-windowed GC wrappers.
+    let runtime = text_runtime();
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit, system_clock());
+
+    store
+        .enqueue(RunDispatch::new(activation("run-1")))
+        .await
+        .unwrap();
+    let listed = ingress.list_dispatches().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].run_id, RunId("run-1".to_string()));
+
+    // Dead-letter it at t=1000, then age it out through the ingress.
+    clock.set(0);
+    assert!(
+        store
+            .claim("w", 1, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        ingress.quarantine_retry_exhausted(0, 1_000).await.unwrap(),
+        1
+    );
+    assert_eq!(ingress.purge_dead_letters_before(999).await.unwrap(), 0);
+    assert_eq!(ingress.purge_dead_letters_before(1_000).await.unwrap(), 1);
+    assert!(ingress.list_dispatches().await.unwrap().is_empty());
+}
+
+use awaken_dispatch_contract::{
+    DispatchAdministration as _, DispatchClaims as _, DispatchControlClaims as _,
+    DispatchControlReads as _, DispatchEnqueue as _, DispatchReads as _, DispatchSettlement as _,
+    InboxRead as _, SessionRunReservations as _,
+};

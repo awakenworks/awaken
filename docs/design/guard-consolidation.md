@@ -296,10 +296,10 @@ Rules that stay (b) and how each retires:
 
 ### M5 decision: aggregate authority is not writable DTO syntax
 
-The existing [SessionAggregate](../../crates/contract/awaken-session-contract/src/state/aggregate/mod.rs)
+The existing [SessionAggregate](../../crates/platform/session/awaken-session-contract/src/state/aggregate/mod.rs)
 has private state, read-only `Deref`, no `DerefMut`, validated `TryFrom`, and
 three compile-fail controls against direct/nested writes and mutable DTO escape.
-[SessionMutations](../../crates/server/awaken-session-application/src/mutation.rs)
+[SessionMutations](../../crates/platform/session/awaken-session-application/src/mutation.rs)
 retains the repository CAS; a public `PersistedSession` transport/store value is
 not itself a second writable aggregate authority.
 

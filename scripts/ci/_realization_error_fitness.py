@@ -47,7 +47,7 @@ def scanned_manifests(repo_root: Path) -> list[Path]:
         in AUTHORITIES
     ]
 
-REALIZATION_SRC = "crates/server/awaken-session-realization/src"
+REALIZATION_SRC = "crates/platform/execution/awaken-session-realization/src"
 # check_crate_boundaries.py owns this helper's execution and hook inputs.
 # Compiled source discovery follows Cargo authority and module reachability.
 TEST_FILES = re.compile(r"(^|/)(tests?|test_support)(\.rs|/)")
@@ -130,7 +130,7 @@ def selftest() -> None:
     assert realization_error_violations({f"{REALIZATION_SRC}/session_realizations/tests.rs": forbidden}) == [], "E2 file"
     assert realization_error_violations({f"{REALIZATION_SRC}/test_support.rs": forbidden}) == [], "E2 support"
     assert realization_error_violations(
-        {"crates/server/awaken-session-executor/src/host_error.rs": forbidden}
+        {"crates/platform/execution/awaken-session-executor/src/host_error.rs": forbidden}
     ) == [], "E3"
     rejected = {
         "E5": "fn f() { g().map_err(|error| RealizationError::invariant(error.to_string())); }\n",

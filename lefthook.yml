@@ -403,7 +403,7 @@ commit-checks:
     # drift test even when no E2E file changed. Its decision table owns the
     # version-match/mismatch oracle; the full runner remains in check-all static.
     - name: worker-fixture-contract
-      glob: "{lefthook.yml,crates/contract/awaken-worker-contract/src/manifest.rs,crates/contract/awaken-credential-contract/src/realization_capabilities.rs,e2e/fixtures/worker_manifest_fixture.mjs,e2e/worker_manifest_fixture.test.mjs}"
+      glob: "{lefthook.yml,crates/platform/dispatch/awaken-worker-contract/src/manifest.rs,crates/platform/credentials/awaken-credential-contract/src/realization_capabilities.rs,e2e/fixtures/worker_manifest_fixture.mjs,e2e/worker_manifest_fixture.test.mjs}"
       run: python3 scripts/ci/parallel_check.py --hook-label worker-fixture-contract --timeout 14400 --shell 'node --test e2e/worker_manifest_fixture.test.mjs' --
 
     # 5. Frontend checks are active as soon as package.json exists. The frontend
@@ -416,7 +416,7 @@ commit-checks:
     # well as its own package: the trigger names every input so a version bump
     # in one place cannot pass by never running the check.
     - name: managed-sdk-oracle
-      glob: "{packages/managed-sdk-oracle/**/*,contracts/anthropic-managed/*,crates/server/awaken-protocol-managed/contracts/*,e2e/package.json,pnpm-lock.yaml}"
+      glob: "{packages/managed-sdk-oracle/**/*,contracts/anthropic-managed/*,crates/platform/protocols/awaken-protocol-managed/contracts/*,e2e/package.json,pnpm-lock.yaml}"
       run: python3 scripts/ci/parallel_check.py --hook-label managed-sdk-oracle --timeout 14400 --shell 'pnpm --filter @awaken/managed-sdk-oracle test && pnpm --filter @awaken/managed-sdk-oracle check' --
 
     - name: read-only-phase-4
@@ -452,13 +452,13 @@ commit-checks:
               jobs:
                 - name: native-service-runner
                   # >>> generated glob from test_native_services.py INPUT_GLOBS — do not edit
-                  glob: "{.github/workflows/windows-native-services.yml,crates/stores/awaken-work-store/tests/work_queue_conformance/**,docs/design/session-execution-test-acceptance/**,scripts/ci/**}"
+                  glob: "{.github/workflows/windows-native-services.yml,crates/platform/environment/awaken-work-store/tests/work_queue_conformance/**,docs/design/session-execution-test-acceptance/**,scripts/ci/**}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label native-service-runner --timeout 600 --read-only --shell 'python3 scripts/ci/test_native_services.py' --
                 - name: native-recovery-laws
                   # >>> generated glob from test_native_recovery.py INPUT_GLOBS — do not edit
-                  glob: "{.github/workflows/windows-native-services.yml,crates/stores/awaken-work-store/tests/work_queue_conformance/**,docs/design/session-execution-test-acceptance/**,scripts/ci/**}"
+                  glob: "{.github/workflows/windows-native-services.yml,crates/platform/environment/awaken-work-store/tests/work_queue_conformance/**,docs/design/session-execution-test-acceptance/**,scripts/ci/**}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label native-recovery-laws --timeout 600 --read-only --shell 'python3 scripts/ci/test_native_recovery.py' --
@@ -490,7 +490,7 @@ commit-checks:
                 # when the types, the baseline, or the oracle change.
                 - name: managed-wire-naming
                   # >>> generated glob from check_managed_wire_naming.py INPUT_GLOBS — do not edit
-                  glob: "{contracts/anthropic-managed/upstream-oracle.generated.json,crates/server/awaken-protocol-managed/src/types/**/*.rs,scripts/ci/check_managed_wire_naming.py}"
+                  glob: "{contracts/anthropic-managed/upstream-oracle.generated.json,crates/platform/protocols/awaken-protocol-managed/src/types/**/*.rs,scripts/ci/check_managed_wire_naming.py}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label managed-wire-naming --timeout 600 --read-only --shell 'python3 scripts/ci/check_managed_wire_naming.py --self-test && python3 scripts/ci/check_managed_wire_naming.py' --
@@ -522,7 +522,7 @@ commit-checks:
     # Generated wire artifacts are derived from the admin-config and Managed
     # DTOs; a DTO edit without regeneration is refused here, not at release.
     - name: generated-contracts
-      glob: "{.gitattributes,contracts/**/*,scripts/contract/**/*,crates/control/awaken-admin-config-api/**/*.rs,crates/server/awaken-protocol-managed/src/**/*.rs,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py}"
+      glob: "{.gitattributes,contracts/**/*,scripts/contract/**/*,crates/platform/config/awaken-admin-config-api/**/*.rs,crates/platform/protocols/awaken-protocol-managed/src/**/*.rs,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py}"
       run: python3 scripts/ci/parallel_check.py --hook-label generated-contracts --timeout 14400 --shell 'python3 scripts/ci/_native_shell.py scripts/contract/generate-contracts.sh --check' --
 
     - name: read-only-phase-5

@@ -12,8 +12,8 @@ import path from 'node:path';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel) => readFileSync(path.join(REPO, rel), 'utf8');
 
-const SESSION_RS = 'crates/server/awaken-protocol-managed/src/types/session.rs';
-const MANAGED_HEADERS_RS = 'crates/server/awaken-protocol-managed/src/common/headers.rs';
+const SESSION_RS = 'crates/platform/protocols/awaken-protocol-managed/src/types/session.rs';
+const MANAGED_HEADERS_RS = 'crates/platform/protocols/awaken-protocol-managed/src/common/headers.rs';
 const SDK_ORACLE_JSON = 'contracts/anthropic-managed/upstream-oracle.generated.json';
 const MANAGED_E2E = 'e2e/managed_e2e.mjs';
 const E2E_PACKAGE_JSON = 'e2e/package.json';

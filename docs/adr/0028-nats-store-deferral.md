@@ -70,6 +70,6 @@ later renamed. Current names, all in `crates/contract/awaken-run-ingress-contrac
 - `PendingInbox` → `Inbox` (`delivery.rs:69`);
 - `MessageOutbox` → `Outbox` (`delivery.rs:105`).
 
-The wake seam is still `WakeSignal` (`crates/shared/awaken-dispatch-execution/src/wake.rs:31`).
+The wake seam is still `WakeSignal` (`crates/platform/execution/awaken-dispatch-execution/src/wake.rs:31`).
 This ADR closes the live-test deferral that ADR-0019 D4 recorded; ADR-0019 does
 not yet point here.

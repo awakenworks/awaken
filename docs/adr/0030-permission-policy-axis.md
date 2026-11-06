@@ -172,9 +172,9 @@ verdicts continue to own ordinary authorization; a declared ceiling cannot grant
 - D2 and the References credit ADR-0016 for the `ResumeTicket` / resume machinery.
   ADR-0016 is durable cancellation and does not define it. The resume-ticket
   mechanism was selected in [ADR-0003](0003-deferred-work-mechanism-selection.md)
-  (committed `ResumeTicket`); the type is `crates/contract/awaken-agent-contract/src/agent/awaiting.rs:228`.
+  (committed `ResumeTicket`); the type is `crates/sdk/contracts/awaken-agent-contract/src/agent/awaiting.rs:228`.
   The "Depends on: ADR-0016" header line should be read as ADR-0003.
 - D4's `auto` policy exists in code as `AgentToolPermissionPolicy::Auto`
-  (`crates/contract/awaken-session-configuration-contract/src/agent_config.rs:75`).
+  (`crates/platform/session/awaken-session-configuration-contract/src/agent_config.rs:75`).
   ADR-0079 governs how authored policies compile; this ADR keeps only the gate,
   the confirmation wait, and the audit.

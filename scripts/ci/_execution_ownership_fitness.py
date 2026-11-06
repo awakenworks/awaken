@@ -34,12 +34,12 @@ RETIRED_EXECUTION_PATHS = {
     "AdmittedRunApplication": "use the sole SessionRunApplication adapter",
 }
 
-RUNTIME_HOST_ERROR_OWNER = "crates/server/awaken-session-executor/src/lib.rs"
+RUNTIME_HOST_ERROR_OWNER = "crates/platform/execution/awaken-session-executor/src/lib.rs"
 CONTAINER_REPOSITORY_OWNER = (
-    "crates/worker/awaken-session-environment/src/container_repositories.rs"
+    "crates/platform/environment/awaken-session-environment/src/container_repositories.rs"
 )
 SESSION_REPOSITORY_ADAPTER = (
-    "crates/worker/awaken-session-environment/src/repository_realizer.rs"
+    "crates/platform/environment/awaken-session-environment/src/repository_realizer.rs"
 )
 FORBIDDEN_HOST_ERROR_INFERENCE = (
     '.contains("401")',
@@ -61,64 +61,64 @@ EXECUTABLE_FIXTURE_ROOTS = ("deploy", "e2e", "scripts")
 THIS_CHECKER = Path(__file__).resolve()
 
 ROUTE_OWNER_FILES = (
-    "crates/control/awaken-admin-config-api/src/router.rs",
-    "crates/control/awaken-admin-config-api/src/router/cloud_login.rs",
-    "crates/control/awaken-config-service/src/capabilities.rs",
-    "crates/control/awaken-control/src/config_routes.rs",
-    "crates/control/awaken-control/src/config_routes/lifecycle.rs",
-    "crates/control/awaken-control/src/authz.rs",
-    "crates/control/awaken-control/src/authz/private_assistant.rs",
-    "crates/control/awaken-control/src/admin_assistant.rs",
-    "crates/control/awaken-control/src/application_mcp_credentials.rs",
-    "crates/control/awaken-control/src/application_credentials.rs",
-    "crates/control/awaken-control/src/mcp_catalog.rs",
-    "crates/control/awaken-control/src/telemetry_policy.rs",
-    "crates/control/awaken-control/src/data_subject.rs",
-    "crates/control/awaken-control/src/lib.rs",
-    "crates/control/awaken-control/src/webhook_authoring.rs",
-    "crates/server/awaken-protocol-managed/src/resources/files.rs",
-    "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
-    "crates/server/awaken-protocol-managed/src/control/models.rs",
-    "crates/server/awaken-protocol-managed/src/resources/skills.rs",
-    "crates/server/awaken-protocol-a2a/src/router.rs",
-    "crates/server/awaken-protocol-ag-ui/src/router.rs",
-    "crates/server/awaken-protocol-ai-sdk/src/router.rs",
-    "crates/server/awaken-protocol-managed/src/awaken_extensions/content_capture.rs",
-    "crates/server/awaken-protocol-awaken/src/dream_policies.rs",
-    "crates/server/awaken-protocol-managed/src/awaken_extensions/execution_evidence.rs",
-    "crates/server/awaken-protocol-managed/src/awaken_extensions/event_admissions.rs",
-    "crates/server/awaken-protocol-awaken/src/live_inbox.rs",
-    "crates/server/awaken-protocol-awaken/src/session_dispatch.rs",
-    "crates/server/awaken-protocol-managed/src/awaken_extensions/memory_copy_conflicts.rs",
-    "crates/server/awaken-protocol-managed/src/awaken_extensions/profiled_sessions.rs",
-    "crates/server/awaken-protocol-managed/src/awaken_extensions/profiled_run_events.rs",
-    "crates/server/awaken-protocol-managed/src/awaken_extensions/repositories.rs",
-    "crates/server/awaken-protocol-managed/src/awaken_extensions/resource_manifests.rs",
-    "crates/server/awaken-protocol-awaken/src/sandbox_policies.rs",
-    "crates/server/awaken-protocol-managed/src/rate_limit.rs",
-    "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
-    "crates/server/awaken-protocol-managed/src/routes/deployments.rs",
-    "crates/server/awaken-protocol-managed/src/routes/dreams.rs",
-    "crates/server/awaken-protocol-managed/src/routes/environments.rs",
-    "crates/server/awaken-protocol-managed/src/routes/sessions.rs",
-    "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-    "crates/server/awaken-protocol-managed/src/routes/user_profiles.rs",
-    "crates/server/awaken-protocol-managed/src/routes/vaults.rs",
-    "crates/server/awaken-protocol-mcp/src/http.rs",
-    "crates/server/awaken-coordinator/src/application_access.rs",
-    "crates/server/awaken-coordinator/src/worker_fleet.rs",
+    "crates/platform/config/awaken-admin-config-api/src/router.rs",
+    "crates/platform/config/awaken-admin-config-api/src/router/cloud_login.rs",
+    "crates/platform/config/awaken-config-service/src/capabilities.rs",
+    "crates/apps/awaken-control/src/config_routes.rs",
+    "crates/apps/awaken-control/src/config_routes/lifecycle.rs",
+    "crates/apps/awaken-control/src/authz.rs",
+    "crates/apps/awaken-control/src/authz/private_assistant.rs",
+    "crates/apps/awaken-control/src/admin_assistant.rs",
+    "crates/apps/awaken-control/src/application_mcp_credentials.rs",
+    "crates/apps/awaken-control/src/application_credentials.rs",
+    "crates/apps/awaken-control/src/mcp_catalog.rs",
+    "crates/apps/awaken-control/src/telemetry_policy.rs",
+    "crates/apps/awaken-control/src/data_subject.rs",
+    "crates/apps/awaken-control/src/lib.rs",
+    "crates/apps/awaken-control/src/webhook_authoring.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/resources/files.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/resources/memory_stores.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/control/models.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/resources/skills.rs",
+    "crates/sdk/protocols/awaken-protocol-a2a/src/router.rs",
+    "crates/sdk/protocols/awaken-protocol-ag-ui/src/router.rs",
+    "crates/sdk/protocols/awaken-protocol-ai-sdk/src/router.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/content_capture.rs",
+    "crates/platform/protocols/awaken-protocol-awaken/src/dream_policies.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/execution_evidence.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/event_admissions.rs",
+    "crates/platform/protocols/awaken-protocol-awaken/src/live_inbox.rs",
+    "crates/platform/protocols/awaken-protocol-awaken/src/session_dispatch.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/memory_copy_conflicts.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/profiled_sessions.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/profiled_run_events.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/repositories.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/resource_manifests.rs",
+    "crates/platform/protocols/awaken-protocol-awaken/src/sandbox_policies.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/rate_limit.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/routes/agents_registry.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/routes/deployments.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/routes/dreams.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/routes/environments.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/routes/sessions.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/routes/tunnels.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/routes/user_profiles.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/routes/vaults.rs",
+    "crates/sdk/protocols/awaken-protocol-mcp/src/http.rs",
+    "crates/apps/awaken-coordinator/src/application_access.rs",
+    "crates/apps/awaken-coordinator/src/worker_fleet.rs",
 )
 
 # Public ingress code is discovered as well as explicitly registered. This
 # prevents a new router source from silently escaping the ownership inventory.
 PUBLIC_ROUTE_ROOTS = (
-    "crates/server/awaken-protocol-a2a/src",
-    "crates/server/awaken-protocol-ag-ui/src",
-    "crates/server/awaken-protocol-ai-sdk/src",
-    "crates/server/awaken-protocol-awaken/src",
-    "crates/server/awaken-protocol-managed/src",
-    "crates/server/awaken-protocol-mcp/src",
-    "crates/server/awaken-coordinator/src",
+    "crates/sdk/protocols/awaken-protocol-a2a/src",
+    "crates/sdk/protocols/awaken-protocol-ag-ui/src",
+    "crates/sdk/protocols/awaken-protocol-ai-sdk/src",
+    "crates/platform/protocols/awaken-protocol-awaken/src",
+    "crates/platform/protocols/awaken-protocol-managed/src",
+    "crates/sdk/protocols/awaken-protocol-mcp/src",
+    "crates/apps/awaken-coordinator/src",
 )
 
 
@@ -139,11 +139,11 @@ PARALLEL_RAW_TOOL_REGISTRY = re.compile(
     r"HashMap\s*<\s*String\s*,\s*(?:std::sync::)?Arc\s*<\s*dyn\s+RawTool\s*>\s*>"
 )
 
-RAW_TOOL_REGISTRY_OWNER = "crates/contract/awaken-tool-contract/src/tool.rs"
+RAW_TOOL_REGISTRY_OWNER = "crates/sdk/contracts/awaken-tool-contract/src/tool.rs"
 RAW_TOOL_REGISTRY_CONSUMERS = (
-    "crates/runtime/awaken-runtime/src/runtime.rs",
-    "crates/worker/awaken-session-environment/src/environment.rs",
-    "crates/worker/awaken-tool-relay/src/serve.rs",
+    "crates/sdk/runtime/awaken-runtime/src/runtime.rs",
+    "crates/platform/environment/awaken-session-environment/src/environment.rs",
+    "crates/platform/sandbox/awaken-tool-relay/src/serve.rs",
 )
 
 
@@ -246,8 +246,8 @@ def repository_git_boundary_violations(sources: dict[str, str]) -> list[str]:
         # neither may run Repository Git on the host.
         if not path.startswith(
             (
-                "crates/server/awaken-session-executor/src/",
-                "crates/worker/awaken-session-environment/src/",
+                "crates/platform/execution/awaken-session-executor/src/",
+                "crates/platform/environment/awaken-session-environment/src/",
             )
         ):
             continue
@@ -518,7 +518,7 @@ def selftest() -> None:
         RUNTIME_HOST_ERROR_OWNER: "match error.code { _ => () }",
     }
     assert runtime_host_boundary_violations(boundary) == [], "B1"
-    boundary["crates/server/awaken-session-application/src/run_admission.rs"] = ""
+    boundary["crates/platform/session/awaken-session-application/src/run_admission.rs"] = ""
     assert runtime_host_boundary_violations(boundary) == [], "B2 one admission owner"
     boundary[RUNTIME_HOST_ERROR_OWNER] = 'message.contains("401")'
     assert runtime_host_boundary_violations(boundary), "B3"
@@ -558,11 +558,11 @@ def selftest() -> None:
         "credentialed Repository effects require a container Sandbox"
     )
     git_boundary[
-        "crates/worker/awaken-session-environment/src/host_git_bypass.rs"
+        "crates/platform/environment/awaken-session-environment/src/host_git_bypass.rs"
     ] = 'Command::new("git")'
     assert repository_git_boundary_violations(git_boundary), "G4"
-    del git_boundary["crates/worker/awaken-session-environment/src/host_git_bypass.rs"]
-    git_boundary["crates/server/awaken-session-executor/src/host_git_bypass.rs"] = (
+    del git_boundary["crates/platform/environment/awaken-session-environment/src/host_git_bypass.rs"]
+    git_boundary["crates/platform/execution/awaken-session-executor/src/host_git_bypass.rs"] = (
         'Command::new("git")'
     )
     assert repository_git_boundary_violations(git_boundary), "G5"

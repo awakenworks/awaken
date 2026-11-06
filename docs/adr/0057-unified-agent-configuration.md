@@ -1166,7 +1166,7 @@ discovery, observation, placement and launch revalidation from drifting.
 Rollout phases 0, A–I are complete as recorded above (F was later retired by
 [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md)). D1/D3 are not implemented: there is no stored kind discriminant and no
 `NativeSpec`/`AcpSpec`/`A2aSpec`. `AgentKind` exists only as a derived, unstored view of
-`backend_ref` (`crates/control/awaken-agent-config/src/config.rs:262-275`), which is
+`backend_ref` (`crates/platform/config/awaken-agent-config/src/config.rs:262-275`), which is
 what phase B delivered; the 2026-07-23 amendment keeps the flat `AgentConfig`. The
 status stays Proposed for D1/D3 only.
 
@@ -1177,8 +1177,8 @@ credential channel" and credits "ADR 67" with removing it. [ADR-0066](0066-sessi
 amendment) decides otherwise: authenticated MCP freezes one delivery mode per
 attachment, and `ClientInjection` places material in the process-private ACP
 `session/new` field (`McpCredentialDelivery::ClientInjection`,
-`crates/contract/awaken-credential-contract/src/realization_capabilities.rs:46`; ACP use at
-`crates/server/awaken-run-executor-acp/src/subprocess.rs:529`). [ADR-0067](0067-credential-custody-model-exposure-and-secret-delivery.md) makes no
+`crates/platform/credentials/awaken-credential-contract/src/realization_capabilities.rs:46`; ACP use at
+`crates/platform/execution/awaken-run-executor-acp/src/subprocess.rs:529`). [ADR-0067](0067-credential-custody-model-exposure-and-secret-delivery.md) makes no
 such removal; only the former reference/inline exits are gone.
 
 ## Amendment 2026-10-09: names and references
@@ -1188,4 +1188,4 @@ such removal; only the former reference/inline exits are gone.
 - [ADR-0002](0002-resolver-role-demarcation.md) cites "ADR-0057 Phase E" for one child-Run delegation path. Phase E's
   completion evidence is that decision: remote children select the one `A2aRunExecutor`
   from the published backend, and `RemoteAgent*`/`with_remote_agent` are gone;
-  `RunDelegationService` is at `crates/contract/awaken-runtime-contract/src/delegation.rs:268`.
+  `RunDelegationService` is at `crates/sdk/contracts/awaken-runtime-contract/src/delegation.rs:268`.

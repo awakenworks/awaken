@@ -38,7 +38,7 @@ WORK_CURRENT_CASES = (
 # The absent legacy process identity remains unaccepted, independently of skips.
 WORK_GAP_BINDINGS = ()
 WORK_PRODUCT_GAPS = ()
-WORK_SOURCE = 'crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance/credential_generation.rs'
+WORK_SOURCE = 'crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance/credential_generation.rs'
 WORK_CALIBRATION_BINDINGS = (
     ('B250', 'owner_only_reclaim_preserves_the_credential_principal_boundary', [0, 2]),
     ('B262', 'same_credential_session_reclaim_fences_the_exact_generation', [0, 1, 2]),
@@ -90,7 +90,7 @@ def validate_work_calibration(data, root):
     if (not all(token in reason for token in ('E17', 'unaccepted', 'credential',
                  *(name for _, name, _ in WORK_CALIBRATION_BINDINGS)))
             or re.search(r'\bfn\s+' + RETIRED_PROCESS_ORACLE + r'\s*\(',
-                (root / 'crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs').read_text(encoding='utf-8'))):
+                (root / 'crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs').read_text(encoding='utf-8'))):
         raise ValueError('Work retired process oracle must preserve its historical limitation')
     return [{'acceptance_case': 'T09-C02', 'bindings': ['B250', 'B262'],
              'status': 'unaccepted-legacy-process-fencing', 'historical_evidence': 'E17',

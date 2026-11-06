@@ -80,7 +80,7 @@ class PortabilitySelectionTests(unittest.TestCase):
         # The source owner supplies the package and prompt identities. A crate
         # extraction must fail this cheap matrix before a long native build can
         # discover an empty selection. The required runner checks live outcomes.
-        realization = ROOT / "crates/server/awaken-session-realization"
+        realization = ROOT / "crates/platform/execution/awaken-session-realization"
         source = realization / "src/managed_input_layout/resource_prompt_tests.rs"
         package = tomllib.loads((realization / "Cargo.toml").read_text(encoding="utf-8"))["package"]["name"]
         prompt = [call for call in calls if call[3] == source.stem]
@@ -94,7 +94,7 @@ class PortabilitySelectionTests(unittest.TestCase):
         module = "::".join(owner.relative_to(realization / "src").with_suffix("").parts) + "::" + source.stem
         self.assertCountEqual(prompt[0][4:], ["--require-case=" + module + "::" + name for name in names])
 
-        host = ROOT / "crates/server/awaken-session-executor"
+        host = ROOT / "crates/platform/execution/awaken-session-executor"
         composed = host / "src/realization_composed_tests/session_environment.rs"
         self.assertIn('mod tests;', composed.read_text(encoding="utf-8"))
         fixture = host / "src/session_environment/tests/shared_environment.rs"
@@ -116,7 +116,7 @@ class PortabilitySelectionTests(unittest.TestCase):
         if supervision:
             self.assertEqual(process[0][4:], [*("--require-case=" + name for name in NAMESPACE_PROCESSES),
                                              "--", "--ignored"])
-            source = (ROOT / "crates/worker/awaken-sandbox-local/src/namespace/tests.rs").read_text(encoding="utf-8")
+            source = (ROOT / "crates/platform/sandbox/awaken-sandbox-local/src/namespace/tests.rs").read_text(encoding="utf-8")
             for identity in NAMESPACE_PROCESSES:
                 name = identity.rsplit("::", 1)[1]
                 row = re.search(r'#\[cfg\(target_os = "linux"\)\]\s*#\[tokio::test\]\s*'

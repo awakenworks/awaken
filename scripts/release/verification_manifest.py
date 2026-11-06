@@ -52,7 +52,7 @@ def _admission_kernel() -> Path:
     if _ADMISSION_KERNEL is not None:
         return _ADMISSION_KERNEL
     source_directory = (
-        ROOT / "crates/server/awaken-service-lifecycle/src"
+        ROOT / "crates/apps/awaken-service-lifecycle/src"
     )
     main_source = source_directory / "release_admission_main.rs"
     kernel_source = source_directory / "release_admission.rs"
@@ -445,8 +445,8 @@ class VerificationManifestTests(unittest.TestCase):
         # on their Kani harnesses, `// @formal` in their opening lines); a
         # consistent source tree stores those obligations too.
         import formal_anchors
-        admission = "crates/server/awaken-service-lifecycle/src/release_admission.rs"
-        admission_main = "crates/server/awaken-service-lifecycle/src/release_admission_main.rs"
+        admission = "crates/apps/awaken-service-lifecycle/src/release_admission.rs"
+        admission_main = "crates/apps/awaken-service-lifecycle/src/release_admission_main.rs"
         anchored = sorted({
             anchor.value
             for harness in formal_anchors.scan_text(admission, (ROOT / admission).read_text(), None).harnesses
@@ -468,18 +468,18 @@ class VerificationManifestTests(unittest.TestCase):
             "formal/tla/Fixture.tla": "---- MODULE Fixture ----\n====\n",
             "scripts/ci/formal_profile.py": (ROOT / "scripts/ci/formal_profile.py").read_text(),
             "scripts/release/verification_manifest.py": Path(__file__).read_text(),
-            "crates/server/awaken-service-lifecycle/src/release_admission.rs": (
-                ROOT / "crates/server/awaken-service-lifecycle/src/release_admission.rs"
+            "crates/apps/awaken-service-lifecycle/src/release_admission.rs": (
+                ROOT / "crates/apps/awaken-service-lifecycle/src/release_admission.rs"
             ).read_text(),
-            "crates/server/awaken-service-lifecycle/src/release_admission_main.rs": (
-                ROOT / "crates/server/awaken-service-lifecycle/src/release_admission_main.rs"
+            "crates/apps/awaken-service-lifecycle/src/release_admission_main.rs": (
+                ROOT / "crates/apps/awaken-service-lifecycle/src/release_admission_main.rs"
             ).read_text(),
             # The receipt names the Kani plan its source derives; the copied
             # harnesses need their package and library root to be planned.
-            "crates/server/awaken-service-lifecycle/Cargo.toml": (
-                ROOT / "crates/server/awaken-service-lifecycle/Cargo.toml"
+            "crates/apps/awaken-service-lifecycle/Cargo.toml": (
+                ROOT / "crates/apps/awaken-service-lifecycle/Cargo.toml"
             ).read_text(),
-            "crates/server/awaken-service-lifecycle/src/lib.rs": "pub mod release_admission;\n",
+            "crates/apps/awaken-service-lifecycle/src/lib.rs": "pub mod release_admission;\n",
             "README.md": "fixture\n", "LICENSE": "fixture\n", "deploy/compose.yaml": "# fixture\n",
         })
         (root / "deploy/images/management").mkdir(parents=True)

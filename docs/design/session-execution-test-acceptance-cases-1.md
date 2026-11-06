@@ -37,7 +37,7 @@
 
 ## T01 构造与关闭
 
-责任组件：SessionExecutorBuilder 与进程 composition root。入口：[源码或现有门禁](../../crates/server/awaken-session-executor/src/host/dependencies/environment.rs)。风险基准：P0。类型：行为域。
+责任组件：SessionExecutorBuilder 与进程 composition root。入口：[源码或现有门禁](../../crates/platform/execution/awaken-session-executor/src/host/dependencies/environment.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。能力是否必需取决于启用模式；明确构造顺序、实例及关闭责任。
 
@@ -108,7 +108,7 @@
 
 ## T03 SDK 等待和结果语义
 
-责任组件：Runtime run 与 resume。入口：[源码或现有门禁](../../crates/runtime/awaken-runtime/tests/sdk_api.rs)。风险基准：P0。类型：行为域。
+责任组件：Runtime run 与 resume。入口：[源码或现有门禁](../../crates/sdk/runtime/awaken-runtime/tests/sdk_api.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。区分等待返回、恢复命令接纳及 Run 终态，避免把协议等待当业务完成。
 
@@ -140,7 +140,7 @@
 
 ## T04 创建与错误顺序
 
-责任组件：Session application 与协议创建适配。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/tests/creation.rs)。风险基准：P0。类型：行为域。
+责任组件：Session application 与协议创建适配。入口：[源码或现有门禁](../../crates/platform/session/awaken-session-application/src/tests/creation.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。要求已定义的错误优先级；不要为无关错误任意规定全局顺序。
 
@@ -172,7 +172,7 @@
 
 ## T05 Session CAS 与回执重放
 
-责任组件：Session aggregate 和 Session repository。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/tests/observed_commit.rs)。风险基准：P0。类型：行为域。
+责任组件：Session aggregate 和 Session repository。入口：[源码或现有门禁](../../crates/platform/session/awaken-session-application/src/tests/observed_commit.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。保留原子 root 与历史回执语义，分开逻辑竞争和持久崩溃。
 
@@ -211,7 +211,7 @@
 
 ## T06 归属与当前授权
 
-责任组件：各受控 application 和执行入口。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/tests/authority/file_authorization.rs)。风险基准：P0。类型：行为域。
+责任组件：各受控 application 和执行入口。入口：[源码或现有门禁](../../crates/platform/session/awaken-session-application/src/tests/authority/file_authorization.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。冻结配置身份与动态撤销权分开验证，减少不必要的重复目录读取。
 
@@ -243,7 +243,7 @@
 
 ## T07 Run 接纳与激活
 
-责任组件：SessionRun application 与 dispatch。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/tests/run_admission.rs)。风险基准：P0。类型：行为域。
+责任组件：SessionRun application 与 dispatch。入口：[源码或现有门禁](../../crates/platform/session/awaken-session-application/src/tests/run_admission.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。分别约束权威提交和外部效果，不承诺任意网络副作用恰好一次。
 
@@ -275,7 +275,7 @@
 
 ## T08 Work 与 Run 桥接
 
-责任组件：Session work projection 与 Run dispatch。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/tests/authority/work_projection.rs)。风险基准：P0。类型：行为域。
+责任组件：Session work projection 与 Run dispatch。入口：[源码或现有门禁](../../crates/platform/session/awaken-session-application/src/tests/authority/work_projection.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。Work 是领取/租约协议事项；ack 不等于 Run 成功，healthcheck 不强制创建 Run。
 
@@ -307,7 +307,7 @@
 
 ## T09 租约边界与竞争
 
-责任组件：Work、dispatch、realization 各自权威。入口：[源码或现有门禁](../../crates/stores/awaken-work-store/tests/lease_book_properties.rs)。风险基准：P0。类型：行为域。
+责任组件：Work、dispatch、realization 各自权威。入口：[源码或现有门禁](../../crates/platform/environment/awaken-work-store/tests/lease_book_properties.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。不同租约各有状态机；共用时钟和边界规则，不合并 epoch。
 
@@ -339,7 +339,7 @@
 
 ## T10 物理停止与未知结果
 
-责任组件：Native、ACP、Sandbox 的现有停止观察者。入口：[源码或现有门禁](../../crates/runtime/awaken-ext-builtin-tools/tests/hand/windows_process.rs)。风险基准：P0。类型：行为域。
+责任组件：Native、ACP、Sandbox 的现有停止观察者。入口：[源码或现有门禁](../../crates/sdk/extensions/awaken-ext-builtin-tools/tests/hand/windows_process.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。停止证明必须按适配器能力声明，future 被 drop 不等于物理静止。
 
@@ -371,7 +371,7 @@
 
 ## T11 工具回复接纳与重放
 
-责任组件：Session event application。入口：[源码或现有门禁](../../crates/server/awaken-protocol-managed/src/state/events/tests.rs)。风险基准：P0。类型：行为域。
+责任组件：Session event application。入口：[源码或现有门禁](../../crates/platform/protocols/awaken-protocol-managed/src/state/events/tests.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。保持 ticket/version/Run/Thread 坐标约束及消费语义。
 
@@ -403,7 +403,7 @@
 
 ## T12 事件批次
 
-责任组件：Session aggregate 与事件适配。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/tests/event_batches.rs)。风险基准：P0。类型：行为域。
+责任组件：Session aggregate 与事件适配。入口：[源码或现有门禁](../../crates/platform/session/awaken-session-application/src/tests/event_batches.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。协议语法验证与 aggregate 业务判定保持分层。
 
@@ -435,7 +435,7 @@
 
 ## T13 预算与动态策略
 
-责任组件：BudgetAccounting、Session policy 与 effect gate。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/tests/budget_settlement.rs)。风险基准：P0。类型：行为域。
+责任组件：BudgetAccounting、Session policy 与 effect gate。入口：[源码或现有门禁](../../crates/platform/session/awaken-session-application/src/tests/budget_settlement.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。明确冻结配置与动态限制；不把模型价格变化追溯应用到已接纳操作。
 

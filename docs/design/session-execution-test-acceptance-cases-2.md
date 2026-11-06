@@ -4,7 +4,7 @@
 
 ## T14 资源替换与引用修复
 
-责任组件：Session aggregate 与 resource reconciliation。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/resource_references/tests.rs)。风险基准：P0。类型：行为域。
+责任组件：Session aggregate 与 resource reconciliation。入口：[源码或现有门禁](../../crates/platform/session/awaken-session-application/src/resource_references/tests.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。保留确切 manifest 身份和原子 root；索引是可修复投影。
 
@@ -36,7 +36,7 @@
 
 ## T15 精确凭据与明文边界
 
-责任组件：Credential application 与 materializer。入口：[源码或现有门禁](../../crates/server/awaken-credential-materializer/src/platform_egress.rs)。风险基准：P0。类型：行为域。
+责任组件：Credential application 与 materializer。入口：[源码或现有门禁](../../crates/platform/execution/awaken-credential-materializer/src/platform_egress.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。保留身份精确性，同时显式区分宿主内凭据、工作负载凭据和外部中介契约。
 
@@ -68,7 +68,7 @@
 
 ## T16 MCP generation 生命周期
 
-责任组件：McpSessions 与 generation root authority。入口：[源码或现有门禁](../../crates/server/awaken-session-mcp/src/mcp/attachment.rs)。风险基准：P0。类型：行为域。
+责任组件：McpSessions 与 generation root authority。入口：[源码或现有门禁](../../crates/platform/execution/awaken-session-mcp/src/mcp/attachment.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。现有 WorkerRelay 保护不能泛化为所有 Native、PlatformRelay、stdio 分支已等价。
 
@@ -108,7 +108,7 @@
 
 ## T17 prepare 与补偿责任
 
-责任组件：Repository、MCP 与 Session creation 各既有事务所有者。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/tests/creation.rs)。风险基准：P0。类型：行为域。
+责任组件：Repository、MCP 与 Session creation 各既有事务所有者。入口：[源码或现有门禁](../../crates/platform/session/awaken-session-application/src/tests/creation.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。不能依赖尚未创建的 Session root 作为准备资源的唯一清理入口。
 
@@ -140,7 +140,7 @@
 
 ## T18 archive 与 delete 竞争
 
-责任组件：Session lifecycle aggregate 与 resource retention。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/tests/realization/worker_retirement.rs)。风险基准：P0。类型：行为域。
+责任组件：Session lifecycle aggregate 与 resource retention。入口：[源码或现有门禁](../../crates/platform/session/awaken-session-application/src/tests/realization/worker_retirement.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。终态与物理静止分开，retirement 资格观察不得消费 cleanup 责任。
 
@@ -172,7 +172,7 @@
 
 ## T19 checkpoint 与续接
 
-责任组件：Session continuation aggregate 与现有 provider。入口：[源码或现有门禁](../../crates/server/awaken-session-application/src/tests/continuation.rs)。风险基准：P0。类型：行为域。
+责任组件：Session continuation aggregate 与现有 provider。入口：[源码或现有门禁](../../crates/platform/session/awaken-session-application/src/tests/continuation.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。每种 Provider 声明支持的恢复能力；无能力时提前拒绝，不伪造通用恢复保证。
 
@@ -204,7 +204,7 @@
 
 ## T20 Environment 定义事务
 
-责任组件：EnvironmentDefinitionStore 与 registration outbox。入口：[源码或现有门禁](../../crates/stores/awaken-env-store/src/lib.rs)。风险基准：P0。类型：行为域。
+责任组件：EnvironmentDefinitionStore 与 registration outbox。入口：[源码或现有门禁](../../crates/platform/environment/awaken-env-store/src/lib.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。定义、不可变 revision 和 intent 是同一事务，不能由 mutable current row 重建历史。
 
@@ -247,7 +247,7 @@
 
 ## T21 Environment 注册投递
 
-责任组件：EnvironmentRegistrationDelivery、catalog、Work 投影和监督者。入口：[源码或现有门禁](../../crates/control/awaken-environment-application/tests/registration_replay.rs)。风险基准：P0。类型：行为域。
+责任组件：EnvironmentRegistrationDelivery、catalog、Work 投影和监督者。入口：[源码或现有门禁](../../crates/platform/environment/awaken-environment-application/tests/registration_replay.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。明确 at-least-once 投递、单调确切身份及可恢复责任，不要求网络恰好一次。
 
@@ -290,7 +290,7 @@
 
 ## T22 Memory 内容事务与作者
 
-责任组件：Memory backend 与 Resources 装饰器。入口：[源码或现有门禁](../../crates/resources/awaken-memory-store/tests/common/memory_repository.rs)。风险基准：P0。类型：行为域。
+责任组件：Memory backend 与 Resources 装饰器。入口：[源码或现有门禁](../../crates/platform/resources/awaken-memory-store/tests/common/memory_repository.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。写入、路径覆盖和历史原子；装饰器只在提交后通知，作者不在中间层丢失。
 
@@ -329,7 +329,7 @@
 
 ## T23 Memory 一致快照
 
-责任组件：MemorySnapshotSource、Recall、Dream 与 Copy。入口：[源码或现有门禁](../../crates/resources/awaken-memory-store/tests/common/memory_repository.rs)。风险基准：P0。类型：行为域。
+责任组件：MemorySnapshotSource、Recall、Dream 与 Copy。入口：[源码或现有门禁](../../crates/platform/resources/awaken-memory-store/tests/common/memory_repository.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。快照保证按声明 store/事务范围定义，不承诺跨独立 store 或任意多次请求全局快照。
 
@@ -361,7 +361,7 @@
 
 ## T24 Copy 写回与 ABA
 
-责任组件：MemoryCopyWriteback、Copy harvest 与 FUSE 文件身份。入口：[源码或现有门禁](../../crates/worker/awaken-sandbox-memoryd/src/copy.rs)。风险基准：P0。类型：行为域。
+责任组件：MemoryCopyWriteback、Copy harvest 与 FUSE 文件身份。入口：[源码或现有门禁](../../crates/platform/sandbox/awaken-sandbox-memoryd/src/copy.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。Copy 按原路径和完整 generation 比较；FUSE 打开句柄跟随 ID，二者不能混为一条规则。
 
@@ -401,7 +401,7 @@
 
 ## T25 Memory 历史脱敏
 
-责任组件：MemoryVersionRedaction 与 Managed 授权入口。入口：[源码或现有门禁](../../crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs)。风险基准：P0。类型：行为域。
+责任组件：MemoryVersionRedaction 与 Managed 授权入口。入口：[源码或现有门禁](../../crates/platform/protocols/awaken-protocol-managed/tests/memory_store_api_http.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。历史脱敏、普通删除和物理 purge 是三个不同授权操作。
 
@@ -433,7 +433,7 @@
 
 ## T26 内容回收与保护
 
-责任组件：Resource reclamation application 与 physical cleanup。入口：[源码或现有门禁](../../crates/server/awaken-resource-reclaimer/src/lib.rs)。风险基准：P0。类型：行为域。
+责任组件：Resource reclamation application 与 physical cleanup。入口：[源码或现有门禁](../../crates/platform/resources/awaken-resource-reclaimer/src/lib.rs)。风险基准：P0。类型：行为域。
 
 校准：保留。删除内容权限不包含物理 purge；检查保护事实的读取失败必须保守拒绝。
 
@@ -465,7 +465,7 @@
 
 ## T27 Sandbox 能力与同一物理实例
 
-责任组件：SandboxProviderRoles 与 Sandbox 能力构造。入口：[源码或现有门禁](../../crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs)。风险基准：P0。类型：行为域。
+责任组件：SandboxProviderRoles 与 Sandbox 能力构造。入口：[源码或现有门禁](../../crates/platform/environment/awaken-provisioning-contract/src/sandbox/runtime.rs)。风险基准：P0。类型：行为域。
 
 校准：细化。按消费者角色约束能力，保留同一物理实例；不要按方法机械拆 trait。
 

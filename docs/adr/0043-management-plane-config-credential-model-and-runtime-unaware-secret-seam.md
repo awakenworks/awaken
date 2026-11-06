@@ -6,8 +6,8 @@
   `awaken-runtime-contract` link no catalog, vault, resolver, or admin crate;
   management crates `awaken-model-catalog`, `awaken-credential-vault`,
   `awaken-config-resolver` and `awaken-admin-config-api` exist;
-  `ProviderConnectionService` (`crates/control/awaken-admin-config-api/src/provider_connection.rs:112`),
-  `ProviderAccessKind` (`crates/contract/awaken-runtime-contract/src/resolved.rs:686`),
+  `ProviderConnectionService` (`crates/platform/config/awaken-admin-config-api/src/provider_connection.rs:112`),
+  `ProviderAccessKind` (`crates/sdk/contracts/awaken-runtime-contract/src/resolved.rs:686`),
   generated contracts (`scripts/contract/generate-contracts.sh`). Inference
   credentials follow ADR-0062/0067 as the sections below already state.
 - Amended: 2026-10-09 (status corrected; names and references)
@@ -577,7 +577,7 @@ coordinates remain local selectors and are never passed off as Cloud route ids.
 
 - `awaken-management-contract` (2026-07-04 header amendment, Context, section 1)
   was never created. Provider, endpoint, offering and `InferenceProfile` live in
-  `awaken-model-catalog` (`crates/control/awaken-model-catalog`), as this ADR's own
+  `awaken-model-catalog` (`crates/platform/config/awaken-model-catalog`), as this ADR's own
   crate table already says.
 - The bare "ADR-0088" in section 1 means awaken-next's ADR-0088 (as the header
   amendment says), not this repository's

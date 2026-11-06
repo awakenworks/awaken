@@ -11,7 +11,7 @@ docs/design/session-execution-test-acceptance/evidence/** -text whitespace=cr-at
 # Generated protocol artifacts are compared byte-for-byte on every platform.
 contracts/**/*.generated.json text eol=lf
 contracts/*.d.ts text eol=lf
-crates/server/awaken-protocol-managed/contracts/*.generated.json text eol=lf
+crates/platform/protocols/awaken-protocol-managed/contracts/*.generated.json text eol=lf
 packages/managed-sdk-oracle/fixtures/generated/*.ts text eol=lf
 packages/managed-sdk-oracle/src/*.generated.ts text eol=lf
 # Reviewed compiler patches and upstream templates carry raw-byte digests.

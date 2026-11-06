@@ -804,7 +804,7 @@ capability activation still require production integration. Built-in supervision
 capabilities therefore remain false.
 
 The real binary tests live in
-`crates/bin/awaken-sandbox/tests/linux_scoped.rs`: physical cwd with spaces/Unicode,
+`crates/apps/awaken-sandbox/tests/linux_scoped.rs`: physical cwd with spaces/Unicode,
 synthetic credentials, binary stdio, loader-time namespace membership, denied
 grant, failed exec, detached descendants, exact scope kill, separate owner
 SIGKILL, helper SIGKILL, stalled-owner SIGSTOP and execution expiry (including
@@ -913,14 +913,14 @@ claim that a File appeared in the Session's historical catalog.
 - **Skill registry owner (A2 vs ADR-0036 D4).** Code follows
   [ADR-0036](0036-skills-as-runtime-extension-single-tool.md) D4:
   `awaken-ext-skills` owns `SkillRegistry`, the runtime lookup its `Skill` tool
-  resolves against (`crates/runtime/awaken-ext-skills/src/registry.rs:19`). The
+  resolves against (`crates/sdk/extensions/awaken-ext-skills/src/registry.rs:19`). The
   durable, Workspace-scoped custom-Skill index that A2 describes is `SkillStore`
-  (`crates/contract/awaken-resource-contract/src/lib.rs:651`). A2's sentence that
+  (`crates/platform/resources/awaken-resource-contract/src/lib.rs:651`). A2's sentence that
   `awaken-ext-skills` "touches no registry or store" does not hold; read A2's
   control-plane index as `SkillStore`.
 - **Store-port placement (D3).** D3 and the rejected alternative "Put the three
   store ports in a contract crate" are reversed in code. The ports live in the
-  contract crate `awaken-resource-contract` (`crates/contract/awaken-resource-contract/src/lib.rs`:
+  contract crate `awaken-resource-contract` (`crates/platform/resources/awaken-resource-contract/src/lib.rs`:
   `FileCatalog` :287, `FileStore` :337, `SkillStore` :651, `MemoryRepository`
   :982); `awaken-provisioning-contract` still carries the mount vocabulary. D1's
   `MemoryStore` port is `MemoryRepository`. The `awaken-coordinator-local`

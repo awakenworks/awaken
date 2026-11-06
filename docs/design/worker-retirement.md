@@ -99,7 +99,7 @@ decision: the Worker observes its own Sandbox sources and reports the facts;
 the Coordinator decides from the facts and holds no provider.
 
 - The Coordinator's Worker occupancy read
-  ([`SessionWorkerOccupancy`](../../crates/server/awaken-session-application/src/worker_occupancy.rs))
+  ([`SessionWorkerOccupancy`](../../crates/platform/session/awaken-session-application/src/worker_occupancy.rs))
   names each original source that must outlive the Actor as a
   `SourceRetentionSubject` (Session, preparation semantics, frozen projection)
   with a canonical digest that excludes only the root revision (realization

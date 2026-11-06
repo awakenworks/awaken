@@ -345,7 +345,7 @@ count at zero.
 
 1. **The Coordinator consumes the executor only through ports.**
    `awaken-coordinator` receives the executor's roles as one root-selected
-   `ExecutionPorts` value (`crates/server/awaken-coordinator/src/execution_ports.rs`),
+   `ExecutionPorts` value (`crates/apps/awaken-coordinator/src/execution_ports.rs`),
    so a Coordinator-only deployment links no Worker-side implementation (D5,
    D6). `scripts/ci/_dispatch_boundary_fitness.py` rule `D3` refuses the
    Session executor or any Worker-side crate in the crate's normal closure;

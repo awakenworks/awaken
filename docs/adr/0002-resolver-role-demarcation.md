@@ -59,6 +59,6 @@ must state what value they resolve.
   direct and durable children select one attempt executor from the published
   backend. The same rule is Accepted in [ADR-0059](0059-neutral-core-and-leaf-evolution.md) and guardrail G40
   ([INVARIANTS.md](../INVARIANTS.md)). Code: `RunDelegationService`
-  (`crates/contract/awaken-runtime-contract/src/delegation.rs:268`),
+  (`crates/sdk/contracts/awaken-runtime-contract/src/delegation.rs:268`),
   `RunAttemptExecutor` / `AttemptExecutorRegistry`
-  (`crates/contract/awaken-runtime-contract/src/execution.rs:231,289`).
+  (`crates/sdk/contracts/awaken-runtime-contract/src/execution.rs:231,289`).

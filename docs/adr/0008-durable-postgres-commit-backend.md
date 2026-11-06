@@ -203,10 +203,10 @@ and [top-level transaction management](https://www.postgresql.org/docs/16/plpgsq
   holds. The Postgres dispatch adapter lives in `awaken-run-ingress`
   ([ADR-0009](0009-durable-run-ingress-slice.md) D1, `crates/server/awaken-run-ingress/Cargo.toml:38`), and
   [ADR-0087](0087-sqlite-through-sqlx.md) sends all SQLite access through sqlx
-  (`crates/stores/awaken-store-sqlite/Cargo.toml:24`). What still holds: the
+  (`crates/platform/committed-truth/awaken-store-sqlite/Cargo.toml:24`). What still holds: the
   runtime core never names a SQL driver; only storage adapters do.
 - D3: the table prefix is a built-in constant, not a parameter ([ADR-0029](0029-built-in-runtime-namespace.md);
-  `crates/stores/awaken-store-postgres/src/lib.rs:190`).
+  `crates/platform/committed-truth/awaken-store-postgres/src/lib.rs:190`).
 - Names: `RunStore` / `ThreadReader` are now `CommittedThreadView` (+
   `CheckpointReader` for events), per [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md). `DurableRunIngress` no
   longer exists (removed by the 2026-09-01 amendment of [ADR-0009](0009-durable-run-ingress-slice.md)).

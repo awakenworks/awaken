@@ -82,7 +82,7 @@ CLOUD_PLACEMENT_TOKENS = (
     "runtime_cell_incarnation",
     "runtime_placement_epoch",
 )
-CLOUD_HOSTING_ACL = Path("crates/bin/awaken-process-startup/src/config/workspace_data.rs")
+CLOUD_HOSTING_ACL = Path("crates/apps/awaken-process-startup/src/config/workspace_data.rs")
 
 NEUTRAL_CRATES = {
     "awaken-agent-contract",
@@ -293,7 +293,7 @@ def _forbidden_neutral_impl_errors(rel: Path, content: str) -> list[str]:
     # concrete Tool or tool ID. Extensions and the SDK share it through their
     # contract dependency; admitting it must not admit a second/concrete impl.
     typed_adapter = (
-        rel.as_posix() == "crates/contract/awaken-tool-contract/src/typed.rs"
+        rel.as_posix() == "crates/sdk/contracts/awaken-tool-contract/src/typed.rs"
         and len(re.findall(r"\bRawTool\s+for\b", syntax)) == 1
         and re.search(r"\bimpl\s*<\s*T\s*:\s*Tool\s*>\s*RawTool\s+for\s+Erased\s*<\s*T\s*>\s*\{", syntax) is not None
     )
@@ -400,7 +400,7 @@ def selftest_builtin_tool_ownership() -> None:
     # forms; E2 reject C2-C6/C8/C9; E3 parse only executable C7/C10 syntax.
     # These mutation probes call the same helpers used on source, so neither a
     # rename-away nor a commented/literal copy can satisfy the gate.
-    rel = Path("crates/runtime/awaken-ext-builtin-tools/src/example.rs")
+    rel = Path("crates/sdk/extensions/awaken-ext-builtin-tools/src/example.rs")
     assert not _forbidden_builtin_source_errors(
         rel,
         'const ID: &str = "bash"; async fn cancel_task() {}',
@@ -427,7 +427,7 @@ def selftest_builtin_tool_ownership() -> None:
         "use compat::Bash::Shell;",
     ):
         assert _forbidden_builtin_source_errors(rel, forbidden), f"S2/E2: {forbidden}"
-    neutral_rel = Path("crates/contract/awaken-runtime-contract/src/example.rs")
+    neutral_rel = Path("crates/sdk/contracts/awaken-runtime-contract/src/example.rs")
     # Projections leave blank lines. A line's indentation must not repeatedly
     # scan all later blank lines; multiline visibility/use trees still parse.
     projected_prefix = " \t\n" * 1000
@@ -495,13 +495,13 @@ use crate::{
         'const EXAMPLE: &str = "impl Tool for Fake {}";\n'
         'const RAW: &str = r#"impl RawTool for Fake {}"#;',
     ), "S3/C10 impl-like string literals are inert"
-    typed_rel = Path("crates/contract/awaken-tool-contract/src/typed.rs")
+    typed_rel = Path("crates/sdk/contracts/awaken-tool-contract/src/typed.rs")
     generic_adapter = "impl<T: Tool> RawTool for Erased<T> {}"
     assert not _forbidden_neutral_impl_errors(typed_rel, generic_adapter), "generic port-owned adaptation is neutral"
     assert _forbidden_neutral_impl_errors(neutral_rel, generic_adapter), "the engine cannot own tool implementations"
     assert _forbidden_neutral_impl_errors(typed_rel, "impl RawTool for Concrete {}"), "contract location cannot admit a concrete tool"
     assert _forbidden_neutral_impl_errors(typed_rel, generic_adapter + " impl RawTool for Concrete {}"), "generic allowance cannot hide an additional concrete impl"
-    resource_modes = Path("crates/contract/awaken-tool-contract/src/tool.rs")
+    resource_modes = Path("crates/sdk/contracts/awaken-tool-contract/src/tool.rs")
     assert not _forbidden_neutral_symbol_errors(
         resource_modes,
         "enum ResourceAccessMode { Read, Write }",
@@ -677,7 +677,7 @@ INCOMPLETE_GENERATION_EXEMPTIONS = {
     # of every other coordinate; every consumer compares it as effect identity
     # on a receipt, never as a precondition on a durable head. The type carries
     # the full argument.
-    "SandboxGeneration": "crates/contract/awaken-session-contract/src/state/environment/generation.rs",
+    "SandboxGeneration": "crates/platform/session/awaken-session-contract/src/state/environment/generation.rs",
 }
 
 
@@ -811,7 +811,7 @@ OPTIONAL_TENANCY_EXEMPTIONS: dict[str, str] = {
     # not others. Absence is already fail-closed, not defaulted:
     # `publication_workspace` returns `None` and the handler answers 400
     # "publication execution workspace is required" without touching the store.
-    "crates/control/awaken-control/src/config_routes.rs::ExecutionWorkspace": (
+    "crates/apps/awaken-control/src/config_routes.rs::ExecutionWorkspace": (
         "secondary publication coordinate; absence answers 400, never a default"
     ),
 }
@@ -820,7 +820,7 @@ OPTIONAL_TENANCY_EXEMPTIONS: dict[str, str] = {
 # did not receive from the edge. It stamps the *provisioned, persisted*
 # installation Workspace, not a compiled-in constant, and only when no edge
 # already resolved one.
-TENANCY_COMPOSITION_ROOT = Path("crates/server/awaken-coordinator/src/workspace_path.rs")
+TENANCY_COMPOSITION_ROOT = Path("crates/apps/awaken-coordinator/src/workspace_path.rs")
 
 AMBIENT_FALLBACK_CALL = re.compile(
     r"\b(?:unwrap_or|unwrap_or_else|unwrap_or_default|map_or|map_or_else)\b"
@@ -1164,7 +1164,7 @@ def selftest_backend_configuration_is_opaque() -> None:
     # Decision table over the source gate. C1=a backend mode identifier appears
     # in executable Rust => E1 reject. C2=it appears only in a comment (stripped
     # by the shared production filter) => E2 accept. C3=no identifier => E2.
-    rel = Path("crates/runtime/awaken-ext-permission/src/lib.rs")
+    rel = Path("crates/sdk/extensions/awaken-ext-permission/src/lib.rs")
     for value in OPAQUE_BACKEND_CONFIG_VALUES:
         assert _opaque_backend_config_errors(
             rel, f'let mode = "{value}";'
@@ -1434,11 +1434,11 @@ UNVALIDATED_MODEL_BINDING_BASELINE = 404
 # `<path>::<fn>`, so the exemption covers one function, not a file: a second
 # producer added elsewhere in the same file is still counted.
 UNVALIDATED_MODEL_BINDING_EXEMPTIONS: dict[str, str] = {
-    "crates/contract/awaken-runtime-contract/src/resolved/model_binding.rs::constructible": (
+    "crates/sdk/contracts/awaken-runtime-contract/src/resolved/model_binding.rs::constructible": (
         "the round-trip property observes whether `new` admits what `parse` admits; "
         "it must call the constructor under test"
     ),
-    "crates/contract/awaken-runtime-contract/src/resolved/model_binding.rs"
+    "crates/sdk/contracts/awaken-runtime-contract/src/resolved/model_binding.rs"
     "::the_documented_shapes_are_admitted_or_refused_exactly": (
         "the named rows of the admission table are built through `new` to prove "
         "each admitted shape round-trips through the wire"

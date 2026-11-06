@@ -83,6 +83,6 @@ snapshots) is the one real path.
 [ADR-0010](0010-idempotent-pending-consumption.md) covers only idempotent
 consumption of pending resume input. The resume-ticket mechanism is
 [ADR-0003](0003-deferred-work-mechanism-selection.md) (`ResumeTicket`,
-`crates/contract/awaken-agent-contract/src/agent/awaiting.rs:228`), and durable
+`crates/sdk/contracts/awaken-agent-contract/src/agent/awaiting.rs:228`), and durable
 resume through ingress is [ADR-0009](0009-durable-run-ingress-slice.md). Read the
 header and References citation as ADR-0003/ADR-0009.

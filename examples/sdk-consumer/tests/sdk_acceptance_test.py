@@ -30,7 +30,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 CONSUMER = ROOT / "examples/sdk-consumer"
-RUNTIME = ROOT / "crates/runtime/awaken-runtime"
+RUNTIME = ROOT / "crates/sdk/runtime/awaken-runtime"
 CONVERSATION = RUNTIME / "src/conversation.rs"
 SNAPSHOT = ROOT / "public-api/awaken-runtime.txt"
 PUBLIC_API_NIGHTLY = "nightly-2026-07-14"
@@ -216,7 +216,7 @@ class PublicApiSnapshotTests(unittest.TestCase):
                 shutil.copy(ROOT / name, copy / name)
             shutil.copytree(ROOT / "crates", copy / "crates",
                             ignore=shutil.ignore_patterns("target", "node_modules"))
-            library = copy / "crates/runtime/awaken-runtime/src/lib.rs"
+            library = copy / "crates/sdk/runtime/awaken-runtime/src/lib.rs"
             text = library.read_text(encoding="utf-8")
             self.assertEqual(text.count(REMOVED_REEXPORT + "\n"), 1)
             library.write_text(text.replace(REMOVED_REEXPORT + "\n", ""), encoding="utf-8")

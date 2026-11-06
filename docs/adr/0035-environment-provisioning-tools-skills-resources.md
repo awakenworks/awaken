@@ -235,9 +235,9 @@ fingerprint.
   a Worker realizes one SessionEnvironment for the Session, and that Environment
   is the only source of a Hand and its `ToolExecutor`. `SandboxProvider` remains
   the one neutral provisioning seam
-  (`crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs:610`).
+  (`crates/platform/environment/awaken-provisioning-contract/src/sandbox/runtime.rs:610`).
 - **Container projection.** `ContainerEnvironmentProvider`
-  (`crates/contract/awaken-container-contract/src/provider.rs:99`) is not the
+  (`crates/platform/environment/awaken-container-contract/src/provider.rs:99`) is not the
   separate "managed Environment port" D7 rejects. ADR-0081 §9 records it as a
   container-tier projection over the same `ContainerProvider` kernels that also
   implement `SandboxProvider`.
@@ -245,4 +245,4 @@ fingerprint.
   `RawTool` detail" is amended by
   [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md) and ADR-0073: the
   kernel calls the Environment's `ToolExecutor`
-  (`crates/contract/awaken-tool-contract/src/tool.rs:1170`).
+  (`crates/sdk/contracts/awaken-tool-contract/src/tool.rs:1170`).

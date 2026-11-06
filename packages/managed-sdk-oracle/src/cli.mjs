@@ -36,11 +36,11 @@ const coveragePath = path.join(
 );
 const supportPath = path.join(
   repoRoot,
-  'crates/server/awaken-protocol-managed/contracts/sdk-support.generated.json',
+  'crates/platform/protocols/awaken-protocol-managed/contracts/sdk-support.generated.json',
 );
 const requestWitnessesPath = path.join(
   repoRoot,
-  'crates/server/awaken-protocol-managed/contracts/request-witnesses.generated.json',
+  'crates/platform/protocols/awaken-protocol-managed/contracts/request-witnesses.generated.json',
 );
 
 function fingerprint(operations) {

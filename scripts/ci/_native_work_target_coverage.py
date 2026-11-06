@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-WORK_MANIFEST = Path("crates/stores/awaken-work-store/Cargo.toml")
+WORK_MANIFEST = Path("crates/platform/environment/awaken-work-store/Cargo.toml")
 
 
 def validate_work_target_coverage(metadata, phases, root):
