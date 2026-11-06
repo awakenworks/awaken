@@ -194,17 +194,9 @@ MINTED_CLAIM = re.compile(r"\bEffectClaim\s*::\s*(?:self_recording|durable|in_pr
 
 
 def _bracket_end(source: str, open_index: int, opener: str, closer: str) -> int:
-    depth = 0
-    index = open_index
-    while index < len(source):
-        if source[index] == opener:
-            depth += 1
-        elif source[index] == closer:
-            depth -= 1
-            if depth == 0:
-                return index
-        index += 1
-    return len(source) - 1
+    """Index of the delimiter closing ``source[open_index]``, or the last index."""
+    end = _crate_boundary_workspace._balanced_end(source, open_index, opener, closer)
+    return len(source) - 1 if end is None else end - 1
 
 
 def _skip_generics(source: str, index: int) -> int:

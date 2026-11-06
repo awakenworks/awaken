@@ -84,8 +84,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 RULES = (
     Rule("degrading-default", "Require the method, make its default fail closed, or review the exact DEGRADING_DEFAULT_EXEMPTIONS decision"),
-    Rule("fail-open-read", "Propagate the read error or review the exact FAIL_OPEN_READ_EXEMPTIONS decision"),
-    Rule("substituted-input", "Take the parameter off the port, honour the argument, or review the exact SUBSTITUTED_INPUT_EXEMPTIONS decision"),
+    Rule("fail-open-read", "Propagate the read error or review the exact FAIL_OPEN_READ_EXEMPTIONS decision", hard=True),
+    Rule("substituted-input", "Take the parameter off the port, honour the argument, or review the exact SUBSTITUTED_INPUT_EXEMPTIONS decision", hard=True),
 )
 
 # Key: "<trait>::<method>". Value: why the degraded call is the correct
@@ -211,17 +211,8 @@ FAIL_OPEN_READ_EXEMPTIONS: dict[str, str] = {
     ),
 }
 
-# The remainder, ratcheted per file exactly like the defaults above.
-FAIL_OPEN_READ_BASELINE: dict[str, int] = {}
-FAIL_OPEN_READ_RATCHET = {
-    "owner": "chaizhenhua",
-    "expires": "2026-12-31",
-    "reason": (
-        "Each remaining read is behind a port that returns a bare value rather "
-        "than a Result, so converting it is a port change plus a caller change; "
-        "they are done one at a time with a test proving the new refusal."
-    ),
-}
+# The untriaged remainder reached zero, so the rule is a plain deny: a new
+# fail-open read is converted or registered above, never counted.
 
 # An input the signature names, discarded by the body and reissued from another
 # authority under the same name. The underscore is what makes it findable: the
@@ -235,7 +226,7 @@ FAIL_OPEN_READ_RATCHET = {
 # is a note that the port change is owed, not that the shape is fine.
 SUBSTITUTED_INPUT_EXEMPTIONS: dict[str, str] = {}
 
-# Zero, and it stays zero. The eight instances this rule was written for were
+# A plain deny: no instance is admitted without a decision above. The eight instances this rule was written for were
 # all one decision in the Postgres dispatch backend: a lease is a
 # mutual-exclusion primitive, its expiry must be judged by the one process every
 # contender talks to, so that backend read `clock_timestamp()` and answered with
@@ -252,16 +243,6 @@ SUBSTITUTED_INPUT_EXEMPTIONS: dict[str, str] = {}
 # had quietly substituted its own "now" for the operator's cutoff -- a different
 # question, answered without anyone being told. A name that says what a value is
 # is what makes that substitution visible.
-SUBSTITUTED_INPUT_BASELINE = 0
-SUBSTITUTED_INPUT_RATCHET = {
-    "owner": "chaizhenhua",
-    "expires": "2026-12-31",
-    "reason": (
-        "Nothing is owed: the shape is gone from the repository. The record "
-        "stays so the rule keeps its owner and its review date, and so a future "
-        "instance has to be argued for rather than absorbed into a count."
-    ),
-}
 
 def _brace_span(text: str, open_index: int) -> int:
     """Index of the brace closing ``text[open_index]``, or the last index."""
@@ -396,11 +377,7 @@ def fail_open_read_violations(sources: dict[str, str]) -> dict[str, list[str]]:
 
 
 def fail_open_read_errors(sources: dict[str, str]) -> list[str]:
-    """Keep the original per-file limit and independent stale-file rule.
-
-    D2/D8: B1-B3 cross hard stale/equal/grow/fall and per-file cancellation;
-    formatting the explicit stale state cannot add it to actual debt.
-    """
+    """Refuse every unregistered fail-open read and every stale decision."""
     findings = fail_open_read_violations(sources)
     rule = RULES[1]
     hard = [_architecture_ratchet.diagnostic(
@@ -410,9 +387,7 @@ def fail_open_read_errors(sources: dict[str, str]) -> list[str]:
             if path not in sources or not FAIL_OPEN_READ.search(sources[path])]
     return hard + _architecture_ratchet.compare(
         (rule,), {rule.name: {path: len(hits) for path, hits in findings.items()}},
-        {rule.name: findings}, {rule.name: FAIL_OPEN_READ_BASELINE},
-        f"{__file__}::FAIL_OPEN_READ_BASELINE",
-        lower_advice=f"lower the exact file allowance in {__file__}::FAIL_OPEN_READ_BASELINE",
+        {rule.name: findings}, {}, f"{__file__}::FAIL_OPEN_READ_EXEMPTIONS",
         full_details=True,
     )
 
@@ -442,7 +417,7 @@ def selftest() -> None:
     def substitutions(sources):
         return _architecture_ratchet.compare_registered(
             substituted_input_findings(sources), SUBSTITUTED_INPUT_EXEMPTIONS, 0,
-            "SUBSTITUTED_INPUT_EXEMPTIONS", rule=RULES[2], baseline_name="test fixture::SUBSTITUTED_INPUT_BASELINE")
+            "SUBSTITUTED_INPUT_EXEMPTIONS", rule=RULES[2], baseline_name="test fixture::SUBSTITUTED_INPUT_EXEMPTIONS")
 
     degrading = {"a.rs": (
         "pub trait Repo {\n"
@@ -479,12 +454,12 @@ def selftest() -> None:
     # registered file; F5 a registry entry whose file no longer defaults a read.
     # Effects: E1 admitted, E2 rejected. Rules: F1 => E2; F2|F3|F4 => E1;
     # F5 => E2.
-    global FAIL_OPEN_READ_EXEMPTIONS, FAIL_OPEN_READ_BASELINE
-    FAIL_OPEN_READ_EXEMPTIONS, FAIL_OPEN_READ_BASELINE = {}, {}
+    global FAIL_OPEN_READ_EXEMPTIONS
+    FAIL_OPEN_READ_EXEMPTIONS = {}
 
     fail_open = {"a.rs": "let rows = store.list(id).await.unwrap_or_default();\n"}
     assert fail_open_read_violations(fail_open), "F1/E2"
-    assert fail_open_read_errors(fail_open), "F1/E2 ratchet"
+    assert fail_open_read_errors(fail_open), "F1/E2 plain deny"
 
     propagated = {"a.rs": "let rows = store.list(id).await?;\n"}
     assert not fail_open_read_violations(propagated), "F2/E1"
@@ -520,15 +495,6 @@ def selftest() -> None:
         assert fail_open_read_errors(collected), "the same failure in production stays rejected"
         (root / production).write_text(propagated["a.rs"], encoding="utf-8")
         assert not fail_open_read_errors(_sources(root)), "test-only negative controls are excluded"
-
-    # The ratchet holds a known remainder and refuses one more.
-    FAIL_OPEN_READ_BASELINE = {"a.rs": 1}
-    assert not fail_open_read_errors(fail_open), "a held ratchet is admitted"
-    assert fail_open_read_errors(
-        {"a.rs": fail_open["a.rs"] * 2}
-    ), "a rise is refused"
-    assert fail_open_read_errors({"a.rs": ""}), "a fall must lower the baseline"
-    FAIL_OPEN_READ_BASELINE = {}
 
     # Causes: S1 a `_x` parameter whose body binds its own `x`; S2 a `_x`
     # parameter the body never rebinds (a double that ignores, and lies to
@@ -568,8 +534,6 @@ def selftest() -> None:
 
     for name, record in (
         ("DEGRADING_DEFAULT_RATCHET", DEGRADING_DEFAULT_RATCHET),
-        ("FAIL_OPEN_READ_RATCHET", FAIL_OPEN_READ_RATCHET),
-        ("SUBSTITUTED_INPUT_RATCHET", SUBSTITUTED_INPUT_RATCHET),
     ):
         assert record["owner"].strip(), f"{name} owner"
         assert record["reason"].strip(), f"{name} reason"
@@ -605,9 +569,9 @@ def main(argv: list[str] | None = None) -> int:
     sources = _sources(ROOT)
     errors = fail_open_read_errors(sources)
     errors += _architecture_ratchet.compare_registered(
-        substituted_input_findings(sources), SUBSTITUTED_INPUT_EXEMPTIONS, SUBSTITUTED_INPUT_BASELINE,
+        substituted_input_findings(sources), SUBSTITUTED_INPUT_EXEMPTIONS, 0,
         "SUBSTITUTED_INPUT_EXEMPTIONS", rule=RULES[2],
-        baseline_name=f"{__file__}::SUBSTITUTED_INPUT_BASELINE",
+        baseline_name=f"{__file__}::SUBSTITUTED_INPUT_EXEMPTIONS",
     )
     errors += _architecture_ratchet.compare_registered(
         degrading_default_findings(sources), DEGRADING_DEFAULT_EXEMPTIONS, UNTRIAGED_BASELINE,
@@ -618,15 +582,11 @@ def main(argv: list[str] | None = None) -> int:
         for problem in errors:
             print(f"ERROR: {problem}", file=sys.stderr)
         return 1
-    held = sum(FAIL_OPEN_READ_BASELINE.values())
     print(
         f"OK - degrading defaults held at the baseline of {UNTRIAGED_BASELINE} "
         f"(owner {DEGRADING_DEFAULT_RATCHET['owner']}, expires "
-        f"{DEGRADING_DEFAULT_RATCHET['expires']}); fail-open reads held at {held} "
-        f"(owner {FAIL_OPEN_READ_RATCHET['owner']}, expires "
-        f"{FAIL_OPEN_READ_RATCHET['expires']}); substituted inputs held at "
-        f"{SUBSTITUTED_INPUT_BASELINE} (owner {SUBSTITUTED_INPUT_RATCHET['owner']}, "
-        f"expires {SUBSTITUTED_INPUT_RATCHET['expires']})."
+        f"{DEGRADING_DEFAULT_RATCHET['expires']}); no unregistered fail-open read "
+        "or substituted input."
     )
     return 0
 
@@ -676,8 +636,7 @@ def _selftest_entrypoint() -> None:
         values = {"_sources": snapshot, "degrading_default_findings": defaults,
                   "substituted_input_findings": substitutions, "fail_open_read_violations": reads,
                   "DEGRADING_DEFAULT_EXEMPTIONS": {}, "FAIL_OPEN_READ_EXEMPTIONS": {},
-                  "SUBSTITUTED_INPUT_EXEMPTIONS": {}, "UNTRIAGED_BASELINE": 0,
-                  "SUBSTITUTED_INPUT_BASELINE": 0, "FAIL_OPEN_READ_BASELINE": {}, **overrides}
+                  "SUBSTITUTED_INPUT_EXEMPTIONS": {}, "UNTRIAGED_BASELINE": 0, **overrides}
         stdout, stderr = io.StringIO(), io.StringIO()
         with patch.dict(main.__globals__, values), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             try:
@@ -698,33 +657,31 @@ def _selftest_entrypoint() -> None:
             assert status == (1 if stale or count != 1 else 0), "B1 hard cannot consume default debt"
             if stale:
                 assert "registered -> missing" in errors and not output, "B1 stale always stderr/failure"
-    # B1 same isolation for substituted inputs: a missing registered function
-    # remains hard at equality, below and above a held global allowance.
+    # B1 substituted inputs and fail-open reads are plain denies: any
+    # unregistered instance fails, and a stale decision fails on its own.
     for count in (0, 1, 2):
         texts = {f"{index}.rs": substitute for index in range(count)}
         for stale in (False, True):
-            status, _, errors, _ = invoke(texts, SUBSTITUTED_INPUT_BASELINE=1,
+            status, _, errors, _ = invoke(texts,
                 SUBSTITUTED_INPUT_EXEMPTIONS={"gone.rs::renew": "reviewed"} if stale else {})
-            assert status == (1 if stale or count != 1 else 0), "B1 hard cannot consume substituted debt"
+            assert status == (1 if stale or count else 0), "B1 substituted input is a plain deny"
             if stale:
                 assert "registered -> missing" in errors, "B1 substituted stale hard"
+    for count in (0, 1, 2):
+        status, _, errors, _ = invoke({"a.rs": read * count})
+        assert status == (1 if count else 0), "B1 fail-open read is a plain deny"
     # B2 exact valid decisions still exempt all occurrences, without broadening
     # another method/file/rule or introducing a CLI reason authorization.
     assert invoke({"a.rs": default}, DEGRADING_DEFAULT_EXEMPTIONS={"Repo::write_as": "test"})[0] == 0, "B2 default decision"
     assert invoke({"a.rs": substitute}, SUBSTITUTED_INPUT_EXEMPTIONS={"a.rs::renew": "test"})[0] == 0, "B2 substitute decision"
     assert invoke({"a.rs": read}, FAIL_OPEN_READ_EXEMPTIONS={"a.rs": "test"})[0] == 0, "B2 read decision"
-    # B3 total is two in both snapshots, but a.rs grows while b.rs falls.
-    # A global sum comparison would incorrectly pass; per-file compare must fail.
-    status, _, errors, _ = invoke({"a.rs": read * 2, "b.rs": ""}, FAIL_OPEN_READ_BASELINE={"a.rs": 1, "b.rs": 1})
-    assert status == 1 and "a.rs" in errors and "b.rs" in errors, "B3 per-file growth never offsets a fall"
     assert invoke({"a.rs": ""}, FAIL_OPEN_READ_EXEMPTIONS={"a.rs": "test"})[0] == 1, "B3 stale read file hard"
     # B3 reuse the original metadata owner, not a second expiry algorithm.
     # These are copies: all three inline owner/reason/expires records stay exact.
     import check_fabricated_facts
 
     today = dt.date.today()
-    for name, record in (("default", DEGRADING_DEFAULT_RATCHET), ("read", FAIL_OPEN_READ_RATCHET),
-                         ("substitute", SUBSTITUTED_INPUT_RATCHET)):
+    for name, record in (("default", DEGRADING_DEFAULT_RATCHET),):
         assert not check_fabricated_facts.expired_entries({name: {**record, "files": {}}}, today), "B3 original metadata valid"
         for change in ({"expires": (today - dt.timedelta(days=1)).isoformat()}, {"owner": " "}, {"reason": ""}):
             assert check_fabricated_facts.expired_entries({name: {**record, **change, "files": {}}}, today), "B3 original owner refuses invalid metadata"

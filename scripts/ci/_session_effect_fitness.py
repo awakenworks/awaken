@@ -60,16 +60,7 @@ from _session_effect_sources import (
 
 
 def _matching_rust_brace(source: str, body_start: int) -> int | None:
-    depth = 0
-    for index in range(body_start, len(source)):
-        character = source[index]
-        if character == "{":
-            depth += 1
-        elif character == "}":
-            depth -= 1
-            if depth == 0:
-                return index + 1
-    return None
+    return _crate_boundary_workspace._balanced_end(source, body_start, "{", "}")
 
 
 def _rust_function(source: str, name: str) -> str | None:

@@ -136,6 +136,5 @@
       "e2e/metrics_export_e2e.mjs": 2,
       "e2e/remote_worker_recovery_e2e.ts": 1
     }
-  },
-  "allow": []
+  }
 }

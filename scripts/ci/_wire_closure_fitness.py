@@ -40,7 +40,7 @@ from _architecture_ratchet import Rule
 
 
 RULES = (
-    Rule("open-request-body", "Close the type, or record the decision in OPEN_REQUEST_BODY_EXEMPTIONS"),
+    Rule("open-request-body", "Close the type, or record the decision in OPEN_REQUEST_BODY_EXEMPTIONS", hard=True),
     Rule("escaping-unit-variant", "Close the type, or record the decision in ESCAPING_UNIT_VARIANT_EXEMPTIONS"),
 )
 
@@ -56,12 +56,12 @@ OPEN_REQUEST_BODY_EXEMPTIONS: dict[str, str] = {}
 ESCAPING_UNIT_VARIANT_EXEMPTIONS: dict[str, str] = {}
 
 # Both shapes predate the gate. Converting every instance at once would be a
-# migration, not a fix, so the untriaged remainder is ratcheted: the count may
-# fall and may not rise. That is what makes this gate refuse a *new* open
-# request body today rather than only after the migration finishes — the
-# failure mode of a file allow-list, which freezes the debt and guards nothing.
-# Lower these as instances are closed or registered; never raise them.
-OPEN_REQUEST_BODY_BASELINE = 0
+# migration, not a fix, so the untriaged remainder of escaping unit variants is
+# ratcheted: the count may fall and may not rise. That is what makes this gate
+# refuse a *new* instance today rather than only after the migration finishes —
+# the failure mode of a file allow-list, which freezes the debt and guards
+# nothing. Lower it as instances are closed or registered; never raise it.
+# Open request bodies reached zero, so that rule is a plain deny.
 ESCAPING_UNIT_VARIANT_BASELINE = 20
 
 # `Json(body): Json<T>` in a handler signature. The `let` guard matters: sqlx
@@ -84,17 +84,9 @@ OPAQUE_EXTRACTOR_ARGUMENTS = {"Value", "String", "HashMap", "BTreeMap", "T"}
 
 
 def _bracket_end(source: str, open_index: int, opener: str, closer: str) -> int:
-    depth = 0
-    index = open_index
-    while index < len(source):
-        if source[index] == opener:
-            depth += 1
-        elif source[index] == closer:
-            depth -= 1
-            if depth == 0:
-                return index
-        index += 1
-    return len(source) - 1
+    """Index of the delimiter closing ``source[open_index]``, or the last index."""
+    end = _crate_boundary_workspace._balanced_end(source, open_index, opener, closer)
+    return len(source) - 1 if end is None else end - 1
 
 
 def _attribute_end(source: str, hash_index: int) -> int:
@@ -285,9 +277,9 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
     return _architecture_ratchet.compare_registered(
         open_request_bodies(sources, repo_root),
         OPEN_REQUEST_BODY_EXEMPTIONS,
-        OPEN_REQUEST_BODY_BASELINE,
+        0,
         "OPEN_REQUEST_BODY_EXEMPTIONS", rule=RULES[0],
-        baseline_name=f"{__file__}::OPEN_REQUEST_BODY_BASELINE",
+        baseline_name=f"{__file__}::OPEN_REQUEST_BODY_EXEMPTIONS",
     ) + _architecture_ratchet.compare_registered(
         escaping_unit_variants(sources, repo_root),
         ESCAPING_UNIT_VARIANT_EXEMPTIONS,
@@ -373,7 +365,7 @@ def selftest() -> None:
     # and an exemption that names nothing live is stale.
     found = [("A", "a"), ("B", "b")]
     registered = partial(_architecture_ratchet.compare_registered,
-                         rule=RULES[0], baseline_name="_wire_closure_fitness.py::OPEN_REQUEST_BODY_BASELINE")
+                         rule=RULES[1], baseline_name="_wire_closure_fitness.py::ESCAPING_UNIT_VARIANT_BASELINE")
 
     # Constructor/wire agreement. Causes: N1 the type decodes through
     # `try_from`; N2 it has an infallible `pub fn new(..) -> Self`; N3 that
@@ -402,6 +394,11 @@ def selftest() -> None:
     assert registered(found, {}, 3, "REG"), "ratchet: below baseline demands a lower number"
     assert not registered(found, {"A": "why"}, 1, "REG"), "ratchet: an exemption removes one"
     assert registered(found, {"C": "why"}, 2, "REG"), "ratchet: a stale exemption rejects"
+    # Open request bodies are a plain deny: one unregistered instance fails.
+    open_body = partial(_architecture_ratchet.compare_registered, rule=RULES[0],
+                        baseline_name="_wire_closure_fitness.py::OPEN_REQUEST_BODY_EXEMPTIONS")
+    assert open_body(found[:1], {}, 0, "REG"), "plain deny: one open body rejects"
+    assert not open_body(found, {"A": "why", "B": "why"}, 0, "REG"), "plain deny: decisions exempt"
 
     with tempfile.TemporaryDirectory() as directory:
         crates = Path(directory) / "crates"
@@ -413,7 +410,7 @@ def selftest() -> None:
         # A3 constructor/wire disagreement is hard, independent of both
         # ratchet counts. At held debt zero a strict-but-bypassable constructor
         # must still fail; the same constructor delegating to parse succeeds.
-        with patch.dict(check_all.__globals__, {"OPEN_REQUEST_BODY_BASELINE": 0, "ESCAPING_UNIT_VARIANT_BASELINE": 0}):
+        with patch.dict(check_all.__globals__, {"ESCAPING_UNIT_VARIANT_BASELINE": 0}):
             source.write_text(strict, encoding="utf-8")
             assert any("Binding" in error for error in check_all(Path(directory), crates)), "A3 hard constructor"
             source.write_text(delegating, encoding="utf-8")
