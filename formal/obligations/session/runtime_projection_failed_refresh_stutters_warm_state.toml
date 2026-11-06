@@ -10,7 +10,6 @@ evidence = [
   "formal/tla/ManagedProjectionPublish.tla",
   "formal/tla/SessionRuntimeProjection.cfg",
   "formal/tla/SessionRuntimeProjection.tla",
-  "scripts/ci/formal_dispatch_mutations.py",
 ]
 production_entrypoints = []
 

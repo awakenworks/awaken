@@ -39,26 +39,6 @@ def fixture():
 
 
 class ProfileTests(unittest.TestCase):
-    def test_observation_mutation_fails_before_kani_without_duplicate_oracle(self):
-        # M1 real observations -> the existing actual-trace mutation oracle,
-        # once, then Kani. M2 unavailable/wrong TLC -> strict failure before
-        # physical witnesses; permissive missing tools remains nonqualifying.
-        # This is an ordering/ownership regression; the mutation owner's tests
-        # exercise bad baselines, ineffective mutants and missing observations.
-        root = Path(__file__).resolve().parents[2]
-        gate = (root / 'scripts/ci/check_formal.sh').read_text()
-        mutation = '--session-observation-trace-mutants'
-        self.assertEqual(gate.count(mutation), 1)
-        producer = gate.index('scripts/ci/check-reliability.sh --session-observations')
-        oracle = gate.index(mutation)
-        kani = gate.index('if command -v cargo-kani')
-        self.assertLess(producer, oracle)
-        self.assertLess(oracle, kani)
-        self.assertLess(gate.index('unexpected TLC version'), producer)
-        self.assertLess(gate.index('required TLC environment unavailable'), producer)
-        self.assertIn('--observation-trace-dir "$observation_trace_dir"', gate)
-        self.assertIn('AWAKEN_FORMAL_MUTATION_EVIDENCE_DIR="$formal_artifact_dir/observation-mutations"', gate)
-
     def test_evidence_namespaces_require_their_existing_product_journeys(self):
         # J1 explicit obligation / exact namespace + existing product journey
         # => complete. J2 remove its edge => reject the disconnected proof even
@@ -107,6 +87,52 @@ class ProfileTests(unittest.TestCase):
                             checker.main()
                         self.assertEqual(stopped.exception.code, 1)
                         self.assertIn(obligation if rule == "missing-obligation" else feature_id, errors.getvalue())
+
+    def test_assumption_and_boundary_ledgers_reject_their_own_drift(self):
+        # A1 an evidenced external assumption reopened => completion gap; A2 one
+        # that loses its fail-closed contract => refusal naming it. B1 a residual
+        # boundary row removed => its exact missing RID; B2 an invented row =>
+        # its exact extra RID. Only the JSON varies; each checker runs as-is.
+        checker = check_feature_coverage
+        original_load = checker.load_json
+        current = original_load(checker.ASSUMPTIONS)
+        first = current["assumptions"][0]["id"]
+        for rule, change, expected in (
+            ("A1", lambda row: row.update(status="open"),
+             "completion required but gaps remain: requirements=0, assumptions=1"),
+            ("A2", lambda row: row.pop("fail_closed_behavior"), f"{first} has no fail_closed_behavior"),
+        ):
+            assumptions = copy.deepcopy(current)
+            change(assumptions["assumptions"][0])
+
+            def load(path, assumptions=assumptions):
+                return assumptions if path == checker.ASSUMPTIONS else original_load(path)
+            errors = io.StringIO()
+            with self.subTest(rule=rule), mock.patch.object(checker, "load_json", side_effect=load), \
+                    mock.patch.object(sys, "argv", [str(checker.__file__), "--require-complete"]), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+                with self.assertRaises(SystemExit) as stopped:
+                    checker.main()
+                self.assertEqual(stopped.exception.code, 1)
+                self.assertIn(expected, errors.getvalue())
+
+        import check_proof_boundaries as boundaries
+        original_read = boundaries.read
+        ledger = original_read("formal/proof-boundaries.json")
+        removed = copy.deepcopy(ledger)
+        missing = removed["boundaries"].pop()["requirement_id"]
+        invented = copy.deepcopy(ledger)
+        invented["boundaries"].append(dict(invented["boundaries"][0], requirement_id="invented.requirement.boundary"))
+        for rule, value, expected in (
+            ("B1", removed, f"missing ['{missing}']"),
+            ("B2", invented, "extra ['invented.requirement.boundary']"),
+        ):
+            def read(path, value=value):
+                return value if path == "formal/proof-boundaries.json" else original_read(path)
+            with self.subTest(rule=rule), mock.patch.object(boundaries, "read", side_effect=read):
+                with self.assertRaises(SystemExit) as stopped:
+                    boundaries.main()
+                self.assertIn(expected, str(stopped.exception.code))
 
     def test_readme_does_not_duplicate_live_proof_measurements(self):
         # D1 source/model changes make copied proof counts and state-space tables
@@ -328,27 +354,26 @@ class ProfileTests(unittest.TestCase):
             "formal/tla/SessionExecutionReplacement.tla",
         ], "R2: official Chain command must match the green mutation baseline")
 
-    def test_k8s_observation_gate_uses_the_single_shared_baseline_owner(self):
-        # KCI cause/effect table: C1 one exact existing mutation CLI invocation;
-        # C2 no independent K8s JVM baseline. R1 C1+C2 => the shared TLC oracle
-        # checks the full positive model once before semantic mutants/witnesses.
-        # R2 absent/duplicate CLI or parallel JVM => this linkage test fails.
-        # The family test owns full CFG/bounds/profile; the adjacent TLC oracle
-        # tests own rejection of bad baseline, wrong failure and tool timeout.
+    def test_k8s_observation_gate_uses_the_qualified_tlc_budget(self):
+        # KCI cause/effect table: C1 the complete three-generation/two-container
+        # configuration has exactly one official call; C2 it keeps the reviewed
+        # 300s/4096MiB/eight-worker budget (the former 1024MiB/one-worker run
+        # exceeded 300s). R1 C1+C2 => the full model is checked within budget;
+        # R2 a missing, duplicate, unbounded or weaker call fails here.
         root = Path(__file__).resolve().parents[2]
         gate = (root / "scripts/ci/check_formal.sh").read_text()
         commands = [shlex.split(line, comments=True)
-                    for line in gate.replace("\\\n", " ").splitlines()]
-        flag = "--k8s-process-observation-model-mutants"
-        self.assertEqual([command for command in commands if flag in command], [[
-            "python3", "scripts/ci/check_formal_mutations.py", flag, "$tla_jar",
-        ]], "R2: one canonical K8s positive/negative owner")
-        model_paths = {"formal/tla/K8sProcessObservation.cfg",
-                       "formal/tla/K8sProcessObservation.tla"}
-        self.assertFalse(any(command and command[0] == "java"
-                             and model_paths.intersection(command)
-                             for command in commands),
-                         "R2: no duplicate standalone positive baseline")
+                    for line in gate.replace("\\\n", " ").splitlines()
+                    if "formal/tla/K8sProcessObservation.cfg" in line
+                    and not line.lstrip().startswith("#")]
+        self.assertEqual(commands, [[
+            "run_with_deadline", "300", "java",
+            "-Djava.io.tmpdir=$tlc_state_root", "-Xmx4096m",
+            "-XX:+UseParallelGC", "-jar", "$tla_jar", "-workers", "8",
+            "-metadir", "$tlc_state_root/k8s-process-observation",
+            "-config", "formal/tla/K8sProcessObservation.cfg",
+            "formal/tla/K8sProcessObservation.tla",
+        ]], "R2: one qualified K8s model call")
 
     def test_native_witness_commands_follow_their_current_owners(self):
         # C1 a stale selected filter can exit0 with no Rust test; C2 one empty

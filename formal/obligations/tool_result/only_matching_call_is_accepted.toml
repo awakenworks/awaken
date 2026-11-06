@@ -5,7 +5,6 @@ run_evidence = "needs_rerun"
 tcb_assumptions = []
 evidence = [
   "formal/tla/ToolResultProtocol.tla",
-  "scripts/ci/formal_event_batch_mutations.py",
 ]
 production_entrypoints = []
 

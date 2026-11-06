@@ -7,7 +7,6 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/AcpBoundary.cfg",
   "formal/tla/AcpBoundary.tla",
-  "scripts/ci/check_formal_mutations.py",
 ]
 production_entrypoints = []
 

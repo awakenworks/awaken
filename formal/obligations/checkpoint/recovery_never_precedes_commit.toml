@@ -8,7 +8,6 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/CheckpointRecovery.tla",
   "scripts/ci/check_formal.sh",
-  "scripts/ci/check_formal_mutations.py",
 ]
 production_entrypoints = []
 

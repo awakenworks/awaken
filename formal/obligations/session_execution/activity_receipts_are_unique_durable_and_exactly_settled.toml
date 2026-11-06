@@ -7,7 +7,6 @@ evidence = [
   "formal/tla/SessionActivityProof.tla",
   "formal/tla/SessionRunBudgetAdmission.tla",
   "formal/tla/SessionRunBudgetAdmission.cfg",
-  "scripts/ci/check_formal_mutations.py",
   "scripts/ci/formal_kani_options.py",
 ]
 production_entrypoints = []

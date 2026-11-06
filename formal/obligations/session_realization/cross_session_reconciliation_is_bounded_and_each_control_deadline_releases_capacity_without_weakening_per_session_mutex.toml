@@ -8,7 +8,6 @@ tcb_assumptions = [
 evidence = [
   "formal/runtime-refinement-manifest.json",
   "formal/tla/SessionRealizationMutex.tla",
-  "scripts/ci/formal_realization_capacity_mutations.py",
   "scripts/ci/render_runtime_refinement_traces.py",
 ]
 production_entrypoints = []

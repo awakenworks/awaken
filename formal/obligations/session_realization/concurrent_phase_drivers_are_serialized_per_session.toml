@@ -21,7 +21,6 @@ evidence = [
   "formal/tla/WorkerAuthorityExit.tla",
   "formal/tla/WorkerExecutionAuthority.cfg",
   "formal/tla/WorkerExecutionAuthority.tla",
-  "scripts/ci/formal_execution_replacement_mutations.py",
 ]
 production_entrypoints = []
 

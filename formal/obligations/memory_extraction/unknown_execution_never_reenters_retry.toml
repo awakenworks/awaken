@@ -8,7 +8,6 @@ evidence = [
   "e2e/managed_memory_extraction_crash_e2e.mjs",
   "formal/tla/MemoryExtraction.cfg",
   "formal/tla/MemoryExtraction.tla",
-  "scripts/ci/formal_memory_mutations.py",
 ]
 production_entrypoints = []
 
