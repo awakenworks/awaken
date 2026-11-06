@@ -73,6 +73,7 @@ def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]
         "pub async fn admit_session_run_for_owner",
         "pub struct SessionRunApplication",
         "impl RunApplication for SessionRunApplication",
+        "run_admitted_session_for_owner",
     )
     if any(symbol not in application for symbol in required):
         errors.append(
@@ -424,11 +425,17 @@ def selftest() -> None:
     # E9 all public Run adapters share it; E10 reject a second creation/recovery
     # path. Decision table: A1 C8+C9,!C10 -> accept; A2 !C8 -> reject; A3 C10 ->
     # reject. The production stripper keeps test fixtures from becoming owners.
+    # A2 retains the former execution-ownership admission refusal here: each of
+    # the two entrypoints, the adapter declaration and its RunApplication impl is
+    # independently necessary. Removing any one or several -> one canonical
+    # structure error, never a second Host-fault report. Wiring/retired-path rules
+    # remain distinct causes with their existing diagnostics and input scopes.
     valid = {
         "crates/server/awaken-session-application/src/run_admission.rs":
             "pub async fn admit_session_run_for_owner() {} "
             "pub struct SessionRunApplication; "
-            "impl RunApplication for SessionRunApplication {}",
+            "impl RunApplication for SessionRunApplication {} "
+            "fn run_admitted_session_for_owner() {}",
         "crates/server/awaken-coordinator/src/lib.rs": "let session_runs = execution.session_runs;",
         **{f"crates/fixture-{placement}/src/lib.rs":
                "let runs = Arc::new(SessionRunApplication::new(runs, sessions)); "
@@ -440,7 +447,19 @@ def selftest() -> None:
     assert session_admission_ownership_violations(valid) == [], "A1/E8/E9"
     missing = dict(valid)
     missing["crates/server/awaken-session-application/src/run_admission.rs"] = ""
-    assert session_admission_ownership_violations(missing), "A2/E10"
+    structure_error = "awaken-session-application: missing the authoritative Session Run command or adapter"
+    assert session_admission_ownership_violations(missing) == [structure_error], "A2 all absent"
+    for marker in (
+        "pub async fn admit_session_run_for_owner",
+        "pub struct SessionRunApplication",
+        "impl RunApplication for SessionRunApplication",
+        "run_admitted_session_for_owner",
+    ):
+        missing_one = dict(valid)
+        missing_one["crates/server/awaken-session-application/src/run_admission.rs"] = (
+            valid["crates/server/awaken-session-application/src/run_admission.rs"].replace(marker, "", 1)
+        )
+        assert session_admission_ownership_violations(missing_one) == [structure_error], f"A2 {marker}"
     # A4 covers each production placement: neither may bypass the one Session
     # admission adapter after the co-located constructor moves into the CLI.
     for path, source in valid.items():
