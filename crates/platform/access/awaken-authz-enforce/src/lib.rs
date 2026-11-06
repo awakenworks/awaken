@@ -665,26 +665,6 @@ fn collapse_session_decision(decision: AuthorizationDecision) -> SessionDecision
     }
 }
 
-#[cfg(kani)]
-/// @obligation authz.decision_collapse_fail_closed
-#[kani::proof]
-fn session_decision_collapse_allows_only_explicit_allow() {
-    // Closed-domain decision table: R1 Allow -> Allow; R2 Deny -> Deny;
-    // R3 RequireApproval -> Deny. No token, transport or IAM-policy proof is
-    // claimed: this verifies the sole production decision-collapse boundary.
-    let index: usize = kani::any();
-    kani::assume(index < 3);
-    let decision = [
-        AuthorizationDecision::Allow,
-        AuthorizationDecision::Deny,
-        AuthorizationDecision::RequireApproval,
-    ][index];
-    assert_eq!(
-        collapse_session_decision(decision) == SessionDecision::Allow,
-        index == 0
-    );
-}
-
 /// The session surface's authorization outcome. It has no `RequireApproval`
 /// variant: this in-memory seeded engine installs only Allow grants, so approval —
 /// a management-plane concept — cannot arise here. Mapping the shared engine's
@@ -728,26 +708,6 @@ pub fn session_action(method: &str) -> ActionKey {
         SessionActionClass::Read => ActionKey(format!("{AGENT_NAMESPACE}.read")),
         SessionActionClass::Write => ActionKey(format!("{AGENT_NAMESPACE}.write")),
     }
-}
-
-#[cfg(kani)]
-/// @obligation authz.method_mapping_total
-/// @proof-input-debt free_symbol session_action_class exact_get
-/// @proof-input-debt free_symbol session_action_class exact_head
-#[kani::proof]
-fn session_method_mapping_is_total_and_read_only_for_exact_safe_methods() {
-    // Closed classifier domain after exact string comparisons: every possible
-    // GET/HEAD equality result maps to one action class, and Read is equivalent
-    // to either exact safe-method match. String equality and ActionKey assembly
-    // remain outside this finite kernel.
-    let exact_get = kani::any::<bool>();
-    let exact_head = kani::any::<bool>();
-    let class = session_action_class(exact_get, exact_head);
-    assert_eq!(class == SessionActionClass::Read, exact_get || exact_head);
-    assert!(matches!(
-        class,
-        SessionActionClass::Read | SessionActionClass::Write
-    ));
 }
 
 /// The tenancy the ingress resolved for a request, stamped into the request
@@ -1360,5 +1320,65 @@ mod tests {
             StatusCode::OK,
             "the same unmapped route is reachable for an authorized admin",
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_decision(decision: AuthorizationDecision) -> usize {
+        match decision {
+            AuthorizationDecision::Allow => 0,
+            AuthorizationDecision::Deny => 1,
+            AuthorizationDecision::RequireApproval => 2,
+        }
+    }
+    const EVERY_DECISION: [AuthorizationDecision; 3] = [
+        AuthorizationDecision::Allow,
+        AuthorizationDecision::Deny,
+        AuthorizationDecision::RequireApproval,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_DECISION.into_iter().enumerate() {
+            assert_eq!(listed_decision(value), index);
+        }
+    }
+
+    /// @exhaustive AuthorizationDecision(3) = 3
+    /// @obligation authz.decision_collapse_fail_closed
+    #[test]
+    fn session_decision_collapse_allows_only_explicit_allow() {
+        // Closed-domain decision table: R1 Allow -> Allow; R2 Deny -> Deny;
+        // R3 RequireApproval -> Deny. No token, transport or IAM-policy proof is
+        // claimed: this checks the sole production decision-collapse boundary.
+        for (index, decision) in EVERY_DECISION.into_iter().enumerate() {
+            assert_eq!(
+                collapse_session_decision(decision) == SessionDecision::Allow,
+                index == 0
+            );
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation authz.method_mapping_total
+    #[test]
+    fn session_method_mapping_is_total_and_read_only_for_exact_safe_methods() {
+        // Closed classifier domain after exact string comparisons: every possible
+        // GET/HEAD equality result maps to one action class, and Read is equivalent
+        // to either exact safe-method match. String equality and ActionKey assembly
+        // remain outside this finite kernel.
+        for exact_get in [false, true] {
+            for exact_head in [false, true] {
+                let class = session_action_class(exact_get, exact_head);
+                assert_eq!(class == SessionActionClass::Read, exact_get || exact_head);
+                assert!(matches!(
+                    class,
+                    SessionActionClass::Read | SessionActionClass::Write
+                ));
+            }
+        }
     }
 }

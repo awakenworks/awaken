@@ -604,49 +604,73 @@ mod tests {
         }
     }
 }
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
 
-/// Kani exhausts the admission kernel over every fact combination: 2 (padded)
-/// x 2 (provider empty) x 2 (model empty) x 3 (backend class) = 24 rows. The
-/// two effects are E1 admit and E2 refuse with exactly one named reason.
-///
-/// | Rule | padded | provider | model | class    | Effect                |
-/// | A1   | F      | set      | set   | native   | E1                    |
-/// | A2   | F      | empty    | empty | native   | E1 (host-installed)   |
-/// | A3   | F      | any      | any   | external | E1                    |
-/// | A4   | F      | empty    | set   | native   | E2 IncompleteNative   |
-/// | A5   | F      | set      | empty | native   | E2 IncompleteNative   |
-/// | A6   | F      | any      | any   | invalid  | E2 Backend            |
-/// | A7   | T      | any      | any   | any      | E2 Whitespace         |
-///
-/// `parse` derives the facts from the coordinate strings and attaches the
-/// refusal payloads; that derivation is covered by the executable table and
-/// property tests in this module, which run the real string code.
-#[cfg(kani)]
-/// @obligation model_binding.constructor_and_wire_share_one_admission
-#[kani::proof]
-fn model_binding_admission_is_exactly_the_documented_rule_table() {
-    let padded: bool = kani::any();
-    let provider_empty: bool = kani::any();
-    let model_empty: bool = kani::any();
-    let class = match kani::any::<u8>() % 3 {
-        0 => BackendClass::Native,
-        1 => BackendClass::External,
-        _ => BackendClass::Invalid,
-    };
-    let facts = AdmissionFacts {
-        padded,
-        provider_empty,
-        model_empty,
-        class,
-    };
-    let expected = if padded {
-        Err(Refusal::Whitespace)
-    } else if class == BackendClass::Invalid {
-        Err(Refusal::Backend)
-    } else if class == BackendClass::Native && provider_empty != model_empty {
-        Err(Refusal::IncompleteNative)
-    } else {
-        Ok(())
-    };
-    assert_eq!(admission(facts), expected);
+    const fn listed_class(class: BackendClass) -> usize {
+        match class {
+            BackendClass::Native => 0,
+            BackendClass::External => 1,
+            BackendClass::Invalid => 2,
+        }
+    }
+    const EVERY_CLASS: [BackendClass; 3] = [
+        BackendClass::Native,
+        BackendClass::External,
+        BackendClass::Invalid,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_CLASS.into_iter().enumerate() {
+            assert_eq!(listed_class(value), index);
+        }
+    }
+
+    /// Exhausts the admission kernel over every fact combination: 2 (padded)
+    /// x 2 (provider empty) x 2 (model empty) x 3 (backend class) = 24 rows. The
+    /// two effects are E1 admit and E2 refuse with exactly one named reason.
+    ///
+    /// | Rule | padded | provider | model | class    | Effect                |
+    /// | A1   | F      | set      | set   | native   | E1                    |
+    /// | A2   | F      | empty    | empty | native   | E1 (host-installed)   |
+    /// | A3   | F      | any      | any   | external | E1                    |
+    /// | A4   | F      | empty    | set   | native   | E2 IncompleteNative   |
+    /// | A5   | F      | set      | empty | native   | E2 IncompleteNative   |
+    /// | A6   | F      | any      | any   | invalid  | E2 Backend            |
+    /// | A7   | T      | any      | any   | any      | E2 Whitespace         |
+    ///
+    /// `parse` derives the facts from the coordinate strings and attaches the
+    /// refusal payloads; that derivation is covered by the executable table and
+    /// property tests in this module, which run the real string code.
+    /// @exhaustive bool(2) x bool(2) x bool(2) x BackendClass(3) = 24
+    /// @obligation model_binding.constructor_and_wire_share_one_admission
+    #[test]
+    fn model_binding_admission_is_exactly_the_documented_rule_table() {
+        for padded in [false, true] {
+            for provider_empty in [false, true] {
+                for model_empty in [false, true] {
+                    for class in EVERY_CLASS {
+                        let facts = AdmissionFacts {
+                            padded,
+                            provider_empty,
+                            model_empty,
+                            class,
+                        };
+                        let expected = if padded {
+                            Err(Refusal::Whitespace)
+                        } else if class == BackendClass::Invalid {
+                            Err(Refusal::Backend)
+                        } else if class == BackendClass::Native && provider_empty != model_empty {
+                            Err(Refusal::IncompleteNative)
+                        } else {
+                            Ok(())
+                        };
+                        assert_eq!(admission(facts), expected);
+                    }
+                }
+            }
+        }
+    }
 }

@@ -488,88 +488,136 @@ impl GateAuditDecision {
     }
 }
 
-#[cfg(kani)]
-mod kani_proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::{
         GateAuditDecision, GateOutcomeKind, ToolCapabilityNarrowing, ToolPermissionVerdictKind,
     };
 
+    const fn listed_narrowing(narrowing: ToolCapabilityNarrowing) -> usize {
+        match narrowing {
+            ToolCapabilityNarrowing::Configured => 0,
+            ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets => 1,
+            ToolCapabilityNarrowing::DenyAll => 2,
+        }
+    }
+    const EVERY_NARROWING: [ToolCapabilityNarrowing; 3] = [
+        ToolCapabilityNarrowing::Configured,
+        ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets,
+        ToolCapabilityNarrowing::DenyAll,
+    ];
+
+    const fn listed_verdict(verdict: ToolPermissionVerdictKind) -> usize {
+        match verdict {
+            ToolPermissionVerdictKind::Allow => 0,
+            ToolPermissionVerdictKind::Deny => 1,
+            ToolPermissionVerdictKind::RequireConfirmation => 2,
+        }
+    }
+    const EVERY_VERDICT: [ToolPermissionVerdictKind; 3] = [
+        ToolPermissionVerdictKind::Allow,
+        ToolPermissionVerdictKind::Deny,
+        ToolPermissionVerdictKind::RequireConfirmation,
+    ];
+
+    const fn listed_outcome(kind: GateOutcomeKind) -> usize {
+        match kind {
+            GateOutcomeKind::Allow => 0,
+            GateOutcomeKind::Block => 1,
+            GateOutcomeKind::SetResult => 2,
+            GateOutcomeKind::RequireConfirmation => 3,
+            GateOutcomeKind::Schedule => 4,
+        }
+    }
+    const EVERY_OUTCOME: [GateOutcomeKind; 5] = [
+        GateOutcomeKind::Allow,
+        GateOutcomeKind::Block,
+        GateOutcomeKind::SetResult,
+        GateOutcomeKind::RequireConfirmation,
+        GateOutcomeKind::Schedule,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_NARROWING.into_iter().enumerate() {
+            assert_eq!(listed_narrowing(value), index);
+        }
+        for (index, value) in EVERY_VERDICT.into_iter().enumerate() {
+            assert_eq!(listed_verdict(value), index);
+        }
+        for (index, value) in EVERY_OUTCOME.into_iter().enumerate() {
+            assert_eq!(listed_outcome(value), index);
+        }
+    }
+
+    /// @exhaustive ToolCapabilityNarrowing(3) x ToolCapabilityNarrowing(3) = 9
     /// @obligation permission.runtime_capability_and_verdict_projection_never_widens_authority
-    #[kani::proof]
+    #[test]
     fn tool_capability_intersection_never_widens_configured_authority() {
         // Cause/effect table: configured, inherited configured, and deny-all
         // intersect in all nine combinations. Deny is absorbing; inherited
         // format survives either configured operand; no combination grants
         // authority removed by either operand.
-        let restriction = |tag: u8| match tag % 3 {
-            0 => ToolCapabilityNarrowing::Configured,
-            1 => ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets,
-            _ => ToolCapabilityNarrowing::DenyAll,
-        };
-        let left = restriction(kani::any());
-        let right = restriction(kani::any());
-        let effective = left.intersect(right);
+        for left in EVERY_NARROWING {
+            for right in EVERY_NARROWING {
+                let effective = left.intersect(right);
+                assert_eq!(
+                    effective.is_configured(),
+                    left.is_configured() && right.is_configured()
+                );
+                assert_eq!(effective, right.intersect(left));
+                if effective.is_configured()
+                    && (left == ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets
+                        || right == ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets)
+                {
+                    assert_eq!(
+                        effective,
+                        ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets
+                    );
+                }
+            }
+        }
+    }
 
-        assert_eq!(
-            effective.is_configured(),
-            left.is_configured() && right.is_configured()
-        );
-        assert_eq!(effective, right.intersect(left));
-        if effective.is_configured()
-            && (left == ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets
-                || right == ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets)
-        {
+    /// @exhaustive ToolPermissionVerdictKind(3) = 3
+    /// @obligation permission.runtime_capability_and_verdict_projection_never_widens_authority
+    #[test]
+    fn permission_verdict_projects_to_exact_non_widening_gate_outcome() {
+        for verdict in EVERY_VERDICT {
+            let outcome = verdict.gate_outcome_kind();
+            let expected = match verdict {
+                ToolPermissionVerdictKind::Allow => GateOutcomeKind::Allow,
+                ToolPermissionVerdictKind::Deny => GateOutcomeKind::Block,
+                ToolPermissionVerdictKind::RequireConfirmation => {
+                    GateOutcomeKind::RequireConfirmation
+                }
+            };
+            assert_eq!(outcome, expected);
             assert_eq!(
-                effective,
-                ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets
+                outcome == GateOutcomeKind::Allow,
+                verdict == ToolPermissionVerdictKind::Allow
             );
         }
     }
 
+    /// @exhaustive GateOutcomeKind(5) = 5
     /// @obligation permission.runtime_capability_and_verdict_projection_never_widens_authority
-    #[kani::proof]
-    fn permission_verdict_projects_to_exact_non_widening_gate_outcome() {
-        let verdict = match kani::any::<u8>() % 3 {
-            0 => ToolPermissionVerdictKind::Allow,
-            1 => ToolPermissionVerdictKind::Deny,
-            _ => ToolPermissionVerdictKind::RequireConfirmation,
-        };
-        let outcome = verdict.gate_outcome_kind();
-        let expected = match verdict {
-            ToolPermissionVerdictKind::Allow => GateOutcomeKind::Allow,
-            ToolPermissionVerdictKind::Deny => GateOutcomeKind::Block,
-            ToolPermissionVerdictKind::RequireConfirmation => GateOutcomeKind::RequireConfirmation,
-        };
-
-        assert_eq!(outcome, expected);
-        assert_eq!(
-            outcome == GateOutcomeKind::Allow,
-            verdict == ToolPermissionVerdictKind::Allow
-        );
-    }
-
-    /// @obligation permission.runtime_capability_and_verdict_projection_never_widens_authority
-    #[kani::proof]
+    #[test]
     fn every_gate_outcome_has_one_exact_audit_label() {
-        let kind = match kani::any::<u8>() % 5 {
-            0 => GateOutcomeKind::Allow,
-            1 => GateOutcomeKind::Block,
-            2 => GateOutcomeKind::SetResult,
-            3 => GateOutcomeKind::RequireConfirmation,
-            _ => GateOutcomeKind::Schedule,
-        };
-        let expected = match kind {
-            GateOutcomeKind::Allow => GateAuditDecision::Allow,
-            GateOutcomeKind::Block => GateAuditDecision::Deny,
-            GateOutcomeKind::SetResult => GateAuditDecision::SetResult,
-            GateOutcomeKind::RequireConfirmation => GateAuditDecision::Ask,
-            GateOutcomeKind::Schedule => GateAuditDecision::Schedule,
-        };
-        assert_eq!(kind.audit_decision(), expected);
-        assert_eq!(
-            kind.audit_decision() == GateAuditDecision::Allow,
-            matches!(kind, GateOutcomeKind::Allow)
-        );
+        for kind in EVERY_OUTCOME {
+            let expected = match kind {
+                GateOutcomeKind::Allow => GateAuditDecision::Allow,
+                GateOutcomeKind::Block => GateAuditDecision::Deny,
+                GateOutcomeKind::SetResult => GateAuditDecision::SetResult,
+                GateOutcomeKind::RequireConfirmation => GateAuditDecision::Ask,
+                GateOutcomeKind::Schedule => GateAuditDecision::Schedule,
+            };
+            assert_eq!(kind.audit_decision(), expected);
+            assert_eq!(
+                kind.audit_decision() == GateAuditDecision::Allow,
+                matches!(kind, GateOutcomeKind::Allow)
+            );
+        }
     }
 }
 

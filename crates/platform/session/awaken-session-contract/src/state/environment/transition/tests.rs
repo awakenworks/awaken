@@ -6,7 +6,8 @@
 //! Memory evidence admits a suspend, and whose Rebuild source is closed and
 //! accessible). Tables T2–T7, T9 and T13 vary one qualifier at a time and
 //! cover every fail-closed row. Table T8 sweeps the complete finite domain
-//! against the four safety laws that the Kani harnesses prove.
+//! against the four safety laws, and is the exhaustive proof of their
+//! obligations.
 
 use super::laws::{
     EVENT_COUNT, STEPS, effects_require_current_lease, event,
@@ -739,18 +740,117 @@ fn t7_realization_gate_is_the_continuation_complement() {
     }
 }
 
+const TERMINALITIES: [SessionTerminality; 3] = [
+    SessionTerminality::Active,
+    SessionTerminality::CleanupJoining,
+    SessionTerminality::Terminal,
+];
+
+const LEASES: [RealizationLeaseStanding; 3] = [
+    RealizationLeaseStanding::Fenced,
+    RealizationLeaseStanding::Unfenced,
+    RealizationLeaseStanding::Stale,
+];
+
+const fn listed_terminality(terminality: SessionTerminality) -> usize {
+    match terminality {
+        SessionTerminality::Active => 0,
+        SessionTerminality::CleanupJoining => 1,
+        SessionTerminality::Terminal => 2,
+    }
+}
+
+const fn listed_lease(lease: RealizationLeaseStanding) -> usize {
+    match lease {
+        RealizationLeaseStanding::Fenced => 0,
+        RealizationLeaseStanding::Unfenced => 1,
+        RealizationLeaseStanding::Stale => 2,
+    }
+}
+
+const fn listed_step(step: SessionEnvironmentStep) -> usize {
+    match step {
+        S::Unmaterialized => 0,
+        S::Resident => 1,
+        S::Suspending(SuspendPhase::Quiescing) => 2,
+        S::Suspending(SuspendPhase::Uploading) => 3,
+        S::Suspending(SuspendPhase::ReadyToDispose) => 4,
+        S::Suspending(SuspendPhase::Disposing) => 5,
+        S::Hibernated => 6,
+        S::Restoring => 7,
+    }
+}
+
+const fn listed_kind(kind: MaterializationKind) -> usize {
+    match kind {
+        K::Create => 0,
+        K::Adopt => 1,
+        K::Rebuild => 2,
+        K::ReserveResources => 3,
+    }
+}
+
+const fn listed_event(event: SessionEnvironmentEvent) -> usize {
+    match event {
+        E::BeginRealization => 0,
+        E::RenewRealization => 1,
+        E::AdmitMaterialization {
+            kind,
+            already_applied,
+        } => 2 + listed_kind(kind) + if already_applied { 4 } else { 0 },
+        E::AdvanceContinuation => 10,
+        E::RequireResident => 11,
+        E::RetireForCleanup => 12,
+        E::Materialized {
+            kind,
+            already_applied,
+        } => 13 + listed_kind(kind) + if already_applied { 4 } else { 0 },
+        E::LegacyBindingDelivered => 21,
+        E::Quiesced => 22,
+        E::Checkpointed => 23,
+        E::SourceReleasePrepared => 24,
+        E::SourceReleased => 25,
+        E::Restored => 26,
+        E::ExpiredCheckpointDeleted => 27,
+        E::CleanedUp {
+            already_recorded: false,
+        } => 28,
+        E::CleanedUp {
+            already_recorded: true,
+        } => 29,
+        E::LegacyCleanupNormalized => 30,
+        E::EffectFailed => 31,
+    }
+}
+
+/// T8's domain lists every value: a new step, terminality, lease standing or
+/// event variant fails to compile in the total `listed_*` matches until it is
+/// enumerated, and each list visits every listed value exactly once.
+#[test]
+fn t8_domain_lists_every_step_terminality_lease_and_event() {
+    for (index, step) in STEPS.into_iter().enumerate() {
+        assert_eq!(listed_step(step), index);
+    }
+    for (index, terminality) in TERMINALITIES.into_iter().enumerate() {
+        assert_eq!(listed_terminality(terminality), index);
+    }
+    for (index, lease) in LEASES.into_iter().enumerate() {
+        assert_eq!(listed_lease(lease), index);
+    }
+    for index in 0..EVENT_COUNT {
+        assert_eq!(listed_event(event(index)), index, "{:?}", event(index));
+    }
+}
+
+/// @exhaustive SessionEnvironmentStep(8) x SessionTerminality(3) x RealizationLeaseStanding(3) x bool^12(4096) x SessionEnvironmentEvent(32) = 9437184
+/// @obligation session_environment.terminal_session_never_reenters_a_live_environment
+/// @obligation session_environment.resident_is_entered_only_by_materialization_or_restore
+/// @obligation session_environment.effect_instructions_require_a_current_realization_lease
+/// @obligation session_environment.rebuild_requires_a_closed_source_with_access
 #[test]
 fn t8_complete_domain_satisfies_the_safety_laws() {
-    let terminalities = [
-        SessionTerminality::Active,
-        SessionTerminality::CleanupJoining,
-        SessionTerminality::Terminal,
-    ];
-    let leases = [
-        RealizationLeaseStanding::Fenced,
-        RealizationLeaseStanding::Unfenced,
-        RealizationLeaseStanding::Stale,
-    ];
+    let terminalities = TERMINALITIES;
+    let leases = LEASES;
     let mut cases = 0_usize;
     for step in STEPS {
         for terminality in terminalities {

@@ -397,162 +397,189 @@ impl DreamStatus {
     }
 }
 
-#[cfg(kani)]
-mod dream_status_proofs {
+#[cfg(test)]
+mod dream_status_exhaustive {
     use super::{DreamCleanupAdmission, DreamStatus, DreamStatusEvent};
 
-    fn status(code: u8) -> DreamStatus {
-        match code {
-            0 => DreamStatus::Pending,
-            1 => DreamStatus::Running,
-            2 => DreamStatus::Completed,
-            3 => DreamStatus::Failed,
-            _ => DreamStatus::Canceled,
+    const EVERY_STATUS: [DreamStatus; 5] = [
+        DreamStatus::Pending,
+        DreamStatus::Running,
+        DreamStatus::Completed,
+        DreamStatus::Failed,
+        DreamStatus::Canceled,
+    ];
+
+    const EVERY_EVENT: [DreamStatusEvent; 5] = [
+        DreamStatusEvent::Recover,
+        DreamStatusEvent::Start,
+        DreamStatusEvent::Complete,
+        DreamStatusEvent::Fail,
+        DreamStatusEvent::Cancel,
+    ];
+
+    const fn listed_status(status: DreamStatus) -> usize {
+        match status {
+            DreamStatus::Pending => 0,
+            DreamStatus::Running => 1,
+            DreamStatus::Completed => 2,
+            DreamStatus::Failed => 3,
+            DreamStatus::Canceled => 4,
         }
     }
 
-    fn event(code: u8) -> DreamStatusEvent {
-        match code {
-            0 => DreamStatusEvent::Recover,
-            1 => DreamStatusEvent::Start,
-            2 => DreamStatusEvent::Complete,
-            3 => DreamStatusEvent::Fail,
-            _ => DreamStatusEvent::Cancel,
+    const fn listed_event(event: DreamStatusEvent) -> usize {
+        match event {
+            DreamStatusEvent::Recover => 0,
+            DreamStatusEvent::Start => 1,
+            DreamStatusEvent::Complete => 2,
+            DreamStatusEvent::Fail => 3,
+            DreamStatusEvent::Cancel => 4,
         }
     }
 
+    #[test]
+    fn every_dream_status_and_event_is_listed() {
+        for (index, status) in EVERY_STATUS.into_iter().enumerate() {
+            assert_eq!(listed_status(status), index);
+        }
+        for (index, event) in EVERY_EVENT.into_iter().enumerate() {
+            assert_eq!(listed_event(event), index);
+        }
+    }
+
+    /// @exhaustive DreamStatus(5) x DreamStatusEvent(5) = 25
     /// @obligation dream.lifecycle_is_closed_exact_and_terminal_absorbing
-    #[kani::proof]
+    #[test]
     fn terminal_dream_statuses_are_absorbing() {
-        let status_code: u8 = kani::any();
-        let event_code: u8 = kani::any();
-        kani::assume(status_code <= 4);
-        kani::assume(event_code <= 4);
-        let current = status(status_code);
-        if current.is_terminal() {
-            assert_eq!(current.transition(event(event_code)), None);
+        for current in EVERY_STATUS {
+            for event in EVERY_EVENT {
+                if current.is_terminal() {
+                    assert_eq!(current.transition(event), None);
+                }
+            }
         }
     }
 
+    /// @exhaustive DreamStatus(5) = 5
     /// @obligation dream.lifecycle_is_closed_exact_and_terminal_absorbing
-    #[kani::proof]
+    #[test]
     fn dream_success_and_failure_require_a_running_process() {
-        let status_code: u8 = kani::any();
-        kani::assume(status_code <= 4);
-        let current = status(status_code);
-        for event in [DreamStatusEvent::Complete, DreamStatusEvent::Fail] {
-            assert_eq!(
-                current.transition(event).is_some(),
-                current == DreamStatus::Running
-            );
+        for current in EVERY_STATUS {
+            for event in [DreamStatusEvent::Complete, DreamStatusEvent::Fail] {
+                assert_eq!(
+                    current.transition(event).is_some(),
+                    current == DreamStatus::Running
+                );
+            }
         }
     }
 
+    /// @exhaustive DreamStatus(5) = 5
     /// @obligation dream.lifecycle_is_closed_exact_and_terminal_absorbing
-    #[kani::proof]
+    #[test]
     fn dream_recovery_and_cancel_never_widen_terminal_authority() {
-        let status_code: u8 = kani::any();
-        kani::assume(status_code <= 4);
-        let current = status(status_code);
-        for event in [DreamStatusEvent::Recover, DreamStatusEvent::Cancel] {
-            if let Some(next) = current.transition(event) {
-                assert!(!current.is_terminal());
-                assert!(matches!(next, DreamStatus::Pending | DreamStatus::Canceled));
+        for current in EVERY_STATUS {
+            for event in [DreamStatusEvent::Recover, DreamStatusEvent::Cancel] {
+                if let Some(next) = current.transition(event) {
+                    assert!(!current.is_terminal());
+                    assert!(matches!(next, DreamStatus::Pending | DreamStatus::Canceled));
+                }
             }
         }
     }
 
+    /// @exhaustive DreamStatus(5) x DreamStatusEvent(5) = 25
     /// @obligation dream.lifecycle_is_closed_exact_and_terminal_absorbing
-    #[kani::proof]
+    #[test]
     fn dream_transition_table_is_total_exact_and_closed() {
-        let status_code: u8 = kani::any();
-        let event_code: u8 = kani::any();
-        kani::assume(status_code <= 4);
-        kani::assume(event_code <= 4);
-        let current = status(status_code);
-        let event = event(event_code);
-        let next = current.transition(event);
-
-        match (event, next) {
-            (DreamStatusEvent::Recover, Some(next)) => {
-                assert!(matches!(
-                    current,
-                    DreamStatus::Pending | DreamStatus::Running
-                ));
-                assert_eq!(next, DreamStatus::Pending);
+        let mut cases = 0;
+        for current in EVERY_STATUS {
+            for event in EVERY_EVENT {
+                let next = current.transition(event);
+                match (event, next) {
+                    (DreamStatusEvent::Recover, Some(next)) => {
+                        assert!(matches!(
+                            current,
+                            DreamStatus::Pending | DreamStatus::Running
+                        ));
+                        assert_eq!(next, DreamStatus::Pending);
+                    }
+                    (DreamStatusEvent::Start, Some(next)) => {
+                        assert_eq!(current, DreamStatus::Pending);
+                        assert_eq!(next, DreamStatus::Running);
+                    }
+                    (DreamStatusEvent::Complete, Some(next)) => {
+                        assert_eq!(current, DreamStatus::Running);
+                        assert_eq!(next, DreamStatus::Completed);
+                    }
+                    (DreamStatusEvent::Fail, Some(next)) => {
+                        assert_eq!(current, DreamStatus::Running);
+                        assert_eq!(next, DreamStatus::Failed);
+                    }
+                    (DreamStatusEvent::Cancel, Some(next)) => {
+                        assert!(matches!(
+                            current,
+                            DreamStatus::Pending | DreamStatus::Running
+                        ));
+                        assert_eq!(next, DreamStatus::Canceled);
+                    }
+                    (_, None) => assert!(
+                        current.is_terminal()
+                            || matches!(
+                                (current, event),
+                                (
+                                    DreamStatus::Pending,
+                                    DreamStatusEvent::Complete | DreamStatusEvent::Fail
+                                ) | (DreamStatus::Running, DreamStatusEvent::Start)
+                            )
+                    ),
+                }
+                cases += 1;
             }
-            (DreamStatusEvent::Start, Some(next)) => {
-                assert_eq!(current, DreamStatus::Pending);
-                assert_eq!(next, DreamStatus::Running);
-            }
-            (DreamStatusEvent::Complete, Some(next)) => {
-                assert_eq!(current, DreamStatus::Running);
-                assert_eq!(next, DreamStatus::Completed);
-            }
-            (DreamStatusEvent::Fail, Some(next)) => {
-                assert_eq!(current, DreamStatus::Running);
-                assert_eq!(next, DreamStatus::Failed);
-            }
-            (DreamStatusEvent::Cancel, Some(next)) => {
-                assert!(matches!(
-                    current,
-                    DreamStatus::Pending | DreamStatus::Running
-                ));
-                assert_eq!(next, DreamStatus::Canceled);
-            }
-            (_, None) => assert!(
-                current.is_terminal()
-                    || matches!(
-                        (current, event),
-                        (
-                            DreamStatus::Pending,
-                            DreamStatusEvent::Complete | DreamStatusEvent::Fail
-                        ) | (DreamStatus::Running, DreamStatusEvent::Start)
-                    )
-            ),
         }
+        assert_eq!(cases, 25);
     }
 
+    /// @exhaustive DreamStatus(5) x bool(2) = 10
     /// @obligation dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
-    #[kani::proof]
+    #[test]
     fn dream_public_terminal_requires_committed_cleanup() {
-        let status_code: u8 = kani::any();
-        let cleanup_pending = kani::any::<bool>();
-        kani::assume(status_code <= 4);
-        let durable = status(status_code);
-        let public = durable.public_projection(cleanup_pending);
-
-        if cleanup_pending && matches!(durable, DreamStatus::Completed | DreamStatus::Failed) {
-            assert_eq!(public, DreamStatus::Running);
-            assert!(!public.is_terminal());
-        } else {
-            assert_eq!(public, durable);
-        }
-        if matches!(public, DreamStatus::Completed | DreamStatus::Failed) {
-            assert!(!cleanup_pending);
+        for durable in EVERY_STATUS {
+            for cleanup_pending in [false, true] {
+                let public = durable.public_projection(cleanup_pending);
+                if cleanup_pending
+                    && matches!(durable, DreamStatus::Completed | DreamStatus::Failed)
+                {
+                    assert_eq!(public, DreamStatus::Running);
+                    assert!(!public.is_terminal());
+                } else {
+                    assert_eq!(public, durable);
+                }
+                if matches!(public, DreamStatus::Completed | DreamStatus::Failed) {
+                    assert!(!cleanup_pending);
+                }
+            }
         }
     }
 
+    /// @exhaustive DreamStatus(5) x bool(2) = 10
     /// @obligation dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
-    #[kani::proof]
+    #[test]
     fn dream_cleanup_admission_is_total_and_retries_every_pending_terminal() {
         // Causes: C1 every closed Dream status; C2 cleanup is pending/settled.
         // Effects: E1 nonterminal is invalid, E2 every pending terminal retries,
-        // E3 every receipted terminal is settled. Constraint: cancellation is
-        // absorbing but cannot turn a missing cleanup receipt into success.
-        // Rules: R1=!terminal=>E1; R2=terminal+C2(pending)=>E2;
-        // R3=terminal+C2(settled)=>E3.
-        let status_code: u8 = kani::any();
-        let cleanup_pending = kani::any::<bool>();
-        kani::assume(status_code <= 4);
-        let current = status(status_code);
-        let admission = current.cleanup_admission(cleanup_pending);
-        if !current.is_terminal() {
-            assert_eq!(admission, DreamCleanupAdmission::Invalid);
-        } else if cleanup_pending {
-            assert_eq!(admission, DreamCleanupAdmission::Retry);
-        } else {
-            assert_eq!(admission, DreamCleanupAdmission::Settled);
+        // E3 every receipted terminal is settled.
+        for current in EVERY_STATUS {
+            for cleanup_pending in [false, true] {
+                let admission = current.cleanup_admission(cleanup_pending);
+                if !current.is_terminal() {
+                    assert_eq!(admission, DreamCleanupAdmission::Invalid);
+                } else if cleanup_pending {
+                    assert_eq!(admission, DreamCleanupAdmission::Retry);
+                } else {
+                    assert_eq!(admission, DreamCleanupAdmission::Settled);
+                }
+            }
         }
     }
 }

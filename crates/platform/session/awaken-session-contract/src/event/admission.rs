@@ -85,65 +85,6 @@ pub const fn resolve_session_event_batch_admission(
     }
 }
 
-#[cfg(kani)]
-/// @obligation session_event_batch.exact_retry_replays_and_changed_retry_conflicts
-/// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-/// @obligation session_event_batch.idempotency_key_appends_at_most_once
-/// @proof-input-debt free_symbol classify_session_event_batch_admission existing
-/// @proof-input-debt free_symbol resolve_session_event_batch_admission existing
-#[kani::proof]
-fn session_event_batch_admission_resolution_is_total_closed_and_append_once() {
-    // Decision table causes: C1 retry identity exists; C2 fingerprint matches;
-    // C3 retained receipt is closed; C4 request is Accept/Close. Effects:
-    // E1 only !C1 appends; E2 exact accepted always replays; E3 exact closed
-    // rejects Accept and replays Close; E4 changed fingerprint conflicts.
-    // Kani exhausts all sixteen Boolean rows, including irrelevant C2/C3 facts
-    // when C1 is false. Repository CAS/transaction durability remains TCB.
-    let existing: bool = kani::any();
-    let fingerprint_matches: bool = kani::any();
-    let admission_closed: bool = kani::any();
-    let accept: bool = kani::any();
-    let action = if accept {
-        SessionEventBatchAdmissionAction::Accept
-    } else {
-        SessionEventBatchAdmissionAction::Close
-    };
-    let actual = resolve_session_event_batch_admission(
-        existing,
-        fingerprint_matches,
-        admission_closed,
-        action,
-    );
-    let class =
-        classify_session_event_batch_admission(existing, fingerprint_matches, admission_closed);
-
-    assert_eq!(actual.appends(), !existing);
-    assert_eq!(
-        actual == SessionEventBatchAdmissionPlan::AppendAccepted,
-        !existing && accept
-    );
-    assert_eq!(
-        actual == SessionEventBatchAdmissionPlan::AppendClosed,
-        !existing && !accept
-    );
-    assert_eq!(
-        actual == SessionEventBatchAdmissionPlan::ReplayAccepted,
-        class == SessionEventBatchAdmissionClass::Accepted
-    );
-    assert_eq!(
-        actual == SessionEventBatchAdmissionPlan::RejectClosed,
-        class == SessionEventBatchAdmissionClass::Closed && accept
-    );
-    assert_eq!(
-        actual == SessionEventBatchAdmissionPlan::ReplayClosed,
-        class == SessionEventBatchAdmissionClass::Closed && !accept
-    );
-    assert_eq!(
-        actual == SessionEventBatchAdmissionPlan::Conflict,
-        class == SessionEventBatchAdmissionClass::Conflict
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +149,91 @@ mod tests {
             assert_eq!(actual, expected, "{class:?} x {action:?}");
             assert_eq!(actual.appends(), !existing, "{class:?} x {action:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_ACTION: [SessionEventBatchAdmissionAction; 2] = [
+        SessionEventBatchAdmissionAction::Accept,
+        SessionEventBatchAdmissionAction::Close,
+    ];
+
+    const fn listed_action(action: SessionEventBatchAdmissionAction) -> usize {
+        match action {
+            SessionEventBatchAdmissionAction::Accept => 0,
+            SessionEventBatchAdmissionAction::Close => 1,
+        }
+    }
+
+    #[test]
+    fn every_admission_action_is_listed() {
+        for (index, action) in EVERY_ACTION.into_iter().enumerate() {
+            assert_eq!(listed_action(action), index);
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x SessionEventBatchAdmissionAction(2) = 16
+    /// @obligation session_event_batch.exact_retry_replays_and_changed_retry_conflicts
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @obligation session_event_batch.idempotency_key_appends_at_most_once
+    #[test]
+    fn session_event_batch_admission_resolution_is_total_closed_and_append_once() {
+        // Decision table causes: C1 retry identity exists; C2 fingerprint matches;
+        // C3 retained receipt is closed; C4 request is Accept/Close. Effects:
+        // E1 only !C1 appends; E2 exact accepted always replays; E3 exact closed
+        // rejects Accept and replays Close; E4 changed fingerprint conflicts.
+        // All sixteen rows, including irrelevant C2/C3 facts when C1 is false.
+        let mut cases = 0;
+        for existing in [false, true] {
+            for fingerprint_matches in [false, true] {
+                for admission_closed in [false, true] {
+                    for action in EVERY_ACTION {
+                        let accept = action == SessionEventBatchAdmissionAction::Accept;
+                        let actual = resolve_session_event_batch_admission(
+                            existing,
+                            fingerprint_matches,
+                            admission_closed,
+                            action,
+                        );
+                        let class = classify_session_event_batch_admission(
+                            existing,
+                            fingerprint_matches,
+                            admission_closed,
+                        );
+
+                        assert_eq!(actual.appends(), !existing);
+                        assert_eq!(
+                            actual == SessionEventBatchAdmissionPlan::AppendAccepted,
+                            !existing && accept
+                        );
+                        assert_eq!(
+                            actual == SessionEventBatchAdmissionPlan::AppendClosed,
+                            !existing && !accept
+                        );
+                        assert_eq!(
+                            actual == SessionEventBatchAdmissionPlan::ReplayAccepted,
+                            class == SessionEventBatchAdmissionClass::Accepted
+                        );
+                        assert_eq!(
+                            actual == SessionEventBatchAdmissionPlan::RejectClosed,
+                            class == SessionEventBatchAdmissionClass::Closed && accept
+                        );
+                        assert_eq!(
+                            actual == SessionEventBatchAdmissionPlan::ReplayClosed,
+                            class == SessionEventBatchAdmissionClass::Closed && !accept
+                        );
+                        assert_eq!(
+                            actual == SessionEventBatchAdmissionPlan::Conflict,
+                            class == SessionEventBatchAdmissionClass::Conflict
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 16);
     }
 }

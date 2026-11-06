@@ -230,41 +230,6 @@ const fn permission_effect_plan(project_call: bool) -> [PermissionEffect; 3] {
     }
 }
 
-#[cfg(kani)]
-/// @obligation acp.boundary_preserves_permission_authority_and_effect_order
-/// @kani features=real-acp
-#[kani::proof]
-fn acp_permission_effect_plan_preserves_authority_order() {
-    // Cause/effect decision table for the production-consumed local plan:
-    // | project open | first effect      | second effect     | third effect |
-    // | true         | project exact call | resolve authority | send response |
-    // | false        | resolve authority  | send response     | none          |
-    // Therefore every response follows exactly one authority resolution, and
-    // an enabled projection precedes both. Async completion and remote effects
-    // are intentionally outside this allocation-free sequencing proof.
-    let project_call: bool = kani::any();
-    let plan = permission_effect_plan(project_call);
-    if project_call {
-        assert_eq!(
-            plan,
-            [
-                PermissionEffect::ProjectCall,
-                PermissionEffect::ResolveAuthority,
-                PermissionEffect::SendResponse,
-            ]
-        );
-    } else {
-        assert_eq!(
-            plan,
-            [
-                PermissionEffect::ResolveAuthority,
-                PermissionEffect::SendResponse,
-                PermissionEffect::NoEffect,
-            ]
-        );
-    }
-}
-
 /// Answer an agent→client request: a permission request is decided by `resolver`
 /// (the neutral `ToolPermissionPolicy`) and projected back onto the agent's own
 /// offered option — allow or reject, once-preferred over always; `cancelled` when
@@ -504,49 +469,6 @@ const fn project_permission_option(
         PermissionConsensus::Allow | PermissionConsensus::Await | PermissionConsensus::Deny => {
             AcpPermissionProjection::Cancelled
         }
-    }
-}
-
-#[cfg(kani)]
-/// @obligation acp.permission_outcome_never_widens_resolved_authority
-/// @kani features=real-acp
-#[kani::proof]
-fn acp_permission_projection_is_total_exact_and_non_widening() {
-    let verdict = crate::arbitrary_permission_consensus(kani::any(), kani::any());
-    let allow_once: bool = kani::any();
-    let allow_always: bool = kani::any();
-    let reject_once: bool = kani::any();
-    let reject_always: bool = kani::any();
-    let projected = project_permission_option(
-        verdict,
-        allow_once,
-        allow_always,
-        reject_once,
-        reject_always,
-    );
-
-    let expected = match verdict {
-        PermissionConsensus::Allow if allow_once => AcpPermissionProjection::AllowOnce,
-        PermissionConsensus::Allow if allow_always => AcpPermissionProjection::AllowAlways,
-        PermissionConsensus::Deny if reject_once => AcpPermissionProjection::RejectOnce,
-        PermissionConsensus::Deny if reject_always => AcpPermissionProjection::RejectAlways,
-        PermissionConsensus::Allow | PermissionConsensus::Await | PermissionConsensus::Deny => {
-            AcpPermissionProjection::Cancelled
-        }
-    };
-    assert_eq!(projected, expected);
-    match verdict {
-        PermissionConsensus::Allow => assert!(!matches!(
-            projected,
-            AcpPermissionProjection::RejectOnce | AcpPermissionProjection::RejectAlways
-        )),
-        PermissionConsensus::Await => {
-            assert_eq!(projected, AcpPermissionProjection::Cancelled)
-        }
-        PermissionConsensus::Deny => assert!(!matches!(
-            projected,
-            AcpPermissionProjection::AllowOnce | AcpPermissionProjection::AllowAlways
-        )),
     }
 }
 
@@ -1056,6 +978,103 @@ mod tests {
                     matches!(outcome, RequestPermissionOutcome::Cancelled),
                     "{rule}: {outcome:?}"
                 ),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) = 2
+    /// @obligation acp.boundary_preserves_permission_authority_and_effect_order
+    #[test]
+    fn acp_permission_effect_plan_preserves_authority_order() {
+        // Cause/effect decision table for the production-consumed local plan:
+        // | project open | first effect      | second effect     | third effect |
+        // | true         | project exact call | resolve authority | send response |
+        // | false        | resolve authority  | send response     | none          |
+        // Therefore every response follows exactly one authority resolution, and
+        // an enabled projection precedes both. Async completion and remote effects
+        // are intentionally outside this allocation-free sequencing proof.
+        for project_call in [false, true] {
+            let plan = permission_effect_plan(project_call);
+            if project_call {
+                assert_eq!(
+                    plan,
+                    [
+                        PermissionEffect::ProjectCall,
+                        PermissionEffect::ResolveAuthority,
+                        PermissionEffect::SendResponse,
+                    ]
+                );
+            } else {
+                assert_eq!(
+                    plan,
+                    [
+                        PermissionEffect::ResolveAuthority,
+                        PermissionEffect::SendResponse,
+                        PermissionEffect::NoEffect,
+                    ]
+                );
+            }
+        }
+    }
+
+    /// @exhaustive PermissionConsensus(3) x bool(2) x bool(2) x bool(2) x bool(2) = 48
+    /// @obligation acp.permission_outcome_never_widens_resolved_authority
+    #[test]
+    fn acp_permission_projection_is_total_exact_and_non_widening() {
+        for verdict in crate::exhaustive::EVERY_PERMISSION_CONSENSUS {
+            for allow_once in [false, true] {
+                for allow_always in [false, true] {
+                    for reject_once in [false, true] {
+                        for reject_always in [false, true] {
+                            let projected = project_permission_option(
+                                verdict,
+                                allow_once,
+                                allow_always,
+                                reject_once,
+                                reject_always,
+                            );
+
+                            let expected = match verdict {
+                                PermissionConsensus::Allow if allow_once => {
+                                    AcpPermissionProjection::AllowOnce
+                                }
+                                PermissionConsensus::Allow if allow_always => {
+                                    AcpPermissionProjection::AllowAlways
+                                }
+                                PermissionConsensus::Deny if reject_once => {
+                                    AcpPermissionProjection::RejectOnce
+                                }
+                                PermissionConsensus::Deny if reject_always => {
+                                    AcpPermissionProjection::RejectAlways
+                                }
+                                PermissionConsensus::Allow
+                                | PermissionConsensus::Await
+                                | PermissionConsensus::Deny => AcpPermissionProjection::Cancelled,
+                            };
+                            assert_eq!(projected, expected);
+                            match verdict {
+                                PermissionConsensus::Allow => assert!(!matches!(
+                                    projected,
+                                    AcpPermissionProjection::RejectOnce
+                                        | AcpPermissionProjection::RejectAlways
+                                )),
+                                PermissionConsensus::Await => {
+                                    assert_eq!(projected, AcpPermissionProjection::Cancelled)
+                                }
+                                PermissionConsensus::Deny => assert!(!matches!(
+                                    projected,
+                                    AcpPermissionProjection::AllowOnce
+                                        | AcpPermissionProjection::AllowAlways
+                                )),
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -560,64 +560,16 @@ mod sequencing_tests {
     }
 }
 
-#[cfg(kani)]
-mod kani_proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
-    /// @obligation remote_attempt.prepared_operation_precedes_send_and_blocks_unknown_replay
-    #[kani::proof]
-    fn remote_operation_sequence_admits_only_prepared_before_send_and_accept_commit() {
-        // Causes: C1 current phase and C2 requested external/durable event.
-        // Effects: E1 advance by exactly one edge or E2 reject. Only the three
-        // listed edges exist; in particular Fresh+Send and replayed Send reject.
-        //
-        // | Rule | phase | event | Effect |
-        // |---|---|---|---|
-        // | R1 | Fresh | CommitPrepared | PreparedCommitted |
-        // | R2 | PreparedCommitted | Send | SendReturned |
-        // | R3 | SendReturned | CommitAccepted | AcceptedCommitted |
-        // | R4 | every other pair | any | reject |
-        let phase = match kani::any::<u8>() % 4 {
-            0 => RemoteOperationSequencePhase::Fresh,
-            1 => RemoteOperationSequencePhase::PreparedCommitted,
-            2 => RemoteOperationSequencePhase::SendReturned,
-            _ => RemoteOperationSequencePhase::AcceptedCommitted,
-        };
-        let event = match kani::any::<u8>() % 3 {
-            0 => RemoteOperationSequenceEvent::CommitPrepared,
-            1 => RemoteOperationSequenceEvent::Send,
-            _ => RemoteOperationSequenceEvent::CommitAccepted,
-        };
-        let next = remote_operation_sequence_step(phase, event);
-        let legal = matches!(
-            (phase, event),
-            (
-                RemoteOperationSequencePhase::Fresh,
-                RemoteOperationSequenceEvent::CommitPrepared
-            ) | (
-                RemoteOperationSequencePhase::PreparedCommitted,
-                RemoteOperationSequenceEvent::Send
-            ) | (
-                RemoteOperationSequencePhase::SendReturned,
-                RemoteOperationSequenceEvent::CommitAccepted
-            )
-        );
-        assert_eq!(next.is_some(), legal);
-        assert!(
-            remote_operation_sequence_step(
-                RemoteOperationSequencePhase::Fresh,
-                RemoteOperationSequenceEvent::Send
-            )
-            .is_none()
-        );
-    }
-
+    /// @exhaustive StoredRemoteOperationKind(3) x bool(2) = 6
     /// @obligation remote_attempt.committed_task_is_endpoint_pinned
     /// @obligation remote_attempt.endpoint_mismatch_fails_closed
     /// @obligation remote_attempt.prepared_operation_precedes_send_and_blocks_unknown_replay
     /// @obligation remote_attempt.recovery_reattaches_without_resending
-    /// @proof-input-debt free_symbol remote_operation_decision endpoint_matches
-    #[kani::proof]
+    #[test]
     fn remote_operation_route_is_total_and_fail_closed() {
         // Cause graph: C1 state is absent/prepared/accepted; C2 its endpoint
         // matches the publication-frozen endpoint. Effects: E1 fresh send is
@@ -631,35 +583,38 @@ mod kani_proofs {
         // | R2 | prepared | yes | E2 |
         // | R3 | accepted | yes | E3 |
         // | R4 | prepared/accepted | no | E4 |
-        let selector: u8 = kani::any();
-        let kind = match selector % 3 {
-            0 => StoredRemoteOperationKind::Absent,
-            1 => StoredRemoteOperationKind::Prepared,
-            _ => StoredRemoteOperationKind::Accepted,
-        };
-        let endpoint_matches: bool = kani::any();
-        let decision = remote_operation_decision(kind, endpoint_matches);
+        for selector in 0_u8..3 {
+            for endpoint_matches in [false, true] {
+                let kind = match selector {
+                    0 => StoredRemoteOperationKind::Absent,
+                    1 => StoredRemoteOperationKind::Prepared,
+                    _ => StoredRemoteOperationKind::Accepted,
+                };
+                let decision = remote_operation_decision(kind, endpoint_matches);
 
-        assert_eq!(
-            decision == RemoteOperationDecision::Fresh,
-            kind == StoredRemoteOperationKind::Absent
-        );
-        assert_eq!(
-            decision == RemoteOperationDecision::PreservePrepared,
-            kind == StoredRemoteOperationKind::Prepared && endpoint_matches
-        );
-        assert_eq!(
-            decision == RemoteOperationDecision::Reattach,
-            kind == StoredRemoteOperationKind::Accepted && endpoint_matches
-        );
-        assert_eq!(
-            decision == RemoteOperationDecision::RejectEndpointMismatch,
-            kind != StoredRemoteOperationKind::Absent && !endpoint_matches
-        );
+                assert_eq!(
+                    decision == RemoteOperationDecision::Fresh,
+                    kind == StoredRemoteOperationKind::Absent
+                );
+                assert_eq!(
+                    decision == RemoteOperationDecision::PreservePrepared,
+                    kind == StoredRemoteOperationKind::Prepared && endpoint_matches
+                );
+                assert_eq!(
+                    decision == RemoteOperationDecision::Reattach,
+                    kind == StoredRemoteOperationKind::Accepted && endpoint_matches
+                );
+                assert_eq!(
+                    decision == RemoteOperationDecision::RejectEndpointMismatch,
+                    kind != StoredRemoteOperationKind::Absent && !endpoint_matches
+                );
+            }
+        }
     }
 
+    /// @exhaustive no symbolic input (1) = 1
     /// @obligation remote_attempt.terminal_commit_retires_task_reference
-    #[kani::proof]
+    #[test]
     fn terminal_remote_operation_command_is_exact_run_scoped_removal() {
         // Cause graph: C1 a Run reaches a committed terminal boundary.
         // Effect E1 the sole A2A task-reference key is removed in Run scope
@@ -675,10 +630,10 @@ mod kani_proofs {
         assert!(matches!(command.action, StateAction::Remove));
     }
 
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x bool(2) = 32
     /// @obligation remote_attempt.cancel_addresses_pinned_task
     /// @obligation remote_attempt.resume_preserves_context_and_task_reference
-    /// @proof-input-debt tautology task_reference_admitted
-    #[kani::proof]
+    #[test]
     fn task_reference_admission_requires_complete_fields_and_required_identity_matches() {
         // Causes: C1 endpoint present; C2 task id present; C3 context id
         // present; C4 task identity matches when reattaching; C5 continuation
@@ -694,25 +649,82 @@ mod kani_proofs {
         // | R4 | * | * | no  | * | * | E2 |
         // | R5 | * | * | * | no  | * | E2 |
         // | R6 | * | * | * | * | no  | E2 |
-        let endpoint_present: bool = kani::any();
-        let task_id_present: bool = kani::any();
-        let context_id_present: bool = kani::any();
-        let task_id_matches: bool = kani::any();
-        let continuation_context_matches: bool = kani::any();
+        for endpoint_present in [false, true] {
+            for task_id_present in [false, true] {
+                for context_id_present in [false, true] {
+                    for task_id_matches in [false, true] {
+                        for continuation_context_matches in [false, true] {
+                            assert_eq!(
+                                task_reference_admitted(
+                                    endpoint_present,
+                                    task_id_present,
+                                    context_id_present,
+                                    task_id_matches,
+                                    continuation_context_matches,
+                                ),
+                                endpoint_present
+                                    && task_id_present
+                                    && context_id_present
+                                    && task_id_matches
+                                    && continuation_context_matches
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-        assert_eq!(
-            task_reference_admitted(
-                endpoint_present,
-                task_id_present,
-                context_id_present,
-                task_id_matches,
-                continuation_context_matches,
-            ),
-            endpoint_present
-                && task_id_present
-                && context_id_present
-                && task_id_matches
-                && continuation_context_matches
-        );
+    /// @exhaustive RemoteOperationSequencePhase(4) x RemoteOperationSequenceEvent(3) = 12
+    /// @obligation remote_attempt.prepared_operation_precedes_send_and_blocks_unknown_replay
+    #[test]
+    fn remote_operation_sequence_admits_only_prepared_before_send_and_accept_commit() {
+        // Causes: C1 current phase and C2 requested external/durable event.
+        // Effects: E1 advance by exactly one edge or E2 reject. Only the three
+        // listed edges exist; in particular Fresh+Send and replayed Send reject.
+        //
+        // | Rule | phase | event | Effect |
+        // |---|---|---|---|
+        // | R1 | Fresh | CommitPrepared | PreparedCommitted |
+        // | R2 | PreparedCommitted | Send | SendReturned |
+        // | R3 | SendReturned | CommitAccepted | AcceptedCommitted |
+        // | R4 | every other pair | any | reject |
+        for phase_tag in 0_u8..4 {
+            for event_tag in 0_u8..3 {
+                let phase = match phase_tag {
+                    0 => RemoteOperationSequencePhase::Fresh,
+                    1 => RemoteOperationSequencePhase::PreparedCommitted,
+                    2 => RemoteOperationSequencePhase::SendReturned,
+                    _ => RemoteOperationSequencePhase::AcceptedCommitted,
+                };
+                let event = match event_tag {
+                    0 => RemoteOperationSequenceEvent::CommitPrepared,
+                    1 => RemoteOperationSequenceEvent::Send,
+                    _ => RemoteOperationSequenceEvent::CommitAccepted,
+                };
+                let next = remote_operation_sequence_step(phase, event);
+                let legal = matches!(
+                    (phase, event),
+                    (
+                        RemoteOperationSequencePhase::Fresh,
+                        RemoteOperationSequenceEvent::CommitPrepared
+                    ) | (
+                        RemoteOperationSequencePhase::PreparedCommitted,
+                        RemoteOperationSequenceEvent::Send
+                    ) | (
+                        RemoteOperationSequencePhase::SendReturned,
+                        RemoteOperationSequenceEvent::CommitAccepted
+                    )
+                );
+                assert_eq!(next.is_some(), legal);
+                assert!(
+                    remote_operation_sequence_step(
+                        RemoteOperationSequencePhase::Fresh,
+                        RemoteOperationSequenceEvent::Send
+                    )
+                    .is_none()
+                );
+            }
+        }
     }
 }

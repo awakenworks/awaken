@@ -74,13 +74,19 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-/// @obligation tool.discovery_limit
-#[kani::proof]
-fn every_u8_is_admitted_exactly_when_it_is_within_the_search_limit() {
-    let value: u8 = kani::any();
-    assert_eq!(
-        ToolSearchLimit::new(value).is_ok(),
-        (1..=ToolSearchLimit::MAX).contains(&value)
-    );
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive u8(256) = 256
+    /// @obligation tool.discovery_limit
+    #[test]
+    fn every_u8_is_admitted_exactly_when_it_is_within_the_search_limit() {
+        for value in u8::MIN..=u8::MAX {
+            assert_eq!(
+                ToolSearchLimit::new(value).is_ok(),
+                (1..=ToolSearchLimit::MAX).contains(&value)
+            );
+        }
+    }
 }

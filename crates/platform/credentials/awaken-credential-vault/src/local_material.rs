@@ -39,27 +39,6 @@ const fn credential_status_allows_materialization(status: CredentialStatus) -> b
     matches!(status, CredentialStatus::Active)
 }
 
-#[cfg(kani)]
-/// @obligation credential_effect.boundary_preserves_exact_materialization_authority
-/// @obligation worker.revoked_credential_blocks_new_materialization
-/// @proof-input-debt tautology credential_status_allows_materialization
-#[kani::proof]
-fn new_materialization_admits_only_active_credential_status() {
-    // Causes: current persisted lifecycle Active, Disabled, or Archived.
-    // Effects: only Active admits a new material read; both revoked states
-    // fail before SecretStore I/O. Rules M1=Active=>admit; M2=Disabled=>deny;
-    // M3=Archived=>deny. The proof calls the same predicate as the adapter.
-    let status = match kani::any::<u8>() % 3 {
-        0 => CredentialStatus::Active,
-        1 => CredentialStatus::Disabled,
-        _ => CredentialStatus::Archived,
-    };
-    assert_eq!(
-        credential_status_allows_materialization(status),
-        matches!(status, CredentialStatus::Active)
-    );
-}
-
 impl VaultLocalMaterialAuthority {
     #[must_use]
     pub fn new(
@@ -663,5 +642,47 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error, CredentialMaterialError::Invalid, "E2");
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_status(status: CredentialStatus) -> usize {
+        match status {
+            CredentialStatus::Active => 0,
+            CredentialStatus::Disabled => 1,
+            CredentialStatus::Archived => 2,
+        }
+    }
+    const EVERY_STATUS: [CredentialStatus; 3] = [
+        CredentialStatus::Active,
+        CredentialStatus::Disabled,
+        CredentialStatus::Archived,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_STATUS.into_iter().enumerate() {
+            assert_eq!(listed_status(value), index);
+        }
+    }
+
+    /// @exhaustive CredentialStatus(3) = 3
+    /// @obligation credential_effect.boundary_preserves_exact_materialization_authority
+    /// @obligation worker.revoked_credential_blocks_new_materialization
+    #[test]
+    fn new_materialization_admits_only_active_credential_status() {
+        // Causes: current persisted lifecycle Active, Disabled, or Archived.
+        // Effects: only Active admits a new material read; both revoked states
+        // fail before SecretStore I/O. Rules M1=Active=>admit; M2=Disabled=>deny;
+        // M3=Archived=>deny. The test calls the same predicate as the adapter.
+        for status in EVERY_STATUS {
+            assert_eq!(
+                credential_status_allows_materialization(status),
+                matches!(status, CredentialStatus::Active)
+            );
+        }
     }
 }

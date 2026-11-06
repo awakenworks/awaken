@@ -212,33 +212,6 @@ const fn worker_realization_scope_source(
     }
 }
 
-#[cfg(kani)]
-/// @obligation worker.realization_scope_uses_only_the_kubernetes_namespace_or_persisted_local_workspace
-#[kani::proof]
-fn worker_realization_scope_source_is_total_and_exact() {
-    // Cause/effect decision table. C1 is one of the five closed SandboxTier
-    // variants. E1 K8s selects only its Kubernetes namespace; E2 every host-local
-    // tier selects only the persisted local Workspace. R1 C1=K8s=>E1;
-    // R2 C1 in {Local,Namespace,Docker,Podman}=>E2. The symbolic index covers
-    // every variant and proves no local marker can become a Kubernetes startup
-    // precondition.
-    let index: u8 = kani::any();
-    kani::assume(index < 5);
-    let tier = match index {
-        0 => awaken_deployment_config::SandboxTier::Local,
-        1 => awaken_deployment_config::SandboxTier::Namespace,
-        2 => awaken_deployment_config::SandboxTier::Docker,
-        3 => awaken_deployment_config::SandboxTier::Podman,
-        4 => awaken_deployment_config::SandboxTier::K8s,
-        _ => unreachable!(),
-    };
-    let source = worker_realization_scope_source(tier);
-    assert_eq!(
-        source == WorkerRealizationScopeSource::KubernetesNamespace,
-        tier == awaken_deployment_config::SandboxTier::K8s
-    );
-}
-
 /// Project the physical installation scope shared by every interchangeable
 /// Worker that can realize the same durable Session substrate. Kubernetes owns
 /// a namespace-wide substrate, whereas host-local runtimes retain the existing
@@ -1971,3 +1944,53 @@ impl WorkerNode {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+    use awaken_deployment_config::SandboxTier;
+
+    const EVERY_SANDBOX_TIER: [SandboxTier; 5] = [
+        SandboxTier::Local,
+        SandboxTier::Namespace,
+        SandboxTier::Docker,
+        SandboxTier::Podman,
+        SandboxTier::K8s,
+    ];
+
+    const fn listed_sandbox_tier(tier: SandboxTier) -> usize {
+        match tier {
+            SandboxTier::Local => 0,
+            SandboxTier::Namespace => 1,
+            SandboxTier::Docker => 2,
+            SandboxTier::Podman => 3,
+            SandboxTier::K8s => 4,
+        }
+    }
+
+    #[test]
+    fn every_sandbox_tier_is_listed_once() {
+        for (index, tier) in EVERY_SANDBOX_TIER.into_iter().enumerate() {
+            assert_eq!(listed_sandbox_tier(tier), index);
+        }
+    }
+
+    /// @exhaustive SandboxTier(5) = 5
+    /// @obligation worker.realization_scope_uses_only_the_kubernetes_namespace_or_persisted_local_workspace
+    #[test]
+    fn worker_realization_scope_source_is_total_and_exact() {
+        // Cause/effect decision table. C1 is one of the five closed SandboxTier
+        // variants. E1 K8s selects only its Kubernetes namespace; E2 every host-local
+        // tier selects only the persisted local Workspace. R1 C1=K8s=>E1;
+        // R2 C1 in {Local,Namespace,Docker,Podman}=>E2. The listed tiers cover
+        // every variant and proves no local marker can become a Kubernetes startup
+        // precondition.
+        for tier in EVERY_SANDBOX_TIER {
+            let source = worker_realization_scope_source(tier);
+            assert_eq!(
+                source == WorkerRealizationScopeSource::KubernetesNamespace,
+                tier == awaken_deployment_config::SandboxTier::K8s
+            );
+        }
+    }
+}

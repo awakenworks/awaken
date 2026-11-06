@@ -106,34 +106,6 @@ const fn mcp_client_credential_admitted(
         && http_transport
 }
 
-#[cfg(kani)]
-/// @obligation credential.mcp_client_admission_requires_exact_delivery_adapter_and_http_transport
-/// @obligation credential.mcp_delivery_mode_is_frozen_and_never_falls_back
-#[kani::proof]
-fn mcp_client_credential_admission_has_no_gateway_or_adapter_fallback() {
-    // Causes: C1 delivery is ClientInjection rather than None/Gateway;
-    // C2 the catalog row declares client injection; C3 transport is HTTP.
-    // Effects: E1 admits iff C1+C2+C3; E2 rejects every other combination.
-    // Constraint: ACP Session is the sole production MCP delivery path, so
-    // adapter identity and a legacy config-file fallback are not inputs.
-    // Decision rule: exhaust the 3*2*2 input product and prove E1's exact
-    // conjunction, which covers every rejecting rule as its complement.
-    let delivery = match kani::any::<u8>() % 3 {
-        0 => None,
-        1 => Some(awaken_credential_contract::McpCredentialDelivery::ClientInjection),
-        _ => Some(awaken_credential_contract::McpCredentialDelivery::GatewayMediation),
-    };
-    let adapter_declared: bool = kani::any();
-    let http_transport: bool = kani::any();
-    let admitted = mcp_client_credential_admitted(delivery, adapter_declared, http_transport);
-    assert_eq!(
-        admitted,
-        delivery == Some(awaken_credential_contract::McpCredentialDelivery::ClientInjection)
-            && adapter_declared
-            && http_transport
-    );
-}
-
 /// The definition of one external ACP CLI: how to launch it and project config onto
 /// it. Referenced by `Backend::Acp(cli)` via [`AcpCli::id`].
 #[derive(Debug, Clone, Copy)]
@@ -369,6 +341,47 @@ mod tests {
                 mcp_client_credential_admitted(delivery, declared, http),
                 admitted
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive Option<McpCredentialDelivery>(3) x bool(2) x bool(2) = 12
+    /// @obligation credential.mcp_client_admission_requires_exact_delivery_adapter_and_http_transport
+    /// @obligation credential.mcp_delivery_mode_is_frozen_and_never_falls_back
+    #[test]
+    fn mcp_client_credential_admission_has_no_gateway_or_adapter_fallback() {
+        // Causes: C1 delivery is ClientInjection rather than None/Gateway;
+        // C2 the catalog row declares client injection; C3 transport is HTTP.
+        // Effects: E1 admits iff C1+C2+C3; E2 rejects every other combination.
+        // Constraint: ACP Session is the sole production MCP delivery path, so
+        // adapter identity and a legacy config-file fallback are not inputs.
+        // Decision rule: exhaust the 3*2*2 input product and prove E1's exact
+        // conjunction, which covers every rejecting rule as its complement.
+        for delivery_tag in 0_u8..3 {
+            let delivery = match delivery_tag {
+                0 => None,
+                1 => Some(awaken_credential_contract::McpCredentialDelivery::ClientInjection),
+                _ => Some(awaken_credential_contract::McpCredentialDelivery::GatewayMediation),
+            };
+            for adapter_declared in [false, true] {
+                for http_transport in [false, true] {
+                    let admitted =
+                        mcp_client_credential_admitted(delivery, adapter_declared, http_transport);
+                    assert_eq!(
+                        admitted,
+                        delivery
+                            == Some(
+                                awaken_credential_contract::McpCredentialDelivery::ClientInjection
+                            )
+                            && adapter_declared
+                            && http_transport
+                    );
+                }
+            }
         }
     }
 }

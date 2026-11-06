@@ -431,31 +431,38 @@ mod proofs {
             _ => unreachable!("one dialect cannot mix thinking envelopes"),
         }
     }
+}
 
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
     /// @obligation protocol_adapter.genai_signed_reasoning_transcript_projection_is_dialect_exact_nonduplicating_and_transport_independent
-    /// @proof-input-debt free_symbol decide_reasoning_fold has_reasoning
-    #[kani::proof]
+    #[test]
     fn reasoning_fold_prepends_exactly_once_and_is_transport_independent() {
-        let has_reasoning: bool = kani::any();
-        let has_ordered_thinking: bool = kani::any();
-        let streaming = decide_reasoning_fold(
-            ResponseTransport::Streaming,
-            has_reasoning,
-            has_ordered_thinking,
-        );
-        let non_streaming = decide_reasoning_fold(
-            ResponseTransport::NonStreaming,
-            has_reasoning,
-            has_ordered_thinking,
-        );
+        for has_reasoning in [false, true] {
+            for has_ordered_thinking in [false, true] {
+                let streaming = decide_reasoning_fold(
+                    ResponseTransport::Streaming,
+                    has_reasoning,
+                    has_ordered_thinking,
+                );
+                let non_streaming = decide_reasoning_fold(
+                    ResponseTransport::NonStreaming,
+                    has_reasoning,
+                    has_ordered_thinking,
+                );
 
-        assert_eq!(streaming, non_streaming);
-        assert_eq!(
-            matches!(streaming, ReasoningFoldAction::Prepend),
-            has_reasoning && !has_ordered_thinking
-        );
-        if has_ordered_thinking || !has_reasoning {
-            assert_eq!(streaming, ReasoningFoldAction::Keep);
+                assert_eq!(streaming, non_streaming);
+                assert_eq!(
+                    matches!(streaming, ReasoningFoldAction::Prepend),
+                    has_reasoning && !has_ordered_thinking
+                );
+                if has_ordered_thinking || !has_reasoning {
+                    assert_eq!(streaming, ReasoningFoldAction::Keep);
+                }
+            }
         }
     }
 }

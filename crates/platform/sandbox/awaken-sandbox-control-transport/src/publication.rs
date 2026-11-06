@@ -406,12 +406,13 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    /// @exhaustive no symbolic input (1) = 1
     /// @obligation sandbox_control.single_publication_is_stale_fenced_non_wrapping_and_close_absorbing
-    #[kani::proof]
+    #[test]
     fn publication_slot_directly_preserves_single_owner_stale_fence_and_absorbing_close() {
         // Cause/effect decision table over the production slot itself:
         // S1 Open+vacant reserves one owner and rejects a second; S2 Open+active

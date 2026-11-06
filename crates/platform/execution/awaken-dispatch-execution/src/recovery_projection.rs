@@ -311,39 +311,6 @@ fn apply_to_snapshot(
 mod verification {
     use super::*;
 
-    /// @obligation remote_worker.recovery_projection_is_committed_prefix
-    /// @kani default-features=false
-    #[kani::proof]
-    fn recovery_snapshot_admission_requires_exact_claim_identity() {
-        // Causes: C1 returned Run is exact/foreign; C2 returned Thread is
-        // exact/foreign. Effects: R1 C1+C2 admits; R2 !C1 rejects as WrongRun
-        // even when C2 is false; R3 C1+!C2 rejects as WrongThread. The
-        // production install door derives both comparisons from these IDs.
-        let claimed_run = RunId("run:claimed".into());
-        let claimed_thread = ThreadId("thread:claimed".into());
-        let returned_run = if kani::any::<bool>() {
-            claimed_run.clone()
-        } else {
-            RunId("run:foreign".into())
-        };
-        let returned_thread = if kani::any::<bool>() {
-            claimed_thread.clone()
-        } else {
-            ThreadId("thread:foreign".into())
-        };
-        let admission = classify_recovery_snapshot_admission(
-            &returned_run == &claimed_run,
-            &returned_thread == &claimed_thread,
-        );
-        if returned_run != claimed_run {
-            assert_eq!(admission, RecoverySnapshotAdmission::WrongRun);
-        } else if returned_thread != claimed_thread {
-            assert_eq!(admission, RecoverySnapshotAdmission::WrongThread);
-        } else {
-            assert_eq!(admission, RecoverySnapshotAdmission::Exact);
-        }
-    }
-
     /// @obligation remote_worker.acknowledged_projection_is_monotonic
     /// @obligation remote_worker.recovery_projection_is_committed_prefix
     /// @kani default-features=false
@@ -608,6 +575,48 @@ mod install_tests {
                 "T2 {cause}"
             );
             assert_eq!(projection.current(), Some(valid.clone()), "T2 {cause}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation remote_worker.recovery_projection_is_committed_prefix
+    #[test]
+    fn recovery_snapshot_admission_requires_exact_claim_identity() {
+        // Causes: C1 returned Run is exact/foreign; C2 returned Thread is
+        // exact/foreign. Effects: R1 C1+C2 admits; R2 !C1 rejects as WrongRun
+        // even when C2 is false; R3 C1+!C2 rejects as WrongThread. The
+        // production install door derives both comparisons from these IDs.
+        let claimed_run = RunId("run:claimed".into());
+        let claimed_thread = ThreadId("thread:claimed".into());
+        for run_exact in [false, true] {
+            for thread_exact in [false, true] {
+                let returned_run = if run_exact {
+                    claimed_run.clone()
+                } else {
+                    RunId("run:foreign".into())
+                };
+                let returned_thread = if thread_exact {
+                    claimed_thread.clone()
+                } else {
+                    ThreadId("thread:foreign".into())
+                };
+                let admission = classify_recovery_snapshot_admission(
+                    returned_run == claimed_run,
+                    returned_thread == claimed_thread,
+                );
+                if returned_run != claimed_run {
+                    assert_eq!(admission, RecoverySnapshotAdmission::WrongRun);
+                } else if returned_thread != claimed_thread {
+                    assert_eq!(admission, RecoverySnapshotAdmission::WrongThread);
+                } else {
+                    assert_eq!(admission, RecoverySnapshotAdmission::Exact);
+                }
+            }
         }
     }
 }

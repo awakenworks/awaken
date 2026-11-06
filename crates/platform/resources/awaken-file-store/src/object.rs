@@ -183,271 +183,6 @@ impl ObjectFileStoreConfig {
     }
 }
 
-#[cfg(kani)]
-mod kani_proofs {
-    use super::{
-        ObjectStoreConfigDecision, ObjectStoreConfigShape, ObjectStoreProvider, PrefixShape,
-        RegionShape, ascii_has_nonblank, classify_prefix_bytes, object_store_config_decision,
-        object_store_config_kernel,
-    };
-
-    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
-    /// @kani features=object-store
-    /// Cause/effect rule K: enumerate both providers, both bucket classes,
-    /// all three prefix classes, all three region classes and both endpoint
-    /// states (72 combinations). Missing bucket/prefix wins first, invalid
-    /// prefix second, then provider-specific coordinates decide; both exact
-    /// rejection categories and acceptance are checked against this table.
-    /// Raw-string classification is a separate premise checked below; this
-    /// finite proof does not claim arbitrary UTF-8 classification.
-    #[kani::proof]
-    fn object_store_configuration_finite_kernel_accepts_exactly_compatible_shapes() {
-        for provider in [ObjectStoreProvider::S3, ObjectStoreProvider::Gcs] {
-            for bucket_nonblank in [false, true] {
-                for prefix in [
-                    PrefixShape::Missing,
-                    PrefixShape::Invalid,
-                    PrefixShape::Normalized,
-                ] {
-                    for region in [RegionShape::Absent, RegionShape::Blank, RegionShape::Named] {
-                        for endpoint_present in [false, true] {
-                            let shape = ObjectStoreConfigShape {
-                                bucket_nonblank,
-                                prefix,
-                                region,
-                                endpoint_present,
-                            };
-                            let expected =
-                                match (bucket_nonblank, prefix, provider, region, endpoint_present)
-                                {
-                                    (false, _, _, _, _) | (_, PrefixShape::Missing, _, _, _) => {
-                                        ObjectStoreConfigDecision::MissingBucketOrPrefix
-                                    }
-                                    (_, PrefixShape::Invalid, _, _, _) => {
-                                        ObjectStoreConfigDecision::InvalidPrefix
-                                    }
-                                    (
-                                        true,
-                                        PrefixShape::Normalized,
-                                        ObjectStoreProvider::S3,
-                                        RegionShape::Named,
-                                        _,
-                                    )
-                                    | (
-                                        true,
-                                        PrefixShape::Normalized,
-                                        ObjectStoreProvider::Gcs,
-                                        RegionShape::Absent,
-                                        false,
-                                    ) => ObjectStoreConfigDecision::Accept,
-                                    (
-                                        true,
-                                        PrefixShape::Normalized,
-                                        ObjectStoreProvider::S3,
-                                        _,
-                                        _,
-                                    ) => ObjectStoreConfigDecision::MissingS3Region,
-                                    (
-                                        true,
-                                        PrefixShape::Normalized,
-                                        ObjectStoreProvider::Gcs,
-                                        _,
-                                        _,
-                                    ) => ObjectStoreConfigDecision::GcsHasS3Coordinates,
-                                };
-                            assert_eq!(object_store_config_kernel(provider, shape), expected);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
-    /// @kani features=object-store
-    /// Cause/effect rule S3-raw: a valid literal bucket and prefix hold their
-    /// two classifications fixed; the actual production decision receives an
-    /// absent, one-space or named region and an independently absent/present
-    /// endpoint. S3 accepts exactly the named region in both endpoint states;
-    /// the other four cases report MissingS3Region. This proves only these
-    /// borrowed raw representatives, not arbitrary UTF-8 region strings.
-    #[kani::proof]
-    #[kani::unwind(12)]
-    fn object_store_configuration_derives_s3_region_from_raw_representatives() {
-        let region_case: u8 = kani::any();
-        kani::assume(region_case < 3);
-        let region = match region_case {
-            0 => None,
-            1 => Some(" "),
-            _ => Some("r"),
-        };
-        let endpoint_present: bool = kani::any();
-        let decision = object_store_config_decision(
-            ObjectStoreProvider::S3,
-            "b",
-            "p",
-            region,
-            endpoint_present.then_some("e"),
-        );
-        assert_eq!(
-            decision,
-            if region_case == 2 {
-                ObjectStoreConfigDecision::Accept
-            } else {
-                ObjectStoreConfigDecision::MissingS3Region
-            }
-        );
-    }
-
-    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
-    /// @kani features=object-store
-    /// Cause/effect rule BP-raw: an empty or named bucket crosses a missing,
-    /// malformed or normalized prefix. With valid S3 coordinates, the real
-    /// production decision reports Missing first, Invalid second, otherwise
-    /// Accept. Six raw-string combinations expose precedence without assuming
-    /// preclassified bucket/prefix bits; longer and Unicode inputs belong to
-    /// the executable differential tests, not this bounded proof.
-    #[kani::proof]
-    #[kani::unwind(12)]
-    fn object_store_configuration_derives_bucket_prefix_from_raw_representatives() {
-        let bucket_named: bool = kani::any();
-        let prefix_case: u8 = kani::any();
-        kani::assume(prefix_case < 3);
-        let bucket = if bucket_named { "b" } else { "" };
-        let prefix = match prefix_case {
-            0 => "/",
-            1 => "/bad",
-            _ => "p",
-        };
-        let decision =
-            object_store_config_decision(ObjectStoreProvider::S3, bucket, prefix, Some("r"), None);
-        let expected = if !bucket_named || prefix_case == 0 {
-            ObjectStoreConfigDecision::MissingBucketOrPrefix
-        } else if prefix_case == 1 {
-            ObjectStoreConfigDecision::InvalidPrefix
-        } else {
-            ObjectStoreConfigDecision::Accept
-        };
-        assert_eq!(decision, expected);
-    }
-
-    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
-    /// @kani features=object-store
-    /// Cause/effect rule GCS-raw: with valid literal bucket and prefix,
-    /// absent, blank and named raw region options cross an independent absent
-    /// or present endpoint. GCS accepts only both absent; all five other
-    /// cases reject S3 coordinates, including an empty but present region.
-    /// This is a bounded representative proof, not arbitrary UTF-8 admission.
-    #[kani::proof]
-    #[kani::unwind(12)]
-    fn object_store_configuration_derives_gcs_coordinates_from_raw_representatives() {
-        let region_case: u8 = kani::any();
-        kani::assume(region_case < 3);
-        let region = match region_case {
-            0 => None,
-            1 => Some(" "),
-            _ => Some("r"),
-        };
-        let endpoint_present: bool = kani::any();
-        let decision = object_store_config_decision(
-            ObjectStoreProvider::Gcs,
-            "b",
-            "p",
-            region,
-            endpoint_present.then_some("e"),
-        );
-        assert_eq!(
-            decision,
-            if region_case == 0 && !endpoint_present {
-                ObjectStoreConfigDecision::Accept
-            } else {
-                ObjectStoreConfigDecision::GcsHasS3Coordinates
-            }
-        );
-    }
-
-    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
-    /// @kani features=object-store
-    /// Cause/effect rule B-ASCII: zero to two bytes from the admitted ASCII
-    /// alphabet {space, 'a'} feed the production ASCII classifier. All-space
-    /// bytes are blank; any 'a' makes the bucket or region nonblank. The
-    /// production string wrapper uses this classifier only after is_ascii();
-    /// executable differential tests cover every short ASCII byte and Unicode.
-    /// Kani's unwinding assertion rejects an insufficient loop bound.
-    #[kani::proof]
-    #[kani::unwind(8)]
-    fn object_store_configuration_classifies_bounded_ascii_blankness() {
-        let first = if kani::any::<bool>() { b' ' } else { b'a' };
-        let second = if kani::any::<bool>() { b' ' } else { b'a' };
-        let len: u8 = kani::any();
-        kani::assume(len <= 2);
-        let bytes = [first, second];
-        let raw = &bytes[..usize::from(len)];
-        let expected = (len >= 1 && first == b'a') || (len == 2 && second == b'a');
-        assert_eq!(ascii_has_nonblank(raw), expected);
-    }
-
-    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
-    /// @kani features=object-store
-    /// Cause/effect rule P-ASCII: zero to three bytes from {'/', 'p'} feed
-    /// the production prefix byte classifier. Empty/all slash is Missing;
-    /// a leading or trailing slash is Invalid; all other shapes are
-    /// Normalized. The full UTF-8 wrapper is covered by executable differential
-    /// tests against the original string rule, including dot and Unicode.
-    /// Kani's unwinding assertion rejects an insufficient loop bound.
-    #[kani::proof]
-    #[kani::unwind(8)]
-    fn object_store_configuration_classifies_bounded_ascii_prefix() {
-        let first = if kani::any::<bool>() { b'/' } else { b'p' };
-        let middle = if kani::any::<bool>() { b'/' } else { b'p' };
-        let last = if kani::any::<bool>() { b'/' } else { b'p' };
-        let len: u8 = kani::any();
-        kani::assume(len <= 3);
-        let bytes = [first, middle, last];
-        let raw = &bytes[..usize::from(len)];
-        let expected = match len {
-            0 => PrefixShape::Missing,
-            1 if first == b'/' => PrefixShape::Missing,
-            1 => PrefixShape::Normalized,
-            2 if first == b'/' && middle == b'/' => PrefixShape::Missing,
-            2 if first == b'p' && middle == b'p' => PrefixShape::Normalized,
-            2 => PrefixShape::Invalid,
-            _ if first == b'/' && middle == b'/' && last == b'/' => PrefixShape::Missing,
-            _ if first == b'p' && last == b'p' => PrefixShape::Normalized,
-            _ => PrefixShape::Invalid,
-        };
-        assert_eq!(classify_prefix_bytes(raw), expected);
-    }
-
-    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
-    /// @kani features=object-store
-    /// Cause/effect rule P-dot: a whole dot or parent segment rejects;
-    /// a dot inside an ordinary segment accepts. Other slash patterns
-    /// belong to P-ASCII and the executable exhaustive differential table.
-    /// Kani's unwinding assertion rejects an insufficient loop bound.
-    #[kani::proof]
-    #[kani::unwind(12)]
-    fn object_store_configuration_classifies_bounded_dot_segments() {
-        let prefix_case: u8 = kani::any();
-        kani::assume(prefix_case < 5);
-        let prefix = match prefix_case {
-            0 => b".".as_slice(),
-            1 => b"..".as_slice(),
-            2 => b"p/./q".as_slice(),
-            3 => b"p/../q".as_slice(),
-            _ => b"p.q".as_slice(),
-        };
-        assert_eq!(
-            classify_prefix_bytes(prefix),
-            if prefix_case == 4 {
-                PrefixShape::Normalized
-            } else {
-                PrefixShape::Invalid
-            }
-        );
-    }
-}
-
 fn e(x: impl ToString) -> FileStoreError {
     FileStoreError::Indeterminate {
         detail: x.to_string(),
@@ -1091,5 +826,316 @@ mod tests {
         );
         s3_fixture::report_exercised();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_PROVIDER: [ObjectStoreProvider; 2] =
+        [ObjectStoreProvider::S3, ObjectStoreProvider::Gcs];
+
+    const fn listed_provider(provider: ObjectStoreProvider) -> usize {
+        match provider {
+            ObjectStoreProvider::S3 => 0,
+            ObjectStoreProvider::Gcs => 1,
+        }
+    }
+
+    const EVERY_PREFIX_SHAPE: [PrefixShape; 3] = [
+        PrefixShape::Missing,
+        PrefixShape::Invalid,
+        PrefixShape::Normalized,
+    ];
+
+    const fn listed_prefix_shape(shape: PrefixShape) -> usize {
+        match shape {
+            PrefixShape::Missing => 0,
+            PrefixShape::Invalid => 1,
+            PrefixShape::Normalized => 2,
+        }
+    }
+
+    const EVERY_REGION_SHAPE: [RegionShape; 3] =
+        [RegionShape::Absent, RegionShape::Blank, RegionShape::Named];
+
+    const fn listed_region_shape(shape: RegionShape) -> usize {
+        match shape {
+            RegionShape::Absent => 0,
+            RegionShape::Blank => 1,
+            RegionShape::Named => 2,
+        }
+    }
+
+    #[test]
+    fn every_object_store_shape_is_listed_once() {
+        for (index, provider) in EVERY_PROVIDER.into_iter().enumerate() {
+            assert_eq!(listed_provider(provider), index);
+        }
+        for (index, shape) in EVERY_PREFIX_SHAPE.into_iter().enumerate() {
+            assert_eq!(listed_prefix_shape(shape), index);
+        }
+        for (index, shape) in EVERY_REGION_SHAPE.into_iter().enumerate() {
+            assert_eq!(listed_region_shape(shape), index);
+        }
+    }
+
+    /// Cause/effect rule K: enumerate both providers, both bucket classes,
+    /// all three prefix classes, all three region classes and both endpoint
+    /// states (72 combinations). Missing bucket/prefix wins first, invalid
+    /// prefix second, then provider-specific coordinates decide; both exact
+    /// rejection categories and acceptance are checked against this table.
+    /// Raw-string classification is a separate premise checked below; this
+    /// finite proof does not claim arbitrary UTF-8 classification.
+    /// @exhaustive ObjectStoreProvider(2) x bool(2) x PrefixShape(3) x RegionShape(3) x bool(2) = 72
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    #[test]
+    fn object_store_configuration_finite_kernel_accepts_exactly_compatible_shapes() {
+        for provider in EVERY_PROVIDER {
+            for bucket_nonblank in [false, true] {
+                for prefix in EVERY_PREFIX_SHAPE {
+                    for region in EVERY_REGION_SHAPE {
+                        for endpoint_present in [false, true] {
+                            let shape = ObjectStoreConfigShape {
+                                bucket_nonblank,
+                                prefix,
+                                region,
+                                endpoint_present,
+                            };
+                            let expected =
+                                match (bucket_nonblank, prefix, provider, region, endpoint_present)
+                                {
+                                    (false, _, _, _, _) | (_, PrefixShape::Missing, _, _, _) => {
+                                        ObjectStoreConfigDecision::MissingBucketOrPrefix
+                                    }
+                                    (_, PrefixShape::Invalid, _, _, _) => {
+                                        ObjectStoreConfigDecision::InvalidPrefix
+                                    }
+                                    (
+                                        true,
+                                        PrefixShape::Normalized,
+                                        ObjectStoreProvider::S3,
+                                        RegionShape::Named,
+                                        _,
+                                    )
+                                    | (
+                                        true,
+                                        PrefixShape::Normalized,
+                                        ObjectStoreProvider::Gcs,
+                                        RegionShape::Absent,
+                                        false,
+                                    ) => ObjectStoreConfigDecision::Accept,
+                                    (
+                                        true,
+                                        PrefixShape::Normalized,
+                                        ObjectStoreProvider::S3,
+                                        _,
+                                        _,
+                                    ) => ObjectStoreConfigDecision::MissingS3Region,
+                                    (
+                                        true,
+                                        PrefixShape::Normalized,
+                                        ObjectStoreProvider::Gcs,
+                                        _,
+                                        _,
+                                    ) => ObjectStoreConfigDecision::GcsHasS3Coordinates,
+                                };
+                            assert_eq!(object_store_config_kernel(provider, shape), expected);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Cause/effect rule S3-raw: a valid literal bucket and prefix hold their
+    /// two classifications fixed; the actual production decision receives an
+    /// absent, one-space or named region and an independently absent/present
+    /// endpoint. S3 accepts exactly the named region in both endpoint states;
+    /// the other four cases report MissingS3Region. This proves only these
+    /// borrowed raw representatives, not arbitrary UTF-8 region strings.
+    /// @exhaustive region representative(3) x bool(2) = 6
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    #[test]
+    fn object_store_configuration_derives_s3_region_from_raw_representatives() {
+        for region_case in 0_u8..3 {
+            for endpoint_present in [false, true] {
+                let region = match region_case {
+                    0 => None,
+                    1 => Some(" "),
+                    _ => Some("r"),
+                };
+                let decision = object_store_config_decision(
+                    ObjectStoreProvider::S3,
+                    "b",
+                    "p",
+                    region,
+                    endpoint_present.then_some("e"),
+                );
+                assert_eq!(
+                    decision,
+                    if region_case == 2 {
+                        ObjectStoreConfigDecision::Accept
+                    } else {
+                        ObjectStoreConfigDecision::MissingS3Region
+                    }
+                );
+            }
+        }
+    }
+
+    /// Cause/effect rule BP-raw: an empty or named bucket crosses a missing,
+    /// malformed or normalized prefix. With valid S3 coordinates, the real
+    /// production decision reports Missing first, Invalid second, otherwise
+    /// Accept. Six raw-string combinations expose precedence without assuming
+    /// preclassified bucket/prefix bits; longer and Unicode inputs belong to
+    /// the executable differential tests, not this bounded proof.
+    /// @exhaustive bool(2) x prefix representative(3) = 6
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    #[test]
+    fn object_store_configuration_derives_bucket_prefix_from_raw_representatives() {
+        for bucket_named in [false, true] {
+            for prefix_case in 0_u8..3 {
+                let bucket = if bucket_named { "b" } else { "" };
+                let prefix = match prefix_case {
+                    0 => "/",
+                    1 => "/bad",
+                    _ => "p",
+                };
+                let decision = object_store_config_decision(
+                    ObjectStoreProvider::S3,
+                    bucket,
+                    prefix,
+                    Some("r"),
+                    None,
+                );
+                let expected = if !bucket_named || prefix_case == 0 {
+                    ObjectStoreConfigDecision::MissingBucketOrPrefix
+                } else if prefix_case == 1 {
+                    ObjectStoreConfigDecision::InvalidPrefix
+                } else {
+                    ObjectStoreConfigDecision::Accept
+                };
+                assert_eq!(decision, expected);
+            }
+        }
+    }
+
+    /// Cause/effect rule GCS-raw: with valid literal bucket and prefix,
+    /// absent, blank and named raw region options cross an independent absent
+    /// or present endpoint. GCS accepts only both absent; all five other
+    /// cases reject S3 coordinates, including an empty but present region.
+    /// This is a bounded representative proof, not arbitrary UTF-8 admission.
+    /// @exhaustive region representative(3) x bool(2) = 6
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    #[test]
+    fn object_store_configuration_derives_gcs_coordinates_from_raw_representatives() {
+        for region_case in 0_u8..3 {
+            for endpoint_present in [false, true] {
+                let region = match region_case {
+                    0 => None,
+                    1 => Some(" "),
+                    _ => Some("r"),
+                };
+                let decision = object_store_config_decision(
+                    ObjectStoreProvider::Gcs,
+                    "b",
+                    "p",
+                    region,
+                    endpoint_present.then_some("e"),
+                );
+                assert_eq!(
+                    decision,
+                    if region_case == 0 && !endpoint_present {
+                        ObjectStoreConfigDecision::Accept
+                    } else {
+                        ObjectStoreConfigDecision::GcsHasS3Coordinates
+                    }
+                );
+            }
+        }
+    }
+
+    /// Cause/effect rule B-ASCII: zero to two bytes from the admitted ASCII
+    /// alphabet {space, 'a'} feed the production ASCII classifier. All-space
+    /// bytes are blank; any 'a' makes the bucket or region nonblank. The
+    /// production string wrapper uses this classifier only after is_ascii();
+    /// executable differential tests cover every short ASCII byte and Unicode.
+    /// @exhaustive bool(2) x bool(2) x length(3) = 12
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    #[test]
+    fn object_store_configuration_classifies_bounded_ascii_blankness() {
+        for first in [b' ', b'a'] {
+            for second in [b' ', b'a'] {
+                for len in 0_u8..=2 {
+                    let bytes = [first, second];
+                    let raw = &bytes[..usize::from(len)];
+                    let expected = (len >= 1 && first == b'a') || (len == 2 && second == b'a');
+                    assert_eq!(ascii_has_nonblank(raw), expected);
+                }
+            }
+        }
+    }
+
+    /// Cause/effect rule P-ASCII: zero to three bytes from {'/', 'p'} feed
+    /// the production prefix byte classifier. Empty/all slash is Missing;
+    /// a leading or trailing slash is Invalid; all other shapes are
+    /// Normalized. The full UTF-8 wrapper is covered by executable differential
+    /// tests against the original string rule, including dot and Unicode.
+    /// @exhaustive bool(2) x bool(2) x bool(2) x length(4) = 32
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    #[test]
+    fn object_store_configuration_classifies_bounded_ascii_prefix() {
+        for first in [b'/', b'p'] {
+            for middle in [b'/', b'p'] {
+                for last in [b'/', b'p'] {
+                    for len in 0_u8..=3 {
+                        let bytes = [first, middle, last];
+                        let raw = &bytes[..usize::from(len)];
+                        let expected = match len {
+                            0 => PrefixShape::Missing,
+                            1 if first == b'/' => PrefixShape::Missing,
+                            1 => PrefixShape::Normalized,
+                            2 if first == b'/' && middle == b'/' => PrefixShape::Missing,
+                            2 if first == b'p' && middle == b'p' => PrefixShape::Normalized,
+                            2 => PrefixShape::Invalid,
+                            _ if first == b'/' && middle == b'/' && last == b'/' => {
+                                PrefixShape::Missing
+                            }
+                            _ if first == b'p' && last == b'p' => PrefixShape::Normalized,
+                            _ => PrefixShape::Invalid,
+                        };
+                        assert_eq!(classify_prefix_bytes(raw), expected);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Cause/effect rule P-dot: a whole dot or parent segment rejects;
+    /// a dot inside an ordinary segment accepts. Other slash patterns
+    /// belong to P-ASCII and the executable exhaustive differential table.
+    /// @exhaustive dot-segment representative(5) = 5
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    #[test]
+    fn object_store_configuration_classifies_bounded_dot_segments() {
+        for prefix_case in 0_u8..5 {
+            let prefix = match prefix_case {
+                0 => b".".as_slice(),
+                1 => b"..".as_slice(),
+                2 => b"p/./q".as_slice(),
+                3 => b"p/../q".as_slice(),
+                _ => b"p.q".as_slice(),
+            };
+            assert_eq!(
+                classify_prefix_bytes(prefix),
+                if prefix_case == 4 {
+                    PrefixShape::Normalized
+                } else {
+                    PrefixShape::Invalid
+                }
+            );
+        }
     }
 }

@@ -784,129 +784,173 @@ pub fn default_postgres_max_connections() -> NonZeroU32 {
     NonZeroU32::new(value).expect("parallelism plus eight is non-zero")
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::{
         ContainerHandResidency, DispatchBackend, SandboxTier, durable_dispatch_is_admitted,
         sandbox_support_projection,
     };
     use awaken_tool_contract::tool::ToolRecoveryCapability;
 
-    fn symbolic_dispatch_backend(value: bool) -> DispatchBackend {
-        if value {
-            DispatchBackend::Postgres
-        } else {
-            DispatchBackend::Sqlite
+    const EVERY_DISPATCH_BACKEND: [DispatchBackend; 2] =
+        [DispatchBackend::Sqlite, DispatchBackend::Postgres];
+
+    const fn listed_dispatch_backend(backend: DispatchBackend) -> usize {
+        match backend {
+            DispatchBackend::Sqlite => 0,
+            DispatchBackend::Postgres => 1,
         }
     }
 
-    fn symbolic_sandbox_tier(value: u8) -> SandboxTier {
-        match value % 5 {
-            0 => SandboxTier::Local,
-            1 => SandboxTier::Namespace,
-            2 => SandboxTier::Docker,
-            3 => SandboxTier::Podman,
-            _ => SandboxTier::K8s,
-        }
-    }
+    const EVERY_SANDBOX_TIER: [SandboxTier; 5] = [
+        SandboxTier::Local,
+        SandboxTier::Namespace,
+        SandboxTier::Docker,
+        SandboxTier::Podman,
+        SandboxTier::K8s,
+    ];
 
-    /// @obligation worker.sandbox_tool_recovery_is_a_hard_claim_axis
-    #[kani::proof]
-    fn container_hand_residency_recovery_mapping_is_total_exact_and_non_widening() {
-        let residency = if kani::any::<bool>() {
-            ContainerHandResidency::AttachedExec
-        } else {
-            ContainerHandResidency::Resident
-        };
-        let expected = match residency {
-            ContainerHandResidency::AttachedExec => ToolRecoveryCapability::NonRecoverable,
-            ContainerHandResidency::Resident => ToolRecoveryCapability::DurableRequest,
-        };
-
-        assert_eq!(residency.recovery_capability(), expected);
-        if residency == ContainerHandResidency::AttachedExec {
-            assert_ne!(
-                residency.recovery_capability(),
-                ToolRecoveryCapability::DurableRequest
-            );
-        }
-    }
-
-    /// @obligation run_ingress.durable_dispatch_deployment_admission_is_exact_store_independent_and_evidence_monotonic
-    /// @proof-input-debt free_symbol durable_dispatch_is_admitted has_storage_dir
-    #[kani::proof]
-    fn durable_dispatch_admission_is_exact_and_commit_store_independent() {
-        let durable: bool = kani::any();
-        let postgres_dispatch: bool = kani::any();
-        let has_storage_dir: bool = kani::any();
-        let injected: bool = kani::any();
-        let backend = symbolic_dispatch_backend(postgres_dispatch);
-
-        let admitted = durable_dispatch_is_admitted(durable, backend, has_storage_dir, injected);
-        assert_eq!(
-            admitted,
-            !durable || postgres_dispatch || has_storage_dir || injected
-        );
-
-        // The exact formula is a disjunction of the three evidence bits (the
-        // backend has only the two variants drawn here), so it is monotone in
-        // each: adding Postgres, a storage dir or an injected queue never
-        // revokes an admission. This is the "evidence monotonic" half of the
-        // obligation; no second harness restates it.
-        //
-        // No commit-store value is accepted by this kernel. When all actual
-        // dispatch persistence evidence is absent, durable ingress is rejected.
-        if durable && !postgres_dispatch && !has_storage_dir && !injected {
-            assert!(!admitted);
-        }
-    }
-
-    /// @obligation sandbox.deployment_support_projection_is_total_exact_and_evidence_bound
-    /// @proof-input-debt free_symbol sandbox_support_projection has_package_builder
-    /// @proof-input-debt free_symbol sandbox_support_projection has_package_registry
-    #[kani::proof]
-    fn sandbox_support_projection_is_total_exact_and_evidence_bound() {
-        let tier = symbolic_sandbox_tier(kani::any());
-        let package_registry: bool = kani::any();
-        let package_builder: bool = kani::any();
-        let projection = sandbox_support_projection(tier, package_registry, package_builder);
-
-        // Causes: the five existing deployment tiers and both independent
-        // registry/builder facts. Effect rows: preserve that same tier, Local
-        // isolates neither, Namespace isolates network only, Docker/Podman
-        // support both, and K8s requires both facts for packages while never
-        // inferring network isolation. The capability/name table checks
-        // the public support projection independently of this pure proof.
-        assert_eq!(projection.backend, tier);
-
+    const fn listed_sandbox_tier(tier: SandboxTier) -> usize {
         match tier {
-            SandboxTier::Local => {
-                assert_eq!(projection.backend, SandboxTier::Local);
-                assert!(!projection.network_isolation);
-                assert!(!projection.package_provisioning);
-            }
-            SandboxTier::Namespace => {
-                assert_eq!(projection.backend, SandboxTier::Namespace);
-                assert!(projection.network_isolation);
-                assert!(!projection.package_provisioning);
-            }
-            SandboxTier::Docker => {
-                assert_eq!(projection.backend, SandboxTier::Docker);
-                assert!(projection.network_isolation);
-                assert!(projection.package_provisioning);
-            }
-            SandboxTier::Podman => {
-                assert_eq!(projection.backend, SandboxTier::Podman);
-                assert!(projection.network_isolation);
-                assert!(projection.package_provisioning);
-            }
-            SandboxTier::K8s => {
-                assert_eq!(projection.backend, SandboxTier::K8s);
-                assert!(!projection.network_isolation);
-                assert_eq!(
-                    projection.package_provisioning,
-                    package_registry && package_builder
+            SandboxTier::Local => 0,
+            SandboxTier::Namespace => 1,
+            SandboxTier::Docker => 2,
+            SandboxTier::Podman => 3,
+            SandboxTier::K8s => 4,
+        }
+    }
+
+    const EVERY_RESIDENCY: [ContainerHandResidency; 2] = [
+        ContainerHandResidency::AttachedExec,
+        ContainerHandResidency::Resident,
+    ];
+
+    const fn listed_residency(residency: ContainerHandResidency) -> usize {
+        match residency {
+            ContainerHandResidency::AttachedExec => 0,
+            ContainerHandResidency::Resident => 1,
+        }
+    }
+
+    #[test]
+    fn every_backend_tier_and_residency_is_listed_once() {
+        for (index, backend) in EVERY_DISPATCH_BACKEND.into_iter().enumerate() {
+            assert_eq!(listed_dispatch_backend(backend), index);
+        }
+        for (index, tier) in EVERY_SANDBOX_TIER.into_iter().enumerate() {
+            assert_eq!(listed_sandbox_tier(tier), index);
+        }
+        for (index, residency) in EVERY_RESIDENCY.into_iter().enumerate() {
+            assert_eq!(listed_residency(residency), index);
+        }
+    }
+
+    /// @exhaustive ContainerHandResidency(2) = 2
+    /// @obligation worker.sandbox_tool_recovery_is_a_hard_claim_axis
+    #[test]
+    fn container_hand_residency_recovery_mapping_is_total_exact_and_non_widening() {
+        for residency in EVERY_RESIDENCY {
+            let expected = match residency {
+                ContainerHandResidency::AttachedExec => ToolRecoveryCapability::NonRecoverable,
+                ContainerHandResidency::Resident => ToolRecoveryCapability::DurableRequest,
+            };
+
+            assert_eq!(residency.recovery_capability(), expected);
+            if residency == ContainerHandResidency::AttachedExec {
+                assert_ne!(
+                    residency.recovery_capability(),
+                    ToolRecoveryCapability::DurableRequest
                 );
+            }
+        }
+    }
+
+    /// @exhaustive bool(2) x DispatchBackend(2) x bool(2) x bool(2) = 16
+    /// @obligation run_ingress.durable_dispatch_deployment_admission_is_exact_store_independent_and_evidence_monotonic
+    #[test]
+    fn durable_dispatch_admission_is_exact_and_commit_store_independent() {
+        for durable in [false, true] {
+            for backend in EVERY_DISPATCH_BACKEND {
+                let postgres_dispatch = backend == DispatchBackend::Postgres;
+                for has_storage_dir in [false, true] {
+                    for injected in [false, true] {
+                        let admitted = durable_dispatch_is_admitted(
+                            durable,
+                            backend,
+                            has_storage_dir,
+                            injected,
+                        );
+                        assert_eq!(
+                            admitted,
+                            !durable || postgres_dispatch || has_storage_dir || injected
+                        );
+
+                        // The exact formula is a disjunction of the three evidence bits (the
+                        // backend has only the two variants drawn here), so it is monotone in
+                        // each: adding Postgres, a storage dir or an injected queue never
+                        // revokes an admission. This is the "evidence monotonic" half of the
+                        // obligation; no second harness restates it.
+                        //
+                        // No commit-store value is accepted by this kernel. When all actual
+                        // dispatch persistence evidence is absent, durable ingress is rejected.
+                        if durable && !postgres_dispatch && !has_storage_dir && !injected {
+                            assert!(!admitted);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive SandboxTier(5) x bool(2) x bool(2) = 20
+    /// @obligation sandbox.deployment_support_projection_is_total_exact_and_evidence_bound
+    #[test]
+    fn sandbox_support_projection_is_total_exact_and_evidence_bound() {
+        for tier in EVERY_SANDBOX_TIER {
+            for package_registry in [false, true] {
+                for package_builder in [false, true] {
+                    let projection =
+                        sandbox_support_projection(tier, package_registry, package_builder);
+
+                    // Causes: the five existing deployment tiers and both independent
+                    // registry/builder facts. Effect rows: preserve that same tier, Local
+                    // isolates neither, Namespace isolates network only, Docker/Podman
+                    // support both, and K8s requires both facts for packages while never
+                    // inferring network isolation. The capability/name table checks
+                    // the public support projection independently of this pure proof.
+                    assert_eq!(projection.backend, tier);
+
+                    match tier {
+                        SandboxTier::Local => {
+                            assert_eq!(projection.backend, SandboxTier::Local);
+                            assert!(!projection.network_isolation);
+                            assert!(!projection.package_provisioning);
+                        }
+                        SandboxTier::Namespace => {
+                            assert_eq!(projection.backend, SandboxTier::Namespace);
+                            assert!(projection.network_isolation);
+                            assert!(!projection.package_provisioning);
+                        }
+                        SandboxTier::Docker => {
+                            assert_eq!(projection.backend, SandboxTier::Docker);
+                            assert!(projection.network_isolation);
+                            assert!(projection.package_provisioning);
+                        }
+                        SandboxTier::Podman => {
+                            assert_eq!(projection.backend, SandboxTier::Podman);
+                            assert!(projection.network_isolation);
+                            assert!(projection.package_provisioning);
+                        }
+                        SandboxTier::K8s => {
+                            assert_eq!(projection.backend, SandboxTier::K8s);
+                            assert!(!projection.network_isolation);
+                            assert_eq!(
+                                projection.package_provisioning,
+                                package_registry && package_builder
+                            );
+                        }
+                    }
+                }
             }
         }
     }

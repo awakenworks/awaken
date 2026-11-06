@@ -30,29 +30,6 @@ pub const fn session_realization_worker_effect(
     }
 }
 
-#[cfg(kani)]
-/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
-#[kani::proof]
-fn session_realization_control_disposition_projects_exact_worker_effect() {
-    let selector = kani::any::<u8>() % 3;
-    let (disposition, expected) = match selector {
-        0 => (
-            awaken_session_execution_contract::SessionRealizationControlDisposition::NotReady,
-            SessionRealizationWorkerEffect::Defer,
-        ),
-        1 => (
-            awaken_session_execution_contract::SessionRealizationControlDisposition::Retryable,
-            SessionRealizationWorkerEffect::Relinquish,
-        ),
-        _ => (
-            awaken_session_execution_contract::SessionRealizationControlDisposition::Terminal,
-            SessionRealizationWorkerEffect::Absorb,
-        ),
-    };
-
-    assert_eq!(session_realization_worker_effect(disposition), expected);
-}
-
 /// Project one admission or realization failure onto the claim outcome its
 /// disposition names. The realization driver projects the same disposition
 /// through [`map_session_realization_drive_error`], so both paths agree.
@@ -251,6 +228,52 @@ mod retry_hint_tests {
                     (class, actual) => panic!("{class} had wrong projection {actual:?}"),
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+    use awaken_session_execution_contract::SessionRealizationControlDisposition;
+
+    const fn listed_disposition(disposition: SessionRealizationControlDisposition) -> usize {
+        match disposition {
+            SessionRealizationControlDisposition::NotReady => 0,
+            SessionRealizationControlDisposition::Retryable => 1,
+            SessionRealizationControlDisposition::Terminal => 2,
+        }
+    }
+    const EVERY_DISPOSITION: [SessionRealizationControlDisposition; 3] = [
+        SessionRealizationControlDisposition::NotReady,
+        SessionRealizationControlDisposition::Retryable,
+        SessionRealizationControlDisposition::Terminal,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_DISPOSITION.into_iter().enumerate() {
+            assert_eq!(listed_disposition(value), index);
+        }
+    }
+
+    /// @exhaustive SessionRealizationControlDisposition(3) = 3
+    /// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
+    #[test]
+    fn session_realization_control_disposition_projects_exact_worker_effect() {
+        for disposition in EVERY_DISPOSITION {
+            let expected = match disposition {
+                SessionRealizationControlDisposition::NotReady => {
+                    SessionRealizationWorkerEffect::Defer
+                }
+                SessionRealizationControlDisposition::Retryable => {
+                    SessionRealizationWorkerEffect::Relinquish
+                }
+                SessionRealizationControlDisposition::Terminal => {
+                    SessionRealizationWorkerEffect::Absorb
+                }
+            };
+            assert_eq!(session_realization_worker_effect(disposition), expected);
         }
     }
 }

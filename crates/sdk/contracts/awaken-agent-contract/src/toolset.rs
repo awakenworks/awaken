@@ -91,7 +91,6 @@ pub enum ToolPermissionRequirement {
 /// override must answer is not "is this stricter?" but "does this let more run
 /// unattended than the author allowed?".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(kani, derive(kani::Arbitrary))]
 pub enum GrantedAutonomy {
     /// Nothing runs until a person decides.
     None,
@@ -236,67 +235,87 @@ impl ToolsetPolicy {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
-    /// Range over the COMPLETE requirement vocabulary.
-    ///
-    /// A two-valued generator silently stops covering the domain the moment a
-    /// variant is added — the proof keeps passing while a third of its input
-    /// space goes unexplored. The exhaustiveness assertion below turns that
-    /// failure mode into a build error instead.
-    fn symbolic_permission() -> ToolPermissionRequirement {
-        match kani::any::<u8>() % 3 {
-            0 => ToolPermissionRequirement::AlwaysAllow,
-            1 => ToolPermissionRequirement::AlwaysAsk,
-            _ => ToolPermissionRequirement::Auto,
-        }
-    }
-
-    /// Fail the build when a requirement is added without extending the
-    /// generator above. The match is exhaustive, so a new variant cannot be
-    /// introduced without deciding how the proofs explore it.
-    const fn requirement_generator_is_exhaustive(value: ToolPermissionRequirement) -> u8 {
+    /// Fail the build when a requirement is added without extending the list
+    /// below. The match is exhaustive, so a new variant cannot be introduced
+    /// without deciding how the tests explore it.
+    const fn listed_permission(value: ToolPermissionRequirement) -> usize {
         match value {
             ToolPermissionRequirement::AlwaysAllow => 0,
             ToolPermissionRequirement::AlwaysAsk => 1,
             ToolPermissionRequirement::Auto => 2,
         }
     }
+    const EVERY_PERMISSION: [ToolPermissionRequirement; 3] = [
+        ToolPermissionRequirement::AlwaysAllow,
+        ToolPermissionRequirement::AlwaysAsk,
+        ToolPermissionRequirement::Auto,
+    ];
 
-    fn symbolic_policy(enabled: bool) -> ToolExecutionPolicy {
-        ToolExecutionPolicy {
-            enabled,
-            permission: symbolic_permission(),
+    const fn listed_autonomy(value: GrantedAutonomy) -> usize {
+        match value {
+            GrantedAutonomy::None => 0,
+            GrantedAutonomy::Evaluated => 1,
+            GrantedAutonomy::Full => 2,
+        }
+    }
+    const EVERY_AUTONOMY: [GrantedAutonomy; 3] = [
+        GrantedAutonomy::None,
+        GrantedAutonomy::Evaluated,
+        GrantedAutonomy::Full,
+    ];
+
+    /// Every enabled flag crossed with every requirement.
+    fn every_policy() -> impl Iterator<Item = ToolExecutionPolicy> {
+        [false, true].into_iter().flat_map(|enabled| {
+            EVERY_PERMISSION
+                .into_iter()
+                .map(move |permission| ToolExecutionPolicy {
+                    enabled,
+                    permission,
+                })
+        })
+    }
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_PERMISSION.into_iter().enumerate() {
+            assert_eq!(listed_permission(value), index);
+        }
+        for (index, value) in EVERY_AUTONOMY.into_iter().enumerate() {
+            assert_eq!(listed_autonomy(value), index);
         }
     }
 
+    /// @exhaustive ToolExecutionPolicy(bool(2) x ToolPermissionRequirement(3) = 6) x ToolExecutionPolicy(6) = 36
     /// @obligation tool_policy.managed_agent_and_mcp_defaults_are_source_exact_and_configurable
-    #[kani::proof]
+    #[test]
     fn toolset_policy_exact_override_replaces_only_the_matching_default() {
         // Cause/effect decision table: C1 lookup is the exact "search" name or
         // the distinct "fetch" name; C2 default and override independently
-        // range over enabled x allow/ask. E1 exact returns the override; E2 the
-        // foreign name returns the default. The fixed non-empty names prove the
-        // production lookup's selection priority; arbitrary names and override
-        // counts remain outside this scalar harness.
-        let default = symbolic_policy(kani::any());
-        let exact = symbolic_policy(kani::any());
-        let policy = ToolsetPolicy {
-            source: ToolsetSource::Agent,
-            default,
-            overrides: vec![ToolPolicyOverride::new("search", exact)],
-        };
-
-        assert_eq!(policy.policy_for("search"), exact);
-        assert_eq!(policy.policy_for("fetch"), default);
+        // range over enabled x allow/ask/auto. E1 exact returns the override; E2
+        // the foreign name returns the default. The fixed non-empty names prove
+        // the production lookup's selection priority; arbitrary names and
+        // override counts remain outside this scalar table.
+        for default in every_policy() {
+            for exact in every_policy() {
+                let policy = ToolsetPolicy {
+                    source: ToolsetSource::Agent,
+                    default,
+                    overrides: vec![ToolPolicyOverride::new("search", exact)],
+                };
+                assert_eq!(policy.policy_for("search"), exact);
+                assert_eq!(policy.policy_for("fetch"), default);
+            }
+        }
     }
 
+    /// @exhaustive bool(2) x bool(2) x bool(2) x ToolPermissionRequirement(3) x ToolPermissionRequirement(3) = 72
     /// @obligation tool_policy.selector_fails_closed_for_unregistered_widened_or_mismatched_calls
-    /// @proof-input-debt free_symbol select_tool_policy exact_tool_match
-    /// @proof-input-debt free_symbol select_tool_policy registered
-    #[kani::proof]
+    #[test]
     fn tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls() {
         // Cause/effect graph over the COMPLETE requirement vocabulary.
         // C1 the tool is registered; C2 the lookup matched exactly; C3 the
@@ -311,71 +330,79 @@ mod verification {
         // | S3 | * | F | * | * | E2 |
         // | S4 | * | * | F | * | E2 |
         // | S5 | T | T | T | T | E2 |
-        let registered: bool = kani::any();
-        let exact_tool_match: bool = kani::any();
-        let enabled: bool = kani::any();
-        let authored_permission = symbolic_permission();
-        let requested = symbolic_permission();
-        let _ = requirement_generator_is_exhaustive(authored_permission);
-        let selected = select_tool_policy(
-            registered,
-            exact_tool_match,
-            ToolExecutionPolicy {
-                enabled,
-                permission: authored_permission,
-            },
-            requested,
-        );
-        // Widening is stated once, on the named axis, instead of enumerating
-        // the pairs that happen to widen today.
-        let widened =
-            requested.granted_autonomy().rank() > authored_permission.granted_autonomy().rank();
-        let expected = registered && exact_tool_match && enabled && !widened;
-
-        assert_eq!(selected.is_some(), expected);
-        if let Some(policy) = selected {
-            assert!(policy.enabled);
-            assert_eq!(policy.permission, requested);
-            assert!(!widened);
+        for registered in [false, true] {
+            for exact_tool_match in [false, true] {
+                for enabled in [false, true] {
+                    for authored_permission in EVERY_PERMISSION {
+                        for requested in EVERY_PERMISSION {
+                            let selected = select_tool_policy(
+                                registered,
+                                exact_tool_match,
+                                ToolExecutionPolicy {
+                                    enabled,
+                                    permission: authored_permission,
+                                },
+                                requested,
+                            );
+                            // Widening is stated once, on the named axis, instead
+                            // of enumerating the pairs that happen to widen today.
+                            let widened = requested.granted_autonomy().rank()
+                                > authored_permission.granted_autonomy().rank();
+                            let expected = registered && exact_tool_match && enabled && !widened;
+                            assert_eq!(selected.is_some(), expected);
+                            if let Some(policy) = selected {
+                                assert!(policy.enabled);
+                                assert_eq!(policy.permission, requested);
+                                assert!(!widened);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
+    /// @exhaustive GrantedAutonomy(3) x GrantedAutonomy(3) x GrantedAutonomy(3) = 27
     /// @obligation tool_policy.selector_fails_closed_for_unregistered_widened_or_mismatched_calls
-    #[kani::proof]
+    #[test]
     fn autonomy_is_a_total_order_whose_ceiling_test_is_exactly_rank_comparison() {
         // The admission decision rests entirely on this order, so the order
         // itself is proved rather than assumed: `within` must be exactly `<=`
         // on `rank`, and `rank` must be a total order (reflexive, antisymmetric,
         // transitive, and comparable in both directions).
-        let a: GrantedAutonomy = kani::any();
-        let b: GrantedAutonomy = kani::any();
-        let c: GrantedAutonomy = kani::any();
-
-        assert_eq!(a.within(b), a.rank() <= b.rank());
-        assert!(a.within(a), "reflexive");
-        if a.within(b) && b.within(a) {
-            assert_eq!(a.rank(), b.rank(), "antisymmetric");
+        for a in EVERY_AUTONOMY {
+            for b in EVERY_AUTONOMY {
+                for c in EVERY_AUTONOMY {
+                    assert_eq!(a.within(b), a.rank() <= b.rank());
+                    assert!(a.within(a), "reflexive");
+                    if a.within(b) && b.within(a) {
+                        assert_eq!(a.rank(), b.rank(), "antisymmetric");
+                    }
+                    if a.within(b) && b.within(c) {
+                        assert!(a.within(c), "transitive");
+                    }
+                    assert!(a.within(b) || b.within(a), "total");
+                }
+            }
         }
-        if a.within(b) && b.within(c) {
-            assert!(a.within(c), "transitive");
-        }
-        assert!(a.within(b) || b.within(a), "total");
     }
 
+    /// @exhaustive ToolPermissionRequirement(3) = 3
     /// @obligation tool_policy.selector_fails_closed_for_unregistered_widened_or_mismatched_calls
-    #[kani::proof]
+    #[test]
     fn every_requirement_sits_at_exactly_one_autonomy_level() {
         // The projection from a policy value to the axis must be total and
         // injective-by-intent: `auto` sits strictly between the two fixed
         // answers, which is the whole reason a single comparison can admit it.
-        let requirement = symbolic_permission();
-        let level = requirement.granted_autonomy();
-        let expected = match requirement {
-            ToolPermissionRequirement::AlwaysAsk => GrantedAutonomy::None,
-            ToolPermissionRequirement::Auto => GrantedAutonomy::Evaluated,
-            ToolPermissionRequirement::AlwaysAllow => GrantedAutonomy::Full,
-        };
-        assert_eq!(level, expected);
+        for requirement in EVERY_PERMISSION {
+            let level = requirement.granted_autonomy();
+            let expected = match requirement {
+                ToolPermissionRequirement::AlwaysAsk => GrantedAutonomy::None,
+                ToolPermissionRequirement::Auto => GrantedAutonomy::Evaluated,
+                ToolPermissionRequirement::AlwaysAllow => GrantedAutonomy::Full,
+            };
+            assert_eq!(level, expected);
+        }
         assert!(
             GrantedAutonomy::None.rank() < GrantedAutonomy::Evaluated.rank()
                 && GrantedAutonomy::Evaluated.rank() < GrantedAutonomy::Full.rank(),

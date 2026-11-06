@@ -182,6 +182,7 @@ mod proofs {
     use super::*;
 
     /// @obligation mcp.notification_admission_is_exact_and_unknown_fails_closed
+    /// @kani tier=nightly
     #[kani::proof]
     fn notification_admission_is_exact_and_unknown_fails_closed() {
         let bytes: [u8; MAX_NOTIFICATION_METHOD_LEN] = kani::any();

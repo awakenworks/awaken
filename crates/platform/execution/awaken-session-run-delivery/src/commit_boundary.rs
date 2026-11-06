@@ -98,24 +98,6 @@ impl<A: Clone, R> SessionCommitBoundary<A, R> {
     }
 }
 
-#[cfg(kani)]
-/// @obligation background_task.terminal_observer_reads_authoritative_committed_state_not_process_projection
-#[kani::proof]
-fn recovery_projection_cannot_mint_committed_authority() {
-    // Cause/effect decision table: R1 Local with any authority payload -> mint
-    // exactly one committed-authority capability; R2 Remote with any recovery
-    // payload -> no capability. The production boundary is generic only over
-    // its stored payloads, so this exhausts both actual source variants without
-    // constructing or mirroring either persistence implementation.
-    let is_local: bool = kani::any();
-    let source = if is_local {
-        SessionCommitBoundary::<bool, bool>::Local(kani::any())
-    } else {
-        SessionCommitBoundary::<bool, bool>::Remote(kani::any())
-    };
-    assert_eq!(source.committed_authority().is_some(), is_local);
-}
-
 /// A database-less Worker's read boundary: the claim-scoped recovery
 /// projection of its current claim, never committed authority.
 #[derive(Default)]
@@ -382,5 +364,37 @@ mod child_projection_tests {
             ),
         )));
         assert!(Arc::ptr_eq(&local, &local.for_independent_child()), "R2");
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive SessionCommitBoundary<bool, bool>{Local(bool),Remote(bool)}(4) = 4
+    /// @obligation background_task.terminal_observer_reads_authoritative_committed_state_not_process_projection
+    #[test]
+    fn recovery_projection_cannot_mint_committed_authority() {
+        // R1 Local with any authority payload -> mint exactly one
+        // committed-authority capability; R2 Remote with any recovery payload
+        // -> no capability. Both actual source variants with every payload.
+        let mut cases = 0;
+        for is_local in [false, true] {
+            for payload in [false, true] {
+                let source = if is_local {
+                    SessionCommitBoundary::<bool, bool>::Local(payload)
+                } else {
+                    SessionCommitBoundary::<bool, bool>::Remote(payload)
+                };
+                let listed = match &source {
+                    SessionCommitBoundary::Local(_) => true,
+                    SessionCommitBoundary::Remote(_) => false,
+                };
+                assert_eq!(listed, is_local);
+                assert_eq!(source.committed_authority().is_some(), is_local);
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 4);
     }
 }

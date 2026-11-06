@@ -148,44 +148,61 @@ impl CaptureDecision {
     }
 }
 
-#[cfg(kani)]
-mod kani_proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::{ContentCapture, ContentProjection};
 
-    fn arbitrary_capture() -> ContentCapture {
-        match kani::any::<u8>() % 3 {
-            0 => ContentCapture::Off,
-            1 => ContentCapture::Structured,
-            _ => ContentCapture::Full,
+    const fn listed_capture(level: ContentCapture) -> usize {
+        match level {
+            ContentCapture::Off => 0,
+            ContentCapture::Structured => 1,
+            ContentCapture::Full => 2,
+        }
+    }
+    const EVERY_CAPTURE: [ContentCapture; 3] = [
+        ContentCapture::Off,
+        ContentCapture::Structured,
+        ContentCapture::Full,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_CAPTURE.into_iter().enumerate() {
+            assert_eq!(listed_capture(value), index);
         }
     }
 
+    /// @exhaustive ContentCapture(3) x ContentCapture(3) = 9
     /// @obligation capture.policy_meet_and_projection_are_exact_non_widening_and_fail_closed
-    #[kani::proof]
+    #[test]
     fn capture_meet_is_exact_commutative_and_non_widening() {
-        let left = arbitrary_capture();
-        let right = arbitrary_capture();
-        let effective = left.meet(right);
+        for left in EVERY_CAPTURE {
+            for right in EVERY_CAPTURE {
+                let effective = left.meet(right);
 
-        assert_eq!(effective, left.min(right));
-        assert_eq!(effective, right.meet(left));
-        assert!(effective <= left);
-        assert!(effective <= right);
+                assert_eq!(effective, left.min(right));
+                assert_eq!(effective, right.meet(left));
+                assert!(effective <= left);
+                assert!(effective <= right);
+            }
+        }
     }
 
+    /// @exhaustive ContentCapture(3) = 3
     /// @obligation capture.policy_meet_and_projection_are_exact_non_widening_and_fail_closed
-    #[kani::proof]
+    #[test]
     fn capture_projection_admits_content_only_at_full() {
-        let level = arbitrary_capture();
-        assert_eq!(
-            level.projection(),
-            if level == ContentCapture::Full {
-                ContentProjection::Redact
-            } else {
-                ContentProjection::Omit
-            }
-        );
-        assert_eq!(level.allows_content(), level == ContentCapture::Full);
+        for level in EVERY_CAPTURE {
+            assert_eq!(
+                level.projection(),
+                if level == ContentCapture::Full {
+                    ContentProjection::Redact
+                } else {
+                    ContentProjection::Omit
+                }
+            );
+            assert_eq!(level.allows_content(), level == ContentCapture::Full);
+        }
     }
 }
 

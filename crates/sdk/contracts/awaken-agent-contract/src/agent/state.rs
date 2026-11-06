@@ -296,70 +296,99 @@ impl Store {
     }
 }
 
-#[cfg(kani)]
-mod kani_proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
-    fn any_scope(tag: u8) -> Scope {
-        match tag % 4 {
-            0 => Scope::Run,
-            1 => Scope::Thread,
-            2 => Scope::Shared,
-            _ => Scope::Profile,
+    const fn listed_scope(scope: Scope) -> usize {
+        match scope {
+            Scope::Run => 0,
+            Scope::Thread => 1,
+            Scope::Shared => 2,
+            Scope::Profile => 3,
         }
     }
+    const EVERY_SCOPE: [Scope; 4] = [Scope::Run, Scope::Thread, Scope::Shared, Scope::Profile];
 
-    fn any_merge(tag: u8) -> MergePolicy {
-        match tag % 3 {
-            0 => MergePolicy::Disjoint,
-            1 => MergePolicy::Commutative,
-            _ => MergePolicy::Exclusive,
+    const fn listed_merge(merge: MergePolicy) -> usize {
+        match merge {
+            MergePolicy::Disjoint => 0,
+            MergePolicy::Commutative => 1,
+            MergePolicy::Exclusive => 2,
+        }
+    }
+    const EVERY_MERGE: [MergePolicy; 3] = [
+        MergePolicy::Disjoint,
+        MergePolicy::Commutative,
+        MergePolicy::Exclusive,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_SCOPE.into_iter().enumerate() {
+            assert_eq!(listed_scope(value), index);
+        }
+        for (index, value) in EVERY_MERGE.into_iter().enumerate() {
+            assert_eq!(listed_merge(value), index);
         }
     }
 
     /// Cause/effect table: C1 scope is Run; E1 bind the carrying Run identity.
-    /// Every other closed scope is E2/no binding. The four symbolic rows prove
-    /// the selector total and prevent scope widening.
+    /// Every other closed scope is E2/no binding. The four rows prove the
+    /// selector total and prevent scope widening.
+    /// @exhaustive Scope(4) = 4
     /// @obligation thread_state.run_identity_binding
-    /// @proof-input-debt tautology scope_binds_run
-    #[kani::proof]
+    #[test]
     fn run_identity_binding_is_exactly_run_scoped() {
-        let scope = any_scope(kani::any());
-        assert_eq!(scope_binds_run(scope), matches!(scope, Scope::Run));
+        for scope in EVERY_SCOPE {
+            assert_eq!(scope_binds_run(scope), matches!(scope, Scope::Run));
+        }
     }
 
     /// Cause/effect table: C1 prior exclusive Set, C2 current policy Exclusive,
     /// C3 current action Set. Only C1+C2+C3 yields E1/conflict; all other eight
     /// Boolean/policy partitions yield E2/admit.
+    /// @exhaustive bool(2) x MergePolicy(3) x bool(2) = 12
     /// @obligation thread_state.exclusive_batch_conflict
-    #[kani::proof]
+    #[test]
     fn exclusive_state_conflict_requires_every_exact_precondition() {
-        let prior = kani::any();
-        let merge = any_merge(kani::any());
-        let set = kani::any();
-        assert_eq!(
-            exclusive_set_conflicts(prior, merge, set),
-            prior && merge == MergePolicy::Exclusive && set
-        );
+        for prior in [false, true] {
+            for merge in EVERY_MERGE {
+                for set in [false, true] {
+                    assert_eq!(
+                        exclusive_set_conflicts(prior, merge, set),
+                        prior && merge == MergePolicy::Exclusive && set
+                    );
+                }
+            }
+        }
     }
 
     /// Decision table covers Remove, commutative object/object merge, and the
     /// replacement complement across all policies and object-shape booleans.
+    /// @exhaustive MergePolicy(3) x bool(2) x bool(2) x bool(2) = 24
     /// @obligation thread_state.materialization_effect
-    /// @proof-input-debt free_symbol materialization_effect existing_is_object
-    #[kani::proof]
+    #[test]
     fn state_materialization_effect_is_total_and_exact() {
-        let merge = any_merge(kani::any());
-        let remove = kani::any();
-        let existing_object = kani::any();
-        let incoming_object = kani::any();
-        let effect = materialization_effect(merge, remove, existing_object, incoming_object);
-        if remove {
-            assert_eq!(effect, MaterializationEffect::Remove);
-        } else if merge == MergePolicy::Commutative && existing_object && incoming_object {
-            assert_eq!(effect, MaterializationEffect::MergeObjects);
-        } else {
-            assert_eq!(effect, MaterializationEffect::Replace);
+        for merge in EVERY_MERGE {
+            for remove in [false, true] {
+                for existing_object in [false, true] {
+                    for incoming_object in [false, true] {
+                        let effect =
+                            materialization_effect(merge, remove, existing_object, incoming_object);
+                        if remove {
+                            assert_eq!(effect, MaterializationEffect::Remove);
+                        } else if merge == MergePolicy::Commutative
+                            && existing_object
+                            && incoming_object
+                        {
+                            assert_eq!(effect, MaterializationEffect::MergeObjects);
+                        } else {
+                            assert_eq!(effect, MaterializationEffect::Replace);
+                        }
+                    }
+                }
+            }
         }
     }
 }

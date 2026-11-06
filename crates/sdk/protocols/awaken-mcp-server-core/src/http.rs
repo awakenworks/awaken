@@ -174,12 +174,36 @@ where
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
+    const EVERY_METHOD: [McpHttpMethod; 4] = [
+        McpHttpMethod::Get,
+        McpHttpMethod::Post,
+        McpHttpMethod::Delete,
+        McpHttpMethod::Other,
+    ];
+
+    const fn listed_method(method: McpHttpMethod) -> usize {
+        match method {
+            McpHttpMethod::Get => 0,
+            McpHttpMethod::Post => 1,
+            McpHttpMethod::Delete => 2,
+            McpHttpMethod::Other => 3,
+        }
+    }
+
+    #[test]
+    fn every_method_is_listed_once() {
+        for (index, method) in EVERY_METHOD.into_iter().enumerate() {
+            assert_eq!(listed_method(method), index);
+        }
+    }
+
+    /// @exhaustive McpHttpMethod(4) = 4
     /// @obligation mcp.sessionless_stream_lifecycle
-    #[kani::proof]
+    #[test]
     fn sessionless_http_lifecycle_routes_each_method_to_its_exact_action() {
         // Cause graph: C1=GET, C2=POST, C3=DELETE, C4=unsupported method.
         // Effects: E1=open the standing event stream, E2=select POST dispatch,
@@ -192,23 +216,17 @@ mod verification {
         // | R2 | POST | E2 |
         // | R3 | DELETE | E3 |
         // | R4 | Other | E4 |
-        let tag: u8 = kani::any();
-        let case = tag & 3;
-        let method = match case {
-            0 => McpHttpMethod::Get,
-            1 => McpHttpMethod::Post,
-            2 => McpHttpMethod::Delete,
-            _ => McpHttpMethod::Other,
-        };
-        let action = sessionless_http_action(method);
+        for (case, method) in EVERY_METHOD.into_iter().enumerate() {
+            let action = sessionless_http_action(method);
 
-        assert_eq!(action == SessionlessHttpAction::OpenEventStream, case == 0);
-        assert_eq!(action == SessionlessHttpAction::DispatchPost, case == 1);
-        assert_eq!(
-            action == SessionlessHttpAction::AcknowledgeDelete,
-            case == 2
-        );
-        assert_eq!(action == SessionlessHttpAction::RejectMethod, case == 3);
+            assert_eq!(action == SessionlessHttpAction::OpenEventStream, case == 0);
+            assert_eq!(action == SessionlessHttpAction::DispatchPost, case == 1);
+            assert_eq!(
+                action == SessionlessHttpAction::AcknowledgeDelete,
+                case == 2
+            );
+            assert_eq!(action == SessionlessHttpAction::RejectMethod, case == 3);
+        }
     }
 }
 

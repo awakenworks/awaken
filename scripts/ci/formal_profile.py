@@ -33,8 +33,8 @@ def validate_proof_grade(row: dict) -> None:
         # No universal Rust-to-model verifier is wired yet. Captured traces
         # remain evidence but cannot manufacture that missing capability.
         raise ValueError(f"{key} implementation_refined requires a checked universal production refinement; captured traces do not qualify")
-    if grade == "production_kernel_proved" and not row.get("proof_harnesses"):
-        raise ValueError(f"{key} production-kernel grade has no Kani harness")
+    if grade == "production_kernel_proved" and not (row.get("proof_harnesses") or row.get("exhaustive_tests")):
+        raise ValueError(f"{key} production-kernel grade has no Kani harness or exhaustive test")
     if grade in DIRECT_GRADES and not row.get("production_entrypoints"):
         raise ValueError(f"{key} direct production grade has no production entrypoint")
     if grade in DIRECT_GRADES and any(

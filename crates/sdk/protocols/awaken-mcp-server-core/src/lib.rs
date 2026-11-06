@@ -5,7 +5,7 @@
 //! Streamable HTTP decision kernel. It deliberately knows nothing about an agent
 //! runtime, authorization, approval, resources, stores, principals, or scopes.
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 mod formal;
 mod http;
 mod server;

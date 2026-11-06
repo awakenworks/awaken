@@ -319,17 +319,6 @@ mod capability_tests {
     }
 }
 
-#[cfg(kani)]
-/// @obligation sandbox.allowlist_claim_requires_runtime_and_issuer_evidence
-/// @proof-input-debt free_symbol allowlist_capability_advertised issuer_installed
-#[kani::proof]
-fn allowlist_claim_never_exceeds_its_evidence() {
-    let runtime_attested: bool = kani::any();
-    let issuer_installed: bool = kani::any();
-    let advertised = allowlist_capability_advertised(runtime_attested, issuer_installed);
-    assert!(!advertised || (runtime_attested && issuer_installed));
-}
-
 /// A memory-store mount carried into a remote container runtime. The canonical
 /// MemoryMounter seeds and harvests these bytes; the Pod receives no Resource
 /// authority credential.
@@ -483,57 +472,6 @@ fn exact_removal_decision(
             "original source retention is not physical removal authority".into(),
         )),
         pc::SandboxObservation::Incompatible { reason } => Err(RuntimeError::Backend(reason)),
-    }
-}
-
-#[cfg(kani)]
-/// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
-/// @kani profile=solver-kissat-v1
-#[kani::proof]
-#[kani::unwind(8)]
-fn retained_original_never_authorizes_exact_physical_removal() {
-    // The seven variants merge before the reason comparison, so builtin memcmp
-    // needs a bound: "foreign" is seven bytes plus the loop exit. Unwinding
-    // assertions stay on, so a short bound fails instead of truncating.
-    // ER1 cause/effect table over all seven observation discriminants, fixed
-    // incarnation/reason bytes and both absence-payload presence cases.
-    // R1 Provisioning/Ready/Terminal/Disposing -> original Remove decision;
-    // R2 definitive absence -> AlreadyAbsent; R3 retained original, even with
-    // the same incarnation -> Conflict; R4 incompatibility -> original Backend.
-    // The production kernel accepts no adapter Result, so no fake IO-error
-    // input is added. This proves the enum policy, not current authority,
-    // immutable-UID DELETE effects or complete physical participant absence.
-    let variant: u8 = kani::any();
-    kani::assume(variant < 7);
-    let present_incarnation: bool = kani::any();
-    let observation = match variant {
-        0 => pc::SandboxObservation::Provisioning { deadline: None },
-        1 => pc::SandboxObservation::Ready,
-        2 => pc::SandboxObservation::Terminal {
-            physical_incarnation: "p".into(),
-        },
-        3 => pc::SandboxObservation::Disposing {
-            physical_incarnation: "p".into(),
-        },
-        4 => pc::SandboxObservation::DefinitivelyUnavailable {
-            physical_incarnation: present_incarnation.then(|| "p".into()),
-        },
-        5 => pc::SandboxObservation::RetainedOriginal {
-            physical_incarnation: "p".into(),
-        },
-        _ => pc::SandboxObservation::Incompatible {
-            reason: "foreign".into(),
-        },
-    };
-    let actual = exact_removal_decision(observation);
-    match variant {
-        0..=3 => assert_eq!(actual.unwrap(), ExactRemovalDecision::Remove),
-        4 => assert_eq!(actual.unwrap(), ExactRemovalDecision::AlreadyAbsent),
-        5 => assert!(matches!(actual, Err(RuntimeError::Conflict(_)))),
-        _ => match actual {
-            Err(RuntimeError::Backend(reason)) => assert_eq!(reason, "foreign"),
-            _ => panic!("ER1 incompatibility must preserve its original Backend"),
-        },
     }
 }
 
@@ -2031,5 +1969,73 @@ pub trait ContainerRuntime: Send + Sync {
         Err(RuntimeError::Backend(
             "container runtime does not implement immutable-incarnation removal".into(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation sandbox.allowlist_claim_requires_runtime_and_issuer_evidence
+    #[test]
+    fn allowlist_claim_never_exceeds_its_evidence() {
+        for runtime_attested in [false, true] {
+            for issuer_installed in [false, true] {
+                let advertised =
+                    allowlist_capability_advertised(runtime_attested, issuer_installed);
+                assert!(!advertised || (runtime_attested && issuer_installed));
+            }
+        }
+    }
+
+    /// @exhaustive SandboxObservation representative(7) x bool(2) = 14
+    /// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+    #[test]
+    fn retained_original_never_authorizes_exact_physical_removal() {
+        // The seven variants merge before the reason comparison, so builtin memcmp
+        // needs a bound: "foreign" is seven bytes plus the loop exit. Unwinding
+        // assertions stay on, so a short bound fails instead of truncating.
+        // ER1 cause/effect table over all seven observation discriminants, fixed
+        // incarnation/reason bytes and both absence-payload presence cases.
+        // R1 Provisioning/Ready/Terminal/Disposing -> original Remove decision;
+        // R2 definitive absence -> AlreadyAbsent; R3 retained original, even with
+        // the same incarnation -> Conflict; R4 incompatibility -> original Backend.
+        // The production kernel accepts no adapter Result, so no fake IO-error
+        // input is added. This proves the enum policy, not current authority,
+        // immutable-UID DELETE effects or complete physical participant absence.
+        for variant in 0_u8..7 {
+            for present_incarnation in [false, true] {
+                let observation = match variant {
+                    0 => pc::SandboxObservation::Provisioning { deadline: None },
+                    1 => pc::SandboxObservation::Ready,
+                    2 => pc::SandboxObservation::Terminal {
+                        physical_incarnation: "p".into(),
+                    },
+                    3 => pc::SandboxObservation::Disposing {
+                        physical_incarnation: "p".into(),
+                    },
+                    4 => pc::SandboxObservation::DefinitivelyUnavailable {
+                        physical_incarnation: present_incarnation.then(|| "p".into()),
+                    },
+                    5 => pc::SandboxObservation::RetainedOriginal {
+                        physical_incarnation: "p".into(),
+                    },
+                    _ => pc::SandboxObservation::Incompatible {
+                        reason: "foreign".into(),
+                    },
+                };
+                let actual = exact_removal_decision(observation);
+                match variant {
+                    0..=3 => assert_eq!(actual.unwrap(), ExactRemovalDecision::Remove),
+                    4 => assert_eq!(actual.unwrap(), ExactRemovalDecision::AlreadyAbsent),
+                    5 => assert!(matches!(actual, Err(RuntimeError::Conflict(_)))),
+                    _ => match actual {
+                        Err(RuntimeError::Backend(reason)) => assert_eq!(reason, "foreign"),
+                        _ => panic!("ER1 incompatibility must preserve its original Backend"),
+                    },
+                }
+            }
+        }
     }
 }

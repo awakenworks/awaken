@@ -305,66 +305,6 @@ const fn paused_reason_for_run_error(kind: RunErrorKind) -> Option<PausedReasonE
     })
 }
 
-#[cfg(kani)]
-fn arbitrary_run_error_kind(bits: u8) -> RunErrorKind {
-    match bits & 0x0f {
-        0 => RunErrorKind::EnvironmentArchived,
-        1 => RunErrorKind::AgentArchived,
-        2 => RunErrorKind::EnvironmentNotFound,
-        3 => RunErrorKind::VaultNotFound,
-        4 => RunErrorKind::VaultArchived,
-        5 => RunErrorKind::FileNotFound,
-        6 => RunErrorKind::MemoryStoreArchived,
-        7 => RunErrorKind::SkillNotFound,
-        8 => RunErrorKind::SessionResourceNotFound,
-        9 => RunErrorKind::WorkspaceArchived,
-        10 => RunErrorKind::OrganizationDisabled,
-        11 => RunErrorKind::SessionRateLimited,
-        12 => RunErrorKind::SessionCreationRejected,
-        13 => RunErrorKind::Unknown,
-        14 => RunErrorKind::SelfHostedResourcesUnsupported,
-        _ => RunErrorKind::McpEgressBlocked,
-    }
-}
-
-#[cfg(kani)]
-/// @obligation public_dto.deployment_failure_projection_is_total_exact_and_non_strengthening
-/// @kani profile=solver-kissat-v1
-#[kani::proof]
-fn deployment_run_failure_projection_is_total_exact_and_non_strengthening() {
-    let kind = arbitrary_run_error_kind(kani::any());
-    let projected = paused_reason_for_run_error(kind);
-    let expected = match kind {
-        RunErrorKind::EnvironmentArchived => Some(PausedReasonError::EnvironmentArchivedError),
-        RunErrorKind::AgentArchived => Some(PausedReasonError::AgentArchivedError),
-        RunErrorKind::EnvironmentNotFound => Some(PausedReasonError::EnvironmentNotFoundError),
-        RunErrorKind::VaultNotFound => Some(PausedReasonError::VaultNotFoundError),
-        RunErrorKind::VaultArchived => Some(PausedReasonError::VaultArchivedError),
-        RunErrorKind::FileNotFound => Some(PausedReasonError::FileNotFoundError),
-        RunErrorKind::MemoryStoreArchived => Some(PausedReasonError::MemoryStoreArchivedError),
-        RunErrorKind::SkillNotFound => Some(PausedReasonError::SkillNotFoundError),
-        RunErrorKind::SessionResourceNotFound => {
-            Some(PausedReasonError::SessionResourceNotFoundError)
-        }
-        RunErrorKind::WorkspaceArchived => Some(PausedReasonError::WorkspaceArchivedError),
-        RunErrorKind::OrganizationDisabled => Some(PausedReasonError::OrganizationDisabledError),
-        RunErrorKind::SessionRateLimited | RunErrorKind::SessionCreationRejected => None,
-        RunErrorKind::Unknown => Some(PausedReasonError::UnknownError),
-        RunErrorKind::SelfHostedResourcesUnsupported => {
-            Some(PausedReasonError::SelfHostedResourcesUnsupportedError)
-        }
-        RunErrorKind::McpEgressBlocked => Some(PausedReasonError::McpEgressBlockedError),
-    };
-    assert_eq!(projected, expected);
-    assert_eq!(
-        projected.is_none(),
-        matches!(
-            kind,
-            RunErrorKind::SessionRateLimited | RunErrorKind::SessionCreationRejected
-        )
-    );
-}
-
 /// `BetaManagedAgentsDeployment` — an agent bound to an environment with initial
 /// events and a schedule.
 #[derive(Debug, Clone, Serialize)]
@@ -402,4 +342,102 @@ pub struct DeploymentRun {
     pub error: Option<RunError>,
     pub session_id: Option<String>,
     pub trigger_context: TriggerContext,
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_RUN_ERROR_KIND: [RunErrorKind; 16] = [
+        RunErrorKind::EnvironmentArchived,
+        RunErrorKind::AgentArchived,
+        RunErrorKind::EnvironmentNotFound,
+        RunErrorKind::VaultNotFound,
+        RunErrorKind::VaultArchived,
+        RunErrorKind::FileNotFound,
+        RunErrorKind::MemoryStoreArchived,
+        RunErrorKind::SkillNotFound,
+        RunErrorKind::SessionResourceNotFound,
+        RunErrorKind::WorkspaceArchived,
+        RunErrorKind::OrganizationDisabled,
+        RunErrorKind::SessionRateLimited,
+        RunErrorKind::SessionCreationRejected,
+        RunErrorKind::Unknown,
+        RunErrorKind::SelfHostedResourcesUnsupported,
+        RunErrorKind::McpEgressBlocked,
+    ];
+
+    const fn listed_run_error_kind(kind: RunErrorKind) -> usize {
+        match kind {
+            RunErrorKind::EnvironmentArchived => 0,
+            RunErrorKind::AgentArchived => 1,
+            RunErrorKind::EnvironmentNotFound => 2,
+            RunErrorKind::VaultNotFound => 3,
+            RunErrorKind::VaultArchived => 4,
+            RunErrorKind::FileNotFound => 5,
+            RunErrorKind::MemoryStoreArchived => 6,
+            RunErrorKind::SkillNotFound => 7,
+            RunErrorKind::SessionResourceNotFound => 8,
+            RunErrorKind::WorkspaceArchived => 9,
+            RunErrorKind::OrganizationDisabled => 10,
+            RunErrorKind::SessionRateLimited => 11,
+            RunErrorKind::SessionCreationRejected => 12,
+            RunErrorKind::Unknown => 13,
+            RunErrorKind::SelfHostedResourcesUnsupported => 14,
+            RunErrorKind::McpEgressBlocked => 15,
+        }
+    }
+
+    #[test]
+    fn every_run_error_kind_is_listed_once() {
+        for (index, kind) in EVERY_RUN_ERROR_KIND.into_iter().enumerate() {
+            assert_eq!(listed_run_error_kind(kind), index);
+        }
+    }
+
+    /// @exhaustive RunErrorKind(16) = 16
+    /// @obligation public_dto.deployment_failure_projection_is_total_exact_and_non_strengthening
+    #[test]
+    fn deployment_run_failure_projection_is_total_exact_and_non_strengthening() {
+        for kind in EVERY_RUN_ERROR_KIND {
+            let projected = paused_reason_for_run_error(kind);
+            let expected = match kind {
+                RunErrorKind::EnvironmentArchived => {
+                    Some(PausedReasonError::EnvironmentArchivedError)
+                }
+                RunErrorKind::AgentArchived => Some(PausedReasonError::AgentArchivedError),
+                RunErrorKind::EnvironmentNotFound => {
+                    Some(PausedReasonError::EnvironmentNotFoundError)
+                }
+                RunErrorKind::VaultNotFound => Some(PausedReasonError::VaultNotFoundError),
+                RunErrorKind::VaultArchived => Some(PausedReasonError::VaultArchivedError),
+                RunErrorKind::FileNotFound => Some(PausedReasonError::FileNotFoundError),
+                RunErrorKind::MemoryStoreArchived => {
+                    Some(PausedReasonError::MemoryStoreArchivedError)
+                }
+                RunErrorKind::SkillNotFound => Some(PausedReasonError::SkillNotFoundError),
+                RunErrorKind::SessionResourceNotFound => {
+                    Some(PausedReasonError::SessionResourceNotFoundError)
+                }
+                RunErrorKind::WorkspaceArchived => Some(PausedReasonError::WorkspaceArchivedError),
+                RunErrorKind::OrganizationDisabled => {
+                    Some(PausedReasonError::OrganizationDisabledError)
+                }
+                RunErrorKind::SessionRateLimited | RunErrorKind::SessionCreationRejected => None,
+                RunErrorKind::Unknown => Some(PausedReasonError::UnknownError),
+                RunErrorKind::SelfHostedResourcesUnsupported => {
+                    Some(PausedReasonError::SelfHostedResourcesUnsupportedError)
+                }
+                RunErrorKind::McpEgressBlocked => Some(PausedReasonError::McpEgressBlockedError),
+            };
+            assert_eq!(projected, expected);
+            assert_eq!(
+                projected.is_none(),
+                matches!(
+                    kind,
+                    RunErrorKind::SessionRateLimited | RunErrorKind::SessionCreationRejected
+                )
+            );
+        }
+    }
 }

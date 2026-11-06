@@ -229,49 +229,6 @@ pub fn legacy_agent_publication_decision(
     )
 }
 
-#[cfg(kani)]
-/// @obligation agent_profile.worker_projection_requires_exact_frozen_publication
-/// @proof-input-debt free_symbol frozen_agent_publication_facts agent_id_matches
-/// @proof-input-debt free_symbol frozen_agent_publication_facts has_frozen_revision
-/// @proof-input-debt free_symbol frozen_agent_publication_facts model_candidate_present
-/// @proof-input-debt free_symbol frozen_agent_publication_facts publication_present
-/// @proof-input-debt free_symbol frozen_agent_publication_facts source_revision_matches
-/// @proof-input-debt free_symbol frozen_agent_publication_facts worker_placement
-#[kani::proof]
-fn frozen_worker_agent_publication_is_exact_or_fails_closed() {
-    let has_frozen_revision: bool = kani::any();
-    let worker_placement: bool = kani::any();
-    let publication_present: bool = kani::any();
-    let agent_id_matches: bool = kani::any();
-    let source_revision_matches: bool = kani::any();
-    let runtime_matches: bool = kani::any();
-    let model_candidate_present: bool = kani::any();
-    let decision = frozen_agent_publication_facts(
-        has_frozen_revision,
-        worker_placement,
-        publication_present,
-        agent_id_matches,
-        source_revision_matches,
-        runtime_matches,
-        model_candidate_present,
-    );
-
-    if has_frozen_revision && worker_placement {
-        assert_eq!(
-            decision == FrozenAgentPublicationDecision::Exact,
-            publication_present && agent_id_matches && source_revision_matches && runtime_matches
-        );
-        assert_ne!(decision, FrozenAgentPublicationDecision::OptionalMissing);
-    }
-    if decision == FrozenAgentPublicationDecision::Exact {
-        assert!(publication_present);
-        assert!(agent_id_matches && source_revision_matches && runtime_matches);
-    }
-    if decision == FrozenAgentPublicationDecision::MissingRequired {
-        assert!(has_frozen_revision && worker_placement && !publication_present);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,5 +562,55 @@ mod tests {
             prop_assert_eq!(&once.resolved_spec.instructions, &prompt);
             prop_assert_eq!(twice, once);
         }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2)^7 = 128
+    /// @obligation agent_profile.worker_projection_requires_exact_frozen_publication
+    #[test]
+    fn frozen_worker_agent_publication_is_exact_or_fails_closed() {
+        let mut cases = 0;
+        for bits in 0_u8..128 {
+            let has_frozen_revision = bits & 1 != 0;
+            let worker_placement = bits & 2 != 0;
+            let publication_present = bits & 4 != 0;
+            let agent_id_matches = bits & 8 != 0;
+            let source_revision_matches = bits & 16 != 0;
+            let runtime_matches = bits & 32 != 0;
+            let model_candidate_present = bits & 64 != 0;
+            let decision = frozen_agent_publication_facts(
+                has_frozen_revision,
+                worker_placement,
+                publication_present,
+                agent_id_matches,
+                source_revision_matches,
+                runtime_matches,
+                model_candidate_present,
+            );
+
+            if has_frozen_revision && worker_placement {
+                assert_eq!(
+                    decision == FrozenAgentPublicationDecision::Exact,
+                    publication_present
+                        && agent_id_matches
+                        && source_revision_matches
+                        && runtime_matches
+                );
+                assert_ne!(decision, FrozenAgentPublicationDecision::OptionalMissing);
+            }
+            if decision == FrozenAgentPublicationDecision::Exact {
+                assert!(publication_present);
+                assert!(agent_id_matches && source_revision_matches && runtime_matches);
+            }
+            if decision == FrozenAgentPublicationDecision::MissingRequired {
+                assert!(has_frozen_revision && worker_placement && !publication_present);
+            }
+            cases += 1;
+        }
+        assert_eq!(cases, 128);
     }
 }

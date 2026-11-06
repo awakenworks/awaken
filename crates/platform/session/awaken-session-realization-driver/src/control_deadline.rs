@@ -240,38 +240,6 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
     }
 }
 
-#[cfg(kani)]
-/// @obligation session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
-/// @proof-input-debt free_symbol control_permit_release_plan has_owned_permit
-#[kani::proof]
-fn session_realization_control_permit_ownership_release_is_total_and_exact() {
-    let has_owned_permit: bool = kani::any();
-    let event = match kani::any::<u8>() % 4 {
-        0 => ControlPermitEvent::Acquire,
-        1 => ControlPermitEvent::Returned,
-        2 => ControlPermitEvent::DeadlineElapsed,
-        _ => ControlPermitEvent::ScopeEnded,
-    };
-    let plan = control_permit_release_plan(has_owned_permit, event);
-
-    assert_eq!(
-        plan == ControlPermitReleasePlan::ReleaseOwned,
-        has_owned_permit && !matches!(event, ControlPermitEvent::Acquire)
-    );
-    assert_eq!(
-        plan == ControlPermitReleasePlan::RetainOwned,
-        has_owned_permit && event == ControlPermitEvent::Acquire
-    );
-    assert_eq!(
-        plan == ControlPermitReleasePlan::StutterReleased,
-        !has_owned_permit && event == ControlPermitEvent::ScopeEnded
-    );
-    assert_eq!(
-        plan == ControlPermitReleasePlan::Reject,
-        !has_owned_permit && event != ControlPermitEvent::ScopeEnded
-    );
-}
-
 /// Deadline decoration only bounds transport waiting. The wrapped Control
 /// remains the sole owner of leases, phases, cleanup commands, and receipts.
 #[async_trait::async_trait]
@@ -453,5 +421,63 @@ mod tests {
             .expect("R5 acquire");
         drop(dropped);
         assert_eq!(scheduler.permits.available_permits(), capacity, "R5/E1");
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_EVENT: [ControlPermitEvent; 4] = [
+        ControlPermitEvent::Acquire,
+        ControlPermitEvent::Returned,
+        ControlPermitEvent::DeadlineElapsed,
+        ControlPermitEvent::ScopeEnded,
+    ];
+
+    const fn listed_event(event: ControlPermitEvent) -> usize {
+        match event {
+            ControlPermitEvent::Acquire => 0,
+            ControlPermitEvent::Returned => 1,
+            ControlPermitEvent::DeadlineElapsed => 2,
+            ControlPermitEvent::ScopeEnded => 3,
+        }
+    }
+
+    #[test]
+    fn every_control_permit_event_is_listed() {
+        for (index, event) in EVERY_EVENT.into_iter().enumerate() {
+            assert_eq!(listed_event(event), index);
+        }
+    }
+
+    /// @exhaustive bool(2) x ControlPermitEvent(4) = 8
+    /// @obligation session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
+    #[test]
+    fn session_realization_control_permit_ownership_release_is_total_and_exact() {
+        let mut cases = 0;
+        for has_owned_permit in [false, true] {
+            for event in EVERY_EVENT {
+                let plan = control_permit_release_plan(has_owned_permit, event);
+                assert_eq!(
+                    plan == ControlPermitReleasePlan::ReleaseOwned,
+                    has_owned_permit && !matches!(event, ControlPermitEvent::Acquire)
+                );
+                assert_eq!(
+                    plan == ControlPermitReleasePlan::RetainOwned,
+                    has_owned_permit && event == ControlPermitEvent::Acquire
+                );
+                assert_eq!(
+                    plan == ControlPermitReleasePlan::StutterReleased,
+                    !has_owned_permit && event == ControlPermitEvent::ScopeEnded
+                );
+                assert_eq!(
+                    plan == ControlPermitReleasePlan::Reject,
+                    !has_owned_permit && event != ControlPermitEvent::ScopeEnded
+                );
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 8);
     }
 }

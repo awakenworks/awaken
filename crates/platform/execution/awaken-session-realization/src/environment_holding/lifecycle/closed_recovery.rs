@@ -57,35 +57,6 @@ const fn closed_environment_recovery_admission(
         && !matches!(owner, ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale)
 }
 
-#[cfg(kani)]
-/// @obligation session_environment.closed_revoked_recovery_consumes_only_exact_unprotected_owner
-#[kani::proof]
-fn closed_environment_recovery_consumes_only_rebuildable_owner_classes() {
-    // Complete cause/effect table: C1 Reject/Rebuild policy; C2 every owner
-    // class. E1 Consume iff Rebuild and the class is exact and unprotected;
-    // E2 Reject, protected, and stale inputs retain. The production plan then
-    // carries the corresponding exact Rust owner value into the sole writer.
-    let rebuild: bool = kani::any();
-    let tag: u8 = kani::any();
-    let policy = if rebuild {
-        SessionEnvironmentUnavailablePolicy::Rebuild
-    } else {
-        SessionEnvironmentUnavailablePolicy::Reject
-    };
-    let owner = match tag % 6 {
-        0 => ClosedEnvironmentRecoveryOwnerClass::Revoked,
-        1 => ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard,
-        2 => ClosedEnvironmentRecoveryOwnerClass::Resident,
-        3 => ClosedEnvironmentRecoveryOwnerClass::Pending,
-        4 => ClosedEnvironmentRecoveryOwnerClass::Vacant,
-        _ => ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale,
-    };
-    assert_eq!(
-        closed_environment_recovery_admission(policy, owner),
-        rebuild && owner != ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale
-    );
-}
-
 pub(super) fn closed_environment_recovery_plan<'a>(
     sessions: &crate::session_realizations::SessionRealizations,
     thread: &str,
@@ -228,5 +199,72 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const EVERY_POLICY: [SessionEnvironmentUnavailablePolicy; 2] = [
+        SessionEnvironmentUnavailablePolicy::Reject,
+        SessionEnvironmentUnavailablePolicy::Rebuild,
+    ];
+    const EVERY_OWNER: [ClosedEnvironmentRecoveryOwnerClass; 6] = [
+        ClosedEnvironmentRecoveryOwnerClass::Revoked,
+        ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard,
+        ClosedEnvironmentRecoveryOwnerClass::Resident,
+        ClosedEnvironmentRecoveryOwnerClass::Pending,
+        ClosedEnvironmentRecoveryOwnerClass::Vacant,
+        ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale,
+    ];
+
+    const fn listed_policy(policy: SessionEnvironmentUnavailablePolicy) -> usize {
+        match policy {
+            SessionEnvironmentUnavailablePolicy::Reject => 0,
+            SessionEnvironmentUnavailablePolicy::Rebuild => 1,
+        }
+    }
+
+    const fn listed_owner(owner: ClosedEnvironmentRecoveryOwnerClass) -> usize {
+        match owner {
+            ClosedEnvironmentRecoveryOwnerClass::Revoked => 0,
+            ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard => 1,
+            ClosedEnvironmentRecoveryOwnerClass::Resident => 2,
+            ClosedEnvironmentRecoveryOwnerClass::Pending => 3,
+            ClosedEnvironmentRecoveryOwnerClass::Vacant => 4,
+            ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale => 5,
+        }
+    }
+
+    #[test]
+    fn every_recovery_policy_and_owner_class_is_listed() {
+        for (index, policy) in EVERY_POLICY.into_iter().enumerate() {
+            assert_eq!(listed_policy(policy), index);
+        }
+        for (index, owner) in EVERY_OWNER.into_iter().enumerate() {
+            assert_eq!(listed_owner(owner), index);
+        }
+    }
+
+    /// @exhaustive SessionEnvironmentUnavailablePolicy(2) x ClosedEnvironmentRecoveryOwnerClass(6) = 12
+    /// @obligation session_environment.closed_revoked_recovery_consumes_only_exact_unprotected_owner
+    #[test]
+    fn closed_environment_recovery_consumes_only_rebuildable_owner_classes() {
+        // C1 Reject/Rebuild policy; C2 every owner class. E1 Consume iff
+        // Rebuild and the class is exact and unprotected; E2 Reject, protected,
+        // and stale inputs retain.
+        let mut cases = 0;
+        for policy in EVERY_POLICY {
+            for owner in EVERY_OWNER {
+                assert_eq!(
+                    closed_environment_recovery_admission(policy, owner),
+                    policy == SessionEnvironmentUnavailablePolicy::Rebuild
+                        && owner != ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale
+                );
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 12);
     }
 }

@@ -148,24 +148,6 @@ const fn initial_event_installation_plan(
 }
 
 #[cfg(kani)]
-/// @obligation session_environment.terminal_fence_admits_only_inflight_binding_receipts
-/// @proof-input-debt tautology terminal_environment_receipt_admitted
-#[kani::proof]
-fn terminal_environment_receipt_is_admitted_only_during_the_fenced_join() {
-    // Causes: C1 the Session is active/terminal; C2 terminal cleanup is in its
-    // Fenced join or any other phase. Effects: E1 active receipt admission
-    // remains delegated to the Environment kernel; E2 a terminal in-flight
-    // receipt may join only in Fenced; E3 every other terminal receipt fails.
-    // Rules: R1=!C1=>E1; R2=C1+C2=>E2; R3=C1+!C2=>E3.
-    let terminal = kani::any::<bool>();
-    let fenced = kani::any::<bool>();
-    assert_eq!(
-        terminal_environment_receipt_admitted(terminal, fenced),
-        !terminal || fenced
-    );
-}
-
-#[cfg(kani)]
 /// @obligation session_event_batch.initial_plan_and_wake_activity_are_atomic_with_root
 /// @obligation session_execution.initial_event_path_reaches_idle_only_after_full_settlement
 /// @proof-input-debt free_symbol initial_event_installation_plan active_activities_empty
@@ -1738,5 +1720,29 @@ mod worker_relay_route_tests {
                 .is_none(),
             "R5/E2"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation session_environment.terminal_fence_admits_only_inflight_binding_receipts
+    #[test]
+    fn terminal_environment_receipt_is_admitted_only_during_the_fenced_join() {
+        // Causes: C1 the Session is active/terminal; C2 terminal cleanup is in its
+        // Fenced join or any other phase. Effects: E1 active receipt admission
+        // remains delegated to the Environment kernel; E2 a terminal in-flight
+        // receipt may join only in Fenced; E3 every other terminal receipt fails.
+        // Rules: R1=!C1=>E1; R2=C1+C2=>E2; R3=C1+!C2=>E3.
+        for terminal in [false, true] {
+            for fenced in [false, true] {
+                assert_eq!(
+                    terminal_environment_receipt_admitted(terminal, fenced),
+                    !terminal || fenced
+                );
+            }
+        }
     }
 }

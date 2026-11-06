@@ -293,51 +293,6 @@ impl DataSubject {
 mod verification {
     use super::*;
 
-    fn status(tag: u8) -> ConsentStatus {
-        match tag % 3 {
-            0 => ConsentStatus::Granted,
-            1 => ConsentStatus::Pending,
-            _ => ConsentStatus::Withdrawn,
-        }
-    }
-
-    /// @obligation consent.any_withdrawal_vetoes_full_capture
-    #[kani::proof]
-    fn any_withdrawal_vetoes_full_content_capture() {
-        let statuses = [
-            status(kani::any()),
-            status(kani::any()),
-            status(kani::any()),
-        ];
-        let mut decision = ConsentDecision::default();
-        for item in statuses {
-            decision = decision.observe(item);
-        }
-        if statuses.contains(&ConsentStatus::Withdrawn) {
-            assert_eq!(decision.ceiling(), ContentCapture::Structured);
-        }
-    }
-
-    /// @obligation consent.upsert_retains_one_purpose_row
-    #[kani::proof]
-    fn consent_upsert_leaves_exactly_one_row_for_the_incoming_purpose() {
-        let existing_match = [kani::any::<bool>(), kani::any(), kani::any()];
-        let retained_matches = existing_match
-            .iter()
-            .filter(|matches| retain_consent_for_upsert(**matches) && **matches)
-            .count();
-        assert_eq!(retained_matches + 1, 1);
-    }
-
-    /// @obligation consent.erasure_withdrawal_is_absorbing
-    #[kani::proof]
-    fn erasure_withdrawal_is_absorbing_and_idempotent() {
-        let first = erased_consent_status(status(kani::any()));
-        let second = erased_consent_status(first);
-        assert_eq!(first, ConsentStatus::Withdrawn);
-        assert_eq!(second, ConsentStatus::Withdrawn);
-    }
-
     /// @obligation data_subject.revision_is_monotonic
     /// @obligation data_subject.revision_is_strict_or_exhausted
     #[kani::proof]
@@ -1483,3 +1438,74 @@ mod tests;
 
 #[cfg(any(test, kani))]
 mod erasure_verification;
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_status(status: ConsentStatus) -> usize {
+        match status {
+            ConsentStatus::Granted => 0,
+            ConsentStatus::Pending => 1,
+            ConsentStatus::Withdrawn => 2,
+        }
+    }
+    const EVERY_STATUS: [ConsentStatus; 3] = [
+        ConsentStatus::Granted,
+        ConsentStatus::Pending,
+        ConsentStatus::Withdrawn,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_STATUS.into_iter().enumerate() {
+            assert_eq!(listed_status(value), index);
+        }
+    }
+
+    /// @exhaustive ConsentStatus(3) x ConsentStatus(3) x ConsentStatus(3) = 27
+    /// @obligation consent.any_withdrawal_vetoes_full_capture
+    #[test]
+    fn any_withdrawal_vetoes_full_content_capture() {
+        for first in EVERY_STATUS {
+            for second in EVERY_STATUS {
+                for third in EVERY_STATUS {
+                    let statuses = [first, second, third];
+                    let mut decision = ConsentDecision::default();
+                    for item in statuses {
+                        decision = decision.observe(item);
+                    }
+                    if statuses.contains(&ConsentStatus::Withdrawn) {
+                        assert_eq!(decision.ceiling(), ContentCapture::Structured);
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive [bool; 3](8) = 8
+    /// @obligation consent.upsert_retains_one_purpose_row
+    #[test]
+    fn consent_upsert_leaves_exactly_one_row_for_the_incoming_purpose() {
+        for mask in 0_u8..8 {
+            let existing_match: [bool; 3] = std::array::from_fn(|bit| mask & (1 << bit) != 0);
+            let retained_matches = existing_match
+                .iter()
+                .filter(|matches| retain_consent_for_upsert(**matches) && **matches)
+                .count();
+            assert_eq!(retained_matches + 1, 1);
+        }
+    }
+
+    /// @exhaustive ConsentStatus(3) = 3
+    /// @obligation consent.erasure_withdrawal_is_absorbing
+    #[test]
+    fn erasure_withdrawal_is_absorbing_and_idempotent() {
+        for status in EVERY_STATUS {
+            let first = erased_consent_status(status);
+            let second = erased_consent_status(first);
+            assert_eq!(first, ConsentStatus::Withdrawn);
+            assert_eq!(second, ConsentStatus::Withdrawn);
+        }
+    }
+}

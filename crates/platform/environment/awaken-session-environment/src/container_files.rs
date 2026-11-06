@@ -368,18 +368,30 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-/// @obligation session_files.read_only_tree_publication_requires_complete_restricted_safe_staging
-#[kani::proof]
-fn read_only_tree_publication_requires_a_complete_restricted_safe_stage() {
-    let path_safe = kani::any();
-    let stage_complete = kani::any();
-    let stage_read_only = kani::any();
-    let admitted = read_only_tree_publish_admitted(path_safe, stage_complete, stage_read_only);
-    assert_eq!(admitted, path_safe && stage_complete && stage_read_only);
-    if admitted {
-        assert!(path_safe);
-        assert!(stage_complete);
-        assert!(stage_read_only);
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation session_files.read_only_tree_publication_requires_complete_restricted_safe_staging
+    #[test]
+    fn read_only_tree_publication_requires_a_complete_restricted_safe_stage() {
+        let mut cases = 0;
+        for path_safe in [false, true] {
+            for stage_complete in [false, true] {
+                for stage_read_only in [false, true] {
+                    let admitted =
+                        read_only_tree_publish_admitted(path_safe, stage_complete, stage_read_only);
+                    assert_eq!(admitted, path_safe && stage_complete && stage_read_only);
+                    if admitted {
+                        assert!(path_safe);
+                        assert!(stage_complete);
+                        assert!(stage_read_only);
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 8);
     }
 }

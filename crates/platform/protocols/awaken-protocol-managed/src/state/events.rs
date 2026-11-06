@@ -69,33 +69,7 @@ const fn inbound_processed_at_visible(view: InboundProjectionView, processed: bo
 
 #[cfg(kani)]
 /// @obligation session_event_batch.idempotent_receipt_is_admission_stable
-/// @kani profile=solver-kissat-v1
-/// @proof-input-debt free_symbol inbound_projection_visible admission_anchored
-#[kani::proof]
-fn inbound_admission_receipt_is_stable_across_processing_races() {
-    let processed: bool = kani::any();
-    let admission_anchored: bool = kani::any();
-    assert!(inbound_projection_visible(
-        InboundProjectionView::AdmissionReceipt,
-        admission_anchored,
-    ));
-    assert_eq!(
-        inbound_projection_visible(InboundProjectionView::DurableHistory, admission_anchored,),
-        admission_anchored
-    );
-    assert!(!inbound_processed_at_visible(
-        InboundProjectionView::AdmissionReceipt,
-        processed
-    ));
-    assert_eq!(
-        inbound_processed_at_visible(InboundProjectionView::DurableHistory, processed),
-        processed
-    );
-}
-
-#[cfg(kani)]
-/// @obligation session_event_batch.idempotent_receipt_is_admission_stable
-/// @kani profile=solver-kissat-v1
+/// @kani profile=solver-kissat-v1 tier=nightly
 #[kani::proof]
 fn inbound_order_is_fixed_before_effect_observation() {
     let admission_cursor: u64 = kani::any();
@@ -617,3 +591,37 @@ mod transcript_projection;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation session_event_batch.idempotent_receipt_is_admission_stable
+    #[test]
+    fn inbound_admission_receipt_is_stable_across_processing_races() {
+        for processed in [false, true] {
+            for admission_anchored in [false, true] {
+                assert!(inbound_projection_visible(
+                    InboundProjectionView::AdmissionReceipt,
+                    admission_anchored,
+                ));
+                assert_eq!(
+                    inbound_projection_visible(
+                        InboundProjectionView::DurableHistory,
+                        admission_anchored,
+                    ),
+                    admission_anchored
+                );
+                assert!(!inbound_processed_at_visible(
+                    InboundProjectionView::AdmissionReceipt,
+                    processed
+                ));
+                assert_eq!(
+                    inbound_processed_at_visible(InboundProjectionView::DurableHistory, processed),
+                    processed
+                );
+            }
+        }
+    }
+}

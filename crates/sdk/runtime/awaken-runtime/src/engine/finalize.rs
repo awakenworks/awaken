@@ -228,17 +228,26 @@ pub(super) async fn finish_with_reader(
     Ok(run_state)
 }
 
-#[cfg(kani)]
-/// @obligation delegation.cancel_intent
-/// @proof-input-debt tautology committed_cancellation_delivery_is_admitted
-#[kani::proof]
-fn child_cancellation_effect_requires_committed_intent() {
-    // Cause/effect table: only commit-success + staged-intent admits delivery;
-    // missing intent, missing coordinator, and rejected commit suppress it.
-    let commit_succeeded: bool = kani::any();
-    let has_staged_intent: bool = kani::any();
-    assert_eq!(
-        committed_cancellation_delivery_is_admitted(commit_succeeded, has_staged_intent),
-        commit_succeeded && has_staged_intent
-    );
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation delegation.cancel_intent
+    #[test]
+    fn child_cancellation_effect_requires_committed_intent() {
+        // Cause/effect table: only commit-success + staged-intent admits delivery;
+        // missing intent, missing coordinator, and rejected commit suppress it.
+        for commit_succeeded in [false, true] {
+            for has_staged_intent in [false, true] {
+                assert_eq!(
+                    committed_cancellation_delivery_is_admitted(
+                        commit_succeeded,
+                        has_staged_intent
+                    ),
+                    commit_succeeded && has_staged_intent
+                );
+            }
+        }
+    }
 }

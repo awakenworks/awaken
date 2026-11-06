@@ -669,60 +669,56 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod kani_proofs {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
     use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
 
+    /// @exhaustive unit(1) = 1
     /// @obligation session_outcome.awaiting_constructor_is_nonterminal_and_nonfailed
-    #[kani::proof]
+    #[test]
     fn awaiting_constructor_cannot_create_a_terminal_or_failed_outcome() {
-        // Test design — Causes: the Awaiting constructor receives no pending tool.
-        // Effects: state is Awaiting and failure is absent. Constraints/invariants:
-        // Awaiting cannot also be terminal. Decision rule K1: any empty message
-        // vector+None pending=>Awaiting and no failure authority.
+        // Causes: the Awaiting constructor receives no pending tool. Effects:
+        // state is Awaiting and failure is absent. Decision rule K1: any empty
+        // message vector+None pending=>Awaiting and no failure authority.
         let outcome = StepOutcome::awaiting(Vec::new(), None);
         assert!(matches!(outcome.state(), RunState::Awaiting));
         assert!(outcome.failure().is_none());
-        std::mem::forget(outcome);
     }
 
+    /// @exhaustive EndCause{Error(CapabilityBound),NaturalEnd}(2) = 2
     /// @obligation session_outcome.ended_constructor_owns_failure_and_clears_pending_tool
-    #[kani::proof]
+    #[test]
     fn ended_constructor_carries_the_only_failure_authority_and_no_pending_tool() {
-        // Test design — Causes: an Ended constructor receives either a classified
-        // error or natural completion. Effects: both are terminal, only the error
-        // exposes Failure, and neither has pending work. Constraints/invariants:
-        // EndCause is the sole failure authority. Decision rule K2: error=>failure;
-        // natural=>none; both=>Ended+no pending.
-        let cause = if kani::any::<bool>() {
-            EndCause::Error(Failure::CapabilityBound)
-        } else {
-            EndCause::NaturalEnd
-        };
-        let is_error = matches!(&cause, EndCause::Error(_));
-        let outcome = StepOutcome::ended(Vec::new(), cause);
-        assert!(matches!(outcome.state(), RunState::Ended(_)));
-        assert!(outcome.pending().is_none());
-        assert_eq!(outcome.failure().is_some(), is_error);
-        std::mem::forget(outcome);
+        // Causes: an Ended constructor receives either a classified error or
+        // natural completion. Effects: both are terminal, only the error exposes
+        // Failure, and neither has pending work. Decision rule K2:
+        // error=>failure; natural=>none; both=>Ended+no pending.
+        for cause in [
+            EndCause::Error(Failure::CapabilityBound),
+            EndCause::NaturalEnd,
+        ] {
+            let is_error = matches!(&cause, EndCause::Error(_));
+            let outcome = StepOutcome::ended(Vec::new(), cause);
+            assert!(matches!(outcome.state(), RunState::Ended(_)));
+            assert!(outcome.pending().is_none());
+            assert_eq!(outcome.failure().is_some(), is_error);
+        }
     }
 
+    /// @exhaustive unit(1) = 1
     /// @obligation session_execution.settled_step_has_no_parallel_observation_authority
-    #[kani::proof]
+    #[test]
     fn settled_step_has_no_parallel_observation_authority() {
-        // Cause/effect decision rule: a terminal committed Run cause creates an
-        // Ended Step outcome; compaction, retry, and model-request observations
-        // remain exclusively in the committed recovery snapshot audit stream.
-        // Constraints/invariants: StepOutcome carries no parallel observation
-        // authority and a settled Step cannot retain pending work.
+        // A terminal committed Run cause creates an Ended Step outcome;
+        // compaction, retry, and model-request observations remain exclusively
+        // in the committed recovery snapshot audit stream.
         let ended = StepOutcome::ended(Vec::new(), EndCause::NaturalEnd);
         assert!(matches!(
             ended.state(),
             RunState::Ended(EndCause::NaturalEnd)
         ));
         assert!(ended.pending().is_none());
-        std::mem::forget(ended);
     }
 }
 

@@ -426,53 +426,59 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
+    use super::super::execution_state::exhaustive::EVERY_EXECUTION_STATE;
     use super::*;
 
-    fn any_execution() -> SessionExecutionState {
-        match kani::any::<u8>() % 7 {
-            0 => SessionExecutionState::Preparing,
-            1 => SessionExecutionState::Activating,
-            2 => SessionExecutionState::ActivationFailed,
-            3 => SessionExecutionState::Running,
-            4 => SessionExecutionState::Rescheduling,
-            5 => SessionExecutionState::Idle,
-            _ => SessionExecutionState::Terminated,
+    const EVERY_RUNTIME: [SessionRuntimePlacement; 2] = [
+        SessionRuntimePlacement::Local,
+        SessionRuntimePlacement::Worker,
+    ];
+
+    const fn listed_runtime(runtime: SessionRuntimePlacement) -> usize {
+        match runtime {
+            SessionRuntimePlacement::Local => 0,
+            SessionRuntimePlacement::Worker => 1,
         }
     }
 
-    fn any_runtime() -> SessionRuntimePlacement {
-        if kani::any() {
-            SessionRuntimePlacement::Worker
-        } else {
-            SessionRuntimePlacement::Local
+    #[test]
+    fn every_runtime_placement_is_listed() {
+        for (index, runtime) in EVERY_RUNTIME.into_iter().enumerate() {
+            assert_eq!(listed_runtime(runtime), index);
         }
     }
 
+    /// @exhaustive Option<SessionPlacementClass(SessionRuntimePlacement(2) x bool(2))>(5) x SessionExecutionState(7) x SessionDisposition{Active,Deleted}(2) = 70
     /// @obligation session_creation.work_projection_is_disposable_repairable_and_non_authoritative
     /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
-    #[kani::proof]
+    #[test]
     fn work_projection_is_derived_only_from_durable_session_truth() {
         // Cause/effect table: C1 root has no frozen baseline / local / external
         // Environment; C2 root execution and retention truth. E1 enqueue iff
         // self-hosted + nonterminal; E2 every other row stutters. Terminality is
         // derived by the production aggregate law, not taken as a free bit.
-        let placement = match kani::any::<u8>() % 3 {
-            0 => None,
-            1 => Some(SessionPlacementClass::new(any_runtime(), false)),
-            _ => Some(SessionPlacementClass::new(any_runtime(), true)),
-        };
-        let execution = any_execution();
-        let disposition = if kani::any() {
-            SessionDisposition::Active
-        } else {
-            SessionDisposition::Deleted
-        };
-        let terminal = session_is_terminal(execution, &disposition);
-        assert_eq!(
-            session_work_projection_required(placement, terminal),
-            placement.is_some_and(SessionPlacementClass::requires_work_projection) && !terminal
-        );
+        let mut placements = vec![None];
+        for runtime in EVERY_RUNTIME {
+            for self_hosted in [false, true] {
+                placements.push(Some(SessionPlacementClass::new(runtime, self_hosted)));
+            }
+        }
+        let mut cases = 0;
+        for &placement in &placements {
+            for execution in EVERY_EXECUTION_STATE {
+                for disposition in [SessionDisposition::Active, SessionDisposition::Deleted] {
+                    let terminal = session_is_terminal(execution, &disposition);
+                    assert_eq!(
+                        session_work_projection_required(placement, terminal),
+                        placement.is_some_and(SessionPlacementClass::requires_work_projection)
+                            && !terminal
+                    );
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 70);
     }
 }

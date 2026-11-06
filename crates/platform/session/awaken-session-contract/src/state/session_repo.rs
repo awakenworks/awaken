@@ -1994,66 +1994,7 @@ mod mutation_tests {
 
 #[cfg(kani)]
 mod verification {
-    use super::{
-        SessionDeleteDispositionClass, SessionExecutionState, session_delete_request_plan,
-        session_tombstone_is_admitted,
-    };
-
-    /// @obligation session_execution.terminal_state_never_reopens
-    #[kani::proof]
-    fn terminal_execution_never_reopens() {
-        // Test design — Causes: the durable execution state is either terminal
-        // variant and the requested successor is any of the seven production
-        // variants. Effect: an admitted edge is necessarily an idempotent
-        // replay of the same terminal state. Constraint: `can_transition_to`
-        // is the sole transition relation used by `transition_execution`.
-        // Decision rules: T1=same terminal state -> admit without reopening;
-        // T2=other terminal or nonterminal state -> reject.
-        let terminal = if kani::any::<bool>() {
-            SessionExecutionState::ActivationFailed
-        } else {
-            SessionExecutionState::Terminated
-        };
-        let next = match kani::any::<u8>() % 7 {
-            0 => SessionExecutionState::Preparing,
-            1 => SessionExecutionState::Activating,
-            2 => SessionExecutionState::ActivationFailed,
-            3 => SessionExecutionState::Running,
-            4 => SessionExecutionState::Rescheduling,
-            5 => SessionExecutionState::Idle,
-            _ => SessionExecutionState::Terminated,
-        };
-        if terminal.can_transition_to(next) {
-            assert_eq!(terminal, next);
-        }
-    }
-
-    /// @obligation session.delete_tombstone_requires_hidden_terminal_verified_cleanup
-    #[kani::proof]
-    fn session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup() {
-        let disposition_hidden = kani::any::<bool>();
-        let execution_terminal = kani::any::<bool>();
-        let cleanup_completed = kani::any::<bool>();
-        let event_batches_complete = kani::any::<bool>();
-        let session_identity_exact = kani::any::<bool>();
-        let next_revision_exact = kani::any::<bool>();
-        assert_eq!(
-            session_tombstone_is_admitted(
-                disposition_hidden,
-                execution_terminal,
-                cleanup_completed,
-                event_batches_complete,
-                session_identity_exact,
-                next_revision_exact,
-            ),
-            disposition_hidden
-                && execution_terminal
-                && cleanup_completed
-                && event_batches_complete
-                && session_identity_exact
-                && next_revision_exact
-        );
-    }
+    use super::{SessionDeleteDispositionClass, session_delete_request_plan};
 
     /// @obligation session.delete_intent_is_hidden_terminal_and_idempotent
     /// @obligation session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
@@ -2103,6 +2044,75 @@ mod verification {
                 assert!(plan.lifecycle_fact_plan().is_none());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::execution_state::exhaustive::EVERY_EXECUTION_STATE;
+    use super::{SessionExecutionState, session_tombstone_is_admitted};
+
+    const BOOLS: [bool; 2] = [false, true];
+
+    /// @exhaustive {ActivationFailed,Terminated}(2) x SessionExecutionState(7) = 14
+    /// @obligation session_execution.terminal_state_never_reopens
+    #[test]
+    fn terminal_execution_never_reopens() {
+        // Causes: the durable execution state is either terminal variant and
+        // the requested successor is any of the seven production variants.
+        // Effect: an admitted edge is necessarily an idempotent replay of the
+        // same terminal state. T1=same terminal state -> admit without
+        // reopening; T2=other terminal or nonterminal state -> reject.
+        let mut cases = 0;
+        for terminal in [
+            SessionExecutionState::ActivationFailed,
+            SessionExecutionState::Terminated,
+        ] {
+            for next in EVERY_EXECUTION_STATE {
+                if terminal.can_transition_to(next) {
+                    assert_eq!(terminal, next);
+                }
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 14);
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x bool(2) x bool(2) = 64
+    /// @obligation session.delete_tombstone_requires_hidden_terminal_verified_cleanup
+    #[test]
+    fn session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup() {
+        let mut cases = 0;
+        for disposition_hidden in BOOLS {
+            for execution_terminal in BOOLS {
+                for cleanup_completed in BOOLS {
+                    for event_batches_complete in BOOLS {
+                        for session_identity_exact in BOOLS {
+                            for next_revision_exact in BOOLS {
+                                assert_eq!(
+                                    session_tombstone_is_admitted(
+                                        disposition_hidden,
+                                        execution_terminal,
+                                        cleanup_completed,
+                                        event_batches_complete,
+                                        session_identity_exact,
+                                        next_revision_exact,
+                                    ),
+                                    disposition_hidden
+                                        && execution_terminal
+                                        && cleanup_completed
+                                        && event_batches_complete
+                                        && session_identity_exact
+                                        && next_revision_exact
+                                );
+                                cases += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 64);
     }
 }
 

@@ -332,78 +332,6 @@ pub(super) fn claim_name(id: &str, plan: &ContainerPlan, configured: bool) -> Op
     claim_required(plan, configured).then(|| continuation_claim_name(id))
 }
 
-#[cfg(kani)]
-/// @obligation sandbox_continuation.ephemeral_never_allocates_or_references_a_claim
-/// @kani profile=solver-kissat-v1
-#[kani::proof]
-fn continuation_claim_selection_is_total_exact_and_non_widening() {
-    let configured: bool = kani::any();
-    let retained: bool = kani::any();
-    let continuity = if retained {
-        awaken_provisioning_contract::FilesystemContinuity::Retained
-    } else {
-        awaken_provisioning_contract::FilesystemContinuity::Ephemeral
-    };
-
-    let selected = claim_required_for(continuity, configured);
-    assert_eq!(selected, configured && retained);
-    assert!(!selected || configured);
-    assert!(!selected || retained);
-}
-
-#[cfg(kani)]
-/// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
-/// @kani profile=solver-kissat-v1
-/// @proof-input-debt free_symbol absent_pod_claim_admission present
-/// @proof-input-debt free_symbol absent_pod_claim_admission terminating
-/// @proof-input-debt free_symbol absent_pod_claim_admission uid_matches
-/// @proof-input-debt free_symbol absent_pod_claim_admission uid_present
-#[kani::proof]
-fn absent_pod_claim_admission_is_total_and_never_starts_deletion() {
-    // KAP-proof: all 16 raw observations, including malformed combinations,
-    // refine the existing KAP1 decision table. Only an exact already-terminating
-    // incarnation can be awaited; a live claim always rejects. API effects
-    // remain checked by KPV5/KPV6, not asserted by this pure-kernel proof.
-    let present = kani::any::<bool>();
-    let uid_present = kani::any::<bool>();
-    let uid_matches = kani::any::<bool>();
-    let terminating = kani::any::<bool>();
-    let decision = absent_pod_claim_admission(present, uid_present, uid_matches, terminating);
-    use AbsentPodClaimAdmission::*;
-    assert_eq!(matches!(decision, AlreadyAbsent), !present);
-    assert_eq!(matches!(decision, MissingUid), present && !uid_present);
-    assert_eq!(
-        matches!(decision, StaleUid),
-        present && uid_present && !uid_matches
-    );
-    assert_eq!(
-        matches!(decision, AwaitTerminating),
-        present && uid_present && uid_matches && terminating
-    );
-    assert_eq!(
-        matches!(decision, UnsafeLiveClaim),
-        present && uid_present && uid_matches && !terminating
-    );
-}
-
-#[cfg(kani)]
-/// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
-/// @kani profile=solver-kissat-v1
-/// @proof-input-debt free_symbol claim_deletion_admission resource_version_present
-/// @proof-input-debt free_symbol claim_deletion_admission uid_matches
-/// @proof-input-debt free_symbol claim_deletion_admission uid_present
-#[kani::proof]
-fn continuation_claim_deletion_requires_exact_uid_and_resource_version() {
-    let uid_present = kani::any::<bool>();
-    let uid_matches = kani::any::<bool>();
-    let resource_version_present = kani::any::<bool>();
-    let decision = claim_deletion_admission(uid_present, uid_matches, resource_version_present);
-    assert_eq!(
-        matches!(decision, ClaimDeletionAdmission::DeleteExact),
-        uid_present && uid_matches && resource_version_present
-    );
-}
-
 #[test]
 fn pod_cleanup_gate_serializes_rebuild_and_claim_deletion() {
     /* Pod/PVC cleanup-gate table KPG1. Causes: C1 Pod UID/RV evidence is
@@ -1465,7 +1393,7 @@ mod tests {
     }
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 fn check_original_guard_admission_domain(bits: u8) {
     let uid = bits & 1 != 0;
     let exact = bits & 2 != 0;
@@ -1488,6 +1416,8 @@ fn check_original_guard_admission_domain(bits: u8) {
     }
 }
 
+/// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) x bool(2) x bool(2) = 64
+/// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
 #[test]
 fn original_guard_gate_admission_exhausts_the_exact_authority_domain() {
     // Cause/effect rules: exact UID + RV are mandatory for every admitting
@@ -1495,20 +1425,6 @@ fn original_guard_gate_admission_exhausts_the_exact_authority_domain() {
     // acquire; a deleting source may only adopt its independently eligible
     // original guard. Exhaust all 64 raw combinations, including contradictory
     // UID facts. No sampled absence or raw finalizer alone authorizes deletion.
-    for bits in 0u8..64 {
-        check_original_guard_admission_domain(bits);
-    }
-}
-
-#[cfg(kani)]
-/// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
-/// @kani profile=solver-kissat-v1
-#[kani::proof]
-#[kani::unwind(65)]
-fn original_guard_gate_admission_preserves_exact_uid_and_retention() {
-    // The complete finite production-kernel domain, not unconstrained physical
-    // observations. HTTP tests qualify eligibility mapping and API CAS effects;
-    // this harness does not prove Kubernetes linearizability or source bytes.
     for bits in 0u8..64 {
         check_original_guard_admission_domain(bits);
     }
@@ -1566,6 +1482,91 @@ fn original_guard_retention_is_qualified_by_observation_purpose() {
                         original_guard_retained(&pod, purpose),
                         guard && label.is_none() && phase_allowed,
                         "{phase:?} {purpose:?} guard={guard} isolation={label:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4
+    /// @obligation sandbox_continuation.ephemeral_never_allocates_or_references_a_claim
+    #[test]
+    fn continuation_claim_selection_is_total_exact_and_non_widening() {
+        for configured in [false, true] {
+            for retained in [false, true] {
+                let continuity = if retained {
+                    awaken_provisioning_contract::FilesystemContinuity::Retained
+                } else {
+                    awaken_provisioning_contract::FilesystemContinuity::Ephemeral
+                };
+
+                let selected = claim_required_for(continuity, configured);
+                assert_eq!(selected, configured && retained);
+                assert!(!selected || configured);
+                assert!(!selected || retained);
+            }
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) = 16
+    /// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+    #[test]
+    fn absent_pod_claim_admission_is_total_and_never_starts_deletion() {
+        // KAP-proof: all 16 raw observations, including malformed combinations,
+        // refine the existing KAP1 decision table. Only an exact already-terminating
+        // incarnation can be awaited; a live claim always rejects. API effects
+        // remain checked by KPV5/KPV6, not asserted by this pure-kernel proof.
+        for present in [false, true] {
+            for uid_present in [false, true] {
+                for uid_matches in [false, true] {
+                    for terminating in [false, true] {
+                        let decision = absent_pod_claim_admission(
+                            present,
+                            uid_present,
+                            uid_matches,
+                            terminating,
+                        );
+                        use AbsentPodClaimAdmission::*;
+                        assert_eq!(matches!(decision, AlreadyAbsent), !present);
+                        assert_eq!(matches!(decision, MissingUid), present && !uid_present);
+                        assert_eq!(
+                            matches!(decision, StaleUid),
+                            present && uid_present && !uid_matches
+                        );
+                        assert_eq!(
+                            matches!(decision, AwaitTerminating),
+                            present && uid_present && uid_matches && terminating
+                        );
+                        assert_eq!(
+                            matches!(decision, UnsafeLiveClaim),
+                            present && uid_present && uid_matches && !terminating
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+    #[test]
+    fn continuation_claim_deletion_requires_exact_uid_and_resource_version() {
+        for uid_present in [false, true] {
+            for uid_matches in [false, true] {
+                for resource_version_present in [false, true] {
+                    let decision = claim_deletion_admission(
+                        uid_present,
+                        uid_matches,
+                        resource_version_present,
+                    );
+                    assert_eq!(
+                        matches!(decision, ClaimDeletionAdmission::DeleteExact),
+                        uid_present && uid_matches && resource_version_present
                     );
                 }
             }

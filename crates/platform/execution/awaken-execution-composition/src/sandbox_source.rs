@@ -57,32 +57,6 @@ const fn acp_mcp_projection_admission(
     }
 }
 
-#[cfg(kani)]
-/// @obligation acp.fixed_official_launch_preserves_process_local_mcp_routes
-/// @proof-input-debt free_symbol acp_mcp_projection_admission projected
-/// @proof-input-debt free_symbol acp_mcp_projection_admission trusted_fixed_acp
-#[kani::proof]
-fn acp_mcp_projection_has_one_exact_authority() {
-    // Causes: C1 the launch is selected from the CLI catalog; C2 the launch is
-    // the trusted official-ACP fixture. Constraint K1: C1 and C2 are mutually
-    // exclusive variants of `LaunchSource`. Effects: E1 catalog capability
-    // checking owns admission; E2 preserve Host-admitted routes exactly; E3
-    // omit routes for the newline-only fixture. Decision table: R1 C1=>E1;
-    // R2 !C1+C2=>E2; R3 !C1+!C2=>E3. The impossible C1+C2 combination is
-    // constrained out so no synthetic precedence is credited as coverage.
-    let projected = kani::any::<bool>();
-    let trusted_fixed_acp = kani::any::<bool>();
-    kani::assume(!(projected && trusted_fixed_acp));
-    let selected = acp_mcp_projection_admission(projected, trusted_fixed_acp);
-    if projected {
-        assert_eq!(selected, AcpMcpProjectionAdmission::CatalogChecked);
-    } else if trusted_fixed_acp {
-        assert_eq!(selected, AcpMcpProjectionAdmission::TrustedFixedAcp);
-    } else {
-        assert_eq!(selected, AcpMcpProjectionAdmission::Omit);
-    }
-}
-
 impl BoundLocalChannelSource {
     pub(crate) fn from_environment(
         sandbox: Arc<dyn awaken_session_environment_contract::AgentProcessEnvironment>,
@@ -1346,5 +1320,38 @@ mod tests {
             sandbox.command.lock().unwrap().is_none(),
             "a mismatched run must not spawn in the SessionEnvironment"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) = 4 (3 after assume !(projected && trusted_fixed_acp))
+    /// @obligation acp.fixed_official_launch_preserves_process_local_mcp_routes
+    #[test]
+    fn acp_mcp_projection_has_one_exact_authority() {
+        // Causes: C1 the launch is selected from the CLI catalog; C2 the launch is
+        // the trusted official-ACP fixture. Constraint K1: C1 and C2 are mutually
+        // exclusive variants of `LaunchSource`. Effects: E1 catalog capability
+        // checking owns admission; E2 preserve Host-admitted routes exactly; E3
+        // omit routes for the newline-only fixture. Decision table: R1 C1=>E1;
+        // R2 !C1+C2=>E2; R3 !C1+!C2=>E3. The impossible C1+C2 combination is
+        // constrained out so no synthetic precedence is credited as coverage.
+        for projected in [false, true] {
+            for trusted_fixed_acp in [false, true] {
+                if projected && trusted_fixed_acp {
+                    continue;
+                }
+                let selected = acp_mcp_projection_admission(projected, trusted_fixed_acp);
+                if projected {
+                    assert_eq!(selected, AcpMcpProjectionAdmission::CatalogChecked);
+                } else if trusted_fixed_acp {
+                    assert_eq!(selected, AcpMcpProjectionAdmission::TrustedFixedAcp);
+                } else {
+                    assert_eq!(selected, AcpMcpProjectionAdmission::Omit);
+                }
+            }
+        }
     }
 }

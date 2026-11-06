@@ -79,27 +79,6 @@ pub fn is_legacy_derived_session_context(message: &Message) -> bool {
         .starts_with(LEGACY_DERIVED_SESSION_CONTEXT_PREFIX)
 }
 
-#[cfg(kani)]
-/// @obligation session.legacy_derived_context_remains_durable_but_is_hidden_from_new_model_requests
-#[kani::proof]
-fn legacy_derived_context_remains_durable_but_never_reaches_a_new_model_request() {
-    let legacy_derived: bool = kani::any();
-    let destination = if kani::any() {
-        TranscriptContextDestination::ModelRequest
-    } else {
-        TranscriptContextDestination::DurableThreadTruth
-    };
-    let visible = session_context_is_visible(legacy_derived, destination);
-    if legacy_derived {
-        assert_eq!(
-            visible,
-            destination == TranscriptContextDestination::DurableThreadTruth
-        );
-    } else {
-        assert!(visible);
-    }
-}
-
 /// Backend-neutral semantic input before transport-specific encoding.
 /// Native consumes `ordered_messages`; ACP and A2A consume `text_envelope`.
 /// Both views share ordering and the legacy-visibility rule, so a protocol
@@ -214,25 +193,6 @@ impl NormalizedModelInput {
             "Current Run input (authoritative task; execute it under the frozen Agent instructions):\n{input}"
         ));
         sections.join("\n\n")
-    }
-}
-
-#[cfg(kani)]
-/// @obligation session.transcript_prefix_is_exact_request_only_context_not_durable_truth
-#[kani::proof]
-fn transcript_prefix_is_exact_request_only_context_not_durable_truth() {
-    let destination = if kani::any() {
-        TranscriptContextDestination::ModelRequest
-    } else {
-        TranscriptContextDestination::DurableThreadTruth
-    };
-    let projected = transcript_prefix_projects_to(destination);
-    assert_eq!(
-        projected,
-        destination == TranscriptContextDestination::ModelRequest
-    );
-    if destination == TranscriptContextDestination::DurableThreadTruth {
-        assert!(!projected);
     }
 }
 
@@ -1057,5 +1017,63 @@ mod cancellation_cause_tests {
         cell.cancel(&token, CancellationCause::WorkerRevoked);
         assert!(child.is_cancelled());
         assert_eq!(child.abandoned_by(), Some(CancellationCause::WorkerRevoked));
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_destination(destination: TranscriptContextDestination) -> usize {
+        match destination {
+            TranscriptContextDestination::ModelRequest => 0,
+            TranscriptContextDestination::DurableThreadTruth => 1,
+        }
+    }
+    const EVERY_DESTINATION: [TranscriptContextDestination; 2] = [
+        TranscriptContextDestination::ModelRequest,
+        TranscriptContextDestination::DurableThreadTruth,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_DESTINATION.into_iter().enumerate() {
+            assert_eq!(listed_destination(value), index);
+        }
+    }
+
+    /// @exhaustive bool(2) x TranscriptContextDestination(2) = 4
+    /// @obligation session.legacy_derived_context_remains_durable_but_is_hidden_from_new_model_requests
+    #[test]
+    fn legacy_derived_context_remains_durable_but_never_reaches_a_new_model_request() {
+        for legacy_derived in [false, true] {
+            for destination in EVERY_DESTINATION {
+                let visible = session_context_is_visible(legacy_derived, destination);
+                if legacy_derived {
+                    assert_eq!(
+                        visible,
+                        destination == TranscriptContextDestination::DurableThreadTruth
+                    );
+                } else {
+                    assert!(visible);
+                }
+            }
+        }
+    }
+
+    /// @exhaustive TranscriptContextDestination(2) = 2
+    /// @obligation session.transcript_prefix_is_exact_request_only_context_not_durable_truth
+    #[test]
+    fn transcript_prefix_is_exact_request_only_context_not_durable_truth() {
+        for destination in EVERY_DESTINATION {
+            let projected = transcript_prefix_projects_to(destination);
+            assert_eq!(
+                projected,
+                destination == TranscriptContextDestination::ModelRequest
+            );
+            if destination == TranscriptContextDestination::DurableThreadTruth {
+                assert!(!projected);
+            }
+        }
     }
 }

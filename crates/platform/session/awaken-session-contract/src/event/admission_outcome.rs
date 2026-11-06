@@ -458,7 +458,7 @@ mod verification {
     // does not prove the whole resolver or SQL codec/transaction behavior.
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-64-v1
+    /// @kani profile=unwind-memcmp-64-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(4)]
     fn deleted_admission_resolver_preserves_empty() {
@@ -857,7 +857,7 @@ mod verification {
     // truncating the error comparison. Nonerror calls use memcmp bound 2.
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_closed_none_07() {
@@ -867,7 +867,7 @@ mod verification {
     // full source frame and two-live-output replay/Drop (two-ID output stays open).
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_none_00() {
@@ -876,7 +876,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-65-v1
+    /// @kani profile=unwind-memcmp-65-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_conflict_none_01() {
@@ -885,7 +885,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_none_02() {
@@ -903,7 +903,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_none_04() {
@@ -912,7 +912,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-65-v1
+    /// @kani profile=unwind-memcmp-65-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_conflict_none_05() {
@@ -921,7 +921,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_none_06() {
@@ -929,7 +929,7 @@ mod verification {
     }
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_empty_08() {
@@ -938,7 +938,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-65-v1
+    /// @kani profile=unwind-memcmp-65-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_conflict_empty_09() {
@@ -947,7 +947,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_empty_10() {
@@ -956,7 +956,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_accepted_empty_11() {
@@ -965,7 +965,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_empty_12() {
@@ -983,7 +983,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_empty_14() {
@@ -992,7 +992,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_closed_empty_15() {
@@ -1000,7 +1000,7 @@ mod verification {
     }
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_one_16() {
@@ -1018,7 +1018,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_one_18() {
@@ -1027,7 +1027,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_accepted_one_19() {
@@ -1036,7 +1036,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_one_20() {
@@ -1054,7 +1054,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_one_22() {
@@ -1063,7 +1063,7 @@ mod verification {
 
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
-    /// @kani profile=unwind-memcmp-2-v1
+    /// @kani profile=unwind-memcmp-2-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_closed_one_23() {
@@ -1099,6 +1099,7 @@ mod verification {
     // existing replay oracle, not a proof-only replacement implementation.
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani tier=nightly
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_accepted_two_initial_27() {

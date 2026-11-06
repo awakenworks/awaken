@@ -27,7 +27,7 @@ impl TenureScope for SessionWork {
 /// its exact owned row. All values enter through the production lease adapter.
 /// Receipt and effect-policy harnesses share this sample builder; neither
 /// copy nor fixture data grants authority independently of the original port.
-#[cfg(kani)]
+#[cfg(test)]
 pub(super) fn proof_representative_lease(
     session: bool,
     owner: bool,
@@ -115,57 +115,76 @@ pub const fn session_work_revival_is_authorized(
         && matches!(acquisition, SessionWorkAcquisition::ClaimedRun)
 }
 
-#[cfg(kani)]
-/// @obligation session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
-#[kani::proof]
-fn stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run() {
-    let session_is_terminal: bool = kani::any();
-    let lease_was_acquired: bool = kani::any();
-    let claimed_run: bool = kani::any();
-    let acquisition = if claimed_run {
-        SessionWorkAcquisition::ClaimedRun
-    } else {
-        SessionWorkAcquisition::RealizationRenewal
-    };
-
-    assert_eq!(
-        session_work_revival_is_authorized(acquisition, session_is_terminal, lease_was_acquired,),
-        claimed_run && !session_is_terminal && !lease_was_acquired
-    );
-}
-
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
+
+    const EVERY_ACQUISITION: [SessionWorkAcquisition; 2] = [
+        SessionWorkAcquisition::ClaimedRun,
+        SessionWorkAcquisition::RealizationRenewal,
+    ];
+
+    const fn listed_acquisition(acquisition: SessionWorkAcquisition) -> usize {
+        match acquisition {
+            SessionWorkAcquisition::ClaimedRun => 0,
+            SessionWorkAcquisition::RealizationRenewal => 1,
+        }
+    }
+
+    #[test]
+    fn every_acquisition_is_listed() {
+        for (index, acquisition) in EVERY_ACQUISITION.into_iter().enumerate() {
+            assert_eq!(listed_acquisition(acquisition), index);
+        }
+    }
+
+    /// @exhaustive SessionWorkAcquisition(2) x bool(2) x bool(2) = 8
+    /// @obligation session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
+    #[test]
+    fn stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run() {
+        let mut cases = 0;
+        for acquisition in EVERY_ACQUISITION {
+            let claimed_run = acquisition == SessionWorkAcquisition::ClaimedRun;
+            for session_is_terminal in [false, true] {
+                for lease_was_acquired in [false, true] {
+                    assert_eq!(
+                        session_work_revival_is_authorized(
+                            acquisition,
+                            session_is_terminal,
+                            lease_was_acquired,
+                        ),
+                        claimed_run && !session_is_terminal && !lease_was_acquired
+                    );
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 8);
+    }
+
+    /// @exhaustive bool(2) = 2
     /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
-    #[kani::proof]
+    #[test]
     fn session_work_effect_requires_not_required_scope_or_exact_owner() {
-        // Complete policy domain, entered through the production wrapper so the
-        // owner fact is the one the code derives rather than a free symbol:
-        // every closed observed Work-authority class crossed with an exact and
-        // a foreign owner spelling. Causes: observed ownership kind and whether
-        // the authenticated owner is the lease's own. Effect: only a Work-free
-        // scope, or a lease whose owner is exactly the authenticated one,
-        // permits a realization effect.
-        // Bounds: the observed ownership *kind* is enumerated concretely for the
-        // same reason as the receipt harness -- a symbolic variant carrying a
-        // String payload does not terminate -- while the owner comparison the
-        // wrapper actually performs stays symbolic.
-        let owner_matches: bool = kani::any();
-        let leased = SessionWorkOwnership::Leased(proof_representative_lease(
-            true,
-            owner_matches,
-            true,
-            true,
-            true,
-            true,
-        ));
-        assert_eq!(
-            leased.permits_effect_for("w"),
-            owner_matches,
-            "a lease permits effects only for its exact current owner"
-        );
-        assert!(SessionWorkOwnership::NotRequired.permits_effect_for("w"));
-        assert!(!SessionWorkOwnership::Unowned.permits_effect_for("w"));
+        // Every closed observed Work-authority class crossed with an exact and
+        // a foreign owner spelling, entered through the production wrapper so
+        // the owner fact is the one the code derives.
+        for owner_matches in [false, true] {
+            let leased = SessionWorkOwnership::Leased(proof_representative_lease(
+                true,
+                owner_matches,
+                true,
+                true,
+                true,
+                true,
+            ));
+            assert_eq!(
+                leased.permits_effect_for("w"),
+                owner_matches,
+                "a lease permits effects only for its exact current owner"
+            );
+            assert!(SessionWorkOwnership::NotRequired.permits_effect_for("w"));
+            assert!(!SessionWorkOwnership::Unowned.permits_effect_for("w"));
+        }
     }
 }

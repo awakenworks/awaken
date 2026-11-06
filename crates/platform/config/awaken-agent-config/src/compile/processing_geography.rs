@@ -91,53 +91,6 @@ pub(super) fn validate_candidate_pool(
     Ok(())
 }
 
-#[cfg(kani)]
-fn arbitrary_geography(value: u8) -> InferenceGeography {
-    match value % 9 {
-        0 => InferenceGeography::Us,
-        1 => InferenceGeography::Eu,
-        2 => InferenceGeography::Apac,
-        3 => InferenceGeography::Cn,
-        4 => InferenceGeography::Jp,
-        5 => InferenceGeography::Au,
-        6 => InferenceGeography::Ca,
-        7 => InferenceGeography::Uk,
-        _ => InferenceGeography::Hk,
-    }
-}
-
-#[cfg(kani)]
-/// @obligation model_geography.every_attempt_candidate_requires_exact_processing_evidence
-/// @proof-input-debt free_symbol candidate_geography_admitted anthropic_messages
-#[kani::proof]
-fn processing_geography_requires_exact_evidence_from_every_candidate() {
-    let required = kani::any::<bool>().then(|| arbitrary_geography(kani::any()));
-    let provider_candidate = kani::any();
-    let placement =
-        kani::any::<bool>().then(|| awaken_runtime_contract::resolved::InferencePlacement {
-            geography: arbitrary_geography(kani::any()),
-            mechanism: if kani::any() {
-                InferencePlacementMechanism::AnthropicRequestBody
-            } else {
-                InferencePlacementMechanism::FrozenRegionalRoute
-            },
-        });
-    let anthropic_messages = kani::any();
-    let admitted =
-        candidate_geography_admitted(required, provider_candidate, placement, anthropic_messages);
-    let expected = required.is_none()
-        || required.is_some_and(|required| {
-            provider_candidate
-                && placement.is_some_and(|placement| {
-                    placement.geography == required
-                        && (placement.mechanism
-                            != InferencePlacementMechanism::AnthropicRequestBody
-                            || (required == InferenceGeography::Us && anthropic_messages))
-                })
-        });
-    assert_eq!(admitted, expected);
-}
-
 fn invalid(agent: &str, reason: String) -> CompileError {
     CompileError::InvalidResolvedModels {
         agent: agent.to_owned(),
@@ -256,5 +209,101 @@ mod tests {
             .is_err(),
             "P5"
         );
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+    use awaken_runtime_contract::resolved::InferencePlacement;
+
+    const fn listed_geography(geography: InferenceGeography) -> usize {
+        match geography {
+            InferenceGeography::Us => 0,
+            InferenceGeography::Eu => 1,
+            InferenceGeography::Apac => 2,
+            InferenceGeography::Cn => 3,
+            InferenceGeography::Jp => 4,
+            InferenceGeography::Au => 5,
+            InferenceGeography::Ca => 6,
+            InferenceGeography::Uk => 7,
+            InferenceGeography::Hk => 8,
+        }
+    }
+    const EVERY_GEOGRAPHY: [InferenceGeography; 9] = [
+        InferenceGeography::Us,
+        InferenceGeography::Eu,
+        InferenceGeography::Apac,
+        InferenceGeography::Cn,
+        InferenceGeography::Jp,
+        InferenceGeography::Au,
+        InferenceGeography::Ca,
+        InferenceGeography::Uk,
+        InferenceGeography::Hk,
+    ];
+
+    const fn listed_mechanism(mechanism: InferencePlacementMechanism) -> usize {
+        match mechanism {
+            InferencePlacementMechanism::AnthropicRequestBody => 0,
+            InferencePlacementMechanism::FrozenRegionalRoute => 1,
+        }
+    }
+    const EVERY_MECHANISM: [InferencePlacementMechanism; 2] = [
+        InferencePlacementMechanism::AnthropicRequestBody,
+        InferencePlacementMechanism::FrozenRegionalRoute,
+    ];
+
+    #[test]
+    fn every_list_names_each_variant_once_in_match_order() {
+        for (index, value) in EVERY_GEOGRAPHY.into_iter().enumerate() {
+            assert_eq!(listed_geography(value), index);
+        }
+        for (index, value) in EVERY_MECHANISM.into_iter().enumerate() {
+            assert_eq!(listed_mechanism(value), index);
+        }
+    }
+
+    /// @exhaustive Option<InferenceGeography>(10) x bool(2) x Option<InferenceGeography(9) x InferencePlacementMechanism(2)>(19) x bool(2) = 760
+    /// @obligation model_geography.every_attempt_candidate_requires_exact_processing_evidence
+    #[test]
+    fn processing_geography_requires_exact_evidence_from_every_candidate() {
+        let requireds = std::iter::once(None).chain(EVERY_GEOGRAPHY.map(Some));
+        let placements: Vec<Option<InferencePlacement>> = std::iter::once(None)
+            .chain(EVERY_GEOGRAPHY.into_iter().flat_map(|geography| {
+                EVERY_MECHANISM.map(|mechanism| {
+                    Some(InferencePlacement {
+                        geography,
+                        mechanism,
+                    })
+                })
+            }))
+            .collect();
+        assert_eq!(placements.len(), 19);
+        for required in requireds {
+            for provider_candidate in [false, true] {
+                for placement in placements.iter().copied() {
+                    for anthropic_messages in [false, true] {
+                        let admitted = candidate_geography_admitted(
+                            required,
+                            provider_candidate,
+                            placement,
+                            anthropic_messages,
+                        );
+                        let expected = required.is_none()
+                            || required.is_some_and(|required| {
+                                provider_candidate
+                                    && placement.is_some_and(|placement| {
+                                        placement.geography == required
+                                            && (placement.mechanism
+                                                != InferencePlacementMechanism::AnthropicRequestBody
+                                                || (required == InferenceGeography::Us
+                                                    && anthropic_messages))
+                                    })
+                            });
+                        assert_eq!(admitted, expected);
+                    }
+                }
+            }
+        }
     }
 }

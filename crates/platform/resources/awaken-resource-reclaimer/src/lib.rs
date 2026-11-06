@@ -840,37 +840,46 @@ mod tests {
     }
 }
 
-#[cfg(kani)]
-/// @obligation resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
-/// @obligation resource_reclamation.reference_and_lease_races_fail_closed
-#[kani::proof]
-fn physical_purge_requires_zero_references_leases_and_fence() {
-    // Symbolic form of the final production admission table. Kani covers every
-    // combination and proves that a missing fence, indexed reference, failed
-    // guard read, or live guard-reported lease/reference always denies purge.
-    let reclamation_fence_is_owned = kani::any::<bool>();
-    let indexed_references_are_clear = kani::any::<bool>();
-    let final_guard_read_succeeded = kani::any::<bool>();
-    let final_guard_has_no_blockers = kani::any::<bool>();
-    let admitted = physical_purge_is_admitted(
-        reclamation_fence_is_owned,
-        indexed_references_are_clear,
-        final_guard_read_succeeded,
-        final_guard_has_no_blockers,
-    );
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
 
-    assert_eq!(
-        admitted,
-        reclamation_fence_is_owned
-            && indexed_references_are_clear
-            && final_guard_read_succeeded
-            && final_guard_has_no_blockers
-    );
-    if !reclamation_fence_is_owned
-        || !indexed_references_are_clear
-        || !final_guard_read_succeeded
-        || !final_guard_has_no_blockers
-    {
-        assert!(!admitted);
+    /// @exhaustive bool(2) x bool(2) x bool(2) x bool(2) = 16
+    /// @obligation resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
+    /// @obligation resource_reclamation.reference_and_lease_races_fail_closed
+    #[test]
+    fn physical_purge_requires_zero_references_leases_and_fence() {
+        // Enumerated form of the final production admission table. The loops cover every
+        // combination and proves that a missing fence, indexed reference, failed
+        // guard read, or live guard-reported lease/reference always denies purge.
+        for reclamation_fence_is_owned in [false, true] {
+            for indexed_references_are_clear in [false, true] {
+                for final_guard_read_succeeded in [false, true] {
+                    for final_guard_has_no_blockers in [false, true] {
+                        let admitted = physical_purge_is_admitted(
+                            reclamation_fence_is_owned,
+                            indexed_references_are_clear,
+                            final_guard_read_succeeded,
+                            final_guard_has_no_blockers,
+                        );
+
+                        assert_eq!(
+                            admitted,
+                            reclamation_fence_is_owned
+                                && indexed_references_are_clear
+                                && final_guard_read_succeeded
+                                && final_guard_has_no_blockers
+                        );
+                        if !reclamation_fence_is_owned
+                            || !indexed_references_are_clear
+                            || !final_guard_read_succeeded
+                            || !final_guard_has_no_blockers
+                        {
+                            assert!(!admitted);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

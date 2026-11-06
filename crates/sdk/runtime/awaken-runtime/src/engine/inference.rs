@@ -943,21 +943,27 @@ impl CheckpointCtx<'_> {
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::should_clear_spent_checkpoint;
 
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
     /// @obligation checkpoint.terminal_completion_clears_resume
-    /// @proof-input-debt tautology should_clear_spent_checkpoint
-    #[kani::proof]
+    #[test]
     fn checkpoint_clear_requires_unvetoed_terminal_completion() {
-        let cancelled = kani::any::<bool>();
-        let journal_failed = kani::any::<bool>();
-        let can_acknowledge_return = kani::any::<bool>();
-
-        assert_eq!(
-            should_clear_spent_checkpoint(cancelled, journal_failed, can_acknowledge_return),
-            !cancelled && !journal_failed && can_acknowledge_return
-        );
+        for cancelled in [false, true] {
+            for journal_failed in [false, true] {
+                for can_acknowledge_return in [false, true] {
+                    assert_eq!(
+                        should_clear_spent_checkpoint(
+                            cancelled,
+                            journal_failed,
+                            can_acknowledge_return
+                        ),
+                        !cancelled && !journal_failed && can_acknowledge_return
+                    );
+                }
+            }
+        }
     }
 }

@@ -164,33 +164,6 @@ pub(crate) async fn wait_for_terminal_reconciliation(deadline: Option<tokio::tim
     }
 }
 
-#[cfg(kani)]
-/// @obligation remote_worker.maintenance_scheduler_respects_adapter_ownership
-/// @kani default-features=false
-#[kani::proof]
-fn maintenance_schedule_exists_only_for_the_owning_adapter() {
-    // Causes: C1 adapter owns local maintenance; C2 dead-letter GC configured;
-    // C3 terminal reconciliation configured. Effects: E1 !C1 yields no local
-    // schedule or timer; E2 C1 always relays; E3/E4 exactly mirror C2/C3.
-    //
-    // | Rule | C1 | C2 | C3 | Effect |
-    // |---|---|---|---|---|
-    // | R1 | no | any | any | E1 no schedule |
-    // | R2 | yes | no | no | E2 relay only |
-    // | R3 | yes | yes | no | E2 + E3 |
-    // | R4 | yes | no | yes | E2 + E4 |
-    // | R5 | yes | yes | yes | E2 + E3 + E4 |
-    let owns: bool = kani::any();
-    let gc: bool = kani::any();
-    let scan: bool = kani::any();
-    let schedule = LocalMaintenanceSchedule::for_adapter(owns, gc, scan);
-    assert_eq!(schedule.is_some(), owns);
-    if let Some(schedule) = schedule {
-        assert_eq!(schedule.purges_dead_letters(), gc);
-        assert_eq!(schedule.reconciles_terminals(), scan);
-    }
-}
-
 /// A running daemon draining one dispatch queue against a runtime.
 pub struct DispatchService<S> {
     worker: Arc<DispatchWorker<S>>,
@@ -544,5 +517,39 @@ mod topology_schedule_tests {
         let config = DispatchServiceConfig::for_topology(&topology);
         assert!(!config.sample_dispatch_queue_depth, "C2/E2");
         assert_eq!(config.poll_interval, topology.lost_wake_recovery_bound);
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
+    /// @obligation remote_worker.maintenance_scheduler_respects_adapter_ownership
+    #[test]
+    fn maintenance_schedule_exists_only_for_the_owning_adapter() {
+        // Causes: C1 adapter owns local maintenance; C2 dead-letter GC configured;
+        // C3 terminal reconciliation configured. Effects: E1 !C1 yields no local
+        // schedule or timer; E2 C1 always relays; E3/E4 exactly mirror C2/C3.
+        //
+        // | Rule | C1 | C2 | C3 | Effect |
+        // |---|---|---|---|---|
+        // | R1 | no | any | any | E1 no schedule |
+        // | R2 | yes | no | no | E2 relay only |
+        // | R3 | yes | yes | no | E2 + E3 |
+        // | R4 | yes | no | yes | E2 + E4 |
+        // | R5 | yes | yes | yes | E2 + E3 + E4 |
+        for owns in [false, true] {
+            for gc in [false, true] {
+                for scan in [false, true] {
+                    let schedule = LocalMaintenanceSchedule::for_adapter(owns, gc, scan);
+                    assert_eq!(schedule.is_some(), owns);
+                    if let Some(schedule) = schedule {
+                        assert_eq!(schedule.purges_dead_letters(), gc);
+                        assert_eq!(schedule.reconciles_terminals(), scan);
+                    }
+                }
+            }
+        }
     }
 }

@@ -541,88 +541,129 @@ pub async fn select_provider_with_policy<'a, P: SandboxReadiness + ?Sized>(
     }
 }
 
-#[cfg(kani)]
-mod verification {
+#[cfg(test)]
+mod exhaustive {
     use super::*;
 
-    fn isolation(tag: u8) -> IsolationClass {
-        match tag % 3 {
-            0 => IsolationClass::Workdir,
-            1 => IsolationClass::Namespace,
-            _ => IsolationClass::Container,
+    const EVERY_ISOLATION: [IsolationClass; 3] = [
+        IsolationClass::Workdir,
+        IsolationClass::Namespace,
+        IsolationClass::Container,
+    ];
+
+    const fn listed_isolation(class: IsolationClass) -> usize {
+        match class {
+            IsolationClass::Workdir => 0,
+            IsolationClass::Namespace => 1,
+            IsolationClass::Container => 2,
         }
     }
 
+    #[test]
+    fn every_isolation_class_is_listed_once() {
+        for (index, class) in EVERY_ISOLATION.into_iter().enumerate() {
+            assert_eq!(listed_isolation(class), index);
+        }
+    }
+
+    /// @exhaustive IsolationClass(3) x IsolationClass(3) x bool(2) x bool(2) x bool(2) x bool(2) = 144
     /// @obligation sandbox.admission_never_weakens_isolation
-    #[kani::proof]
+    #[test]
     fn sandbox_admission_never_weakens_the_isolation_floor() {
-        let actual = isolation(kani::any());
-        let required = isolation(kani::any());
-        let admitted = capability_requirements_satisfied(
-            actual,
-            required,
-            kani::any(),
-            kani::any(),
-            kani::any(),
-            kani::any(),
-        );
-        if admitted {
-            assert!(isolation_rank(actual) >= isolation_rank(required));
+        for actual in EVERY_ISOLATION {
+            for required in EVERY_ISOLATION {
+                for has_network in [false, true] {
+                    for needs_network in [false, true] {
+                        for has_limits in [false, true] {
+                            for needs_limits in [false, true] {
+                                let admitted = capability_requirements_satisfied(
+                                    actual,
+                                    required,
+                                    has_network,
+                                    needs_network,
+                                    has_limits,
+                                    needs_limits,
+                                );
+                                if admitted {
+                                    assert!(isolation_rank(actual) >= isolation_rank(required));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
+    /// @exhaustive IsolationClass(3) x bool(2) x bool(2) x bool(2) x bool(2) = 48
     /// @obligation sandbox.admission_requires_requested_capabilities
-    #[kani::proof]
+    #[test]
     fn sandbox_admission_requires_every_requested_capability() {
-        let has_network = kani::any();
-        let needs_network = kani::any();
-        let has_limits = kani::any();
-        let needs_limits = kani::any();
-        let admitted = capability_requirements_satisfied(
-            isolation(kani::any()),
-            IsolationClass::Workdir,
-            has_network,
-            needs_network,
-            has_limits,
-            needs_limits,
-        );
-        if admitted {
-            assert!(!needs_network || has_network);
-            assert!(!needs_limits || has_limits);
+        for actual in EVERY_ISOLATION {
+            for has_network in [false, true] {
+                for needs_network in [false, true] {
+                    for has_limits in [false, true] {
+                        for needs_limits in [false, true] {
+                            let admitted = capability_requirements_satisfied(
+                                actual,
+                                IsolationClass::Workdir,
+                                has_network,
+                                needs_network,
+                                has_limits,
+                                needs_limits,
+                            );
+                            if admitted {
+                                assert!(!needs_network || has_network);
+                                assert!(!needs_limits || has_limits);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
+    /// @exhaustive IsolationClass(3) x IsolationClass(3) = 9
     /// @obligation sandbox.fail_closed_policy_never_downgrades
-    #[kani::proof]
+    #[test]
     fn fail_closed_sandbox_policy_never_authorizes_a_downgrade() {
-        let actual = isolation(kani::any());
-        let required = isolation(kani::any());
-        if degradation_is_authorized(actual, required, OnUnmet::FailClosed) {
-            assert!(isolation_rank(actual) >= isolation_rank(required));
+        for actual in EVERY_ISOLATION {
+            for required in EVERY_ISOLATION {
+                if degradation_is_authorized(actual, required, OnUnmet::FailClosed) {
+                    assert!(isolation_rank(actual) >= isolation_rank(required));
+                }
+            }
         }
     }
 
+    /// @exhaustive bool(2) x bool(2) = 4
     /// @obligation sandbox.workspace_path_projection_is_one_logical_root_and_never_discloses_provider_host_paths
-    #[kani::proof]
+    #[test]
     fn workspace_path_projection_requires_exact_fidelity_admission() {
-        let provider_has_path_fidelity: bool = kani::any();
-        let workload_requires_path_fidelity: bool = kani::any();
-        let mut capabilities = SandboxCapabilities::default();
-        capabilities.path_fidelity = provider_has_path_fidelity;
-        let mut requirements = SandboxRequirements::default();
-        requirements.path_fidelity = workload_requires_path_fidelity;
+        for provider_has_path_fidelity in [false, true] {
+            for workload_requires_path_fidelity in [false, true] {
+                let capabilities = SandboxCapabilities {
+                    path_fidelity: provider_has_path_fidelity,
+                    ..SandboxCapabilities::default()
+                };
+                let requirements = SandboxRequirements {
+                    path_fidelity: workload_requires_path_fidelity,
+                    ..SandboxRequirements::default()
+                };
 
-        // Admission cause/effect table (all four rows are symbolic):
-        // A1 !required + !provided -> admit; A2 !required + provided -> admit;
-        // A3 required + !provided -> reject; A4 required + provided -> admit.
-        // Effect E1 is exact fail-closed selection before any provider bind or
-        // workload launch can expose a physical path. Constraint: every other
-        // requirement/capability axis is the same default value, isolating the
-        // complete path-fidelity decision rather than bypassing another cause.
-        assert_eq!(
-            capabilities.satisfies_requirements(&requirements),
-            !workload_requires_path_fidelity || provider_has_path_fidelity
-        );
+                // Admission cause/effect table (all four rows are enumerated):
+                // A1 !required + !provided -> admit; A2 !required + provided -> admit;
+                // A3 required + !provided -> reject; A4 required + provided -> admit.
+                // Effect E1 is exact fail-closed selection before any provider bind or
+                // workload launch can expose a physical path. Constraint: every other
+                // requirement/capability axis is the same default value, isolating the
+                // complete path-fidelity decision rather than bypassing another cause.
+                assert_eq!(
+                    capabilities.satisfies_requirements(&requirements),
+                    !workload_requires_path_fidelity || provider_has_path_fidelity
+                );
+            }
+        }
     }
 }
 

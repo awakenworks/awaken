@@ -1020,7 +1020,7 @@ impl WorkerUpstream {
     }
 }
 
-#[cfg(kani)]
+#[cfg(test)]
 fn remote_endpoint_from_index(index: u8) -> RemoteEndpointPosture {
     match index {
         0 => RemoteEndpointPosture::Https,
@@ -1032,7 +1032,7 @@ fn remote_endpoint_from_index(index: u8) -> RemoteEndpointPosture {
     }
 }
 
-#[cfg(kani)]
+#[cfg(test)]
 fn remote_credential_from_index(index: u8) -> RemoteCredentialPosture {
     match index {
         0 => RemoteCredentialPosture::ExactlyOneSigned,
@@ -1045,7 +1045,7 @@ fn remote_credential_from_index(index: u8) -> RemoteCredentialPosture {
     }
 }
 
-#[cfg(kani)]
+#[cfg(test)]
 fn remote_identity_from_index(index: u8) -> RemoteIdentityPosture {
     match index {
         0 => RemoteIdentityPosture::Exact,
@@ -1054,62 +1054,6 @@ fn remote_identity_from_index(index: u8) -> RemoteIdentityPosture {
         3 => RemoteIdentityPosture::ConfiguredWhitespace,
         4 => RemoteIdentityPosture::CredentialWhitespace,
         _ => RemoteIdentityPosture::Mismatch,
-    }
-}
-
-/// Exhaustively covers the finite 6 x 7 x 6 posture algebra. Only HTTPS + one
-/// supported credential-verification mode + exact identity is admitted.
-#[cfg(kani)]
-/// @obligation worker.remote_transport_is_secure_exact_and_identity_bound
-#[kani::proof]
-fn worker_transport_selector_admits_only_supported_exact_postures() {
-    let endpoint_index: u8 = kani::any();
-    let credential_index: u8 = kani::any();
-    let identity_index: u8 = kani::any();
-    kani::assume(endpoint_index < 6);
-    kani::assume(credential_index < 7);
-    kani::assume(identity_index < 6);
-
-    let endpoint = remote_endpoint_from_index(endpoint_index);
-    let credential = remote_credential_from_index(credential_index);
-    let identity = remote_identity_from_index(identity_index);
-    let admitted = select_remote_worker_transport(endpoint, credential, identity);
-    let exact = endpoint == RemoteEndpointPosture::Https
-        && matches!(
-            credential,
-            RemoteCredentialPosture::ExactlyOneSigned | RemoteCredentialPosture::PodBoundToken
-        )
-        && identity == RemoteIdentityPosture::Exact;
-    assert_eq!(admitted.is_some(), exact);
-}
-
-/// Any admitted remote selection retains every required security property; no
-/// state can downgrade TLS, omit verification or broaden identity binding.
-#[cfg(kani)]
-/// @obligation worker.remote_transport_is_secure_exact_and_identity_bound
-#[kani::proof]
-fn remote_transport_never_downgrades_or_widens_identity() {
-    let endpoint_index: u8 = kani::any();
-    let credential_index: u8 = kani::any();
-    let identity_index: u8 = kani::any();
-    kani::assume(endpoint_index < 6);
-    kani::assume(credential_index < 7);
-    kani::assume(identity_index < 6);
-
-    if let Some(selection) = select_remote_worker_transport(
-        remote_endpoint_from_index(endpoint_index),
-        remote_credential_from_index(credential_index),
-        remote_identity_from_index(identity_index),
-    ) {
-        assert!(selection.requires_https());
-        assert_ne!(
-            selection.requires_signed_credential(),
-            selection.requires_pod_bound_token()
-        );
-        assert!(selection.binds_exact_worker_id());
-        assert_eq!(endpoint_index, 0);
-        assert!(credential_index == 0 || credential_index == 6);
-        assert_eq!(identity_index, 0);
     }
 }
 
@@ -1792,5 +1736,123 @@ mod tests {
         // An mTLS process keeps its registered incarnation; only a
         // provider-identified domain requires provider-observed evidence.
         assert!(!verified.requires_provider_incarnation());
+    }
+}
+
+#[cfg(test)]
+mod exhaustive {
+    use super::*;
+
+    const fn listed_endpoint(posture: RemoteEndpointPosture) -> usize {
+        match posture {
+            RemoteEndpointPosture::Https => 0,
+            RemoteEndpointPosture::PlainHttp => 1,
+            RemoteEndpointPosture::EmbeddedAuthority => 2,
+            RemoteEndpointPosture::QueryOrFragment => 3,
+            RemoteEndpointPosture::OtherScheme => 4,
+            RemoteEndpointPosture::Invalid => 5,
+        }
+    }
+
+    const fn listed_credential(posture: RemoteCredentialPosture) -> usize {
+        match posture {
+            RemoteCredentialPosture::ExactlyOneSigned => 0,
+            RemoteCredentialPosture::Missing => 1,
+            RemoteCredentialPosture::Multiple => 2,
+            RemoteCredentialPosture::UnsignedHeader => 3,
+            RemoteCredentialPosture::MtlsOnly => 4,
+            RemoteCredentialPosture::Invalid => 5,
+            RemoteCredentialPosture::PodBoundToken => 6,
+        }
+    }
+
+    const fn listed_identity(posture: RemoteIdentityPosture) -> usize {
+        match posture {
+            RemoteIdentityPosture::Exact => 0,
+            RemoteIdentityPosture::ConfiguredEmpty => 1,
+            RemoteIdentityPosture::CredentialEmpty => 2,
+            RemoteIdentityPosture::ConfiguredWhitespace => 3,
+            RemoteIdentityPosture::CredentialWhitespace => 4,
+            RemoteIdentityPosture::Mismatch => 5,
+        }
+    }
+
+    /// The index tables the tests enumerate list every posture variant once:
+    /// a new variant has no `listed_*` arm and fails to compile until listed.
+    #[test]
+    fn every_posture_index_lists_each_variant_once() {
+        for index in 0_u8..6 {
+            assert_eq!(
+                listed_endpoint(remote_endpoint_from_index(index)),
+                usize::from(index)
+            );
+        }
+        for index in 0_u8..7 {
+            assert_eq!(
+                listed_credential(remote_credential_from_index(index)),
+                usize::from(index)
+            );
+        }
+        for index in 0_u8..6 {
+            assert_eq!(
+                listed_identity(remote_identity_from_index(index)),
+                usize::from(index)
+            );
+        }
+    }
+
+    /// Exhaustively covers the finite 6 x 7 x 6 posture algebra. Only HTTPS + one
+    /// supported credential-verification mode + exact identity is admitted.
+    /// @exhaustive RemoteEndpointPosture(6) x RemoteCredentialPosture(7) x RemoteIdentityPosture(6) = 252
+    /// @obligation worker.remote_transport_is_secure_exact_and_identity_bound
+    #[test]
+    fn worker_transport_selector_admits_only_supported_exact_postures() {
+        for endpoint_index in 0_u8..6 {
+            for credential_index in 0_u8..7 {
+                for identity_index in 0_u8..6 {
+                    let endpoint = remote_endpoint_from_index(endpoint_index);
+                    let credential = remote_credential_from_index(credential_index);
+                    let identity = remote_identity_from_index(identity_index);
+                    let admitted = select_remote_worker_transport(endpoint, credential, identity);
+                    let exact = endpoint == RemoteEndpointPosture::Https
+                        && matches!(
+                            credential,
+                            RemoteCredentialPosture::ExactlyOneSigned
+                                | RemoteCredentialPosture::PodBoundToken
+                        )
+                        && identity == RemoteIdentityPosture::Exact;
+                    assert_eq!(admitted.is_some(), exact);
+                }
+            }
+        }
+    }
+
+    /// Any admitted remote selection retains every required security property; no
+    /// state can downgrade TLS, omit verification or broaden identity binding.
+    /// @exhaustive RemoteEndpointPosture(6) x RemoteCredentialPosture(7) x RemoteIdentityPosture(6) = 252
+    /// @obligation worker.remote_transport_is_secure_exact_and_identity_bound
+    #[test]
+    fn remote_transport_never_downgrades_or_widens_identity() {
+        for endpoint_index in 0_u8..6 {
+            for credential_index in 0_u8..7 {
+                for identity_index in 0_u8..6 {
+                    if let Some(selection) = select_remote_worker_transport(
+                        remote_endpoint_from_index(endpoint_index),
+                        remote_credential_from_index(credential_index),
+                        remote_identity_from_index(identity_index),
+                    ) {
+                        assert!(selection.requires_https());
+                        assert_ne!(
+                            selection.requires_signed_credential(),
+                            selection.requires_pod_bound_token()
+                        );
+                        assert!(selection.binds_exact_worker_id());
+                        assert_eq!(endpoint_index, 0);
+                        assert!(credential_index == 0 || credential_index == 6);
+                        assert_eq!(identity_index, 0);
+                    }
+                }
+            }
+        }
     }
 }
