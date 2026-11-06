@@ -121,16 +121,10 @@ class WorkParitySelectionTests(unittest.TestCase):
                 self.verify(source)
 
     def test_unknown_ignored_cases_still_fail_the_real_execution_reconciler(self):
-        import check_rust_test_execution as execution
-        inventory = 'current: test\nunknown_new_gap: test\n\n2 tests, 0 benchmarks\n'
-        results = (
-            'running 2 tests\n'
-            'test current ... ok\n'
-            'test unknown_new_gap ... ignored, product gap: new\n'
-            'test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n'
-        )
-        observed = execution.execution_evidence(inventory, results, 0, ['current'])
-        self.assertTrue(observed['errors'])
+        import nextest_execution as execution
+        inventory = execution.listing('current', 'unknown_new_gap', ignored=('unknown_new_gap',))
+        observed = execution.qualify(inventory, execution.junit('current'), 0, ['current'])
+        self.assertIn('selected tests are #[ignore]d: unknown_new_gap', observed['errors'])
 
 
 class WorkCalibrationAdmissionTests(unittest.TestCase):

@@ -361,7 +361,7 @@ class ProfileTests(unittest.TestCase):
         # fails the existing executor even if another test matches the filter.
         # This source expectation copies no case inventory and runs no Rust;
         # the executor's existing list/run/NoTests/skip cases own that law.
-        from check_rust_test_execution import selection_commands
+        from nextest_execution import required_command as selection_commands
         root = Path(__file__).resolve().parents[2]
         source = (root / "scripts/ci/check_formal.sh").read_text()
         commands = [shlex.split(line, comments=True)

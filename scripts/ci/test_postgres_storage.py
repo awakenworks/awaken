@@ -147,8 +147,7 @@ class StorageReceiptTests(unittest.TestCase):
         return postgres_receipts(base,"storage")
 
     def test_all_domains_require_exact_source_live_fixture_and_actual_executions(self):
-        import check_rust_test_execution as q
-        with tempfile.TemporaryDirectory() as directory,mock.patch.object(q,"verify_preparation"):
+        with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);paths=self.receipts(base)
             def references(rows):return "".join("execution evidence: "+str(path)+"\n" for path in rows)
             log=references(paths)
@@ -165,10 +164,12 @@ class StorageReceiptTests(unittest.TestCase):
                     value=copy.deepcopy(original);value.update(changed);path.write_text(json.dumps(value),encoding="utf-8")
                     with self.subTest(change=changed),self.assertRaises(ValueError):gate.reconcile_postgres(log,"source","storage",fixture_owner=FIXTURE_OWNER)
                 path.write_text(json.dumps(original),encoding="utf-8")
-                path=paths[0]/"results.log";original_output=path.read_text()
-                for changed in (original_output.replace(" ... ok"," ... ignored"),original_output+"SKIPPED PostgreSQL fixture\n"):
-                    path.write_text(changed,encoding="utf-8")
+                for name,old,new in (("list.json",'"ignored": false','"ignored": true'),
+                                     ("junit.xml","</system-out>","\nSKIPPED PostgreSQL fixture\n</system-out>")):
+                    path=paths[0]/name;original_output=path.read_text()
+                    path.write_text(original_output.replace(old,new,1),encoding="utf-8")
                     with self.assertRaises(ValueError):gate.reconcile_postgres(log,"source","storage",fixture_owner=FIXTURE_OWNER)
+                    path.write_text(original_output,encoding="utf-8")
 
 
 if __name__=="__main__":

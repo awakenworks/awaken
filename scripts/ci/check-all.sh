@@ -230,11 +230,10 @@ run static "hook-glob generator self-test" python3 scripts/ci/generate_hooks.py 
 run static "hook-glob generation" python3 scripts/ci/generate_hooks.py --check
 run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestration.py --self-test
 run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
-run static "required Rust execution self-test" python3 scripts/ci/check_rust_test_execution.py --self-test
 run static "affected Rust plan self-test" python3 scripts/ci/rust_test_plan.py --self-test
 run static "CI performance report self-test" python3 scripts/ci/ci_performance.py --self-test
 run static "CI performance artifact policy" python3 scripts/ci/ci_performance.py workflow
-run static "Nextest selection evidence self-test" python3 scripts/ci/nextest_execution.py --self-test
+run static "required Rust run (nextest JUnit) self-test" python3 scripts/ci/nextest_execution.py --self-test
 run static "ordinary Rust benchmark evidence self-test" python3 scripts/ci/benchmark_rust_build.py --self-test
 run static "parallel static check tests" python3 scripts/ci/test_parallel_checks.py
 run static "combined coverage gate tests" python3 scripts/ci/test_combined_coverage.py

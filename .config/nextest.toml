@@ -42,3 +42,14 @@ success-output = "never"
 [[profile.default.overrides]]
 filter = 'test(=__awaken_no_test_matches_this_filter__)'
 slow-timeout = { period = "60s", terminate-after = 5 }
+
+# Focused required runs (`run_required_rust_tests`). It inherits the deadline and
+# leak policy above; `scripts/ci/nextest_execution.py` reads the JUnit report it
+# writes to `<target-dir>/nextest/required/junit.xml`. Passing output is kept
+# there because a test that prints a fixture skip and returns must not qualify.
+[profile.required]
+fail-fast = false
+
+[profile.required.junit]
+path = "junit.xml"
+store-success-output = true

@@ -908,55 +908,6 @@
     "id": "B113"
   },
   {
-    "name": "test_mutations_at_each_sequence_fence_stop_or_reject_execution",
-    "source_locations": [
-      {
-        "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1372,
-        "file_sha256": "3152420a7f06986a8a78cef43c42c3e40a0ab20fd9cd079cc7e42fdb7ffcd282"
-      }
-    ],
-    "assertion_locations": [
-      {
-        "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1402
-      },
-      {
-        "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1403
-      },
-      {
-        "path": "scripts/ci/check_rust_test_execution.py",
-        "line": 1404
-      }
-    ],
-    "execution_witnesses": [
-      {
-        "evidence": "E12",
-        "case": "ExecutionTests.test_mutations_at_each_sequence_fence_stop_or_reject_execution",
-        "package": "scripts/ci",
-        "target": "check_rust_test_execution.py --self-test",
-        "result": "passed",
-        "skipped": false,
-        "source_head": "9540e98c4bf16297e27b10d9bf6790418518f549",
-        "historical": false,
-        "log_sha256": "eb8ff3997e94927b3a78aa30040120382bfa270194e3bfc29f96dd8ebbf1c86b"
-      }
-    ],
-    "relation": "covers_case_clauses",
-    "covers": {
-      "T36-C02": {
-        "oracles": [
-          3
-        ],
-        "negative_control": false
-      }
-    },
-    "review": "Existing self-test: edits a tracked file at each execution fence and requires stop/reject with source_unchanged=false; re-executed natively for this batch. Navigation lines refreshed after the proxy fixtures changed; this bound test body and its assertions are byte-identical. Original execution source and log hashes are retained.",
-    "limitation": null,
-    "id": "B114"
-  },
-  {
     "name": "every_installation_order_lands_the_same_broker_mounter_and_clock_on_the_final_provider",
     "source_locations": [
       {
