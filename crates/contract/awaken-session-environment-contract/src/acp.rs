@@ -22,7 +22,7 @@ use crate::AgentProcessEnvironment;
 /// backend, creates a Session, or commits a Run.
 pub struct AcpSessionExecution {
     pub environment: Arc<dyn AgentProcessEnvironment>,
-    /// Read-only projection of this Environment's frozen Session baseline env.
+    /// Read-only observation of this exact resident's effective adoption-layout env.
     /// `None` is unrecorded provenance, never evidence of an empty environment.
     /// This value constrains a source profile and never configures the process.
     pub environment_variables: Option<Vec<awaken_provisioning_contract::EnvVar>>,
