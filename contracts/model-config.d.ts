@@ -80,6 +80,44 @@ export type SelectionPolicy = "first_healthy" | "rotate_spread" | "sticky_resume
  */
 export type CredentialAudienceRef = string;
 /**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "TokenSourceField".
+ */
+export type TokenSourceField =
+  | {
+      type: "access_token";
+    }
+  | {
+      type: "refresh_token";
+    }
+  | {
+      type: "client_secret";
+    }
+  | {
+      slot: string;
+      type: "auxiliary";
+    };
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "TokenRequestEncoding".
+ */
+export type TokenRequestEncoding = "json" | "form" | "query";
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "TokenRequestMethod".
+ */
+export type TokenRequestMethod = "POST" | "GET";
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "TokenExpiryUnit".
+ */
+export type TokenExpiryUnit = "seconds" | "milliseconds";
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "RefreshTokenPolicy".
+ */
+export type RefreshTokenPolicy = "not_expected" | "preserve_if_absent" | "replace_required";
+/**
  * Secret-free description of the material document sealed by the Vault.
  *
  * This interface was referenced by the generated JSON Schema
@@ -583,6 +621,11 @@ export interface CredentialPoolMember {
  * via the `definition` "CredentialDescriptor".
  */
 export interface CredentialDescriptor {
+  /**
+   * Immutable acquisition configuration. Issued lifetimes/material stay in
+   * the same Vault generation; this field never carries token values.
+   */
+  acquisition?: CredentialTokenExchangeProfile | null;
   expires_at_unix_ms?: number | null;
   material: CredentialMaterialDescriptor;
   permissions?: CredentialPermissionRef[];
@@ -593,6 +636,69 @@ export interface CredentialDescriptor {
    * forbidden because their Cartesian product would invent undeclared uses.
    */
   targets: CredentialTargetContract[];
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "CredentialTokenExchangeProfile".
+ */
+export interface CredentialTokenExchangeProfile {
+  access_field?: string | null;
+  basic_auth?: TokenClientBasicAuth | null;
+  bindings?: {
+    [k: string]: {
+      [k: string]: TokenSourceField;
+    };
+  };
+  encoding: TokenRequestEncoding;
+  headers?: {
+    [k: string]: unknown;
+  };
+  method?: TokenRequestMethod & string;
+  parameters: unknown;
+  response: TokenResponseSpec;
+  token_endpoint: string;
+  version: number;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "TokenClientBasicAuth".
+ */
+export interface TokenClientBasicAuth {
+  client_id: string;
+  secret_slot: string;
+}
+/**
+ * One immutable response contract shared by client-credential issuance and
+ * refresh-token exchange. A missing optional expiry disables token caching.
+ *
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "TokenResponseSpec".
+ */
+export interface TokenResponseSpec {
+  access_token_pointer: string;
+  access_ttl_pointer?: string | null;
+  access_ttl_unit?: TokenExpiryUnit & string;
+  additional_fields?: {
+    [k: string]: string;
+  };
+  authorization_required?: TokenResponseCondition[];
+  max_access_ttl_seconds: number;
+  max_refresh_ttl_seconds: number;
+  refresh_margin_ms?: number;
+  refresh_policy?: RefreshTokenPolicy & string;
+  refresh_token_pointer?: string | null;
+  refresh_ttl_pointer?: string | null;
+  require_access_ttl?: boolean;
+  require_refresh_ttl?: boolean;
+  success?: TokenResponseCondition[];
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "TokenResponseCondition".
+ */
+export interface TokenResponseCondition {
+  equals: unknown;
+  pointer: string;
 }
 /**
  * One source-declared authorization contract. The target identity and its

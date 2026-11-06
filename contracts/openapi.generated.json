@@ -789,6 +789,17 @@
             "additionalProperties": false,
             "description": "One normalized, secret-free description stored on the canonical source row.",
             "properties": {
+              "acquisition": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CredentialSource/$defs/CredentialTokenExchangeProfile"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Immutable acquisition configuration. Issued lifetimes/material stay in\nthe same Vault generation; this field never carries token values."
+              },
               "expires_at_unix_ms": {
                 "format": "uint64",
                 "minimum": 0,
@@ -1098,6 +1109,69 @@
             ],
             "type": "object"
           },
+          "CredentialTokenExchangeProfile": {
+            "additionalProperties": false,
+            "properties": {
+              "access_field": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "basic_auth": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CredentialSource/$defs/TokenClientBasicAuth"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "bindings": {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/CredentialSource/$defs/TokenSourceField"
+                  },
+                  "type": "object"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "encoding": {
+                "$ref": "#/components/schemas/CredentialSource/$defs/TokenRequestEncoding"
+              },
+              "headers": {
+                "additionalProperties": true,
+                "default": {},
+                "type": "object"
+              },
+              "method": {
+                "$ref": "#/components/schemas/CredentialSource/$defs/TokenRequestMethod",
+                "default": "POST"
+              },
+              "parameters": true,
+              "response": {
+                "$ref": "#/components/schemas/CredentialSource/$defs/TokenResponseSpec"
+              },
+              "token_endpoint": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "version",
+              "token_endpoint",
+              "encoding",
+              "parameters",
+              "response"
+            ],
+            "type": "object"
+          },
           "CredentialUsage": {
             "description": "How the resolved endpoint consumes injected material.",
             "oneOf": [
@@ -1316,6 +1390,14 @@
               }
             ]
           },
+          "RefreshTokenPolicy": {
+            "enum": [
+              "not_expected",
+              "preserve_if_absent",
+              "replace_required"
+            ],
+            "type": "string"
+          },
           "SignatureVerificationAlgorithm": {
             "description": "Closed provider-neutral algorithms implemented by the host verification\nboundary. Provider-specific message construction remains in the caller.",
             "enum": [
@@ -1324,6 +1406,203 @@
               "constant_time"
             ],
             "type": "string"
+          },
+          "TokenClientBasicAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "client_id": {
+                "type": "string"
+              },
+              "secret_slot": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "client_id",
+              "secret_slot"
+            ],
+            "type": "object"
+          },
+          "TokenExpiryUnit": {
+            "enum": [
+              "seconds",
+              "milliseconds"
+            ],
+            "type": "string"
+          },
+          "TokenRequestEncoding": {
+            "enum": [
+              "json",
+              "form",
+              "query"
+            ],
+            "type": "string"
+          },
+          "TokenRequestMethod": {
+            "enum": [
+              "POST",
+              "GET"
+            ],
+            "type": "string"
+          },
+          "TokenResponseCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "equals": true,
+              "pointer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pointer",
+              "equals"
+            ],
+            "type": "object"
+          },
+          "TokenResponseSpec": {
+            "additionalProperties": false,
+            "description": "One immutable response contract shared by client-credential issuance and\nrefresh-token exchange. A missing optional expiry disables token caching.",
+            "properties": {
+              "access_token_pointer": {
+                "type": "string"
+              },
+              "access_ttl_pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "access_ttl_unit": {
+                "$ref": "#/components/schemas/CredentialSource/$defs/TokenExpiryUnit",
+                "default": "seconds"
+              },
+              "additional_fields": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "authorization_required": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/CredentialSource/$defs/TokenResponseCondition"
+                },
+                "type": "array"
+              },
+              "max_access_ttl_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "max_refresh_ttl_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_margin_ms": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_policy": {
+                "$ref": "#/components/schemas/CredentialSource/$defs/RefreshTokenPolicy",
+                "default": "not_expected"
+              },
+              "refresh_token_pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refresh_ttl_pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "require_access_ttl": {
+                "default": false,
+                "type": "boolean"
+              },
+              "require_refresh_ttl": {
+                "default": false,
+                "type": "boolean"
+              },
+              "success": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/CredentialSource/$defs/TokenResponseCondition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "access_token_pointer",
+              "max_access_ttl_seconds",
+              "max_refresh_ttl_seconds"
+            ],
+            "type": "object"
+          },
+          "TokenSourceField": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "access_token",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "refresh_token",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "client_secret",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "slot": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "auxiliary",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "slot"
+                ],
+                "type": "object"
+              }
+            ]
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1462,6 +1741,17 @@
             "additionalProperties": false,
             "description": "One normalized, secret-free description stored on the canonical source row.",
             "properties": {
+              "acquisition": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/EnterCredentialRequest/$defs/CredentialTokenExchangeProfile"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Immutable acquisition configuration. Issued lifetimes/material stay in\nthe same Vault generation; this field never carries token values."
+              },
               "expires_at_unix_ms": {
                 "format": "uint64",
                 "minimum": 0,
@@ -1779,6 +2069,69 @@
             ],
             "type": "object"
           },
+          "CredentialTokenExchangeProfile": {
+            "additionalProperties": false,
+            "properties": {
+              "access_field": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "basic_auth": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/EnterCredentialRequest/$defs/TokenClientBasicAuth"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "bindings": {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/EnterCredentialRequest/$defs/TokenSourceField"
+                  },
+                  "type": "object"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "encoding": {
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/TokenRequestEncoding"
+              },
+              "headers": {
+                "additionalProperties": true,
+                "default": {},
+                "type": "object"
+              },
+              "method": {
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/TokenRequestMethod",
+                "default": "POST"
+              },
+              "parameters": true,
+              "response": {
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/TokenResponseSpec"
+              },
+              "token_endpoint": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "version",
+              "token_endpoint",
+              "encoding",
+              "parameters",
+              "response"
+            ],
+            "type": "object"
+          },
           "CredentialUsage": {
             "description": "How the resolved endpoint consumes injected material.",
             "oneOf": [
@@ -1997,6 +2350,14 @@
               }
             ]
           },
+          "RefreshTokenPolicy": {
+            "enum": [
+              "not_expected",
+              "preserve_if_absent",
+              "replace_required"
+            ],
+            "type": "string"
+          },
           "SignatureVerificationAlgorithm": {
             "description": "Closed provider-neutral algorithms implemented by the host verification\nboundary. Provider-specific message construction remains in the caller.",
             "enum": [
@@ -2005,6 +2366,203 @@
               "constant_time"
             ],
             "type": "string"
+          },
+          "TokenClientBasicAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "client_id": {
+                "type": "string"
+              },
+              "secret_slot": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "client_id",
+              "secret_slot"
+            ],
+            "type": "object"
+          },
+          "TokenExpiryUnit": {
+            "enum": [
+              "seconds",
+              "milliseconds"
+            ],
+            "type": "string"
+          },
+          "TokenRequestEncoding": {
+            "enum": [
+              "json",
+              "form",
+              "query"
+            ],
+            "type": "string"
+          },
+          "TokenRequestMethod": {
+            "enum": [
+              "POST",
+              "GET"
+            ],
+            "type": "string"
+          },
+          "TokenResponseCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "equals": true,
+              "pointer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pointer",
+              "equals"
+            ],
+            "type": "object"
+          },
+          "TokenResponseSpec": {
+            "additionalProperties": false,
+            "description": "One immutable response contract shared by client-credential issuance and\nrefresh-token exchange. A missing optional expiry disables token caching.",
+            "properties": {
+              "access_token_pointer": {
+                "type": "string"
+              },
+              "access_ttl_pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "access_ttl_unit": {
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/TokenExpiryUnit",
+                "default": "seconds"
+              },
+              "additional_fields": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "authorization_required": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/EnterCredentialRequest/$defs/TokenResponseCondition"
+                },
+                "type": "array"
+              },
+              "max_access_ttl_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "max_refresh_ttl_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_margin_ms": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_policy": {
+                "$ref": "#/components/schemas/EnterCredentialRequest/$defs/RefreshTokenPolicy",
+                "default": "not_expected"
+              },
+              "refresh_token_pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refresh_ttl_pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "require_access_ttl": {
+                "default": false,
+                "type": "boolean"
+              },
+              "require_refresh_ttl": {
+                "default": false,
+                "type": "boolean"
+              },
+              "success": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/EnterCredentialRequest/$defs/TokenResponseCondition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "access_token_pointer",
+              "max_access_ttl_seconds",
+              "max_refresh_ttl_seconds"
+            ],
+            "type": "object"
+          },
+          "TokenSourceField": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "access_token",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "refresh_token",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "client_secret",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "slot": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "auxiliary",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "slot"
+                ],
+                "type": "object"
+              }
+            ]
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4257,6 +4815,17 @@
             "additionalProperties": false,
             "description": "One normalized, secret-free description stored on the canonical source row.",
             "properties": {
+              "acquisition": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ProviderConnectionView/$defs/CredentialTokenExchangeProfile"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Immutable acquisition configuration. Issued lifetimes/material stay in\nthe same Vault generation; this field never carries token values."
+              },
               "expires_at_unix_ms": {
                 "format": "uint64",
                 "minimum": 0,
@@ -4643,6 +5212,69 @@
             ],
             "type": "object"
           },
+          "CredentialTokenExchangeProfile": {
+            "additionalProperties": false,
+            "properties": {
+              "access_field": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "basic_auth": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ProviderConnectionView/$defs/TokenClientBasicAuth"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "bindings": {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/ProviderConnectionView/$defs/TokenSourceField"
+                  },
+                  "type": "object"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "encoding": {
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/TokenRequestEncoding"
+              },
+              "headers": {
+                "additionalProperties": true,
+                "default": {},
+                "type": "object"
+              },
+              "method": {
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/TokenRequestMethod",
+                "default": "POST"
+              },
+              "parameters": true,
+              "response": {
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/TokenResponseSpec"
+              },
+              "token_endpoint": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "version",
+              "token_endpoint",
+              "encoding",
+              "parameters",
+              "response"
+            ],
+            "type": "object"
+          },
           "CredentialUsage": {
             "description": "How the resolved endpoint consumes injected material.",
             "oneOf": [
@@ -4946,6 +5578,14 @@
             "description": "Stable id of a [`Provider`] (vendor namespace).",
             "type": "string"
           },
+          "RefreshTokenPolicy": {
+            "enum": [
+              "not_expected",
+              "preserve_if_absent",
+              "replace_required"
+            ],
+            "type": "string"
+          },
           "SignatureVerificationAlgorithm": {
             "description": "Closed provider-neutral algorithms implemented by the host verification\nboundary. Provider-specific message construction remains in the caller.",
             "enum": [
@@ -4954,6 +5594,203 @@
               "constant_time"
             ],
             "type": "string"
+          },
+          "TokenClientBasicAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "client_id": {
+                "type": "string"
+              },
+              "secret_slot": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "client_id",
+              "secret_slot"
+            ],
+            "type": "object"
+          },
+          "TokenExpiryUnit": {
+            "enum": [
+              "seconds",
+              "milliseconds"
+            ],
+            "type": "string"
+          },
+          "TokenRequestEncoding": {
+            "enum": [
+              "json",
+              "form",
+              "query"
+            ],
+            "type": "string"
+          },
+          "TokenRequestMethod": {
+            "enum": [
+              "POST",
+              "GET"
+            ],
+            "type": "string"
+          },
+          "TokenResponseCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "equals": true,
+              "pointer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pointer",
+              "equals"
+            ],
+            "type": "object"
+          },
+          "TokenResponseSpec": {
+            "additionalProperties": false,
+            "description": "One immutable response contract shared by client-credential issuance and\nrefresh-token exchange. A missing optional expiry disables token caching.",
+            "properties": {
+              "access_token_pointer": {
+                "type": "string"
+              },
+              "access_ttl_pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "access_ttl_unit": {
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/TokenExpiryUnit",
+                "default": "seconds"
+              },
+              "additional_fields": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "authorization_required": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/ProviderConnectionView/$defs/TokenResponseCondition"
+                },
+                "type": "array"
+              },
+              "max_access_ttl_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "max_refresh_ttl_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_margin_ms": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_policy": {
+                "$ref": "#/components/schemas/ProviderConnectionView/$defs/RefreshTokenPolicy",
+                "default": "not_expected"
+              },
+              "refresh_token_pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refresh_ttl_pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "require_access_ttl": {
+                "default": false,
+                "type": "boolean"
+              },
+              "require_refresh_ttl": {
+                "default": false,
+                "type": "boolean"
+              },
+              "success": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/ProviderConnectionView/$defs/TokenResponseCondition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "access_token_pointer",
+              "max_access_ttl_seconds",
+              "max_refresh_ttl_seconds"
+            ],
+            "type": "object"
+          },
+          "TokenSourceField": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "access_token",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "refresh_token",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "client_secret",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "slot": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "auxiliary",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "slot"
+                ],
+                "type": "object"
+              }
+            ]
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -5426,6 +6263,17 @@
             "additionalProperties": false,
             "description": "One normalized, secret-free description stored on the canonical source row.",
             "properties": {
+              "acquisition": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RotateCredentialRequest/$defs/CredentialTokenExchangeProfile"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Immutable acquisition configuration. Issued lifetimes/material stay in\nthe same Vault generation; this field never carries token values."
+              },
               "expires_at_unix_ms": {
                 "format": "uint64",
                 "minimum": 0,
@@ -5700,6 +6548,69 @@
             ],
             "type": "object"
           },
+          "CredentialTokenExchangeProfile": {
+            "additionalProperties": false,
+            "properties": {
+              "access_field": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "basic_auth": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RotateCredentialRequest/$defs/TokenClientBasicAuth"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "bindings": {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/RotateCredentialRequest/$defs/TokenSourceField"
+                  },
+                  "type": "object"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "encoding": {
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/TokenRequestEncoding"
+              },
+              "headers": {
+                "additionalProperties": true,
+                "default": {},
+                "type": "object"
+              },
+              "method": {
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/TokenRequestMethod",
+                "default": "POST"
+              },
+              "parameters": true,
+              "response": {
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/TokenResponseSpec"
+              },
+              "token_endpoint": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "version",
+              "token_endpoint",
+              "encoding",
+              "parameters",
+              "response"
+            ],
+            "type": "object"
+          },
           "CredentialUsage": {
             "description": "How the resolved endpoint consumes injected material.",
             "oneOf": [
@@ -5908,6 +6819,14 @@
               }
             ]
           },
+          "RefreshTokenPolicy": {
+            "enum": [
+              "not_expected",
+              "preserve_if_absent",
+              "replace_required"
+            ],
+            "type": "string"
+          },
           "SignatureVerificationAlgorithm": {
             "description": "Closed provider-neutral algorithms implemented by the host verification\nboundary. Provider-specific message construction remains in the caller.",
             "enum": [
@@ -5916,6 +6835,203 @@
               "constant_time"
             ],
             "type": "string"
+          },
+          "TokenClientBasicAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "client_id": {
+                "type": "string"
+              },
+              "secret_slot": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "client_id",
+              "secret_slot"
+            ],
+            "type": "object"
+          },
+          "TokenExpiryUnit": {
+            "enum": [
+              "seconds",
+              "milliseconds"
+            ],
+            "type": "string"
+          },
+          "TokenRequestEncoding": {
+            "enum": [
+              "json",
+              "form",
+              "query"
+            ],
+            "type": "string"
+          },
+          "TokenRequestMethod": {
+            "enum": [
+              "POST",
+              "GET"
+            ],
+            "type": "string"
+          },
+          "TokenResponseCondition": {
+            "additionalProperties": false,
+            "properties": {
+              "equals": true,
+              "pointer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pointer",
+              "equals"
+            ],
+            "type": "object"
+          },
+          "TokenResponseSpec": {
+            "additionalProperties": false,
+            "description": "One immutable response contract shared by client-credential issuance and\nrefresh-token exchange. A missing optional expiry disables token caching.",
+            "properties": {
+              "access_token_pointer": {
+                "type": "string"
+              },
+              "access_ttl_pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "access_ttl_unit": {
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/TokenExpiryUnit",
+                "default": "seconds"
+              },
+              "additional_fields": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "authorization_required": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/RotateCredentialRequest/$defs/TokenResponseCondition"
+                },
+                "type": "array"
+              },
+              "max_access_ttl_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "max_refresh_ttl_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_margin_ms": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refresh_policy": {
+                "$ref": "#/components/schemas/RotateCredentialRequest/$defs/RefreshTokenPolicy",
+                "default": "not_expected"
+              },
+              "refresh_token_pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "refresh_ttl_pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "require_access_ttl": {
+                "default": false,
+                "type": "boolean"
+              },
+              "require_refresh_ttl": {
+                "default": false,
+                "type": "boolean"
+              },
+              "success": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/RotateCredentialRequest/$defs/TokenResponseCondition"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "access_token_pointer",
+              "max_access_ttl_seconds",
+              "max_refresh_ttl_seconds"
+            ],
+            "type": "object"
+          },
+          "TokenSourceField": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "access_token",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "refresh_token",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "client_secret",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "slot": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "auxiliary",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "slot"
+                ],
+                "type": "object"
+              }
+            ]
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
