@@ -4,7 +4,7 @@
 //! Installing a frozen Session projection into the process: the preparation
 //! preflight, the typed installation of its facts, and completing preparation.
 
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use super::RunAssembly;
 use crate::session_execution_error::to_run_error;

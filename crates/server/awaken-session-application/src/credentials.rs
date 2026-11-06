@@ -12,11 +12,11 @@ use awaken_credential_contract::{
     CredentialMaterialIngress, CredentialSourceId, SessionCredentialAccessRequest,
     SessionCredentialSource,
 };
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::resource::{
     ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
 };
 use awaken_session_contract::{PersistedSession, SessionAggregate};
-use awaken_session_types::RunError;
 use std::sync::Arc;
 
 use super::{SessionMutationError, SessionMutations, mutation::repository_failure};

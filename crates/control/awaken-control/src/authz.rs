@@ -1112,7 +1112,9 @@ pub async fn management_guard(
             req.extensions_mut().insert(AuthedPrincipal(principal));
             let workspace_id = workspace.0;
             req.extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope(workspace_id.clone()));
+                .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                    workspace_id.clone(),
+                ));
             return awaken_protocol_managed::with_managed_workspace_header(
                 next.run(req).await,
                 &workspace_id,
@@ -1175,7 +1177,9 @@ pub async fn management_guard(
     // layers. The IAM guard must be the outer layer so no unauthenticated caller
     // can select this scope and no audited write silently falls back to default.
     req.extensions_mut()
-        .insert(awaken_tenancy::WorkspaceScope(workspace.0.clone()));
+        .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+            workspace.0.clone(),
+        ));
 
     let Some(target_scope) = target_scope(scope_class, &workspace.0, req.uri().path()) else {
         return awaken_protocol_managed::with_managed_workspace_header(
@@ -1291,7 +1295,7 @@ pub async fn cloud_management_guard(
         .map(|scope| scope.workspace_id.clone())
         .or_else(|| {
             req.extensions()
-                .get::<awaken_tenancy::WorkspaceScope>()
+                .get::<awaken_runtime_contract::runs::scope::WorkspaceScope>()
                 .map(|scope| scope.0.clone())
         });
     let Some(workspace) = workspace else {
@@ -1385,7 +1389,9 @@ pub async fn cloud_management_guard(
             req.extensions_mut().insert(memory_actor(&principal));
             req.extensions_mut().insert(principal);
             req.extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope(workspace.clone()));
+                .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                    workspace.clone(),
+                ));
             awaken_protocol_managed::with_managed_workspace_header(next.run(req).await, &workspace)
         }
         AuthorizationDecision::RequireApproval => {

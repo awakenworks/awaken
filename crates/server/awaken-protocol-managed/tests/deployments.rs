@@ -27,9 +27,9 @@ fn app() -> Router {
     }
     let state = Arc::new(DeploymentApplication::new(awaken_time::system_clock()));
     state.bind_launcher(Arc::new(Launcher));
-    deployments_router(state).layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-        "default".into(),
-    )))
+    deployments_router(state).layer(axum::Extension(
+        awaken_runtime_contract::runs::scope::WorkspaceScope("default".into()),
+    ))
 }
 
 #[tokio::test]
@@ -40,9 +40,9 @@ async fn deployment_routes_require_the_edge_selected_workspace() {
     // rules: S1 C1=>E1, S2 C2=>E1, S3 C3=>E2 (the lifecycle tests below own S3).
     let state = Arc::new(DeploymentApplication::new(awaken_time::system_clock()));
     let missing = deployments_router(state.clone());
-    let empty = deployments_router(state).layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-        String::new(),
-    )));
+    let empty = deployments_router(state).layer(axum::Extension(
+        awaken_runtime_contract::runs::scope::WorkspaceScope(String::new()),
+    ));
     let body = json!({
         "agent": "agent_x",
         "environment_id": "env_1",

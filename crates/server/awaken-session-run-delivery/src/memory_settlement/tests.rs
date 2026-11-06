@@ -2,8 +2,8 @@ use super::*;
 use crate::{AdvisorModelSource, SessionCommitSource};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_runtime_contract::runs::RunError;
 use awaken_runtime_contract::terminal::RunTerminalObserverError;
-use awaken_session_types::RunError;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

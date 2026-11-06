@@ -19,9 +19,6 @@
       "awaken_runtime_contract::activation": 1,
       "awaken_runtime_contract::resume": 1
     },
-    "awaken-session-application-contract": {
-      "awaken_agent_contract::stream::sink": 1
-    },
     "awaken-session-environment-contract": {
       "awaken_runtime_contract::execution": 1,
       "awaken_runtime_contract::resume": 1
@@ -35,15 +32,6 @@
     "awaken-managed-session-events": {
       "awaken_runtime_contract::compaction": 3,
       "awaken_runtime_contract::model_operation": 1
-    },
-    "awaken-protocol-a2a": {
-      "awaken_agent_contract::stream::sink": 2
-    },
-    "awaken-protocol-ag-ui": {
-      "awaken_agent_contract::stream::sink": 2
-    },
-    "awaken-protocol-ai-sdk": {
-      "awaken_agent_contract::stream::sink": 2
     },
     "awaken-protocol-mcp": {
       "awaken_runtime_contract::plugin": 1

@@ -23,12 +23,12 @@ use async_trait::async_trait;
 use awaken_agent_contract::AgentSkillBinding;
 use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
 use awaken_runtime_contract::agent_bindings::InferenceOptions;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::{
     AgentCapabilities, SessionModelChoice, SessionModelSource, SessionSystemPromptSelection,
     SessionToolConfiguration, validate_mcp_toolset_pairing,
 };
 use awaken_session_contract::PersistedSession;
-use awaken_session_types::RunError;
 
 use crate::session_input::{self, SessionInputRequest};
 use crate::{

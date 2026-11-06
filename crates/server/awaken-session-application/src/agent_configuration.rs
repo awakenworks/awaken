@@ -5,8 +5,8 @@
 //! Effective Agent configuration compiled from the original accepted inputs.
 
 use awaken_executable_agent_contract::{ExecutableAgentDelegate, ExecutableAgentSessionProfile};
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::{AgentCapabilities, SessionAgentRoster};
-use awaken_session_types::RunError;
 
 /// The original ordered publication captures shared by creation and roster compilation.
 pub(crate) type CapturedDelegates = Vec<(String, ExecutableAgentSessionProfile)>;

@@ -523,8 +523,8 @@ async fn a_task_tenure_read_carries_the_partition_its_task_was_committed_in() {
     // | P1 | root Thread | `thread` | the record |
     // | P2 | child Thread | `session` of its Session | the record |
     // | P4 | child Thread | `thread`, or another Session | `BadRequest`, never an empty read |
+    use awaken_runtime_contract::runs::RunErrorKind;
     use awaken_session_application_contract::{TaskReadPartition, TaskTenureRead};
-    use awaken_session_types::RunErrorKind;
     let app = Router::new().route(
         awaken_session_application_contract::WORKER_TASK_TENURE_PATH,
         post(partitioned_tenure),

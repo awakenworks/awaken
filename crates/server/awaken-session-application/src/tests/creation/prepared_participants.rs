@@ -814,7 +814,7 @@ async fn concurrent_continuations_share_one_external_object() {
         .expect_err("O2 conflicting payload");
     assert_eq!(
         conflict.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "O2"
     );
     assert_eq!(

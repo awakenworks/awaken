@@ -82,7 +82,7 @@ impl SessionRealizationControlFailure {
 ///
 /// ```
 /// use awaken_session_execution_contract::{SessionRealizationControlFailure as C, effect_failure_disposition};
-/// use awaken_session_types::{RunError, RunErrorClassification};
+/// use awaken_runtime_contract::runs::{RunError, RunErrorClassification};
 /// let missing: RunError = C::NotFound.into();
 /// assert_eq!(missing.classification(), RunErrorClassification::NotFound);
 /// let corrupt = C::Internal("damaged row".into());
@@ -91,7 +91,7 @@ impl SessionRealizationControlFailure {
 /// assert_eq!(effect_failure_disposition(&run), expected);
 /// assert!(!run.is_unclassified_internal());
 /// ```
-impl From<SessionRealizationControlFailure> for awaken_session_types::RunError {
+impl From<SessionRealizationControlFailure> for awaken_runtime_contract::runs::RunError {
     fn from(error: SessionRealizationControlFailure) -> Self {
         use SessionRealizationControlFailure as C;
         match error {
@@ -286,8 +286,8 @@ mod tests {
                 serde_json::from_value(wire).expect(rule);
             assert_eq!(decoded, failure, "{rule}");
             assert_eq!(decoded.disposition(), disposition, "{rule}");
-            let direct: awaken_session_types::RunError = decoded.clone().into();
-            let run: awaken_session_types::RunError =
+            let direct: awaken_runtime_contract::runs::RunError = decoded.clone().into();
+            let run: awaken_runtime_contract::runs::RunError =
                 super::super::SessionRealizationDriveError::Control(decoded.clone()).into();
             assert_eq!(
                 (&run.kind, &run.code, &run.message),

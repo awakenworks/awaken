@@ -29,7 +29,7 @@
 //! The coordinate is named from `awaken_agent_contract`, not from here:
 //!
 //! ```compile_fail
-//! use awaken_tenancy::ScopeId;
+//! use awaken_tenancy::{ScopeId};
 //! ```
 //!
 //! # Boundary
@@ -78,53 +78,16 @@ impl AsRef<ExecutionScopeRef> for VerifiedExecutionScope {
     }
 }
 
-/// The tenant workspace an ingress edge resolved for a session, handed to the core
-/// so an edge projection (webhooks / usage) can stamp it. This is a **tenancy**
-/// concept (orthogonal to the session-runtime contract, which never sees tenancy):
-/// it lives here beside [`ScopeId`], the opaque handle it corresponds to, so the
-/// managed session edge and its consumers depend on the tenancy contract rather
-/// than on a protocol adapter. `None`/absent when the edge resolved no workspace.
-#[derive(Debug, Clone)]
-pub struct WorkspaceScope(pub String);
-
-impl WorkspaceScope {
-    /// Return the edge-selected Workspace only when it is a usable ownership key.
-    ///
-    /// Protocol adapters remain responsible for mapping absence to their wire
-    /// error shape; this method is the single validation rule for a stamped scope.
-    #[must_use]
-    pub fn non_empty(&self) -> Option<&str> {
-        (!self.0.trim().is_empty()).then_some(self.0.as_str())
-    }
-}
-
 /// The real Workspace into which a configuration publication is installed.
 ///
 /// This request-local coordinate is supplied by trusted composition code. It is
-/// deliberately distinct from [`WorkspaceScope`]: a reserved configuration
+/// deliberately distinct from [`awaken_runtime_contract::runs::scope::WorkspaceScope`]: a reserved configuration
 /// namespace may be the authoring scope while resources, credentials, and runtime
 /// lookup still belong to this real Workspace. It is neither an authorization
 /// grant nor a persisted resource field; the PEP must authorize the request before
 /// installing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionWorkspace(pub String);
-
-/// An opaque resource id resolved by a trusted ingress policy layer.
-///
-/// A protocol adapter may prefer this over an untrusted public id. It carries
-/// no customer user, role, project, or authorization vocabulary.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedResourceId(pub String);
-
-/// The caller-visible thread id already authorized by a trusted ingress.
-/// This request-local projection is for protocol output only: execution and
-/// persistence must use the separately resolved resource id.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PresentedThreadId(pub String);
-
-/// An Agent id selected and allow-listed by a trusted ingress policy layer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedAgentId(pub String);
 
 /// A scope claimed by one ingress vehicle, before authorization.
 ///
@@ -331,6 +294,7 @@ pub fn resolve_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_runtime_contract::runs::scope::WorkspaceScope;
 
     #[test]
     fn scope_coordinates_are_the_runtime_sdk_types_with_their_shape() {

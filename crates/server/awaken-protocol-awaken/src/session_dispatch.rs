@@ -2,9 +2,9 @@
 // @formal reason: Native scope/path/error projection only; Session application and Dispatch own all reads and admission evidence.
 //! Native-only operational read over the Session application's narrow port.
 use crate::common::{ExtensionRejection, RequiredWorkspaceScope, extension_rejection};
+use awaken_runtime_contract::runs::RunErrorClassification;
 use awaken_session_application_contract::SessionRunDispatchObservation;
 use awaken_session_application_contract::SessionRunDispatchQueries;
-use awaken_session_types::RunErrorClassification;
 use axum::{
     Json, Router,
     extract::{Path, State},

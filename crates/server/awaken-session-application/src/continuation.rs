@@ -10,13 +10,13 @@
 //! out the decided effect through the Runtime, and commit the observation
 //! through the Session root CAS before the next external effect.
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_contract::{
     PersistedSession, SessionAggregate, SessionEnvironmentEvent, SessionEnvironmentFacts,
     SessionEnvironmentInstruction, SessionEnvironmentRejection, SessionEnvironmentStep,
     SessionEnvironmentTransitionError, transition_environment,
 };
 use awaken_session_execution_contract::EnvironmentRuntime;
-use awaken_session_types::RunError;
 
 use std::sync::Arc;
 

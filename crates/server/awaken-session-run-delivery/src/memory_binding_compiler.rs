@@ -1,8 +1,8 @@
 // @formal surface requirement=resource.memory.memory_consistency
 // @formal reason: One stateless binding law retains original content and verification roles without installed Sessions or a staging authority.
 //! Compile resolved and frozen Memory inputs through the same binding law.
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_types::RunError;
 use std::sync::Arc;
 
 /// Memory-specific compilation through selected content and verification roles.

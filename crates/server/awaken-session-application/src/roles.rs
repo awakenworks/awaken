@@ -30,6 +30,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_environment_contract::EnvItem;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_application_contract::ExecutableProjectionAdmission;
 use awaken_session_contract::SessionEventAdmission;
 use awaken_session_contract::SessionEventInput;
@@ -41,7 +42,6 @@ use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, CoordinatedThreadLink, SessionRunActivation,
     SessionThreadLiveSubscription,
 };
-use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
 
 use crate::{
@@ -85,7 +85,7 @@ pub trait SessionCreation: Send + Sync {
         _protocol: &dyn SessionCreateProtocol,
     ) -> Result<PersistedSession, SessionCreateRequestError> {
         Err(
-            awaken_session_types::RunError::unavailable("private Session creation is unavailable")
+            awaken_runtime_contract::runs::RunError::unavailable("private Session creation is unavailable")
                 .into(),
         )
     }
@@ -627,7 +627,7 @@ impl SessionResourceCommands for crate::SessionResourceManifests {
 /// ```
 /// use awaken_credential_contract::{CredentialMaterialInput};
 /// use awaken_session_application::{SessionCredentialCommands};
-/// use awaken_session_types::SessionId;
+/// use awaken_session_types::{SessionId};
 /// use awaken_resource_contract::BindingId;
 /// async fn binding_commands(role: &dyn SessionCredentialCommands, material: CredentialMaterialInput) {
 ///     let _ = role.missing_vault("workspace", &[]).await;
@@ -647,7 +647,7 @@ impl SessionResourceCommands for crate::SessionResourceManifests {
 /// ```compile_fail,E0599
 /// use awaken_credential_contract::{CredentialMaterialInput};
 /// use awaken_session_application::{SessionResourceCommands};
-/// use awaken_session_types::SessionId;
+/// use awaken_session_types::{SessionId};
 /// use awaken_resource_contract::BindingId;
 /// async fn old_resource_role(role: &dyn SessionResourceCommands, material: CredentialMaterialInput) {
 ///     let _ = role.rotate_repository_credential(
@@ -666,7 +666,7 @@ impl SessionResourceCommands for crate::SessionResourceManifests {
 /// ```compile_fail,E0599
 /// use awaken_credential_contract::{CredentialMaterialInput};
 /// use awaken_session_application::{SessionApplication};
-/// use awaken_session_types::SessionId;
+/// use awaken_session_types::{SessionId};
 /// use awaken_resource_contract::BindingId;
 /// async fn old_application(application: &SessionApplication, material: CredentialMaterialInput) {
 ///     let _ = application.rotate_repository_credential(

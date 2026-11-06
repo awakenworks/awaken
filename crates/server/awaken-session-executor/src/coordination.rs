@@ -320,14 +320,14 @@ impl HostAgentCoordinator {
     }
 }
 
-fn tool_error(error: awaken_session_types::RunError) -> ToolError {
+fn tool_error(error: awaken_runtime_contract::runs::RunError) -> ToolError {
     match error.kind {
-        awaken_session_types::RunErrorKind::BadRequest => {
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest => {
             ToolError::InvalidArguments(error.message)
         }
-        awaken_session_types::RunErrorKind::Internal
-        | awaken_session_types::RunErrorKind::Unavailable
-        | awaken_session_types::RunErrorKind::Conflict => {
+        awaken_runtime_contract::runs::RunErrorKind::Internal
+        | awaken_runtime_contract::runs::RunErrorKind::Unavailable
+        | awaken_runtime_contract::runs::RunErrorKind::Conflict => {
             ToolError::DefinitiveFailure(error.message)
         }
     }
@@ -548,7 +548,7 @@ impl DispatchSettlementObserver for HostDispatchSettlementObserver {
 pub(crate) struct RecordingSessionAgentCoordination {
     pub(crate) boundaries: std::sync::Mutex<Vec<SessionAgentBoundaryCommand>>,
     message_gate: Option<Arc<AdmissionGate>>,
-    model_error: std::sync::Mutex<Option<awaken_session_types::RunError>>,
+    model_error: std::sync::Mutex<Option<awaken_runtime_contract::runs::RunError>>,
 }
 
 #[cfg(test)]
@@ -580,8 +580,11 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
         _agent: &str,
         _run: &awaken_agent_contract::agent::run::Id,
         _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
-    ) -> Result<Option<awaken_session_types::SessionRevision>, awaken_session_types::RunError> {
-        Err(awaken_session_types::RunError::unavailable(
+    ) -> Result<
+        Option<awaken_session_types::SessionRevision>,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        Err(awaken_runtime_contract::runs::RunError::unavailable(
             "the recorder observes child boundaries without admitting root activity",
         ))
     }
@@ -596,9 +599,9 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
         _preparation: awaken_session_execution_contract::PreparedSessionRunActivity,
     ) -> Result<
         awaken_session_execution_contract::SessionRunActivityAdmission,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
-        Err(awaken_session_types::RunError::unavailable(
+        Err(awaken_runtime_contract::runs::RunError::unavailable(
             "the recorder observes child boundaries without admitting root activity",
         ))
     }
@@ -611,9 +614,9 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
         _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
         awaken_session_execution_contract::SessionRunActivityAdmission,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
-        Err(awaken_session_types::RunError::bad_request(
+        Err(awaken_runtime_contract::runs::RunError::bad_request(
             "recording coordination fixture does not admit Session activity",
         ))
     }
@@ -623,9 +626,9 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
         _session_id: &awaken_session_types::SessionId,
         _thread_id: &awaken_agent_contract::agent::thread::Id,
         _run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<bool, awaken_session_types::RunError> {
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         Err(self.model_error.lock().unwrap().take().unwrap_or_else(|| {
-            awaken_session_types::RunError::bad_request(
+            awaken_runtime_contract::runs::RunError::bad_request(
                 "recording coordination fixture does not admit model requests",
             )
         }))
@@ -634,26 +637,28 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
     async fn list_session_agents(
         &self,
         _session_id: &awaken_session_types::SessionId,
-    ) -> Result<Vec<SessionAgentRosterEntry>, awaken_session_types::RunError> {
+    ) -> Result<Vec<SessionAgentRosterEntry>, awaken_runtime_contract::runs::RunError> {
         Ok(Vec::new())
     }
 
     async fn send_session_agent_message(
         &self,
         _command: SessionAgentMessageCommand,
-    ) -> Result<SessionAgentMessageReceipt, awaken_session_types::RunError> {
+    ) -> Result<SessionAgentMessageReceipt, awaken_runtime_contract::runs::RunError> {
         if let Some(gate) = &self.message_gate {
             let _receipt = AdmissionDropReceipt(gate.clone());
             gate.entered.notify_one();
             gate.release.notified().await;
         }
-        Err(awaken_session_types::RunError::bad_request("unused"))
+        Err(awaken_runtime_contract::runs::RunError::bad_request(
+            "unused",
+        ))
     }
 
     async fn settle_session_agent_boundary(
         &self,
         command: SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.boundaries.lock().unwrap().push(command);
         Ok(())
     }
@@ -661,7 +666,7 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
     async fn finalize_session_agent_boundary(
         &self,
         _command: SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         // This fixture has no retained Session Event aggregate. Its only
         // reachable root continuation is a child-report Run, for which the
         // production application also classifies post-Dispatch finalization as
@@ -673,14 +678,14 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
         &self,
         _session_id: &awaken_session_types::SessionId,
         _child_thread_id: &awaken_agent_contract::agent::thread::Id,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         Ok(())
     }
 
     async fn reply_session_thread_tool(
         &self,
         _command: awaken_session_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         Ok(())
     }
 }

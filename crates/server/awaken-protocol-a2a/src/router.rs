@@ -2,7 +2,7 @@
 // @formal reason: This source implements the repository-controlled protocol product boundary and is
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 // awaken-allow(file-limit-ceiling): 1692
-//! The axum router: A2A `message:send` + agent-card routes over a `RunApplication`.
+//! The axum router: A2A `message:send` + agent-card routes over a `Runs`.
 //!
 //! Handlers decode the request, drive one turn (or resume an awaiting run on the same
 //! context) through the port, and project the committed step into an A2A `Task`.
@@ -25,9 +25,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use awaken_session_application_contract::{
-    EventForwardingSink, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{EventForwardingSink, RunError, RunResume, Runs, StepOutcome};
 
 use crate::card::agent_card;
 use crate::encoder::{encode_task, working_task};
@@ -60,7 +58,7 @@ type Runtime = A2aState;
 
 /// Build the A2A router. Mount it alongside other protocol routers; the paths are
 /// the `/v1/a2a...` surface an A2A `HTTP+JSON` client posts to.
-pub fn router(runtime: Arc<dyn RunApplication>, clock: Arc<dyn awaken_time::WallClock>) -> Router {
+pub fn router(runtime: Arc<dyn Runs>, clock: Arc<dyn awaken_time::WallClock>) -> Router {
     router_with_storage_root(runtime, None, clock)
 }
 
@@ -70,7 +68,7 @@ pub fn router(runtime: Arc<dyn RunApplication>, clock: Arc<dyn awaken_time::Wall
 /// Runtime/composition owns whether storage exists; this protocol adapter owns
 /// only its filename and serialization format.
 pub fn router_with_storage_root(
-    runtime: Arc<dyn RunApplication>,
+    runtime: Arc<dyn Runs>,
     storage_root: Option<&std::path::Path>,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
@@ -397,7 +395,7 @@ async fn prepare_send(
     mut req: SendMessageRequest,
     path_agent: Option<String>,
     version: ProtocolVersion,
-) -> Result<PreparedSend, RunApplicationError> {
+) -> Result<PreparedSend, RunError> {
     validate_send_configuration(&req)?;
     let history_length = req
         .configuration
@@ -835,7 +833,7 @@ async fn run_send(
     req: SendMessageRequest,
     path_agent: Option<String>,
     version: ProtocolVersion,
-) -> Result<Task, RunApplicationError> {
+) -> Result<Task, RunError> {
     let PreparedSend {
         processed,
         history_length,
@@ -897,19 +895,19 @@ async fn run_send(
 async fn drive_processed(
     rt: &Runtime,
     processed: crate::request::Processed,
-) -> Result<StepOutcome, RunApplicationError> {
+) -> Result<StepOutcome, RunError> {
     let thread = processed.thread_id.clone();
     let agent_id = processed.agent_id.clone();
     drive_processed_runtime(&rt.runtime, processed, None, agent_id, &thread).await
 }
 
 async fn drive_processed_runtime(
-    runtime: &Arc<dyn RunApplication>,
+    runtime: &Arc<dyn Runs>,
     processed: crate::request::Processed,
     sink: Option<Arc<dyn StreamSink>>,
     agent_id: Option<String>,
     thread: &str,
-) -> Result<StepOutcome, RunApplicationError> {
+) -> Result<StepOutcome, RunError> {
     let operation_id = processed.operation_id.clone();
     match runtime.pending(thread).await? {
         // A awaiting run on this context → the message is the awaited input.
@@ -921,7 +919,7 @@ async fn drive_processed_runtime(
                 .await
         }
         // No awaiting run → a fresh turn.
-        None if processed.approval.is_some() => Err(RunApplicationError::bad_request(
+        None if processed.approval.is_some() => Err(RunError::bad_request(
             "A2A tool-approval decision has no awaiting tool",
         )),
         None => match sink {
@@ -965,24 +963,24 @@ async fn resolve_task_context(
     rt: &Runtime,
     req: &mut SendMessageRequest,
     path_agent: Option<&str>,
-) -> Result<(), RunApplicationError> {
+) -> Result<(), RunError> {
     let Some(task_id) = req.message.task_id.as_deref() else {
         return Ok(());
     };
     let owner = path_agent.or(req.agent_id.as_deref());
     let Some(task) = rt.task(task_id, owner).await else {
-        return Err(RunApplicationError::bad_request_classified(
+        return Err(RunError::bad_request_classified(
             "not_found",
             format!("task not found: {task_id}"),
         ));
     };
     if task.status.state.is_terminal() {
-        return Err(RunApplicationError::bad_request(format!(
+        return Err(RunError::bad_request(format!(
             "task is terminal and cannot accept another message: {task_id}"
         )));
     }
     match req.message.context_id.as_deref() {
-        Some(context_id) if context_id != task.context_id => Err(RunApplicationError::bad_request(
+        Some(context_id) if context_id != task.context_id => Err(RunError::bad_request(
             "message contextId does not match the referenced task",
         )),
         Some(_) => Ok(()),
@@ -1004,14 +1002,14 @@ async fn send(rt: Runtime, req: SendMessageRequest, path_agent: Option<String>) 
 fn decode_send_params(
     params: Value,
     version: ProtocolVersion,
-) -> Result<SendMessageRequest, RunApplicationError> {
+) -> Result<SendMessageRequest, RunError> {
     let params = if version == ProtocolVersion::V1 {
-        crate::v1::normalize_send_params(params).map_err(RunApplicationError::bad_request)?
+        crate::v1::normalize_send_params(params).map_err(RunError::bad_request)?
     } else {
         params
     };
     serde_json::from_value(params)
-        .map_err(|error| RunApplicationError::bad_request(format!("invalid params: {error}")))
+        .map_err(|error| RunError::bad_request(format!("invalid params: {error}")))
 }
 
 async fn message_send_rest(
@@ -1804,11 +1802,11 @@ mod tests {
         // A caller fault is a 400; a runtime fault is a 500 — both carry the A2A
         // JSON error envelope (its shape is covered by the `types` tests).
         assert_eq!(
-            error_response(RunApplicationError::bad_request("bad")).status(),
+            error_response(RunError::bad_request("bad")).status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            error_response(RunApplicationError::internal("boom")).status(),
+            error_response(RunError::internal("boom")).status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
     }

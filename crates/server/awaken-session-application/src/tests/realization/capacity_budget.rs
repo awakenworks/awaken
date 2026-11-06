@@ -141,7 +141,7 @@ async fn conflict_and_unclassified_internal_failures_retry_until_the_durable_bud
     // | B1 | conflict / unclassified internal | first failure | E1 |
     // | B2 | conflict / unclassified internal | budget spent | E2 |
     // | B3 | classified internal | first failure | E3 |
-    use awaken_session_types::RunError;
+    use awaken_runtime_contract::runs::RunError;
     /// Row name, the failed effect's Run error, failures until it absorbs.
     type Row = (&'static str, fn() -> RunError, usize);
     let rows: [Row; 3] = [

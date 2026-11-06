@@ -140,7 +140,9 @@ mod scoped_cases {
         if let Some(scope) = scope {
             request
                 .extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope(scope.into()));
+                .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                    scope.into(),
+                ));
         }
         router.oneshot(request).await.unwrap()
     }

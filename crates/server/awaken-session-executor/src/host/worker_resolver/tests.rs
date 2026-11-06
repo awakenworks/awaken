@@ -410,7 +410,8 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
     async fn stage_mcp_attachment(
         &self,
         request: crate::session_mcp::StageMcpAttachment,
-    ) -> Result<crate::session_mcp::McpRealizationReceipt, awaken_session_types::RunError> {
+    ) -> Result<crate::session_mcp::McpRealizationReceipt, awaken_runtime_contract::runs::RunError>
+    {
         self.calls.lock().unwrap().push("stage");
         if let Some((host, thread)) = self.required_physical_environment.get() {
             let physical_only = host.upgrade().is_some_and(|host| {
@@ -424,14 +425,14 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
                     .unwrap_or(false)
             });
             if !physical_only {
-                return Err(awaken_session_types::RunError::classified(
+                return Err(awaken_runtime_contract::runs::RunError::classified(
                     "test_session_physical_environment_missing",
                     "claimed MCP stage requires the physical Environment but no parent Runtime",
                 ));
             }
         }
         if self.fail_stage.load(Ordering::SeqCst) {
-            return Err(awaken_session_types::RunError::classified(
+            return Err(awaken_runtime_contract::runs::RunError::classified(
                 "test_mcp_stage_failed",
                 "test MCP stage failed",
             ));
@@ -448,7 +449,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
     async fn publish_mcp_generation(
         &self,
         _generation: crate::session_mcp::McpGenerationRef,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.calls.lock().unwrap().push("publish");
         Ok(())
     }
@@ -456,7 +457,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
     async fn drain_mcp_generation(
         &self,
         _generation: crate::session_mcp::McpGenerationRef,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.calls.lock().unwrap().push("drain");
         Ok(())
     }

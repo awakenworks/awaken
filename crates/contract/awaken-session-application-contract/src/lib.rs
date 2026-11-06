@@ -4,15 +4,15 @@
 //! this contract publishes no Core alias:
 //!
 //! ```compile_fail
-//! use awaken_session_application_contract::SessionEventAdmission;
+//! use awaken_session_application_contract::{SessionEventAdmission};
 //! ```
 //!
 //! ```compile_fail
-//! use awaken_session_application_contract::LifecycleFactDelivery;
+//! use awaken_session_application_contract::{LifecycleFactDelivery};
 //! ```
 //!
 //! ```compile_fail
-//! use awaken_session_application_contract::session_usage_from_thread_usage;
+//! use awaken_session_application_contract::{session_usage_from_thread_usage};
 //! ```
 //!
 //! The contract holds ports only. Wall-clock codecs are named from
@@ -20,11 +20,11 @@
 //! from `awaken-session-application`:
 //!
 //! ```compile_fail
-//! use awaken_session_application_contract::epoch_millis_to_rfc3339;
+//! use awaken_session_application_contract::{epoch_millis_to_rfc3339};
 //! ```
 //!
 //! ```compile_fail
-//! use awaken_session_application_contract::SessionApplicationConfiguration;
+//! use awaken_session_application_contract::{SessionApplicationConfiguration};
 //! ```
 //!
 //! # Boundary
@@ -51,13 +51,10 @@ pub use execution_observation::{
 mod executable_projection;
 mod lifecycle_notifier;
 mod live_inbox;
-mod pending;
 mod run_application;
 mod run_coordination;
-mod step_outcome;
 mod task_attention;
 
-pub(crate) use awaken_session_types::RunError;
 pub(crate) use awaken_session_types::SessionId;
 
 pub use executable_projection::{
@@ -71,17 +68,11 @@ pub use live_inbox::{
     LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot,
 };
-pub use pending::Pending;
-pub use run_application::{
-    EventForwardingSink, OwnerScopedRunApplication, RunApplication, RunApplicationError, RunMode,
-    RunResume, SessionRunBackgroundApplication, SessionRunReplacementApplication, StopReceipt,
-    blocks_text, paginate_history,
-};
+pub use run_application::{SessionRunBackgroundApplication, SessionRunReplacementApplication};
 pub use run_coordination::{
-    DelegatedRun, DelegatedRunSnapshot, SessionBudgetResumeDelivery,
-    SessionBudgetResumeDisposition, SessionBudgetResumeTicket,
+    DelegatedRunSnapshot, SessionBudgetResumeDelivery, SessionBudgetResumeDisposition,
+    SessionBudgetResumeTicket,
 };
-pub use step_outcome::StepOutcome;
 pub use task_attention::{
     PRIVATE_TASK_INPUT_VERSION, PrivateTaskInput, PrivateTaskInputError, RegisteredTaskControl,
     TASK_TENURE_RECORD_VERSION, TaskAttention, TaskAttentionAck, TaskReadPartition, TaskTenureRead,

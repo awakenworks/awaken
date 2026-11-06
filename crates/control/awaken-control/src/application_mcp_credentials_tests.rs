@@ -11,7 +11,7 @@ use awaken_credential_vault::repo::{
 };
 use awaken_credential_vault::{InMemorySecretStore, SecretStore};
 use awaken_protocol_managed::VaultState;
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt as _;

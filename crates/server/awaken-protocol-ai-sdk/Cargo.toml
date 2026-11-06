@@ -5,20 +5,19 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
+api_snapshot = true
 context = "coordinator"
-product = "platform"
-bounded_context = "protocols"
+product = "sdk"
+bounded_context = "agent-runtime"
 layer = "interface"
 authority = "protocol-ai-sdk"
 separation = "protocol"
 protocol = "ai-sdk"
 
 [dependencies]
+awaken-runtime-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-api-contract.workspace = true
-awaken-session-application-contract.workspace = true
-awaken-session-types.workspace = true
-awaken-tenancy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true

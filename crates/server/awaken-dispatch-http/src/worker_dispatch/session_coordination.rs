@@ -149,19 +149,19 @@ fn session_coordination(
 }
 
 fn coordination_failure(
-    error: awaken_session_types::RunError,
+    error: awaken_runtime_contract::runs::RunError,
 ) -> awaken_session_execution_contract::SessionRealizationControlFailure {
     match error.kind {
-        awaken_session_types::RunErrorKind::BadRequest => {
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest => {
             awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(
                 error.message,
             )
         }
-        awaken_session_types::RunErrorKind::Conflict => {
+        awaken_runtime_contract::runs::RunErrorKind::Conflict => {
             awaken_session_execution_contract::SessionRealizationControlFailure::Conflict
         }
-        awaken_session_types::RunErrorKind::Internal
-        | awaken_session_types::RunErrorKind::Unavailable => {
+        awaken_runtime_contract::runs::RunErrorKind::Internal
+        | awaken_runtime_contract::runs::RunErrorKind::Unavailable => {
             awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
                 error.message,
             )

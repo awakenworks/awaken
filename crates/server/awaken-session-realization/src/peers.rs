@@ -23,9 +23,9 @@ use crate::staged_resources::{
     StagedResources,
 };
 use awaken_provisioning_contract as pc;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_contract::SessionEnvironmentEffectIntent;
-use awaken_session_types::RunError;
 use std::sync::Arc;
 
 /// Shared views of the realization components, lent by the executor.
@@ -140,7 +140,7 @@ pub trait StagingPeer: Send + Sync {
         workspace: &str,
         command: &awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &session_resource::SessionRealizationLease,
-    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError>;
+    ) -> Result<crate::staged_resources::StagedResources, awaken_runtime_contract::runs::RunError>;
     #[allow(clippy::too_many_arguments)]
     async fn publish_repository_activation(
         &self,

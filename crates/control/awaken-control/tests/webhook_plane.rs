@@ -24,12 +24,12 @@ use awaken_control::webhook_authoring::{
     webhook_config_router, webhook_config_router_loopback,
 };
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use awaken_session_application::{LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL, LifecycleOutboxRelay};
 use awaken_session_application_contract::LifecycleFactNotifier;
 use awaken_session_contract::LifecycleFactDelivery;
 use awaken_session_contract::LifecycleOutbox;
 use awaken_session_contract::ManagedLifecycleFact;
-use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::lifecycle::{ConfigPlaneLifecycleDelivery, config_plane_lifecycle_delivery};
 use awaken_webhook::{
     ResolvedSubscription, SubscriptionFailureState, SubscriptionSource, WebhookDispatcher,

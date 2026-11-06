@@ -12,10 +12,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use awaken_runtime_contract::runs::request::{
+    OrgAdmissionDecision, OrgAdmissionUnavailable, OrgOperation,
+};
 use awaken_sync::LeafLock;
 use awaken_tenancy::org_admission::{
-    OrgAdmissionDecision, OrgAdmissionRequest, OrgAdmissionUnavailable, OrgOperation,
-    OrgRateLimits, OrgRequestAdmission, OrgRequestSource,
+    OrgAdmissionRequest, OrgRateLimits, OrgRequestAdmission, OrgRequestSource,
 };
 use awaken_time::WallClockExt as _;
 use awaken_time::mono::Stopwatch;
@@ -444,8 +446,8 @@ pub async fn admit_by_org_bucket(
     let class = (encoding.classify)(request.method(), &path);
     let workspace_id = request
         .extensions()
-        .get::<awaken_tenancy::WorkspaceScope>()
-        .and_then(awaken_tenancy::WorkspaceScope::non_empty)
+        .get::<awaken_runtime_contract::runs::scope::WorkspaceScope>()
+        .and_then(awaken_runtime_contract::runs::scope::WorkspaceScope::non_empty)
         .map(str::to_owned);
     let operation_id = request
         .headers()
@@ -652,9 +654,9 @@ mod tests {
                 OrgAdmissionEdge::new(limiter.clone(), PROBE),
                 admit_by_org_bucket,
             ));
-        let scoped = app
-            .clone()
-            .layer(axum::Extension(awaken_tenancy::WorkspaceScope("ws".into())));
+        let scoped = app.clone().layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("ws".into()),
+        ));
         let call =
             |app: Router, uri: &str| app.oneshot(Request::post(uri).body(Body::empty()).unwrap());
         let free = call(scoped.clone(), "/free").await.unwrap();

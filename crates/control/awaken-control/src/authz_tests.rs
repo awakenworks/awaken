@@ -615,7 +615,9 @@ async fn local_browser_session_enters_the_existing_management_pdp() {
 #[tokio::test]
 async fn local_browser_session_enters_the_existing_resource_pdp() {
     async fn echo(
-        axum::Extension(scope): axum::Extension<awaken_tenancy::WorkspaceScope>,
+        axum::Extension(scope): axum::Extension<
+            awaken_runtime_contract::runs::scope::WorkspaceScope,
+        >,
     ) -> Response {
         (StatusCode::OK, Json(json!({ "workspace": scope.0 }))).into_response()
     }
@@ -960,7 +962,9 @@ async fn mg11a_allow_passes_through() {
 #[tokio::test(flavor = "multi_thread")]
 async fn mg11a_authenticated_workspace_is_stamped_for_inner_layers() {
     async fn scope_echo(
-        axum::Extension(scope): axum::Extension<awaken_tenancy::WorkspaceScope>,
+        axum::Extension(scope): axum::Extension<
+            awaken_runtime_contract::runs::scope::WorkspaceScope,
+        >,
     ) -> Response {
         (StatusCode::OK, scope.0).into_response()
     }

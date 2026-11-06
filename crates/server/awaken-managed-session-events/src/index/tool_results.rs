@@ -9,7 +9,7 @@ use crate::{
 };
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::{RunLifecycleEventKind, agent::content::ContentBlock};
-use awaken_session_application_contract::Pending;
+use awaken_runtime_contract::runs::Pending;
 use std::collections::HashSet;
 
 impl OrderIndex<'_> {
@@ -52,7 +52,7 @@ impl OrderIndex<'_> {
     pub fn pending_tool_source(
         &self,
         awaiting: &awaken_agent_contract::RunLifecycleEvent,
-        pending: &awaken_session_application_contract::Pending,
+        pending: &awaken_runtime_contract::runs::Pending,
     ) -> Result<ToolResultSource, ProjectionError> {
         if awaiting.kind != RunLifecycleEventKind::Awaiting
             || self.lifecycle_by_cursor.get(&awaiting.cursor).copied() != Some(awaiting)
@@ -543,7 +543,7 @@ mod tests {
     use awaken_agent_contract::{
         RunId, RunLifecycleCursor, RunLifecycleEvent, ThreadId, encode_run_lifecycle_cursor,
     };
-    use awaken_session_application_contract::Pending;
+    use awaken_runtime_contract::runs::Pending;
     use std::collections::{HashMap, HashSet};
 
     fn call(step: usize, name: &str) -> Message {

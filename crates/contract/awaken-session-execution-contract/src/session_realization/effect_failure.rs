@@ -192,7 +192,7 @@ pub fn is_environment_effect_code(code: &str) -> bool {
 /// code on a non-Unavailable fault is no deferral: it keeps its fault's class.
 #[must_use]
 pub fn effect_failure_disposition(error: &RunError) -> SessionRealizationControlDisposition {
-    use awaken_session_types::RunErrorKind;
+    use awaken_runtime_contract::runs::RunErrorKind;
     match error.kind {
         RunErrorKind::Unavailable if is_not_ready_code(&error.code) => {
             SessionRealizationControlDisposition::NotReady
@@ -729,8 +729,8 @@ mod tests {
         // unclassified code retry; BadRequest and a classified Internal fault
         // are terminal whatever the code; a Conflict carrying a permanent
         // conflict code is terminal (no retry changes committed state).
-        use awaken_session_types::RunErrorKind;
-        use awaken_session_types::error::UNCLASSIFIED_INTERNAL_CODE;
+        use awaken_runtime_contract::runs::RunErrorKind;
+        use awaken_runtime_contract::runs::error::UNCLASSIFIED_INTERNAL_CODE;
         for kind in [
             RunErrorKind::Unavailable,
             RunErrorKind::Internal,

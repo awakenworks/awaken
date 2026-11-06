@@ -24,7 +24,7 @@ async fn worker_retirement_consumes_only_explicit_retention_and_preserves_provid
     async fn read(
         outcome: Result<pc::SandboxObservation, pc::SandboxError>,
         prepared: bool,
-    ) -> Result<bool, awaken_session_types::RunError> {
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         let (host, events) = source_retention_host(outcome, None).await;
         let id = "source-retention-read";
         let handle =
@@ -94,7 +94,7 @@ async fn worker_retirement_consumes_only_explicit_retention_and_preserves_provid
             );
         }
     }
-    use awaken_session_types::RunErrorKind::{Internal, Unavailable};
+    use awaken_runtime_contract::runs::RunErrorKind::{Internal, Unavailable};
     for (failure, kind, code) in [
         (
             pc::SandboxError::transport("lost response"),
@@ -291,7 +291,10 @@ impl SourceRetentionFixture {
         release
     }
 
-    async fn observe(&self, prepared: bool) -> Result<bool, awaken_session_types::RunError> {
+    async fn observe(
+        &self,
+        prepared: bool,
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         self.roles
             .observe_source_retention(
                 &awaken_session_types::SessionId::from(RETENTION_SESSION),
@@ -702,7 +705,7 @@ async fn worker_retirement_rechecks_original_owner_and_activity_after_provider_r
             let error = result.unwrap_err();
             assert_eq!(
                 error.kind,
-                awaken_session_types::RunErrorKind::Unavailable,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable,
                 "SR5/R3"
             );
             assert_eq!(error.code, "environment_unavailable", "SR5/R3");

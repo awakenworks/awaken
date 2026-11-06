@@ -15,10 +15,10 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_dispatch_contract::{DispatchEnqueue as _, Inbox as _};
 use awaken_runtime_contract::resume::ResumeCommand;
+use awaken_runtime_contract::runs::{RunError, RunResume, StepOutcome};
+
 use awaken_runtime_contract::{DataSubjectId, RunActivation};
-use awaken_session_application_contract::{RunResume, StepOutcome};
 use awaken_session_execution_contract::CanonicalSessionProjection;
-use awaken_session_types::RunError;
 
 use super::{SETTLED_RECONCILIATION_INTERVAL, WorkerPlacedSessions};
 use crate::session_run_activation::read_settled_phase;

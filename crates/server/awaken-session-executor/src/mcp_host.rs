@@ -127,7 +127,7 @@ impl McpGenerationAuthority for McpRootAuthority {
     fn mcp_generation_root_authority(
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
-    ) -> Result<Option<bool>, awaken_session_types::RunError> {
+    ) -> Result<Option<bool>, awaken_runtime_contract::runs::RunError> {
         // A poisoned registry proves no root and is not absence either: it is
         // refused as an error, so no caller can fall back to the lease alone.
         Ok(self
@@ -172,7 +172,7 @@ impl McpGenerationAuthority for McpApplicationInputs {
     fn mcp_generation_root_authority(
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
-    ) -> Result<Option<bool>, awaken_session_types::RunError> {
+    ) -> Result<Option<bool>, awaken_runtime_contract::runs::RunError> {
         self.authority.mcp_generation_root_authority(generation)
     }
 }
@@ -182,7 +182,7 @@ impl McpInputHost for McpApplicationInputs {
     fn active_mcp_projections(
         &self,
         session: &str,
-    ) -> Result<Vec<McpGenerationProjection>, awaken_session_types::RunError> {
+    ) -> Result<Vec<McpGenerationProjection>, awaken_runtime_contract::runs::RunError> {
         self.mcp
             .active_projections(self.installed_sessions.as_ref(), session)
             .map_err(|error| {

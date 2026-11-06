@@ -4,7 +4,7 @@
 pub use awaken_webhook::lifecycle::*;
 
 use awaken_authz_enforce::RequestTenancy;
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 
 /// Map guard-resolved tenancy onto the protocol-neutral Workspace scope used by
 /// Coordinator handlers. Apply this layer inside the guard.

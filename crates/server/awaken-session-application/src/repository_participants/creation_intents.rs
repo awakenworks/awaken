@@ -10,9 +10,10 @@
 //! leaves the intent behind: once its lease expires (or at once, when an
 //! abort already claimed it) the recovery cycle completes the abort.
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_contract::SessionRepositoryError;
 use awaken_session_contract::{PreparedParticipantIntentClaim, PreparedParticipantIntentRecord};
-use awaken_session_types::{RunError, SessionId};
+use awaken_session_types::SessionId;
 use awaken_time::WallClockExt as _;
 
 use super::{

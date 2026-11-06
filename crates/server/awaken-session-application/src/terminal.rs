@@ -8,12 +8,12 @@
 use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_provisioning_contract::RepositoryPublicationExpectation;
 use awaken_resource_contract::{BindingId, ResourceAccess};
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::resource::{ResolvedInput, ResolvedInputSource};
 use awaken_session_contract::{
     ManagedLifecycleFact, PersistedSession, SessionDisposition, SessionExecutionState,
     SessionRepositoryPublicationIntent, SessionRepositoryPublicationReceipt,
 };
-use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
 use awaken_session_contract::{

@@ -88,7 +88,7 @@ impl SessionDeleteCommand {
 /// ```
 /// use awaken_session_application::SessionLifecycle;
 /// use awaken_session_contract::SessionUsage;
-/// use awaken_session_types::SessionId;
+/// use awaken_session_types::{SessionId};
 /// async fn settle(service: &SessionLifecycle, id: &SessionId, usage: SessionUsage) {
 ///     let _ = service.reconcile_managed_budget_usage(id, "operation", usage).await;
 /// }
@@ -97,7 +97,7 @@ impl SessionDeleteCommand {
 /// ```compile_fail,E0599
 /// use awaken_session_application::SessionApplication;
 /// use awaken_session_contract::SessionUsage;
-/// use awaken_session_types::SessionId;
+/// use awaken_session_types::{SessionId};
 /// async fn old_command(app: &SessionApplication, id: &SessionId, usage: SessionUsage) {
 ///     let _ = app.reconcile_managed_budget_usage(id, "operation", usage).await;
 /// }
@@ -109,7 +109,7 @@ impl SessionDeleteCommand {
 ///
 /// ```
 /// use awaken_session_application::SessionLifecycle;
-/// use awaken_session_types::SessionId;
+/// use awaken_session_types::{SessionId};
 /// async fn settle(service: &SessionLifecycle, id: &SessionId, epoch: u64) {
 ///     let _ = service.settle_activity_observed(id, epoch, None).await;
 /// }
@@ -124,7 +124,7 @@ impl SessionDeleteCommand {
 ///
 /// ```compile_fail,E0599
 /// use awaken_session_application::SessionApplication;
-/// use awaken_session_types::SessionId;
+/// use awaken_session_types::{SessionId};
 /// async fn old_observed_command(app: &SessionApplication, id: &SessionId) {
 ///     let _ = app.settle_activity_observed(id, 1, None).await;
 /// }

@@ -945,7 +945,7 @@ pub enum SessionEventBatchError {
     InvalidAcceptedAdmission,
 }
 
-impl From<SessionEventBatchError> for awaken_session_types::RunError {
+impl From<SessionEventBatchError> for awaken_runtime_contract::runs::RunError {
     /// A typed rejection keeps its stable class as the error code.
     fn from(error: SessionEventBatchError) -> Self {
         Self::bad_request_classified(error.code(), error.to_string())

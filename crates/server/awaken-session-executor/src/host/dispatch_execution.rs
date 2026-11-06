@@ -100,7 +100,7 @@ pub(crate) fn session_worker_resolver(
 /// A realization failure crosses into dispatch as its one Run projection,
 /// which carries the class its disposition implies.
 pub(crate) fn admission_error(error: RealizationError) -> AdmissionError {
-    AdmissionError::Run(awaken_session_types::RunError::from(error))
+    AdmissionError::Run(awaken_runtime_contract::runs::RunError::from(error))
 }
 
 /// Adopt the Sandbox a claim carries through the realization executor. The
@@ -199,7 +199,7 @@ impl ClaimedSessionInstallation for ClaimedRunAssembly {
         session: &str,
         manifest: &crate::session_resource::SessionResourceManifest,
         claim: &RunClaim,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.assembly
             .realization_executor
             .install_dispatched_resources(session, manifest, Some(claim))

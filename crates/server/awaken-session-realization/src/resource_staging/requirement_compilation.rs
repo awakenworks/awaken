@@ -10,7 +10,7 @@ use awaken_session_configuration_contract::environment_projection;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_execution_contract::ResourceOperationFence;
 
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use crate::managed_input_layout::ResourcePromptProjection;
 use crate::managed_layout::{
@@ -224,7 +224,7 @@ impl ResourceStaging {
         claim: Option<&awaken_worker_contract::RunClaim>,
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
         environment: Option<&environment_projection::FrozenEnvironmentInputs>,
-    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
+    ) -> Result<crate::staged_resources::StagedResources, awaken_runtime_contract::runs::RunError> {
         self.stage_resolved_input_for_reader(
             workspace,
             input,
@@ -247,7 +247,7 @@ impl ResourceStaging {
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
         environment: Option<&environment_projection::FrozenEnvironmentInputs>,
         reader_session_id: Option<&str>,
-    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
+    ) -> Result<crate::staged_resources::StagedResources, awaken_runtime_contract::runs::RunError> {
         let authority = if let (Some((session_id, resource_revision, lease)), true) =
             (realization, self.fetches_resources_upstream)
         {
@@ -258,7 +258,7 @@ impl ResourceStaging {
                     input.clone(),
                     lease.clone(),
                 )
-                .map_err(awaken_session_types::RunError::bad_request)?,
+                .map_err(awaken_runtime_contract::runs::RunError::bad_request)?,
             ))
         } else {
             claim.map(|claim| ResourceOperationFence::Run(claim.clone()))
@@ -283,11 +283,11 @@ impl ResourceStaging {
         workspace: &str,
         command: &awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &session_resource::SessionRealizationLease,
-    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
-        command
-            .intent
-            .validate()
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+    ) -> Result<crate::staged_resources::StagedResources, awaken_runtime_contract::runs::RunError>
+    {
+        command.intent.validate().map_err(|error| {
+            awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+        })?;
         let input = &command.intent.input;
         let fence = ResourceOperationFence::RepositoryPublication {
             command: Box::new(command.clone()),
@@ -324,9 +324,9 @@ impl ResourceStaging {
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
         environment: Option<&environment_projection::FrozenEnvironmentInputs>,
         reader_session_id: Option<&str>,
-    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
+    ) -> Result<crate::staged_resources::StagedResources, awaken_runtime_contract::runs::RunError> {
+        use awaken_runtime_contract::runs::RunError;
         use awaken_session_configuration_contract::resource::ResolvedInputSource;
-        use awaken_session_types::RunError;
 
         let claim = resource_authority.and_then(|authority| match authority {
             ResourceOperationFence::Run(claim) => Some(claim),
@@ -623,7 +623,7 @@ impl ResourceStaging {
         workspace: &str,
         id: &str,
         version: awaken_resource_contract::ConfigVersion,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         awaken_session_configuration_contract::resource::binding_checks::verify_memory_binding(
             self.resource_validator.as_deref(),
             workspace,

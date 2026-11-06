@@ -178,7 +178,7 @@ async fn paused_or_failed_activity_cas_executes_nothing_and_leaves_a_repairable_
         .expect_err("Z2 failed activity CAS refuses admission");
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::Unavailable,
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable,
         "Z2 {error:?}"
     );
     let failed = runtime.counts();
@@ -363,7 +363,7 @@ async fn failed_activity_cas_reports_a_pending_admission_that_repair_settles_onc
     assert_eq!(
         (error.kind, error.code.as_str()),
         (
-            awaken_session_types::RunErrorKind::Unavailable,
+            awaken_runtime_contract::runs::RunErrorKind::Unavailable,
             "session_run_admission_pending"
         ),
         "the caller learns the admission is pending, never that it failed: {error:?}"

@@ -72,7 +72,7 @@ def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]
     required = (
         "pub async fn admit_session_run_for_owner",
         "pub struct SessionRunApplication",
-        "impl RunApplication for SessionRunApplication",
+        "impl Runs for SessionRunApplication",
         "run_admitted_session_for_owner",
     )
     if any(symbol not in application for symbol in required):
@@ -434,7 +434,7 @@ def selftest() -> None:
         "crates/server/awaken-session-application/src/run_admission.rs":
             "pub async fn admit_session_run_for_owner() {} "
             "pub struct SessionRunApplication; "
-            "impl RunApplication for SessionRunApplication {} "
+            "impl Runs for SessionRunApplication {} "
             "fn run_admitted_session_for_owner() {}",
         "crates/server/awaken-coordinator/src/lib.rs": "let session_runs = execution.session_runs;",
         **{f"crates/fixture-{placement}/src/lib.rs":
@@ -452,7 +452,7 @@ def selftest() -> None:
     for marker in (
         "pub async fn admit_session_run_for_owner",
         "pub struct SessionRunApplication",
-        "impl RunApplication for SessionRunApplication",
+        "impl Runs for SessionRunApplication",
         "run_admitted_session_for_owner",
     ):
         missing_one = dict(valid)
@@ -499,7 +499,7 @@ def selftest() -> None:
         entry.write_text("#[cfg(test)] mod nested;", encoding="utf-8")
         assert check_session_admission_ownership(repository) == [], "A8 test-only module"
     erased = dict(valid)
-    erased[COORDINATOR_EXECUTION_PORTS] = "pub session_runs: Arc<dyn RunApplication>,"
+    erased[COORDINATOR_EXECUTION_PORTS] = "pub session_runs: Arc<dyn Runs>,"
     assert session_admission_ownership_violations(erased), "A6/!E9 erased port type"
     read_back = dict(valid)
     read_back["crates/server/awaken-coordinator/src/lib.rs"] += (

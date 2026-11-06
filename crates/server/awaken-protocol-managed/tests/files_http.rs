@@ -5,7 +5,7 @@
 
 use awaken_protocol_managed::files_router;
 use awaken_resource_contract::FileRecord;
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

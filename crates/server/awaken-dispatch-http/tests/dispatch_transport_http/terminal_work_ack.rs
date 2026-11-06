@@ -24,7 +24,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for LostRe
         _acquisition: awaken_session_application_contract::SessionWorkAcquisition,
     ) -> Result<
         awaken_session_application_contract::SessionWorkOwnership,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         self.acquisitions.fetch_add(1, Ordering::SeqCst);
         if self.retired.load(Ordering::SeqCst) {
@@ -49,12 +49,12 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for LostRe
     async fn release_session_work(
         &self,
         lease: &awaken_session_application_contract::SessionWorkGrant,
-    ) -> Result<bool, awaken_session_types::RunError> {
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         self.released.lock().unwrap().push(lease.clone());
         if self.retired.swap(true, Ordering::SeqCst) {
             return Ok(true);
         }
-        Err(awaken_session_types::RunError::unavailable(
+        Err(awaken_runtime_contract::runs::RunError::unavailable(
             "Work release committed but its response was lost",
         ))
     }
@@ -62,7 +62,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for LostRe
     async fn release_worker_session_work(
         &self,
         _worker_owner: &str,
-    ) -> Result<usize, awaken_session_types::RunError> {
+    ) -> Result<usize, awaken_runtime_contract::runs::RunError> {
         Ok(0)
     }
 }

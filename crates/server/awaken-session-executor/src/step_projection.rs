@@ -1,8 +1,8 @@
 //! The executor's settled steps as the neutral application outcome.
 
-use awaken_session_application_contract::StepOutcome;
+use awaken_runtime_contract::runs::{RunError, StepOutcome};
+
 use awaken_session_run_delivery::{CommittedStepReceipt, settled_step};
-use awaken_session_types::RunError;
 
 use crate::SessionExecutionError;
 use crate::session_execution_error::to_run_error;

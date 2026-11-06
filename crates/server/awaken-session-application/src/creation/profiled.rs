@@ -6,12 +6,12 @@
 
 use std::collections::BTreeMap;
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::{
     ApplicationOriginBinding, ControlSessionCreationInputs, SessionContextSeed,
     SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
     SessionSystemPromptSelection, SessionToolConfiguration, SessionTrigger,
 };
-use awaken_session_types::RunError;
 
 use super::SessionCreationCompletion;
 use crate::run_admission::preparation_error;

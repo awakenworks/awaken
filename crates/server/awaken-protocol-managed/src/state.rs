@@ -70,8 +70,9 @@ pub use error::StateError;
 pub use managed_state::ManagedState;
 pub(crate) use managed_state::SessionApplicationRoles;
 
+use awaken_runtime_contract::runs::RunError;
 #[cfg(test)]
-use awaken_session_application_contract::StepOutcome;
+use awaken_runtime_contract::runs::StepOutcome;
 use awaken_session_configuration_contract::AgentCapabilities;
 use awaken_session_contract::SessionUsage;
 use awaken_session_execution_contract::CommittedOutcomeProjection;
@@ -79,7 +80,6 @@ use awaken_session_execution_contract::CommittedOutcomeProjection;
 use awaken_session_execution_contract::SessionRuns;
 #[cfg(test)]
 use awaken_session_execution_contract::{OutcomeDrive, OutcomeFailure, OutcomeReport};
-use awaken_session_types::RunError;
 pub use constants::COMMITTED_PREFIX_READ_CONFLICT;
 pub(crate) use constants::LEGACY_UNRECORDED_AT;
 pub(crate) use helpers::{

@@ -5,7 +5,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/continuation.rs",
-        "line": 1921,
+        "line": 1953,
         "file_sha256": "3ff58e93b4a88ccfd91feda39b9e5d2e65e4df3b7f44dd870a1a6cbcb565ad71"
       }
     ],
@@ -33,7 +33,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
-        "line": 9121,
+        "line": 9125,
         "file_sha256": "cff04e16f81092b500d1277dd6e1beead945a888f6711bf8de65d2af913dd0ec"
       }
     ],
@@ -129,7 +129,7 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/support/work_identity_durable.rs",
-        "line": 127,
+        "line": 132,
         "file_sha256": "48349177bdfe9d4803bf7652b5bc45ee65d907fdc0f2829c0e45489af2886f79"
       }
     ],
@@ -185,7 +185,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-environment-image-build/src/sqlite.rs",
-        "line": 199,
+        "line": 210,
         "file_sha256": "6f22531c9285e9cf0d4788a60d97cccf8472e14855746ab6eac69a24009788b2"
       }
     ],
@@ -241,7 +241,7 @@
     "source_locations": [
       {
         "path": "crates/control/awaken-environment-application/tests/registration_replay.rs",
-        "line": 485,
+        "line": 487,
         "file_sha256": "3803ba788b384b22fd31a5394d85ddbe318dc2dae0209658a1df1db6f5fc39a2"
       }
     ],
@@ -269,7 +269,7 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/support/work_identity_durable.rs",
-        "line": 50,
+        "line": 55,
         "file_sha256": "48349177bdfe9d4803bf7652b5bc45ee65d907fdc0f2829c0e45489af2886f79"
       }
     ],
@@ -297,7 +297,7 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
-        "line": 277,
+        "line": 291,
         "file_sha256": "cc5b9076b8ed285a8d1e8d896b8fc0840faf3a4434ad7cabf73db2813c4b8304"
       }
     ],
@@ -368,7 +368,7 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/tests/support/work_identity_durable.rs",
-        "line": 297,
+        "line": 302,
         "file_sha256": "48349177bdfe9d4803bf7652b5bc45ee65d907fdc0f2829c0e45489af2886f79"
       }
     ],
@@ -396,7 +396,7 @@
     "source_locations": [
       {
         "path": "crates/control/awaken-environment-application/tests/registration_replay.rs",
-        "line": 520,
+        "line": 522,
         "file_sha256": "3803ba788b384b22fd31a5394d85ddbe318dc2dae0209658a1df1db6f5fc39a2"
       }
     ],
@@ -452,7 +452,7 @@
     "source_locations": [
       {
         "path": "crates/stores/awaken-work-store/src/tests.rs",
-        "line": 135,
+        "line": 137,
         "file_sha256": "74a2bb1a32cdb2fcfbedd38e3ea45a889f7a5ec0e546a7107587cea8182754e5"
       }
     ],
@@ -508,7 +508,7 @@
     "source_locations": [
       {
         "path": "crates/worker/awaken-sandbox-local/src/git_transport/command.rs",
-        "line": 386,
+        "line": 390,
         "file_sha256": "2b728a1ebf264bf104533f6acfc85ddda1ff9d5987a61172f6932d4fa7047e98"
       }
     ],
@@ -536,7 +536,7 @@
     "source_locations": [
       {
         "path": "crates/control/awaken-control/src/registration_supervisor.rs",
-        "line": 383,
+        "line": 389,
         "file_sha256": "275279d25ab5d31005f6a7edb0854375a1d418624dfd435f25548098577e904c"
       }
     ],
@@ -564,7 +564,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
-        "line": 2739,
+        "line": 2741,
         "file_sha256": "cff04e16f81092b500d1277dd6e1beead945a888f6711bf8de65d2af913dd0ec"
       }
     ],
@@ -632,7 +632,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/observed_commit.rs",
-        "line": 247,
+        "line": 261,
         "file_sha256": "e7801e5b36b26d9df355744c266495431f197784c082c8c82a71667509e116cf"
       }
     ],
@@ -688,7 +688,7 @@
     "source_locations": [
       {
         "path": "crates/control/awaken-environment-application/tests/registration_replay.rs",
-        "line": 477,
+        "line": 479,
         "file_sha256": "3803ba788b384b22fd31a5394d85ddbe318dc2dae0209658a1df1db6f5fc39a2"
       }
     ],
@@ -772,7 +772,7 @@
     "source_locations": [
       {
         "path": "crates/control/awaken-environment-application/tests/registration_replay.rs",
-        "line": 509,
+        "line": 511,
         "file_sha256": "3803ba788b384b22fd31a5394d85ddbe318dc2dae0209658a1df1db6f5fc39a2"
       }
     ],
@@ -884,7 +884,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/realization/worker_retirement.rs",
-        "line": 421,
+        "line": 437,
         "file_sha256": "8ae897ce88650a906023a84f53dec2edeba13e95559c938fcb91a7ca18f2c1f5"
       }
     ],

@@ -18,8 +18,10 @@ use std::sync::Arc;
 use crate::realization_state::SessionRealization;
 /// A poisoned installed-Session registry, as the neutral Run failure a
 /// Session role returns.
-pub(crate) fn registry_run_error(error: RealizationLock) -> awaken_session_types::RunError {
-    awaken_session_types::RunError::from(RealizationError::from(error))
+pub(crate) fn registry_run_error(
+    error: RealizationLock,
+) -> awaken_runtime_contract::runs::RunError {
+    awaken_runtime_contract::runs::RunError::from(RealizationError::from(error))
 }
 
 mod frozen_projection;

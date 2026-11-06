@@ -13,9 +13,9 @@ impl crate::McpAttachmentRealizer for NeutralRuntime {
         _request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
     ) -> Result<
         awaken_session_configuration_contract::mcp::McpRealizationReceipt,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
-        Err(awaken_session_types::RunError::classified(
+        Err(awaken_runtime_contract::runs::RunError::classified(
             "mcp_runtime_unsupported",
             "fixture does not support generation-fenced MCP realization",
         ))
@@ -24,8 +24,8 @@ impl crate::McpAttachmentRealizer for NeutralRuntime {
     async fn publish_mcp_generation(
         &self,
         _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
-    ) -> Result<(), awaken_session_types::RunError> {
-        Err(awaken_session_types::RunError::classified(
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
+        Err(awaken_runtime_contract::runs::RunError::classified(
             "mcp_runtime_unsupported",
             "fixture does not support generation-fenced MCP publication",
         ))
@@ -34,8 +34,8 @@ impl crate::McpAttachmentRealizer for NeutralRuntime {
     async fn drain_mcp_generation(
         &self,
         _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
-    ) -> Result<(), awaken_session_types::RunError> {
-        Err(awaken_session_types::RunError::classified(
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
+        Err(awaken_runtime_contract::runs::RunError::classified(
             "mcp_runtime_unsupported",
             "fixture does not support generation-fenced MCP drain",
         ))

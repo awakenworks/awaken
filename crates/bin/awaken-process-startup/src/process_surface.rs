@@ -122,7 +122,8 @@ mod tests {
 
     #[tokio::test]
     async fn ordinary_purpose_survives_workspace_address_rewriting() {
-        use awaken_tenancy::{WorkspaceScope, workspace_purpose::WorkspacePurposeUnavailable};
+        use awaken_runtime_contract::runs::scope::WorkspaceScope;
+        use awaken_tenancy::workspace_purpose::WorkspacePurposeUnavailable;
         use axum::Extension;
 
         struct Purpose;

@@ -11,7 +11,7 @@ use crate::{
     state::{ManagedState, StateError},
     types::SendEventsRequest,
 };
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 use axum::{
     Json,
     extract::{Path, State},

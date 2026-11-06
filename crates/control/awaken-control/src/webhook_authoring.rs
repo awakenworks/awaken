@@ -13,7 +13,7 @@ use awaken_config_resolver::{
     WebhookDeliveryState, WebhookEndpointDef, WebhookMutationIntent, WebhookStore,
 };
 use awaken_credential_vault::{SecretRef, SecretStore};
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use awaken_webhook::{
     ResolvedSubscription, SubscriptionFailureState, SubscriptionSource, generate_secret,
     generate_secret_reference,

@@ -143,9 +143,10 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordUnexpect
     async fn stage_mcp_attachment(
         &self,
         request: crate::session_mcp::StageMcpAttachment,
-    ) -> Result<crate::session_mcp::McpRealizationReceipt, awaken_session_types::RunError> {
+    ) -> Result<crate::session_mcp::McpRealizationReceipt, awaken_runtime_contract::runs::RunError>
+    {
         self.0.lock().unwrap().push(request);
-        Err(awaken_session_types::RunError::classified(
+        Err(awaken_runtime_contract::runs::RunError::classified(
             "unexpected_direct_stage",
             "Managed claim entered ordinary MCP",
         ))
@@ -153,13 +154,13 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordUnexpect
     async fn publish_mcp_generation(
         &self,
         _generation: crate::session_mcp::McpGenerationRef,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         panic!("no generation may be published after original projection loss")
     }
     async fn drain_mcp_generation(
         &self,
         _generation: crate::session_mcp::McpGenerationRef,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         panic!("no generation was staged for cleanup")
     }
 }

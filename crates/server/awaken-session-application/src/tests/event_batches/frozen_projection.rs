@@ -3,8 +3,9 @@ use super::*;
 use awaken_agent_contract::thread::read::transcript::{
     TranscriptError, TranscriptRange, TranscriptSliceSpec, TranscriptSnapshot, TranscriptView,
 };
+use awaken_runtime_contract::runs::RunErrorKind;
 use awaken_session_configuration_contract::SessionBaselineState;
-use awaken_session_types::{RunErrorKind, SessionRuntimePlacement};
+use awaken_session_types::SessionRuntimePlacement;
 
 // Transform the existing creation input, rather than duplicating its defaults or
 // minting another root/Store. The canonical finalizer owns the new fingerprint.

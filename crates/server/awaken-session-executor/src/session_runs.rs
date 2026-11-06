@@ -21,7 +21,7 @@ use crate::host::capability;
 
 /// Session Run delivery for one process. Consumers: the Session application's
 /// `SessionRuns` and `StreamingRuns` roles, the protocol-neutral
-/// `RunApplication` (AI SDK, AG-UI, A2A), the durable-ingress verbs, and the
+/// `Runs` (AI SDK, AG-UI, A2A), the durable-ingress verbs, and the
 /// Run-driving parts of coordination, budgets and Outcomes.
 ///
 /// Causes/effects H0-H2: the ordinary Host Run member remains available (H0),

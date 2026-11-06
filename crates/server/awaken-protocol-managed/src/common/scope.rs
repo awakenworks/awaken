@@ -5,7 +5,7 @@
 //! therefore consume an existing [`WorkspaceScope`] and never infer one from the
 //! Host, credentials, route, or deployment mode.
 
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::Json;
 use axum::extract::FromRequestParts;
 use axum::http::{StatusCode, request::Parts};

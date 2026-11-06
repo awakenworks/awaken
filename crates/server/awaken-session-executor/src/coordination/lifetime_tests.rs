@@ -59,7 +59,10 @@ async fn local_live_subscription_reads_no_session_execution_context() {
             assert!(result.unwrap().is_some(), "R1 original root observer");
         } else {
             let error = result.err().expect("R2 committed membership is required");
-            assert_eq!(error.kind, awaken_session_types::RunErrorKind::BadRequest);
+            assert_eq!(
+                error.kind,
+                awaken_runtime_contract::runs::RunErrorKind::BadRequest
+            );
             assert_eq!(error.code, "invalid_request");
         }
         assert!(
@@ -462,12 +465,12 @@ async fn model_gate_preserves_local_and_remote_control_failure_grades() {
     };
     let rows = [
         (
-            awaken_session_types::RunError::unavailable("causal dependency"),
+            awaken_runtime_contract::runs::RunError::unavailable("causal dependency"),
             F::Unavailable("causal dependency".into()),
             FailureClass::Transient,
         ),
         (
-            awaken_session_types::RunError::unavailable_classified(
+            awaken_runtime_contract::runs::RunError::unavailable_classified(
                 ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
                 "causal capacity",
             ),
@@ -475,7 +478,7 @@ async fn model_gate_preserves_local_and_remote_control_failure_grades() {
             FailureClass::Overloaded { retry_after: None },
         ),
         (
-            awaken_session_types::RunError::bad_request("causal rejection"),
+            awaken_runtime_contract::runs::RunError::bad_request("causal rejection"),
             F::Invalid("causal rejection".into()),
             FailureClass::Permanent,
         ),

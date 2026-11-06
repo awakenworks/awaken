@@ -2,7 +2,7 @@
 //! Coordinator selects the shared plain-text HTTP encoding; this adapter owns
 //! which of its routes consume each bucket, not another copy of the renderer.
 
-use awaken_tenancy::org_admission::OrgOperation;
+use awaken_runtime_contract::runs::request::OrgOperation;
 use axum::http::Method;
 
 /// Starting a Run consumes the Create bucket; reading a Thread consumes the

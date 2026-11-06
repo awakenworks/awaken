@@ -253,7 +253,7 @@ pub async fn application_guard(
     });
     request
         .extensions_mut()
-        .insert(awaken_tenancy::WorkspaceScope(
+        .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
             identity.workspace_id.clone(),
         ));
     let path = request.uri().path().to_string();
@@ -446,17 +446,23 @@ async fn scope_application_request<'a>(
             );
             object.remove("agent_id");
         }
-        parts.extensions.insert(awaken_tenancy::ResolvedResourceId(
-            binding.managed_session_id.clone(),
-        ));
+        parts
+            .extensions
+            .insert(awaken_runtime_contract::runs::scope::ResolvedResourceId(
+                binding.managed_session_id.clone(),
+            ));
         if let Some(presented_thread) = presented_thread {
             parts
                 .extensions
-                .insert(awaken_tenancy::PresentedThreadId(presented_thread));
+                .insert(awaken_runtime_contract::runs::scope::PresentedThreadId(
+                    presented_thread,
+                ));
         }
         parts
             .extensions
-            .insert(awaken_tenancy::ResolvedAgentId(binding.agent_id.clone()));
+            .insert(awaken_runtime_contract::runs::scope::ResolvedAgentId(
+                binding.agent_id.clone(),
+            ));
         let encoded = serde_json::to_vec(&value).map_err(|_| {
             ApplicationRejection::new(StatusCode::BAD_REQUEST, "invalid application request body")
         })?;
@@ -472,12 +478,16 @@ async fn scope_application_request<'a>(
     })?;
     let binding = resolve_binding(identity, external)?;
     let (mut parts, body) = request.into_parts();
-    parts.extensions.insert(awaken_tenancy::ResolvedResourceId(
-        binding.managed_session_id.clone(),
-    ));
     parts
         .extensions
-        .insert(awaken_tenancy::ResolvedAgentId(binding.agent_id.clone()));
+        .insert(awaken_runtime_contract::runs::scope::ResolvedResourceId(
+            binding.managed_session_id.clone(),
+        ));
+    parts
+        .extensions
+        .insert(awaken_runtime_contract::runs::scope::ResolvedAgentId(
+            binding.agent_id.clone(),
+        ));
     let request = Request::from_parts(parts, body);
     Ok(request)
 }

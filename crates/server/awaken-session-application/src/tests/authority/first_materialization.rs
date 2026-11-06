@@ -358,7 +358,7 @@ async fn rebuild_admission_maps_each_source_decision_to_one_run_error() {
         let error = sink.authorize(&requested).await.unwrap_err();
         assert_eq!(
             error.kind,
-            awaken_session_types::RunErrorKind::Unavailable,
+            awaken_runtime_contract::runs::RunErrorKind::Unavailable,
             "{rule}"
         );
         assert_eq!(
@@ -377,7 +377,7 @@ async fn rebuild_admission_maps_each_source_decision_to_one_run_error() {
     let error = sink.authorize(&lost).await.unwrap_err();
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::Conflict,
+        awaken_runtime_contract::runs::RunErrorKind::Conflict,
         "M2 a 409 state conflict, never Unavailable"
     );
     assert_eq!(

@@ -14,7 +14,7 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 #[cfg(test)]
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
 #[cfg(test)]
-use awaken_session_application_contract::Pending;
+use awaken_runtime_contract::runs::Pending;
 use awaken_session_execution_contract::CoordinatedThreadLink;
 
 use crate::{

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use awaken_dispatch_erasure::{RuntimeAuthority, RuntimeAuthorityError};
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use crate::{SessionCommit, SessionCommitSource};
 
@@ -56,7 +56,7 @@ impl SessionCommitSource for AuthorityCommits {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_session_types::RunErrorKind;
+    use awaken_runtime_contract::runs::RunErrorKind;
 
     #[test]
     fn runtime_authority_failures_keep_one_run_class() {

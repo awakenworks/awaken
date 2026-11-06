@@ -6,7 +6,7 @@
 
 use super::*;
 use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
-use awaken_session_types::RunErrorKind;
+use awaken_runtime_contract::runs::RunErrorKind;
 
 /// Negative control: the payload is grammatically valid Managed wire JSON.
 fn grammar_valid(payload: serde_json::Value) -> SendEventsRequest {

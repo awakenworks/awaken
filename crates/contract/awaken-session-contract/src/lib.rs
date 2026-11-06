@@ -11,7 +11,7 @@
 //! use std::sync::Arc;
 //! use awaken_session_contract::{SessionAggregate, SessionBudgetState, SessionEventBatch,
 //!     SessionRepository, SessionRepositoryReads, SessionReconciliation};
-//! use awaken_session_types::SessionId;
+//! use awaken_session_types::{SessionId};
 //! fn roles(store: Arc<dyn SessionRepository>, _: SessionId) {
 //!     let _: Arc<dyn SessionRepositoryReads> = store.clone();
 //!     let _: Arc<dyn SessionReconciliation> = store;

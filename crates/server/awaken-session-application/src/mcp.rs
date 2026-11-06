@@ -3,7 +3,7 @@
 // @formal reason: against its product requirement; this link is not a formal-proof claim.
 //! Canonical Session MCP authoring normalization and credential selection.
 
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 use {
     awaken_agent_contract::McpTarget,
     awaken_session_configuration_contract::mcp::{McpAttachmentDraft, McpAttachmentOrigin},

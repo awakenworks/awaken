@@ -81,7 +81,9 @@ async fn call(
     // all address the single `ws` Workspace they author into.
     request
         .extensions_mut()
-        .insert(awaken_tenancy::WorkspaceScope("ws".into()));
+        .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+            "ws".into(),
+        ));
     let resp = app.clone().oneshot(request).await.unwrap();
     let status = resp.status();
     let content_type = resp

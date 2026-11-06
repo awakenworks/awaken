@@ -1,4 +1,7 @@
-//! Neutral Session runtime failure classification.
+// @formal surface requirement=protocol.ui_adapters.stream_projection
+// @formal reason: Stable Run failure kinds and codes are shared protocol inputs;
+// @formal reason: adapters project them without inventing lifecycle or retry facts.
+//! Neutral Run failure classification.
 
 #[derive(Debug, thiserror::Error)]
 #[error("run failed: {message}")]

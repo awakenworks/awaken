@@ -51,7 +51,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 471,
+        "line": 475,
         "file_sha256": "72691ba6415d4855340aac0e721d27c11fc76dedd5632a77db00b0004dbcf537"
       }
     ],
@@ -74,7 +74,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 613,
+        "line": 617,
         "file_sha256": "72691ba6415d4855340aac0e721d27c11fc76dedd5632a77db00b0004dbcf537"
       }
     ],
@@ -98,7 +98,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 734,
+        "line": 738,
         "file_sha256": "72691ba6415d4855340aac0e721d27c11fc76dedd5632a77db00b0004dbcf537"
       }
     ],
@@ -122,7 +122,7 @@
     "source_locations": [
       {
         "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 864,
+        "line": 868,
         "file_sha256": "72691ba6415d4855340aac0e721d27c11fc76dedd5632a77db00b0004dbcf537"
       }
     ],

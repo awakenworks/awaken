@@ -3,8 +3,7 @@
 //! Session/Run application vocabulary.
 
 use awaken_agent_contract::agent::run::RunState;
-use awaken_session_application_contract::StepOutcome;
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::{RunError, StepOutcome};
 
 use crate::CommittedStepReceipt;
 

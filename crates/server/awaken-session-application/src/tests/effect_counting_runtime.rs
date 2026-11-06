@@ -8,9 +8,9 @@
 //! concrete counter and a negative control can prove the counter detects a
 //! leaked effect that a success/error return code would hide.
 use super::*;
+use awaken_runtime_contract::runs::StepOutcome;
 use awaken_session_application_contract::{
     SessionBudgetResumeDelivery, SessionBudgetResumeDisposition, SessionBudgetResumeTicket,
-    StepOutcome,
 };
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
@@ -234,7 +234,8 @@ impl awaken_session_execution_contract::ChildRunCoordination for EffectCountingR
         &self,
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
-    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::runs::RunError>
+    {
         awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,

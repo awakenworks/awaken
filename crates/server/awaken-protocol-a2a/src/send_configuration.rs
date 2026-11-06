@@ -4,11 +4,9 @@
 //! Shared send configuration admission for A2A bindings.
 
 use crate::types::SendMessageRequest;
-use awaken_session_application_contract::RunApplicationError;
+use awaken_runtime_contract::runs::RunError;
 
-pub(crate) fn validate_send_configuration(
-    req: &SendMessageRequest,
-) -> Result<(), RunApplicationError> {
+pub(crate) fn validate_send_configuration(req: &SendMessageRequest) -> Result<(), RunError> {
     let Some(configuration) = &req.configuration else {
         return Ok(());
     };
@@ -20,7 +18,7 @@ pub(crate) fn validate_send_configuration(
             )
         })
     {
-        return Err(RunApplicationError::bad_request_classified(
+        return Err(RunError::bad_request_classified(
             "unsupported_output_modes",
             format!(
                 "unsupported output modes: {}",

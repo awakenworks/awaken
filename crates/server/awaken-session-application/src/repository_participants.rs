@@ -19,9 +19,9 @@ use awaken_resource_contract::{
     ResourcePurgeScheduler, ResourceRegistry, SESSION_REPOSITORY_OWNER_KIND,
     SESSION_REPOSITORY_OWNER_SESSION,
 };
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::resource::ResolvedInputSource;
 use awaken_session_contract::SessionAggregate;
-use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
 use crate::credentials::internal;

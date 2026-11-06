@@ -1,7 +1,7 @@
 // @formal surface requirement=session.lifecycle.session_state
 // @formal reason: Constructor-selected effects use the original realizer and canonical MCP authority. Configured forwarding retains no unrelated Session owner; local Direct execution keeps its required staging context.
 //! Constructor-selected MCP execution effects and local generation projections.
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 use std::sync::Arc;
 
 impl crate::RunAssembly {

@@ -83,7 +83,7 @@ impl crate::RunCapabilities {
                 .credential_realization(&activation.thread_id.0)
                 .map_err(|error| {
                     awaken_dispatch_execution::AdmissionError::from(
-                        awaken_session_types::RunError::from(error),
+                        awaken_runtime_contract::runs::RunError::from(error),
                     )
                 })
         })

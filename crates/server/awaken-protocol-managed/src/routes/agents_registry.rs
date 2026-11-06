@@ -535,7 +535,9 @@ mod tests {
             .unwrap();
         request
             .extensions_mut()
-            .insert(awaken_tenancy::WorkspaceScope("workspace-policy".into()));
+            .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                "workspace-policy".into(),
+            ));
         let response = app.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let _ = response.into_body().collect().await.unwrap();
@@ -550,7 +552,9 @@ mod tests {
             .unwrap();
         request
             .extensions_mut()
-            .insert(awaken_tenancy::WorkspaceScope("workspace-policy".into()));
+            .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                "workspace-policy".into(),
+            ));
         let response = app.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let body = response.into_body().collect().await.unwrap().to_bytes();

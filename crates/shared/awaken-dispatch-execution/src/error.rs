@@ -1,3 +1,6 @@
+// @formal surface requirement=dispatch.durable_ingress.claim_and_delivery
+// @formal reason: Dispatch failures distinguish deferred claims from terminal resolution and
+// @formal reason: execution failures; this is a product classification, not formal execution evidence.
 //! Attempt and process-drain failures reported by the one dispatch executor.
 
 use awaken_dispatch_contract::DispatchError;

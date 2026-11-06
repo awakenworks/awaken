@@ -6,23 +6,21 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{Pending, RunError, RunResume, Runs, StepOutcome};
 
 use super::SessionRuns;
 use crate::HostResume;
 use crate::session_execution_error::to_run_error;
 
 #[async_trait::async_trait]
-impl RunApplication for SessionRuns {
+impl Runs for SessionRuns {
     async fn run(
         &self,
         _operation_id: &str,
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let result = self
             .run(agent.as_deref(), thread, messages)
             .await
@@ -37,7 +35,7 @@ impl RunApplication for SessionRuns {
         agent: Option<String>,
         messages: Vec<Message>,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let result = self
             .run_streaming(agent.as_deref(), thread, messages, sink)
             .await
@@ -51,7 +49,7 @@ impl RunApplication for SessionRuns {
         thread: &str,
         tool_use_id: &str,
         resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let resume = match resume {
             RunResume::Permission(decision) => HostResume::Permission(decision),
             RunResume::ClientResult { content, is_error } => {
@@ -65,15 +63,15 @@ impl RunApplication for SessionRuns {
         awaken_session_run_delivery::settled_step(result)
     }
 
-    async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
+    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
         self.interrupt(thread).await.map_err(to_run_error)
     }
 
-    async fn pending(&self, thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, thread: &str) -> Result<Option<Pending>, RunError> {
         self.thread_reads.pending_tool(thread).await
     }
 
-    async fn history(&self, thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, thread: &str) -> Result<Vec<Message>, RunError> {
         self.thread_reads.committed_messages(thread).await
     }
 
@@ -81,7 +79,7 @@ impl RunApplication for SessionRuns {
         self.capabilities.model()
     }
 
-    async fn usage(&self, thread: &str) -> Result<(u64, u64), RunApplicationError> {
+    async fn usage(&self, thread: &str) -> Result<(u64, u64), RunError> {
         let usage = self
             .thread_reads
             .session_thread_usage(thread, &ThreadId(thread.to_string()))
@@ -94,7 +92,7 @@ impl RunApplication for SessionRuns {
 mod tests {
     use super::*;
     use crate::SessionExecutionError;
-    use awaken_session_types::RunErrorKind;
+    use awaken_runtime_contract::runs::RunErrorKind;
 
     #[test]
     fn host_failures_keep_their_fault_for_every_run_protocol() {
@@ -144,7 +142,10 @@ mod tests {
             (
                 "A6",
                 crate::session_execution_error::from_run_error(
-                    awaken_session_types::RunError::bad_request_classified("not_found", "m"),
+                    awaken_runtime_contract::runs::RunError::bad_request_classified(
+                        "not_found",
+                        "m",
+                    ),
                 ),
                 RunErrorKind::BadRequest,
                 "not_found",
@@ -152,7 +153,10 @@ mod tests {
             (
                 "A7",
                 crate::session_execution_error::from_run_error(
-                    awaken_session_types::RunError::conflict_classified("projection_changed", "m"),
+                    awaken_runtime_contract::runs::RunError::conflict_classified(
+                        "projection_changed",
+                        "m",
+                    ),
                 ),
                 RunErrorKind::Conflict,
                 "projection_changed",

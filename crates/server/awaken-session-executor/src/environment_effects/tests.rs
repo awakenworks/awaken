@@ -100,7 +100,8 @@ impl SessionEnvironmentBindingSink for Sink {
     async fn authorize(
         &self,
         intent: &SessionEnvironmentEffectIntent,
-    ) -> Result<SessionEnvironmentEffectAuthorization, awaken_session_types::RunError> {
+    ) -> Result<SessionEnvironmentEffectAuthorization, awaken_runtime_contract::runs::RunError>
+    {
         Ok(SessionEnvironmentEffectAuthorization::Authorized {
             intent: Box::new(intent.clone()),
         })
@@ -108,10 +109,10 @@ impl SessionEnvironmentBindingSink for Sink {
     async fn persist(
         &self,
         receipt: SessionEnvironmentReceipt,
-    ) -> Result<SessionEnvironmentState, awaken_session_types::RunError> {
+    ) -> Result<SessionEnvironmentState, awaken_runtime_contract::runs::RunError> {
         self.persists.fetch_add(1, Ordering::SeqCst);
         if self.response_lost {
-            return Err(awaken_session_types::RunError::unavailable(
+            return Err(awaken_runtime_contract::runs::RunError::unavailable(
                 "store response unavailable",
             ));
         }

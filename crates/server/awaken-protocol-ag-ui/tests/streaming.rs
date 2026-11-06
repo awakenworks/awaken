@@ -12,9 +12,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_session_application_contract::{
-    OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{OwnedRuns, Pending, RunError, RunResume, Runs, StepOutcome};
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
@@ -24,14 +22,14 @@ use tower::ServiceExt;
 struct StreamingMock;
 
 #[async_trait::async_trait]
-impl RunApplication for StreamingMock {
+impl Runs for StreamingMock {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         Ok(committed())
     }
 
@@ -42,7 +40,7 @@ impl RunApplication for StreamingMock {
         _agent: Option<String>,
         _messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let run = RunId("r1".into());
         for kind in [
             AgentEvent::Fact(Fact::RunStarted),
@@ -82,15 +80,15 @@ impl RunApplication for StreamingMock {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -123,7 +121,7 @@ async fn frames() -> Vec<Value> {
     frames_for(Arc::new(StreamingMock)).await
 }
 
-async fn frames_for(runtime: Arc<dyn RunApplication>) -> Vec<Value> {
+async fn frames_for(runtime: Arc<dyn Runs>) -> Vec<Value> {
     let app = awaken_protocol_ag_ui::router::router(runtime, "test-workspace".into());
     let body = json!({
         "threadId": "t1",
@@ -179,14 +177,14 @@ struct PrefixMock {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for PrefixMock {
+impl Runs for PrefixMock {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         Ok(self.outcome.clone())
     }
 
@@ -197,7 +195,7 @@ impl RunApplication for PrefixMock {
         _agent: Option<String>,
         _messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         for kind in self.events.clone() {
             sink.send(Event {
                 run_id: RunId("r1".into()),
@@ -215,15 +213,15 @@ impl RunApplication for PrefixMock {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -374,14 +372,14 @@ struct HangupProbe {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for HangupProbe {
+impl Runs for HangupProbe {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("the disconnect test only streams")
     }
 
@@ -392,7 +390,7 @@ impl RunApplication for HangupProbe {
         _agent: Option<String>,
         _messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let run = RunId("r1".into());
         for _ in 0..10_000 {
             let sent = sink
@@ -424,18 +422,18 @@ impl RunApplication for HangupProbe {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
-    async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
+    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
         self.interrupted.store(true, Ordering::SeqCst);
         self.interrupted_threads.lock().unwrap().push(thread.into());
         Ok(())
     }
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
     fn model(&self) -> String {
@@ -444,7 +442,7 @@ impl RunApplication for HangupProbe {
 }
 
 #[async_trait::async_trait]
-impl OwnerScopedRunApplication for HangupProbe {
+impl OwnedRuns for HangupProbe {
     async fn run_streaming_for_owner(
         &self,
         _: &str,
@@ -453,7 +451,7 @@ impl OwnerScopedRunApplication for HangupProbe {
         agent: Option<String>,
         messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         self.run_streaming(operation_id, thread, agent, messages, sink)
             .await
     }
@@ -465,7 +463,7 @@ impl OwnerScopedRunApplication for HangupProbe {
         _: &str,
         _: &str,
         _: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
 }
@@ -535,7 +533,7 @@ async fn owner_scoped_hangup_detaches_without_interrupting_the_turn() {
         finished: finished.clone(),
     });
     let app = awaken_protocol_ag_ui::router::router_with_owner_scope(rt).layer(axum::Extension(
-        awaken_tenancy::WorkspaceScope("test-workspace".into()),
+        awaken_runtime_contract::runs::scope::WorkspaceScope("test-workspace".into()),
     ));
     let response = app
         .oneshot(
@@ -582,12 +580,12 @@ async fn explicit_stop_uses_the_bound_ag_ui_thread() {
         finished: Arc::new(Notify::new()),
     });
     let app = awaken_protocol_ag_ui::router::router_with_owner_scope(rt)
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            "test-workspace".into(),
-        )))
-        .layer(axum::Extension(awaken_tenancy::ResolvedResourceId(
-            "sesn_existing".into(),
-        )));
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("test-workspace".into()),
+        ))
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::ResolvedResourceId("sesn_existing".into()),
+        ));
     let response = app
         .oneshot(
             Request::builder()

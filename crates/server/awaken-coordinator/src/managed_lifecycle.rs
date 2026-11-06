@@ -5,7 +5,7 @@
 // @formal reason: committed lifecycle facts flow through CompositeLifecycleFactDelivery to the existing
 // @formal reason: LifecycleOutboxRelay; no lifecycle transition, retry, or durable-outbox decision is
 // @formal reason: reimplemented here. Evidence:
-// @formal reason: crates/contract/awaken-session-event-contract/src/lifecycle.rs and
+// @formal reason: crates/contract/awaken-session-contract/src/event/lifecycle.rs and
 // @formal reason: crates/server/awaken-session-application/src/lifecycle_outbox_relay.rs.
 //! One Coordinator composition for Session lifecycle delivery.
 //!

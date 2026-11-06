@@ -4,6 +4,7 @@
 // @formal reason: Skill selections pin exact versions. No realization effect is reachable. Classification only.
 //! The frozen-input admission of the Sessions registered Workers realize.
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::sandbox_layout::validate_structural_sandbox_layout;
 use awaken_session_configuration_contract::skill_delivery::{
     resolve_skill_selections, skill_store_run_error,
@@ -16,7 +17,7 @@ use awaken_session_execution_contract::{
     CanonicalSessionProjection, FrozenSessionProjection, SessionRealizationEffectFailure,
 };
 use awaken_session_execution_contract::{NO_COLOCATED_WORKER, SessionInputAdmission};
-use awaken_session_types::{RunError, SessionRuntimePlacement};
+use awaken_session_types::SessionRuntimePlacement;
 
 use super::WorkerPlacedSessions;
 

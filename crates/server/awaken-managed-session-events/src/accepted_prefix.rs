@@ -23,7 +23,7 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_agent_contract::{
     RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind, ThreadDisposition,
 };
-use awaken_session_application_contract::Pending;
+use awaken_runtime_contract::runs::Pending;
 use awaken_session_execution_contract::{CoordinatedThreadLink, ProjectionThreadSnapshots};
 
 use crate::{

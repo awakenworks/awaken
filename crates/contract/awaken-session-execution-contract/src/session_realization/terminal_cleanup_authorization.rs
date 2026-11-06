@@ -276,8 +276,8 @@ impl SessionTerminalCleanupPreparationAuthorization {
         &self,
         expected_restore: Option<&awaken_provisioning_contract::SandboxRestoreRequest>,
         reads_live_source: bool,
-    ) -> Result<(), awaken_session_types::RunError> {
-        use awaken_session_types::RunError;
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
+        use awaken_runtime_contract::runs::RunError;
         if expected_restore != self.effect.command.restore_target.as_ref() {
             return Err(
                 if self.effect.command.thread_id != self.effect.command.session_id {

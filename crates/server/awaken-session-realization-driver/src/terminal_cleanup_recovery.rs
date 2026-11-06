@@ -14,13 +14,14 @@
 //! assignment is revoked and how one recovery sweep is bounded are decided
 //! once, in this module.
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_execution_contract::{RealizationEffects, RealizationRuntime, TerminalCleanup};
 use awaken_session_execution_contract::{
     SessionRealizationControlFailure, SessionRealizationDriveError, SessionRealizationTarget,
     SessionTerminalCleanupControl,
 };
-use awaken_session_types::{RunError, SessionId};
+use awaken_session_types::SessionId;
 use futures_util::StreamExt as _;
 
 /// The most assignments one recovery sweep claims, so one sweep cannot

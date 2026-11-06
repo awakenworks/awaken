@@ -12,7 +12,7 @@ use awaken_agent_contract::event::{
     Delta, Fact, HistorySink, StreamTerminalDecision, StreamTerminalKind, ToolDisposition,
     ToolUseRef, Transcoder, decide_stream_terminal, fold_history, fold_messages,
 };
-use awaken_session_application_contract::{StepOutcome, blocks_text};
+use awaken_runtime_contract::runs::{StepOutcome, blocks_text};
 use serde_json::Value;
 
 use crate::types::{UIStreamEvent, assistant_parts, history_message, history_parts};
@@ -460,7 +460,7 @@ fn parse_output(content: &[ContentBlock]) -> Value {
 /// [`fold_history`], this sink only shapes each message the AI SDK way.
 pub fn encode_history(
     messages: &[Message],
-    pending: Option<&awaken_session_application_contract::Pending>,
+    pending: Option<&awaken_runtime_contract::runs::Pending>,
 ) -> Vec<Value> {
     let mut sink = AiSdkHistorySink::new(pending);
     fold_history(messages, &mut sink);
@@ -481,7 +481,7 @@ struct AiSdkHistorySink {
 }
 
 impl AiSdkHistorySink {
-    fn new(pending: Option<&awaken_session_application_contract::Pending>) -> Self {
+    fn new(pending: Option<&awaken_runtime_contract::runs::Pending>) -> Self {
         Self {
             encoded: Vec::new(),
             pending_parts: std::collections::HashMap::new(),
@@ -551,7 +551,7 @@ mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::Id;
     use awaken_agent_contract::agent::run::{EndCause, Failure};
-    use awaken_session_application_contract::Pending;
+    use awaken_runtime_contract::runs::Pending;
     use serde_json::json;
 
     // --- live `delta()` tier (the streamed prefix) ---

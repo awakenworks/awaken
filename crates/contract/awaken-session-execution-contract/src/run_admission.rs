@@ -168,7 +168,7 @@ pub trait SessionRunActivityAdmitter: Send + Sync {
         reservation: SessionRunReservation,
         recover_only: bool,
         admitted_after_cursor: Option<u64>,
-    ) -> Result<AdmittedSessionRun, awaken_session_types::RunError>;
+    ) -> Result<AdmittedSessionRun, awaken_runtime_contract::runs::RunError>;
 }
 
 /// Closed result of reserving a dispatch row before root activity admission.
@@ -483,7 +483,7 @@ mod tests {
         ] {
             assert_eq!(
                 error.kind,
-                awaken_session_types::RunErrorKind::Unavailable,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable,
                 "{rule}"
             );
             assert_eq!(error.message, diagnostic, "{rule}");

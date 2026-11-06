@@ -130,9 +130,9 @@ async fn assert_selected_memory_content(
         api_key_id: "selected-application-api".into(),
     };
     let router = build_router(&selected, &sentinel)
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            "test".into(),
-        )))
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("test".into()),
+        ))
         .layer(axum::Extension(AuthenticatedMemoryActor(actor.clone())));
     let (status, body) = call(
         &router,

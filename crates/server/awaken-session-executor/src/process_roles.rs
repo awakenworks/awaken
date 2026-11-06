@@ -199,7 +199,7 @@ impl WorkerRoles {
         session_id: &awaken_session_types::SessionId,
         projection: &awaken_session_execution_contract::FrozenSessionProjection,
         source_prepared: bool,
-    ) -> Result<bool, awaken_session_types::RunError> {
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         // Provider retention is not quiescence of this Actor. Observe the same
         // original owner on both sides of the async read; its one activity key
         // also makes an unreadable BackgroundRuns registry refuse retirement.
@@ -211,7 +211,7 @@ impl WorkerRoles {
                     &projection.workspace_id,
                     session_id.as_str(),
                 )
-                .map_err(awaken_session_types::RunError::from)?
+                .map_err(awaken_runtime_contract::runs::RunError::from)?
         {
             return Ok(false);
         }
@@ -229,7 +229,7 @@ impl WorkerRoles {
             .environments()
             .observe_source_retention(session_id, projection, source_prepared)
             .await
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         if !retained {
             return Ok(false);
         }
@@ -250,7 +250,7 @@ impl WorkerRoles {
         session_id: &awaken_session_types::SessionId,
     ) -> Result<
         Option<awaken_session_realization::environment_owner::BoundSessionEnvironment>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         self.assembly
             .realization_executor
@@ -259,7 +259,7 @@ impl WorkerRoles {
                 realization.environment().owner.terminal_bound_environment()
             })
             .map(Option::flatten)
-            .map_err(awaken_session_types::RunError::from)
+            .map_err(awaken_runtime_contract::runs::RunError::from)
     }
 
     fn source_retention_background_busy(

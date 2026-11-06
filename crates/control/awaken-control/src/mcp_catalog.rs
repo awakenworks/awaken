@@ -11,7 +11,7 @@
 use awaken_agent_config::mcp_config::*;
 use awaken_protocol_managed::VaultState;
 use awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding;
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::{
     Json, Router,
     extract::{Extension, Path, Query, State},

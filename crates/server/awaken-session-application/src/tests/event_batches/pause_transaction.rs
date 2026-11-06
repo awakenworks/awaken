@@ -320,7 +320,10 @@ async fn budget_paused_interrupt_only_batch_is_a_no_op_at_root_admission() {
         panic!("C4 requires a committed allowance update, not a rejected update");
     };
     assert!(outcome.command_applied && outcome.changes.budget());
-    assert_eq!(source.kind, awaken_session_types::RunErrorKind::Unavailable);
+    assert_eq!(
+        source.kind,
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable
+    );
     let resumed = fixture.store.get(&session).await.unwrap();
     assert!(!awaken_session_contract::session_is_budget_paused(&resumed));
     *fixture.runtime.recovery_read_error.lock().unwrap() = Some(RunError::unavailable(
@@ -402,7 +405,7 @@ async fn awaiting_unknown_or_moving_prefix_never_becomes_a_budget_noop() {
         if cause == "unknown" {
             assert_eq!(
                 result.unwrap_err().kind,
-                awaken_session_types::RunErrorKind::Unavailable,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable,
                 "P2"
             );
             assert_eq!(fixture.store.get(&session).await.unwrap(), before);

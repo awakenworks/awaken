@@ -81,10 +81,10 @@ fn failing_authenticator(
 fn app(authenticator: Arc<dyn ApplicationAccessAuthenticator>) -> Router {
     async fn echo_run(
         Path(thread): Path<String>,
-        resolved: Option<axum::Extension<awaken_tenancy::ResolvedResourceId>>,
-        presented: Option<axum::Extension<awaken_tenancy::PresentedThreadId>>,
-        agent: Option<axum::Extension<awaken_tenancy::ResolvedAgentId>>,
-        workspace: Option<axum::Extension<awaken_tenancy::WorkspaceScope>>,
+        resolved: Option<axum::Extension<awaken_runtime_contract::runs::scope::ResolvedResourceId>>,
+        presented: Option<axum::Extension<awaken_runtime_contract::runs::scope::PresentedThreadId>>,
+        agent: Option<axum::Extension<awaken_runtime_contract::runs::scope::ResolvedAgentId>>,
+        workspace: Option<axum::Extension<awaken_runtime_contract::runs::scope::WorkspaceScope>>,
         Json(body): Json<Value>,
     ) -> Json<Value> {
         Json(json!({
@@ -98,7 +98,7 @@ fn app(authenticator: Arc<dyn ApplicationAccessAuthenticator>) -> Router {
     }
     async fn echo_history(
         Path(thread): Path<String>,
-        resolved: Option<axum::Extension<awaken_tenancy::ResolvedResourceId>>,
+        resolved: Option<axum::Extension<awaken_runtime_contract::runs::scope::ResolvedResourceId>>,
     ) -> Json<Value> {
         Json(json!({
             "thread": thread,
@@ -106,8 +106,8 @@ fn app(authenticator: Arc<dyn ApplicationAccessAuthenticator>) -> Router {
         }))
     }
     async fn echo_ag_ui(
-        resolved: Option<axum::Extension<awaken_tenancy::ResolvedResourceId>>,
-        presented: Option<axum::Extension<awaken_tenancy::PresentedThreadId>>,
+        resolved: Option<axum::Extension<awaken_runtime_contract::runs::scope::ResolvedResourceId>>,
+        presented: Option<axum::Extension<awaken_runtime_contract::runs::scope::PresentedThreadId>>,
         Json(body): Json<Value>,
     ) -> Json<Value> {
         Json(json!({
@@ -376,7 +376,9 @@ async fn exact_binding_rewrites_to_the_existing_managed_session() {
 #[tokio::test]
 async fn application_token_fences_and_projects_its_workspace() {
     async fn workspace(
-        axum::Extension(scope): axum::Extension<awaken_tenancy::WorkspaceScope>,
+        axum::Extension(scope): axum::Extension<
+            awaken_runtime_contract::runs::scope::WorkspaceScope,
+        >,
     ) -> String {
         scope.0
     }

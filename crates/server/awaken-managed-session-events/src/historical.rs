@@ -12,7 +12,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind};
-use awaken_session_application_contract::Pending;
+use awaken_runtime_contract::runs::Pending;
 
 use crate::ProjectionError;
 

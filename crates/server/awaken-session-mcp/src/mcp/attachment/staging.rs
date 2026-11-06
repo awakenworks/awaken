@@ -8,8 +8,8 @@ use crate::mcp_material::{
     McpGenerationProjection, McpProjectionState, McpStagingActivity, McpTransportMaterial,
     McpWiring,
 };
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::mcp::{McpRealizationReceipt, StageMcpAttachment};
-use awaken_session_types::RunError;
 use std::sync::Arc;
 
 #[derive(Clone, Copy)]

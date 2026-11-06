@@ -62,7 +62,10 @@ fn check(inputs: &[Input], events: &[RunLifecycleEvent], fence: u64) {
             assert_eq!(actual, expected, "exact greatest eligible commit")
         }
         (None, Err(StateError::Run(error))) => {
-            assert_eq!(error.kind, awaken_session_types::RunErrorKind::Unavailable);
+            assert_eq!(
+                error.kind,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable
+            );
             assert_eq!(error.code, "unavailable");
         }
         _ => panic!("anchor exists exactly when the fenced prefix contains eligible evidence"),

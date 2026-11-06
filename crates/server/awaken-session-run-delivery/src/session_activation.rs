@@ -9,7 +9,7 @@
 
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 /// Which Managed coordination surface a Session Run receives.

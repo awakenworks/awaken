@@ -408,9 +408,9 @@ pub struct WorkerDomainReadFailure {
 fn domain_read_failure(
     identity: &awaken_worker_registry::WorkerIdentity,
     stage: &'static str,
-    error: awaken_session_types::RunError,
+    error: awaken_runtime_contract::runs::RunError,
 ) -> axum::response::Response {
-    use awaken_session_types::RunErrorKind;
+    use awaken_runtime_contract::runs::RunErrorKind;
     let (status, kind) = match error.kind {
         RunErrorKind::BadRequest => (StatusCode::BAD_REQUEST, "bad_request"),
         RunErrorKind::Conflict => (StatusCode::CONFLICT, "conflict"),
@@ -470,7 +470,7 @@ async fn handle_domain(
             return domain_read_failure(
                 &identity,
                 "registry",
-                awaken_session_types::RunError::unavailable_classified(
+                awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "worker_identity_changed",
                     "Registry identity changed",
                 ),
@@ -480,7 +480,7 @@ async fn handle_domain(
             return domain_read_failure(
                 &identity,
                 "registry",
-                awaken_session_types::RunError::conflict_classified(
+                awaken_runtime_contract::runs::RunError::conflict_classified(
                     "worker_not_registered",
                     "Worker is not registered",
                 ),
@@ -490,7 +490,7 @@ async fn handle_domain(
             return domain_read_failure(
                 &identity,
                 "registry",
-                awaken_session_types::RunError::unavailable_classified(
+                awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "worker_registry_unavailable",
                     error.to_string(),
                 ),
@@ -508,7 +508,7 @@ async fn handle_domain(
                 return domain_read_failure(
                     &identity,
                     "physical_attempts",
-                    awaken_session_types::RunError::unavailable_classified(
+                    awaken_runtime_contract::runs::RunError::unavailable_classified(
                         "worker_physical_read_unavailable",
                         error.to_string(),
                     ),
@@ -521,7 +521,7 @@ async fn handle_domain(
             return domain_read_failure(
                 &identity,
                 "work_claims",
-                awaken_session_types::RunError::unavailable_classified(
+                awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "worker_work_read_unavailable",
                     error.to_string(),
                 ),
@@ -847,13 +847,15 @@ mod tests {
         ] {
             for (error, status, kind, code) in [
                 (
-                    awaken_session_types::RunError::bad_request("private-detail".repeat(8192)),
+                    awaken_runtime_contract::runs::RunError::bad_request(
+                        "private-detail".repeat(8192),
+                    ),
                     StatusCode::BAD_REQUEST,
                     "bad_request",
                     "invalid_request",
                 ),
                 (
-                    awaken_session_types::RunError::bad_request_classified(
+                    awaken_runtime_contract::runs::RunError::bad_request_classified(
                         "unavailable",
                         "private-detail",
                     ),
@@ -862,13 +864,13 @@ mod tests {
                     "unavailable",
                 ),
                 (
-                    awaken_session_types::RunError::conflict("private-detail"),
+                    awaken_runtime_contract::runs::RunError::conflict("private-detail"),
                     StatusCode::CONFLICT,
                     "conflict",
                     "conflict",
                 ),
                 (
-                    awaken_session_types::RunError::conflict_classified(
+                    awaken_runtime_contract::runs::RunError::conflict_classified(
                         "internal",
                         "private-detail",
                     ),
@@ -877,13 +879,13 @@ mod tests {
                     "internal",
                 ),
                 (
-                    awaken_session_types::RunError::internal("private-detail"),
+                    awaken_runtime_contract::runs::RunError::internal("private-detail"),
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal",
                     "internal",
                 ),
                 (
-                    awaken_session_types::RunError::classified(
+                    awaken_runtime_contract::runs::RunError::classified(
                         "environment_unavailable",
                         "private-detail",
                     ),
@@ -892,13 +894,13 @@ mod tests {
                     "environment_unavailable",
                 ),
                 (
-                    awaken_session_types::RunError::unavailable("private-detail"),
+                    awaken_runtime_contract::runs::RunError::unavailable("private-detail"),
                     StatusCode::SERVICE_UNAVAILABLE,
                     "unavailable",
                     "unavailable",
                 ),
                 (
-                    awaken_session_types::RunError::unavailable_classified(
+                    awaken_runtime_contract::runs::RunError::unavailable_classified(
                         "environment_rejected",
                         "private-detail",
                     ),

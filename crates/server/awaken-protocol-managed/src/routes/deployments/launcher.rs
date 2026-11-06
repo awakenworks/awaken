@@ -64,7 +64,7 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
             match limiter
                 .admit(awaken_tenancy::org_admission::OrgAdmissionRequest {
                     workspace_id: request.workspace_id.clone(),
-                    operation: awaken_tenancy::org_admission::OrgOperation::Create,
+                    operation: awaken_runtime_contract::runs::request::OrgOperation::Create,
                     resource: "sessions",
                     operation_id: Some(request.deployment_run_id.clone()),
                     source: awaken_tenancy::org_admission::OrgRequestSource::Deployment,

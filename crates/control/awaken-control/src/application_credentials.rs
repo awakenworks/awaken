@@ -18,7 +18,7 @@ use awaken_credential_contract::{
 use awaken_protocol_managed::VaultState;
 use awaken_protocol_managed::types::memory::AuthenticatedMemoryActor;
 use awaken_resource_contract::MemoryActor;
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::{
     Json, Router,
     extract::{Extension, State},

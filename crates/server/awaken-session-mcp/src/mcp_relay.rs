@@ -132,7 +132,7 @@ struct RelayState {
 /// | A2 | `Ok(Some(false))`     | no       | no       |
 /// | A3 | `Ok(None)` (absent)   | no       | no       |
 /// | A4 | `Err(_)` (unreadable) | no       | yes      |
-fn relay_admits_root(root: Result<Option<bool>, awaken_session_types::RunError>) -> bool {
+fn relay_admits_root(root: Result<Option<bool>, awaken_runtime_contract::runs::RunError>) -> bool {
     match root {
         Ok(root) => root == Some(true),
         Err(error) => {
@@ -733,10 +733,12 @@ mod tests {
         assert!(!relay_admits_root(Ok(Some(false))), "A2");
         assert!(!relay_admits_root(Ok(None)), "A3");
         assert!(
-            !relay_admits_root(Err(awaken_session_types::RunError::unavailable_classified(
-                "session_realization_lock_poisoned",
-                "installed Sessions lock poisoned",
-            ))),
+            !relay_admits_root(Err(
+                awaken_runtime_contract::runs::RunError::unavailable_classified(
+                    "session_realization_lock_poisoned",
+                    "installed Sessions lock poisoned",
+                )
+            )),
             "A4"
         );
     }

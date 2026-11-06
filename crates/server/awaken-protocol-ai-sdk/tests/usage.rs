@@ -4,9 +4,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{Pending, RunError, RunResume, Runs, StepOutcome};
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
 use serde_json::{Value, json};
@@ -15,14 +13,14 @@ use tower::ServiceExt;
 struct UsageRuntime;
 
 #[async_trait::async_trait]
-impl RunApplication for UsageRuntime {
+impl Runs for UsageRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         Ok(StepOutcome::ended(
             vec![Message::text(Id("a1".into()), Role::Assistant, "hi")],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
@@ -35,15 +33,15 @@ impl RunApplication for UsageRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -51,7 +49,7 @@ impl RunApplication for UsageRuntime {
         "test".into()
     }
 
-    async fn usage(&self, _thread: &str) -> Result<(u64, u64), RunApplicationError> {
+    async fn usage(&self, _thread: &str) -> Result<(u64, u64), RunError> {
         Ok((10, 20))
     }
 }
@@ -102,14 +100,14 @@ async fn the_finish_frame_carries_total_usage() {
 struct ResumeUsageRuntime;
 
 #[async_trait::async_trait]
-impl RunApplication for ResumeUsageRuntime {
+impl Runs for ResumeUsageRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("a resume-only request never calls run")
     }
 
@@ -119,7 +117,7 @@ impl RunApplication for ResumeUsageRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         // The resumed run finishes cleanly after answering the awaiting tool.
         Ok(StepOutcome::ended(
             vec![Message::text(Id("a2".into()), Role::Assistant, "done")],
@@ -127,7 +125,7 @@ impl RunApplication for ResumeUsageRuntime {
         ))
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(Some(Pending {
             tool_use_id: "c1".into(),
             name: "submit_answer".into(),
@@ -136,7 +134,7 @@ impl RunApplication for ResumeUsageRuntime {
         }))
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -144,7 +142,7 @@ impl RunApplication for ResumeUsageRuntime {
         "resume".into()
     }
 
-    async fn usage(&self, _thread: &str) -> Result<(u64, u64), RunApplicationError> {
+    async fn usage(&self, _thread: &str) -> Result<(u64, u64), RunError> {
         Ok((7, 11))
     }
 }

@@ -3,10 +3,10 @@
 
 use std::sync::Arc;
 
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use awaken_session_dream_contract::{
     DreamPolicy, DreamPolicyApplication, DreamPolicyApplicationError, DreamPolicyConfig,
 };
-use awaken_tenancy::WorkspaceScope;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;

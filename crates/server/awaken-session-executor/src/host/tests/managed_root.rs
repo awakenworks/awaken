@@ -74,7 +74,7 @@ impl ManagedSessionRootFixture {
         init: awaken_session_configuration_contract::SessionInit,
     ) -> Result<
         awaken_session_execution_contract::FrozenSessionProjection,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         self.install_projection(
             managed,
@@ -99,7 +99,7 @@ impl ManagedSessionRootFixture {
         projection: awaken_session_execution_contract::FrozenSessionProjection,
     ) -> Result<
         awaken_session_execution_contract::FrozenSessionProjection,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         use awaken_session_contract::SessionRepository as _;
         use awaken_session_contract::{
@@ -117,7 +117,7 @@ impl ManagedSessionRootFixture {
                     awaken_session_contract::SessionEnvironmentMaterialization::has_admitted,
                 )
         {
-            return Err(awaken_session_types::RunError::bad_request(
+            return Err(awaken_runtime_contract::runs::RunError::bad_request(
                 "fresh Root fixture requires an unmaterialized initial declaration; recovery reads the existing Root and updates require its original commands",
             ));
         }
@@ -125,7 +125,9 @@ impl ManagedSessionRootFixture {
         let mut resources = SessionResourceState::default();
         resources
             .prepare(&session_id, projection.resources.clone())
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+            .map_err(|error| {
+                awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+            })?;
         let fresh = PersistedSession::frozen_with_budget(
             session_id,
             projection.baseline.clone(),
@@ -144,7 +146,9 @@ impl ManagedSessionRootFixture {
             .repository
             .create(&projection.workspace_id, fresh, identity, Vec::new())
             .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+            .map_err(|error| {
+                awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+            })?;
         let mut root = match created {
             SessionCreateResult::Applied(root) | SessionCreateResult::Replayed(root) => root,
         };
@@ -172,21 +176,17 @@ impl ManagedSessionRootFixture {
         thread: &str,
     ) -> Result<
         awaken_session_execution_contract::FrozenSessionProjection,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         let id = awaken_session_types::SessionId::from(thread);
-        let root = self
-            .repository
-            .get(&id)
-            .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
-        let owner = self
-            .repository
-            .owner(&id)
-            .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+        let root = self.repository.get(&id).await.map_err(|error| {
+            awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+        })?;
+        let owner = self.repository.owner(&id).await.map_err(|error| {
+            awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+        })?;
         let current = root.realization.as_ref().ok_or_else(|| {
-            awaken_session_types::RunError::unavailable("fixture assignment is absent")
+            awaken_runtime_contract::runs::RunError::unavailable("fixture assignment is absent")
         })?;
         self.check_actor(current)?;
         let (resource_revision, resources) = root.resources.desired_generation();
@@ -201,7 +201,9 @@ impl ManagedSessionRootFixture {
             workspace_id: owner,
             revision: root.revision,
             baseline: root.frozen_baseline().cloned().ok_or_else(|| {
-                awaken_session_types::RunError::unavailable("fixture Root has no frozen baseline")
+                awaken_runtime_contract::runs::RunError::unavailable(
+                    "fixture Root has no frozen baseline",
+                )
             })?,
             agent_publication: frozen.published_snapshot.clone(),
             environment: root.environment.clone(),
@@ -235,40 +237,36 @@ impl ManagedSessionRootFixture {
         target_actor: (&str, &str),
     ) -> Result<
         awaken_session_execution_contract::FrozenSessionProjection,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         let id = awaken_session_types::SessionId::from(thread);
-        let owner = self
-            .repository
-            .owner(&id)
-            .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+        let owner = self.repository.owner(&id).await.map_err(|error| {
+            awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+        })?;
         if owner != template.workspace_id || target_actor.0.is_empty() || target_actor.1.is_empty()
         {
-            return Err(awaken_session_types::RunError::bad_request(
+            return Err(awaken_runtime_contract::runs::RunError::bad_request(
                 "fixture reassignment requires the original Workspace and an explicit Actor",
             ));
         }
-        let root = self
-            .repository
-            .get(&id)
-            .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+        let root = self.repository.get(&id).await.map_err(|error| {
+            awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+        })?;
         let current = root.realization.as_ref().ok_or_else(|| {
-            awaken_session_types::RunError::unavailable("fixture assignment is absent")
+            awaken_runtime_contract::runs::RunError::unavailable("fixture assignment is absent")
         })?;
         let closed = source.run_assembly.installed_sessions.realizations().read_realization(thread, |r| {
             matches!(&r.execution().authority, crate::realization_state::SessionRealizationAuthority::Closed(Some(old)) if old == current)
         }).expect("installed Sessions").unwrap_or(false);
         if !closed {
-            return Err(awaken_session_types::RunError::unavailable(
+            return Err(awaken_runtime_contract::runs::RunError::unavailable(
                 "fixture advance requires the explicitly revoked exact generation",
             ));
         }
         let epoch = awaken_lease_contract::fence::Epoch::from_persisted(current.epoch)
             .and_then(awaken_lease_contract::fence::Epoch::next)
             .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable("fixture epoch is exhausted")
+                awaken_runtime_contract::runs::RunError::unavailable("fixture epoch is exhausted")
             })?;
         let mut next = current.clone();
         next.owner = target_actor.0.into();
@@ -282,9 +280,9 @@ impl ManagedSessionRootFixture {
     fn check_actor(
         &self,
         lease: &crate::session_resource::SessionRealizationLease,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         if lease.owner != "runtime-host-test" || lease.runtime_incarnation != self.incarnation {
-            return Err(awaken_session_types::RunError::unavailable(
+            return Err(awaken_runtime_contract::runs::RunError::unavailable(
                 "fixture does not own the Root's current Actor",
             ));
         }
@@ -296,14 +294,18 @@ impl ManagedSessionRootFixture {
         owner: &str,
         root: awaken_session_contract::PersistedSession,
         lease: crate::session_resource::SessionRealizationLease,
-    ) -> Result<awaken_session_contract::PersistedSession, awaken_session_types::RunError> {
+    ) -> Result<awaken_session_contract::PersistedSession, awaken_runtime_contract::runs::RunError>
+    {
         use awaken_session_contract::SessionAggregate;
-        let mut aggregate = SessionAggregate::try_from(root)
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+        let mut aggregate = SessionAggregate::try_from(root).map_err(|error| {
+            awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+        })?;
         aggregate
             .assignment()
             .claim(lease, false)
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+            .map_err(|error| {
+                awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+            })?;
         self.commit_aggregate(owner, aggregate).await
     }
 
@@ -371,7 +373,7 @@ impl ManagedSessionRootFixture {
         desired: crate::session_resource::ResolvedSessionResources,
     ) -> Result<
         awaken_session_execution_contract::FrozenSessionProjection,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         let projection = self
             .settle_resource_stage(managed, thread, projection)
@@ -390,17 +392,17 @@ impl ManagedSessionRootFixture {
                 },
             )
             .await
-            .map_err(|error| awaken_session_types::RunError::unavailable(error.to_string()))?;
-        let root = self
-            .repository
-            .get(&id)
-            .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+            .map_err(|error| {
+                awaken_runtime_contract::runs::RunError::unavailable(error.to_string())
+            })?;
+        let root = self.repository.get(&id).await.map_err(|error| {
+            awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+        })?;
         let installed = self
             .install_committed_projection(managed, thread, projection, root.clone())
             .await?;
         let lease = root.realization.as_ref().ok_or_else(|| {
-            awaken_session_types::RunError::unavailable("fixture assignment is absent")
+            awaken_runtime_contract::runs::RunError::unavailable("fixture assignment is absent")
         })?;
         let transition = installed.resource_transition(
             awaken_session_execution_contract::FrozenResourceTransitionUse::ApplyEffects,
@@ -424,17 +426,15 @@ impl ManagedSessionRootFixture {
         projection: awaken_session_execution_contract::FrozenSessionProjection,
     ) -> Result<
         awaken_session_execution_contract::FrozenSessionProjection,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         use awaken_session_execution_contract::SessionRealizationControl as _;
         let id = awaken_session_types::SessionId::from(thread);
-        let root = self
-            .repository
-            .get(&id)
-            .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+        let root = self.repository.get(&id).await.map_err(|error| {
+            awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+        })?;
         let lease = root.realization.as_ref().ok_or_else(|| {
-            awaken_session_types::RunError::unavailable("fixture assignment is absent")
+            awaken_runtime_contract::runs::RunError::unavailable("fixture assignment is absent")
         })?;
         self.check_actor(lease)?;
         let (revision, resources) = root.resources.desired_generation();
@@ -455,7 +455,7 @@ impl ManagedSessionRootFixture {
             .expect("installed Sessions")
             .unwrap_or(false);
         if !exact_stage {
-            return Err(awaken_session_types::RunError::unavailable(
+            return Err(awaken_runtime_contract::runs::RunError::unavailable(
                 "fixture Resource settlement requires the exact current physically prepared generation",
             ));
         }
@@ -470,7 +470,9 @@ impl ManagedSessionRootFixture {
                 },
             )
             .await
-            .map_err(|error| awaken_session_types::RunError::unavailable(error.to_string()))?;
+            .map_err(|error| {
+                awaken_runtime_contract::runs::RunError::unavailable(error.to_string())
+            })?;
         self.read_projection(thread, &projection).await
     }
 
@@ -478,7 +480,8 @@ impl ManagedSessionRootFixture {
         &self,
         owner: &str,
         mut aggregate: awaken_session_contract::SessionAggregate,
-    ) -> Result<awaken_session_contract::PersistedSession, awaken_session_types::RunError> {
+    ) -> Result<awaken_session_contract::PersistedSession, awaken_runtime_contract::runs::RunError>
+    {
         use awaken_session_contract::SessionRepository as _;
         use awaken_session_contract::{
             IdempotencyRecord, SessionMutationPayload, SessionMutationResult,
@@ -499,19 +502,19 @@ impl ManagedSessionRootFixture {
             .repository
             .commit(owner, mutation)
             .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?
-        {
+            .map_err(|error| {
+                awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+            })? {
             SessionMutationResult::Applied { .. } | SessionMutationResult::Replayed { .. } => {}
             other => {
-                return Err(awaken_session_types::RunError::unavailable(format!(
-                    "fixture Root command did not commit: {other:?}"
-                )));
+                return Err(awaken_runtime_contract::runs::RunError::unavailable(
+                    format!("fixture Root command did not commit: {other:?}"),
+                ));
             }
         }
-        self.repository
-            .get(&id)
-            .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
+        self.repository.get(&id).await.map_err(|error| {
+            awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+        })
     }
 
     pub(super) async fn install_committed_projection(
@@ -522,13 +525,13 @@ impl ManagedSessionRootFixture {
         root: awaken_session_contract::PersistedSession,
     ) -> Result<
         awaken_session_execution_contract::FrozenSessionProjection,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         let lease = root
             .realization
             .as_ref()
             .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable("fixture assignment is absent")
+                awaken_runtime_contract::runs::RunError::unavailable("fixture assignment is absent")
             })?
             .clone();
         self.check_actor(&lease)?;
@@ -543,24 +546,20 @@ impl ManagedSessionRootFixture {
         template: &awaken_session_execution_contract::FrozenSessionProjection,
     ) -> Result<
         awaken_session_execution_contract::FrozenSessionProjection,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         let id = awaken_session_types::SessionId::from(thread);
-        let owner = self
-            .repository
-            .owner(&id)
-            .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+        let owner = self.repository.owner(&id).await.map_err(|error| {
+            awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+        })?;
         if owner != template.workspace_id {
-            return Err(awaken_session_types::RunError::bad_request(
+            return Err(awaken_runtime_contract::runs::RunError::bad_request(
                 "fixture template does not name the original Workspace",
             ));
         }
-        let root = self
-            .repository
-            .get(&id)
-            .await
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+        let root = self.repository.get(&id).await.map_err(|error| {
+            awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+        })?;
         Self::project_root(template.clone(), &root)
     }
 
@@ -569,10 +568,12 @@ impl ManagedSessionRootFixture {
         root: &awaken_session_contract::PersistedSession,
     ) -> Result<
         awaken_session_execution_contract::FrozenSessionProjection,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         projection.baseline = root.frozen_baseline().cloned().ok_or_else(|| {
-            awaken_session_types::RunError::unavailable("fixture Root has no frozen baseline")
+            awaken_runtime_contract::runs::RunError::unavailable(
+                "fixture Root has no frozen baseline",
+            )
         })?;
         let (resource_revision, desired) = root.resources.desired_generation();
         let (previous_revision, previous) = root.resources.active_generation();
@@ -603,10 +604,10 @@ impl ManagedSessionRootFixture {
         expected: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
         awaken_session_execution_contract::FrozenSessionProjection,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         if root.realization.as_ref() != Some(expected) {
-            return Err(awaken_session_types::RunError::unavailable(
+            return Err(awaken_runtime_contract::runs::RunError::unavailable(
                 "fixture installation differs from the explicitly committed Actor",
             ));
         }
@@ -633,11 +634,11 @@ impl ManagedSessionRootFixture {
                         self.clock.now_ms(),
                     )
                     .map_err(|error| {
-                        awaken_session_types::RunError::bad_request(error.to_string())
+                        awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
                     })?
                     .observed(
                         awaken_authority_clock::authority_proof_started().map_err(|error| {
-                            awaken_session_types::RunError::unavailable(error.to_string())
+                            awaken_runtime_contract::runs::RunError::unavailable(error.to_string())
                         })?,
                     ),
                 // Fixture installation establishes Root/lease inputs only.

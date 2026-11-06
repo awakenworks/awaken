@@ -11,7 +11,8 @@ use awaken_iam_contract::{AccountId, AuthorizationDecision, PrincipalRef};
 use awaken_iam_host::AuthReject;
 use awaken_protocol_managed::AdmittedPrivateSessionRequest;
 use awaken_session_contract::SessionPrivateBinding;
-use awaken_tenancy::{WorkspaceScope, workspace_purpose::WorkspacePurposeUnavailable};
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
+use awaken_tenancy::workspace_purpose::WorkspacePurposeUnavailable;
 use axum::{
     Router,
     extract::{Request, State},

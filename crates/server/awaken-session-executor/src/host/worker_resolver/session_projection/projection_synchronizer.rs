@@ -33,7 +33,7 @@ mod tests {
             intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
         ) -> Result<
             awaken_session_contract::SessionEnvironmentEffectAuthorization,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             self.requested_kinds
                 .lock()
@@ -49,8 +49,10 @@ mod tests {
         async fn persist(
             &self,
             _receipt: awaken_session_contract::SessionEnvironmentReceipt,
-        ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
-        {
+        ) -> Result<
+            awaken_session_contract::SessionEnvironmentState,
+            awaken_runtime_contract::runs::RunError,
+        > {
             panic!("legacy aggregate-Unowned recovery must not persist a durable binding")
         }
     }

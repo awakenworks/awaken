@@ -33,7 +33,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
         intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         self.control
             .authorize_session_environment_effect(&self.identity, intent)
@@ -43,8 +43,10 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
     async fn persist(
         &self,
         receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentState,
+        awaken_runtime_contract::runs::RunError,
+    > {
         self.control
             .persist_session_environment_receipt(&self.identity, &receipt)
             .await

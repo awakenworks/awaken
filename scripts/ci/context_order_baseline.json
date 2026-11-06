@@ -2,7 +2,6 @@
   "upward-edges": {
     "awaken-credential-vault -> awaken-provisioning-contract": "credential custody receives credential-contract values; Execution translates (ADR-0088 decision 4)",
     "awaken-provisioning-contract -> awaken-resource-contract": "resource reference values move with the environment contract they describe",
-    "awaken-run-executor-a2a -> awaken-protocol-a2a": "shared wire types move down into a contract; the executor stops depending on the serving adapter",
     "awaken-run-executor-acp -> awaken-protocol-acp": "shared wire types move down into a contract; the executor stops depending on the serving adapter",
     "awaken-dispatch -> awaken-dispatch-execution": "slice A / S3: dispatch hands work through a port Execution implements",
     "awaken-session-application -> awaken-environment-contract": "W7: the Session names environments through identity and reference values a small environment contract provides",

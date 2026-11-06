@@ -18,11 +18,12 @@ use awaken_coordinator_client::{WorkerControlClient, WorkerTaskControlClient};
 use awaken_dispatch_http::worker_task_control_router;
 use awaken_dispatch_testkit::worker_http::ready_worker;
 use awaken_lease_testkit::ManualClock;
+use awaken_runtime_contract::runs::{RunError, RunErrorKind};
+
 use awaken_session_application_contract::{
-    PrivateTaskInput, RegisteredTaskControl, RunApplicationError, SessionRunBackgroundApplication,
-    TaskAttention, TaskAttentionAck, TaskReadPartition, TaskTenureRead, registered_task_holder,
+    PrivateTaskInput, RegisteredTaskControl, SessionRunBackgroundApplication, TaskAttention,
+    TaskAttentionAck, TaskReadPartition, TaskTenureRead, registered_task_holder,
 };
-use awaken_session_types::{RunError, RunErrorKind};
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 /// The Coordinator's Session application, recording what it admits.
@@ -60,14 +61,14 @@ impl SessionRunBackgroundApplication for RecordingApplication {
         _agent: Option<String>,
         _messages: Vec<Message>,
         _traceparent: Option<String>,
-    ) -> Result<RunId, RunApplicationError> {
+    ) -> Result<RunId, RunError> {
         panic!("Task attention never submits an ordinary background Run")
     }
 
     async fn task_attention_receipt(
         &self,
         attention: TaskAttention,
-    ) -> Result<Option<TaskAttentionAck>, RunApplicationError> {
+    ) -> Result<Option<TaskAttentionAck>, RunError> {
         for (original, acknowledged) in self.attentions.lock().unwrap().iter() {
             if *acknowledged && original.operation_id == attention.operation_id {
                 if original != &attention {
@@ -84,7 +85,7 @@ impl SessionRunBackgroundApplication for RecordingApplication {
     async fn submit_task_attention(
         &self,
         attention: TaskAttention,
-    ) -> Result<TaskAttentionAck, RunApplicationError> {
+    ) -> Result<TaskAttentionAck, RunError> {
         let index = {
             let mut calls = self.attentions.lock().unwrap();
             let index = calls.len();

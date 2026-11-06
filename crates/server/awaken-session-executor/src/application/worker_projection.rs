@@ -23,7 +23,7 @@ pub(crate) async fn realize_session(
         .sessions()
         .acquire_realization(session_id.as_str())
         .await
-        .map_err(awaken_session_types::RunError::from)?;
+        .map_err(awaken_runtime_contract::runs::RunError::from)?;
     let synchronizer = WorkerProjectionSynchronizer::for_directive(
         host,
         &directive,
@@ -38,7 +38,7 @@ pub(crate) async fn realize_session(
         synchronizer,
         awaken_authority_clock::authority_proof_started().map_err(|error| {
             awaken_session_execution_contract::SessionRealizationDriveError::Effect(
-                awaken_session_types::RunError::unavailable(error.to_string()).into(),
+                awaken_runtime_contract::runs::RunError::unavailable(error.to_string()).into(),
             )
         })?,
         &realization,

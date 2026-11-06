@@ -2,10 +2,12 @@
 // @formal owner crates/server/awaken-session-executor/src/process_roles.rs
 // @formal reason: cfg(test) only; strict unused-role ports for existing mechanism fixtures. Production startup tests use the public complete constructor.
 use awaken_agent_contract::agent::{message::Message, run::Id as RunId, thread::Id as ThreadId};
-use awaken_session_application_contract::{RunApplicationError, SessionRunBackgroundApplication};
+use awaken_runtime_contract::runs::RunError;
+
+use awaken_session_application_contract::SessionRunBackgroundApplication;
 use awaken_session_contract::SessionThreadToolReplyCommand;
 use awaken_session_execution_contract::*;
-use awaken_session_types::{RunError, SessionId};
+use awaken_session_types::SessionId;
 use std::sync::{Arc, OnceLock};
 
 pub(crate) struct UnusedApplications {
@@ -99,13 +101,13 @@ impl SessionRunBackgroundApplication for UnusedApplications {
         _: Option<String>,
         _: Vec<Message>,
         _: Option<String>,
-    ) -> Result<RunId, RunApplicationError> {
+    ) -> Result<RunId, RunError> {
         panic!("unused background submission role was invoked")
     }
     async fn submit_task_attention(
         &self,
         _: awaken_session_application_contract::TaskAttention,
-    ) -> Result<awaken_session_application_contract::TaskAttentionAck, RunApplicationError> {
+    ) -> Result<awaken_session_application_contract::TaskAttentionAck, RunError> {
         panic!("unused Task attention role was invoked")
     }
 
@@ -115,7 +117,7 @@ impl SessionRunBackgroundApplication for UnusedApplications {
         _: awaken_session_application_contract::TaskAttention,
     ) -> Result<
         Option<awaken_session_application_contract::TaskAttentionAck>,
-        awaken_session_application_contract::RunApplicationError,
+        awaken_runtime_contract::runs::RunError,
     > {
         panic!("unused Task attention receipt role was invoked")
     }

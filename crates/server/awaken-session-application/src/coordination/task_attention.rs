@@ -5,8 +5,8 @@
 use super::{MAX_UNARCHIVED_AGENT_CHILD_THREADS, SessionCoordination};
 use crate::SessionRootReads as _;
 use awaken_agent_contract::{RunId, ThreadId};
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_execution_contract::{CoordinatedRunIntent, session_run_activity_operation_id};
-use awaken_session_types::RunError;
 
 impl SessionCoordination {
     /// Build the original command only from committed membership and the

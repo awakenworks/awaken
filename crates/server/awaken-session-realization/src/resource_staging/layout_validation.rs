@@ -199,7 +199,7 @@ impl ResourceStaging {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         let environments = peers.environments;
         let staging = self;
         let environment = environment_projection::project_environment(&layout.environment);
@@ -211,7 +211,9 @@ impl ResourceStaging {
                 None,
                 None,
             )
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+            .map_err(|error| {
+                awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+            })?;
         let result =
             if layout.runtime_placement == awaken_session_types::SessionRuntimePlacement::Worker {
                 staging.validate_structural_binding_layout(
@@ -231,7 +233,9 @@ impl ResourceStaging {
                         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                     )
                 }
-                .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+                .map_err(|error| {
+                    awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+                })?;
                 staging.validate_binding_layout(
                     thread,
                     &layout.resources,
@@ -241,7 +245,9 @@ impl ResourceStaging {
                     Some(&environment),
                 )
             };
-        result.map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
+        result.map_err(|error| {
+            awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+        })
     }
 
     pub fn validate_effective_resource_layout(
@@ -249,14 +255,18 @@ impl ResourceStaging {
         peers: crate::peers::Peers<'_>,
         thread: &str,
         resources: &session_resource::ResolvedSessionResources,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         let environments = peers.environments;
         let staging = self;
         let provider = environments
             .projected_session_environment_provider(thread, None)
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+            .map_err(|error| {
+                awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+            })?;
         staging
             .validate_resource_layout(thread, resources, provider, None, None, None)
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
+            .map_err(|error| {
+                awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+            })
     }
 }

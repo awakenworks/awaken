@@ -30,9 +30,6 @@
     "WorkerContentAdapters": 1
   },
   "bare-runtime": {
-    "awaken-protocol-a2a::Runtime": 1,
-    "awaken-protocol-ag-ui::Runtime": 1,
-    "awaken-protocol-ai-sdk::Runtime": 1,
     "awaken-session-executor::Runtime": 1,
     "awaken-session-mcp::Runtime": 1
   },

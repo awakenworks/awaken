@@ -2,7 +2,7 @@
 //! classes and stable codes the Runtime Host's own error uses, so the Host's
 //! conversion and the Managed `RunError` projection below stay lossless.
 
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 /// A Session MCP failure classified by fault: `BadRequest` is the caller's,
 /// `Internal` the runtime's, `Unavailable` retryable.

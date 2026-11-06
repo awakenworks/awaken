@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use awaken_dispatch_execution::session_dispatch::DispatchPreparation;
+use awaken_runtime_contract::runs::RunError;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation};
 use awaken_session_run_delivery::{ChildRunInputs, SessionLowering};
-use awaken_session_types::RunError;
 
 use crate::SessionExecutionError;
 use crate::session_execution_error::to_run_error;

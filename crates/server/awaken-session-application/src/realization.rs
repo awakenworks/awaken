@@ -10,6 +10,7 @@ use awaken_time::WallClockExt as _;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::mcp::{
     McpAttachmentState, McpGenerationRef, StageMcpAttachment,
 };
@@ -25,7 +26,6 @@ use awaken_session_execution_contract::{
     SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
     SessionRealizationDriveError,
 };
-use awaken_session_types::RunError;
 
 use super::SessionMutationError;
 use crate::{creation::DurableSessionRoot, projection};

@@ -169,7 +169,7 @@ impl BoundaryFixture {
 fn assert_classified(row: &str, error: &RunError, expected: &str) {
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "{row}/O0"
     );
     assert_eq!(error.message, expected, "{row}/O0 stable class text");

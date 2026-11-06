@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind};
-use awaken_session_application_contract::Pending;
+use awaken_runtime_contract::runs::Pending;
 use awaken_session_contract::SessionAgentRunBoundary;
 use awaken_session_contract::SessionEventBatch;
 use awaken_session_contract::{PersistedSession, SessionExecutionState, SessionRuntimeInterval};

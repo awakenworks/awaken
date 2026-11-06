@@ -13,11 +13,11 @@ use awaken_dispatch_contract::{
 };
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_dispatch_execution::{DispatchPublication, session_dispatch::DispatchPreparation};
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_execution_contract::{
     AdmitPreparedSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunActivityAdmitter,
     SessionRunReservation,
 };
-use awaken_session_types::RunError;
 
 use crate::session_run_activation::{activate_session_run_reservation, read_settled_phase};
 use crate::{CompletionRegistry, SessionCommit, activate_and_await_session_run};

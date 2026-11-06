@@ -180,7 +180,10 @@ async fn invalid_commands_return_the_contracted_first_error_without_effects() {
             let error = rejected_create(&fixture, row, inherited, durable_only).await;
             assert_eq!(
                 (error.kind, error.code.as_str()),
-                (awaken_session_types::RunErrorKind::BadRequest, expected),
+                (
+                    awaken_runtime_contract::runs::RunErrorKind::BadRequest,
+                    expected
+                ),
                 "{row}/O0 typed first error under wording {wording:?}"
             );
             typed.push((row, error.kind, error.code.clone()));

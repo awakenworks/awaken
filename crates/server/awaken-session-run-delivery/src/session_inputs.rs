@@ -10,8 +10,8 @@ use awaken_agent_contract::agent::awaiting::{AwaitTarget, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
+use awaken_runtime_contract::runs::RunError;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation};
-use awaken_session_types::RunError;
 use awaken_tool_contract::tool::ToolOutput;
 
 /// The resume activation of `ticket`'s Run on `thread`: the ticket's own

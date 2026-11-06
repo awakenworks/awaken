@@ -71,9 +71,13 @@ pub(crate) use awaken_agent_contract::McpTarget;
 pub(crate) use awaken_agent_contract::stable_fingerprint;
 #[cfg(test)]
 pub(crate) use awaken_environment_contract::EnvironmentRevision;
+pub(crate) use awaken_runtime_contract::runs::RunError;
+#[cfg(test)]
+pub(crate) use awaken_runtime_contract::runs::RunErrorKind;
+pub(crate) use awaken_runtime_contract::runs::{DelegatedRun, Pending, StepOutcome};
 pub(crate) use awaken_session_application_contract::{
-    DelegatedRun, DelegatedRunSnapshot, Pending, SessionBudgetResumeDelivery,
-    SessionBudgetResumeDisposition, SessionBudgetResumeTicket, StepOutcome,
+    DelegatedRunSnapshot, SessionBudgetResumeDelivery, SessionBudgetResumeDisposition,
+    SessionBudgetResumeTicket,
 };
 #[cfg(feature = "test-support")]
 pub(crate) use awaken_session_configuration_contract::mcp::McpGeneration;
@@ -99,9 +103,6 @@ pub(crate) use awaken_session_contract::{
     SessionRepositoryPublicationReceipt, SessionRepositoryPublicationRejection,
     SessionTerminalCleanupAction, SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
 };
-pub(crate) use awaken_session_types::RunError;
-#[cfg(test)]
-pub(crate) use awaken_session_types::RunErrorKind;
 pub(crate) use awaken_session_types::{SessionId, SessionRevision, SessionRuntimePlacement};
 pub(crate) use {
     awaken_provisioning_contract::SandboxCheckpointRef,

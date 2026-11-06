@@ -413,7 +413,7 @@ pub struct QueueStats {
 ///
 /// ```compile_fail,E0277
 /// use awaken_executable_environment_contract::WorkQueueError;
-/// fn no_implicit_session_conversion(error: WorkQueueError) -> awaken_session_types::RunError {
+/// fn no_implicit_session_conversion(error: WorkQueueError) -> awaken_runtime_contract::runs::RunError {
 ///     error.into()
 /// }
 /// ```

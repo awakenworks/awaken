@@ -4,7 +4,7 @@
 // @formal reason: path. This is a product-requirement classification, not a direct proof claim.
 //! The Session application's `ThreadReads` role, served by [`CommittedReads`].
 
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use super::CommittedReads;
 

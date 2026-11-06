@@ -3,8 +3,8 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Managed Session command failures and their protocol-facing classification.
 
+use awaken_runtime_contract::runs::{RunError, RunErrorKind};
 use awaken_session_application_contract::LiveInboxError;
-use awaken_session_types::{RunError, RunErrorKind};
 
 const SESSION_PROJECTION_RECOVERY_REQUIRED_CODE: &str = "session_projection_recovery_required";
 const SESSION_EVENT_HISTORY_CONFLICT_CODE: &str = "session_event_history_conflict";

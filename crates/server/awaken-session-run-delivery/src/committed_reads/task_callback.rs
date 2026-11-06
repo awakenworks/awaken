@@ -11,7 +11,8 @@ use super::committed_runs::recorded_delegation_registries_from_commands;
 use awaken_agent_contract::ThreadId;
 use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource as _;
-use awaken_session_types::{RunError, SessionId};
+use awaken_runtime_contract::runs::RunError;
+use awaken_session_types::SessionId;
 use std::collections::{HashMap, HashSet};
 
 impl CommittedReads {

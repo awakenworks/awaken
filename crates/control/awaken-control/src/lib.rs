@@ -259,8 +259,8 @@ async fn durable_management_audit(
     // request before this layer runs.
     let Some(scope) = parts
         .extensions
-        .get::<awaken_tenancy::WorkspaceScope>()
-        .and_then(awaken_tenancy::WorkspaceScope::non_empty)
+        .get::<awaken_runtime_contract::runs::scope::WorkspaceScope>()
+        .and_then(awaken_runtime_contract::runs::scope::WorkspaceScope::non_empty)
         .map(ScopeId::from)
     else {
         return (
@@ -726,7 +726,7 @@ fn workspace_context_router(organization: String, identity_mode: &'static str) -
     Router::new().route(
         "/v1/config/workspace-context",
         get(
-            move |Extension(scope): Extension<awaken_tenancy::WorkspaceScope>,
+            move |Extension(scope): Extension<awaken_runtime_contract::runs::scope::WorkspaceScope>,
                   principal: Option<Extension<crate::authz::AuthedPrincipal>>| {
                 let organization_id = organization.clone();
                 async move {

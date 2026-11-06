@@ -8,7 +8,7 @@
 use super::error::run_error;
 use super::{McpErrorKind, mcp_transport_error};
 use awaken_ext_mcp::McpTransportError;
-use awaken_session_types::RunErrorKind;
+use awaken_runtime_contract::runs::RunErrorKind;
 
 /// One row: a typed fault whose text deliberately names another class.
 struct Row {

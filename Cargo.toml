@@ -101,10 +101,10 @@ awaken-ext-state-machine = { path = "crates/runtime/awaken-ext-state-machine", v
 awaken-ext-compact = { path = "crates/runtime/awaken-ext-compact", version = "2.0.0" }
 awaken-ext-memory = { path = "crates/runtime/awaken-ext-memory", version = "2.0.0" }
 awaken-ext-builtin-tools = { path = "crates/runtime/awaken-ext-builtin-tools", version = "2.0.0" }
-awaken-protocol-a2a = { path = "crates/server/awaken-protocol-a2a" }
+awaken-protocol-a2a = { path = "crates/server/awaken-protocol-a2a", version = "0.0.0" }
 awaken-protocol-mcp = { path = "crates/server/awaken-protocol-mcp" }
-awaken-protocol-ag-ui = { path = "crates/server/awaken-protocol-ag-ui" }
-awaken-protocol-ai-sdk = { path = "crates/server/awaken-protocol-ai-sdk" }
+awaken-protocol-ag-ui = { path = "crates/server/awaken-protocol-ag-ui", version = "1.0.0" }
+awaken-protocol-ai-sdk = { path = "crates/server/awaken-protocol-ai-sdk", version = "1.0.0" }
 awaken-protocol-managed = { path = "crates/server/awaken-protocol-managed" }
 awaken-protocol-managed-testkit = { path = "crates/devtools/awaken-protocol-managed-testkit" }
 awaken-session-executor-testkit = { path = "crates/devtools/awaken-session-executor-testkit", default-features = false }

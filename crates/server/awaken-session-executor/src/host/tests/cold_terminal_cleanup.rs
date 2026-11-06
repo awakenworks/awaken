@@ -1247,7 +1247,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         .expect_err("A2 running work cannot archive");
     assert_eq!(
         rejected.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "A2/E2"
     );
     assert_eq!(

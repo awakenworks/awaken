@@ -25,7 +25,7 @@ use std::collections::HashSet;
 /// use std::sync::Arc;
 /// use awaken_session_contract::{SessionRepository, SessionRepositoryReads};
 /// use awaken_session_contract::SessionScanQuery;
-/// use awaken_session_types::SessionId;
+/// use awaken_session_types::{SessionId};
 /// async fn observe(repo: Arc<dyn SessionRepository>, id: &SessionId) {
 ///     let reader: Arc<dyn SessionRepositoryReads> = repo;
 ///     let _ = reader.get(id).await;

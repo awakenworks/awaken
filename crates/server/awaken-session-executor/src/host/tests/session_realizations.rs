@@ -258,7 +258,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
             .expect("actual child context");
         host.run_assembly.installed_sessions
             .install_run(child_id, |run| run.context = Some(child.clone()));
-        let delegated = |status| awaken_session_application_contract::DelegatedRun {
+        let delegated = |status| awaken_runtime_contract::runs::DelegatedRun {
             run_id: RunId(child_id.into()),
             parent_call_id: "query-parent-call".into(),
             agent_id: "query-child-agent".into(),
@@ -688,10 +688,10 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
                 "forbidden-key".into(),
             )
             .unwrap_err();
-        let failed = awaken_session_types::RunError::from(failed);
+        let failed = awaken_runtime_contract::runs::RunError::from(failed);
         assert_eq!(
             failed.kind,
-            awaken_session_types::RunErrorKind::Unavailable,
+            awaken_runtime_contract::runs::RunErrorKind::Unavailable,
             "S2/R5 {rule}"
         );
         assert_eq!(

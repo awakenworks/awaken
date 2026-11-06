@@ -13,6 +13,7 @@ authority = "environment"
 separation = "sole-in-layer"
 
 [dependencies]
+awaken-runtime-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-agent-contract.workspace = true
 # Per-Session Work bearer entropy is provided by the platform CSPRNG seam.

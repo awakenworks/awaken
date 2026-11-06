@@ -2,11 +2,11 @@
 // @formal reason: The SDK Direct attachment role retains the original MCP relay, canonical states and staging context, and borrows its selected credential capabilities per call. The existing lifecycle owns admission, publication and drain.
 //! Owned SDK Direct attachment effects over the selected MCP lifecycle inputs.
 use crate::{McpCredentialMaterialization, McpSessions, McpStagingSession, SessionMcpStates};
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::mcp::{
     McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
 };
 use awaken_session_execution_contract::McpAttachmentRealizer;
-use awaken_session_types::RunError;
 use std::sync::Arc;
 
 /// SDK Direct admission, distinct from a Worker command assigned to a Session.

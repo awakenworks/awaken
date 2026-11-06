@@ -28,9 +28,9 @@ macro_rules! neutral_role {
                 &self,
             ) -> Result<
                 awaken_lease_contract::authority::AuthorityProofStarted,
-                ::awaken_session_types::RunError,
+                ::awaken_runtime_contract::runs::RunError,
             > {
-                Err(::awaken_session_types::RunError::unavailable(
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "runtime does not provide an execution authority clock",
                 ))
             }
@@ -44,8 +44,8 @@ macro_rules! neutral_role {
                 _owner: &str,
                 _runtime_incarnation: &str,
                 _timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-            ) -> Result<usize, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<usize, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "runtime does not reconcile realization time proofs",
                 ))
             }
@@ -60,7 +60,7 @@ macro_rules! neutral_role {
                 _projection: $crate::FrozenSessionProjection,
                 _mode: $crate::SessionProjectionInstallMode,
             ) -> Result<(), $crate::SessionRealizationEffectFailure> {
-                Err((::awaken_session_types::RunError::unavailable(
+                Err((::awaken_runtime_contract::runs::RunError::unavailable(
                     "runtime does not implement complete Session projection installation",
                 )).into())
             }
@@ -72,8 +72,8 @@ macro_rules! neutral_role {
                 &self,
                 _thread: &str,
                 _lease: $crate::ObservedSessionRealizationLease,
-            ) -> Result<(), ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "runtime does not implement Session realization lease renewal",
                 ))
             }
@@ -86,7 +86,7 @@ macro_rules! neutral_role {
                 &self,
                 _thread: &str,
                 _lease: &::awaken_session_configuration_contract::resource::SessionRealizationLease,
-            ) -> Result<(), ::awaken_session_types::RunError> {
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
                 Ok(())
             }
 
@@ -105,14 +105,14 @@ macro_rules! neutral_role {
                 &self,
                 _thread: &str,
                 layout: &::awaken_session_configuration_contract::SessionSandboxLayout,
-            ) -> Result<(), ::awaken_session_types::RunError> {
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
                 if layout.resources.iter().any(|binding| {
                     matches!(
                         binding.target,
                         awaken_resource_contract::InputResourceId::Repository(_)
                     )
                 }) {
-                    return Err(::awaken_session_types::RunError::unavailable(
+                    return Err(::awaken_runtime_contract::runs::RunError::unavailable(
                         "runtime does not implement Repository Sandbox-layout validation",
                     ));
                 }
@@ -125,8 +125,8 @@ macro_rules! neutral_role {
                 &self,
                 _thread: &str,
                 _request: ::awaken_session_contract::SandboxCheckpointRequest,
-            ) -> Result<::awaken_session_contract::CheckpointReceipt, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable_classified(
+            ) -> Result<::awaken_session_contract::CheckpointReceipt, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",
                     "Runtime does not implement Session environment checkpointing",
                 ))
@@ -141,8 +141,8 @@ macro_rules! neutral_role {
                 _preparation: &::awaken_session_contract::SourceReleasePreparationEffect,
                 _generation: &::awaken_session_contract::SandboxGeneration,
                 _source_binding: &str,
-            ) -> Result<::awaken_session_contract::SourceReleasePreparedReceipt, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable_classified(
+            ) -> Result<::awaken_session_contract::SourceReleasePreparedReceipt, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",
                     "Runtime does not implement checkpoint source release preparation",
                 ))
@@ -154,8 +154,8 @@ macro_rules! neutral_role {
                 &self,
                 _thread: &str,
                 _disposal: &::awaken_session_contract::SourceReleaseDisposal,
-            ) -> Result<::awaken_session_contract::SourceDisposedReceipt, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable_classified(
+            ) -> Result<::awaken_session_contract::SourceDisposedReceipt, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",
                     "Runtime does not implement prepared checkpoint source disposal",
                 ))
@@ -165,8 +165,8 @@ macro_rules! neutral_role {
             async fn restore_checkpointed_session_environment(
                 &self,
                 _request: ::awaken_provisioning_contract::SandboxRestoreRequest,
-            ) -> Result<::awaken_session_contract::RestoreReceipt, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable_classified(
+            ) -> Result<::awaken_session_contract::RestoreReceipt, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",
                     "Runtime does not implement Session environment restore",
                 ))
@@ -178,8 +178,8 @@ macro_rules! neutral_role {
                 &self,
                 _thread: &str,
                 _checkpoint: &::awaken_provisioning_contract::SandboxCheckpointRef,
-            ) -> Result<(), ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable_classified(
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",
                     "Runtime does not implement Session environment checkpoint deletion",
                 ))
@@ -193,7 +193,7 @@ macro_rules! neutral_role {
                 &self,
                 _thread: &str,
                 _transition: &::awaken_session_configuration_contract::resource::SessionResourceTransition,
-            ) -> Result<(), ::awaken_session_types::RunError> {
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
                 Ok(())
             }
 
@@ -208,8 +208,8 @@ macro_rules! neutral_role {
                 &self,
                 _command: ::awaken_session_contract::SessionRepositoryPublicationCommand,
                 _lease: &::awaken_session_configuration_contract::resource::SessionRealizationLease,
-            ) -> Result<::awaken_session_contract::SessionRepositoryPublicationEffect, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable_classified(
+            ) -> Result<::awaken_session_contract::SessionRepositoryPublicationEffect, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "session_repository_publication_effect_runtime_unsupported",
                     "runtime does not implement realization-fenced terminal Repository publication",
                 ))
@@ -221,8 +221,8 @@ macro_rules! neutral_role {
             async fn dispose_terminal_cleanup_for_effect(
                 &self,
                 _effect: ::awaken_session_contract::SessionTerminalCleanupDisposalEffect,
-            ) -> Result<::awaken_session_contract::SessionCleanupDisposalReceipt, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable_classified(
+            ) -> Result<::awaken_session_contract::SessionCleanupDisposalReceipt, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "session_terminal_cleanup_disposal_runtime_unsupported",
                     "runtime does not implement realization-fenced Session cleanup disposal",
                 ))
@@ -238,8 +238,8 @@ macro_rules! neutral_role {
             async fn reserve_session_run(
                 &self,
                 _command: $crate::AdmitSessionRun,
-            ) -> Result<$crate::SessionRunReservation, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<$crate::SessionRunReservation, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "runtime does not implement durable Session Run reservations",
                 ))
             }
@@ -248,8 +248,8 @@ macro_rules! neutral_role {
                 &self,
                 _command: $crate::AdmitPreparedSessionRun,
                 _activity: &dyn $crate::SessionRunActivityAdmitter,
-            ) -> Result<::awaken_agent_contract::agent::run::RunState, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<::awaken_agent_contract::agent::run::RunState, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "runtime does not implement prepared Session Run admission",
                 ))
             }
@@ -259,8 +259,8 @@ macro_rules! neutral_role {
             async fn activate_session_run(
                 &self,
                 _delivery: $crate::SessionRunDelivery,
-            ) -> Result<$crate::SessionRunActivation, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<$crate::SessionRunActivation, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "runtime does not implement durable Session Run activation",
                 ))
             }
@@ -278,8 +278,8 @@ macro_rules! neutral_role {
                 _admission: $crate::AdmittedSessionRun,
                 _input_message_ids: Vec<String>,
                 _sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-            ) -> Result<::awaken_session_application_contract::StepOutcome, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<::awaken_runtime_contract::runs::StepOutcome, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "runtime does not implement durable Session Run observation",
                 ))
             }
@@ -295,8 +295,8 @@ macro_rules! neutral_role {
             async fn admit_coordinated_run(
                 &self,
                 _command: $crate::CoordinatedRunCommand,
-            ) -> Result<$crate::SessionAgentMessageReceipt, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<$crate::SessionAgentMessageReceipt, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "asynchronous Agent coordination is unsupported",
                 ))
             }
@@ -312,7 +312,7 @@ macro_rules! neutral_role {
                 &self,
                 _session_id: &::awaken_session_types::SessionId,
                 _thread_id: &str,
-            ) -> Result<Option<Box<dyn $crate::SessionThreadLiveSubscription>>, ::awaken_session_types::RunError>
+            ) -> Result<Option<Box<dyn $crate::SessionThreadLiveSubscription>>, ::awaken_runtime_contract::runs::RunError>
             {
                 Ok(None)
             }
@@ -323,8 +323,8 @@ macro_rules! neutral_role {
             async fn continue_session_agent_report(
                 &self,
                 _command: $crate::SessionAgentReportContinuation,
-            ) -> Result<(), ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "asynchronous Agent report continuation is unsupported",
                 ))
             }
@@ -335,8 +335,8 @@ macro_rules! neutral_role {
                 &self,
                 _session_id: &::awaken_session_types::SessionId,
                 _child_thread_id: &awaken_agent_contract::agent::thread::Id,
-            ) -> Result<(), ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "coordinated Session Thread interruption is unsupported",
                 ))
             }
@@ -348,8 +348,8 @@ macro_rules! neutral_role {
             async fn reply_session_thread_tool(
                 &self,
                 _delivery: ::awaken_session_contract::SessionThreadToolReplyDelivery,
-            ) -> Result<(), ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "Session Thread tool replies are unsupported",
                 ))
             }
@@ -362,8 +362,8 @@ macro_rules! neutral_role {
                 &self,
                 _delivery: ::awaken_session_contract::SessionThreadToolReplyDelivery,
         _stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-            ) -> Result<::awaken_session_application_contract::StepOutcome, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<::awaken_runtime_contract::runs::StepOutcome, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "Session Thread tool reply observation is unsupported",
                 ))
             }
@@ -375,8 +375,8 @@ macro_rules! neutral_role {
                 &self,
                 _session_id: &::awaken_session_types::SessionId,
                 _thread_id: &str,
-            ) -> Result<(), ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "durable coordinated Thread archive is unsupported",
                 ))
             }
@@ -386,7 +386,7 @@ macro_rules! neutral_role {
             async fn quiesce_terminal_delegations(
                 &self,
                 thread: &str,
-            ) -> Result<::awaken_session_application_contract::DelegatedRunSnapshot, ::awaken_session_types::RunError> {
+            ) -> Result<::awaken_session_application_contract::DelegatedRunSnapshot, ::awaken_runtime_contract::runs::RunError> {
                 $crate::StreamingRuns::interrupt(self, thread).await?;
                 Ok(::awaken_session_application_contract::DelegatedRunSnapshot {
                     delegated_runs: $crate::SessionCoordinationReads::delegated_runs(self, thread)
@@ -422,8 +422,8 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn session_run_command_receipt(
                 &self,
                 _command: &$crate::AdmitSessionRun,
-            ) -> Result<Option<$crate::SessionRunReservation>, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<Option<$crate::SessionRunReservation>, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "exact Session Run command receipt is unavailable",
                 ))
             }
@@ -438,9 +438,9 @@ impl $crate::SessionCoordinationReads for $ty {
                     String,
                     ::awaken_agent_contract::agent::delegation::DelegationOrigin,
                 )>,
-                ::awaken_session_types::RunError,
+                ::awaken_runtime_contract::runs::RunError,
             > {
-                Err(::awaken_session_types::RunError::unavailable(
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "Task callback membership is unavailable",
                 ))
             }
@@ -455,9 +455,9 @@ impl $crate::SessionCoordinationReads for $ty {
                     ::awaken_runtime_contract::RunActivation,
                     Vec<::awaken_runtime_contract::ExecutableAgentSnapshot>,
                 )>,
-                ::awaken_session_types::RunError,
+                ::awaken_runtime_contract::runs::RunError,
             > {
-                Err(::awaken_session_types::RunError::unavailable(
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "original Task execution source is unavailable",
                 ))
             }
@@ -465,8 +465,8 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn coordinated_admission_receipt(
                 &self,
                 _command: $crate::CoordinatedAdmissionRef<'_>,
-            ) -> Result<Option<$crate::SessionAgentMessageReceipt>, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<Option<$crate::SessionAgentMessageReceipt>, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "original coordinated admission recovery is unsupported",
                 ))
             }
@@ -478,8 +478,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _session_id: &::awaken_session_types::SessionId,
                 _run_id: &awaken_agent_contract::agent::run::Id,
-            ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "runtime does not implement Session Run recovery",
                 ))
             }
@@ -490,7 +490,7 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn delegated_runs(
                 &self,
                 _thread: &str,
-            ) -> Result<Vec<::awaken_session_application_contract::DelegatedRun>, ::awaken_session_types::RunError> {
+            ) -> Result<Vec<::awaken_runtime_contract::runs::DelegatedRun>, ::awaken_runtime_contract::runs::RunError> {
                 Ok(Vec::new())
             }
 
@@ -507,10 +507,10 @@ impl $crate::SessionCoordinationReads for $ty {
                 observed_root: Option<
                     &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
                 >,
-            ) -> Result<Vec<$crate::CoordinatedThreadLink>, ::awaken_session_types::RunError> {
+            ) -> Result<Vec<$crate::CoordinatedThreadLink>, ::awaken_runtime_contract::runs::RunError> {
                 if observed_root.is_some_and(|snapshot| snapshot.thread_id.0 != session_id.as_str())
                 {
-                    return Err(::awaken_session_types::RunError::internal(
+                    return Err(::awaken_runtime_contract::runs::RunError::internal(
                         "coordination query received a snapshot for a different Session root",
                     ));
                 }
@@ -525,8 +525,8 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn session_thread_tool_reply_fence(
                 &self,
                 _command: &::awaken_session_contract::SessionThreadToolReplyCommand,
-            ) -> Result<::awaken_session_contract::SessionThreadToolReplyFence, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<::awaken_session_contract::SessionThreadToolReplyFence, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "Session Thread tool reply fencing is unsupported",
                 ))
             }
@@ -543,8 +543,8 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn validate_session_agent_message_source(
                 &self,
                 _command: &$crate::SessionAgentMessageCommand,
-            ) -> Result<$crate::SessionAgentMessageCommand, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<$crate::SessionAgentMessageCommand, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "durable Agent message source validation is unsupported",
                 ))
             }
@@ -559,8 +559,8 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn resume_budget_reached(
                 &self,
                 _delivery: ::awaken_session_application_contract::SessionBudgetResumeDelivery,
-            ) -> Result<::awaken_session_application_contract::SessionBudgetResumeDisposition, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<::awaken_session_application_contract::SessionBudgetResumeDisposition, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "budget-paused Run resumption is unsupported",
                 ))
             }
@@ -571,8 +571,8 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn session_budget_resume_tickets(
                 &self,
                 _session_id: &::awaken_session_types::SessionId,
-            ) -> Result<Vec<::awaken_session_application_contract::SessionBudgetResumeTicket>, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<Vec<::awaken_session_application_contract::SessionBudgetResumeTicket>, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "budget-paused Run discovery is unsupported",
                 ))
             }
@@ -583,7 +583,7 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn session_usage(
                 &self,
                 _thread: &str,
-            ) -> Result<::awaken_session_contract::SessionUsage, ::awaken_session_types::RunError> {
+            ) -> Result<::awaken_session_contract::SessionUsage, ::awaken_runtime_contract::runs::RunError> {
                 Ok(::awaken_session_contract::SessionUsage::default())
             }
 
@@ -594,7 +594,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _session_id: &::awaken_session_types::SessionId,
                 thread_id: &str,
-            ) -> Result<::awaken_session_contract::SessionUsage, ::awaken_session_types::RunError> {
+            ) -> Result<::awaken_session_contract::SessionUsage, ::awaken_runtime_contract::runs::RunError> {
                 $crate::BudgetAccounting::session_usage(self, thread_id).await
             }
         }
@@ -614,13 +614,13 @@ impl $crate::SessionCoordinationReads for $ty {
                     ::awaken_agent_contract::agent::content::ContentBlock,
                 >,
                 _data_subject_id: Option<String>,
-            ) -> Result<::awaken_session_application_contract::StepOutcome, ::awaken_session_types::RunError> {
+            ) -> Result<::awaken_runtime_contract::runs::StepOutcome, ::awaken_runtime_contract::runs::RunError> {
                 $crate::SessionRuns::run(self, agent, thread, content).await
             }
 
             /// Run one user request, installing `sink` as the Run's best-effort live-progress
             /// channel so the adapter can project in-flight `stream::Kind` into
-            /// `event_start`/`event_delta` previews. The committed [`::awaken_session_application_contract::StepOutcome`] is
+            /// `event_start`/`event_delta` previews. The committed [`::awaken_runtime_contract::runs::StepOutcome`] is
             /// identical to [`run`](Self::run) — the sink only mirrors in-flight events. The
             /// default ignores the sink and delegates to `run`, so a host without a
             /// streaming path (or a test double) is unaffected.
@@ -632,7 +632,7 @@ impl $crate::SessionCoordinationReads for $ty {
                     ::awaken_agent_contract::agent::content::ContentBlock,
                 >,
                 _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-            ) -> Result<::awaken_session_application_contract::StepOutcome, ::awaken_session_types::RunError> {
+            ) -> Result<::awaken_runtime_contract::runs::StepOutcome, ::awaken_runtime_contract::runs::RunError> {
                 $crate::SessionRuns::run(self, agent, thread, content).await
             }
 
@@ -646,13 +646,13 @@ impl $crate::SessionCoordinationReads for $ty {
                 >,
                 _data_subject_id: Option<String>,
                 sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-            ) -> Result<::awaken_session_application_contract::StepOutcome, ::awaken_session_types::RunError> {
+            ) -> Result<::awaken_runtime_contract::runs::StepOutcome, ::awaken_runtime_contract::runs::RunError> {
                 $crate::StreamingRuns::run_streaming(self, agent, thread, content, sink).await
             }
 
             /// Interrupt the run in flight on `thread` (a `user.interrupt`): cancel it so
             /// an in-progress outcome ends `interrupted`. A no-op when nothing is running.
-            async fn interrupt(&self, _thread: &str) -> Result<(), ::awaken_session_types::RunError> {
+            async fn interrupt(&self, _thread: &str) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
                 Ok(())
             }
 
@@ -664,7 +664,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _thread: &str,
                 _model: &str,
-            ) -> Result<(), ::awaken_session_types::RunError> {
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
                 Ok(())
             }
 
@@ -674,7 +674,7 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn supports_mid_conversation_system(
                 &self,
                 _thread: &str,
-            ) -> Result<bool, ::awaken_session_types::RunError> {
+            ) -> Result<bool, ::awaken_runtime_contract::runs::RunError> {
                 Ok(true)
             }
 
@@ -684,7 +684,7 @@ impl $crate::SessionCoordinationReads for $ty {
             async fn pending_tool(
                 &self,
                 _thread: &str,
-            ) -> Result<Option<::awaken_session_application_contract::Pending>, ::awaken_session_types::RunError> {
+            ) -> Result<Option<::awaken_runtime_contract::runs::Pending>, ::awaken_runtime_contract::runs::RunError> {
                 Ok(None)
             }
         }
@@ -700,8 +700,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _thread: &str,
                 _tools: ::awaken_session_configuration_contract::SessionToolConfiguration,
-            ) -> Result<(), ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::internal(
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::internal(
                     "session tool runtime is unsupported",
                 ))
             }
@@ -714,7 +714,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 _agent: &str,
                 _thread: &str,
                 _binding: &str,
-            ) -> Result<(), ::awaken_session_types::RunError> {
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
                 Ok(())
             }
 
@@ -729,8 +729,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 _source_binding: &str,
                 _generation: &::awaken_session_contract::SandboxGeneration,
                 _expected_mcp_generations: &[::awaken_session_configuration_contract::mcp::McpGenerationRef],
-            ) -> Result<::awaken_session_contract::QuiescenceReceipt, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable_classified(
+            ) -> Result<::awaken_session_contract::QuiescenceReceipt, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",
                     "Runtime does not implement Session environment quiescence",
                 ))
@@ -743,7 +743,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _workspace_id: &str,
                 _skills: &[awaken_agent_contract::AgentSkillBinding],
-            ) -> Result<Vec<::awaken_session_configuration_contract::resource::ResolvedSkillBinding>, ::awaken_session_types::RunError> {
+            ) -> Result<Vec<::awaken_session_configuration_contract::resource::ResolvedSkillBinding>, ::awaken_runtime_contract::runs::RunError> {
                 Ok(Vec::new())
             }
 
@@ -757,7 +757,7 @@ impl $crate::SessionCoordinationReads for $ty {
             /// MUST answer without materializing any per-thread state (no context
             /// build, no cache entry) — probing must be free of side effects. The
             /// default reports nothing, so an ephemeral host mints densely from 0.
-            async fn owns_thread(&self, _thread: &str) -> Result<bool, ::awaken_session_types::RunError> {
+            async fn owns_thread(&self, _thread: &str) -> Result<bool, ::awaken_runtime_contract::runs::RunError> {
                 Ok(false)
             }
 
@@ -770,7 +770,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 _thread: &str,
             ) -> Result<
                 Vec<::awaken_agent_contract::agent::message::Message>,
-                ::awaken_session_types::RunError,
+                ::awaken_runtime_contract::runs::RunError,
             > {
                 Ok(Vec::new())
             }
@@ -788,9 +788,9 @@ impl $crate::SessionCoordinationReads for $ty {
                 _thread_id: &str,
             ) -> Result<
                 Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-                ::awaken_session_types::RunError,
+                ::awaken_runtime_contract::runs::RunError,
             > {
-                Err(::awaken_session_types::RunError::unavailable(
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "consistent coordinated Thread recovery is unsupported",
                 ))
             }
@@ -811,7 +811,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 run_id: &::awaken_agent_contract::agent::run::Id,
             ) -> Result<
                 Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-                ::awaken_session_types::RunError,
+                ::awaken_runtime_contract::runs::RunError,
             > {
                 let snapshot =
                     $crate::ThreadReads::session_thread_recovery_snapshot(
@@ -828,19 +828,19 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _session_id: &::awaken_session_types::SessionId,
                 _thread_id: &str,
-            ) -> Result<awaken_agent_contract::ThreadDisposition, ::awaken_session_types::RunError> {
+            ) -> Result<awaken_agent_contract::ThreadDisposition, ::awaken_runtime_contract::runs::RunError> {
                 Ok(awaken_agent_contract::ThreadDisposition::Active)
             }
 
             /// Read one exact terminal Outcome projection from committed Thread truth.
             /// `None` means the id is absent or still active. Implementations must not
             /// resume the Outcome or reconstruct a terminal from an in-process
-            /// [`::awaken_session_application_contract::StepOutcome`].
+            /// [`::awaken_runtime_contract::runs::StepOutcome`].
             async fn committed_outcome_projection(
                 &self,
                 _thread: &str,
                 _outcome_id: &str,
-            ) -> Result<Option<$crate::CommittedOutcomeProjection>, ::awaken_session_types::RunError> {
+            ) -> Result<Option<$crate::CommittedOutcomeProjection>, ::awaken_runtime_contract::runs::RunError> {
                 Ok(None)
             }
         }
@@ -854,8 +854,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _effect: ::awaken_session_contract::SessionTerminalCleanupEffect,
                 _authorization: $crate::SessionTerminalCleanupPreparationAuthorization,
-            ) -> Result<::awaken_session_contract::SessionCleanupPreparation, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable_classified(
+            ) -> Result<::awaken_session_contract::SessionCleanupPreparation, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "session_terminal_cleanup_preparation_runtime_unsupported",
                     "runtime does not implement realization-fenced Session cleanup preparation",
                 ))
@@ -898,8 +898,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _assignment: &$crate::SessionTerminalCleanupAssignment,
                 _proof: $crate::ObservedSessionRealizationLease,
-            ) -> Result<(), ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable_classified(
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "session_terminal_projection_runtime_unsupported",
                     "runtime does not implement frozen terminal Session projection installation",
                 ))
@@ -919,8 +919,8 @@ impl $crate::SessionCoordinationReads for $ty {
                 _description: &str,
                 _rubric: &str,
                 _max_iterations: u32,
-            ) -> Result<u64, ::awaken_session_types::RunError> {
-                Err(::awaken_session_types::RunError::unavailable(
+            ) -> Result<u64, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
                     "runtime does not implement durable Outcome preparation",
                 ))
             }
@@ -933,7 +933,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 rubric: &str,
                 max_iterations: u32,
                 admission: &dyn $crate::PreparedSessionRunAdmission,
-            ) -> Result<$crate::OutcomeDrive, ::awaken_session_types::RunError> {
+            ) -> Result<$crate::OutcomeDrive, ::awaken_runtime_contract::runs::RunError> {
                 let outcome_id = ::awaken_session_contract::session_outcome_convenience_id(
                     thread,
                     description,
@@ -951,7 +951,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 .await?;
                 $crate::Outcomes::continue_outcome(self, thread, admission)
                     .await?
-                    .ok_or_else(|| ::awaken_session_types::RunError::internal("prepared Outcome is not active"))
+                    .ok_or_else(|| ::awaken_runtime_contract::runs::RunError::internal("prepared Outcome is not active"))
             }
 
             /// Continue the active Outcome after the ordinary Run resume has committed.
@@ -961,7 +961,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 &self,
                 _thread: &str,
                 _admission: &dyn $crate::PreparedSessionRunAdmission,
-            ) -> Result<Option<$crate::OutcomeDrive>, ::awaken_session_types::RunError> {
+            ) -> Result<Option<$crate::OutcomeDrive>, ::awaken_runtime_contract::runs::RunError> {
                 Ok(None)
             }
         }
@@ -1030,7 +1030,7 @@ impl $crate::SessionCoordinationReads for $ty {
             /// custom tools, skills, and delegate roster so the session enumerates what it does.
             fn capabilities(
                 &self,
-            ) -> Result<::awaken_session_configuration_contract::AgentCapabilities, ::awaken_session_types::RunError>
+            ) -> Result<::awaken_session_configuration_contract::AgentCapabilities, ::awaken_runtime_contract::runs::RunError>
             {
                 Ok(::awaken_session_configuration_contract::AgentCapabilities::default())
             }
@@ -1043,7 +1043,7 @@ impl $crate::SessionCoordinationReads for $ty {
                 _thread: &str,
             ) -> Result<
                 ::awaken_session_configuration_contract::AgentCapabilities,
-                ::awaken_session_types::RunError,
+                ::awaken_runtime_contract::runs::RunError,
             > {
                 $crate::CapabilityRuntime::capabilities(self)
             }

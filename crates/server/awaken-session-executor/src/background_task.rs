@@ -21,12 +21,12 @@ use awaken_ext_background_task::{
 use awaken_runtime::{PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_runtime_contract::resolved::ToolKind;
+use awaken_runtime_contract::runs::RunErrorKind;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{
     CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
 };
 use awaken_session_application_contract::{PrivateTaskInput, TaskAttention};
-use awaken_session_types::RunErrorKind;
 use awaken_time::WallClockExt;
 use awaken_tool_contract::tool::background_task::{
     BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskWaitCandidate,
@@ -995,13 +995,16 @@ mod tests {
     }
 
     impl RecordingAttentionApplication {
-        fn record(&self, call: AttentionCall) -> Result<(), awaken_session_types::RunError> {
+        fn record(
+            &self,
+            call: AttentionCall,
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             self.calls
                 .lock()
                 .expect("attention calls mutex poisoned")
                 .push(call);
             if self.definitive_rejection {
-                return Err(awaken_session_types::RunError::bad_request(
+                return Err(awaken_runtime_contract::runs::RunError::bad_request(
                     "definitive test rejection",
                 ));
             }
@@ -1012,7 +1015,7 @@ mod tests {
                 })
                 .is_ok()
             {
-                return Err(awaken_session_types::RunError::unavailable(
+                return Err(awaken_runtime_contract::runs::RunError::unavailable(
                     "transient test failure",
                 ));
             }
@@ -1029,7 +1032,7 @@ mod tests {
             agent: Option<String>,
             messages: Vec<Message>,
             traceparent: Option<String>,
-        ) -> Result<RunId, awaken_session_application_contract::RunApplicationError> {
+        ) -> Result<RunId, awaken_runtime_contract::runs::RunError> {
             self.record(AttentionCall {
                 operation_id: operation_id.to_string(),
                 thread: thread.to_string(),
@@ -1049,11 +1052,11 @@ mod tests {
             attention: awaken_session_application_contract::TaskAttention,
         ) -> Result<
             awaken_session_application_contract::TaskAttentionAck,
-            awaken_session_application_contract::RunApplicationError,
+            awaken_runtime_contract::runs::RunError,
         > {
-            let attention = attention
-                .bind_input()
-                .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+            let attention = attention.bind_input().map_err(|error| {
+                awaken_runtime_contract::runs::RunError::bad_request(error.to_string())
+            })?;
             let run_id = awaken_session_execution_contract::session_run_id(
                 &awaken_session_types::SessionId::from(attention.tenure.thread.as_str()),
                 &attention.operation_id,
@@ -1076,13 +1079,11 @@ mod tests {
             _: awaken_session_application_contract::TaskAttention,
         ) -> Result<
             Option<awaken_session_application_contract::TaskAttentionAck>,
-            awaken_session_application_contract::RunApplicationError,
+            awaken_runtime_contract::runs::RunError,
         > {
-            Err(
-                awaken_session_application_contract::RunApplicationError::unavailable(
-                    "Task attention receipt read is unavailable",
-                ),
-            )
+            Err(awaken_runtime_contract::runs::RunError::unavailable(
+                "Task attention receipt read is unavailable",
+            ))
         }
     }
 
@@ -1560,14 +1561,14 @@ mod tests {
             attention: TaskAttention,
         ) -> Result<
             awaken_session_application_contract::TaskAttentionAck,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             self.attentions
                 .lock()
                 .expect("delivered attentions mutex poisoned")
                 .push(attention.clone());
             if self.definitive_rejection {
-                return Err(awaken_session_types::RunError::bad_request(
+                return Err(awaken_runtime_contract::runs::RunError::bad_request(
                     "the Task attention names a Task this Worker incarnation does not hold",
                 ));
             }
@@ -1578,7 +1579,7 @@ mod tests {
                 })
                 .is_ok()
             {
-                return Err(awaken_session_types::RunError::unavailable(
+                return Err(awaken_runtime_contract::runs::RunError::unavailable(
                     "Coordinator unavailable",
                 ));
             }
@@ -1592,7 +1593,7 @@ mod tests {
             _read: awaken_session_application_contract::TaskTenureRead,
         ) -> Result<
             Option<awaken_session_application_contract::TaskTenureRecord>,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             panic!("attention publication reads no Task tenure")
         }

@@ -457,7 +457,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
         .expect_err("R3 definition mismatch");
     assert_eq!(
         definition_mismatch.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "R3/E3"
     );
     let config_mismatch = restarted
@@ -470,7 +470,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
         .expect_err("R4 config mismatch");
     assert_eq!(
         config_mismatch.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "R4/E3"
     );
     assert_eq!(
@@ -1625,7 +1625,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         matches!(
             &foreign_outcome,
             Err(SessionPreparationError::Rejected(error))
-                if error.kind == awaken_session_types::RunErrorKind::Internal
+                if error.kind == awaken_runtime_contract::runs::RunErrorKind::Internal
                     && error.message == "Session terminal cleanup is inconsistent with its root: Session cleanup operation does not match its Session identity"
         ),
         "R5 foreign Completed outcome fails closed at aggregate import: {foreign_outcome:?}"
@@ -2178,7 +2178,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         matches!(
             root_rejected,
             Err(SessionPreparationError::Rejected(ref error))
-                if error.kind == awaken_session_types::RunErrorKind::BadRequest
+                if error.kind == awaken_runtime_contract::runs::RunErrorKind::BadRequest
                     && error.message == "only an idle Session may be archived"
         ),
         "L3/E2: {root_rejected:?}"
@@ -2214,7 +2214,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         matches!(
             child_rejected,
             Err(SessionPreparationError::Rejected(ref error))
-                if error.kind == awaken_session_types::RunErrorKind::BadRequest
+                if error.kind == awaken_runtime_contract::runs::RunErrorKind::BadRequest
         ),
         "L4/E2: {child_rejected:?}"
     );
@@ -2241,7 +2241,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         matches!(
             race_archive,
             Err(SessionPreparationError::Rejected(ref error))
-                if error.kind == awaken_session_types::RunErrorKind::BadRequest
+                if error.kind == awaken_runtime_contract::runs::RunErrorKind::BadRequest
         ),
         "L5/E3: {race_archive:?}"
     );
@@ -2422,7 +2422,7 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
             matches!(
                 result,
                 Err(SessionPreparationError::Rejected(ref error))
-                    if error.kind == awaken_session_types::RunErrorKind::Unavailable
+                    if error.kind == awaken_runtime_contract::runs::RunErrorKind::Unavailable
                         && error.code == "session_event_batch_pending"
             ),
             "{rule}: {result:?}"
@@ -3357,7 +3357,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
             let error = result.expect_err("R2-R4/E2 unknown identity fails closed");
             assert_eq!(
                 error.kind,
-                awaken_session_types::RunErrorKind::BadRequest,
+                awaken_runtime_contract::runs::RunErrorKind::BadRequest,
                 "{rule}/E2"
             );
             assert_eq!(runtime.continuations.lock().unwrap().len(), 1, "{rule}/E2");
@@ -3469,7 +3469,7 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
             let error = result.expect_err("A5 Failed must reject");
             assert_eq!(
                 error.kind,
-                awaken_session_types::RunErrorKind::BadRequest,
+                awaken_runtime_contract::runs::RunErrorKind::BadRequest,
                 "A5/E2"
             );
             assert_eq!(runtime.admissions.lock().unwrap().len(), 1, "A5/E2");
@@ -3541,7 +3541,7 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
             .expect_err("non-ordinary/closed target must reject");
         assert_eq!(
             error.kind,
-            awaken_session_types::RunErrorKind::BadRequest,
+            awaken_runtime_contract::runs::RunErrorKind::BadRequest,
             "{rule}/E2"
         );
         assert!(
@@ -3591,7 +3591,7 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let allow = || {
-        awaken_session_application_contract::RunResume::Permission(
+        awaken_runtime_contract::runs::RunResume::Permission(
             awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
         )
     };
@@ -3614,7 +3614,7 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
         (
             "foreground-request-wrong-kind",
             "reply-tool",
-            awaken_session_application_contract::RunResume::ClientResult {
+            awaken_runtime_contract::runs::RunResume::ClientResult {
                 content: Vec::new(),
                 is_error: false,
             },
@@ -3661,7 +3661,9 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
             "foreground-request-accepted",
             "reply-tool",
             allow(),
-            Arc::new(awaken_session_application_contract::EventForwardingSink::new(|_| Ok(()))),
+            Arc::new(awaken_runtime_contract::runs::EventForwardingSink::new(
+                |_| Ok(()),
+            )),
         )
         .await
         .expect("F3 accepted foreground resume");
@@ -4113,7 +4115,7 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
         .expect_err("A3 forged reply");
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "A3/E3"
     );
     assert_eq!(
@@ -4631,7 +4633,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
         matches!(
             missing,
             Err(RunError {
-                kind: awaken_session_types::RunErrorKind::BadRequest,
+                kind: awaken_runtime_contract::runs::RunErrorKind::BadRequest,
                 ..
             })
         ),
@@ -4998,7 +5000,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
             .await
             .unwrap_err()
             .kind,
-        awaken_session_types::RunErrorKind::Unavailable,
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable,
         "A6b fresh dependency error"
     );
     assert!(runtime.usage_thread_reads.lock().unwrap().is_empty());
@@ -5024,7 +5026,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
             .unwrap_err();
         assert_eq!(
             error.kind,
-            awaken_session_types::RunErrorKind::Internal,
+            awaken_runtime_contract::runs::RunErrorKind::Internal,
             "A7"
         );
         assert!(
@@ -6318,7 +6320,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         .expect_err("B4 stale equal-binding replay is fenced");
     assert_eq!(
         stale_error.kind,
-        awaken_session_types::RunErrorKind::Unavailable,
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable,
         "B4"
     );
     assert_eq!(stale_error.code, "session_realization_stale", "B4");
@@ -6336,7 +6338,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         .expect_err("B5 stale binding replacement is fenced");
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::Unavailable,
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable,
         "B5"
     );
     assert_eq!(error.code, "session_realization_stale", "B5");
@@ -6372,7 +6374,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         .expect_err("B7 expired equal-binding replay is fenced");
     assert_eq!(
         expired_error.kind,
-        awaken_session_types::RunErrorKind::Unavailable,
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable,
         "B7"
     );
     assert_eq!(expired_error.code, "session_realization_stale", "B7");

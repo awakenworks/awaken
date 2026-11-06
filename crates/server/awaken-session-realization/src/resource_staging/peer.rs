@@ -8,8 +8,8 @@ use crate::staged_resources::{
     StagedResources,
 };
 use awaken_provisioning_contract as pc;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::resource as session_resource;
-use awaken_session_types::RunError;
 use std::sync::Arc;
 
 use super::ResourceStaging;
@@ -90,7 +90,8 @@ impl crate::peers::StagingPeer for ResourceStaging {
         workspace: &str,
         command: &awaken_session_contract::SessionRepositoryPublicationCommand,
         lease: &session_resource::SessionRealizationLease,
-    ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
+    ) -> Result<crate::staged_resources::StagedResources, awaken_runtime_contract::runs::RunError>
+    {
         ResourceStaging::stage_terminal_repository_publication_input(
             self, workspace, command, lease,
         )

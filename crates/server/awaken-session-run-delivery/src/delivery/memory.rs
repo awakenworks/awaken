@@ -22,7 +22,7 @@ use awaken_ext_memory::{
     MemoryMutationReceipt,
 };
 use awaken_runtime_contract::RunActivation;
-use awaken_session_types::{RunError, RunErrorKind};
+use awaken_runtime_contract::runs::{RunError, RunErrorKind};
 
 use super::dispatched_runs::DispatchedRuns;
 use crate::{

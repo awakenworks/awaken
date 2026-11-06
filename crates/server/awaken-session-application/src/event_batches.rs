@@ -14,6 +14,7 @@ use crate::mutation::ROOT_CAS_ATTEMPTS;
 use crate::{SessionProjectionReads as _, SessionRootReads as _};
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 use awaken_agent_contract::agent::run::RunState;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_contract::SessionThreadTarget;
 use awaken_session_contract::{
     OUTCOME_BUSY_CODE, SessionEventBatch, SessionEventBatchAdmissionAction,
@@ -27,7 +28,7 @@ use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionAgentCoordination, SessionRunActivation,
     admit_event_batch_topology,
 };
-use awaken_session_types::{RunError, SessionRevision};
+use awaken_session_types::SessionRevision;
 use awaken_time::WallClockExt as _;
 
 use std::sync::Arc;

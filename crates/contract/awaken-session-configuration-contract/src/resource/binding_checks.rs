@@ -10,7 +10,7 @@ use awaken_resource_contract::{
     LiveResourceBindingVerifier, RepositoryBindingVerifier, RepositoryBindingVerifierError,
     ResourceRegistryError,
 };
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use super::{ResolvedInputSource, SessionResourceManifest};
 
@@ -70,7 +70,7 @@ pub fn repository_binding_code(error: &RepositoryBindingVerifierError) -> &'stat
         RepositoryBindingVerifierError::InvalidRequest { .. }
         | RepositoryBindingVerifierError::Denied { .. } => "invalid_request",
         RepositoryBindingVerifierError::Conflict { .. } => {
-            awaken_session_types::error::CONFLICT_CODE
+            awaken_runtime_contract::runs::error::CONFLICT_CODE
         }
         RepositoryBindingVerifierError::AuthorityUnavailable { .. }
         | RepositoryBindingVerifierError::Indeterminate { .. } => "unavailable",
@@ -317,7 +317,7 @@ mod tests {
             .expect_err("B5");
         assert_eq!(
             refused.code,
-            awaken_session_types::error::CONFLICT_CODE,
+            awaken_runtime_contract::runs::error::CONFLICT_CODE,
             "B5"
         );
 
@@ -336,7 +336,7 @@ mod tests {
         // Direct staging checks and manifest admission must agree on kind,
         // stable code and exact diagnostic, without inspecting diagnostic text.
         use awaken_resource_contract::ResourceState;
-        use awaken_session_types::RunErrorKind;
+        use awaken_runtime_contract::runs::RunErrorKind;
         for (fault, kind, code) in [
             (
                 ResourceRegistryError::AuthorityUnavailable {

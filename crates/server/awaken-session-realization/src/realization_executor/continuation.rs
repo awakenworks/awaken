@@ -12,7 +12,7 @@ use crate::sandbox_projection::provisioning_checkpoint_request;
 use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_execution_contract::ResourceOperationFence;
 
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use crate::realization_executor::RealizationExecutor;
 
@@ -143,7 +143,7 @@ impl RealizationExecutor {
         let authority = self
             .authority
             .provider_effect_authority(thread, &effect_fence)
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         let _lifecycle = realizations.lock_lifecycle(thread).await?;
         let environment = self
             .environments
@@ -154,7 +154,7 @@ impl RealizationExecutor {
                 &request.source_binding,
                 &request.generation,
             )
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         let store = self
             .environments
             .providers()
@@ -259,7 +259,7 @@ impl RealizationExecutor {
                 crate::session_environment::BoundEnvironmentPreparationMode::LiveSource,
             )
             .await
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         let Some((environment, _)) = prepared.environment.as_ref() else {
             return Err(RunError::unavailable_classified(
                 "session_environment_continuation_source_absent_before_preparation",
@@ -290,7 +290,7 @@ impl RealizationExecutor {
             let authority = self
                 .authority
                 .provider_effect_authority(thread, &effect_fence)
-                .map_err(awaken_session_types::RunError::from)?;
+                .map_err(awaken_runtime_contract::runs::RunError::from)?;
             environment
                 .lifecycle()
                 .acknowledge_memory_reconciliation(&effect_fence, materializations, &authority)
@@ -306,7 +306,7 @@ impl RealizationExecutor {
         let authority = self
             .authority
             .provider_effect_authority(thread, &effect_fence)
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         let provider_prepared_effect_fence = environment
             .lifecycle()
             .prepare_disposal_for_effect(&effect_fence, &authority)
@@ -337,7 +337,7 @@ impl RealizationExecutor {
             source_binding,
             environment,
         )
-        .map_err(awaken_session_types::RunError::from)?;
+        .map_err(awaken_runtime_contract::runs::RunError::from)?;
         Ok(receipt)
     }
 
@@ -364,7 +364,7 @@ impl RealizationExecutor {
                 &provider_authorization,
             )
             .await
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         self.continuation_source_disposal_authorization(thread, disposal)?;
         Ok(awaken_session_contract::SourceDisposedReceipt {
             effect_id: operation.effect_id().to_owned(),
@@ -388,10 +388,10 @@ impl RealizationExecutor {
         exec.environments
             .retry_unpublished_session_environment_cleanup(&thread)
             .await
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         exec.environments
             .begin_session_environment_restore(&thread, &request)
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         let store = exec
             .environments
             .providers()
@@ -407,7 +407,7 @@ impl RealizationExecutor {
             .environments
             .publication()
             .resolve_session_publication(&thread, None, None)
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         if workspace != request.workspace_id {
             return Err(RunError::unavailable(
                 "restore request Workspace does not match the Session projection",
@@ -420,7 +420,7 @@ impl RealizationExecutor {
         let provider = exec
             .environments
             .session_environment_provider_for_thread(&thread, provisioning)
-            .map_err(awaken_session_types::RunError::from)?;
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         let spec = self.staging.sandbox_spec_for_provider(&thread, provider)?;
         let handle = provider
             .terminal()

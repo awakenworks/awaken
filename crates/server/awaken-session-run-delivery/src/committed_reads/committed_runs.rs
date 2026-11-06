@@ -12,9 +12,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::{Scope, StateKey as _, Store};
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_runtime_contract::RunDelegations;
-use awaken_session_application_contract::DelegatedRun;
-
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::{DelegatedRun, RunError};
 
 pub fn project_delegated_runs(
     registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,

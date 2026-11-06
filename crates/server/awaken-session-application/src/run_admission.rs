@@ -18,15 +18,13 @@ mod events;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
-use awaken_session_application_contract::{
-    OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{OwnedRuns, Pending, RunError, RunResume, Runs, StepOutcome};
+
 use awaken_session_contract::SessionRepositoryError;
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivityReceiptPlan, SessionRunDelivery,
     session_run_activity_operation_id, session_run_activity_receipt_plan,
 };
-use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 
 use crate::{
@@ -608,7 +606,7 @@ impl SessionRunAdmissions {
         &self,
         workspace_id: &str,
         thread_id: &str,
-    ) -> Result<SessionRevision, RunApplicationError> {
+    ) -> Result<SessionRevision, RunError> {
         let recovered = self
             .recover_session_projection(thread_id, Some(workspace_id))
             .await
@@ -662,7 +660,7 @@ impl SessionRunAdmissions {
         workspace_id: &str,
         thread_id: &str,
         agent_id: &str,
-    ) -> Result<SessionRevision, RunApplicationError> {
+    ) -> Result<SessionRevision, RunError> {
         self.creation_commands
             .create_profiled_session(CreateProfiledSessionCommand {
                 owner_scope: workspace_id.to_string(),
@@ -695,7 +693,7 @@ impl SessionRunAdmissions {
         workspace_id: &str,
         thread_id: &str,
         agent_id: &str,
-    ) -> Result<SessionRevision, RunApplicationError> {
+    ) -> Result<SessionRevision, RunError> {
         match self
             .queries
             .session(&awaken_session_types::SessionId::from(thread_id))
@@ -710,7 +708,10 @@ impl SessionRunAdmissions {
                     Ok(revision) => Ok(revision),
                     // Concurrent first Runs race only at the durable create fence;
                     // every loser adopts the exact winner through the same recovery.
-                    Err(error) if error.kind == awaken_session_types::RunErrorKind::Unavailable => {
+                    Err(error)
+                        if error.kind
+                            == awaken_runtime_contract::runs::RunErrorKind::Unavailable =>
+                    {
                         match self
                             .queries
                             .session(&awaken_session_types::SessionId::from(thread_id))
@@ -908,7 +909,7 @@ type ProjectedAgentResolver = dyn Fn(&str) -> Result<Option<String>, RunError> +
 
 #[derive(Clone)]
 pub struct SessionRunApplication {
-    runtime: Arc<dyn RunApplication>,
+    runtime: Arc<dyn Runs>,
     admissions: Arc<SessionRunAdmissions>,
     coordination: Arc<crate::SessionCoordination>,
     workspace: Arc<WorkspaceResolver>,
@@ -919,7 +920,7 @@ pub struct SessionRunApplication {
 impl SessionRunApplication {
     #[must_use]
     pub fn new(
-        runtime: Arc<dyn RunApplication>,
+        runtime: Arc<dyn Runs>,
         admissions: Arc<SessionRunAdmissions>,
         coordination: Arc<crate::SessionCoordination>,
         workspace: impl Fn(&str) -> Result<String, RunError> + Send + Sync + 'static,
@@ -987,7 +988,7 @@ impl SessionRunApplication {
         messages: Vec<Message>,
         traceparent: Option<String>,
         replacement: awaken_session_types::SessionRunReplacement,
-    ) -> Result<AdmitSessionRun, RunApplicationError> {
+    ) -> Result<AdmitSessionRun, RunError> {
         if operation_id.trim().is_empty() {
             return Err(RunError::bad_request(
                 "Session Run requires a stable operation identity",
@@ -1025,7 +1026,7 @@ impl SessionRunApplication {
         command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
         create: bool,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         if !(create || self.first_run_creates) {
             let access = self
                 .authorize(owner_scope, command.session_id.as_str())
@@ -1064,14 +1065,14 @@ impl SessionRunApplication {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for SessionRunApplication {
+impl Runs for SessionRunApplication {
     async fn run(
         &self,
         operation_id: &str,
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let command = self.admission_command(
             operation_id,
             thread,
@@ -1091,7 +1092,7 @@ impl RunApplication for SessionRunApplication {
         agent: Option<String>,
         messages: Vec<Message>,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         // The ordinary port derives its Workspace and has the same first-Run
         // creation semantics as `run`; the owner-scoped port below stays fenced
         // to existing roots. Both use the original command/admission kernels.
@@ -1113,7 +1114,7 @@ impl RunApplication for SessionRunApplication {
         thread: &str,
         tool_use_id: &str,
         resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         self.resume_for_owner(
             &(self.workspace)(thread)?,
             operation_id,
@@ -1131,7 +1132,7 @@ impl RunApplication for SessionRunApplication {
         tool_use_id: &str,
         resume: RunResume,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         self.resume_streaming_for_owner(
             &(self.workspace)(thread)?,
             operation_id,
@@ -1143,15 +1144,15 @@ impl RunApplication for SessionRunApplication {
         .await
     }
 
-    async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
+    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
         self.runtime.interrupt(thread).await
     }
 
-    async fn pending(&self, thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, thread: &str) -> Result<Option<Pending>, RunError> {
         self.runtime.pending(thread).await
     }
 
-    async fn history(&self, thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, thread: &str) -> Result<Vec<Message>, RunError> {
         self.runtime.history(thread).await
     }
 
@@ -1159,13 +1160,13 @@ impl RunApplication for SessionRunApplication {
         self.runtime.model()
     }
 
-    async fn usage(&self, thread: &str) -> Result<(u64, u64), RunApplicationError> {
+    async fn usage(&self, thread: &str) -> Result<(u64, u64), RunError> {
         self.runtime.usage(thread).await
     }
 }
 
 #[async_trait::async_trait]
-impl OwnerScopedRunApplication for SessionRunApplication {
+impl OwnedRuns for SessionRunApplication {
     async fn run_streaming_for_owner(
         &self,
         owner_scope: &str,
@@ -1174,7 +1175,7 @@ impl OwnerScopedRunApplication for SessionRunApplication {
         agent: Option<String>,
         messages: Vec<Message>,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let command = self.admission_command(
             operation_id,
             thread,
@@ -1194,7 +1195,7 @@ impl OwnerScopedRunApplication for SessionRunApplication {
         thread: &str,
         tool_use_id: &str,
         resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let access = self.authorize(owner_scope, thread).await?;
         self.coordination
             .resume_owned_session_run(&access, operation_id, tool_use_id, resume)
@@ -1208,7 +1209,7 @@ impl OwnerScopedRunApplication for SessionRunApplication {
         tool_use_id: &str,
         resume: RunResume,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let access = self.authorize(owner_scope, thread).await?;
         self.coordination
             .resume_owned_session_run_streaming(&access, operation_id, tool_use_id, resume, sink)
@@ -1226,7 +1227,7 @@ impl awaken_session_application_contract::SessionRunReplacementApplication
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let command = self.admission_command(
             operation_id,
             thread,
@@ -1251,7 +1252,7 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
         agent: Option<String>,
         messages: Vec<Message>,
         traceparent: Option<String>,
-    ) -> Result<awaken_agent_contract::agent::run::Id, RunApplicationError> {
+    ) -> Result<awaken_agent_contract::agent::run::Id, RunError> {
         let command = self.admission_command(
             operation_id,
             thread,
@@ -1276,8 +1277,7 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
     async fn task_attention_receipt(
         &self,
         attention: awaken_session_application_contract::TaskAttention,
-    ) -> Result<Option<awaken_session_application_contract::TaskAttentionAck>, RunApplicationError>
-    {
+    ) -> Result<Option<awaken_session_application_contract::TaskAttentionAck>, RunError> {
         let attention = attention
             .bind_input()
             .map_err(|error| RunError::bad_request(error.to_string()))?;
@@ -1316,7 +1316,7 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
     async fn submit_task_attention(
         &self,
         attention: awaken_session_application_contract::TaskAttention,
-    ) -> Result<awaken_session_application_contract::TaskAttentionAck, RunApplicationError> {
+    ) -> Result<awaken_session_application_contract::TaskAttentionAck, RunError> {
         let attention = attention
             .bind_input()
             .map_err(|error| RunError::bad_request(error.to_string()))?;

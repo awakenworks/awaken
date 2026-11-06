@@ -31,7 +31,7 @@ use awaken_protocol_managed::types::memory::AuthenticatedMemoryActor;
 use awaken_resource_contract::{
     MemErr, MemoryActor, MemoryVersion, MemoryVersionQueries as _, MemoryVersionRedaction,
 };
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

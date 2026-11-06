@@ -12,6 +12,7 @@
 //! exact evidence through `SessionRealizationControl`; it persists no cursor,
 //! retry record, receipt, or topology-specific state.
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::resource::realization_lease_generation_authorizes;
 use awaken_session_contract::{
     SessionRepositoryPublicationEffect, SessionTerminalCleanupAction,
@@ -21,7 +22,6 @@ use awaken_session_execution_contract::{
     SessionRealizationControlFailure, SessionRealizationDriveError, SessionTerminalCleanupControl,
     SessionTerminalCleanupWork,
 };
-use awaken_session_types::RunError;
 
 /// Observable result of one bounded drive of an already-admitted terminal
 /// assignment. `Pending` means the same aggregate currently exposes no
@@ -298,7 +298,7 @@ pub(crate) mod tests {
     use super::*;
     use awaken_agent_contract::agent::awaiting::PermissionDecision;
     use awaken_agent_contract::agent::content::ContentBlock;
-    use awaken_session_application_contract::StepOutcome;
+    use awaken_runtime_contract::runs::StepOutcome;
     use awaken_session_contract::{
         SessionCleanupCommand, SessionCleanupDisposalReceipt, SessionCleanupOperation,
     };
@@ -670,7 +670,7 @@ pub(crate) mod tests {
             owner: &str,
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-        ) -> Result<usize, awaken_session_types::RunError> {
+        ) -> Result<usize, awaken_runtime_contract::runs::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
                 .await
@@ -703,7 +703,7 @@ pub(crate) mod tests {
             &self,
             thread: &str,
             lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_lease(thread, lease)
                 .await
@@ -719,7 +719,7 @@ pub(crate) mod tests {
             &self,
             thread: &str,
             lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
                 .await
@@ -739,7 +739,7 @@ pub(crate) mod tests {
             &self,
             thread: &str,
             layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .validate_session_sandbox_layout(thread, layout)
         }
@@ -748,8 +748,10 @@ pub(crate) mod tests {
             &self,
             thread: &str,
             request: awaken_session_contract::SandboxCheckpointRequest,
-        ) -> Result<awaken_session_contract::CheckpointReceipt, awaken_session_types::RunError>
-        {
+        ) -> Result<
+            awaken_session_contract::CheckpointReceipt,
+            awaken_runtime_contract::runs::RunError,
+        > {
             awaken_session_execution_contract::NeutralRuntime
                 .checkpoint_session_environment(thread, request)
                 .await
@@ -763,7 +765,7 @@ pub(crate) mod tests {
             source_binding: &str,
         ) -> Result<
             awaken_session_contract::SourceReleasePreparedReceipt,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             awaken_session_execution_contract::NeutralRuntime
                 .prepare_checkpoint_source_disposal(thread, preparation, generation, source_binding)
@@ -774,8 +776,10 @@ pub(crate) mod tests {
             &self,
             thread: &str,
             disposal: &awaken_session_contract::SourceReleaseDisposal,
-        ) -> Result<awaken_session_contract::SourceDisposedReceipt, awaken_session_types::RunError>
-        {
+        ) -> Result<
+            awaken_session_contract::SourceDisposedReceipt,
+            awaken_runtime_contract::runs::RunError,
+        > {
             awaken_session_execution_contract::NeutralRuntime
                 .dispose_prepared_checkpoint_source(thread, disposal)
                 .await
@@ -784,7 +788,7 @@ pub(crate) mod tests {
         async fn restore_checkpointed_session_environment(
             &self,
             request: awaken_provisioning_contract::SandboxRestoreRequest,
-        ) -> Result<awaken_session_contract::RestoreReceipt, awaken_session_types::RunError>
+        ) -> Result<awaken_session_contract::RestoreReceipt, awaken_runtime_contract::runs::RunError>
         {
             awaken_session_execution_contract::NeutralRuntime
                 .restore_checkpointed_session_environment(request)
@@ -795,7 +799,7 @@ pub(crate) mod tests {
             &self,
             thread: &str,
             checkpoint: &awaken_provisioning_contract::SandboxCheckpointRef,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .delete_session_checkpoint(thread, checkpoint)
                 .await
@@ -805,7 +809,7 @@ pub(crate) mod tests {
             &self,
             thread: &str,
             transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .apply_session_inputs(thread, transition)
                 .await
@@ -817,7 +821,7 @@ pub(crate) mod tests {
             lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<
             awaken_session_contract::SessionRepositoryPublicationEffect,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             self.events.lock().unwrap().push(format!(
                 "publish:{}:{}",

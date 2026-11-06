@@ -132,7 +132,7 @@ impl WorkerControlClient {
     fn session_environment_error(
         status: reqwest::StatusCode,
         body: &Value,
-    ) -> awaken_session_types::RunError {
+    ) -> awaken_runtime_contract::runs::RunError {
         let code = body.get("code").and_then(Value::as_str).unwrap_or(
             if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
                 "unavailable"
@@ -145,13 +145,13 @@ impl WorkerControlClient {
             .and_then(Value::as_str)
             .unwrap_or("Session Environment control request rejected");
         if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-            awaken_session_types::RunError::unavailable_classified(code, message)
+            awaken_runtime_contract::runs::RunError::unavailable_classified(code, message)
         } else if status == reqwest::StatusCode::CONFLICT {
             // A conflict keeps its fault across the Worker boundary, so the
             // Worker retries it exactly as a co-located realization would.
-            awaken_session_types::RunError::conflict_classified(code, message)
+            awaken_runtime_contract::runs::RunError::conflict_classified(code, message)
         } else {
-            awaken_session_types::RunError::classified(code, message)
+            awaken_runtime_contract::runs::RunError::classified(code, message)
         }
     }
 
@@ -163,8 +163,10 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         attention: &awaken_session_application_contract::TaskAttention,
-    ) -> Result<awaken_session_application_contract::TaskAttentionAck, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_application_contract::TaskAttentionAck,
+        awaken_runtime_contract::runs::RunError,
+    > {
         match self
             .post_response(
                 awaken_session_application_contract::WORKER_TASK_ATTENTION_PATH,
@@ -173,10 +175,12 @@ impl WorkerControlClient {
             .await
         {
             Ok((status, body)) => task_attention_outcome(status, &body),
-            Err(error) if error.retryable => {
-                Err(awaken_session_types::RunError::unavailable(error.message))
-            }
-            Err(error) => Err(awaken_session_types::RunError::bad_request(error.message)),
+            Err(error) if error.retryable => Err(
+                awaken_runtime_contract::runs::RunError::unavailable(error.message),
+            ),
+            Err(error) => Err(awaken_runtime_contract::runs::RunError::bad_request(
+                error.message,
+            )),
         }
     }
 
@@ -190,7 +194,7 @@ impl WorkerControlClient {
         read: &awaken_session_application_contract::TaskTenureRead,
     ) -> Result<
         Option<awaken_session_application_contract::TaskTenureRecord>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         match self
             .post_response(
@@ -200,10 +204,12 @@ impl WorkerControlClient {
             .await
         {
             Ok((status, body)) => task_tenure_outcome(status, &body),
-            Err(error) if error.retryable => {
-                Err(awaken_session_types::RunError::unavailable(error.message))
-            }
-            Err(error) => Err(awaken_session_types::RunError::bad_request(error.message)),
+            Err(error) if error.retryable => Err(
+                awaken_runtime_contract::runs::RunError::unavailable(error.message),
+            ),
+            Err(error) => Err(awaken_runtime_contract::runs::RunError::bad_request(
+                error.message,
+            )),
         }
     }
 
@@ -213,7 +219,7 @@ impl WorkerControlClient {
         intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         let (status, body) = self
             .post_response(
@@ -221,13 +227,15 @@ impl WorkerControlClient {
                 json!({ "identity": identity, "intent": intent }),
             )
             .await
-            .map_err(|error| awaken_session_types::RunError::unavailable(error.to_string()))?;
+            .map_err(|error| {
+                awaken_runtime_contract::runs::RunError::unavailable(error.to_string())
+            })?;
         if !status.is_success() {
             return Err(Self::session_environment_error(status, &body));
         }
         serde_json::from_value(body.get("authorization").cloned().unwrap_or(Value::Null)).map_err(
             |error| {
-                awaken_session_types::RunError::internal(format!(
+                awaken_runtime_contract::runs::RunError::internal(format!(
                     "Session Environment authorization decode: {error}"
                 ))
             },
@@ -238,21 +246,25 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         receipt: &awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentState,
+        awaken_runtime_contract::runs::RunError,
+    > {
         let (status, body) = self
             .post_response(
                 "/v1/worker/session/environment/persist",
                 json!({ "identity": identity, "receipt": receipt }),
             )
             .await
-            .map_err(|error| awaken_session_types::RunError::unavailable(error.to_string()))?;
+            .map_err(|error| {
+                awaken_runtime_contract::runs::RunError::unavailable(error.to_string())
+            })?;
         if !status.is_success() {
             return Err(Self::session_environment_error(status, &body));
         }
         serde_json::from_value(body.get("environment").cloned().unwrap_or(Value::Null)).map_err(
             |error| {
-                awaken_session_types::RunError::internal(format!(
+                awaken_runtime_contract::runs::RunError::internal(format!(
                     "Session Environment authority decode: {error}"
                 ))
             },
@@ -972,15 +984,18 @@ impl WorkerControlClient {
 fn task_attention_outcome(
     status: reqwest::StatusCode,
     body: &Value,
-) -> Result<awaken_session_application_contract::TaskAttentionAck, awaken_session_types::RunError> {
+) -> Result<
+    awaken_session_application_contract::TaskAttentionAck,
+    awaken_runtime_contract::runs::RunError,
+> {
     if status.is_success() {
         let ack = body.get("ack").cloned().ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
+            awaken_runtime_contract::runs::RunError::unavailable(
                 "Task attention response carries no acknowledgement",
             )
         })?;
         return serde_json::from_value(ack).map_err(|error| {
-            awaken_session_types::RunError::unavailable(format!(
+            awaken_runtime_contract::runs::RunError::unavailable(format!(
                 "Task attention acknowledgement does not decode: {error}"
             ))
         });
@@ -991,9 +1006,13 @@ fn task_attention_outcome(
         .unwrap_or("Task attention rejected")
         .to_owned();
     if status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS {
-        Err(awaken_session_types::RunError::bad_request(message))
+        Err(awaken_runtime_contract::runs::RunError::bad_request(
+            message,
+        ))
     } else {
-        Err(awaken_session_types::RunError::unavailable(message))
+        Err(awaken_runtime_contract::runs::RunError::unavailable(
+            message,
+        ))
     }
 }
 
@@ -1012,11 +1031,13 @@ fn task_tenure_outcome(
     body: &Value,
 ) -> Result<
     Option<awaken_session_application_contract::TaskTenureRecord>,
-    awaken_session_types::RunError,
+    awaken_runtime_contract::runs::RunError,
 > {
     if status.is_success() {
         let tenure = body.get("tenure").ok_or_else(|| {
-            awaken_session_types::RunError::unavailable("Task tenure response carries no tenure")
+            awaken_runtime_contract::runs::RunError::unavailable(
+                "Task tenure response carries no tenure",
+            )
         })?;
         if tenure.is_null() {
             return Ok(None);
@@ -1024,7 +1045,7 @@ fn task_tenure_outcome(
         return serde_json::from_value(tenure.clone())
             .map(Some)
             .map_err(|error| {
-                awaken_session_types::RunError::unavailable(format!(
+                awaken_runtime_contract::runs::RunError::unavailable(format!(
                     "Task tenure record does not decode: {error}"
                 ))
             });
@@ -1035,16 +1056,20 @@ fn task_tenure_outcome(
         .unwrap_or("Task tenure read rejected")
         .to_owned();
     if status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS {
-        Err(awaken_session_types::RunError::bad_request(message))
+        Err(awaken_runtime_contract::runs::RunError::bad_request(
+            message,
+        ))
     } else {
-        Err(awaken_session_types::RunError::unavailable(message))
+        Err(awaken_runtime_contract::runs::RunError::unavailable(
+            message,
+        ))
     }
 }
 
 #[cfg(test)]
 mod task_tenure_outcome_tests {
     use super::task_tenure_outcome;
-    use awaken_session_types::RunErrorKind;
+    use awaken_runtime_contract::runs::RunErrorKind;
     use reqwest::StatusCode;
     use serde_json::json;
 
@@ -1094,7 +1119,7 @@ mod task_tenure_outcome_tests {
 #[cfg(test)]
 mod task_attention_outcome_tests {
     use super::task_attention_outcome;
-    use awaken_session_types::RunErrorKind;
+    use awaken_runtime_contract::runs::RunErrorKind;
     use reqwest::StatusCode;
     use serde_json::json;
 
@@ -1150,7 +1175,7 @@ mod task_attention_outcome_tests {
 #[cfg(test)]
 mod session_environment_error_tests {
     use super::WorkerControlClient;
-    use awaken_session_types::RunErrorKind;
+    use awaken_runtime_contract::runs::RunErrorKind;
     use serde_json::json;
 
     #[test]

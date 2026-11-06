@@ -6,7 +6,9 @@ async fn tunnel_routes_enter_the_workspace_pep_and_stamp_its_scope() {
     // token or browser credential. Effect: every C2 is rejected before the
     // application handler. A role grant cannot upgrade an API key into WIF.
     async fn scope_echo(
-        axum::Extension(scope): axum::Extension<awaken_tenancy::WorkspaceScope>,
+        axum::Extension(scope): axum::Extension<
+            awaken_runtime_contract::runs::scope::WorkspaceScope,
+        >,
     ) -> Response {
         (StatusCode::OK, Json(json!({ "workspace": scope.0 }))).into_response()
     }

@@ -5,11 +5,12 @@
 //! Skill bindings and the provider-effective Sandbox layout gate.
 
 use awaken_agent_contract::McpTarget;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 use awaken_session_configuration_contract::{
     SessionModelOverride, is_native_session_runtime, validate_sandbox_provisioning_runtime,
 };
-use awaken_session_types::{RunError, SessionRuntimePlacement};
+use awaken_session_types::SessionRuntimePlacement;
 
 use crate::{ResolvedSessionEnvironment, SessionCreationCommands, runtime_placement_for_topology};
 

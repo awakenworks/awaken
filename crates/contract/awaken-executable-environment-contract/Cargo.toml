@@ -29,6 +29,7 @@ thiserror.workspace = true
 workspace = true
 
 [dev-dependencies]
+awaken-runtime-contract.workspace = true
 awaken-session-application-contract.workspace = true
 proptest.workspace = true
 tokio.workspace = true

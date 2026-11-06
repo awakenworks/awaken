@@ -195,7 +195,7 @@ impl TaskAttentionTarget {
     pub(super) async fn deliver(
         &self,
         attention: TaskAttention,
-    ) -> Result<TaskAttentionAck, awaken_session_types::RunError> {
+    ) -> Result<TaskAttentionAck, awaken_runtime_contract::runs::RunError> {
         match self {
             Self::Application(application) => application.submit_task_attention(attention).await,
             Self::Registered(delivery) => delivery.deliver(attention).await,
@@ -273,7 +273,7 @@ mod tests {
         async fn deliver(
             &self,
             _attention: TaskAttention,
-        ) -> Result<TaskAttentionAck, awaken_session_types::RunError> {
+        ) -> Result<TaskAttentionAck, awaken_runtime_contract::runs::RunError> {
             panic!("route selection never delivers")
         }
 
@@ -282,7 +282,7 @@ mod tests {
             _read: TaskTenureRead,
         ) -> Result<
             Option<awaken_session_application_contract::TaskTenureRecord>,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             panic!("route selection never reads tenure")
         }
@@ -441,7 +441,7 @@ mod tests {
 
     /// A registered incarnation whose Coordinator answers one scripted tenure.
     struct ScriptedTaskControl {
-        answer: Result<Option<serde_json::Value>, awaken_session_types::RunErrorKind>,
+        answer: Result<Option<serde_json::Value>, awaken_runtime_contract::runs::RunErrorKind>,
         reads: std::sync::Mutex<Vec<TaskTenureRead>>,
     }
 
@@ -454,7 +454,7 @@ mod tests {
         async fn deliver(
             &self,
             _attention: TaskAttention,
-        ) -> Result<TaskAttentionAck, awaken_session_types::RunError> {
+        ) -> Result<TaskAttentionAck, awaken_runtime_contract::runs::RunError> {
             panic!("tenure reads never deliver")
         }
 
@@ -463,7 +463,7 @@ mod tests {
             read: TaskTenureRead,
         ) -> Result<
             Option<awaken_session_application_contract::TaskTenureRecord>,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             self.reads
                 .lock()
@@ -473,10 +473,12 @@ mod tests {
                 Ok(slot) => Ok(slot
                     .clone()
                     .map(awaken_session_application_contract::TaskTenureRecord::new)),
-                Err(awaken_session_types::RunErrorKind::BadRequest) => Err(
-                    awaken_session_types::RunError::bad_request("not this incarnation's holder"),
-                ),
-                Err(_) => Err(awaken_session_types::RunError::unavailable(
+                Err(awaken_runtime_contract::runs::RunErrorKind::BadRequest) => {
+                    Err(awaken_runtime_contract::runs::RunError::bad_request(
+                        "not this incarnation's holder",
+                    ))
+                }
+                Err(_) => Err(awaken_runtime_contract::runs::RunError::unavailable(
                     "Coordinator unavailable",
                 )),
             }
@@ -522,12 +524,12 @@ mod tests {
             ("H3", Ok(None), Ok(None)),
             (
                 "H4",
-                Err(awaken_session_types::RunErrorKind::BadRequest),
+                Err(awaken_runtime_contract::runs::RunErrorKind::BadRequest),
                 Err(()),
             ),
             (
                 "H5",
-                Err(awaken_session_types::RunErrorKind::Unavailable),
+                Err(awaken_runtime_contract::runs::RunErrorKind::Unavailable),
                 Err(()),
             ),
             (

@@ -5,7 +5,7 @@ use crate::{OrderIndex, ProjectionError, ToolResultSource};
 use awaken_agent_contract::RunLifecycleEvent;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::{EndCause, RunState};
-use awaken_session_application_contract::Pending;
+use awaken_runtime_contract::runs::Pending;
 
 /// The timeline's stop classification of one Run boundary.
 ///

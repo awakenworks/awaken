@@ -1294,7 +1294,7 @@ mod tests {
                 match error {
                     Some(message) => {
                         let error = result.expect_err(rule);
-                        assert_eq!(error.kind, awaken_session_types::RunErrorKind::BadRequest, "{rule}");
+                        assert_eq!(error.kind, awaken_runtime_contract::runs::RunErrorKind::BadRequest, "{rule}");
                         assert_eq!(error.message, message, "{rule}: original error projection");
                     }
                     None => {
@@ -1339,7 +1339,7 @@ mod tests {
                     .unwrap_err();
                 assert_eq!(
                     error.kind,
-                    awaken_session_types::RunErrorKind::BadRequest,
+                    awaken_runtime_contract::runs::RunErrorKind::BadRequest,
                     "M0 published={published}"
                 );
                 assert_eq!(

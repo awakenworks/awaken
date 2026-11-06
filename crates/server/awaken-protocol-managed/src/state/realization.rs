@@ -5,9 +5,9 @@
 
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
-use awaken_session_execution_contract::SessionRealizationControlFailure;
 #[cfg(test)]
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
+use awaken_session_execution_contract::SessionRealizationControlFailure;
 
 impl ManagedState {
     fn map_realization_failure(error: SessionRealizationControlFailure) -> StateError {
@@ -39,7 +39,7 @@ mod tests {
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::{credential::PlaintextBoundary, credential::PlaintextHolder};
     use awaken_credential_contract::CredentialRealizationProfile;
-    use awaken_session_application_contract::StepOutcome;
+    use awaken_runtime_contract::runs::StepOutcome;
     use awaken_session_configuration_contract::{
         EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
         SessionNetworkPolicy,
@@ -120,7 +120,7 @@ mod tests {
             &self,
         ) -> Result<
             awaken_lease_contract::authority::AuthorityProofStarted,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             awaken_protocol_managed_testkit::observe_realization_request()
         }
@@ -136,7 +136,7 @@ mod tests {
             owner: &str,
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-        ) -> Result<usize, awaken_session_types::RunError> {
+        ) -> Result<usize, awaken_runtime_contract::runs::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
                 .await
@@ -175,7 +175,7 @@ mod tests {
             &self,
             thread: &str,
             lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
                 .await
@@ -198,7 +198,7 @@ mod tests {
             description: &str,
             rubric: &str,
             max_iterations: u32,
-        ) -> Result<u64, awaken_session_types::RunError> {
+        ) -> Result<u64, awaken_runtime_contract::runs::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
                 .await
@@ -226,7 +226,7 @@ mod tests {
             executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
         ) -> Result<
             Option<awaken_session_execution_contract::OutcomeDrive>,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             awaken_session_execution_contract::NeutralRuntime
                 .continue_outcome(thread, executor)

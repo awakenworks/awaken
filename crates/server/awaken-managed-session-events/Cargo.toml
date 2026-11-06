@@ -19,7 +19,6 @@ awaken-agent-contract.workspace = true
 # Compaction markers, the Advisor tool identity and tool-batch operation ids.
 awaken-runtime-contract.workspace = true
 # `Pending`: the one answerable-ticket vocabulary a timeline pause refers to.
-awaken-session-application-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-types.workspace = true

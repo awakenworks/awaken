@@ -378,7 +378,10 @@ async fn profiled_capture_keeps_missing_child_errors_and_its_existing_geography_
                     let SessionCreationError::Rejected(error) = result.unwrap_err() else {
                         panic!("R3 original Profiled error")
                     };
-                    assert_eq!(error.kind, awaken_session_types::RunErrorKind::BadRequest);
+                    assert_eq!(
+                        error.kind,
+                        awaken_runtime_contract::runs::RunErrorKind::BadRequest
+                    );
                     assert_eq!(error.code, "invalid_request");
                     assert_eq!(
                         error.message,

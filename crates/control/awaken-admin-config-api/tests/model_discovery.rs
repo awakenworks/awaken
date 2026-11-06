@@ -446,7 +446,9 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
         .unwrap();
     request
         .extensions_mut()
-        .insert(awaken_tenancy::WorkspaceScope(edge_workspace(uri, &body)));
+        .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+            edge_workspace(uri, &body),
+        ));
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();

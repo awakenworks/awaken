@@ -72,7 +72,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for GatedS
         intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         self.inner.authorize(intent).await
     }
@@ -80,8 +80,10 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for GatedS
     async fn persist(
         &self,
         receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentState,
+        awaken_runtime_contract::runs::RunError,
+    > {
         if matches!(
             receipt.kind,
             awaken_session_contract::SessionEnvironmentEffectKind::Create

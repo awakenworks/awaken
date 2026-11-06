@@ -16,13 +16,13 @@ use awaken_executable_agent_contract::{
 };
 use awaken_protocol_managed::{ManagedDeploymentSessionLauncher, deployments_router};
 use awaken_protocol_managed_testkit::DurableFact;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use awaken_runtime_contract::snapshot::AgentId;
 use awaken_runtime_contract::{
     AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
     AgentSnapshotMetadata, ExecutableAgentSnapshot, ModelBinding,
 };
 use awaken_scenario_host::{EchoModel, build_unmounted_platform_with_agent_publications};
-use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -261,7 +261,7 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     };
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "L2b"
     );
     assert_eq!(

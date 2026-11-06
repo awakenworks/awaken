@@ -8,7 +8,8 @@
 use crate::worker_lease_types::proof_representative_lease;
 use crate::{SessionWork, SessionWorkAcquisition, SessionWorkGrant, SessionWorkOwnership};
 use awaken_lease_contract::fence::{Epoch, Tenure, ZeroEpoch};
-use awaken_session_types::{RunError, SessionId};
+use awaken_runtime_contract::runs::RunError;
+use awaken_session_types::SessionId;
 
 /// Session admission over the Environment queue's one existing lease authority.
 /// Queue adapters cannot implement this decision in place of the Session owner.

@@ -13,8 +13,8 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_dispatch_contract::PendingInput;
 use awaken_dispatch_execution::AdmissionError;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
-use awaken_session_application_contract::RunResume;
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::{RunError, RunResume};
+
 use awaken_tool_contract::tool::ToolOutput;
 
 use crate::{

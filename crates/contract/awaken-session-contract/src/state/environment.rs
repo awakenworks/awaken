@@ -59,7 +59,7 @@ pub use transition::{
 ///
 /// ```
 /// use awaken_session_contract::{SandboxGeneration, SessionEnvironmentOperation};
-/// use awaken_session_types::SessionId;
+/// use awaken_session_types::{SessionId};
 /// fn build(session: &SessionId, generation: &SandboxGeneration) -> SessionEnvironmentOperation {
 ///     SessionEnvironmentOperation::new("workspace", session, "suspend", generation, 7, None, None)
 /// }

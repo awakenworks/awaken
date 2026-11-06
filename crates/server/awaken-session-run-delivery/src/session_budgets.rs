@@ -16,7 +16,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource as _;
 use awaken_dispatch_contract::{DispatchReads as _, PendingInput, SessionContinuationOutbox as _};
 use awaken_runtime_contract::resume::ResumeResult;
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use crate::{CommittedReads, CoordinatedThreads, recovery_ticket};
 

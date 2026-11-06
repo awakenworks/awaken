@@ -73,7 +73,7 @@ impl SessionArchiveAdmission {
     pub fn validate_execution(
         self,
         session: &PersistedSession,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         use crate::state::SessionExecutionState;
         let refusal = match self.resolve(session.execution) {
             Self::IdleOnly if session.execution != SessionExecutionState::Idle => {
@@ -100,7 +100,9 @@ impl SessionArchiveAdmission {
             _ => None,
         };
         refusal.map_or(Ok(()), |message| {
-            Err(awaken_session_types::RunError::bad_request(message))
+            Err(awaken_runtime_contract::runs::RunError::bad_request(
+                message,
+            ))
         })
     }
 }

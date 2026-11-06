@@ -154,8 +154,11 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
         _agent: &str,
         _run: &awaken_agent_contract::agent::run::Id,
         _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
-    ) -> Result<Option<awaken_session_types::SessionRevision>, awaken_session_types::RunError> {
-        Err(awaken_session_types::RunError::unavailable(
+    ) -> Result<
+        Option<awaken_session_types::SessionRevision>,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        Err(awaken_runtime_contract::runs::RunError::unavailable(
             "the transport fixture observes settlement without admitting activity",
         ))
     }
@@ -170,9 +173,9 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
         _preparation: awaken_session_execution_contract::PreparedSessionRunActivity,
     ) -> Result<
         awaken_session_execution_contract::SessionRunActivityAdmission,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
-        Err(awaken_session_types::RunError::unavailable(
+        Err(awaken_runtime_contract::runs::RunError::unavailable(
             "the transport fixture observes settlement without admitting activity",
         ))
     }
@@ -185,9 +188,9 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
         _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
         awaken_session_execution_contract::SessionRunActivityAdmission,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
-        Err(awaken_session_types::RunError::bad_request(
+        Err(awaken_runtime_contract::runs::RunError::bad_request(
             "settlement fixture does not admit Session activity",
         ))
     }
@@ -197,8 +200,8 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
         _session_id: &awaken_session_types::SessionId,
         _thread_id: &ThreadId,
         _run_id: &RunId,
-    ) -> Result<bool, awaken_session_types::RunError> {
-        Err(awaken_session_types::RunError::bad_request(
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
+        Err(awaken_runtime_contract::runs::RunError::bad_request(
             "settlement fixture does not admit model requests",
         ))
     }
@@ -208,7 +211,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
         _session_id: &awaken_session_types::SessionId,
     ) -> Result<
         Vec<awaken_session_execution_contract::SessionAgentRosterEntry>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         Ok(Vec::new())
     }
@@ -218,22 +221,24 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
         _command: awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<
         awaken_session_execution_contract::SessionAgentMessageReceipt,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
-        Err(awaken_session_types::RunError::bad_request("unused"))
+        Err(awaken_runtime_contract::runs::RunError::bad_request(
+            "unused",
+        ))
     }
 
     async fn settle_session_agent_boundary(
         &self,
         _command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         Ok(())
     }
 
     async fn finalize_session_agent_boundary(
         &self,
         command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.finalized.lock().unwrap().push(command);
         Ok(())
     }
@@ -242,14 +247,14 @@ impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSe
         &self,
         _session_id: &awaken_session_types::SessionId,
         _child_thread_id: &ThreadId,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         Ok(())
     }
 
     async fn reply_session_thread_tool(
         &self,
         _command: awaken_session_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         Ok(())
     }
 }
@@ -317,11 +322,11 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Record
         _acquisition: awaken_session_application_contract::SessionWorkAcquisition,
     ) -> Result<
         awaken_session_application_contract::SessionWorkOwnership,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         self.acquisitions.fetch_add(1, Ordering::SeqCst);
         if self.unavailable.load(Ordering::SeqCst) {
-            return Err(awaken_session_types::RunError::unavailable(
+            return Err(awaken_runtime_contract::runs::RunError::unavailable(
                 "injected Work authority outage",
             ));
         }
@@ -354,14 +359,14 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Record
     async fn release_session_work(
         &self,
         _lease: &awaken_session_application_contract::SessionWorkGrant,
-    ) -> Result<bool, awaken_session_types::RunError> {
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         self.releases.fetch_add(1, Ordering::SeqCst);
         let mut mode = self.mode.lock().unwrap();
         match *mode {
             WorkMode::ReleaseRace => Ok(false),
             WorkMode::ReleaseResponseLost => {
                 *mode = WorkMode::Retired;
-                Err(awaken_session_types::RunError::unavailable(
+                Err(awaken_runtime_contract::runs::RunError::unavailable(
                     "release committed but its response was lost",
                 ))
             }
@@ -373,7 +378,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Record
     async fn release_worker_session_work(
         &self,
         _worker_owner: &str,
-    ) -> Result<usize, awaken_session_types::RunError> {
+    ) -> Result<usize, awaken_runtime_contract::runs::RunError> {
         Ok(0)
     }
 }

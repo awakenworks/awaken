@@ -11,6 +11,7 @@ use crate::mutation::ROOT_CAS_ATTEMPTS;
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_runtime_contract::runs::RunError;
 #[cfg(any(test, kani))]
 use awaken_session_contract::SessionActivitySettlementPlan;
 #[cfg(any(test, kani))]
@@ -20,7 +21,6 @@ use awaken_session_contract::session_activity_open_plan;
 #[cfg(test)]
 use awaken_session_contract::session_activity_settlement_plan;
 use awaken_session_contract::{IdempotencyRecord, PersistedSession};
-use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 use awaken_time::WallClockExt as _;
 

@@ -4,7 +4,7 @@ use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::{
     Event as StreamEvent, Observation as StreamObservation,
 };
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 use awaken_store_inmem::MemoryStreamSink;
 
 /// A3: dropping the guard (caller future dropped / timed out) removes the

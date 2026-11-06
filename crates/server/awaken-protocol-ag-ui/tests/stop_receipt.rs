@@ -14,9 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_session_application_contract::{
-    OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{OwnedRuns, Pending, RunError, RunResume, Runs, StepOutcome};
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::Value;
@@ -29,14 +27,14 @@ struct StopRecorder {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for StopRecorder {
+impl Runs for StopRecorder {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("a Stop never starts a Run")
     }
 
@@ -46,20 +44,20 @@ impl RunApplication for StopRecorder {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("a Stop never resumes a Run")
     }
 
-    async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
+    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
         self.interrupted.lock().unwrap().push(thread.to_string());
         Ok(())
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -69,7 +67,7 @@ impl RunApplication for StopRecorder {
 }
 
 #[async_trait::async_trait]
-impl OwnerScopedRunApplication for StopRecorder {
+impl OwnedRuns for StopRecorder {
     async fn run_streaming_for_owner(
         &self,
         _owner_scope: &str,
@@ -78,7 +76,7 @@ impl OwnerScopedRunApplication for StopRecorder {
         _agent: Option<String>,
         _messages: Vec<Message>,
         _sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("a Stop never starts a Run")
     }
 
@@ -89,15 +87,16 @@ impl OwnerScopedRunApplication for StopRecorder {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("a Stop never resumes a Run")
     }
 }
 
 async fn stop(runtime: Arc<StopRecorder>, thread: &str) -> (StatusCode, Value) {
-    let app = awaken_protocol_ag_ui::router::router_with_owner_scope(runtime).layer(
-        axum::Extension(awaken_tenancy::WorkspaceScope("t32-workspace".into())),
-    );
+    let app =
+        awaken_protocol_ag_ui::router::router_with_owner_scope(runtime).layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("t32-workspace".into()),
+        ));
     let response = app
         .oneshot(
             Request::builder()

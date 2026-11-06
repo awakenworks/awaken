@@ -4,10 +4,10 @@
 // @formal reason: identity validation to McpGenerationRef; no state transition or effect is selected.
 //! Existing MCP claim-to-request encoding; frozen Session reads live with Queries.
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::mcp::{
     McpGenerationRef, SessionMcpAttachment, StageMcpAttachment,
 };
-use awaken_session_types::RunError;
 
 pub(crate) fn mcp_generation_ref(
     session_id: &awaken_session_types::SessionId,

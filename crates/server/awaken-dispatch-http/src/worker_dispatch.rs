@@ -200,7 +200,7 @@ pub fn worker_source_retention_router(
                 .source_retention_subjects(&request.identity)
                 .await
                 .map_err(|error| match error.kind {
-                    awaken_session_types::RunErrorKind::BadRequest => {
+                    awaken_runtime_contract::runs::RunErrorKind::BadRequest => {
                         ApplicationError::invalid(error.to_string())
                     }
                     _ => ApplicationError::unavailable(error.to_string()),
@@ -858,7 +858,7 @@ pub fn respond(result: Result<Value, ApplicationError>) -> (StatusCode, Json<Val
 enum RealizationHttpError {
     Boundary(ApplicationError),
     Control(awaken_session_execution_contract::SessionRealizationControlFailure),
-    Binding(awaken_session_types::RunError),
+    Binding(awaken_runtime_contract::runs::RunError),
 }
 
 impl From<ApplicationError> for RealizationHttpError {
@@ -875,8 +875,8 @@ impl From<awaken_session_execution_contract::SessionRealizationControlFailure>
     }
 }
 
-impl From<awaken_session_types::RunError> for RealizationHttpError {
-    fn from(error: awaken_session_types::RunError) -> Self {
+impl From<awaken_runtime_contract::runs::RunError> for RealizationHttpError {
+    fn from(error: awaken_runtime_contract::runs::RunError) -> Self {
         Self::Binding(error)
     }
 }
@@ -887,10 +887,14 @@ fn respond_realization(result: Result<Value, RealizationHttpError>) -> (StatusCo
         Err(RealizationHttpError::Boundary(error)) => respond(Err(error)),
         Err(RealizationHttpError::Binding(error)) => {
             let status = match error.kind {
-                awaken_session_types::RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
-                awaken_session_types::RunErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-                awaken_session_types::RunErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-                awaken_session_types::RunErrorKind::Conflict => StatusCode::CONFLICT,
+                awaken_runtime_contract::runs::RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable => {
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+                awaken_runtime_contract::runs::RunErrorKind::Internal => {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+                awaken_runtime_contract::runs::RunErrorKind::Conflict => StatusCode::CONFLICT,
             };
             (
                 status,

@@ -98,7 +98,7 @@ use std::sync::Arc;
 mod dream;
 
 use awaken_protocol_managed::{ManagedState, router};
-use awaken_session_application_contract::RunApplication;
+use awaken_runtime_contract::runs::Runs;
 use axum::Router;
 
 // This data plane depends on each authoritative owner directly.
@@ -1083,7 +1083,9 @@ async fn mount_with_managed_over_and_models(
                 .await
             {
                 Ok(_) => Ok(true),
-                Err(error) if error.kind == awaken_session_types::RunErrorKind::BadRequest => {
+                Err(error)
+                    if error.kind == awaken_runtime_contract::runs::RunErrorKind::BadRequest =>
+                {
                     Ok(false)
                 }
                 Err(error) => Err(error.to_string()),
@@ -1120,7 +1122,7 @@ async fn mount_with_managed_over_and_models(
     // they share the executor with no per-protocol execution path. The root
     // already bound it back into the executor as its background submission.
     let session_runs = execution.session_runs.clone();
-    let admitted_runs: Arc<dyn RunApplication> = session_runs.clone();
+    let admitted_runs: Arc<dyn Runs> = session_runs.clone();
     let (ai_sdk, ag_ui) = application_protocol_routers(
         &session_runs,
         application_access,
@@ -1404,12 +1406,12 @@ fn with_local_workspace_scope(router: Router, local_workspace: String) -> Router
                 // edges already stamped a scope, which must remain authoritative.
                 if request
                     .extensions()
-                    .get::<awaken_tenancy::WorkspaceScope>()
+                    .get::<awaken_runtime_contract::runs::scope::WorkspaceScope>()
                     .is_none()
                 {
-                    request
-                        .extensions_mut()
-                        .insert(awaken_tenancy::WorkspaceScope(local_workspace));
+                    request.extensions_mut().insert(
+                        awaken_runtime_contract::runs::scope::WorkspaceScope(local_workspace),
+                    );
                 }
                 next.run(request).await
             }

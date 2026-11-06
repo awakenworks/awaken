@@ -12,8 +12,8 @@
 use crate::mutation::ROOT_CAS_ATTEMPTS;
 use crate::repository_participants::RepositoryRetirementCause;
 use awaken_agent_contract::stable_fingerprint;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_contract::{IdempotencyRecord, SessionExecutionState};
-use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
 use crate::mutation::repository_failure;

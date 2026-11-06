@@ -240,7 +240,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Respon
         intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         self.authorize_calls.fetch_add(1, Ordering::SeqCst);
         if let Some(delegate) = &self.delegate {
@@ -273,8 +273,10 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Respon
     async fn persist(
         &self,
         receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentState,
+        awaken_runtime_contract::runs::RunError,
+    > {
         self.persist_calls.fetch_add(1, Ordering::SeqCst);
         if let Some(delegate) = &self.delegate {
             return delegate.persist(receipt).await;
@@ -284,7 +286,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Respon
             return Ok(test_committed_environment(receipt));
         }
         *committed = Some((receipt.effect_id, receipt.binding));
-        Err(awaken_session_types::RunError::unavailable(
+        Err(awaken_runtime_contract::runs::RunError::unavailable(
             "root CAS response was lost",
         ))
     }
@@ -299,7 +301,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
         intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         self.authorize_calls.fetch_add(1, Ordering::SeqCst);
         let asserted_epoch = intent.realization().map_or(0, |lease| lease.epoch);
@@ -310,27 +312,33 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
                 },
             )
         } else {
-            Err(awaken_session_types::RunError::unavailable_classified(
-                "session_realization_stale",
-                "a newer exact realization fence owns the Session",
-            ))
+            Err(
+                awaken_runtime_contract::runs::RunError::unavailable_classified(
+                    "session_realization_stale",
+                    "a newer exact realization fence owns the Session",
+                ),
+            )
         }
     }
 
     async fn persist(
         &self,
         receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentState,
+        awaken_runtime_contract::runs::RunError,
+    > {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let asserted_epoch = receipt.realization.as_ref().map_or(0, |lease| lease.epoch);
         if asserted_epoch == self.accepted_epoch.load(Ordering::SeqCst) {
             Ok(test_committed_environment(receipt))
         } else {
-            Err(awaken_session_types::RunError::unavailable_classified(
-                "session_realization_stale",
-                "a newer exact realization fence owns the Session",
-            ))
+            Err(
+                awaken_runtime_contract::runs::RunError::unavailable_classified(
+                    "session_realization_stale",
+                    "a newer exact realization fence owns the Session",
+                ),
+            )
         }
     }
 }

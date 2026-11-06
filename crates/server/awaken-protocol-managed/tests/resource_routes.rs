@@ -10,7 +10,7 @@ use std::sync::Arc;
 use awaken_protocol_managed::{
     ResourcesRouterInput, default_models, models_router, resources_router,
 };
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

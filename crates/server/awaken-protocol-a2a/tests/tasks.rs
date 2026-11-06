@@ -12,9 +12,7 @@ use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Message;
 use awaken_lease_testkit::ManualClock;
 use awaken_protocol_a2a::router;
-use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{Pending, RunError, RunResume, Runs, StepOutcome};
 use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
@@ -30,14 +28,14 @@ struct AwaitingRuntime {
 }
 
 #[async_trait]
-impl RunApplication for AwaitingRuntime {
+impl Runs for AwaitingRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         self.started.store(true, Ordering::SeqCst);
         Ok(StepOutcome::awaiting(Vec::new(), Some(pending())))
     }
@@ -48,7 +46,7 @@ impl RunApplication for AwaitingRuntime {
         _thread: &str,
         _tool_use_id: &str,
         resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         if let RunResume::Permission(PermissionDecision::Deny { .. }) = resume {
             self.denied.store(true, Ordering::SeqCst);
         }
@@ -58,11 +56,11 @@ impl RunApplication for AwaitingRuntime {
         ))
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(self.started.load(Ordering::SeqCst).then(pending))
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -276,14 +274,14 @@ struct ClientToolRuntime {
 }
 
 #[async_trait]
-impl RunApplication for ClientToolRuntime {
+impl Runs for ClientToolRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("the context is already awaiting, so send takes the resume branch")
     }
 
@@ -293,7 +291,7 @@ impl RunApplication for ClientToolRuntime {
         _thread: &str,
         _tool_use_id: &str,
         resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         if let RunResume::ClientResult { content, is_error } = resume {
             assert!(!is_error, "a plain answer is not an error result");
             *self.delivered.lock().unwrap() = Some(extract_text(&content));
@@ -306,7 +304,7 @@ impl RunApplication for ClientToolRuntime {
         ))
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(Some(Pending {
             tool_use_id: "c2".into(),
             name: "submit_answer".into(),
@@ -315,7 +313,7 @@ impl RunApplication for ClientToolRuntime {
         }))
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 

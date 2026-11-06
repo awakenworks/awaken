@@ -10,7 +10,7 @@
 use awaken_agent_contract::agent::message::{Message as AgentMessage, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 
-use awaken_session_application_contract::{StepOutcome, blocks_text};
+use awaken_runtime_contract::runs::{StepOutcome, blocks_text};
 
 use crate::types::{Message, MessageRole, Part, Task, TaskState, TaskStatus};
 
@@ -224,7 +224,7 @@ mod tests {
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::Id as MessageId;
     use awaken_agent_contract::agent::run::{EndCause, Failure};
-    use awaken_session_application_contract::Pending;
+    use awaken_runtime_contract::runs::Pending;
 
     const TIMESTAMP: &str = "2026-07-19T00:00:00Z";
 
