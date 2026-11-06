@@ -508,6 +508,35 @@ Linux-specific namespace/pidfd obligations remain in the required Linux gate.
 
 ## Coverage interpretation and merge evidence
 
+For local Rust-only feedback, use the same coverage owner with an explicit
+scope:
+
+```sh
+bash scripts/ci/combined-coverage.sh --rust-only
+```
+
+This retains the authored whole Rust feature graph, native tests, pinned
+doctests, homogeneous profile export and working-source fence. It does not
+start service E2E or apply its qualification threshold. `per-crate.json` records
+`execution_scope=rust-workspace`; the no-argument composition below keeps
+`execution_scope=combined` and every existing required stage. Scope is explicit
+at the report writer, so a partial report cannot silently declare combined
+execution.
+
+Risk (P0/P1/P2) and tier (L0-L4) remain the existing dimensions above. Independent
+expectation tables belong beside their tests and may be shared with proofs,
+but may not call the production decision being specified. Assert both admitted
+and refused effects. A default-denied optional adapter is not evidence that a
+real backend executed. Required adapter lanes must provide their existing
+required fixtures and reconcile named outcomes with the listed selection.
+
+Coverage-report aggregation matches crate ownership once per source file and
+reduces each measured line/branch once. Performance replay must retain the
+same LCOV bytes, metadata, exclusions and identical outputs. A synthetic replay
+is a report-processing benchmark only; it is neither measured product coverage
+nor the paused ordinary Cargo-build benchmark. Queue, compilation, execution
+and report processing retain their separate observations.
+
 ```sh
 bash scripts/ci/combined-coverage.sh
 ```
@@ -517,7 +546,12 @@ deterministic E2E on one instrumented build. Homogeneous binary-signature LCOV
 groups are exported before unioning `(file,line)` and branch identities, so
 repeated profiles do not multiply the denominator. `per-crate.json` reports
 production `src` coverage by actual workspace membership and excludes test-only
-lines. `null` means unmeasured/unavailable, including missing branch data; it
+lines. It reuses the existing Cargo module graph to exclude whole files reached
+only through test modules, including their unannotated fixture helpers. Mixed
+test/feature modules and files also reached by production remain candidates.
+An unresolved production include makes that crate's production counters `null`
+with its cause recorded; the raw LCOV evidence remains available.
+`null` means unmeasured/unavailable, including missing branch data; it
 is never a reported 0% or a passing threshold. Stable line instrumentation
 does not by itself prove branch/MC/DC coverage. The independent fuzz workspace
 is governed by its fuzz gate, not a fabricated row in root Cargo metadata.

@@ -24,6 +24,15 @@ its wall-clock-derived expiry is not a stable replay fingerprint; clients needin
 replayable uploads omit relative expiry. The key remains internal catalog data and
 is not projected by list or metadata responses.
 
+Artifact content deduplication and publishing-Run provenance have different
+owners. The existing File key deduplicates immutable path/content publication;
+`ArtifactCapture.origin` and the capture revision retain the publishing Run's
+reference. The harvester binds that reference from its existing Run fence
+before accepting a capture receipt. The HTTP boundary rechecks the same
+reference against its admitted fence. A peer cannot erase or replace it, and
+an unclaimed capture never invents one. No second artifact identity or history
+store is derived from provider bytes, which carry no Run authority.
+
 ### Bind and resolve
 
 Agent and Session bindings carry the logical `FileId`. Resolution checks the

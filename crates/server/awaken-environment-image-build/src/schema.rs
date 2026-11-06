@@ -5,17 +5,24 @@ pub(crate) const NS: &str = "environment_image_build";
 pub fn environment_image_build_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         "awaken.environment_image_build",
-        vec![Migration::new(
-            1,
-            "Environment image-build jobs",
-            "CREATE TABLE {prefix}_job (\
+        vec![
+            Migration::new(
+                1,
+                "Environment image-build jobs",
+                "CREATE TABLE {prefix}_job (\
                 build_key TEXT PRIMARY KEY, \
                 version BIGINT NOT NULL, \
                 demand_json TEXT NOT NULL, \
                 state_kind TEXT NOT NULL, \
                 state_json TEXT NOT NULL, \
                 updated_at_ms BIGINT NOT NULL)",
-        )?],
+            )?,
+            Migration::new(
+                2,
+                "Immutable registration recipe bindings",
+                "CREATE TABLE {prefix}_binding (binding_key TEXT PRIMARY KEY, build_key TEXT NOT NULL REFERENCES {prefix}_job(build_key))",
+            )?,
+        ],
     )
 }
 

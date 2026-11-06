@@ -120,6 +120,10 @@ pub(crate) struct ChildExecutionAdapters {
     /// delegation clones this coordinate; its logical parent is never a store.
     /// Standalone compositions without a Session leave it absent.
     pub(crate) session_thread_id: Option<awaken_agent_contract::ThreadId>,
+    /// The Host's installed Session registry, read at attempt time for the
+    /// Session environment context every child attempt in that Session receives.
+    /// Weak, like the root projection, so cached adapters never own the registry.
+    pub(crate) installed_sessions: Option<std::sync::Weak<crate::InstalledSessions>>,
     pub(crate) acp: Option<ChildAcpExecutorFactory>,
     pub(crate) remote: Option<Arc<dyn RunAttemptExecutor>>,
     pub(crate) credential_capabilities: credential::CredentialRealizationCapabilities,
@@ -232,12 +236,25 @@ pub(crate) fn child_attempt_executor(
     } else {
         None
     };
-    Ok(Arc::new(crate::run_exec::session_attempt_executor(
+    let attempt: Arc<dyn RunAttemptExecutor> = Arc::new(crate::run_exec::session_attempt_executor(
         runtime,
         acp,
         remote,
         &[&snapshot.resolved_spec],
-    )))
+    ));
+    // A child inside a Session receives the same task-time facts as its root;
+    // a standalone composition without a Session has none to project.
+    Ok(match (&adapters.session_thread_id, &adapters.installed_sessions, &adapters.clock) {
+        (Some(session), Some(installed_sessions), Some(clock)) => Arc::new(
+            crate::application::attempt_context::SessionContextAttemptExecutor::for_delegated_child(
+                attempt,
+                installed_sessions.clone(),
+                session.0.clone(),
+                clock.clone(),
+            ),
+        ),
+        _ => attempt,
+    })
 }
 
 pub(super) fn bind_direct_child_credentials(

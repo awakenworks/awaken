@@ -6,6 +6,7 @@ Notable changes to `awaken-mcp-wire`. Versions follow the [SDK versioning policy
 
 ### Changed
 
+- `McpTransportError::AuthenticationRequired` identifies a transport-authored authentication challenge. Server payload text remains a protocol error even when it imitates an authentication message. Exhaustive matches need the new arm; this remains inside the unpublished `0.2.0` change set.
 - `McpTransportError::ToolFault(code, message)` carries a server tool fault with its JSON-RPC code instead of folding it into `ServerError` (ADR-0103). Exhaustive matches need the new arm.
 
 ### Added

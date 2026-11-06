@@ -101,6 +101,28 @@ impl VaultLocalMaterialAuthority {
             .map_err(classify_secret_store_error)
     }
 
+    async fn validated_source(
+        &self,
+        request: &CredentialMaterialRequest<'_>,
+    ) -> Result<CredentialSource, CredentialMaterialError> {
+        if request.access.usage == CredentialUsage::ProviderAdapter
+            && request.expected_provider.is_none()
+        {
+            return Err(CredentialMaterialError::BindingMismatch);
+        }
+        let source = self
+            .load_active_source(&request.access.credential.id)
+            .await?;
+        self.validate_exact_source(
+            &source,
+            request.access,
+            request.selected_holder,
+            request.binding,
+            request.expected_provider,
+        )?;
+        Ok(source)
+    }
+
     /// The sole use-time source authorization decision for ordinary local
     /// resolution and attempt envelope issuance. All checks precede material
     /// store I/O, and an absent Provider coordinate fails closed.
@@ -196,23 +218,23 @@ impl CredentialMaterialResolver for VaultLocalMaterialAuthority {
         .collect()
     }
 
+    async fn validate_reference(
+        &self,
+        request: CredentialMaterialRequest<'_>,
+    ) -> Result<(), CredentialMaterialError> {
+        self.validated_source(&request).await.map(|_| ())
+    }
+
     async fn resolve_exact(
         &self,
         request: CredentialMaterialRequest<'_>,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
+        let source = self.validated_source(&request).await?;
         let CredentialMaterialRequest {
             access,
             selected_holder,
-            binding,
-            expected_provider,
+            ..
         } = request;
-        if access.usage == CredentialUsage::ProviderAdapter && expected_provider.is_none() {
-            // Reject missing, one-way endpoint evidence before even opening
-            // the source row; the same rule is rechecked at the source below.
-            return Err(CredentialMaterialError::BindingMismatch);
-        }
-        let source = self.load_active_source(&access.credential.id).await?;
-        self.validate_exact_source(&source, access, selected_holder, binding, expected_provider)?;
         let access_token = self.materialize_source(&source).await?;
         let material = if access.usage == CredentialUsage::ProviderAdapter
             && let Some(refresh) = &access.refresh
@@ -394,6 +416,18 @@ mod tests {
             provider_id: "provider-a",
             protocol_endpoint_id: Some("endpoint-1"),
         };
+        // V1 metadata admission is the same source decision with zero material
+        // IO. The holder process alone may subsequently request the secret.
+        authority
+            .validate_reference(CredentialMaterialRequest {
+                access: &access,
+                selected_holder: &holder,
+                binding: &binding,
+                expected_provider: Some(exact),
+            })
+            .await
+            .unwrap();
+        assert_eq!(secrets.reads.load(Ordering::SeqCst), 0, "V1 no secret read");
         assert!(
             resolve(&authority, &access, &holder, &binding, Some(exact))
                 .await
@@ -443,6 +477,56 @@ mod tests {
             "R3/E2 Workspace"
         );
         let foreign_holder = PlaintextHolder::new(PlaintextBoundary::Worker, "foreign.worker");
+        // V2-V5 missing provider / wrong revision / foreign Workspace / holder
+        // refuse in metadata-only admission too. These are the same R2/R3
+        // conditions, not another validation algorithm or a material probe.
+        for (rule, candidate, recipient, scope, provider, expected) in [
+            (
+                "V2",
+                &access,
+                &holder,
+                &binding,
+                None,
+                CredentialMaterialError::BindingMismatch,
+            ),
+            (
+                "V3",
+                &wrong_revision,
+                &holder,
+                &binding,
+                Some(exact),
+                CredentialMaterialError::RevisionMismatch,
+            ),
+            (
+                "V4",
+                &access,
+                &holder,
+                &wrong_workspace,
+                Some(exact),
+                CredentialMaterialError::RecipientMismatch,
+            ),
+            (
+                "V5",
+                &access,
+                &foreign_holder,
+                &binding,
+                Some(exact),
+                CredentialMaterialError::RecipientMismatch,
+            ),
+        ] {
+            assert_eq!(
+                authority
+                    .validate_reference(CredentialMaterialRequest {
+                        access: candidate,
+                        selected_holder: recipient,
+                        binding: scope,
+                        expected_provider: provider,
+                    })
+                    .await,
+                Err(expected),
+                "{rule}"
+            );
+        }
         assert_eq!(
             resolve(&authority, &access, &foreign_holder, &binding, Some(exact))
                 .await
@@ -452,6 +536,18 @@ mod tests {
         );
         source.status = CredentialStatus::Disabled;
         credentials.put(source).await.unwrap();
+        assert_eq!(
+            authority
+                .validate_reference(CredentialMaterialRequest {
+                    access: &access,
+                    selected_holder: &holder,
+                    binding: &binding,
+                    expected_provider: Some(exact),
+                })
+                .await,
+            Err(CredentialMaterialError::Unavailable),
+            "V6 revoked metadata"
+        );
         assert_eq!(
             resolve(&authority, &access, &holder, &binding, Some(exact))
                 .await

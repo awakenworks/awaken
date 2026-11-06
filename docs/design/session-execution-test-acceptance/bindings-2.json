@@ -5,8 +5,8 @@
     "source_locations": [
       {
         "path": "crates/contract/awaken-executable-environment-contract/src/image_realization.rs",
-        "line": 477,
-        "file_sha256": "4cb02685aa98e7661112a2e2b13354d3a5245ebc1f920d5ca9f361ce55113ad4"
+        "line": 440,
+        "file_sha256": "19a4088431e80c499b205b9a887ff8da194772d059aabf3a459174b4d872aaa0"
       }
     ],
     "execution_witnesses": [

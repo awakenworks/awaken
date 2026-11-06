@@ -331,12 +331,15 @@ impl awaken_credential_materializer::PlatformMcpEgressAllocation for GatedMediat
     }
 }
 
-fn platform_request(session: &str) -> crate::session_mcp::StageMcpAttachment {
+fn platform_request(
+    session: &str,
+    credential: awaken_agent_contract::credential::CredentialRef,
+) -> crate::session_mcp::StageMcpAttachment {
     use awaken_agent_contract::{
         credential::CredentialAccess, credential::CredentialExecutionPolicy,
-        credential::CredentialMaterialSource, credential::CredentialRef,
-        credential::CredentialUsage, credential::ModelExposurePolicy,
-        credential::PlaintextBoundary, credential::PlaintextHolder,
+        credential::CredentialMaterialSource, credential::CredentialUsage,
+        credential::ModelExposurePolicy, credential::PlaintextBoundary,
+        credential::PlaintextHolder,
     };
     let holder = PlaintextHolder::new(
         PlaintextBoundary::Platform,
@@ -368,10 +371,7 @@ fn platform_request(session: &str) -> crate::session_mcp::StageMcpAttachment {
         prompts_as_skills: false,
         credential: Some(
             CredentialAccess::new(
-                CredentialRef {
-                    id: "credential-never-stored".into(),
-                    revision: 7,
-                },
+                credential,
                 CredentialMaterialSource::ControlPlaneReference,
                 CredentialUsage::HttpHeader {
                     name: "authorization".into(),
@@ -407,12 +407,11 @@ async fn platform_row(event: Event) -> PlatformRow {
         release: Arc::new(tokio::sync::Semaphore::new(0)),
         released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
+    let (credentials, secrets, credential) =
+        super::mcp_plaintext_boundary::platform_credential().await;
     let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
-        .with_credentials(
-            Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
-            Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-        )
+        .with_credentials(credentials, secrets)
         .with_session_execution(
             crate::SessionExecutionDependencies::default()
                 .with_platform_mcp_egress_provisioner(mediator.clone()),
@@ -422,7 +421,10 @@ async fn platform_row(event: Event) -> PlatformRow {
     host.run_assembly
         .install_session_realization_lease(&session, lease())
         .unwrap();
-    let request = platform_request(&session);
+    let request = platform_request(
+        &session,
+        super::mcp_plaintext_boundary::credential_ref(&credential),
+    );
     let generation = request.generation.clone();
     let assembly = host.run_assembly.clone();
     let pending = tokio::spawn(async move { assembly.stage_mcp_attachment(request).await });

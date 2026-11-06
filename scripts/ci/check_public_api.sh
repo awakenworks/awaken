@@ -80,13 +80,15 @@ fi
 # The installed tool is here, so its version is a question it must answer. A
 # query that fails, or prints something this cannot parse, leaves the pinned
 # rendering undecided -- and the snapshots are an output of that exact version.
-if ! version_output="$(cargo public-api --version 2>&1)"; then
-  undecidable_tool "cargo public-api --version failed: $(printf '%s' "$version_output" | head -n 1)"
+# Query the installed binary directly: this reads no crate and must not queue
+# behind Cargo build admission. Rendering below still uses admitted Cargo.
+if ! version_output="$(cargo-public-api --version 2>&1)"; then
+  undecidable_tool "cargo-public-api --version failed: $(printf '%s' "$version_output" | head -n 1)"
 fi
 installed_public_api_version="$(printf '%s\n' "$version_output" | awk '{print $2}' | head -n 1)"
 case "$installed_public_api_version" in
   [0-9]*) ;;
-  *) undecidable_tool "cargo public-api --version printed no version: $(printf '%s' "$version_output" | head -n 1)" ;;
+  *) undecidable_tool "cargo-public-api --version printed no version: $(printf '%s' "$version_output" | head -n 1)" ;;
 esac
 if [ "$installed_public_api_version" != "$PUBLIC_API_TOOL_VERSION" ]; then
   absent_tool "cargo-public-api $PUBLIC_API_TOOL_VERSION (found $installed_public_api_version)" \

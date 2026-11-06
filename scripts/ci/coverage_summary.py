@@ -6,9 +6,38 @@ import argparse
 import json
 from pathlib import Path
 
+import _crate_boundary_workspace as workspace
 from check_changed_e2e_line_coverage import test_only_lines
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def production_exclusions(metadata: dict, files: set[str], root: Path) -> tuple[dict[str, set[int]], dict[str, list[str]]]:
+    """Reuse Cargo module ownership; absence outside a known graph proves nothing."""
+    members = set(metadata["workspace_members"])
+    production: set[Path] = set()
+    compiled: set[Path] = set()
+    unresolved: dict[str, list[str]] = {}
+    for package in metadata["packages"]:
+        if package["id"] not in members:
+            continue
+        manifest = Path(package["manifest_path"])
+        unknown: list[str] = []
+        production.update(workspace.production_module_files([manifest], unresolved_includes=unknown))
+        if unknown:
+            # Never turn an unresolved include into a negative usage verdict.
+            # The caller leaves this crate's production coverage unmeasured.
+            unresolved[package["name"]] = unknown
+        else:
+            compiled.update(workspace.production_module_files(
+                [manifest], project=workspace.rust_without_comments, include_test_targets=True))
+    test_files = compiled - production
+    excluded = {}
+    for relative in files:
+        path = root / relative
+        excluded[relative] = (set(range(1, len(path.read_text(encoding="utf-8").splitlines()) + 1))
+                              if path.resolve() in test_files else test_only_lines(relative, root=root))
+    return excluded, unresolved
 
 
 def summarize(metadata: dict, documents: list[str], root: Path, excluded: dict[str, set[int]]) -> list[dict]:
@@ -39,14 +68,25 @@ def summarize(metadata: dict, documents: list[str], root: Path, excluded: dict[s
                 key = (current, int(number), block, branch)
                 if key[1] not in excluded.get(current, set()):
                     branches[key] = max(branches.get(key, 0), 0 if hits == "-" else int(hits))
-    result = []
-    for name, directory in sorted(packages):
-        def counts(values: dict) -> dict | None:
-            # Only production source is counted; integration tests/build scripts
-            # and dependencies cannot inflate a crate's production percentage.
-            owned = [hits for key, hits in values.items() if key[0].startswith(directory + "/src/")]
-            return {"covered": sum(hits > 0 for hits in owned), "total": len(owned)} if owned else None
-        result.append({"crate": name, "path": directory, "lines": counts(lines), "branches": counts(branches)})
+    # Match ownership once per source file, then aggregate each measured key
+    # once. Scanning all line/branch records separately for every crate made
+    # report cost proportional to crates * measured records.
+    packages = sorted(packages)
+    result = [{"crate": name, "path": directory, "lines": None, "branches": None}
+              for name, directory in packages]
+    owners: dict[str, tuple[int, ...]] = {}
+    for kind, values in (("lines", lines), ("branches", branches)):
+        for key, hits in values.items():
+            path = key[0]
+            if path not in owners:
+                owners[path] = tuple(index for index, (_, directory) in enumerate(packages)
+                                     if path.startswith(directory + "/src/"))
+            for index in owners[path]:
+                counts = result[index][kind]
+                if counts is None:
+                    counts = result[index][kind] = {"covered": 0, "total": 0}
+                counts["covered"] += int(hits > 0)
+                counts["total"] += 1
     return result
 
 
@@ -54,6 +94,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--metadata", type=Path, required=True)
     parser.add_argument("--lcov-path", type=Path, action="append", required=True)
+    parser.add_argument("--execution-scope", choices=("combined", "rust-workspace"), required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--source-digest", required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -73,8 +114,12 @@ def main() -> int:
                         files.add(relative.as_posix())
                 except ValueError:
                     continue
-    excluded = {p: test_only_lines(p) for p in files}
-    report = {"revision": args.revision, "source_digest": args.source_digest, "scope": "workspace-production", "crates": summarize(metadata, documents, ROOT, excluded), "unmeasured": "null means unavailable or not linked; it never means zero coverage"}
+    excluded, unresolved = production_exclusions(metadata, files, ROOT)
+    crates = summarize(metadata, documents, ROOT, excluded)
+    for crate in crates:
+        if crate["crate"] in unresolved:
+            crate.update(lines=None, branches=None, unmeasured_reason="unresolved production module include")
+    report = {"revision": args.revision, "source_digest": args.source_digest, "scope": "workspace-production", "execution_scope": args.execution_scope, "crates": crates, "unresolved_production_includes": unresolved, "unmeasured": "null means unavailable, not linked, or production attribution is unresolved; it never means zero coverage"}
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"Per-crate coverage: {args.output}")
     return 0
