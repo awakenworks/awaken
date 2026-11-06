@@ -39,9 +39,12 @@ consistent vocabulary. This affects the documentation layers differently:
 
 ## Architecture Execution
 
-Reviewed main checkpoint `8b908ffec6f4` (2026-11-06), qualified by
-`verified/20261106-0345` for its original complete Linux Rust scope: 10,553
-passed and 129 skipped, both workspace Clippy graphs and doctests passed.
+Current main source `a4fc7d6a3140` (2026-11-06) retains five normally
+committed CI/fixture changes after `8b908ffec6f4`; the rebased combination
+still needs its own source-bound qualification. Private checkpoint
+`31645771afd4` earned `verified/20261106-0823` for the original complete
+Linux Rust group: 10,561 passed and 129 skipped, both workspace Clippy
+graphs and doctests passed; the earlier main checkpoint keeps its own receipt.
 This is the single progress record for the crate-boundary program; decisions
 remain in their ADRs and code, and executed results remain in the
 [qualification record](design/test-validation.md#integrated-source-qualification-record).
@@ -49,17 +52,18 @@ Plan v5 is in force; the v4 slices below identify their existing owners.
 The automatic Resource receipt and exact concurrent-convergence repairs are
 normally committed and fast-forwarded. The fixed-source ACP continuation `8594ef7915b0`, its conditional child
 observation follow-up `689d604978c8` and guard consolidation `5758bd9fee47`
-are privately received with owning qualification; later combined source,
-full E2E, formal and downstream results retain their own subjects.
+are privately received with owning qualification. Their four replayed patches
+and all incoming main afterimages are preserved; the new source, full E2E,
+formal and downstream results retain their own subjects.
 
 - **Delivered checkpoints.** V4, the E2E continuation, SDK baseline qualifier
   repair, G, nanos-image proof and BackgroundTask consolidation have normal
   commit and protected FF receipts; no push is claimed. Their distinct source
   subjects and executed scopes remain in the [qualification record](design/test-validation.md#integrated-source-qualification-record).
-- **Tags.** `verified/20261106-0345` peels to `8b908ffec6f4` and records the
-  original complete Linux Rust group only. The exact source and scope of later
-  qualifications remain in their annotated `verified/*` tags; full13,
-  downstream, SDK release and product evidence stay separate.
+- **Tags.** `verified/20261106-0823` peels to private `31645771afd4` and records
+  the original complete Linux Rust group only. Earlier tags retain their own
+  source and scope; the rebased combination, whole214, SDK release, full13
+  and product evidence stay separate.
 - **Source versus delivery.** G's runtime `2903a249449a` and normal delivery
   `a4402c05ca68`, nanos follow-up `fcf046d5150e` and BackgroundTask follow-up
   `2d195c4174b7` each retain their own evidence. Remaining formal, SDK release,
@@ -111,7 +115,7 @@ full E2E, formal and downstream results retain their own subjects.
 
 | Item | Scope | Status |
 |---|---|---|
-| V0 | Source-bound Rust, PG and cold recovery qualification | The original complete Linux Rust group passed on `8b908ffec6f4`: 10,553 passed and 129 skipped, including the original default-stack two-Run/Vault MCP case and all four new Resource races. The annotated tag binds that scope; later candidate results remain separate. |
+| V0 | Source-bound Rust, PG and cold recovery qualification | The original complete Linux Rust group passed on private `31645771afd4`: 10,561 passed and 129 skipped, including the original default-stack two-Run/Vault MCP case and all four Resource races. Tag `verified/20261106-0823` binds that checkpoint; the rebased main combination needs its own complete run. |
 | V0b/V0c | Container-instance identity and same-Run/Session recovery | Host cold recovery passed; joined physical restart/Run recovery remains unverified. The separate real Skill journey failed before its restart stage. |
 | V1 | Prefer compiler/Cargo controls; consolidate actual duplicate guards | Normal `2df68c09a677` consolidates three trait walkers into the existing lexer/span owner, while the canonical libtest observer refuses empty-child evidence. Privately received `5758bd9fee47` consolidates the overlapping Run-admission predicate and route delimiter parser after original self-tests, full boundary/docs checks and normal hooks passed. |
 | V2 | Preserve lock-poisoning policy and typed failures | IAM `07af02a7` (0.2) and Native typed failures, atomic publication and Org credential authority are delivered. The reviewed main has zero production poison-panic hits and passed both original workspace Clippy graphs; Windows remains separate. |
@@ -120,7 +124,7 @@ full E2E, formal and downstream results retain their own subjects.
 | V5 | Keep one short status record and linked design owners | This is the single progress owner; executed details stay in the existing qualification/M5 owners without a second status ledger. |
 | V6 | Every formal gate proof finishes within host resources | The `3eeb9532` full run completed Kani/vacuity and TLAPS before the observation-mutant failure repaired in `395303e5`; the later full attempt returned resource 75. Fresh complete qualification and the existing rerun markers remain open. |
 | V7 | Upgrade the real Cloud/Flow composition cohort | Flow and Cloud retain their incoming main changes in clean rebased candidate trees, still resolving Native `81aef316f004` and `615c885bd4e7` respectively. Final qualified Native pins, the Flow constructor migration, actual fingerprint/BOM and both complete validation graphs remain open. |
-| V8 | Linux, k3d and distributed product acceptance on one final BOM | Required Provider/Skill journeys, full13, distributed acceptance, final BOM and coverage remain open; the approved minimal six-file historical reference still needs its own complete source-bound comparison. Canonical fixture repairs and a same-literal standalone Provider control do not qualify the failed real child journey; earlier R7 partial profiles are not a baseline. |
+| V8 | Linux, k3d and distributed product acceptance on one final BOM | Whole214 has a retained delegation counterexample on `31645771afd4`; required Provider/Skill journeys, full13, distributed acceptance, final BOM and coverage remain open. The approved minimal historical reference still needs a complete comparison; controlled Provider checks and earlier partial profiles keep their narrower scopes. |
 | V9 | G private Task control and L SDK SemVer; retire LocalWorker after V8 | G is delivered; all three original SDK package/artifact/compiler-SemVer qualifiers and their outer wrappers passed on `08eef1f2fb88`, with historical and first-release subjects distinguished. Final source and public publication remain separate; LocalWorker retirement follows V8 and requalifies its changed source. |
 
 ## Document Readiness

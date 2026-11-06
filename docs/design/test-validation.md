@@ -634,6 +634,31 @@ Windows/MSVC checks run where a Windows host exists. Source candidates, bound
 runtime results, normal commits, protected fast-forwards and full13
 qualification are separate claims.
 
+- **Private combined Rust checkpoint (`31645771afd4`, 2026-11-06).** The original
+  complete `bash scripts/ci/check-all.sh --group rust` and outer wrapper returned
+  0 in 490.952 seconds: 10,561 nextest cases passed and 129 were skipped, both
+  workspace Clippy graphs and doctests passed, and the unchanged default-stack
+  two-Run/Vault MCP case passed in 0.384 seconds. Root/SDK/index facts stayed
+  exact and 70 original owner files matched their retained copies; annotated
+  `verified/20261106-0823` binds only this Linux Rust scope. The earlier attempt
+  returned resource 75 before nextest admission at memory PSI 6.32% over the
+  unchanged 5% ceiling; its partial checks were not combined with the fresh run.
+- **Main CI reception (`a4fc7d6a3140` plus the private continuation).** A separate
+  clean worktree rebased the four private units onto this main source with
+  `git rebase --no-fork-point`: `8594ef7915b0` to `d195371672`,
+  `689d604978c8` to `97ab01003a`, `5758bd9fee47` to `ada6520d36`, and
+  `31645771afd4` to `ed32e67a5d`. Every range-diff row is equal; all 35 Native
+  and 27 incoming main path afterimages and modes are preserved, with no
+  overlapping path or conflict resolution. These are source-preservation facts;
+  the new combination needs its own normal checks and same-SHA qualification,
+  while each earlier unit receipt keeps its original SHA and scope.
+- **Original whole214 counterexample (`31645771afd4`).** The original prebuild
+  and source/lock/four-binary manifest validator returned 0. Nine commands
+  passed before command ten, `node managed_delegation_e2e.mjs`, failed its
+  unchanged M10/E1 assertion: the event list gained two entries after a rejected
+  batch; 204 commands were unexecuted. The exact failing assertion and evidence
+  remain unchanged, with cause still under investigation; this is not whole214
+  qualification or evidence for the rebased combination.
 - **Main Resource continuation (`8b908ffec6f4`, 2026-11-06).** The original
   `bash scripts/ci/check-all.sh --group rust` completed with exit 0 on the clean
   SHA: 10,553 nextest cases passed and 129 were skipped; both original workspace
