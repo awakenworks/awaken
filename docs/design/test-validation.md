@@ -76,9 +76,8 @@ bash scripts/ci/test.sh --affected --base origin/main
 The plan includes the independent index and working-tree changes since the
 base, both ends of renames, and untracked bytes. Global/unowned or manifest
 inputs fall back to the whole workspace. The ordinary nextest path currently
-compiles the authored whole graph and filters execution; the quick compile
-path can use only the proved shared-unit peer closure. Unknown Cargo
-configuration retains the original whole compile. One profile/metadata helper
+compiles the authored whole graph and filters execution; the quick/push
+compile is the incremental whole-workspace `cargo check`. One profile/metadata helper
 constructs commands and companions, and one sequential owner retains every
 command and stops after source, admission or execution failure.
 Documentation-only Markdown changes can have no Rust owner, but still require
@@ -142,6 +141,32 @@ listing starts no test run. The named receipt and reported count use the same
 validated observation. Original command failures remain distinct from later
 source or receipt failures. PostgreSQL stages also share the existing whole-gate
 wall-clock budget; this change does not extend it or qualify a full gate.
+
+### What runs at each hook tier, and why
+
+- **pre-commit** (`lefthook.yml` `commit-checks`): a job starts only when a staged path matches its
+  generated trigger — the checker's `INPUT_GLOBS` plus every script it imports, sources or runs.
+  `rust-quick` (`check-rust.sh --quick`) starts only for a Rust build input or a script the gate runs.
+  A gate-script-only change runs just the steps that execute that script. A change to the selector
+  (`rust_test_plan.py`, `crate_test.py`, `generate_hooks.py`, `check-rust.sh`, what they import or
+  source), a manifest or the lockfile keeps the whole gate. `script-tests` runs the self-tests and
+  `test_*.py` of every changed `scripts/ci` file.
+- **pre-push** (`push-qualification`): docs, `check-rust.sh --push` (scoped to the `origin/main`
+  merge-base, plus workspace clippy and the formal ledger), public API, frontend.
+- **qualification**: `scripts/ci/check-all.sh --full-gate` runs everything, unscoped.
+
+All Cargo steps of one gate run share one host build admission; while queued, the gate prints the
+current holder and its own wait every 30 s.
+
+Why did something run (nothing is built):
+```sh
+python3 scripts/ci/generate_hooks.py --explain <path>...                 # hook jobs and script tests, with the matching glob
+python3 scripts/ci/rust_test_plan.py --gate-scope --base HEAD --explain  # Rust gate scope and why per path
+```
+
+Run one tier by hand: `lefthook run pre-commit`, `scripts/ci/check-rust.sh --quick|--push|--full`,
+`lefthook run push-qualification`, `python3 scripts/ci/generate_hooks.py --script-tests <path>...`.
+Add `AWAKEN_BUILD_OBSERVE=1` to a Rust gate run to record performance telemetry.
 
 ## Reduce total time without losing evidence
 
@@ -275,8 +300,8 @@ model, so an unwired declaration is refused before expensive suites start.
 Pre-commit prints the live log path when each checker starts, then elapsed
 progress every 15 seconds while it runs. Rust reports its current substage and
 retains each substage's output/status; quick/push compilation retains Cargo
-HTML through the same before/after collector as the full test build. The
-shared-unit peer proof and conservative whole-workspace fallback stay in force.
+HTML through the same before/after collector as the full test build when
+telemetry is enabled (`AWAKEN_BUILD_OBSERVE=1`).
 Crate-boundary rules and Rust execution/benchmark framework cases write
 individual timings into the existing task's command observations. Skips and
 expected failures remain distinct from passed cases. Nested durations are
