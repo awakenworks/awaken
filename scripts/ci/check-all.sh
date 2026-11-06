@@ -356,7 +356,7 @@ run docs "documentation" scripts/ci/check-docs.sh
 run rust "crate test runner self-test" scripts/ci/test.sh --self-test
 run rust "rust" scripts/ci/check-rust.sh --full
 run rust "dependency-advisories" cargo deny --log-level error check advisories
-run rust "dependency-policy" cargo deny --exclude-dev --log-level error check -D unused-wrapper bans
+run rust "dependency-policy" cargo deny --exclude-dev --log-level error check -D unused-wrapper bans sources
 run api "public-api" scripts/ci/check_public_api.sh --require-tools
 run api "sdk-semver" python3 scripts/ci/check_sdk_semver.py
 # Generated wire artifacts (JSON Schema, OpenAPI, TS types, the Managed SDK

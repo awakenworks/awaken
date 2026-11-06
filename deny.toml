@@ -71,6 +71,22 @@ deny = [
     ] },
 ]
 
+# Where a dependency may come from. This is the one allowlist of Git
+# repositories: `scripts/ci/check_dependency_sources.py` reads `allow-git` from
+# here for the cold fetch tier, which must refuse an unlisted host before any
+# network fetch and runs where cargo-deny is not installed. That script keeps the
+# two rules cargo-deny cannot state: a full 40-character `rev`, and one revision
+# per repository.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+required-git-spec = "rev"
+allow-git = [
+    "https://github.com/awakenworks/awaken-ui",
+    "https://github.com/awakenworks/awaken-foundation",
+    "https://github.com/awakenworks/awaken-iam",
+]
+
 # The mandatory trust-root guard limits this semver-shim false positive.
 [advisories]
 ignore = [

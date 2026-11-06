@@ -94,7 +94,7 @@ REQUIRED_RELEASE_COMMANDS = (
     "scripts/contract/generate-contracts.sh --check",
     "pnpm --filter @awaken/managed-sdk-oracle check",
     "cargo deny --log-level error check advisories",
-    "cargo deny --exclude-dev --log-level error check -D unused-wrapper bans",
+    "cargo deny --exclude-dev --log-level error check -D unused-wrapper bans sources",
     "check_formal.sh --require-tools",
     "check-reliability.sh --require-tools",
     "pg_tests.sh --require-docker",
@@ -1463,7 +1463,7 @@ def self_test() -> None:
         check_rust,
     ), "R7 RustSec advisories cannot disappear behind the bans-only gate"
     assert release_gate_errors(
-        check_all.replace("--exclude-dev --log-level error check -D unused-wrapper bans", "--log-level error check bans"),
+        check_all.replace("--exclude-dev --log-level error check -D unused-wrapper bans sources", "--log-level error check bans sources"),
         public_api,
         check_rust,
     ), "R7 the transport bans run on the production graph and refuse a stale wrapper"

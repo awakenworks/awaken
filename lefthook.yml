@@ -620,6 +620,7 @@ commit-checks:
     # 14. Only the crates deny.toml lists as wrappers depend on a transport
     #    crate (`reqwest`, `rustls`). Production graph only (`--exclude-dev`);
     #    an unused wrapper is an error, so a stale exemption cannot stay.
+    #    `sources` refuses a registry or Git repository outside deny.toml.
     #    cargo-deny reads Cargo metadata and builds nothing, so it is started
     #    directly rather than through the host's build admission. Skips with a
     #    hint if cargo-deny is not installed.
@@ -627,7 +628,7 @@ commit-checks:
       glob: "{Cargo.toml,Cargo.lock,deny.toml,crates/**/Cargo.toml}"
       # Fold to one shell command: Windows' hook launcher cannot carry the
       # nested double-quoted, multiline `sh -c` body intact.
-      run: python3 scripts/ci/parallel_check.py --hook-label check-dep-direction --timeout 14400 --shell 'if command -v cargo-deny >/dev/null 2>&1; then cargo-deny --exclude-dev --log-level error check --disable-fetch -D unused-wrapper bans; else echo '"'"'cargo-deny not installed; skipping dependency-direction check (cargo install cargo-deny)'"'"'; fi' --
+      run: python3 scripts/ci/parallel_check.py --hook-label check-dep-direction --timeout 14400 --shell 'if command -v cargo-deny >/dev/null 2>&1; then cargo-deny --exclude-dev --log-level error check --disable-fetch -D unused-wrapper bans sources; else echo '"'"'cargo-deny not installed; skipping dependency-direction check (cargo install cargo-deny)'"'"'; fi' --
 
 
 commit-msg:

@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Require reproducible, allowlisted sources for every Cargo Git dependency."""
+"""Require reproducible, allowlisted sources for every Cargo Git dependency.
+
+The allowlist is `deny.toml` `[sources] allow-git`, which cargo-deny enforces in
+the gate; this module adds the full 40-character rev and one-revision-per-
+repository rules cargo-deny cannot state, and is the pre-fetch policy of the
+cold fetch tier (`check_dependency_fetch.py`), which runs without cargo-deny.
+"""
 
 from __future__ import annotations
 
@@ -14,12 +20,11 @@ import formal_sources
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FULL_GIT_REV = re.compile(r"[0-9a-f]{40}")
-ALLOWED_GIT_REPOSITORIES = {
-    "https://github.com/awakenworks/awaken-ui",
-    "https://github.com/awakenworks/awaken-foundation",
-    "https://github.com/awakenworks/awaken-iam",
-    "https://github.com/awakenworks/rust-genai",
-}
+# One allowlist: cargo-deny's `[sources] allow-git` (deny.toml), which also
+# refuses an unknown registry and a branch/tag spec in the gate. This tier reads
+# it so the cold fetch refuses an unlisted host before any network I/O.
+with (REPO_ROOT / "deny.toml").open("rb") as _deny:
+    ALLOWED_GIT_REPOSITORIES = set(tomllib.load(_deny)["sources"]["allow-git"])
 DEPENDENCY_TABLES = {"dependencies", "dev-dependencies", "build-dependencies"}
 
 
