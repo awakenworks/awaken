@@ -546,7 +546,12 @@ deterministic E2E on one instrumented build. Homogeneous binary-signature LCOV
 groups are exported before unioning `(file,line)` and branch identities, so
 repeated profiles do not multiply the denominator. `per-crate.json` reports
 production `src` coverage by actual workspace membership and excludes test-only
-lines. `null` means unmeasured/unavailable, including missing branch data; it
+lines. It reuses the existing Cargo module graph to exclude whole files reached
+only through test modules, including their unannotated fixture helpers. Mixed
+test/feature modules and files also reached by production remain candidates.
+An unresolved production include makes that crate's production counters `null`
+with its cause recorded; the raw LCOV evidence remains available.
+`null` means unmeasured/unavailable, including missing branch data; it
 is never a reported 0% or a passing threshold. Stable line instrumentation
 does not by itself prove branch/MC/DC coverage. The independent fuzz workspace
 is governed by its fuzz gate, not a fabricated row in root Cargo metadata.

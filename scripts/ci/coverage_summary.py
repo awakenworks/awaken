@@ -6,9 +6,38 @@ import argparse
 import json
 from pathlib import Path
 
+import _crate_boundary_workspace as workspace
 from check_changed_e2e_line_coverage import test_only_lines
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def production_exclusions(metadata: dict, files: set[str], root: Path) -> tuple[dict[str, set[int]], dict[str, list[str]]]:
+    """Reuse Cargo module ownership; absence outside a known graph proves nothing."""
+    members = set(metadata["workspace_members"])
+    production: set[Path] = set()
+    compiled: set[Path] = set()
+    unresolved: dict[str, list[str]] = {}
+    for package in metadata["packages"]:
+        if package["id"] not in members:
+            continue
+        manifest = Path(package["manifest_path"])
+        unknown: list[str] = []
+        production.update(workspace.production_module_files([manifest], unresolved_includes=unknown))
+        if unknown:
+            # Never turn an unresolved include into a negative usage verdict.
+            # The caller leaves this crate's production coverage unmeasured.
+            unresolved[package["name"]] = unknown
+        else:
+            compiled.update(workspace.production_module_files(
+                [manifest], project=workspace.rust_without_comments, include_test_targets=True))
+    test_files = compiled - production
+    excluded = {}
+    for relative in files:
+        path = root / relative
+        excluded[relative] = (set(range(1, len(path.read_text(encoding="utf-8").splitlines()) + 1))
+                              if path.resolve() in test_files else test_only_lines(relative, root=root))
+    return excluded, unresolved
 
 
 def summarize(metadata: dict, documents: list[str], root: Path, excluded: dict[str, set[int]]) -> list[dict]:
@@ -85,8 +114,12 @@ def main() -> int:
                         files.add(relative.as_posix())
                 except ValueError:
                     continue
-    excluded = {p: test_only_lines(p) for p in files}
-    report = {"revision": args.revision, "source_digest": args.source_digest, "scope": "workspace-production", "execution_scope": args.execution_scope, "crates": summarize(metadata, documents, ROOT, excluded), "unmeasured": "null means unavailable or not linked; it never means zero coverage"}
+    excluded, unresolved = production_exclusions(metadata, files, ROOT)
+    crates = summarize(metadata, documents, ROOT, excluded)
+    for crate in crates:
+        if crate["crate"] in unresolved:
+            crate.update(lines=None, branches=None, unmeasured_reason="unresolved production module include")
+    report = {"revision": args.revision, "source_digest": args.source_digest, "scope": "workspace-production", "execution_scope": args.execution_scope, "crates": crates, "unresolved_production_includes": unresolved, "unmeasured": "null means unavailable, not linked, or production attribution is unresolved; it never means zero coverage"}
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"Per-crate coverage: {args.output}")
     return 0

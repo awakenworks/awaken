@@ -36,7 +36,7 @@ def diff_base(base: str) -> str:
     return run("git", "merge-base", base, "HEAD").strip()
 
 
-def test_only_lines(relative: str) -> set[int]:
+def test_only_lines(relative: str, *, root: pathlib.Path | None = None) -> set[int]:
     """Return source lines owned by Rust's compile-time test surface.
 
     Separate ``src/tests.rs`` modules are wholly test-only. Inline items reuse
@@ -47,7 +47,7 @@ def test_only_lines(relative: str) -> set[int]:
     """
 
     path = pathlib.PurePosixPath(relative)
-    source = (ROOT / relative).read_text(encoding="utf-8")
+    source = ((ROOT if root is None else root) / relative).read_text(encoding="utf-8")
     if path.name == "tests.rs" or "tests" in path.parts:
         return set(range(1, len(source.splitlines()) + 1))
     lines: set[int] = set()
