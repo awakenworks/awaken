@@ -584,3 +584,34 @@ The existing execution self-test owns the L1–L9 cause/effect rows, including t
 old parser's lifetime/raw/literal counterexamples. Before/after comparison of the
 current route corpus preserves its complete method/path/owner tuples and order;
 this does not expand the accepted route literal grammar.
+
+## 2026-11-06 zero ratchets, type facts and deletions
+
+Measured with `python3 scripts/ci/principle_status.py --guards` on base
+`1d0773c3ad`: Python lines 82,129 → 81,621 (−508), baseline entries 753 → 600
+(the 153 `crate-line-ceiling` entries). Each row names the new holder and the
+negative example that proves it refuses a violation.
+
+| Removed or changed rule | New holder | Negative example |
+|---|---|---|
+| `check_test_orchestration` `UNBOUNDED_WAIT_BASELINE = 0` | the same rule as a plain deny. Not held elsewhere: nextest `terminate-after` bounds the run but says "timed out", and `check_test_waits` has no signal-wait rule | a test `gate.notified().await` with no `timeout` in `awaken-protocol-managed/tests` → exit 1 "1 test(s) wait on a signal without a deadline" |
+| `check_test_orchestration` `TUPLE_HELPER_BASELINE = 0` and the discarded-status rule | `status_tuple_errors`, a plain deny. `support::Call` does not stop a new helper returning `(StatusCode, Value)`; a discard needs such a helper, so the discard rule went with it | a helper `-> (StatusCode, Value)` in the same tree → exit 1 "return support::Call" |
+| `test_waits_baseline.json` `"allow": []` and the `allow-reason` rule | the source marker `awaken-allow(wait): <reason>` is the only exemption | self-test TCLI5: a baseline `allow` entry exempts nothing (the wait is still reported) |
+| `check_degrading_defaults` `FAIL_OPEN_READ_BASELINE = {}` and its owner record | `Rule("fail-open-read", hard=True)`; decisions stay in `FAIL_OPEN_READ_EXEMPTIONS` | `store.list(id).await.unwrap_or_default()` in a production file → exit 1 `fail-open-read: … 0 -> 1` |
+| `check_degrading_defaults` `SUBSTITUTED_INPUT_BASELINE = 0` and its owner record | `Rule("substituted-input", hard=True)`; `compare_registered` gives hard rules no budget | `fn renew(&self, _now_ms: u64) { let now_ms = db_now(); … }` → exit 1 |
+| `_wire_closure_fitness` `OPEN_REQUEST_BODY_BASELINE = 0` | `Rule("open-request-body", hard=True)` | an axum `Json<ZzBody>` without `deny_unknown_fields` → `open-request-body: workspace 0 -> 1` |
+| `_poisoned_lock_fitness` L1/L2 (R18/R19 remainder) | the type: `awaken_sync::LockPoisoned` and `TryLockFailure` implement neither `Debug` nor `Error`, so `.unwrap()`/`.expect()` on a refusal does not compile, tests included; owners convert with `From<LockPoisoned>` storing the type name or text | `compile_fail,E0599` doctests on both types; the first workspace check after the change failed with E0277 at about 245 test sites in 50 files, rewritten to `unwrap_or_else(\|poisoned\| panic!("{poisoned}"))`. Not held: `.ok().expect("poisoned")`, a deliberate conversion |
+| `_provider_env_fitness` R12 ambient `genai::Client::default` / `GenaiExecutor::{new,default}` | `deny.toml` `[bans]` admits a direct `genai` dependency only for `awaken-provider-genai` and the devtools example; `GenaiExecutor::with_client` removed, no `Default`/`new`. The transport-vocabulary rule stays | `genai.workspace = true` in `awaken-time` → `cargo-deny check bans` fails (`crate 'genai' is explicitly banned`) |
+| `check_dependency_sources` allowlist | `deny.toml` `[sources]` (`unknown-git`/`unknown-registry = "deny"`, `required-git-spec = "rev"`, `allow-git`), run with `bans` in `check-dep-direction` and `check-all.sh`; the Python tier reads `allow-git` from it (one list) and keeps the full-rev and one-revision-per-repository rules cargo-deny cannot state, because the cold fetch tier runs without cargo-deny and must refuse an unlisted host before fetching | a config with no `allow-git` → `sources FAILED`, `detected 'git' source not explicitly allowed` (awaken-ui); the real config → `bans ok, sources ok` |
+| `_modularity_fitness` `crate-line-ceiling` (advisory, S7) | deleted; `check_file_limits` stays. `long-function` is unchanged | — |
+| private brace/comment scanners in `_cancel_safety_fitness`, `_wire_closure_fitness`, `_session_effect_fitness`, `check_proof_input_derivation`, `check_test_orchestration`, `_ownership_fence_fitness` | `_crate_boundary_workspace._balanced_end`, `rust_syntax`, `rust_without_comments` | 20,000 random delimiter strings give identical results; the fence guard's rule outputs and every pattern count are identical on the tree |
+
+Checked and kept: `check_rustfmt.py` (cargo-fmt does pass every target path to
+rustfmt, so the Windows command-line limit is real); `_nextest_policy_fitness.py`
+(five independent assertions, not one); R11 (no Python remainder left); R13/R14
+remainders (`SystemClock` value reads, `.max(0)`, epoch increments are not
+clippy-held, so `check_authority_arithmetic` stays); the private scanners in
+`check_contract_shape`, `check_degrading_defaults` and
+`_service_data_ownership_fitness` already used the shared lexer;
+`check_formal_web_surface` reads TypeScript; `check_test_waits.test_module_of`
+is a line selection, not a brace scan.
