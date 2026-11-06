@@ -28,6 +28,8 @@ mod local_material;
 #[cfg(feature = "oauth-command")]
 pub mod oauth;
 pub mod repo;
+#[cfg(feature = "token-acquisition")]
+pub mod token_acquisition;
 mod vault_application;
 mod vault_credential_access;
 pub use local_material::{VaultAttemptCredentialDeliverySource, VaultLocalMaterialAuthority};
@@ -66,8 +68,7 @@ pub struct SecretRef(pub String);
 
 /// Conventional slots used by OAuth refresh consumers. They are ordinary
 /// extension-defined slots and receive no special lifecycle treatment.
-pub const OAUTH_REFRESH_TOKEN_SLOT: &str = "oauth_refresh_token";
-pub const OAUTH_CLIENT_SECRET_SLOT: &str = "oauth_client_secret";
+pub use awaken_credential_contract::{OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT};
 
 use awaken_agent_contract::{
     credential::CredentialPurpose, credential::CredentialRef, credential::CredentialTarget,

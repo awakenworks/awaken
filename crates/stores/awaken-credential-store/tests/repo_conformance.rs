@@ -30,6 +30,8 @@ fn epoch(value: u64) -> Option<awaken_lease_contract::fence::Epoch> {
 mod cleanup;
 #[path = "repo_conformance/material_closure.rs"]
 mod material_closure;
+#[path = "repo_conformance/token_acquisition.rs"]
+mod token_acquisition;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1479,6 +1481,7 @@ use managed_mutations::managed_material_mutation_begin_and_phases_conform;
 
 /// Run every suite, each on a fresh repo from `make`.
 async fn run_all<F: std::future::Future<Output = Box<dyn CredentialRepo>>>(make: impl Fn() -> F) {
+    token_acquisition::acquisition_publication_and_preemption_conform(&*make().await).await;
     sources_round_trip_and_scope_by_workspace(&*make().await).await;
     replacement_lineage_round_trips(&*make().await).await;
     pools_round_trip_and_scope_by_workspace(&*make().await).await;
