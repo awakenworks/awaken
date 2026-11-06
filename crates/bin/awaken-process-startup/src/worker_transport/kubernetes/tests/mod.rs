@@ -294,6 +294,7 @@ fn fixture_with_client() -> (WorkerTransport, Arc<Facts>, kube::Client) {
     let transport = WorkerTransport::kubernetes(
         client.clone(),
         "workers",
+        "workers",
         "executor",
         "awaken-worker",
         "test-cluster",

@@ -50,6 +50,7 @@ const REALIZATION_DIGEST: &str = "awaken.dev/realization-digest";
 #[derive(Clone)]
 pub struct K8sCreateBroker {
     ledger: Arc<dyn K8sCreateBrokerEffects>,
+    worker_namespace: String,
     sandbox_namespace: String,
     provider_id: String,
 }
@@ -384,11 +385,13 @@ async fn verify_request(
 impl K8sCreateBroker {
     pub fn new(
         ledger: Arc<dyn K8sCreateBrokerEffects>,
+        worker_namespace: &str,
         sandbox_namespace: &str,
         provider_id: &str,
     ) -> Self {
         Self {
             ledger,
+            worker_namespace: worker_namespace.into(),
             sandbox_namespace: sandbox_namespace.into(),
             provider_id: provider_id.into(),
         }
@@ -498,7 +501,7 @@ impl K8sCreateBroker {
     ) -> Result<BrokerCreateReply, ApplicationError> {
         let pod = KubernetesPodIdentity::from_worker_id(&identity.worker_id)
             .map_err(ApplicationError::invalid)?;
-        if pod.namespace() != self.sandbox_namespace || !pod.matches_worker(&identity) {
+        if pod.namespace() != self.worker_namespace || !pod.matches_worker(&identity) {
             return Err(ApplicationError::invalid(
                 "Worker Create names another physical Pod",
             ));
@@ -681,7 +684,7 @@ impl K8sCreateBroker {
         };
         let pod = KubernetesPodIdentity::from_worker_id(&identity.worker_id)
             .map_err(ApplicationError::invalid)?;
-        if pod.namespace() != self.sandbox_namespace || !pod.matches_worker(&identity) {
+        if pod.namespace() != self.worker_namespace || !pod.matches_worker(&identity) {
             return Ok(RequestJoin::Unknown);
         }
         let Some(record) = directory.incarnation(&identity).await.map_err(|_| {

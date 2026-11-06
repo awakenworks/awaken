@@ -22,9 +22,14 @@ async fn bootstrap_retirement_requires_original_empty_ledger_before_any_pod_muta
         "replacement",
     ] {
         let (transport, facts, client) = fixture_with_client();
-        let ledger =
-            K8sWorkerCreateLedger::new(client.clone(), "create-control", "workers", "test-cluster")
-                .unwrap();
+        let ledger = K8sWorkerCreateLedger::new(
+            client.clone(),
+            "create-control",
+            "workers",
+            "workers",
+            "test-cluster",
+        )
+        .unwrap();
         let (name, uid) = ledger
             .initialize("workers", "worker-a", "uid-a", "uid-a")
             .await
@@ -175,8 +180,14 @@ async fn bootstrap_retirement_failure_keeps_deny_fence_and_retries_same_uid() {
     // and UID retire, no new identity/ticket/receipt. Stopper fault tables own
     // response-loss, RV conflict, replacement, finalizer and sibling-retention.
     let (transport, facts, client) = fixture_with_client();
-    let ledger =
-        K8sWorkerCreateLedger::new(client, "create-control", "workers", "test-cluster").unwrap();
+    let ledger = K8sWorkerCreateLedger::new(
+        client,
+        "create-control",
+        "workers",
+        "workers",
+        "test-cluster",
+    )
+    .unwrap();
     let (name, uid) = ledger
         .initialize("workers", "worker-a", "uid-a", "uid-a")
         .await
@@ -247,9 +258,14 @@ async fn ended_unregistered_worker_pods_release_retention_only_when_provably_unr
             for ledger_state in ["absent", "unbound", "bound"] {
                 let row = format!("registered={registered} {phase} ledger={ledger_state}");
                 let (transport, facts, client) = fixture_with_client();
-                let ledger =
-                    K8sWorkerCreateLedger::new(client, "create-control", "workers", "test-cluster")
-                        .unwrap();
+                let ledger = K8sWorkerCreateLedger::new(
+                    client,
+                    "create-control",
+                    "workers",
+                    "workers",
+                    "test-cluster",
+                )
+                .unwrap();
                 facts.pod.lock().unwrap().1["metadata"]["finalizers"] =
                     json!(["awaken.dev/worker-process-evidence", "other.example/keep"]);
                 // The Pod's container instance names its incarnation and ledger.

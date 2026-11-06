@@ -75,6 +75,7 @@
     "a_rate_limited_acp_failure_ends_error_with_the_acp_failure_code": "a_rate_limited_acp_failure_ends_error_with_the_rate_limited_code",
     "connection_drop_at_prompt_is_rate_limited_but_at_init_is_permanent": "connection_drop_at_prompt_is_an_unknown_outcome_but_at_init_is_permanent",
     "server_shut_down_at_prompt_is_rate_limited": "server_shut_down_at_prompt_is_a_dropped_connection",
-    "native_run_observation_refuses_foreign_scope_missing_source_and_invalid_page": "native_run_observation_refuses_foreign_scope_source_outage_and_invalid_page"
+    "native_run_observation_refuses_foreign_scope_missing_source_and_invalid_page": "native_run_observation_refuses_foreign_scope_source_outage_and_invalid_page",
+    "exact_acp_mcp_bearer_uses_the_existing_recipient_envelope": "exact_mcp_bearer_preserves_the_selected_relay_or_acp_client"
   }
 }

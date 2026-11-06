@@ -376,12 +376,22 @@ async fn worker_create_ledger_joins_api_requests_and_rejects_recreated_uid() {
         .unwrap();
     let sandbox_name = sandbox.name_any();
     let control_name = control.name_any();
-    let first =
-        K8sWorkerCreateLedger::new(client.clone(), &control_name, &sandbox_name, "provider-a")
-            .unwrap();
-    let replacement =
-        K8sWorkerCreateLedger::new(client.clone(), &control_name, &sandbox_name, "provider-a")
-            .unwrap();
+    let first = K8sWorkerCreateLedger::new(
+        client.clone(),
+        &control_name,
+        &sandbox_name,
+        &sandbox_name,
+        "provider-a",
+    )
+    .unwrap();
+    let replacement = K8sWorkerCreateLedger::new(
+        client.clone(),
+        &control_name,
+        &sandbox_name,
+        &sandbox_name,
+        "provider-a",
+    )
+    .unwrap();
     let (ledger_name, original_uid) = first
         .initialize(&sandbox_name, "worker", "worker-uid", "worker-uid")
         .await
@@ -599,8 +609,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
         let control_name = control.as_ref().unwrap().name_any();
         install_canonical_sandbox_network_policy(&sandbox_name)?;
         let ledger = K8sWorkerCreateLedger::new(
-            client.clone(), &control_name, &sandbox_name, "provider-isolation",
-        )?;
+            client.clone(), &control_name, &sandbox_name, &sandbox_name, "provider-isolation")?;
         let (ledger_name, ledger_uid) = ledger
             .initialize(&sandbox_name, "worker", "worker-uid", "worker-uid")
             .await?;
@@ -753,8 +762,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
             }
         }
         let replacement = K8sWorkerCreateLedger::new(
-            client.clone(), &control_name, &sandbox_name, "provider-isolation",
-        )?;
+            client.clone(), &control_name, &sandbox_name, &sandbox_name, "provider-isolation")?;
         let replay = replacement.isolate_sealed_group_and_join(anchor, "old-effect").await?;
         if !matches!(replay, RequestJoin::Complete(tickets)
             if tickets.len() == requests.len()
@@ -836,8 +844,8 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
                 client.clone(),
                 &control_name,
                 &sandbox_name,
-                "provider-isolation",
-            )?,
+                &sandbox_name,
+                "provider-isolation")?,
             ..(*broker).clone()
         });
         // GC4 cause: the requested Pod coordinate does not map to the one

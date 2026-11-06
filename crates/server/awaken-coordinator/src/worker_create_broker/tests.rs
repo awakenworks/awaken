@@ -330,6 +330,10 @@ fn broker_stamps_identity_on_every_kind_and_guards_only_pod() {
 
 #[tokio::test]
 async fn worker_response_loss_does_not_cancel_the_one_admitted_create() {
+    // Namespace cause C0: authenticated Worker lives in workers-ns while
+    // Sandbox effects target sandbox-ns and tickets live in control-ns.
+    // C0 + all original identity/CAS conditions -> exact sandbox Create;
+    // changing a target namespace remains the earlier zero-effect rejection.
     // Causes: C1 exact Ready Worker and Registry-frozen ledger UID; C2 a
     // Pod Create has won ticket CAS but its API response is delayed; C3
     // Worker HTTP future disappears; C4 a retry arrives before/after the

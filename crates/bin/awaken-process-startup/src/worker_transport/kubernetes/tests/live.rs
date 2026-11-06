@@ -282,6 +282,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     let transport = WorkerTransport::kubernetes(
         client.clone(),
         name,
+        name,
         "executor",
         audience,
         &cluster,
@@ -560,6 +561,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             .await
             .unwrap(),
         name,
+        name,
         "executor",
         audience,
         &cluster,
@@ -692,7 +694,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         "L3a old Pod deletion cannot garbage-collect the independent ledger"
     );
     let process_ledger =
-        K8sWorkerCreateLedger::new(client.clone(), control_name, name, &cluster).unwrap();
+        K8sWorkerCreateLedger::new(client.clone(), control_name, name, name, &cluster).unwrap();
     let retained_process = process_ledger
         .read_process_binding(K8sLedgerBinding {
             worker_namespace: name,
