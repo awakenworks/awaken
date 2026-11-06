@@ -203,7 +203,7 @@ impl EnvironmentImageBuildCoordinator {
                         &claim,
                         &message,
                         self.clock.now_ms(),
-                        retry_delay_ms(&self.policy, claim.lease_epoch),
+                        retry_delay_ms(&self.policy, claim.lease_epoch.get()),
                     )
                     .await?
             }

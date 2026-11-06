@@ -112,12 +112,14 @@ impl SandboxExecutionPolicyStore for InMemorySandboxExecutionPolicyStore {
         if state.current.contains_key(&policy.id.0) {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
-        state.current.insert(policy.id.0.clone(), policy.version.0);
+        state
+            .current
+            .insert(policy.id.0.clone(), policy.version.get());
         state
             .policies
             .entry(policy.id.0.clone())
             .or_default()
-            .insert(policy.version.0, policy);
+            .insert(policy.version.get(), policy);
         Ok(())
     }
 
@@ -128,17 +130,19 @@ impl SandboxExecutionPolicyStore for InMemorySandboxExecutionPolicyStore {
     ) -> Result<(), SandboxExecutionPolicyError> {
         validate(&policy)?;
         let mut state = self.state()?;
-        if state.current.get(&policy.id.0).copied() != Some(expected_current.0)
+        if state.current.get(&policy.id.0).copied() != Some(expected_current.get())
             || policy.version != expected_current.checked_next()?
         {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
-        state.current.insert(policy.id.0.clone(), policy.version.0);
+        state
+            .current
+            .insert(policy.id.0.clone(), policy.version.get());
         state
             .policies
             .entry(policy.id.0.clone())
             .or_default()
-            .insert(policy.version.0, policy);
+            .insert(policy.version.get(), policy);
         Ok(())
     }
 
@@ -149,7 +153,7 @@ impl SandboxExecutionPolicyStore for InMemorySandboxExecutionPolicyStore {
         self.state()?
             .policies
             .get(&reference.id.0)
-            .and_then(|versions| versions.get(&reference.version.0))
+            .and_then(|versions| versions.get(&reference.version.get()))
             .cloned()
             .ok_or(SandboxExecutionPolicyError::NotFound)
     }
@@ -259,7 +263,7 @@ impl SandboxExecutionPolicyStore for PostgresSandboxExecutionPolicyStore {
         let json = serde_json::to_string(&policy).map_err(store_failed)?;
         sqlx::query("INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES($1,$2,$3)")
             .bind(&policy.id.0)
-            .bind(as_i64(policy.version.0)?)
+            .bind(as_i64(policy.version.get())?)
             .bind(json)
             .execute(&mut *tx)
             .await
@@ -268,7 +272,7 @@ impl SandboxExecutionPolicyStore for PostgresSandboxExecutionPolicyStore {
             "INSERT INTO sandbox_execution_policy_current(policy_id,version) VALUES($1,$2)",
         )
         .bind(&policy.id.0)
-        .bind(as_i64(policy.version.0)?)
+        .bind(as_i64(policy.version.get())?)
         .execute(&mut *tx)
         .await
         .map_err(|_| SandboxExecutionPolicyError::VersionConflict)?;
@@ -286,9 +290,9 @@ impl SandboxExecutionPolicyStore for PostgresSandboxExecutionPolicyStore {
         }
         let mut tx = self.pool.begin().await.map_err(store_failed)?;
         let changed = sqlx::query("UPDATE sandbox_execution_policy_current SET version=$1 WHERE policy_id=$2 AND version=$3")
-            .bind(as_i64(policy.version.0)?)
+            .bind(as_i64(policy.version.get())?)
             .bind(&policy.id.0)
-            .bind(as_i64(expected_current.0)?)
+            .bind(as_i64(expected_current.get())?)
             .execute(&mut *tx)
             .await
             .map_err(store_failed)?
@@ -299,7 +303,7 @@ impl SandboxExecutionPolicyStore for PostgresSandboxExecutionPolicyStore {
         let json = serde_json::to_string(&policy).map_err(store_failed)?;
         sqlx::query("INSERT INTO sandbox_execution_policy_version(policy_id,version,policy_json) VALUES($1,$2,$3)")
             .bind(&policy.id.0)
-            .bind(as_i64(policy.version.0)?)
+            .bind(as_i64(policy.version.get())?)
             .bind(json)
             .execute(&mut *tx)
             .await
@@ -313,7 +317,7 @@ impl SandboxExecutionPolicyStore for PostgresSandboxExecutionPolicyStore {
     ) -> Result<SandboxExecutionPolicy, SandboxExecutionPolicyError> {
         let row = sqlx::query("SELECT policy_json FROM sandbox_execution_policy_version WHERE policy_id=$1 AND version=$2")
             .bind(&reference.id.0)
-            .bind(as_i64(reference.version.0)?)
+            .bind(as_i64(reference.version.get())?)
             .fetch_optional(&self.pool)
             .await
             .map_err(store_failed)?
@@ -379,7 +383,7 @@ impl SandboxExecutionPolicyStore for SqliteSandboxExecutionPolicyStore {
         if policy.version != SandboxExecutionPolicyVersion::INITIAL {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
-        let version = as_i64(policy.version.0)?;
+        let version = as_i64(policy.version.get())?;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
@@ -415,8 +419,8 @@ impl SandboxExecutionPolicyStore for SqliteSandboxExecutionPolicyStore {
         if policy.version != expected_current.checked_next()? {
             return Err(SandboxExecutionPolicyError::VersionConflict);
         }
-        let version = as_i64(policy.version.0)?;
-        let expected = as_i64(expected_current.0)?;
+        let version = as_i64(policy.version.get())?;
+        let expected = as_i64(expected_current.get())?;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
@@ -456,7 +460,7 @@ impl SandboxExecutionPolicyStore for SqliteSandboxExecutionPolicyStore {
             "SELECT policy_json FROM sandbox_execution_policy_version WHERE policy_id=?1 AND version=?2",
         )
         .bind(&reference.id.0)
-        .bind(as_i64(reference.version.0)?)
+        .bind(as_i64(reference.version.get())?)
         .fetch_optional(&self.pool)
         .await
         .map_err(store_failed)?;
@@ -474,7 +478,7 @@ mod tests {
     fn policy(id: &str, version: u64, isolation: IsolationClass) -> SandboxExecutionPolicy {
         SandboxExecutionPolicy {
             id: SandboxExecutionPolicyId(id.to_string()),
-            version: SandboxExecutionPolicyVersion(version),
+            version: SandboxExecutionPolicyVersion::new(version),
             config: SandboxOverride {
                 isolation: Some(isolation),
                 ..Default::default()
@@ -501,7 +505,7 @@ mod tests {
         store.create(v1.clone()).await.expect("P1");
         let v2 = policy("strict", 2, IsolationClass::Container);
         store
-            .publish(SandboxExecutionPolicyVersion(1), v2.clone())
+            .publish(SandboxExecutionPolicyVersion::new(1), v2.clone())
             .await
             .expect("P2");
         let v1_ref = SandboxExecutionPolicyRef {
@@ -512,7 +516,7 @@ mod tests {
         assert!(matches!(
             store
                 .publish(
-                    SandboxExecutionPolicyVersion(1),
+                    SandboxExecutionPolicyVersion::new(1),
                     policy("strict", 3, IsolationClass::Container)
                 )
                 .await,
@@ -522,7 +526,7 @@ mod tests {
             store
                 .get_exact(&SandboxExecutionPolicyRef {
                     id: SandboxExecutionPolicyId("missing".into()),
-                    version: SandboxExecutionPolicyVersion(1),
+                    version: SandboxExecutionPolicyVersion::new(1),
                 })
                 .await,
             Err(SandboxExecutionPolicyError::NotFound)
@@ -545,7 +549,7 @@ mod tests {
         let restarted = SqliteSandboxExecutionPolicyStore::open(path).await.unwrap();
         let v1 = SandboxExecutionPolicyRef {
             id: SandboxExecutionPolicyId("strict".into()),
-            version: SandboxExecutionPolicyVersion(1),
+            version: SandboxExecutionPolicyVersion::new(1),
         };
         assert_eq!(
             restarted.get_exact(&v1).await.unwrap().config.isolation,
@@ -770,7 +774,7 @@ mod tests {
             reopened
                 .get_exact(&SandboxExecutionPolicyRef {
                     id: SandboxExecutionPolicyId("strict".into()),
-                    version: SandboxExecutionPolicyVersion(1),
+                    version: SandboxExecutionPolicyVersion::new(1),
                 })
                 .await
                 .unwrap(),
@@ -781,12 +785,12 @@ mod tests {
             reopened
                 .get_exact(&SandboxExecutionPolicyRef {
                     id: SandboxExecutionPolicyId("strict".into()),
-                    version: SandboxExecutionPolicyVersion(2),
+                    version: SandboxExecutionPolicyVersion::new(2),
                 })
                 .await
                 .unwrap()
                 .version,
-            SandboxExecutionPolicyVersion(2),
+            SandboxExecutionPolicyVersion::new(2),
             "P6 current head"
         );
     }

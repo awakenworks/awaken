@@ -258,7 +258,7 @@ mod tests {
         };
         let policy = awaken_provisioning_contract::SandboxExecutionPolicy {
             id: awaken_provisioning_contract::SandboxExecutionPolicyId("policy-a".into()),
-            version: awaken_provisioning_contract::SandboxExecutionPolicyVersion(1),
+            version: awaken_provisioning_contract::SandboxExecutionPolicyVersion::new(1),
             config,
             provisioning: Default::default(),
             idle_retention: Default::default(),
