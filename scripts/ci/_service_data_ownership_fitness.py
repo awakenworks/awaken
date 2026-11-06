@@ -1285,11 +1285,7 @@ def selftest() -> None:
 def check_all(repo_root: Path) -> list[str]:
     errors: list[str] = []
     product_manifests: dict[str, dict] = {}
-    product_manifest_paths = sorted(
-        path
-        for path in (repo_root / "crates").rglob("Cargo.toml")
-        if "devtools" not in path.relative_to(repo_root / "crates").parts
-    )
+    product_manifest_paths = _crate_boundary_workspace.production_crate_manifests(repo_root / "crates")
     for manifest_path in product_manifest_paths:
         product_manifest = manifest_path.relative_to(repo_root).as_posix()
         with (repo_root / product_manifest).open("rb") as handle:

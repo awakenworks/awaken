@@ -7,7 +7,7 @@ scanned); a type is any `struct`, `enum`, `trait`, `type` or `union` declaration
 
 * `mechanism-name`: a type whose name ends in a mechanism word
   (`MECHANISM_WORDS`, compared with the last CamelCase word of the name) outside
-  a composition root -- a crate under `crates/bin/` or of layer `bootstrap`,
+  a composition root -- a crate of layer `bootstrap`,
   where wiring is the responsibility (D7.3). Test doubles (`TEST_DOUBLE_PREFIXES`)
   are not counted. Keyed by type name.
 * `bare-runtime`: a type named exactly `Runtime` outside the SDK (crates of
@@ -84,7 +84,6 @@ RETIRED_NAMES = {
                               "(ADR-0087)",
 }
 COMPOSITION_LAYER = "bootstrap"
-BINARY_DIRECTORY = "bin"
 
 RULES = (
     Rule("mechanism-name", "name the type for what its consumer does with it, or split it; mechanism words belong "
@@ -134,7 +133,7 @@ def is_runtime_word(name: str) -> bool:
 
 
 def composition_root(crate: _architecture_ratchet.CrateSource) -> bool:
-    return crate.metadata.get("layer") == COMPOSITION_LAYER or crate.directory.parent.name == BINARY_DIRECTORY
+    return crate.metadata.get("layer") == COMPOSITION_LAYER
 
 
 def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) -> tuple[Counts, Places]:
@@ -210,7 +209,7 @@ def selftest() -> None:
 
     | Rule | cause                                                                  | effect |
     | N1   | type ending in a mechanism word outside a composition root             | counted by name |
-    | N2   | the same in a `crates/bin/*` or `bootstrap` crate; a test double; the word mid-name | not counted |
+    | N2   | the same in a `bootstrap` crate; a test double; the word mid-name | not counted |
     | N3   | type named `Runtime` outside / inside the SDK                          | counted / not counted |
     | N4   | type named `Provider`, `Coordinator`, `Host` anywhere; `ModelProvider` | counted; not counted |
     | N5   | identifier with the word turn: `TurnId`, `max_turns`, `END_TURN`       | counted once per file |
@@ -237,6 +236,9 @@ def selftest() -> None:
 
     def crate(name, directory, **metadata):
         return _architecture_ratchet.CrateSource(name, metadata, Path(directory), {Path(directory) / "src/lib.rs": code})
+
+    assert composition_root(crate("root", "/w/crates/apps/root", layer="bootstrap")), "N2 relocated root"
+    assert not composition_root(crate("domain", "/w/crates/bin/domain", layer="domain")), "N2 path grants no exemption"
 
     counts, places = measure((
         crate("awaken-x", "/w/crates/server/awaken-x", product="platform"),
