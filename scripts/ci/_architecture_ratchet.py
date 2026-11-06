@@ -128,6 +128,7 @@ def compare_registered(
     A stale decision is a hard error, separate from the measured live debt.
     Callers keep their scanner, exact exemption keys, inline budget and advice;
     this adapter neither writes a record nor authorizes another exemption.
+    A ``hard`` rule has no budget: pass 0, and every unregistered finding fails.
     """
     seen = {key for key, _ in found}
     live = sorted(message for key, message in found if key not in exemptions)
@@ -136,7 +137,7 @@ def compare_registered(
             for key in sorted(exemptions) if key not in seen]
     return hard + compare(
         (rule,), {rule.name: {"workspace": len(live)}}, {rule.name: {"workspace": live}},
-        {rule.name: {"workspace": baseline}}, baseline_name,
+        {} if rule.hard else {rule.name: {"workspace": baseline}}, baseline_name,
         lower_advice=f"lower {baseline_name} to {len(live)} in the commit that removed the debt",
         full_details=True,
     )
@@ -543,6 +544,13 @@ def _selftest_registered() -> None:
                 assert all(message in errors for key, message in found if key not in exemptions), "A1 full advice retained"
             elif held > actual:
                 assert any("fixture.py::HELD" in error for error in errors), "A1 real inline source named"
+    # A3 a hard rule: any unregistered finding fails, none passes, and a held
+    # budget is never consulted (there is none to record).
+    hard = Rule("fixture", "own the effect or review the exact decision", hard=True)
+    assert compare_registered(found, {}, 0, "REG", rule=hard, baseline_name="fixture.py"), "A3 hard refuses"
+    assert not compare_registered([], {}, 0, "REG", rule=hard, baseline_name="fixture.py"), "A3 hard at zero"
+    assert not compare_registered(found, {"A": "why", "B": "why"}, 0, "REG", rule=hard,
+                                  baseline_name="fixture.py"), "A3 exact decisions still exempt"
     # A1 prove delegation, not a second comparison hidden in the adapter.
     with patch.dict(compare_registered.__globals__, {"compare": lambda *args, **kwargs: ["canonical compare called"]}):
         assert compare_registered(found, {}, 3, "REG", rule=rule, baseline_name="fixture.py::HELD") == [
