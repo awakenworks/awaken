@@ -8,6 +8,7 @@
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_credential_contract::CredentialEnvelopeValidation;
+use awaken_worker_contract::WorkerStanding;
 
 /// Keep admission-owned resources alive after a caller drops its HTTP future.
 fn complete_admission<F, T>(operation: F) -> tokio::task::JoinHandle<T>
@@ -403,12 +404,12 @@ async fn admit_attempt(
                 ApplicationError::invalid("Worker incarnation changed before physical admission")
             })?;
         let snapshot = guard.snapshot();
-        if snapshot.expires_at_ms <= service.clock.now_ms()
-            || matches!(
-                snapshot.state,
-                awaken_dispatch::WorkerState::Quiesced | awaken_dispatch::WorkerState::Dead
-            )
-        {
+        // Physical admission starts work only on a live incarnation that has
+        // not closed: drained, expired and dead incarnations are fenced.
+        if matches!(
+            snapshot.standing(service.clock.now_ms()),
+            WorkerStanding::Quiesced | WorkerStanding::Expired | WorkerStanding::Dead
+        ) {
             guard
                 .release()
                 .await
@@ -729,7 +730,12 @@ mod admission_cancellation_tests {
                 WorkerRegistration {
                     worker_id: "cancelled-admission".into(),
                     incarnation_id: "boot".into(),
-                    manifest: Default::default(),
+                    manifest: awaken_worker_contract::WorkerManifest {
+                        runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                        ),
+                        ..Default::default()
+                    },
                     create_ledger: None,
                 },
                 100,

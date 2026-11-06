@@ -273,7 +273,7 @@ impl PostgresWorkerDirectory {
                 heartbeat,
                 now_ms,
                 ttl_ms,
-            } => transition::heartbeat(current.as_ref(), identity, heartbeat, now_ms, ttl_ms),
+            } => transition::heartbeat(current.as_ref(), identity, heartbeat, now_ms, ttl_ms)?,
             Mutation::BeginDrain { deadline_ms } => {
                 transition::begin_drain(current.as_ref(), identity, deadline_ms)
             }

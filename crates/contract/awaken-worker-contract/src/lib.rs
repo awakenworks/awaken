@@ -48,6 +48,7 @@ mod relay_route;
 mod requirements;
 mod run_claim;
 mod source_retention;
+mod standing;
 
 pub use fleet_readiness::{FleetReadiness, fleet_readiness};
 pub use manifest::{
@@ -96,6 +97,11 @@ pub use requirements::{
 };
 pub use run_claim::RunClaim;
 pub use source_retention::WorkerSourceRetention;
+pub use standing::{
+    RegistrationCredential, RegistrationIncarnation, WorkerStanding,
+    registration_incarnation_admission, require_current_runtime_protocol,
+    worker_heartbeat_protocol_admission, worker_registration_request_admission,
+};
 
 /// Why a Worker lifecycle is stopping. The Worker drives its drain from it,
 /// and a process that supervises a co-located Worker (AllInOne) selects it from

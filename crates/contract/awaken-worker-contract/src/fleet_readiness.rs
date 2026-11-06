@@ -93,7 +93,10 @@ pub fn fleet_readiness(
 /// service. Liveness is weaker than readiness on purpose: it admits a Worker
 /// that is merely busy.
 fn is_live(worker: &RegisteredWorker, now_ms: u64) -> bool {
-    worker.snapshot.state.accepts_work() && worker.snapshot.expires_at_ms > now_ms
+    matches!(
+        worker.snapshot.standing(now_ms),
+        crate::WorkerStanding::Ready
+    )
 }
 
 #[cfg(test)]

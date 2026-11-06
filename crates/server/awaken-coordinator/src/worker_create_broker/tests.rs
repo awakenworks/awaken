@@ -7,7 +7,7 @@ mod closed_worker;
 mod fixture;
 use super::*;
 use awaken_container_contract::K8S_CREATE_CAPTURE_HEADER;
-use awaken_dispatch::{WorkerHeartbeat, WorkerManifest, WorkerRegistration};
+use awaken_dispatch::{WorkerHeartbeat, WorkerRegistration};
 use awaken_lease_testkit::ManualClock;
 use awaken_worker_contract::WorkerIncarnationSource as _;
 use awaken_worker_fleet_kubernetes::K8sWorkerCreateLedger;
@@ -718,7 +718,12 @@ async fn private_seal_route_keeps_identity_liveness_and_transport_fences() {
                             WorkerRegistration {
                                 worker_id: identity.worker_id.clone(),
                                 incarnation_id: "replacement".into(),
-                                manifest: WorkerManifest::default(),
+                                manifest: awaken_worker_contract::WorkerManifest {
+                                    runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                                        awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                                    ),
+                                    ..awaken_worker_contract::WorkerManifest::default()
+                                },
                                 create_ledger: None,
                             },
                             fixture.clock.now_ms(),

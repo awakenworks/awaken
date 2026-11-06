@@ -35,6 +35,7 @@ mod application;
 mod clock;
 mod dispatch;
 mod dispatch_schema;
+mod worker_registration;
 // Synchronous composition convenience for conformance and embedded fixtures.
 // Production Hosts compose DispatchWorker/DispatchPool directly and therefore
 // cannot depend on the former parallel ingress façade.
@@ -155,6 +156,7 @@ pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
 pub use wake::NatsWakeSignal;
 #[cfg(feature = "durable")]
 pub use wake::PgNotifyWake;
+pub use worker_registration::{RegisterWorker, WorkerRegistryCommands};
 
 #[cfg(any(feature = "durable", test))]
 fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {

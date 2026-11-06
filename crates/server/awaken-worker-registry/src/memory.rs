@@ -56,7 +56,9 @@ fn register_records(
 fn mutate_records(
     workers: &mut WorkerRecords,
     identity: &WorkerIdentity,
-    decide: impl FnOnce(Option<&RegisteredWorker>) -> (Option<RegisteredWorker>, RegistryMutation),
+    decide: impl FnOnce(
+        Option<&RegisteredWorker>,
+    ) -> Result<(Option<RegisteredWorker>, RegistryMutation), RegistryError>,
 ) -> Result<RegistryMutation, RegistryError> {
     let records = workers.get_mut(&identity.worker_id);
     let (next, outcome) = decide(
@@ -64,7 +66,7 @@ fn mutate_records(
             .as_ref()
             .and_then(|rows| rows.last_key_value())
             .map(|(_, record)| record),
-    );
+    )?;
     if let (Some(next), Some(records)) = (next, records) {
         records.insert(next.snapshot.identity.generation, next);
     }
@@ -115,7 +117,7 @@ impl MemoryWorkerDirectory {
         deadline_ms: u64,
     ) -> Result<RegistryMutation, RegistryError> {
         self.mutate(identity, |current| {
-            transition::begin_drain(current, identity, deadline_ms)
+            Ok(transition::begin_drain(current, identity, deadline_ms))
         })
     }
 
@@ -123,7 +125,10 @@ impl MemoryWorkerDirectory {
     fn mutate(
         &self,
         identity: &WorkerIdentity,
-        decide: impl FnOnce(Option<&RegisteredWorker>) -> (Option<RegisteredWorker>, RegistryMutation),
+        decide: impl FnOnce(
+            Option<&RegisteredWorker>,
+        )
+            -> Result<(Option<RegisteredWorker>, RegistryMutation), RegistryError>,
     ) -> Result<RegistryMutation, RegistryError> {
         let mut workers = self.workers_lock()?;
         mutate_records(&mut workers, identity, decide)
@@ -135,7 +140,10 @@ impl MemoryWorkerDirectory {
     async fn mutate_async(
         &self,
         identity: &WorkerIdentity,
-        decide: impl FnOnce(Option<&RegisteredWorker>) -> (Option<RegisteredWorker>, RegistryMutation),
+        decide: impl FnOnce(
+            Option<&RegisteredWorker>,
+        )
+            -> Result<(Option<RegisteredWorker>, RegistryMutation), RegistryError>,
     ) -> Result<RegistryMutation, RegistryError> {
         let mut workers = self.workers.lock().await;
         mutate_records(&mut workers, identity, decide)
@@ -234,7 +242,7 @@ impl WorkerDirectory for MemoryWorkerDirectory {
         deadline_ms: u64,
     ) -> Result<RegistryMutation, RegistryError> {
         self.mutate_async(identity, |current| {
-            transition::begin_drain(current, identity, deadline_ms)
+            Ok(transition::begin_drain(current, identity, deadline_ms))
         })
         .await
     }
@@ -243,8 +251,10 @@ impl WorkerDirectory for MemoryWorkerDirectory {
         &self,
         identity: &WorkerIdentity,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.mutate_async(identity, |current| transition::quiesce(current, identity))
-            .await
+        self.mutate_async(identity, |current| {
+            Ok(transition::quiesce(current, identity))
+        })
+        .await
     }
 
     async fn deregister(
@@ -252,7 +262,7 @@ impl WorkerDirectory for MemoryWorkerDirectory {
         identity: &WorkerIdentity,
     ) -> Result<RegistryMutation, RegistryError> {
         self.mutate_async(identity, |current| {
-            transition::deregister(current, identity)
+            Ok(transition::deregister(current, identity))
         })
         .await
     }
@@ -263,7 +273,7 @@ impl WorkerDirectory for MemoryWorkerDirectory {
         now_ms: u64,
     ) -> Result<RegistryMutation, RegistryError> {
         self.mutate_async(identity, |current| {
-            transition::expire(current, identity, now_ms)
+            Ok(transition::expire(current, identity, now_ms))
         })
         .await
     }
@@ -311,7 +321,12 @@ mod loom_tests {
         WorkerRegistration {
             worker_id: "worker".to_string(),
             incarnation_id: incarnation.to_string(),
-            manifest: WorkerManifest::default(),
+            manifest: WorkerManifest {
+                runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                    awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                ),
+                ..WorkerManifest::default()
+            },
             create_ledger: None,
         }
     }
@@ -446,7 +461,7 @@ mod loom_tests {
             let expiry = thread::spawn(move || {
                 expiry_directory
                     .mutate(&expiry_identity, |current| {
-                        transition::expire(current, &expiry_identity, 11)
+                        Ok(transition::expire(current, &expiry_identity, 11))
                     })
                     .unwrap()
             });

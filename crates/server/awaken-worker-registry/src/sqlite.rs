@@ -204,7 +204,10 @@ impl SqliteWorkerDirectory {
     async fn mutate(
         &self,
         identity: &WorkerIdentity,
-        decide: impl FnOnce(Option<&RegisteredWorker>) -> (Option<RegisteredWorker>, RegistryMutation),
+        decide: impl FnOnce(
+            Option<&RegisteredWorker>,
+        )
+            -> Result<(Option<RegisteredWorker>, RegistryMutation), RegistryError>,
     ) -> Result<RegistryMutation, RegistryError> {
         let mut tx = self
             .pool
@@ -212,7 +215,7 @@ impl SqliteWorkerDirectory {
             .await
             .map_err(persist)?;
         let current = Self::read(&mut tx, &identity.worker_id).await?;
-        let (next, outcome) = decide(current.as_ref());
+        let (next, outcome) = decide(current.as_ref())?;
         if let Some(next) = next {
             Self::write(&mut tx, &next).await?;
         }
@@ -345,7 +348,7 @@ impl WorkerDirectory for SqliteWorkerDirectory {
         deadline_ms: u64,
     ) -> Result<RegistryMutation, RegistryError> {
         self.mutate(identity, |current| {
-            transition::begin_drain(current, identity, deadline_ms)
+            Ok(transition::begin_drain(current, identity, deadline_ms))
         })
         .await
     }
@@ -354,8 +357,10 @@ impl WorkerDirectory for SqliteWorkerDirectory {
         &self,
         identity: &WorkerIdentity,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.mutate(identity, |current| transition::quiesce(current, identity))
-            .await
+        self.mutate(identity, |current| {
+            Ok(transition::quiesce(current, identity))
+        })
+        .await
     }
 
     async fn deregister(
@@ -363,7 +368,7 @@ impl WorkerDirectory for SqliteWorkerDirectory {
         identity: &WorkerIdentity,
     ) -> Result<RegistryMutation, RegistryError> {
         self.mutate(identity, |current| {
-            transition::deregister(current, identity)
+            Ok(transition::deregister(current, identity))
         })
         .await
     }
@@ -375,7 +380,7 @@ impl WorkerDirectory for SqliteWorkerDirectory {
     ) -> Result<RegistryMutation, RegistryError> {
         durable_i64("now_ms", now_ms)?;
         self.mutate(identity, |current| {
-            transition::expire(current, identity, now_ms)
+            Ok(transition::expire(current, identity, now_ms))
         })
         .await
     }

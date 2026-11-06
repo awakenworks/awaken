@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use awaken_sync::{LeafLock, LeafRwLock};
 use awaken_time::{NotBefore, UtcTime, WallClock, WallClockExt};
 use awaken_worker_contract::RunClaim;
-use awaken_worker_contract::{WorkerDirectory, WorkerIdentity, WorkerSnapshot, WorkerState};
+use awaken_worker_contract::{WorkerDirectory, WorkerIdentity, WorkerSnapshot, WorkerStanding};
 use axum::Json;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, request::Parts};
@@ -134,10 +134,15 @@ pub fn verify_registered_worker_identity(
     if &snapshot.identity != identity {
         return Err("worker incarnation is stale".into());
     }
-    if (require_ready && snapshot.state != WorkerState::Ready)
-        || snapshot.expires_at_ms <= now_ms
-        || snapshot.state == WorkerState::Dead
-    {
+    let admitted = match snapshot.standing(now_ms) {
+        WorkerStanding::Ready => true,
+        // Authority the incarnation already holds needs only a live lease.
+        WorkerStanding::Starting | WorkerStanding::Draining | WorkerStanding::Quiesced => {
+            !require_ready
+        }
+        WorkerStanding::Expired | WorkerStanding::Dead => false,
+    };
+    if !admitted {
         return Err("worker is not ready or its registry lease expired".into());
     }
     Ok(())
@@ -1275,6 +1280,7 @@ impl WorkerLeasePolicy for FixedWorkerLeasePolicy {
 mod tests {
     use super::*;
     use awaken_lease_testkit::ManualClock;
+    use awaken_worker_contract::WorkerState;
 
     #[test]
     fn registered_worker_record_admission_has_one_identity_liveness_and_ready_law() {

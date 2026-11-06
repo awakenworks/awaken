@@ -99,7 +99,12 @@ pub(super) async fn ready_route_fixture() -> (NoApiRouteFixture, WorkerIdentity)
             WorkerRegistration {
                 worker_id: "k8s:sandbox-ns:worker:pod-uid".into(),
                 incarnation_id: "pod-uid".into(),
-                manifest: WorkerManifest::default(),
+                manifest: awaken_worker_contract::WorkerManifest {
+                    runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                        awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                    ),
+                    ..awaken_worker_contract::WorkerManifest::default()
+                },
                 create_ledger: None,
             },
             now_ms,

@@ -6,137 +6,38 @@
 use super::{
     ApplicationError, Arc, Extension, HeartbeatWorkerReq, Json, RegisterWorkerReq, State,
     StatusCode, Value, VerifiedWorkerContext, WorkerDispatchService, WorkerIdentityReq, directory,
-    json, release_closed_idle_worker_evidence, respond, settle_previous_incarnation,
-    verify_worker_id, verify_worker_identity,
+    json, registry_commands, release_closed_idle_worker_evidence, respond, verify_worker_id,
+    verify_worker_identity,
 };
 use awaken_time::WallClockExt;
+use awaken_worker_contract::{
+    CURRENT_RUNTIME_PROTOCOL_VERSION, RegistrationCredential, RegistryMutation,
+};
 use tracing::Instrument;
-
-fn heartbeat_changes_placement(
-    previous: Option<&awaken_dispatch::RegisteredWorker>,
-    heartbeat: &awaken_dispatch::WorkerHeartbeat,
-) -> bool {
-    let Some(previous) = previous else {
-        return false;
-    };
-    let snapshot = &previous.snapshot;
-    snapshot.state.accepts_work() != heartbeat.ready
-        || snapshot.in_flight != heartbeat.in_flight
-        || snapshot.warm_environment_shapes != heartbeat.warm_environment_shapes
-        || snapshot.credential_observations != heartbeat.credential_observations
-        || snapshot.acp_capability_observations != heartbeat.acp_capability_observations
-}
 
 pub(super) async fn register_worker(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(mut request): Json<RegisterWorkerReq>,
+    Json(request): Json<RegisterWorkerReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_worker_id(&worker, &request.registration.worker_id)?;
-        if worker.identity().is_some() {
-            return Err(ApplicationError::invalid(
-                "worker registration requires a bootstrap credential",
-            ));
-        }
-        if !request
-            .registration
-            .manifest
-            .supports_current_runtime_protocol()
-        {
-            return Err(ApplicationError::invalid(
-                "Worker manifest does not explicitly support the current runtime protocol",
-            ));
-        }
-        let observed = match &service.execution_bindings {
-            Some(source) => {
-                source
-                    .registration_incarnation(&request.registration)
-                    .await?
-            }
-            None => None,
+        let credential = if worker.identity().is_some() {
+            RegistrationCredential::Incarnation
+        } else {
+            RegistrationCredential::Bootstrap
         };
-        if observed.is_none() && worker.requires_provider_incarnation() {
-            // A provider-identified domain (an authenticated Kubernetes Pod)
-            // is admitted only under the incarnation the provider observes.
-            // Without that evidence the process's own proposal is never
-            // trusted: refuse instead of accepting it on the process's word.
-            return Err(ApplicationError::invalid(
-                "Worker registration requires the provider-observed incarnation of its execution domain",
-            ));
-        }
-        if let Some(incarnation) = observed {
-            // The provider identifies the process (a Kubernetes container
-            // instance); a process-proposed incarnation is never trusted. A
-            // different current incarnation of this Worker ID is a restarted
-            // process: settle it first from its retained exact evidence, or
-            // leave it Unknown, before the Registry may admit the new one.
-            let previous = directory(&service)?
-                .current(worker.worker_id())
-                .await
-                .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-                .filter(|current| current.snapshot.identity.incarnation_id != incarnation);
-            if let Some(previous) = previous {
-                settle_previous_incarnation(&service, &previous.snapshot.identity).await?;
-            }
-            request.registration.incarnation_id = incarnation;
-        }
-        if let Some(source) = &service.execution_bindings {
-            request.registration.create_ledger = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                source.prepare_registration_physical_evidence(&request.registration),
-            )
-            .await
-            .map_err(|_| {
-                ApplicationError::unavailable("Worker physical evidence preparation timed out")
-            })??;
-        }
-        let record = match directory(&service)?
-            .register(
-                request.registration,
-                service.clock.now_ms(),
-                service.registry_ttl_ms,
-            )
-            .await
-        {
-            Ok(record) => record,
-            Err(awaken_dispatch::RegistryError::SlotOccupied {
-                worker_id,
-                generation,
-            }) => {
-                return Err(ApplicationError::conflict(format!(
-                    "worker slot {worker_id} is occupied by generation {generation}"
-                )));
-            }
-            Err(error) => return Err(ApplicationError::invalid(error.to_string())),
-        };
-        if record.snapshot.state == awaken_dispatch::WorkerState::Starting
-            && let Some(source) = &service.execution_bindings
-        {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                source.retain_registered_worker_evidence(
-                    &record.snapshot.identity,
-                    record.create_ledger.as_ref(),
-                ),
-            )
-            .await
-            .map_err(|_| ApplicationError::unavailable("Worker evidence retention timed out"))??;
-            // Provider I/O can outlive closure. Re-read durable truth before
-            // replying, then converge retention if admission closed meanwhile.
-            release_closed_idle_worker_evidence(&service, &record.snapshot.identity).await?;
-        }
-        let identity = record.snapshot.identity.clone();
-        let record = directory(&service)?
-            .current(&identity.worker_id)
-            .await
-            .map_err(|e| ApplicationError::unavailable(e.to_string()))?
-            .filter(|current| current.snapshot.identity == identity)
-            .ok_or_else(|| ApplicationError::unavailable("registered Worker disappeared"))?;
+        let record = registry_commands(&service)?
+            .register(awaken_dispatch::RegisterWorker {
+                registration: request.registration,
+                credential,
+                provider_identified: worker.requires_provider_incarnation(),
+            })
+            .await?;
         Ok(json!({
             "worker": record,
             "lease_ttl_ms": service.registry_ttl_ms,
-            "runtime_protocol_version": awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            "runtime_protocol_version": CURRENT_RUNTIME_PROTOCOL_VERSION,
         }))
     }
     .await;
@@ -150,52 +51,15 @@ pub(super) async fn heartbeat_worker(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_worker_identity(&worker, &request.identity).map_err(ApplicationError::invalid)?;
-        let worker_directory = directory(&service)?;
-        // Placement evidence is read only to decide whether to nudge the one
-        // existing Session lifecycle supervisor. The registry mutation below
-        // remains the authority; a rejected heartbeat never publishes a hint.
-        let previous = worker_directory
-            .current(&request.identity.worker_id)
-            .instrument(tracing::info_span!("worker.registry.current"))
-            .await
-            .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        // The immutable incarnation manifest cannot gain protocol support by
-        // heartbeat. Old incarnations may still drain/deregister, but cannot
-        // extend authority indefinitely across a Control upgrade. A stale
-        // identity keeps the registry's normal non-mutating rejection below.
-        if previous.as_ref().is_some_and(|record| {
-            record.snapshot.identity == request.identity
-                && !record.snapshot.manifest.supports_current_runtime_protocol()
-        }) {
-            return Err(ApplicationError::invalid(
-                "Worker manifest does not explicitly support the current runtime protocol",
-            ));
-        }
-        let placement_changed = previous.as_ref().is_some_and(|previous| {
-            heartbeat_changes_placement(Some(previous), &request.heartbeat)
-        });
-        let mutation = worker_directory
+        let mutation = registry_commands(&service)?
             .heartbeat(
                 &request.identity,
                 request.heartbeat,
-                service.clock.now_ms(),
-                service.registry_ttl_ms,
+                service.session_work.as_deref(),
             )
-            .instrument(tracing::info_span!("worker.registry.heartbeat"))
-            .await
-            .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        if mutation == awaken_dispatch::RegistryMutation::Applied
-            && placement_changed
-            && let Some(session_work) = service.session_work.as_ref()
-        {
-            tracing::debug!(
-                worker_id = %request.identity.worker_id,
-                "Worker placement evidence changed; waking Session lifecycle reconciliation"
-            );
-            session_work.request_lifecycle_reconciliation();
-        }
-        let lease_ttl_ms = (mutation == awaken_dispatch::RegistryMutation::Applied)
-            .then_some(service.registry_ttl_ms);
+            .await?;
+        let lease_ttl_ms =
+            (mutation == RegistryMutation::Applied).then_some(service.registry_ttl_ms);
         Ok(json!({
             "mutation": mutation,
             "lease_ttl_ms": lease_ttl_ms,
@@ -239,7 +103,7 @@ pub(super) async fn quiesce_worker(
             .mark_quiesced(&request.identity)
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        if mutation == awaken_dispatch::RegistryMutation::Applied {
+        if mutation == RegistryMutation::Applied {
             release_closed_idle_worker_evidence(&service, &request.identity).await?;
         }
         Ok(json!({ "mutation": mutation }))
@@ -267,7 +131,7 @@ pub(super) async fn deregister_worker(
             .instrument(tracing::info_span!("worker.registry.deregister"))
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        if mutation == awaken_dispatch::RegistryMutation::Applied {
+        if mutation == RegistryMutation::Applied {
             release_closed_idle_worker_evidence(&service, &request.identity).await?;
         }
         Ok(json!({ "mutation": mutation }))

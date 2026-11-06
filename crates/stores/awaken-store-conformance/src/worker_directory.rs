@@ -24,6 +24,9 @@ pub fn registration(worker: &str, incarnation: &str) -> WorkerRegistration {
         incarnation_id: incarnation.to_string(),
         manifest: WorkerManifest {
             build_digest: "sha256:image-a".to_string(),
+            runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            ),
             ..WorkerManifest::default()
         },
         create_ledger: None,
