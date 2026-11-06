@@ -259,44 +259,6 @@ def changed_sources(base: str) -> list[str]:
     ) - {""})
 
 
-def compile_scope(metadata: dict, changed: list[str], original: list[str], root: Path = ROOT, target_reason: str = "") -> tuple[list[str], list[str], str]:
-    """Keep every Cargo peer that can contribute to a retained dependency unit.
-
-    This deliberately uses package overlap, not a feature solver. If an excluded
-    root shares no resolved package with the retained closure, its normal/dev/
-    build requests cannot change any retained unit's features. Ambiguous flags,
-    global inputs, no changed source or a whole connected component stay whole.
-    """
-    selected, reason = affected_packages(metadata, changed, root)
-    packages = {p["name"]: p for p in metadata["packages"] if p["id"] in metadata["workspace_members"]}
-    if target_reason:
-        return original, sorted(packages), "whole: " + target_reason
-    if not selected or len(selected) == len(packages) or reason != "changed owners and transitive consumers, including test dependencies":
-        return original, sorted(packages), "whole: " + reason
-    if original[:4] != ["cargo", "check", "--workspace", "--all-targets"]:
-        return original, sorted(packages), "whole: unsupported compile command shape"
-    flags = original[4:]
-    feature_owners: set[str] = set()
-    index = 0
-    while index < len(flags):
-        argument = flags[index]
-        if argument in ("--locked", "--message-format=json", "--timings"):
-            index += 1
-        elif argument == "--features" and index + 1 < len(flags):
-            for feature in flags[index + 1].replace(" ", ",").split(","):
-                owner, separator, name = feature.partition("/")
-                if not separator or not name or owner not in packages:
-                    return original, sorted(packages), "whole: unowned compile feature"
-                feature_owners.add(owner)
-            index += 2
-        else:
-            return original, sorted(packages), "whole: unsupported target/profile/config flag"
-    names = crate_test.peer_packages(metadata, {*selected, *feature_owners})
-    if len(names) == len(packages):
-        return original, names, "whole: shared-unit peer closure reaches the workspace"
-    return ["cargo", "check", *(part for name in names for part in ("-p", name)), "--all-targets", *flags], names, "affected owners and all potentially shared-unit contributing peers"
-
-
 def explain(changed: list[str], entry: str = GATE, modes: tuple[str, ...] = HOOK_MODES) -> list[str]:
     """One line per changed path: why the gate counts it (or ignores it)."""
     rust = rust_inputs()
@@ -343,7 +305,7 @@ class PlanTests(unittest.TestCase):
         from formal_sources import detached_git_environment
         self.detached_environment = detached_git_environment
         # Fixtures author their compile graph; caller linker/target overrides
-        # are independent inputs exercised by native_graph_reason's own table.
+        # are independent inputs.
         values = {key: value for key, value in detached_git_environment().items()
                   if key not in crate_test.COMPILE_ENVIRONMENT_OVERRIDES}
         environment = mock.patch.dict(os.environ, values, clear=True)
@@ -500,7 +462,7 @@ class PlanTests(unittest.TestCase):
 
     def planner_cli(self, directory: str, root: Path, metadata: dict, *, metadata_status: int = 0,
                     execution_status: int = 0, mutate: str = "", broken_metadata: bool = False,
-                    run: bool = True, check_command: list[str] | None = None) -> tuple[subprocess.CompletedProcess, list[str], list[dict]]:
+                    run: bool = True) -> tuple[subprocess.CompletedProcess, list[str], list[dict]]:
         # The fixture controls the original subprocess boundary, not Cargo's
         # dependency solver or compile behavior. Real Git supplies the subject.
         outer = Path(directory)
@@ -560,8 +522,7 @@ else:
                            AWAKEN_FIXTURE_PROGRAM=sys.executable, AWAKEN_FIXTURE_SCRIPT=str(shim),
                            W41_FIXTURE_METADATA_STATUS=str(metadata_status), W41_FIXTURE_EXECUTION_STATUS=str(execution_status),
                            W41_FIXTURE_MUTATE=mutate, W41_FIXTURE_BROKEN=str(int(broken_metadata)))
-        result = subprocess.run([sys.executable, "-B", str(root / "scripts/ci/rust_test_plan.py"), "--base", "HEAD", *(["--run"] if run else []),
-                                 *(["--check-command", *check_command] if check_command is not None else [])],
+        result = subprocess.run([sys.executable, "-B", str(root / "scripts/ci/rust_test_plan.py"), "--base", "HEAD", *(["--run"] if run else [])],
                                 cwd=root, env=environment, capture_output=True, text=True)
         calls = [json.loads(line) for line in calls_path.read_text().splitlines()] if calls_path.exists() else []
         receipts = [json.loads(path.read_text()) for path in (target / "test-timings").glob("affected-*.json") if path.is_file()]
@@ -932,138 +893,6 @@ else:
         with self.assertRaises(ValueError):
             affected_packages(metadata, ["crates/kernel/src/lib.rs"])
 
-    def test_compile_peer_closure_preserves_dependency_kinds_and_package_ids(self) -> None:
-        # B1/B2/B3/B4/B7 decision table: changed root + an excluded peer shares
-        # a dependency unit -> retain that peer regardless of default/dev/build/
-        # target/optional provenance. A peer connected only through a newly
-        # retained peer is also retained (fixed point). A different package ID
-        # with the same crate name, or a disjoint root, contributes no such unit.
-        # This is potential-contribution closure, not node.features equivalence.
-        original = ["cargo", "check", "--workspace", "--all-targets", "--features", "cli/pod", "--locked"]
-        names = ("kernel", "peer", "second", "cli", "other")
-        metadata = {
-            "workspace_members": list(names),
-            "packages": [{"id": n, "name": n, "manifest_path": str(ROOT / "crates" / n / "Cargo.toml")} for n in names]
-                        + [{"id": n, "name": "shared", "manifest_path": "/registry/shared/Cargo.toml"} for n in ("shared@1", "shared@2", "bridge")],
-            "resolve": {"nodes": [{"id": n, "deps": [{"name": "renamed", "pkg": d, "dep_kinds": [{"kind": kind, "target": "cfg(unix)"}]} for d in deps]}
-                                     for n, deps, kind in (("kernel", ("shared@1",), None), ("peer", ("shared@1", "bridge"), "dev"),
-                                                          ("second", ("bridge",), "build"), ("cli", (), None), ("other", ("shared@2",), None),
-                                                          ("shared@1", (), None), ("shared@2", (), None), ("bridge", (), None))]},
-        }
-        command, selected, reason = compile_scope(metadata, ["crates/kernel/src/lib.rs"], original)
-        self.assertEqual(selected, ["cli", "kernel", "peer", "second"])
-        self.assertEqual(command, ["cargo", "check", "-p", "cli", "-p", "kernel", "-p", "peer", "-p", "second", "--all-targets", *original[4:]])
-        self.assertIn("potentially", reason)
-        self.assertNotIn("-E", command)
-        # B12 diagnostic HTML timings change no target/feature selection and
-        # survive projection verbatim. Unknown timing formats stay whole.
-        timed, timed_selected, _ = compile_scope(metadata, ["crates/kernel/src/lib.rs"], [*original, '--timings'])
-        self.assertEqual(timed, [*command, '--timings'])
-        self.assertEqual(timed_selected, selected)
-        unknown = [*original, '--timings=json']
-        self.assertEqual(compile_scope(metadata, ["crates/kernel/src/lib.rs"], unknown)[0], unknown)
-        for kind in (None, "dev", "build"):
-            metadata["resolve"]["nodes"][1]["deps"][0]["dep_kinds"][0]["kind"] = kind
-            self.assertEqual(compile_scope(metadata, ["crates/kernel/src/lib.rs"], original)[1], selected)
-        metadata["resolve"]["nodes"][-1]["deps"] = [{"pkg": "shared@2"}]
-        self.assertEqual(compile_scope(metadata, ["crates/kernel/src/lib.rs"], original)[0], original)
-
-    def test_compile_whole_fallback_is_explicit_before_execution(self) -> None:
-        # B5/B6/B8/B9: clean/manual, docs-only, global/config/hooks/fuzz,
-        # manifests (owned too), deleted/unowned sources or an unsupported
-        # target/profile/feature request -> original whole argv, never no-work
-        # or an altered feature graph. Invalid metadata is refusal, not fallback.
-        with tempfile.TemporaryDirectory() as directory:
-            root, metadata = self.fixture_repository(directory)
-            original = ["cargo", "check", "--workspace", "--all-targets", "--locked"]
-            for paths in ([], ["docs/readme.md"], ["Cargo.lock"], [".cargo/config.toml"], [".config/rust-tests.toml"],
-                          ["lefthook.yml"], ["scripts/ci/crate_test.py"], ["fuzz/fuzz_targets/new.rs"],
-                          ["crates/kernel/Cargo.toml"], ["crates/deleted/src/lib.rs"],
-                          ["docs/readme.md", "crates/kernel/Cargo.toml"], ["docs/readme.md", "lefthook.yml"]):
-                with self.subTest(paths=paths):
-                    command, selected, reason = compile_scope(metadata, paths, original, root)
-                    self.assertEqual(command, original)
-                    self.assertEqual(selected, ["application", "cli", "kernel", "other"])
-                    self.assertTrue(reason.startswith("whole:"), reason)
-            for flags in (["--target", "x86_64-unknown-linux-gnu"], ["--release"], ["--no-default-features"],
-                          ["--features", "foreign/feature"], ["--features", "kernel-feature"], ["--features"]):
-                command = [*original, *flags]
-                self.assertEqual(compile_scope(metadata, ["crates/kernel/src/lib.rs"], command, root)[0], command)
-            metadata["resolve"]["nodes"][0]["deps"] = [{"pkg": "missing-unit"}]
-            with self.assertRaisesRegex(ValueError, "omits a dependency node"):
-                compile_scope(metadata, ["crates/kernel/src/lib.rs"], original, root)
-
-    def test_compile_cli_binds_original_actual_argv_and_working_subject(self) -> None:
-        # B10/B11: actual CLI reads the same index+WT+untracked identity and
-        # authored last-step features; its subprocess argv equals its ordinary
-        # local-affected-check receipt. The old nextest -E mode remains separate.
-        with tempfile.TemporaryDirectory() as directory:
-            root, metadata = self.fixture_repository(directory)
-            source = root / "crates/kernel/src/lib.rs"
-            source.write_text("pub const VALUE: u8 = 2;\n")
-            self.git(root, "add", str(source))
-            source.write_text("pub const VALUE: u8 = 1;\n")
-            original = ["cargo", "check", "--workspace", "--all-targets", "--features", "cli/pod", "--locked"]
-            result, calls, receipts = self.planner_cli(directory, root, metadata, check_command=original)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(calls, ["metadata", "check"])
-            receipt = receipts[0]
-            self.assertEqual(receipt["kind"], "local-affected-check")
-            self.assertEqual(receipt["original_command"], original)
-            self.assertEqual(receipt["selected_packages"], ["application", "cli", "kernel"])
-            actual = [json.loads(line) for line in (Path(directory) / "argv.jsonl").read_text().splitlines()]
-            self.assertEqual(actual[-1], receipt["command"][1:])
-            self.assertEqual(receipt["source_kind"], "working-tree")
-            self.assertTrue(receipt["source_unchanged"])
-            self.assertFalse(receipt["full_gate"])
-            self.assertIn("--all-targets", actual[-1])
-            self.assertIn("cli/pod", actual[-1])
-            self.assertNotIn("-E", actual[-1])
-
-    def test_compile_cli_refusal_source_change_and_execution_failure_never_retry(self) -> None:
-        # B12/B13 decision table at the existing process boundary:
-        # metadata75/23 -> exact status, no check/receipt; source mutation in
-        # metadata -> refusal before check; check75/23 -> exact status and one
-        # failed ordinary receipt, never retry whole; check mutates source ->
-        # refusal even if its status was0. No row changes profiles or admission.
-        original = ["cargo", "check", "--workspace", "--all-targets", "--locked"]
-        for metadata_status, execution_status, mutate, expected, calls_expected in (
-            (75, 0, "", 75, ["metadata"]), (23, 0, "", 23, ["metadata"]),
-            (0, 0, "metadata", 1, ["metadata"]), (0, 75, "", 75, ["metadata", "check"]),
-            (0, 23, "", 23, ["metadata", "check"]), (0, 0, "execution", 1, ["metadata", "check"]),
-        ):
-            with self.subTest(metadata=metadata_status, execution=execution_status, mutate=mutate), tempfile.TemporaryDirectory() as directory:
-                root, metadata = self.fixture_repository(directory)
-                (root / "crates/kernel/src/lib.rs").write_text("pub const VALUE: u8 = 2;\n")
-                result, calls, receipts = self.planner_cli(directory, root, metadata, metadata_status=metadata_status,
-                                                         execution_status=execution_status, mutate=mutate, check_command=original)
-                self.assertEqual(result.returncode, expected, result.stderr)
-                self.assertEqual(calls, calls_expected)
-                self.assertEqual(len(receipts), int("check" in calls))
-                if receipts:
-                    self.assertEqual(receipts[0]["exit_code"], expected)
-                    self.assertEqual(receipts[0]["source_unchanged"], mutate != "execution")
-
-    def test_compile_cli_config_appearance_refuses_without_claiming_source_change(self) -> None:
-        # B8/B13: private CARGO_HOME starts with no config; the metadata/check
-        # boundary creates one outside the repo. Planning appearance -> zero
-        # compile; execution appearance -> failed receipt even if check0. Repo
-        # source_unchanged remains its actual Git fact; do not call a contextual
-        # failure a source change, print private values, or retry whole.
-        original = ["cargo", "check", "--workspace", "--all-targets", "--locked"]
-        for mutate, expected_calls in (("metadata-config", ["metadata"]), ("execution-config", ["metadata", "check"])):
-            with self.subTest(mutate=mutate), tempfile.TemporaryDirectory() as directory:
-                root, metadata = self.fixture_repository(directory)
-                (root / "crates/kernel/src/lib.rs").write_text("pub const VALUE: u8 = 2;\n")
-                result, calls, receipts = self.planner_cli(directory, root, metadata, mutate=mutate, check_command=original)
-                self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertEqual(calls, expected_calls)
-                self.assertIn("Compile target admission changed", result.stderr)
-                self.assertNotIn("private-value", result.stderr)
-                if receipts:
-                    self.assertTrue(receipts[0]["source_unchanged"])
-                    self.assertEqual(receipts[0]["exit_code"], 1)
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -1074,7 +903,6 @@ def main() -> int:
     parser.add_argument("--source-digest", action="store_true")
     parser.add_argument("--base")
     parser.add_argument("--run", action="store_true")
-    parser.add_argument("--check-command", nargs=argparse.REMAINDER)
     parser.add_argument("--gate-scope", action="store_true")
     parser.add_argument("--entry", default=GATE, help="gate script whose scope is planned (default check-rust.sh)")
     parser.add_argument("--explain", action="store_true", help="also print why each changed path counts (stderr)")
@@ -1087,7 +915,7 @@ def main() -> int:
         print("\n".join(production_selection()))
         return 0
     if args.gate_scope:
-        if not args.base or args.run or args.check_command is not None or args.features or args.self_test or args.source_digest:
+        if not args.base or args.run or args.features or args.self_test or args.source_digest:
             parser.error("--gate-scope takes only --base, --entry and --explain")
         try:
             base = git_output("rev-parse", "--verify", "--end-of-options", args.base + "^{commit}").decode().strip()
@@ -1118,7 +946,7 @@ def main() -> int:
             print(package)
         return 0
     if args.features or args.self_test or args.source_digest:
-        if args.base or args.run or args.check_command is not None or sum((args.features, args.self_test, args.source_digest)) != 1:
+        if args.base or args.run or sum((args.features, args.self_test, args.source_digest)) != 1:
             parser.error("--features, --source-digest and --self-test are standalone modes")
         if args.source_digest:
             print(source_snapshot()[0])
@@ -1135,40 +963,23 @@ def main() -> int:
         fingerprint, facts = working_subject()
         base = git_output("rev-parse", "--verify", "--end-of-options", args.base + "^{commit}").decode().strip()
         changed = changed_sources(base)
-        if args.check_command is not None and args.check_command[:2] != ["cargo", "check"]:
-            parser.error("--check-command requires the original cargo check argv")
-        original = args.check_command
-        if original is None:
-            feature_names, companions = crate_test.load_profile(PROFILE)
-            features = ",".join(feature_names)
-        else:
-            features = ",".join(original[i + 1] for i, value in enumerate(original[:-1]) if value == "--features")
+        feature_names, companions = crate_test.load_profile(PROFILE)
         environment = crate_test.environment(ROOT)
-        target_reason = crate_test.native_graph_reason(ROOT, environment) if original is not None else ""
-        metadata = crate_test.full_graph_metadata(features.split(",") if features else [], root=ROOT,
-                                                  environment=environment, host_only=original is not None and not target_reason)
-        if original is not None:
-            command, selected, reason = compile_scope(metadata, changed, original, ROOT, target_reason)
-            commands = [command]
-        else:
-            selected, reason = affected_packages(metadata, changed, ROOT)
-            errors = crate_test.companion_errors(metadata, companions, ROOT)
-            if errors:
-                raise crate_test.PlanError("; ".join(errors))
-            commands = crate_test.plan_packages(metadata, feature_names, companions, selected, []) if selected else []
-            command = commands[-1] if commands else []
+        metadata = crate_test.full_graph_metadata(feature_names, root=ROOT, environment=environment, host_only=False)
+        selected, reason = affected_packages(metadata, changed, ROOT)
+        errors = crate_test.companion_errors(metadata, companions, ROOT)
+        if errors:
+            raise crate_test.PlanError("; ".join(errors))
+        commands = crate_test.plan_packages(metadata, feature_names, companions, selected, []) if selected else []
+        command = commands[-1] if commands else []
         plan = {"schema_version": 1, "kind": "local-affected", "revision": facts["revision"].decode().strip(), "base": base, "changed": changed, "selected_packages": selected, "reason": reason, "command": command if selected else [], "full_gate": False,
                 "source_kind": "working-tree", "source_digest": fingerprint, "index_tree": facts["index_tree"].decode().strip(),
                 "untracked_files": {name: hashlib.sha256(data).hexdigest() for name, data in facts["untracked"].items()}}
-        if original is not None:
-            plan.update(kind="local-affected-check", original_command=original)
         plan["commands"] = commands
         # Metadata projects the first capture. This fresh final fence still
         # refuses any late source axis, including no-run/no-work plans.
         if source_snapshot()[0] != fingerprint:
             raise ValueError("Source changed during affected planning; no execution started")
-        if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
-            raise ValueError("Compile target admission changed during planning; no execution started")
         print(json.dumps(plan, indent=2), flush=True)
         if not args.run or not commands:
             return 0
@@ -1178,14 +989,10 @@ def main() -> int:
         receipt.with_suffix(".patch").write_bytes(facts["patch"])
         if source_snapshot()[0] != fingerprint:
             raise ValueError("Source changed before affected execution; no execution started")
-        if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
-            raise ValueError("Compile target admission changed before execution; no execution started")
         started = time.monotonic()
         def verify():
             if source_snapshot()[0] != fingerprint:
                 raise ValueError("Source changed before or during affected execution")
-            if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
-                raise ValueError("Compile target admission changed during execution")
         def record(rows):
             plan.update(status="running", rows=rows)
             receipt.write_text(json.dumps(plan, indent=2), encoding="utf-8")
@@ -1198,9 +1005,6 @@ def main() -> int:
             unchanged = False
         if not unchanged:
             print("Source changed during affected execution; result cannot qualify this tree", file=sys.stderr)
-            status = status or 1
-        if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
-            print("Compile target admission changed during execution; result cannot qualify this context", file=sys.stderr)
             status = status or 1
         plan.update(status="passed" if status == 0 else "failed", rows=rows, exit_code=status,
                     source_unchanged=unchanged, duration_seconds=time.monotonic() - started)

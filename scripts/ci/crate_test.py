@@ -113,65 +113,6 @@ def full_graph_metadata(features: list[str], *, root: Path = ROOT,
     ))
 
 
-# Cargo configuration keys that change how a unit is built or cached, never
-# which packages, targets or features Cargo selects. A config holding only these
-# keys leaves the host-filtered metadata graph exact, so narrowing stays sound.
-HARMLESS_BUILD_KEYS = frozenset({"rustc-wrapper", "jobs", "incremental", "build-dir"})
-HARMLESS_TARGET_KEYS = frozenset({"linker", "rustflags"})
-
-
-def config_refusal(path: Path) -> str:
-    """The first key of one Cargo config that could change package selection.
-
-    Returns "" when every key is harmless. Only key names are reported; values
-    (which may be private paths or tokens) are never printed.
-    """
-    try:
-        document = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
-        return f"unreadable Cargo configuration {path}"
-    for key, value in document.items():
-        if key == "profile":
-            continue
-        if key == "build" and isinstance(value, dict) and set(value) <= HARMLESS_BUILD_KEYS:
-            continue
-        if key == "target" and isinstance(value, dict) and all(
-                isinstance(table, dict) and set(table) <= HARMLESS_TARGET_KEYS
-                # A --cfg flag can change which target-specific dependencies resolve.
-                and not any("cfg" in str(flag) for flag in table.get("rustflags", []))
-                for table in value.values()):
-            continue
-        detail = (f"{key}.{sorted(set(value) - HARMLESS_BUILD_KEYS)[0]}"
-                  if key == "build" and isinstance(value, dict) and set(value) - HARMLESS_BUILD_KEYS else key)
-        return f"Cargo configuration key {detail} in {path} may change package selection"
-    return ""
-
-
-def native_graph_reason(root: Path, values: dict[str, str]) -> str:
-    """Whether this metadata owner's host filter can describe the compile.
-
-    Stable Cargo offers no effective-config oracle, so a config is accepted only
-    when every key it sets is one that cannot change package selection
-    (HARMLESS_BUILD_KEYS, any ``profile.*``, ``target.<triple>.linker`` and a
-    ``rustflags`` without ``--cfg``). Any other key, an unreadable file, or an
-    explicit compiler/target environment override keeps the whole command.
-    Paths and key names explain refusal without revealing configuration values.
-    """
-    if any(values.get(name) for name in COMPILE_ENVIRONMENT_OVERRIDES):
-        return "unconfirmed compile target/compiler environment"
-    cargo_home = Path(values.get("CARGO_HOME", str(Path.home() / ".cargo")))
-    if not cargo_home.is_absolute():
-        cargo_home = root / cargo_home
-    directories = [*(parent / ".cargo" for parent in (root.resolve(), *root.resolve().parents)), cargo_home]
-    for directory in directories:
-        for name in ("config", "config.toml"):
-            if (directory / name).exists():
-                refusal = config_refusal(directory / name)
-                if refusal:
-                    return refusal
-    return ""
-
-
 def _members(metadata: dict) -> dict[str, dict]:
     member_ids = metadata["workspace_members"]
     members = set(member_ids)
@@ -234,19 +175,6 @@ def _closure(metadata: dict, package_id: str) -> set[str]:
                 reached.add(dependency)
                 pending.append(dependency)
     return reached
-
-
-def peer_packages(metadata: dict, roots: set[str]) -> list[str]:
-    """The existing compile fixed point: every potentially shared-unit peer."""
-    packages = _members(metadata)
-    retained = {packages[name]["id"] for name in roots}
-    closures = {p["id"]: _closure(metadata, p["id"]) for p in packages.values()}
-    while True:
-        dependencies = set().union(*(closures[identity] for identity in retained))
-        peers = {identity for identity, closure in closures.items() if closure & dependencies}
-        if peers <= retained:
-            return sorted(p["name"] for p in packages.values() if p["id"] in retained)
-        retained |= peers
 
 
 def _profile_flags(passthrough: list[str]) -> list[str]:
@@ -576,7 +504,6 @@ class CrateTestPlan(unittest.TestCase):
             {"id": "shared", "features": ["rich"], "deps": []},
             {"id": "peer", "features": [], "deps": [{"pkg": "shared"}]},
         ))
-        self.assertEqual(peer_packages(metadata, {"leaf"}), ["leaf", "peer", "shared"])
         command = plan_packages(metadata, self.features, [], ["leaf"], [])[-1]
         self.assertIn("--workspace", command)
         self.assertEqual(command[command.index("--features") + 1], ",".join(self.features))
@@ -792,53 +719,6 @@ class CrateTestPlan(unittest.TestCase):
                     mock.patch(__name__ + ".full_graph_metadata", side_effect=subprocess.CalledProcessError(original, ["cargo", "metadata"])), \
                     mock.patch.object(subprocess, "run", side_effect=AssertionError("dependent execution started")):
                 self.assertEqual(main(["-p", "awaken-cli"]), expected)
-
-    def test_compile_host_admission_never_guesses_effective_configuration(self) -> None:
-        # B8: no configuration/override -> native host may be used. A target
-        # environment, root/ancestor config or CARGO_HOME config -> explicit
-        # unknown; the caller widens before compiling. No contents/secret values
-        # are interpreted or printed, and the test helper's profile is separate.
-        with tempfile.TemporaryDirectory() as directory:
-            outer = Path(directory)
-            root, home = outer / "repository/subdirectory", outer / "cargo-home"
-            root.mkdir(parents=True)
-            home.mkdir()
-            values = {"CARGO_HOME": str(home)}
-            self.assertEqual(native_graph_reason(root, values), "")
-            self.assertIn("environment", native_graph_reason(root, {**values, "CARGO_BUILD_TARGET": "private-value"}))
-            for config in (root / ".cargo/config.toml", root.parent / ".cargo/config", home / "config.toml"):
-                config.parent.mkdir(exist_ok=True)
-                config.write_text("[build]\ntarget = 'private-value'\n")
-                reason = native_graph_reason(root, values)
-                self.assertIn("configuration", reason)
-                self.assertNotIn("private-value", reason)
-                config.unlink()
-            relative_home = root / "relative-home"
-            relative_home.mkdir()
-            (relative_home / "config.toml").write_text("[build]\ntarget='private-value'\n")
-            self.assertIn("configuration", native_graph_reason(root, {"CARGO_HOME": "relative-home"}))
-            # H1 keys that change only how units build (wrapper, jobs, caches,
-            # profiles, linker, rustflags without --cfg) keep narrowing; H2 any
-            # other key, a --cfg flag or an unreadable file keeps the whole run.
-            harmless = ("[build]\nrustc-wrapper = '/private/sccache'\nincremental = false\njobs = 16\n"
-                        "build-dir = '/private/{workspace-path-hash}'\n[profile.dev]\ndebug = 'line-tables-only'\n"
-                        "[target.x86_64-unknown-linux-gnu]\nlinker = 'clang'\n"
-                        "rustflags = ['-C', 'link-arg=-fuse-ld=mold']\n")
-            (home / "config.toml").write_text(harmless)
-            self.assertEqual(native_graph_reason(root, values), "", "H1")
-            for extra, key in (("[build]\ntarget-dir = 'private-value'\n", "build.target-dir"),
-                               ("[unstable]\nprivate = true\n", "unstable"),
-                               ("[patch.crates-io]\nprivate = { path = 'private-value' }\n", "patch"),
-                               ("[target.x86_64-unknown-linux-gnu]\nrustflags = ['--cfg', 'private']\n", "target"),
-                               ("[target.'cfg(unix)']\nrunner = 'private-value'\n", "target"),
-                               ("not = [toml\n", "unreadable")):
-                with self.subTest(key=key):
-                    document = extra if extra.startswith(("[build]", "[target", "not")) else harmless + extra
-                    (home / "config.toml").write_text(document)
-                    reason = native_graph_reason(root, values)
-                    self.assertIn(key, reason, "H2")
-                    self.assertNotIn("private-value", reason)
-            (home / "config.toml").unlink()
 
     def test_p8_stale_companion_rows(self) -> None:
         rows = [{"package": "leaf", "binary": "hand-bin", "launcher": "gone"}]

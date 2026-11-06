@@ -470,21 +470,16 @@ case "$mode" in
     # factory or leaf-only success is not that effect. L3 admission75/source or
     # profile uncertainty -> retain the exact refusal, no retry/flag change.
     # UNKNOWN_CONFIG still keeps whole; a focused PASS cannot qualify a subset.
-    # Both lanes plan the same check against their own base (S2 above); the
-    # planner keeps the whole argv whenever it cannot prove a narrower one,
-    # including when nothing changed (an incremental no-op after pre-commit).
+    # The workspace check is incremental: unchanged crates are fresh, so the
+    # whole argv costs only what changed. (A per-package narrowing used to run
+    # here; its shared-unit peer closure kept 152 of 153 packages for every
+    # single-crate change, so it decided nothing.) A gate-script-only change
+    # compiles nothing.
     if [ "$rust_changed" -eq 0 ]; then
       echo "↷ check (unaffected: $scope_reason)"
     else
-      if [ "$mode" = "--quick" ]; then
-        step "check" "fix the compile errors shown above" \
-          python3 scripts/ci/rust_test_plan.py --base HEAD --run --check-command \
-          cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}" --timings
-      else
-        step "check" "fix the compile errors shown above" \
-          python3 scripts/ci/rust_test_plan.py --base "$scope_base" --run --check-command \
-          cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}" --timings
-      fi
+      step "check" "fix the compile errors shown above" \
+        cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}" --timings
     fi
     if [ "$mode" = "--push" ]; then
       # A dev dependency may enable the upstream Host variant while the CLI's

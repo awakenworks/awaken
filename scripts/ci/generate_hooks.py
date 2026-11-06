@@ -1033,16 +1033,16 @@ def selftest() -> None:
     assert "self_probe.py" not in gate_mode_source(self_test, "--quick"), "T3 early-exit mode is excluded"
     # T1 compound-mode cause: matching mode + opaque false condition takes the
     # real else branch. Both outcomes of that condition must own their inputs.
-    compound = gate.replace('if [ "$mode" = "--quick" ]; then',
-                            'if [ "$mode" = "--quick" ] && test -n "${OPAQUE:-}"; then')
-    compound = compound.replace('      else\n        step "check"',
-                                '      else\n        python3 scripts/ci/compound_else_probe.py\n        step "check"')
+    compound = gate.replace('  if [ "$mode" = "--push" ]; then\n    # Without',
+                            '  if [ "$mode" = "--quick" ] && test -n "${OPAQUE:-}"; then\n    # Without')
+    compound = compound.replace('  else\n    scope_base=HEAD',
+                                '  else\n    python3 scripts/ci/compound_else_probe.py\n    scope_base=HEAD')
     assert "rust_test_plan.py" in gate_mode_source(compound, "--quick")
     assert "compound_else_probe.py" in gate_mode_source(compound, "--quick"), "T1 compound else must be retained"
     for broken in (gate.replace("  --quick|--push)\n", "  --push)\n"),
-                   gate.replace('if [ "$mode" = "--quick" ]; then', 'if test "$mode" = "--quick"; then'),
-                   gate.replace("python3 scripts/ci/rust_test_plan.py --base", 'python3 "$checker" --base'),
-                   gate.replace("python3 scripts/ci/rust_test_plan.py --base", 'eval "$checker" --base'),
+                   gate.replace('if [ "$mode" = "--full" ]; then', 'if test "$mode" = "--full"; then'),
+                   gate.replace("  python3 scripts/ci/check_dependency_sources.py", '  python3 "$checker"'),
+                   gate.replace("  python3 scripts/ci/check_dependency_sources.py", '  eval "$checker"'),
                    gate.replace('mode="${1:---full}"\n', 'mode="${1:---full}"\nmode="--push"\n'),
                    gate.replace('mode="${1:---full}"\n', 'mode="${1:---full}"\nreadonly mode="--push"\n'),
                    gate.replace("  --full)\n", '  "$dynamic")\n')):
