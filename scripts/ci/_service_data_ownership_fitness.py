@@ -991,19 +991,53 @@ def _normal_dependencies(manifest: dict) -> set[str]:
     return dependencies
 
 
-def product_test_support_violations(manifest: dict) -> list[str]:
-    """Return default or normal/build edges that enable test-only capabilities."""
+def product_test_support_violations(
+    manifest: dict, tooling: frozenset[str] = frozenset()
+) -> list[str]:
+    """Return default, feature or normal/build edges that enable test-only capabilities.
+
+    This is what makes the one production lint in check-rust.sh (every crate
+    except `layer = "tooling"`, every feature except test-support, `--lib
+    --bins`) a production graph: nothing outside tooling can switch
+    test-support on, so a production call into a fixture-only item fails to
+    compile there instead of being hidden by feature unification.
+    """
 
     errors: list[str] = []
-    defaults = manifest.get("features", {}).get("default", [])
-    for feature in defaults:
+    features = manifest.get("features", {})
+    for feature in features.get("default", []):
         if feature == "test-support" or feature.endswith("/test-support"):
             errors.append(f"default feature enables `{feature}`")
+    for feature, values in features.items():
+        if feature in ("default", "test-support"):
+            continue
+        for value in values:
+            if value == "test-support" or value.endswith("/test-support"):
+                errors.append(
+                    f"feature `{feature}` enables `{value}`; only the `test-support` feature may"
+                )
     for section, table in _normal_dependency_tables(manifest):
         for name, value in table.items():
             if isinstance(value, dict) and "test-support" in value.get("features", []):
                 errors.append(f"{section} dependency `{name}` enables test-support")
+            package = value.get("package", name) if isinstance(value, dict) else name
+            if package in tooling:
+                errors.append(
+                    f"{section} dependency `{name}` is a tooling crate, which enables test-support"
+                )
     return sorted(errors)
+
+
+def tooling_crates(repo_root: Path) -> frozenset[str]:
+    """Crates whose metadata layer is `tooling` (testkits, harnesses, examples)."""
+
+    names = set()
+    for path in _crate_boundary_workspace.crate_manifests(repo_root / "crates"):
+        with path.open("rb") as handle:
+            package = tomllib.load(handle).get("package", {})
+        if package.get("metadata", {}).get("awaken", {}).get("layer") == "tooling":
+            names.add(package["name"])
+    return frozenset(names)
 
 
 def product_inmem_dependency_violations(manifest_path: str, manifest: dict) -> list[str]:
@@ -1285,12 +1319,18 @@ def selftest() -> None:
 def check_all(repo_root: Path) -> list[str]:
     errors: list[str] = []
     product_manifests: dict[str, dict] = {}
+    tooling = tooling_crates(repo_root)
     product_manifest_paths = _crate_boundary_workspace.production_crate_manifests(repo_root / "crates")
     for manifest_path in product_manifest_paths:
         product_manifest = manifest_path.relative_to(repo_root).as_posix()
         with (repo_root / product_manifest).open("rb") as handle:
             product_manifests[product_manifest] = tomllib.load(handle)
-        for error in product_test_support_violations(product_manifests[product_manifest]):
+        package_name = product_manifests[product_manifest].get("package", {}).get("name")
+        for error in (
+            []
+            if package_name in tooling
+            else product_test_support_violations(product_manifests[product_manifest], tooling)
+        ):
             errors.append(f"{product_manifest}: {error}")
         for error in product_inmem_dependency_violations(
             product_manifest, product_manifests[product_manifest]
