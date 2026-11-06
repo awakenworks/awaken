@@ -426,26 +426,6 @@ scoped_step "run-ingress-neutral-unit" "keep memory and domain tests independent
 # option for these lints, which is why there are two passes.
 production_only_lints=(-A clippy::disallowed_methods -A clippy::disallowed_types -A unreachable_pub)
 
-# CR7 a brokered client needs catalog/HTTP contracts but no Admin database:
-# its actual transitive graph must compile warning-free without workspace SQL
-# feature unification. CR8 SQL adapters/tests still own migration-history helpers;
-# the workspace check below and Admin schema tests retain those consumers. Do not
-# silence dead-code warnings or enable a database merely to hide this boundary.
-# CR9 default authority must be disabled explicitly: both brokered tests and
-# the adapter-absent rejection test formerly called an authority-only constructor.
-# Cross adapter present/absent with no authority; the workspace graph retains
-# authority-enabled consumers. Execute the same tests, not cfg-filtered copies.
-for materializer_profile in bare brokered; do
-  materializer_features=()
-  if [ "$materializer_profile" = brokered ]; then
-    materializer_features=(--features brokered)
-  fi
-  scoped_step "credential-materializer-$materializer_profile-neutral" "keep database-only helpers out of neutral materializer consumers" \
-    "awaken-credential-materializer" cargo clippy -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --all-targets "${locked[@]}" -- -D warnings "${production_only_lints[@]}"
-  scoped_step "credential-materializer-$materializer_profile-neutral-unit" "keep neutral materializer tests independent of local Vault authority" \
-    "awaken-credential-materializer" cargo test -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --lib "${locked[@]}"
-done
-
 # CR6 optional Pod transport and its production startup are not enabled by
 # default -> include the owning CLI feature, which also enables Worker and
 # security adapters. A leaf-only check would miss configuration/wiring drift.

@@ -104,7 +104,7 @@ mod verification {
     }
 }
 
-#[cfg(all(test, feature = "authority"))]
+#[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;

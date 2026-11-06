@@ -187,7 +187,7 @@ sha2 = "0.10"
 awaken-dispatch-http.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-executor = { workspace = true, features = ["test-support"] }
-awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
+awaken-credential-materializer.workspace = true
 awaken-protocol-a2a.workspace = true
 
 awaken-dispatch-erasure = { workspace = true, features = ["test-support"] }

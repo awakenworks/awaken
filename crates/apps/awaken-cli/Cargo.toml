@@ -51,7 +51,7 @@ awaken-acp-contract.workspace = true
 awaken-control = { workspace = true }
 awaken-coordinator = { workspace = true }
 awaken-credential-contract.workspace = true
-awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
+awaken-credential-materializer.workspace = true
 awaken-credential-vault.workspace = true
 awaken-deployment-config.workspace = true
 awaken-protocol-acp = { workspace = true, features = ["real-acp"] }

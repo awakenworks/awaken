@@ -23,8 +23,9 @@ awaken-provisioning-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-provider-genai.workspace = true
 # Provider executors for the endpoints this crate materializes, and the
-# brokered grant transport its `brokered` feature routes through.
-awaken-inference-endpoint.workspace = true
+# brokered grant port. Every consumer that links this crate already links the
+# brokered transport's dependencies, so the port is not feature-selected.
+awaken-inference-endpoint = { workspace = true, features = ["brokered"] }
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
@@ -32,11 +33,6 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 uuid = { version = "1", features = ["v4"] }
-
-[features]
-default = ["authority"]
-authority = []
-brokered = ["awaken-inference-endpoint/brokered"]
 
 [dev-dependencies]
 awaken-credential-envelope.workspace = true

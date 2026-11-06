@@ -42,14 +42,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 mod admission;
-#[cfg(all(test, feature = "authority"))]
+#[cfg(test)]
 mod attempt_delivery_tests;
 mod claimed_materialization;
 mod material_capabilities;
 use admission::{ExpectedProviderTarget, admit_exact_adapter};
 use awaken_time::WallClockExt as _;
 
-#[cfg(all(test, feature = "authority"))]
+#[cfg(test)]
 use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::credential::{
     CredentialAccess, CredentialMaterialSource, CredentialUsage, PlaintextHolder,
@@ -73,9 +73,7 @@ struct RegisteredExtensionConsumer {
 #[derive(Clone)]
 pub struct PinnedCredentialMaterializer {
     clock: Arc<dyn awaken_time::WallClock>,
-    #[cfg(feature = "authority")]
     local_material_resolver: Option<Arc<dyn CredentialMaterialResolver>>,
-    #[cfg(feature = "authority")]
     local_secret_broker: Option<Arc<dyn awaken_provisioning_contract::SecretBroker>>,
     external_material_resolver: Option<Arc<dyn CredentialMaterialResolver>>,
     extension_consumers: Arc<BTreeMap<String, RegisteredExtensionConsumer>>,
@@ -86,7 +84,6 @@ pub struct PinnedCredentialMaterializer {
 }
 
 impl PinnedCredentialMaterializer {
-    #[cfg(feature = "authority")]
     #[must_use]
     pub fn new<A>(local_authority: Arc<A>, clock: Arc<dyn awaken_time::WallClock>) -> Self
     where
@@ -96,7 +93,6 @@ impl PinnedCredentialMaterializer {
     }
 
     /// Consume the resolver and broker selected together by the composition root.
-    #[cfg(feature = "authority")]
     #[must_use]
     pub fn from_local_roles(
         local_material_resolver: Arc<dyn CredentialMaterialResolver>,
@@ -127,9 +123,7 @@ impl PinnedCredentialMaterializer {
     ) -> Self {
         Self {
             clock,
-            #[cfg(feature = "authority")]
             local_material_resolver: None,
-            #[cfg(feature = "authority")]
             local_secret_broker: None,
             external_material_resolver: Some(resolver),
             extension_consumers: Arc::new(BTreeMap::new()),
@@ -196,14 +190,7 @@ impl PinnedCredentialMaterializer {
     }
 
     fn has_local_authority(&self) -> bool {
-        #[cfg(feature = "authority")]
-        {
-            self.local_material_resolver.is_some() && self.local_secret_broker.is_some()
-        }
-        #[cfg(not(feature = "authority"))]
-        {
-            false
-        }
+        self.local_material_resolver.is_some() && self.local_secret_broker.is_some()
     }
 
     /// Resolve and dispatch one exact extension binding without exposing its
@@ -271,7 +258,7 @@ impl PinnedCredentialMaterializer {
     /// complete candidate that was already included in the published snapshot.
     // Only the authority test module uses this convenience projection. Neutral
     // tests exercise the same production materialize_provider_for boundary.
-    #[cfg(all(test, feature = "authority"))]
+    #[cfg(test)]
     async fn materialize_provider(
         &self,
         candidate: &ResolvedModelCandidate,
@@ -400,16 +387,9 @@ impl PinnedCredentialMaterializer {
             if access.material_source != CredentialMaterialSource::ControlPlaneReference {
                 return Err(CredentialMaterialError::Unavailable);
             }
-            #[cfg(feature = "authority")]
-            {
-                self.local_material_resolver
-                    .as_ref()
-                    .ok_or(CredentialMaterialError::Unavailable)?
-            }
-            #[cfg(not(feature = "authority"))]
-            {
-                return Err(CredentialMaterialError::Unavailable);
-            }
+            self.local_material_resolver
+                .as_ref()
+                .ok_or(CredentialMaterialError::Unavailable)?
         };
         Ok((resolver.as_ref(), external))
     }
@@ -590,7 +570,7 @@ impl CredentialMaterialResolver for PinnedCredentialMaterializer {
     }
 }
 
-#[cfg(all(test, feature = "authority"))]
+#[cfg(test)]
 pub(crate) fn pinned_vault(
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
@@ -606,12 +586,12 @@ pub(crate) fn pinned_vault(
     )
 }
 
-// These fixtures exercise the local Vault authority constructor. The
-// database-less Worker path is covered by `S10` in this module when authority
-// tests run, by the no-default-features build matrix, and by the standalone
-// Worker materialization E2E; compiling local-store fixtures into that feature
-// profile would itself violate the boundary under test.
-#[cfg(all(test, feature = "authority"))]
+// These fixtures exercise the local Vault authority constructor through a
+// dev-dependency. The database-less Worker path is covered by `S10` in this
+// module and by the standalone Worker materialization E2E; the Worker's
+// production closure excluding `awaken-credential-vault` is a dependency fact
+// held by the crate-boundary checker, not by a feature build of this crate.
+#[cfg(test)]
 mod tests {
     mod binding_matrix;
     mod native_capabilities;

@@ -156,23 +156,15 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
                     awaken_provisioning_contract::SandboxError::backend("materialize", error)
                 });
         }
-        #[cfg(feature = "authority")]
-        {
-            return self
-                .local_secret_broker
-                .as_ref()
-                .ok_or_else(|| {
-                    awaken_provisioning_contract::SandboxError::unsupported(
-                        "credential materialization requires the installed Vault authority",
-                    )
-                })?
-                .materialize(reference)
-                .await;
-        }
-        #[cfg(not(feature = "authority"))]
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "database-less Worker cannot materialize a local Vault reference",
-        ))
+        self.local_secret_broker
+            .as_ref()
+            .ok_or_else(|| {
+                awaken_provisioning_contract::SandboxError::unsupported(
+                    "credential materialization requires the installed Vault authority",
+                )
+            })?
+            .materialize(reference)
+            .await
     }
 
     async fn materialize_process(
@@ -224,30 +216,19 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
         target: awaken_provisioning_contract::SecretWritebackTarget<'_>,
         bytes: Vec<u8>,
     ) -> Result<(), awaken_provisioning_contract::SandboxError> {
-        #[cfg(feature = "authority")]
-        {
-            return self
-                .local_secret_broker
-                .as_ref()
-                .ok_or_else(|| {
-                    awaken_provisioning_contract::SandboxError::unsupported(
-                        "credential write-back requires the installed Vault authority",
-                    )
-                })?
-                .write_back(target, bytes)
-                .await;
-        }
-        #[cfg(not(feature = "authority"))]
-        {
-            let _ = (target, bytes);
-            Err(awaken_provisioning_contract::SandboxError::unsupported(
-                "database-less Worker cannot write a local Vault reference",
-            ))
-        }
+        self.local_secret_broker
+            .as_ref()
+            .ok_or_else(|| {
+                awaken_provisioning_contract::SandboxError::unsupported(
+                    "credential write-back requires the installed Vault authority",
+                )
+            })?
+            .write_back(target, bytes)
+            .await
     }
 }
 
-#[cfg(all(test, feature = "authority"))]
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

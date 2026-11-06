@@ -627,3 +627,14 @@ clippy-held, so `check_authority_arithmetic` stays); the private scanners in
 `_service_data_ownership_fitness` already used the shared lexer;
 `check_formal_web_surface` reads TypeScript; `check_test_waits.test_module_of`
 is a line selection, not a brace scan.
+
+### Feature builds replaced by crate edges and values (2026-11-06)
+
+A feature that removes code (`cfg(not(feature))`) costs one build per
+combination to prove the absence. Where the absence is already a dependency
+fact or can be a constructor value, the build goes and the fact is checked
+statically or by an ordinary unit test.
+
+| Removed `check-rust.sh` step | New holder | Negative example |
+|---|---|---|
+| `credential-materializer-{bare,brokered}-neutral{,-unit}` (4 cargo runs): the empty `authority` feature and the `brokered` feature of `awaken-credential-materializer` | both features deleted; the local Vault broker stays an `Option` (constructor injection) and the brokered port is unconditional. "The Worker cannot reach Vault" is `FORBIDDEN_WORKER_DEPENDENCIES` over Cargo's resolved Worker closure in `_service_data_ownership_fitness` (run by `check_crate_boundaries.py`) | a normal `awaken-credential-vault` edge on `awaken-worker` → `Worker transitively links authority-store dependency awaken-credential-vault` |

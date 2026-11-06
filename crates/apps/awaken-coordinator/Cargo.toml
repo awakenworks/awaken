@@ -163,7 +163,7 @@ awaken-protocol-managed-testkit.workspace = true
 awaken-dispatch-testkit.workspace = true
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-control = { workspace = true, features = ["test-support"] }
-awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
+awaken-credential-materializer.workspace = true
 awaken-deployment-application = { workspace = true, features = ["test-support"] }
 awaken-webhook = { workspace = true, features = ["test-support"] }
 awaken-worker-registry = { workspace = true, features = ["test-support"] }

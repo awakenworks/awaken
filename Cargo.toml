@@ -141,7 +141,7 @@ awaken-resource-store = { path = "crates/platform/resources/awaken-resource-stor
 awaken-env-store = { path = "crates/platform/environment/awaken-env-store" }
 awaken-config-store = { path = "crates/platform/config/awaken-config-store" }
 awaken-config-service = { path = "crates/platform/config/awaken-config-service" }
-awaken-credential-materializer = { path = "crates/platform/execution/awaken-credential-materializer", default-features = false }
+awaken-credential-materializer = { path = "crates/platform/execution/awaken-credential-materializer" }
 awaken-inference-endpoint = { path = "crates/platform/execution/awaken-inference-endpoint" }
 awaken-credential-envelope = { path = "crates/platform/credentials/awaken-credential-envelope" }
 awaken-provisioning-contract = { path = "crates/platform/environment/awaken-provisioning-contract" }
