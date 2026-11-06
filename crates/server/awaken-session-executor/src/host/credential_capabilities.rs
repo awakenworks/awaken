@@ -131,6 +131,7 @@ impl crate::RunCapabilities {
         });
         Ok(crate::agent_runner::ChildExecutionAdapters {
             session_thread_id: Some(awaken_agent_contract::ThreadId(thread.to_owned())),
+            installed_sessions: Some(Arc::downgrade(&self.installed_sessions)),
             acp,
             remote: self.agent.remote_attempt_executor.clone(),
             credential_capabilities: self.local_credential_realization_capabilities(),

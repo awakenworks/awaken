@@ -24,6 +24,20 @@ pub(crate) struct SessionContextAttemptExecutor {
     installed_sessions: Weak<crate::installed_session::InstalledSessions>,
     session_id: String,
     clock: Arc<dyn awaken_time::WallClock>,
+    scope: SessionContextScope,
+}
+
+/// Which Session projections an attempt receives.
+///
+/// The environment context (task date, timezone, trigger) is a fact of the
+/// Session, so every attempt running inside it receives it, including a
+/// delegated child. The Session tool replacement and the Session's
+/// product/resource/skill prompts are projections of the root publication; a
+/// delegated child runs its own publication and never inherits them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionContextScope {
+    Root,
+    DelegatedChild,
 }
 
 impl SessionContextAttemptExecutor {
@@ -40,6 +54,25 @@ impl SessionContextAttemptExecutor {
             installed_sessions: Arc::downgrade(installed_sessions),
             session_id: session_id.into(),
             clock,
+            scope: SessionContextScope::Root,
+        }
+    }
+
+    /// Projects only the Session environment context onto a delegated child
+    /// attempt running inside `session_id`. The child keeps its own
+    /// publication, tools and instructions.
+    pub(crate) fn for_delegated_child(
+        inner: Arc<dyn RunAttemptExecutor>,
+        installed_sessions: Weak<crate::installed_session::InstalledSessions>,
+        session_id: impl Into<String>,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> Self {
+        Self {
+            inner,
+            installed_sessions,
+            session_id: session_id.into(),
+            clock,
+            scope: SessionContextScope::DelegatedChild,
         }
     }
 
@@ -49,6 +82,10 @@ impl SessionContextAttemptExecutor {
         mut activation: RunActivation,
         context: &mut awaken_runtime_contract::RuntimeRunContext,
     ) -> awaken_runtime_contract::execution::Result<RunActivation> {
+        if self.scope == SessionContextScope::DelegatedChild {
+            self.project_environment(installed_sessions, context)?;
+            return Ok(activation);
+        }
         if let Some(result) = installed_sessions
             .read(&self.session_id, |installed| {
                 installed.inputs.tools.as_ref().map(|tools| {
@@ -70,49 +107,7 @@ impl SessionContextAttemptExecutor {
             })?;
         }
         let filesystem = consistent_agent_filesystem_context(&activation.snapshot)?;
-        let seed = installed_sessions
-            .read(&self.session_id, |installed| {
-                installed.inputs.baseline.as_ref().map(|baseline| {
-                    awaken_session_configuration_contract::SessionContextSeed::from_prompts(
-                        &baseline.prompts,
-                    )
-                })
-            })
-            .map_err(|error| {
-                awaken_runtime_contract::execution::Error::Resolution(error.to_string())
-            })?
-            .flatten()
-            .unwrap_or_else(|| {
-                awaken_session_configuration_contract::SessionContextSeed::from_prompts(&[])
-            });
-        {
-            let seed = seed.map_err(|error| {
-                awaken_runtime_contract::execution::Error::Resolution(error.to_string())
-            })?;
-            context.request_timezone = Some(seed.timezone().to_owned());
-            let prefix = format!("session-environment:{}:", self.session_id);
-            let id = MessageId(format!(
-                "{prefix}{}",
-                awaken_agent_contract::stable_fingerprint(&seed)
-            ));
-            context
-                .request_context
-                .retain(|message| !message.id.0.starts_with(&prefix) || message.id == id);
-            if !context
-                .request_context
-                .iter()
-                .any(|message| message.id == id)
-            {
-                let prompt = seed
-                    .render_at(self.clock.now().as_epoch_ms())
-                    .map_err(|error| {
-                        awaken_runtime_contract::execution::Error::Resolution(error.to_string())
-                    })?;
-                context
-                    .request_context
-                    .push(Message::text(id, Role::System, prompt));
-            }
-        }
+        self.project_environment(installed_sessions, context)?;
         let prompts = installed_sessions
             .realizations()
             .prompts(
@@ -159,6 +154,59 @@ impl SessionContextAttemptExecutor {
                 }),
         );
         Ok(activation)
+    }
+
+    /// The one request-only environment message for this attempt, rendered
+    /// from the Session's frozen seed (legacy UTC when it has none).
+    fn project_environment(
+        &self,
+        installed_sessions: &Arc<crate::installed_session::InstalledSessions>,
+        context: &mut awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<()> {
+        let seed = installed_sessions
+            .read(&self.session_id, |installed| {
+                installed.inputs.baseline.as_ref().map(|baseline| {
+                    awaken_session_configuration_contract::SessionContextSeed::from_prompts(
+                        &baseline.prompts,
+                    )
+                })
+            })
+            .map_err(|error| {
+                awaken_runtime_contract::execution::Error::Resolution(error.to_string())
+            })?
+            .flatten()
+            .unwrap_or_else(|| {
+                awaken_session_configuration_contract::SessionContextSeed::from_prompts(&[])
+            });
+        {
+            let seed = seed.map_err(|error| {
+                awaken_runtime_contract::execution::Error::Resolution(error.to_string())
+            })?;
+            context.request_timezone = Some(seed.timezone().to_owned());
+            let prefix = format!("session-environment:{}:", self.session_id);
+            let id = MessageId(format!(
+                "{prefix}{}",
+                awaken_agent_contract::stable_fingerprint(&seed)
+            ));
+            context
+                .request_context
+                .retain(|message| !message.id.0.starts_with(&prefix) || message.id == id);
+            if !context
+                .request_context
+                .iter()
+                .any(|message| message.id == id)
+            {
+                let prompt = seed
+                    .render_at(self.clock.now().as_epoch_ms())
+                    .map_err(|error| {
+                        awaken_runtime_contract::execution::Error::Resolution(error.to_string())
+                    })?;
+                context
+                    .request_context
+                    .push(Message::text(id, Role::System, prompt));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -368,27 +416,9 @@ mod acp_context_tests {
         )
     }
 
-    #[test]
-    fn frozen_environment_context_is_shared_request_only_and_stable_per_attempt() {
-        // Causes: C1 Native/ACP; C2 frozen timezone/source; C3 clock crosses
-        // local midnight; C4 same/new attempt; C5 corrupt seed. Effects:
-        // E1 identical task facts; E2 no seed/durable-input leakage; E3 same
-        // attempt byte-stable; E4 fresh attempt updates date; E5 reject C5.
-        // Rules A1 C1+C2=>E1+E2; A2 C3+same=>E3; A3 C3+new=>E4; A4 C5=>E5.
+    fn baseline(prompts: Vec<String>) -> awaken_session_configuration_contract::SessionBaseline {
         use awaken_session_configuration_contract as sc;
-        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(
-            awaken_time::utc::rfc3339_to_epoch_millis("2026-09-29T15:59:59Z").unwrap(),
-        ));
-        let seed = sc::SessionContextSeed::from_metadata(
-            sc::SessionTrigger::Interactive {},
-            &std::collections::BTreeMap::from([(
-                "awaken.timezone".into(),
-                "Asia/Singapore".into(),
-            )]),
-            None,
-        )
-        .unwrap();
-        let baseline = sc::SessionBaseline::compile(sc::SessionBaselineInputs {
+        sc::SessionBaseline::compile(sc::SessionBaselineInputs {
             environment: sc::EnvironmentSnapshot {
                 environment_id: "environment".into(),
                 revision: awaken_environment_contract::EnvironmentRevision(1),
@@ -414,9 +444,32 @@ mod acp_context_tests {
             toolsets: Vec::new(),
             mounts: Vec::new(),
             env: Vec::new(),
-            prompts: vec![seed.encode(), "product context".into()],
+            prompts,
             transcript_prefix: None,
-        });
+        })
+    }
+
+    #[test]
+    fn frozen_environment_context_is_shared_request_only_and_stable_per_attempt() {
+        // Causes: C1 Native/ACP; C2 frozen timezone/source; C3 clock crosses
+        // local midnight; C4 same/new attempt; C5 corrupt seed. Effects:
+        // E1 identical task facts; E2 no seed/durable-input leakage; E3 same
+        // attempt byte-stable; E4 fresh attempt updates date; E5 reject C5.
+        // Rules A1 C1+C2=>E1+E2; A2 C3+same=>E3; A3 C3+new=>E4; A4 C5=>E5.
+        use awaken_session_configuration_contract as sc;
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(
+            awaken_time::utc::rfc3339_to_epoch_millis("2026-09-29T15:59:59Z").unwrap(),
+        ));
+        let seed = sc::SessionContextSeed::from_metadata(
+            sc::SessionTrigger::Interactive {},
+            &std::collections::BTreeMap::from([(
+                "awaken.timezone".into(),
+                "Asia/Singapore".into(),
+            )]),
+            None,
+        )
+        .unwrap();
+        let baseline = baseline(vec![seed.encode(), "product context".into()]);
         let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
@@ -519,6 +572,149 @@ mod acp_context_tests {
                 .project(&installed_sessions, activation("genai"), &mut fresh)
                 .is_err(),
             "E5 before inference"
+        );
+    }
+
+    #[test]
+    fn delegated_child_attempt_receives_only_the_session_environment_context() {
+        // Causes: C1 scope root/delegated child; C2 the Session has a frozen
+        // seed, a product prompt and a Session tool replacement; C3 the Session
+        // is not installed; C4 the frozen seed is duplicated (corrupt).
+        // Effects: E1 one environment message, identical to the root's for the
+        // same attempt clock; E2 product prompts and tool replacement stay
+        // root-only (the child keeps its own publication); E3 legacy UTC
+        // environment; E4 rejection before inference.
+        //
+        // | Rule | C1    | C2  | C3  | C4  | effect  |
+        // | D1   | root  | yes | no  | no  | E1 + root prompt/tools |
+        // | D2   | child | yes | no  | no  | E1 + E2 |
+        // | D3   | child | no  | yes | no  | E3 + E2 |
+        // | D4   | child | yes | no  | yes | E4      |
+        use awaken_session_configuration_contract as sc;
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(
+            awaken_time::utc::rfc3339_to_epoch_millis("2026-09-29T15:59:59Z").unwrap(),
+        ));
+        let seed = sc::SessionContextSeed::from_metadata(
+            sc::SessionTrigger::Interactive {},
+            &std::collections::BTreeMap::from([(
+                "awaken.timezone".into(),
+                "Asia/Singapore".into(),
+            )]),
+            None,
+        )
+        .unwrap();
+        let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
+        installed_sessions
+            .replace_frozen_with("session-1", |next| {
+                next.baseline = Some(baseline(vec![seed.encode(), "product context".into()]));
+                next.tools = Some(sc::SessionToolConfiguration {
+                    toolsets: Vec::new(),
+                    client_tools: vec![awaken_agent_contract::ClientToolDescriptor {
+                        name: "root_only_client_tool".into(),
+                        description: "Session replacement for the root publication".into(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                    }],
+                });
+            })
+            .expect("installed Sessions");
+        let root = SessionContextAttemptExecutor::new(
+            Arc::new(UnusedExecutor),
+            &installed_sessions,
+            "session-1",
+            clock.clone(),
+        );
+        let child = SessionContextAttemptExecutor::for_delegated_child(
+            Arc::new(UnusedExecutor),
+            Arc::downgrade(&installed_sessions),
+            "session-1",
+            clock.clone(),
+        );
+        let has_client_tool = |activation: &RunActivation| {
+            activation
+                .snapshot
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .any(|tool| tool.id == "root_only_client_tool")
+        };
+
+        let mut root_context = awaken_runtime_contract::RuntimeRunContext::new();
+        let root_projected = root
+            .project(&installed_sessions, activation("genai"), &mut root_context)
+            .unwrap();
+        assert!(has_client_tool(&root_projected), "D1 root tools");
+        let root_texts = root_context
+            .request_context
+            .iter()
+            .map(Message::text_content)
+            .collect::<Vec<_>>();
+        assert_eq!(root_texts.len(), 2, "D1 environment + product context");
+        assert_eq!(root_texts[1], "product context", "D1 root prompt");
+
+        let child_activation = activation("genai");
+        let mut child_context = awaken_runtime_contract::RuntimeRunContext::new();
+        let child_projected = child
+            .project(
+                &installed_sessions,
+                child_activation.clone(),
+                &mut child_context,
+            )
+            .unwrap();
+        assert_eq!(child_projected, child_activation, "D2/E2 own publication");
+        assert!(!has_client_tool(&child_projected), "D2/E2 no Session tools");
+        assert_eq!(
+            child_context.request_context,
+            root_context.request_context[..1],
+            "D2/E1 the root's exact environment message and nothing else"
+        );
+        assert!(
+            child_context.request_context[0].text_content().contains(
+                "current_date=2026-09-29
+timezone=Asia/Singapore
+"
+            ),
+            "D2/E1 Session task-time facts"
+        );
+        assert_eq!(
+            child_context.request_timezone.as_deref(),
+            Some("Asia/Singapore"),
+            "D2/E1"
+        );
+
+        let absent = Arc::new(crate::installed_session::InstalledSessions::default());
+        let legacy = SessionContextAttemptExecutor::for_delegated_child(
+            Arc::new(UnusedExecutor),
+            Arc::downgrade(&absent),
+            "session-1",
+            clock.clone(),
+        );
+        let mut legacy_context = awaken_runtime_contract::RuntimeRunContext::new();
+        legacy
+            .project(&absent, activation("genai"), &mut legacy_context)
+            .unwrap();
+        assert_eq!(legacy_context.request_context.len(), 1, "D3");
+        assert!(
+            legacy_context.request_context[0].text_content().contains(
+                "timezone=UTC
+"
+            ),
+            "D3/E3 legacy UTC"
+        );
+
+        installed_sessions
+            .replace_frozen_with("session-1", |next| {
+                next.baseline = Some(baseline(vec![seed.encode(), seed.encode()]));
+            })
+            .expect("installed Sessions");
+        assert!(
+            child
+                .project(
+                    &installed_sessions,
+                    activation("genai"),
+                    &mut awaken_runtime_contract::RuntimeRunContext::new()
+                )
+                .is_err(),
+            "D4/E4"
         );
     }
 

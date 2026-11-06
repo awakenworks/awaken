@@ -1944,6 +1944,42 @@ async fn managed_child_neutral_requests_keep_publication_and_history_isolated() 
                 .any(|message| message.role == Role::Tool)),
             "{rule}: parent tool history actually exercised"
         );
+        // E5: the Session's task-time facts are Session facts, so the child
+        // attempt receives the same one environment message as its parent
+        // (the date line is sampled per attempt; everything else is frozen).
+        let environment = |request: &ChatRequest| {
+            let blocks = request
+                .messages
+                .iter()
+                .filter(|message| message.role == Role::System)
+                .flat_map(|message| &message.content)
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text }
+                        if text.starts_with("Awaken environment context") =>
+                    {
+                        Some(
+                            text.lines()
+                                .filter(|line| !line.starts_with("current_date="))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        )
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(blocks.len(), 1, "{rule}: exactly one environment message");
+            blocks.into_iter().next().unwrap()
+        };
+        let parent_environment = environment(parent_requests[0]);
+        assert!(
+            parent_environment.contains("timezone=UTC"),
+            "{rule}: frozen Session seed"
+        );
+        assert_eq!(
+            environment(request),
+            parent_environment,
+            "{rule}: child receives the Session environment context"
+        );
     }
     lifecycle
         .shutdown(std::time::Duration::from_secs(10))
