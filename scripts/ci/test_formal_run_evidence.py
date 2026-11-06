@@ -20,7 +20,7 @@ import formal_budget
 import formal_plan
 import formal_sources
 from formal_sources import detached_git_environment
-from formal_run_evidence import FULL_SELECTION, ROOT, begin_record, finish_record, validate_record, write_record, begin_artifacts, finish_artifacts, verify_artifacts, source_snapshot, digest_bytes, committed_file_digest
+from formal_run_evidence import FULL_SELECTION, ROOT, begin_record, finish_record, validate_record, write_record, begin_artifacts, finish_artifacts, verify_artifacts, source_snapshot, digest_bytes, committed_file_digest, proof_toolchain
 
 
 
@@ -752,6 +752,9 @@ class EvidenceTests(unittest.TestCase):
         # Not-passed/artifact-finalization. Constraints: diagnostic failure can
         # never leave or publish success. Rules R1=C1->E1, R2=C2->E2. Execute the
         # real initialization/EXIT trap while replacing only the proof body.
+        # Cooperative metadata/fixture work must precede the heavy Java PATH
+        # adapter. Otherwise its admission diagnostics replace the TLC version
+        # before these original success/seal-failure effects can be exercised.
         initialization = formal_gate_initialization(self.root)
         bindir = Path(self.temporary.name) / "completion-bin"
         bindir.mkdir()
@@ -775,6 +778,65 @@ class EvidenceTests(unittest.TestCase):
                         "kind": "execution-failed", "exit_code": 37,
                         "stage": "artifact-finalization", "subject": "formal",
                     })
+
+    @unittest.skipIf(os.name == "nt", "cooperative host admission is Linux; native deadline tests own Windows")
+    def test_cooperative_java_adapter_follows_framework_and_keeps_heavy_admission(self):
+        # Causes: C1 cooperative phase versus an inherited exclusive admission;
+        # C2 the existing fake host port admits (0) or refuses (75). Effects:
+        # E1 metadata/receipt initialization reads the exact pinned version with
+        # no admission; E2 only after framework checks does the SAME adapter
+        # admit heavy Java; E3 refusal preserves 75 and executes no Java body;
+        # E4 an inherited admission executes directly, without reacquiring it.
+        # Rules: phase+0=>E1/E2; phase+75=>E1/E3; inherited+75=>E1/E4.
+        # The Java body is an explicit recording port, not a model or proof.
+        # FullGateAdmissionTests owns the fake Cargo/admission protocol; execute
+        # the real gate prefix, original adapter bytes and shared deadline here.
+        from test_full_gate_admission import FullGateAdmissionTests
+
+        source = (self.root / "scripts/ci/check_formal.sh").read_text()
+        marker = 'if [ "${AWAKEN_ADMISSION_PHASE_MODE:-}" = 1 ]; then\n'
+        self.assertEqual(source.count(marker), 1)
+        start = source.index(marker)
+        block = source[start:source.index("\nfi\n", start) + len("\nfi\n")]
+        self.assertGreater(start, source.index("python3 scripts/ci/check_formal_mutations.py\n"))
+        self.assertLess(start, source.index("run_required_rust_tests -p awaken-service-lifecycle"))
+        initialization = formal_gate_initialization(self.root)
+        self.assertNotIn(marker, initialization)
+        for inherited, status in ((False, 0), (False, 75), (True, 75)):
+            with self.subTest(inherited=inherited, admission=status), tempfile.TemporaryDirectory() as tmp:
+                fixture = Path(tmp)
+                host, env = FullGateAdmissionTests().fixture(fixture)
+                bindir = fixture / "recording-java"
+                bindir.mkdir()
+                java = bindir / "java"
+                java.write_text(
+                    '#!/bin/sh\nif [ "${4:-}" = -version ]; then\n'
+                    " printf '%s\\n' " + shlex.quote(proof_toolchain(self.root)["tlc"]) + "; exit 0\nfi\n"
+                    '[ "${AWAKEN_CARGO_ADMITTED:-}" = 1 ] || exit 95\n'
+                    'printf "executed\\n" > "$JAVA_BODY"\nexit 23\n'
+                )
+                java.chmod(0o755)
+                jar = fixture / "fixture.jar"
+                jar.touch()
+                env.update(PATH=f"{bindir}:{host}:{env['PATH']}",
+                           AWAKEN_ADMISSION_PHASE_MODE="1", FIXTURE_STATUS=str(status),
+                           TLA2TOOLS_JAR=jar.as_posix(), JAVA_BODY=(fixture / "body").as_posix(),
+                           METADATA_READY=(fixture / "metadata-ready").as_posix(),
+                           AWAKEN_FORMAL_RUN_EVIDENCE=(fixture / "receipt.json").as_posix())
+                if inherited:
+                    env["AWAKEN_CARGO_ADMITTED"] = "1"
+                body = (initialization + '\nprintf "ready\\n" > "$METADATA_READY"\n'
+                        + block + '\njava owned-heavy-proof-port\n')
+                result = run_shell_fixture(
+                    [bash_executable(), "-c", body, "scripts/ci/check_formal.sh", "--require-tools"],
+                    cwd=self.root, env=env, capture_output=True, text=True, timeout=30,
+                )
+                self.assertTrue((fixture / "metadata-ready").exists(), result.stderr)
+                self.assertEqual(result.returncode, 75 if status == 75 and not inherited else 23,
+                                 result.stderr)
+                self.assertEqual((fixture / "body").exists(), status == 0 or inherited)
+                self.assertFalse((fixture / "wrong-cargo-ran").exists())
+                self.assertEqual(list(fixture.glob("awaken-cargo-deadline.*")), [])
 
     def test_incomplete_or_interrupted_body_never_publishes_passed(self):
         # Receipt cause/effect table: C1 the formal body exits zero before its
