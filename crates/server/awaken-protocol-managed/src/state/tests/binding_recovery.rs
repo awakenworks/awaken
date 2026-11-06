@@ -626,7 +626,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
             },
         ],
     )]);
-    *runtime.pending.lock() = Some(awaken_session_application_contract::Pending {
+    *runtime.pending.lock() = Some(awaken_runtime_contract::runs::Pending {
         tool_use_id: "call-submit".into(),
         name: "design_submit_artifact".into(),
         input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),

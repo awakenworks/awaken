@@ -148,7 +148,7 @@ async fn selected_profile_port_keeps_absent_and_missing_snapshot_budget_refusals
         .expect_err("P1b late required source");
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "P1b"
     );
     assert_eq!(
@@ -188,7 +188,7 @@ async fn selected_profile_port_keeps_absent_and_missing_snapshot_budget_refusals
             .expect_err(rule);
         assert_eq!(
             error.kind,
-            awaken_session_types::RunErrorKind::BadRequest,
+            awaken_runtime_contract::runs::RunErrorKind::BadRequest,
             "{rule}"
         );
         assert_eq!(
@@ -396,7 +396,7 @@ async fn assert_unconfigured_roster_reads_the_root_first(
     .expect_err("P8 original root-profile refusal");
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::Unavailable,
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable,
         "P8"
     );
     assert_eq!(

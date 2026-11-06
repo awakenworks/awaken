@@ -289,8 +289,10 @@ impl awaken_session_application_contract::RegisteredTaskControl for UnusedTaskAt
     async fn deliver(
         &self,
         _attention: awaken_session_application_contract::TaskAttention,
-    ) -> Result<awaken_session_application_contract::TaskAttentionAck, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_application_contract::TaskAttentionAck,
+        awaken_runtime_contract::runs::RunError,
+    > {
         panic!("context construction publishes no Task attention")
     }
 
@@ -299,7 +301,7 @@ impl awaken_session_application_contract::RegisteredTaskControl for UnusedTaskAt
         _read: awaken_session_application_contract::TaskTenureRead,
     ) -> Result<
         Option<awaken_session_application_contract::TaskTenureRecord>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         panic!("context construction reads no Task tenure")
     }

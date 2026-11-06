@@ -25,7 +25,7 @@ async fn deliver(
     projection: awaken_session_execution_contract::FrozenSessionProjection,
     rule: String,
     trace: &mut Vec<serde_json::Value>,
-) -> Result<(), awaken_session_types::RunError> {
+) -> Result<(), awaken_runtime_contract::runs::RunError> {
     let before = observation(host);
     let receipt =
         awaken_session_execution_contract::FrozenProjectionReceipt::from_projection(&projection)
@@ -153,9 +153,9 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
             assert_eq!(
                 error.kind,
                 if label.starts_with("stale") {
-                    awaken_session_types::RunErrorKind::Unavailable
+                    awaken_runtime_contract::runs::RunErrorKind::Unavailable
                 } else {
-                    awaken_session_types::RunErrorKind::Internal
+                    awaken_runtime_contract::runs::RunErrorKind::Internal
                 },
                 "R3 retries a delayed read; R4 rejects contradictory truth",
             );

@@ -2,12 +2,12 @@
 use super::ObservedCommitPort;
 use crate::SessionMutationError;
 use crate::{SessionMutations, SessionRootReads};
+use awaken_runtime_contract::runs::RunErrorKind;
 use awaken_session_contract::SessionRepositoryReads;
 use awaken_session_contract::{
     IdempotencyRecord, PersistedSession, SessionMutation, SessionMutationPayload,
     SessionMutationResult, SessionRepositoryConflict, SessionRepositoryError,
 };
-use awaken_session_types::RunErrorKind;
 use awaken_session_types::{SessionId, SessionRevision};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -180,7 +180,7 @@ async fn invalid_applied_revision_is_permanent_and_never_reloaded() {
                 "revision={revision}"
             );
             if let Err(error) = result {
-                let error: awaken_session_types::RunError = error.into();
+                let error: awaken_runtime_contract::runs::RunError = error.into();
                 assert_eq!(error.kind, RunErrorKind::Internal, "revision={revision}");
                 assert!(!error.is_unclassified_internal(), "revision={revision}");
             }
@@ -258,7 +258,7 @@ fn permanent_mutation_failures_do_not_become_retryable_domain_errors() {
                 disposition,
                 awaken_session_execution_contract::SessionRealizationControlDisposition::Terminal
             );
-            let error: awaken_session_types::RunError =
+            let error: awaken_runtime_contract::runs::RunError =
                 crate::SessionAccessError::Internal("same detail".into()).into();
             assert_eq!(error.kind, kind);
             assert!(!error.is_unclassified_internal(), "known access cause");
@@ -281,7 +281,7 @@ fn permanent_mutation_failures_do_not_become_retryable_domain_errors() {
 
 #[test]
 fn mutation_run_errors_preserve_cause_and_permanence() {
-    use awaken_session_types::RunError;
+    use awaken_runtime_contract::runs::RunError;
     // Every input class has an independent kind oracle. Unknown internal errors
     // are a positive control: known corruption must not share their retry code.
     assert!(RunError::internal("same detail").is_unclassified_internal());
@@ -506,7 +506,7 @@ fn a_list_price_outage_is_the_one_retryable_state_violation() {
             RunErrorKind::Internal
         };
         assert_eq!(
-            awaken_session_types::RunError::from(mutation).kind,
+            awaken_runtime_contract::runs::RunError::from(mutation).kind,
             expected,
             "{rule} run error"
         );

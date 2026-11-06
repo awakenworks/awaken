@@ -39,7 +39,7 @@ use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{
     CatalogSyncResult, ModelAttributeSource, ModelAttributes, OfferingSource, OfferingStatus,
 };
-use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
+use awaken_runtime_contract::runs::scope::WorkspaceScope as ResourceWorkspace;
 use axum::extract::{Extension, FromRef, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header::CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};

@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use super::RunAssembly;
 use crate::PinnedCredentialMaterializer;

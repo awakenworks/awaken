@@ -19,7 +19,7 @@ use awaken_agent_contract::agent::{
     run::{EndCause, Id as RunId, RunState},
     thread::Id as ThreadId,
 };
-use awaken_session_application_contract::StepOutcome;
+use awaken_runtime_contract::runs::StepOutcome;
 use awaken_session_contract::{
     SessionEventCommand, SessionEventInput, SessionEventInterrupt, SessionEventToolReply,
     SessionEventToolReplyKind, SessionInitialEventPlan, SessionOutcomeRubric,
@@ -205,7 +205,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EventBatchRuntime
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-    ) -> Result<usize, awaken_session_types::RunError> {
+    ) -> Result<usize, awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
             .await
@@ -248,7 +248,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EventBatchRuntime
         &self,
         thread: &str,
         lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
             .await
@@ -264,7 +264,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EventBatchRuntime
         &self,
         thread: &str,
         lease: &crate::session_resource::SessionRealizationLease,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
@@ -281,7 +281,8 @@ impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRunti
         &self,
         command: awaken_session_execution_contract::AdmitPreparedSessionRun,
         activity: &dyn awaken_session_execution_contract::SessionRunActivityAdmitter,
-    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_session_types::RunError> {
+    ) -> Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::runs::RunError>
+    {
         awaken_session_execution_contract::ChildRunCoordination::run_prepared_session_run(
             &awaken_session_execution_contract::NeutralRuntime,
             command,
@@ -295,7 +296,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRunti
         command: awaken_session_execution_contract::AdmitSessionRun,
     ) -> Result<
         awaken_session_execution_contract::SessionRunReservation,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         let barriers = self.reservation_barriers.lock().unwrap().take();
         if let Some((entered, release)) = barriers {
@@ -403,7 +404,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRunti
         admission: awaken_session_execution_contract::AdmittedSessionRun,
         input_message_ids: Vec<String>,
         sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
+    ) -> Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::RunError>
     {
         awaken_session_execution_contract::NeutralRuntime
             .activate_and_observe_session_run(admission, input_message_ids, sink)
@@ -420,7 +421,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRunti
         command: awaken_session_execution_contract::CoordinatedRunCommand,
     ) -> Result<
         awaken_session_execution_contract::SessionAgentMessageReceipt,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .admit_coordinated_run(command)
@@ -440,7 +441,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRunti
         thread_id: &str,
     ) -> Result<
         Option<Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .subscribe_session_thread_live(session_id, thread_id)
@@ -455,7 +456,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRunti
     async fn continue_session_agent_report(
         &self,
         command: awaken_session_execution_contract::SessionAgentReportContinuation,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .continue_session_agent_report(command)
             .await
@@ -525,7 +526,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRunti
         &self,
         delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
+    ) -> Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::RunError>
     {
         awaken_session_execution_contract::NeutralRuntime
             .reply_and_observe_session_thread_tool(delivery, stream_sink)
@@ -541,7 +542,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRunti
         thread: &str,
     ) -> Result<
         awaken_session_application_contract::DelegatedRunSnapshot,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         self.interrupt(thread).await?;
         Ok(awaken_session_application_contract::DelegatedRunSnapshot {
@@ -568,7 +569,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRunti
         &self,
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .archive_session_thread(session_id, thread_id)
             .await
@@ -589,7 +590,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchR
         command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
     ) -> Result<
         Option<awaken_session_execution_contract::SessionAgentMessageReceipt>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .coordinated_admission_receipt(command)
@@ -612,8 +613,8 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchR
         &self,
         thread: &str,
     ) -> Result<
-        Vec<awaken_session_application_contract::DelegatedRun>,
-        awaken_session_types::RunError,
+        Vec<awaken_runtime_contract::runs::DelegatedRun>,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .delegated_runs(thread)
@@ -697,7 +698,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchR
         command: &awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<
         awaken_session_execution_contract::SessionAgentMessageCommand,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .validate_session_agent_message_source(command)
@@ -709,7 +710,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchR
         command: &awaken_session_execution_contract::AdmitSessionRun,
     ) -> Result<
         Option<awaken_session_execution_contract::SessionRunReservation>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_session_execution_contract::SessionCoordinationReads::session_run_command_receipt(
             &awaken_session_execution_contract::NeutralRuntime,
@@ -728,7 +729,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchR
             String,
             awaken_agent_contract::agent::delegation::DelegationOrigin,
         )>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_session_execution_contract::SessionCoordinationReads::task_callback_source(
             &awaken_session_execution_contract::NeutralRuntime,
@@ -749,7 +750,7 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchR
             awaken_runtime_contract::RunActivation,
             Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
         )>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_session_execution_contract::SessionCoordinationReads::task_origin_execution(
             &awaken_session_execution_contract::NeutralRuntime,
@@ -775,7 +776,7 @@ impl awaken_session_execution_contract::StreamingRuns for EventBatchRuntime {
         thread: &str,
         content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
         _data_subject_id: Option<String>,
-    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
+    ) -> Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::RunError>
     {
         self.run(agent, thread, content).await
     }
@@ -784,7 +785,7 @@ impl awaken_session_execution_contract::StreamingRuns for EventBatchRuntime {
     // answered this role method with anything but the refusal below.
     /// Run one user request, installing `sink` as the Run's best-effort live-progress
     /// channel so the adapter can project in-flight `stream::Kind` into
-    /// `event_start`/`event_delta` previews. The committed [`awaken_session_application_contract::StepOutcome`] is
+    /// `event_start`/`event_delta` previews. The committed [`awaken_runtime_contract::runs::StepOutcome`] is
     /// identical to [`run`](Self::run) — the sink only mirrors in-flight events. The
     /// default ignores the sink and delegates to `run`, so a host without a
     /// streaming path (or a test double) is unaffected.
@@ -794,7 +795,7 @@ impl awaken_session_execution_contract::StreamingRuns for EventBatchRuntime {
         thread: &str,
         content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
         _sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
+    ) -> Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::RunError>
     {
         self.run(agent, thread, content).await
     }
@@ -809,7 +810,7 @@ impl awaken_session_execution_contract::StreamingRuns for EventBatchRuntime {
         content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
         _data_subject_id: Option<String>,
         sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError>
+    ) -> Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::RunError>
     {
         self.run_streaming(agent, thread, content, sink).await
     }
@@ -842,7 +843,7 @@ impl awaken_session_execution_contract::StreamingRuns for EventBatchRuntime {
         &self,
         thread: &str,
         model: &str,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .rebind_model(thread, model)
             .await
@@ -856,7 +857,7 @@ impl awaken_session_execution_contract::StreamingRuns for EventBatchRuntime {
     async fn supports_mid_conversation_system(
         &self,
         thread: &str,
-    ) -> Result<bool, awaken_session_types::RunError> {
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .supports_mid_conversation_system(thread)
             .await
@@ -870,8 +871,10 @@ impl awaken_session_execution_contract::StreamingRuns for EventBatchRuntime {
     async fn pending_tool(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_application_contract::Pending>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Option<awaken_runtime_contract::runs::Pending>,
+        awaken_runtime_contract::runs::RunError,
+    > {
         awaken_session_execution_contract::NeutralRuntime
             .pending_tool(thread)
             .await
@@ -887,7 +890,10 @@ impl awaken_session_execution_contract::ThreadReads for EventBatchRuntime {
     /// MUST answer without materializing any per-thread state (no context
     /// build, no cache entry) — probing must be free of side effects. The
     /// default reports nothing, so an ephemeral host mints densely from 0.
-    async fn owns_thread(&self, thread: &str) -> Result<bool, awaken_session_types::RunError> {
+    async fn owns_thread(
+        &self,
+        thread: &str,
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .owns_thread(thread)
             .await
@@ -1013,7 +1019,7 @@ impl awaken_session_execution_contract::ThreadReads for EventBatchRuntime {
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<
         Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         Ok(awaiting_ticket::with_awaited_ticket(
             awaken_session_execution_contract::select_recovery_snapshot_run(
@@ -1035,7 +1041,8 @@ impl awaken_session_execution_contract::ThreadReads for EventBatchRuntime {
         &self,
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_agent_contract::ThreadDisposition, awaken_session_types::RunError> {
+    ) -> Result<awaken_agent_contract::ThreadDisposition, awaken_runtime_contract::runs::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .session_thread_disposition(session_id, thread_id)
             .await
@@ -1049,14 +1056,14 @@ impl awaken_session_execution_contract::ThreadReads for EventBatchRuntime {
     /// Read one exact terminal Outcome projection from committed Thread truth.
     /// `None` means the id is absent or still active. Implementations must not
     /// resume the Outcome or reconstruct a terminal from an in-process
-    /// [`awaken_session_application_contract::StepOutcome`].
+    /// [`awaken_runtime_contract::runs::StepOutcome`].
     async fn committed_outcome_projection(
         &self,
         thread: &str,
         outcome_id: &str,
     ) -> Result<
         Option<awaken_session_execution_contract::CommittedOutcomeProjection>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
             .committed_outcome_projection(thread, outcome_id)
@@ -1129,8 +1136,10 @@ impl awaken_session_execution_contract::Outcomes for EventBatchRuntime {
         rubric: &str,
         max_iterations: u32,
         executor: &dyn awaken_session_execution_contract::PreparedSessionRunAdmission,
-    ) -> Result<awaken_session_execution_contract::OutcomeDrive, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_execution_contract::OutcomeDrive,
+        awaken_runtime_contract::runs::RunError,
+    > {
         let outcome_id = awaken_session_contract::session_outcome_convenience_id(
             thread,
             description,
@@ -2547,7 +2556,7 @@ async fn competing_tool_reply_admission_table(repository: Arc<dyn crate::Session
         );
         assert_eq!(
             outcomes.iter().find_map(|v| v.as_ref().err()).unwrap().kind,
-            awaken_session_types::RunErrorKind::BadRequest
+            awaken_runtime_contract::runs::RunErrorKind::BadRequest
         );
         let winner = outcomes.iter().find_map(|v| v.as_ref().ok()).unwrap();
         let (input, key, fp) = if outcomes[0].is_ok() {
@@ -4498,8 +4507,9 @@ async fn reply_stage_response_loss_replays_one_durable_effect_after_restart() {
         .drive_session_event_batches(&SessionId::from("reply-replay"), None)
         .await;
     assert!(
-        interrupted
-            .is_err_and(|error| error.kind == awaken_session_types::RunErrorKind::Unavailable),
+        interrupted.is_err_and(
+            |error| error.kind == awaken_runtime_contract::runs::RunErrorKind::Unavailable
+        ),
         "R1/E1"
     );
     assert!(
@@ -5338,7 +5348,7 @@ async fn user_run_activity_rejects_a_root_changed_after_projection_recovery() {
         .expect_err("P2 stale projection must retry");
     assert_eq!(
         error.kind,
-        awaken_session_types::RunErrorKind::Unavailable,
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable,
         "P2/E3"
     );
     let durable = repository.get(&SessionId::from(session_id)).await.unwrap();

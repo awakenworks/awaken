@@ -19,10 +19,10 @@ use awaken_dispatch_contract::{
 };
 use awaken_dispatch_execution::durable_control::DurableRunControl;
 use awaken_dispatch_execution::{AdmissionError, LiveRunControlError};
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_execution_contract::{
     ApplicationError, DurableDispatchStatus, DurableRunOperations,
 };
-use awaken_session_types::RunError;
 
 use super::WorkerPlacedSessions;
 use crate::{application_error, decision_input, manual_resume_input};

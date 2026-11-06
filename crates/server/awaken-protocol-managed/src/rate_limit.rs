@@ -9,7 +9,9 @@ use axum::Json;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-use awaken_tenancy::org_admission::{OrgAdmissionDecision, OrgAdmissionUnavailable, OrgOperation};
+use awaken_runtime_contract::runs::request::{
+    OrgAdmissionDecision, OrgAdmissionUnavailable, OrgOperation,
+};
 
 use crate::types::ErrorResponse;
 

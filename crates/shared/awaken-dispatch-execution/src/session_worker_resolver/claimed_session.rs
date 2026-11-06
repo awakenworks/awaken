@@ -54,7 +54,7 @@ pub fn map_claimed_session_control_error(
 pub fn control_projection_matches_dispatched_manifest(
     projection: &awaken_session_execution_contract::FrozenSessionProjection,
     dispatched: &awaken_session_configuration_contract::resource::SessionResourceManifest,
-) -> Result<bool, awaken_session_types::RunError> {
+) -> Result<bool, awaken_runtime_contract::runs::RunError> {
     Ok(projection
         .resource_transition(
             awaken_session_execution_contract::FrozenResourceTransitionUse::ApplyEffects,

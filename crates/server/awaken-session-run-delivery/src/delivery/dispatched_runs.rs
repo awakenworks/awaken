@@ -7,8 +7,8 @@ use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::DispatchEnqueue as _;
 use awaken_runtime_contract::execution::{Error as ExecutionError, Result as ExecutionResult};
+use awaken_runtime_contract::runs::RunError;
 use awaken_runtime_contract::{RunActivation, RuntimeRunContext};
-use awaken_session_types::RunError;
 use std::sync::Arc;
 
 use super::SETTLED_RECONCILIATION_INTERVAL;

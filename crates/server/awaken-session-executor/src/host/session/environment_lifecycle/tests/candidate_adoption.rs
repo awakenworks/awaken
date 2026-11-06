@@ -146,7 +146,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
         intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         self.authorize_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -160,8 +160,10 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
     async fn persist(
         &self,
         _receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentState,
+        awaken_runtime_contract::runs::RunError,
+    > {
         panic!("a non-owning binding sink must not persist")
     }
 }

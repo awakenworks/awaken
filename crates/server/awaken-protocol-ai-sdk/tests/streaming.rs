@@ -12,9 +12,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{Pending, RunError, RunResume, Runs, StepOutcome};
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
@@ -27,14 +25,14 @@ use tower::ServiceExt;
 struct StreamingMock;
 
 #[async_trait::async_trait]
-impl RunApplication for StreamingMock {
+impl Runs for StreamingMock {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         Ok(committed())
     }
 
@@ -45,7 +43,7 @@ impl RunApplication for StreamingMock {
         _agent: Option<String>,
         _messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let run = RunId("r1".into());
         for kind in [
             AgentEvent::Fact(Fact::RunStarted),
@@ -85,15 +83,15 @@ impl RunApplication for StreamingMock {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -206,14 +204,14 @@ async fn falls_back_to_full_projection_when_nothing_streamed() {
     // yields a well-formed stream with a single `start` and the committed tail.
     struct SilentMock;
     #[async_trait::async_trait]
-    impl RunApplication for SilentMock {
+    impl Runs for SilentMock {
         async fn run(
             &self,
             _operation_id: &str,
             _t: &str,
             _a: Option<String>,
             _m: Vec<Message>,
-        ) -> Result<StepOutcome, RunApplicationError> {
+        ) -> Result<StepOutcome, RunError> {
             Ok(StepOutcome::ended(
                 vec![Message::text(Id("a1".into()), Role::Assistant, "hello")],
                 awaken_agent_contract::agent::run::EndCause::NaturalEnd,
@@ -225,13 +223,13 @@ async fn falls_back_to_full_projection_when_nothing_streamed() {
             _t: &str,
             _id: &str,
             _r: RunResume,
-        ) -> Result<StepOutcome, RunApplicationError> {
+        ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
-        async fn pending(&self, _t: &str) -> Result<Option<Pending>, RunApplicationError> {
+        async fn pending(&self, _t: &str) -> Result<Option<Pending>, RunError> {
             Ok(None)
         }
-        async fn history(&self, _t: &str) -> Result<Vec<Message>, RunApplicationError> {
+        async fn history(&self, _t: &str) -> Result<Vec<Message>, RunError> {
             Ok(Vec::new())
         }
         fn model(&self) -> String {
@@ -295,14 +293,14 @@ async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
     }
 
     #[async_trait::async_trait]
-    impl RunApplication for RetainedSinkMock {
+    impl Runs for RetainedSinkMock {
         async fn run(
             &self,
             _operation_id: &str,
             _thread: &str,
             _agent: Option<String>,
             _messages: Vec<Message>,
-        ) -> Result<StepOutcome, RunApplicationError> {
+        ) -> Result<StepOutcome, RunError> {
             unreachable!("the completion test uses run_streaming")
         }
 
@@ -313,7 +311,7 @@ async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
             _agent: Option<String>,
             _messages: Vec<Message>,
             sink: Arc<dyn StreamSink>,
-        ) -> Result<StepOutcome, RunApplicationError> {
+        ) -> Result<StepOutcome, RunError> {
             *self.retained.lock().unwrap() = Some(sink);
             Ok(StepOutcome::ended(
                 vec![Message::text(Id("a1".into()), Role::Assistant, "complete")],
@@ -327,15 +325,15 @@ async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
             _thread: &str,
             _tool_use_id: &str,
             _resume: RunResume,
-        ) -> Result<StepOutcome, RunApplicationError> {
+        ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
 
-        async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
             Ok(None)
         }
 
-        async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
             Ok(Vec::new())
         }
 
@@ -385,14 +383,14 @@ struct HangupProbe {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for HangupProbe {
+impl Runs for HangupProbe {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("the disconnect test only streams")
     }
 
@@ -403,7 +401,7 @@ impl RunApplication for HangupProbe {
         _agent: Option<String>,
         _messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let run = RunId("r1".into());
         for _ in 0..10_000 {
             let sent = sink
@@ -431,13 +429,13 @@ impl RunApplication for HangupProbe {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
     fn model(&self) -> String {
@@ -491,14 +489,14 @@ struct ResumeProbe {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for ResumeProbe {
+impl Runs for ResumeProbe {
     async fn run(
         &self,
         _: &str,
         _: &str,
         _: Option<String>,
         _: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
     async fn resume(
@@ -507,7 +505,7 @@ impl RunApplication for ResumeProbe {
         _: &str,
         _: &str,
         _: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("a live continuation must not use the buffered resume method")
     }
     async fn resume_streaming(
@@ -517,7 +515,7 @@ impl RunApplication for ResumeProbe {
         call: &str,
         resume: RunResume,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         assert!(!operation.is_empty());
         assert_eq!(thread, "t1");
         assert_eq!(call, "c1");
@@ -565,12 +563,12 @@ impl RunApplication for ResumeProbe {
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
         ))
     }
-    async fn interrupt(&self, _: &str) -> Result<(), RunApplicationError> {
+    async fn interrupt(&self, _: &str) -> Result<(), RunError> {
         self.interrupted.store(true, Ordering::SeqCst);
         self.release.notify_one();
         Ok(())
     }
-    async fn pending(&self, _: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _: &str) -> Result<Option<Pending>, RunError> {
         Ok(Some(Pending {
             tool_use_id: "c1".into(),
             name: "AskUserQuestion".into(),
@@ -578,19 +576,19 @@ impl RunApplication for ResumeProbe {
             client_executed: true,
         }))
     }
-    async fn history(&self, _: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
     fn model(&self) -> String {
         "mock".into()
     }
-    async fn usage(&self, _: &str) -> Result<(u64, u64), RunApplicationError> {
+    async fn usage(&self, _: &str) -> Result<(u64, u64), RunError> {
         Ok((12, 34))
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_application_contract::OwnerScopedRunApplication for ResumeProbe {
+impl awaken_runtime_contract::runs::OwnedRuns for ResumeProbe {
     async fn run_streaming_for_owner(
         &self,
         _: &str,
@@ -599,7 +597,7 @@ impl awaken_session_application_contract::OwnerScopedRunApplication for ResumePr
         _: Option<String>,
         _: Vec<Message>,
         _: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
     async fn resume_for_owner(
@@ -609,7 +607,7 @@ impl awaken_session_application_contract::OwnerScopedRunApplication for ResumePr
         _: &str,
         _: &str,
         _: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("owner scope must not downgrade streaming")
     }
     async fn resume_streaming_for_owner(
@@ -620,7 +618,7 @@ impl awaken_session_application_contract::OwnerScopedRunApplication for ResumePr
         call: &str,
         resume: RunResume,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         self.scopes.lock().unwrap().push(scope.into());
         self.resume_streaming(operation, thread, call, resume, sink)
             .await
@@ -639,9 +637,10 @@ async fn client_tool_continuation_streams_before_commit_and_preserves_scope_and_
         interrupted: Arc::new(AtomicBool::new(false)),
         scopes: Mutex::new(Vec::new()),
     });
-    let app = awaken_protocol_ai_sdk::router::router_with_owner_scope(rt.clone()).layer(
-        axum::Extension(awaken_tenancy::WorkspaceScope("owner-1".into())),
-    );
+    let app =
+        awaken_protocol_ai_sdk::router::router_with_owner_scope(rt.clone()).layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("owner-1".into()),
+        ));
     let response = app.oneshot(Request::builder().method("POST").uri("/v1/ai-sdk/threads/t1/runs")
         .header("content-type", "application/json").body(Body::from(json!({"messages":[{"id":"a1","role":"assistant","parts":[{"type":"tool-AskUserQuestion","toolCallId":"c1","state":"output-available","output":{"status":"answered"}}]}]}).to_string())).unwrap()).await.unwrap();
     let mut body = response.into_body();

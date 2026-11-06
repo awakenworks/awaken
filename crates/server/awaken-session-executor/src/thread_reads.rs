@@ -14,10 +14,10 @@
 
 use std::sync::{Arc, Weak};
 
-use awaken_session_application_contract::DelegatedRun;
+use awaken_runtime_contract::runs::{DelegatedRun, RunError};
+
 use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_session_run_delivery::{CommittedReads, SessionCommit};
-use awaken_session_types::RunError;
 
 use crate::SessionExecutionError;
 use crate::session_execution_error::to_run_error;

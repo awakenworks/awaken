@@ -3,7 +3,7 @@
 //! path drives a Run, a tool reply or a root fact.
 
 use super::*;
-use awaken_session_types::RunErrorKind;
+use awaken_runtime_contract::runs::RunErrorKind;
 
 /// Every durable fact and every Runtime drive a terminal reply must not add.
 #[derive(Debug, PartialEq)]

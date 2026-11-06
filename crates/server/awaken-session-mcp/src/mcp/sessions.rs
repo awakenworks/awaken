@@ -14,7 +14,7 @@ use crate::mcp_material::{
     McpGenerationProjection, McpProjectionState, McpWiring, SessionMcpState,
 };
 use crate::mcp_relay::{McpRelay, McpRelayOutboundProxy};
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 pub(super) const MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(10);
 

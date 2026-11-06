@@ -2,8 +2,8 @@
 
 use std::convert::Infallible;
 
-use awaken_session_application_contract::RunApplicationError;
-use awaken_session_types::{RunErrorClassification, RunErrorKind};
+use awaken_runtime_contract::runs::{RunError, RunErrorClassification, RunErrorKind};
+
 use axum::Json;
 use axum::body::Body;
 use axum::http::{StatusCode, header};
@@ -24,12 +24,12 @@ pub(super) fn rpc_ok(id: Value, result: impl serde::Serialize) -> Response {
 }
 
 /// Map a driver error to a JSON-RPC `(code, message)` pair.
-pub(super) fn rpc_fault(err: RunApplicationError) -> (i32, String) {
+pub(super) fn rpc_fault(err: RunError) -> (i32, String) {
     let (_, code) = driver_fault(&err);
     (code, err.message)
 }
 
-fn driver_fault(error: &RunApplicationError) -> (StatusCode, i32) {
+fn driver_fault(error: &RunError) -> (StatusCode, i32) {
     match error.classification() {
         RunErrorClassification::NotFound => (StatusCode::NOT_FOUND, -32001),
         RunErrorClassification::UnsupportedOutputModes => (StatusCode::BAD_REQUEST, -32005),
@@ -40,13 +40,13 @@ fn driver_fault(error: &RunApplicationError) -> (StatusCode, i32) {
     }
 }
 
-pub(super) fn cancel_driver_error(error: RunApplicationError) -> (StatusCode, i32, String) {
+pub(super) fn cancel_driver_error(error: RunError) -> (StatusCode, i32, String) {
     let (status, code) = driver_fault(&error);
     (status, code, error.message)
 }
 
 /// Map a driver error to `(status, A2A error envelope)`.
-pub(super) fn error_response(err: RunApplicationError) -> Response {
+pub(super) fn error_response(err: RunError) -> Response {
     let (status, code, message) = match (err.kind, err.message) {
         (RunErrorKind::BadRequest, message) => (StatusCode::BAD_REQUEST, -32600, message),
         (RunErrorKind::Internal, message) => (StatusCode::INTERNAL_SERVER_ERROR, -32603, message),
@@ -56,7 +56,7 @@ pub(super) fn error_response(err: RunApplicationError) -> Response {
     (status, Json(ErrorResponse::new(code, message))).into_response()
 }
 
-fn rest_driver_error(err: RunApplicationError) -> Response {
+fn rest_driver_error(err: RunError) -> Response {
     let (status, code) = driver_fault(&err);
     (
         status,
@@ -66,7 +66,7 @@ fn rest_driver_error(err: RunApplicationError) -> Response {
 }
 
 pub(super) fn stream_binding_error(
-    error: RunApplicationError,
+    error: RunError,
     rpc_id: Option<&Value>,
     rest_errors: bool,
     version: ProtocolVersion,
@@ -81,10 +81,7 @@ pub(super) fn stream_binding_error(
     }
 }
 
-pub(super) fn rest_driver_error_version(
-    error: RunApplicationError,
-    version: ProtocolVersion,
-) -> Response {
+pub(super) fn rest_driver_error_version(error: RunError, version: ProtocolVersion) -> Response {
     if version == ProtocolVersion::V03 {
         return rest_driver_error(error);
     }
@@ -222,7 +219,7 @@ mod diagnostic_tests {
                     -32603,
                 ),
             ] {
-                let make_error = || RunApplicationError {
+                let make_error = || RunError {
                     kind,
                     code: code.into(),
                     message: "原因已本地化".into(),
@@ -240,21 +237,18 @@ mod diagnostic_tests {
     #[test]
     fn prose_cannot_impersonate_a_classified_error() {
         assert_eq!(
-            rpc_fault(RunApplicationError::bad_request(
+            rpc_fault(RunError::bad_request(
                 "unsupported output modes: ordinary prose"
             ))
             .0,
             -32602
         );
         assert_eq!(
-            driver_fault(&RunApplicationError::bad_request(
-                "task not found: ordinary prose"
-            ))
-            .0,
+            driver_fault(&RunError::bad_request("task not found: ordinary prose")).0,
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            driver_fault(&RunApplicationError::unavailable_classified(
+            driver_fault(&RunError::unavailable_classified(
                 "not_found",
                 "unavailable"
             ))

@@ -232,7 +232,9 @@ async fn renewal_tags_durable_cancellation_and_claim_loss_with_their_causes() {
         store
             .enqueue(crate::RunDispatch::new(RunActivation::new(
                 run_id.clone(),
-                ThreadId(format!("renewal-cause-thread-{durable_cancel}-{physical_started}")),
+                ThreadId(format!(
+                    "renewal-cause-thread-{durable_cancel}-{physical_started}"
+                )),
                 ExecutableAgentSnapshot::builder("renewal-cause-snapshot")
                     .model(
                         awaken_runtime_contract::resolved::ModelBinding::parse(

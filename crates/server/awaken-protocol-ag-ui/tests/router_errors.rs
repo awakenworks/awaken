@@ -6,9 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::Message;
-use awaken_session_application_contract::{
-    OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{OwnedRuns, Pending, RunError, RunResume, Runs, StepOutcome};
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
 use serde_json::{Value, json};
@@ -17,14 +15,14 @@ use tower::ServiceExt;
 struct NoAwaitingRuntime;
 
 #[async_trait::async_trait]
-impl RunApplication for NoAwaitingRuntime {
+impl Runs for NoAwaitingRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         Ok(StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
@@ -37,16 +35,16 @@ impl RunApplication for NoAwaitingRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("no run is awaiting, so resume must never be reached")
     }
 
     // No run is ever awaiting.
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -55,16 +53,12 @@ impl RunApplication for NoAwaitingRuntime {
     }
 }
 
-async fn post_frames(
-    runtime: Arc<dyn RunApplication>,
-    path: &str,
-    body: impl Into<String>,
-) -> Vec<Value> {
+async fn post_frames(runtime: Arc<dyn Runs>, path: &str, body: impl Into<String>) -> Vec<Value> {
     post_frames_with_content_type(runtime, path, body, "application/json").await
 }
 
 async fn post_frames_with_content_type(
-    runtime: Arc<dyn RunApplication>,
+    runtime: Arc<dyn Runs>,
     path: &str,
     body: impl Into<String>,
     content_type: &str,
@@ -179,14 +173,14 @@ async fn a_tool_result_with_no_awaiting_run_fails_closed_with_run_error() {
 struct AwaitingRuntime;
 
 #[async_trait::async_trait]
-impl RunApplication for AwaitingRuntime {
+impl Runs for AwaitingRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("this test only drives the resume path")
     }
 
@@ -196,7 +190,7 @@ impl RunApplication for AwaitingRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         use awaken_agent_contract::agent::message::{Id, Role};
         Ok(StepOutcome::ended(
             vec![Message::text(Id("a1".into()), Role::Assistant, "done")],
@@ -204,7 +198,7 @@ impl RunApplication for AwaitingRuntime {
         ))
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(Some(Pending {
             tool_use_id: "c1".into(),
             name: "write".into(),
@@ -213,7 +207,7 @@ impl RunApplication for AwaitingRuntime {
         }))
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -256,14 +250,14 @@ struct ExactResumeRuntime {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for ExactResumeRuntime {
+impl Runs for ExactResumeRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("this test drives only resume")
     }
 
@@ -273,7 +267,7 @@ impl RunApplication for ExactResumeRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         self.resumed.store(true, Ordering::SeqCst);
         Ok(StepOutcome::ended(
             Vec::new(),
@@ -281,7 +275,7 @@ impl RunApplication for ExactResumeRuntime {
         ))
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(Some(Pending {
             tool_use_id: "c1".into(),
             name: "write".into(),
@@ -290,7 +284,7 @@ impl RunApplication for ExactResumeRuntime {
         }))
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -300,7 +294,7 @@ impl RunApplication for ExactResumeRuntime {
 }
 
 #[async_trait::async_trait]
-impl OwnerScopedRunApplication for ExactResumeRuntime {
+impl OwnedRuns for ExactResumeRuntime {
     async fn run_streaming_for_owner(
         &self,
         _owner_scope: &str,
@@ -309,7 +303,7 @@ impl OwnerScopedRunApplication for ExactResumeRuntime {
         _agent: Option<String>,
         _messages: Vec<Message>,
         _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("exact resume runtime never admits a new Run")
     }
 
@@ -320,7 +314,7 @@ impl OwnerScopedRunApplication for ExactResumeRuntime {
         thread: &str,
         tool_use_id: &str,
         resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         assert_eq!(owner_scope, "exact-workspace");
         self.scoped.store(true, Ordering::SeqCst);
         self.resume(operation_id, thread, tool_use_id, resume).await
@@ -379,7 +373,9 @@ async fn authenticated_workspace_scope_reaches_ag_ui_tool_resume() {
                 .method("POST")
                 .uri("/v1/ag-ui")
                 .header("content-type", "application/json")
-                .extension(awaken_tenancy::WorkspaceScope("exact-workspace".into()))
+                .extension(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                    "exact-workspace".into(),
+                ))
                 .body(Body::from(body.to_string()))
                 .unwrap(),
         )
@@ -414,14 +410,14 @@ struct AdmissionRecordingRuntime {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for AdmissionRecordingRuntime {
+impl Runs for AdmissionRecordingRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         self.ran.store(true, Ordering::SeqCst);
         Ok(StepOutcome::ended(
             Vec::new(),
@@ -435,15 +431,15 @@ impl RunApplication for AdmissionRecordingRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("unsupported fresh input must fail before resume")
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -453,7 +449,7 @@ impl RunApplication for AdmissionRecordingRuntime {
 }
 
 #[async_trait::async_trait]
-impl OwnerScopedRunApplication for AdmissionRecordingRuntime {
+impl OwnedRuns for AdmissionRecordingRuntime {
     async fn run_streaming_for_owner(
         &self,
         owner_scope: &str,
@@ -462,7 +458,7 @@ impl OwnerScopedRunApplication for AdmissionRecordingRuntime {
         agent: Option<String>,
         messages: Vec<Message>,
         _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         assert_eq!(owner_scope, "exact-workspace");
         self.scoped.store(true, Ordering::SeqCst);
         self.run(operation_id, thread, agent, messages).await
@@ -475,7 +471,7 @@ impl OwnerScopedRunApplication for AdmissionRecordingRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("admission recorder never resumes")
     }
 }
@@ -580,7 +576,9 @@ async fn authenticated_workspace_scope_reaches_the_same_ag_ui_run_admission() {
                 .method("POST")
                 .uri("/v1/ag-ui")
                 .header("content-type", "application/json")
-                .extension(awaken_tenancy::WorkspaceScope("exact-workspace".into()))
+                .extension(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                    "exact-workspace".into(),
+                ))
                 .body(Body::from(body.to_string()))
                 .unwrap(),
         )
@@ -601,14 +599,14 @@ struct DenyRecordingRuntime {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for DenyRecordingRuntime {
+impl Runs for DenyRecordingRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _t: &str,
         _a: Option<String>,
         _m: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
     async fn resume(
@@ -617,7 +615,7 @@ impl RunApplication for DenyRecordingRuntime {
         _t: &str,
         _id: &str,
         resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         if let RunResume::Permission(PermissionDecision::Deny { .. }) = resume {
             self.denied.store(true, Ordering::SeqCst);
         }
@@ -626,7 +624,7 @@ impl RunApplication for DenyRecordingRuntime {
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
         ))
     }
-    async fn pending(&self, _t: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _t: &str) -> Result<Option<Pending>, RunError> {
         Ok(Some(Pending {
             tool_use_id: "c1".into(),
             name: "write".into(),
@@ -634,7 +632,7 @@ impl RunApplication for DenyRecordingRuntime {
             client_executed: false,
         }))
     }
-    async fn history(&self, _t: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _t: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
     fn model(&self) -> String {
@@ -667,18 +665,15 @@ async fn an_error_flagged_tool_result_denies_an_awaiting_builtin_tool() {
 struct ClassifiedFailureRuntime;
 
 #[async_trait::async_trait]
-impl RunApplication for ClassifiedFailureRuntime {
+impl Runs for ClassifiedFailureRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
-        Err(RunApplicationError::classified(
-            "provider_overloaded",
-            "try later",
-        ))
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::classified("provider_overloaded", "try later"))
     }
 
     async fn resume(
@@ -687,15 +682,15 @@ impl RunApplication for ClassifiedFailureRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
 
@@ -732,14 +727,14 @@ async fn classified_stream_failure_preserves_code_separately_from_message() {
 struct AgUiPanickingRuntime;
 
 #[async_trait::async_trait]
-impl RunApplication for AgUiPanickingRuntime {
+impl Runs for AgUiPanickingRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _t: &str,
         _a: Option<String>,
         _m: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         panic!("the turn task died");
     }
     async fn resume(
@@ -748,13 +743,13 @@ impl RunApplication for AgUiPanickingRuntime {
         _t: &str,
         _id: &str,
         _r: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
-    async fn pending(&self, _t: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _t: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
-    async fn history(&self, _t: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _t: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
     fn model(&self) -> String {
@@ -762,7 +757,7 @@ impl RunApplication for AgUiPanickingRuntime {
     }
 }
 
-async fn ag_ui_frame_types(runtime: Arc<dyn RunApplication>, body: String) -> Vec<String> {
+async fn ag_ui_frame_types(runtime: Arc<dyn Runs>, body: String) -> Vec<String> {
     frame_types(&post_frames(runtime, "/v1/ag-ui", body).await)
 }
 

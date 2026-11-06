@@ -10,7 +10,7 @@ use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
 #[cfg(test)]
 use awaken_managed_session_events::SEND_MESSAGE_TOOL_ID as SEND_MESSAGE;
 use awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE;
-use awaken_session_application_contract::Pending;
+use awaken_runtime_contract::runs::Pending;
 use awaken_session_contract::SessionThreadTarget;
 #[cfg(test)]
 use awaken_session_contract::SessionThreadToolReply;

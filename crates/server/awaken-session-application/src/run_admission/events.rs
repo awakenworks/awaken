@@ -7,7 +7,8 @@ use crate::SessionProjectionReads as _;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::{RunLifecycleCursor, ThreadId};
 use awaken_dispatch_contract::{DispatchCursor, DispatchPage, SessionRunEventPage};
-use awaken_session_types::{RunError, SessionId};
+use awaken_runtime_contract::runs::RunError;
+use awaken_session_types::SessionId;
 
 use crate::SessionProjectionRecoveryError;
 use awaken_session_execution_contract::session_run_activity_operation_id;

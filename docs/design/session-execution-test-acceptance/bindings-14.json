@@ -98,7 +98,7 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 429,
+        "line": 428,
         "file_sha256": "a3a0d6782f6190a46d6a27fb243b5d59bd9d5664d8b01f291ac6ae03c23cf54f"
       }
     ],
@@ -121,7 +121,7 @@
     "source_locations": [
       {
         "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
-        "line": 450,
+        "line": 448,
         "file_sha256": "a3a0d6782f6190a46d6a27fb243b5d59bd9d5664d8b01f291ac6ae03c23cf54f"
       }
     ],

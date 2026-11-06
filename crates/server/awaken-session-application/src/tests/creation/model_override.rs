@@ -71,6 +71,9 @@ async fn model_override_decision_reuses_only_an_equal_id_and_resolves_every_mism
         )
         .await
         .expect_err("malformed resolver output must fail before persistence");
-    assert_eq!(error.kind, awaken_session_types::RunErrorKind::BadRequest);
+    assert_eq!(
+        error.kind,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest
+    );
     assert!(error.message.contains("duplicate model candidate"));
 }

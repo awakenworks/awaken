@@ -1,6 +1,6 @@
 //! Response metadata consumed directly by the official Anthropic SDKs.
 
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::Router;
 use axum::extract::Request;
 use axum::http::HeaderValue;

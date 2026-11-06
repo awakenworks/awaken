@@ -2,7 +2,7 @@ use super::*;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _};
 use awaken_dispatch_erasure::{AnyCoordinatorDispatch, LocalCommitAdapter};
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 use std::sync::{
     Mutex,
     atomic::{AtomicUsize, Ordering},

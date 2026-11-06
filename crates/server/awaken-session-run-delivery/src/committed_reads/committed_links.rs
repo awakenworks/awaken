@@ -10,8 +10,8 @@ use awaken_agent_contract::agent::state::{StateKey as _, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_ext_builtin_tools::{AgentMessageReceipt, SendMessageArgs};
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_execution_contract::{CoordinatedThreadLink, CoordinatedThreadTarget};
-use awaken_session_types::RunError;
 use awaken_tool_contract::tool_batch::{ActiveToolBatch, ToolBatch};
 
 #[derive(Clone)]

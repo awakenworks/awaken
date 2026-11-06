@@ -10,8 +10,8 @@
 use std::borrow::Cow;
 
 use awaken_dispatch_contract::DispatchError;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_execution_contract::SessionRealizationControlDisposition;
-use awaken_session_types::RunError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdmissionError {
@@ -101,7 +101,7 @@ mod tests {
     fn admission_failures_project_one_run_class() {
         // Decision table: cause = the admission failure; effect = the neutral
         // Run error kind and code its callers return.
-        use awaken_session_types::RunErrorKind::{BadRequest, Internal, Unavailable};
+        use awaken_runtime_contract::runs::RunErrorKind::{BadRequest, Internal, Unavailable};
         let rows = [
             (
                 "R1 refused",

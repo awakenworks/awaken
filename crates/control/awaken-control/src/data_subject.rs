@@ -302,7 +302,7 @@ mod tests {
             CapturePolicyInputs, CapturePolicySources, NullResolver, TelemetryNarrowing,
             decide_capture,
         };
-        use awaken_tenancy::WorkspaceScope;
+        use awaken_runtime_contract::runs::scope::WorkspaceScope;
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use tower::ServiceExt;

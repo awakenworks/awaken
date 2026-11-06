@@ -13,6 +13,7 @@ use std::borrow::Cow;
 
 use awaken_provisioning_contract::{ProvisioningDeadline, SandboxError};
 use awaken_resource_contract::RepositoryBindingVerifierError;
+use awaken_runtime_contract::runs::{RunError, RunErrorKind};
 #[cfg(test)]
 use awaken_session_configuration_contract::resource::binding_checks::REPOSITORY_BINDING_CORRUPT_CODE;
 use awaken_session_configuration_contract::resource::binding_checks::{
@@ -24,7 +25,6 @@ use awaken_session_execution_contract::{
     SessionRealizationControlDisposition, effect_failure_disposition, environment_effect_error,
     provisioning_disposition,
 };
-use awaken_session_types::{RunError, RunErrorKind};
 
 /// What a caller does next with a failed realization operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -194,14 +194,16 @@ impl SessionRealization {
     pub fn validate_preparation_publication(
         &self,
         asserted: Option<&session_resource::SessionRealizationLease>,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         if self.staging.preparation.is_some()
             && !asserted.is_some_and(|lease| self.resource_preparation_authorized(lease))
         {
-            return Err(awaken_session_types::RunError::unavailable_classified(
-                "session_realization_authority_lost",
-                "Resource preparation cannot publish after realization authority ended",
-            ));
+            return Err(
+                awaken_runtime_contract::runs::RunError::unavailable_classified(
+                    "session_realization_authority_lost",
+                    "Resource preparation cannot publish after realization authority ended",
+                ),
+            );
         }
         Ok(())
     }

@@ -959,8 +959,8 @@ mod tests {
         }
     }
 
+    use awaken_runtime_contract::runs::scope::WorkspaceScope;
     use awaken_skill_store::InMemorySkillStore;
-    use awaken_tenancy::WorkspaceScope;
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;

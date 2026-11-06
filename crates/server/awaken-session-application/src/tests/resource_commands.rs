@@ -97,7 +97,7 @@ async fn resource_commands_refuse_before_any_lowering_or_root_change() {
         matches!(
             app.resource_manifests.attach_session_file(&session_id, memory_target).await,
             Err(SessionResourceManifestError::Rejected(error))
-                if error.kind == awaken_session_types::RunErrorKind::BadRequest
+                if error.kind == awaken_runtime_contract::runs::RunErrorKind::BadRequest
         ),
         "A1"
     );

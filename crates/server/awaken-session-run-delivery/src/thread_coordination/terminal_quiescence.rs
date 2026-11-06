@@ -8,7 +8,7 @@ use awaken_dispatch_contract::{
 };
 use awaken_dispatch_execution::durable_control::RunResidence;
 use awaken_runtime_contract::control::LiveRunControl;
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use super::CoordinatedThreads;
 

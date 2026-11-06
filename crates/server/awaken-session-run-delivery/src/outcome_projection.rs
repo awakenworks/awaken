@@ -8,11 +8,11 @@
 //! transitions stay in `awaken-ext-goal`.
 
 use awaken_ext_goal::controller::{CommittedOutcome, Error as ControllerError, Report};
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_contract::OUTCOME_BUSY_CODE;
 use awaken_session_execution_contract::{
     CommittedOutcomeProjection, OutcomeFailure, OutcomeIteration, OutcomeReport,
 };
-use awaken_session_types::RunError;
 
 /// The one classification of an Outcome controller failure: a busy Outcome is
 /// retryable, a domain refusal is the caller's, the rest are internal.

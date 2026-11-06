@@ -18,8 +18,8 @@ pub(super) fn has_work_session_access(req: &Request) -> bool {
         .is_some()
         && req
             .extensions()
-            .get::<awaken_tenancy::WorkspaceScope>()
-            .and_then(awaken_tenancy::WorkspaceScope::non_empty)
+            .get::<awaken_runtime_contract::runs::scope::WorkspaceScope>()
+            .and_then(awaken_runtime_contract::runs::scope::WorkspaceScope::non_empty)
             .is_some()
 }
 
@@ -68,9 +68,9 @@ mod tests {
                 );
             }
             if workspace {
-                request
-                    .extensions_mut()
-                    .insert(awaken_tenancy::WorkspaceScope("ws_1".into()));
+                request.extensions_mut().insert(
+                    awaken_runtime_contract::runs::scope::WorkspaceScope("ws_1".into()),
+                );
             }
             request
         };

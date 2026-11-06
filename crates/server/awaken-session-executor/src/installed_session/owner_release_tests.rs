@@ -195,7 +195,7 @@ async fn retained_session_run_projection_callbacks_release_the_original_owners_a
         ] {
             assert_eq!(
                 error.kind,
-                awaken_session_types::RunErrorKind::Unavailable,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable,
                 "P8"
             );
             assert_eq!(

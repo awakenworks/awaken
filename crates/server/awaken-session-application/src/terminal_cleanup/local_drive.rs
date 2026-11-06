@@ -7,11 +7,11 @@ use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_time::WallClockExt as _;
 use std::{future::Future, pin::Pin};
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_execution_contract::{
     SessionRealizationControlFailure, SessionRealizationDriveError,
     SessionTerminalCleanupAssignment,
 };
-use awaken_session_types::RunError;
 use {
     awaken_provisioning_contract::SandboxRestoreRequest, awaken_session_contract::PersistedSession,
     awaken_session_contract::SessionTerminalCleanupAction,
@@ -576,7 +576,7 @@ mod tests {
             _agent: &str,
             _thread: &str,
             _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-        ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
+        ) -> Result<awaken_runtime_contract::runs::StepOutcome, RunError> {
             Err(RunError::internal("terminal renewal fixture"))
         }
 
@@ -585,7 +585,7 @@ mod tests {
             _thread: &str,
             _tool_use_id: &str,
             _decision: awaken_agent_contract::agent::awaiting::PermissionDecision,
-        ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
+        ) -> Result<awaken_runtime_contract::runs::StepOutcome, RunError> {
             Err(RunError::internal("terminal renewal fixture"))
         }
 
@@ -595,7 +595,7 @@ mod tests {
             _tool_use_id: &str,
             _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
             _is_error: bool,
-        ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
+        ) -> Result<awaken_runtime_contract::runs::StepOutcome, RunError> {
             Err(RunError::internal("terminal renewal fixture"))
         }
 
@@ -644,7 +644,7 @@ mod tests {
             owner: &str,
             runtime_incarnation: &str,
             timing: awaken_lease_contract::authority::AuthorityLeaseTiming,
-        ) -> Result<usize, awaken_session_types::RunError> {
+        ) -> Result<usize, awaken_runtime_contract::runs::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
                 .await
@@ -677,7 +677,7 @@ mod tests {
             &self,
             thread: &str,
             lease: awaken_session_execution_contract::ObservedSessionRealizationLease,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_lease(thread, lease)
                 .await
@@ -693,7 +693,7 @@ mod tests {
             &self,
             thread: &str,
             lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
                 .await
@@ -714,7 +714,7 @@ mod tests {
             authorization: awaken_session_execution_contract::SessionTerminalCleanupPreparationAuthorization,
         ) -> Result<
             awaken_session_contract::SessionCleanupPreparation,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             awaken_session_execution_contract::NeutralRuntime
                 .prepare_terminal_cleanup_for_effect(effect, authorization)
@@ -1507,7 +1507,10 @@ mod tests {
         else {
             panic!("permanent durable error was made retryable")
         };
-        assert_eq!(internal.kind, awaken_session_types::RunErrorKind::Internal);
+        assert_eq!(
+            internal.kind,
+            awaken_runtime_contract::runs::RunErrorKind::Internal
+        );
         assert_eq!(internal.message, "offline");
         assert!(!internal.is_unclassified_internal());
         assert_eq!(

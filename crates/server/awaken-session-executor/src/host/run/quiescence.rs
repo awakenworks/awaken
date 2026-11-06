@@ -15,7 +15,7 @@ impl awaken_session_run_delivery::ResidentAttempt for ResidentContext {
         self.0.live_control()
     }
 
-    fn cancel_foreground(&self) -> Result<(), awaken_session_types::RunError> {
+    fn cancel_foreground(&self) -> Result<(), awaken_runtime_contract::runs::RunError> {
         let foreground = self
             .0
             .foreground
@@ -27,7 +27,7 @@ impl awaken_session_run_delivery::ResidentAttempt for ResidentContext {
         Ok(())
     }
 
-    fn has_foreground_run(&self) -> Result<bool, awaken_session_types::RunError> {
+    fn has_foreground_run(&self) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         self.0
             .foreground
             .has_run()

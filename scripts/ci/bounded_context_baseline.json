@@ -33,7 +33,6 @@
     "awaken-coordinator-client -> awaken-dispatch-execution": "reach the execution context through its contract instead of awaken-dispatch-execution (infrastructure), or re-home awaken-coordinator-client"
   },
   "protocol-leaf": {
-    "awaken-run-executor-a2a -> awaken-protocol-a2a": "the executor uses awaken-protocol-a2a's client codec; move that codec behind an execution-side contract",
     "awaken-run-executor-acp -> awaken-protocol-acp": "the executor uses awaken-protocol-acp's client codec; move that codec behind an execution-side contract"
   }
 }

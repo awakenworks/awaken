@@ -6,7 +6,7 @@
 //! does NOT prove the router called the neutral cancel verb — a router that simply
 //! returned on the send error, never calling `interrupt`, would pass that test
 //! while leaking the in-flight turn. This test closes that gap with a recording
-//! `RunApplication` double that captures every `interrupt` call, mirroring the
+//! `Runs` double that captures every `interrupt` call, mirroring the
 //! contract the ag-ui adapter upholds (both converge on `interrupt`).
 
 use std::sync::Arc;
@@ -18,9 +18,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{Pending, RunError, RunResume, Runs, StepOutcome};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
@@ -42,14 +40,14 @@ struct InterruptRecorder {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for InterruptRecorder {
+impl Runs for InterruptRecorder {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("this test only streams")
     }
 
@@ -60,7 +58,7 @@ impl RunApplication for InterruptRecorder {
         _agent: Option<String>,
         _messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         let run = RunId("r1".into());
         for _ in 0..10_000 {
             let sent = sink
@@ -92,19 +90,19 @@ impl RunApplication for InterruptRecorder {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
 
-    async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
+    async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
         self.interrupted.lock().await.push(thread.to_string());
         Ok(())
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
-    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
     }
     fn model(&self) -> String {
@@ -113,7 +111,7 @@ impl RunApplication for InterruptRecorder {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_application_contract::OwnerScopedRunApplication for InterruptRecorder {
+impl awaken_runtime_contract::runs::OwnedRuns for InterruptRecorder {
     async fn run_streaming_for_owner(
         &self,
         _: &str,
@@ -122,7 +120,7 @@ impl awaken_session_application_contract::OwnerScopedRunApplication for Interrup
         agent: Option<String>,
         messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         self.run_streaming(operation_id, thread, agent, messages, sink)
             .await
     }
@@ -134,7 +132,7 @@ impl awaken_session_application_contract::OwnerScopedRunApplication for Interrup
         _: &str,
         _: &str,
         _: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!()
     }
 }
@@ -210,7 +208,7 @@ async fn owner_scoped_client_hangup_detaches_without_interrupting_the_run() {
         finished: finished.clone(),
     });
     let app = awaken_protocol_ai_sdk::router::router_with_owner_scope(rt).layer(axum::Extension(
-        awaken_tenancy::WorkspaceScope("test-workspace".into()),
+        awaken_runtime_contract::runs::scope::WorkspaceScope("test-workspace".into()),
     ));
     let response = app
         .oneshot(
@@ -244,7 +242,7 @@ async fn owner_scoped_client_hangup_detaches_without_interrupting_the_run() {
 async fn explicit_stop_reaches_the_exact_existing_interrupt_port() {
     // Causes: C1 the guarded browser DELETE names an external Thread and has
     // its exact resolved Session extension; C2 the same Stop is repeated.
-    // Effects: E1/E2 the sole RunApplication interrupt sees only the bound
+    // Effects: E1/E2 the sole Runs interrupt sees only the bound
     // Session, each response is 202 with its own Stop receipt, and no new Run or cancel store is made.
     let interrupted = Arc::new(Mutex::new(Vec::<String>::new()));
     let rt = Arc::new(InterruptRecorder {
@@ -255,12 +253,12 @@ async fn explicit_stop_reaches_the_exact_existing_interrupt_port() {
         finished: Arc::new(Notify::new()),
     });
     let app = awaken_protocol_ai_sdk::router::router_with_owner_scope(rt)
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            "test-workspace".into(),
-        )))
-        .layer(axum::Extension(awaken_tenancy::ResolvedResourceId(
-            "sesn_existing".into(),
-        )));
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("test-workspace".into()),
+        ))
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::ResolvedResourceId("sesn_existing".into()),
+        ));
     for _ in 0..2 {
         let response = app
             .clone()

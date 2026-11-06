@@ -79,19 +79,19 @@ mod tests {
         );
         assert_eq!(
             rejected.kind,
-            awaken_session_types::RunErrorKind::BadRequest,
+            awaken_runtime_contract::runs::RunErrorKind::BadRequest,
             "R1/E1"
         );
         assert_eq!(
             unavailable.kind,
-            awaken_session_types::RunErrorKind::Unavailable,
+            awaken_runtime_contract::runs::RunErrorKind::Unavailable,
             "R3/E2"
         );
         assert_eq!(rejected.code, "invalid_request");
         assert_eq!(rejected.message, "invalid shape");
         assert_eq!(
             unavailable.kind,
-            awaken_session_types::RunErrorKind::Unavailable
+            awaken_runtime_contract::runs::RunErrorKind::Unavailable
         );
         assert_eq!(unavailable.code, "unavailable");
         assert_eq!(unavailable.message, "response lost");
@@ -217,7 +217,7 @@ mod tests {
                 .expect_err("R5 mismatch is unknown");
             assert_eq!(
                 error.kind,
-                awaken_session_types::RunErrorKind::Unavailable,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable,
                 "R5 axis {axis}"
             );
         }
@@ -249,7 +249,7 @@ mod tests {
         let conflict = dispatch_admission_error(conflict);
         assert_eq!(
             conflict.kind,
-            awaken_session_types::RunErrorKind::Unavailable,
+            awaken_runtime_contract::runs::RunErrorKind::Unavailable,
             "R2/E2 the Session settler must retain the accepted activity"
         );
         assert_eq!(conflict.code, "unavailable");
@@ -377,7 +377,7 @@ mod tests {
             .expect_err("R7 insufficient tombstone");
         assert_eq!(
             completed.kind,
-            awaken_session_types::RunErrorKind::Unavailable
+            awaken_runtime_contract::runs::RunErrorKind::Unavailable
         );
     }
 

@@ -11,8 +11,8 @@
 
 use std::sync::Arc;
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_execution_contract::OutcomeDrive;
-use awaken_session_types::RunError;
 
 /// Outcome orchestration for one process. Consumer: the Session application's
 /// `Outcomes` role.

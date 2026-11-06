@@ -146,7 +146,7 @@ fn connect_key_fixture(base_url: String) -> Arc<RemoteManagementAuthz> {
 fn key_request(workspace: &str) -> Request {
     Request::builder()
         .uri("/v1/config/catalog")
-        .extension(awaken_tenancy::WorkspaceScope(workspace.into()))
+        .extension(awaken_runtime_contract::runs::scope::WorkspaceScope(workspace.into()))
         .header("authorization", format!("Bearer {SCOPED_KEY}"))
         .body(Body::empty())
         .unwrap()
@@ -308,7 +308,7 @@ fn remote_management_never_drops_a_verified_actor_before_pdp() {
                 .unwrap();
             request
                 .extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope("ws_cloud".into()));
+                .insert(awaken_runtime_contract::runs::scope::WorkspaceScope("ws_cloud".into()));
             assert_eq!(
                 app.clone().oneshot(request).await.unwrap().status(),
                 expected
@@ -492,17 +492,18 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
             cloud_management_guard,
         ));
     runtime.block_on(async {
-        let request = |bearer: Option<&str>| {
-            let mut builder = Request::builder().uri("/v1/config/catalog");
-            if let Some(bearer) = bearer {
-                builder = builder.header("authorization", format!("Bearer {bearer}"));
-            }
-            let mut request = builder.body(Body::empty()).unwrap();
-            request
-                .extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope("ws_cloud".into()));
-            request
-        };
+        let request =
+            |bearer: Option<&str>| {
+                let mut builder = Request::builder().uri("/v1/config/catalog");
+                if let Some(bearer) = bearer {
+                    builder = builder.header("authorization", format!("Bearer {bearer}"));
+                }
+                let mut request = builder.body(Body::empty()).unwrap();
+                request.extensions_mut().insert(
+                    awaken_runtime_contract::runs::scope::WorkspaceScope("ws_cloud".into()),
+                );
+                request
+            };
         assert_eq!(
             app.clone().oneshot(request(None)).await.unwrap().status(),
             StatusCode::OK
@@ -539,17 +540,18 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
     // policy 403). R7 the original PDP recovers -> the same token reaches the
     // same handler. Original transport retry owns retries, no adapter classifier.
     runtime.block_on(async {
-        let request = || {
-            let mut request = Request::builder()
-                .uri("/v1/config/catalog")
-                .header("authorization", format!("Bearer {token}"))
-                .body(Body::empty())
-                .unwrap();
-            request
-                .extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope("ws_cloud".into()));
-            request
-        };
+        let request =
+            || {
+                let mut request = Request::builder()
+                    .uri("/v1/config/catalog")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap();
+                request.extensions_mut().insert(
+                    awaken_runtime_contract::runs::scope::WorkspaceScope("ws_cloud".into()),
+                );
+                request
+            };
         let before = handlers.load(Ordering::SeqCst);
         authorization_status.store(503, Ordering::SeqCst);
         assert_eq!(
@@ -584,17 +586,18 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
             cloud_management_guard,
         ));
     runtime.block_on(async {
-        let request = |bearer: Option<&str>| {
-            let mut builder = Request::builder().uri("/v1/config/catalog");
-            if let Some(bearer) = bearer {
-                builder = builder.header("authorization", format!("Bearer {bearer}"));
-            }
-            let mut request = builder.body(Body::empty()).unwrap();
-            request
-                .extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope("ws_cloud".into()));
-            request
-        };
+        let request =
+            |bearer: Option<&str>| {
+                let mut builder = Request::builder().uri("/v1/config/catalog");
+                if let Some(bearer) = bearer {
+                    builder = builder.header("authorization", format!("Bearer {bearer}"));
+                }
+                let mut request = builder.body(Body::empty()).unwrap();
+                request.extensions_mut().insert(
+                    awaken_runtime_contract::runs::scope::WorkspaceScope("ws_cloud".into()),
+                );
+                request
+            };
         assert_eq!(
             hosted_app
                 .clone()
@@ -618,17 +621,18 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
         // the Coordinator handler; R2 no bearer never falls back to the
         // projected service credential. The route-policy test separately
         // covers an unmapped Worker path and absence from public route export.
-        let fleet_request = |bearer: Option<&str>| {
-            let mut builder = Request::builder().uri("/v1/workers/readiness");
-            if let Some(bearer) = bearer {
-                builder = builder.header("authorization", format!("Bearer {bearer}"));
-            }
-            let mut request = builder.body(Body::empty()).unwrap();
-            request
-                .extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope("ws_cloud".into()));
-            request
-        };
+        let fleet_request =
+            |bearer: Option<&str>| {
+                let mut builder = Request::builder().uri("/v1/workers/readiness");
+                if let Some(bearer) = bearer {
+                    builder = builder.header("authorization", format!("Bearer {bearer}"));
+                }
+                let mut request = builder.body(Body::empty()).unwrap();
+                request.extensions_mut().insert(
+                    awaken_runtime_contract::runs::scope::WorkspaceScope("ws_cloud".into()),
+                );
+                request
+            };
         assert_eq!(
             hosted_app
                 .clone()
@@ -765,7 +769,9 @@ fn cloud_tunnel_guard_requires_wif_service_bearer_and_scope() {
         let mut request = builder.body(Body::empty()).unwrap();
         request
             .extensions_mut()
-            .insert(awaken_tenancy::WorkspaceScope("ws_cloud".into()));
+            .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                "ws_cloud".into(),
+            ));
         request
     };
     runtime.block_on(async {

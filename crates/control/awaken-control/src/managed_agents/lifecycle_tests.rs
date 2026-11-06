@@ -4,7 +4,7 @@
 use super::test_support::{create_params, plane_with_catalog};
 use super::*;
 use awaken_protocol_managed::AgentRegistryState;
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::{
     Extension, Router,
     body::{Body, to_bytes},

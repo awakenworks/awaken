@@ -11,7 +11,7 @@ use awaken_agent_contract::RunLifecycleEventKind;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent};
-use awaken_session_application_contract::Pending;
+use awaken_runtime_contract::runs::Pending;
 use awaken_session_contract::SessionAgentRunBoundary;
 use awaken_session_contract::{PersistedSession, SessionRuntimeInterval};
 use awaken_session_execution_contract::CoordinatedThreadLink;

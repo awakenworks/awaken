@@ -1520,6 +1520,152 @@ pub fn awaken_runtime_contract::resume::OwnedToolContinuation::recover<'life0, '
 pub fn awaken_runtime_contract::resume::OwnedToolContinuation::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::diagnostic::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::resume::OwnedToolContinuation::tool_await_reason(&self, &str) -> core::option::Option<awaken_agent_contract::agent::awaiting::ToolAwaitReason>
 pub fn awaken_runtime_contract::resume::validate_resume(&awaken_agent_contract::agent::awaiting::ResumeTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>
+pub mod awaken_runtime_contract::runs
+pub mod awaken_runtime_contract::runs::error
+#[non_exhaustive] pub enum awaken_runtime_contract::runs::error::RunErrorClassification
+pub awaken_runtime_contract::runs::error::RunErrorClassification::Conflict
+pub awaken_runtime_contract::runs::error::RunErrorClassification::Internal
+pub awaken_runtime_contract::runs::error::RunErrorClassification::InvalidRequest
+pub awaken_runtime_contract::runs::error::RunErrorClassification::NotFound
+pub awaken_runtime_contract::runs::error::RunErrorClassification::Unavailable
+pub awaken_runtime_contract::runs::error::RunErrorClassification::UnsupportedOutputModes
+pub enum awaken_runtime_contract::runs::error::RunErrorKind
+pub awaken_runtime_contract::runs::error::RunErrorKind::BadRequest
+pub awaken_runtime_contract::runs::error::RunErrorKind::Conflict
+pub awaken_runtime_contract::runs::error::RunErrorKind::Internal
+pub awaken_runtime_contract::runs::error::RunErrorKind::Unavailable
+pub struct awaken_runtime_contract::runs::error::RunError
+pub awaken_runtime_contract::runs::error::RunError::code: alloc::string::String
+pub awaken_runtime_contract::runs::error::RunError::kind: awaken_runtime_contract::runs::error::RunErrorKind
+pub awaken_runtime_contract::runs::error::RunError::message: alloc::string::String
+impl awaken_runtime_contract::runs::error::RunError
+pub fn awaken_runtime_contract::runs::error::RunError::bad_request(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::bad_request_classified(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::classification(&self) -> awaken_runtime_contract::runs::error::RunErrorClassification
+pub fn awaken_runtime_contract::runs::error::RunError::classified(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::conflict(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::conflict_classified(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::internal(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::is_unclassified_internal(&self) -> bool
+pub fn awaken_runtime_contract::runs::error::RunError::unavailable(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::unavailable_classified(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub const awaken_runtime_contract::runs::error::CONFLICT_CODE: &str
+pub const awaken_runtime_contract::runs::error::UNCLASSIFIED_INTERNAL_CODE: &str
+pub mod awaken_runtime_contract::runs::request
+pub enum awaken_runtime_contract::runs::request::OrgOperation
+pub awaken_runtime_contract::runs::request::OrgOperation::Create
+pub awaken_runtime_contract::runs::request::OrgOperation::Read
+pub struct awaken_runtime_contract::runs::request::OrgAdmissionDecision
+pub awaken_runtime_contract::runs::request::OrgAdmissionDecision::allowed: bool
+pub awaken_runtime_contract::runs::request::OrgAdmissionDecision::limit: u32
+pub awaken_runtime_contract::runs::request::OrgAdmissionDecision::remaining: u32
+pub awaken_runtime_contract::runs::request::OrgAdmissionDecision::reset_after: u64
+pub awaken_runtime_contract::runs::request::OrgAdmissionDecision::reset_at_unix_ms: u64
+pub awaken_runtime_contract::runs::request::OrgAdmissionDecision::retry_after: core::option::Option<u64>
+pub struct awaken_runtime_contract::runs::request::OrgAdmissionUnavailable
+pub awaken_runtime_contract::runs::request::OrgAdmissionUnavailable::message: alloc::string::String
+impl core::error::Error for awaken_runtime_contract::runs::request::OrgAdmissionUnavailable
+impl core::fmt::Display for awaken_runtime_contract::runs::request::OrgAdmissionUnavailable
+pub fn awaken_runtime_contract::runs::request::OrgAdmissionUnavailable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod awaken_runtime_contract::runs::scope
+pub struct awaken_runtime_contract::runs::scope::PresentedThreadId(pub alloc::string::String)
+pub struct awaken_runtime_contract::runs::scope::ResolvedAgentId(pub alloc::string::String)
+pub struct awaken_runtime_contract::runs::scope::ResolvedResourceId(pub alloc::string::String)
+pub struct awaken_runtime_contract::runs::scope::WorkspaceScope(pub alloc::string::String)
+impl awaken_runtime_contract::runs::scope::WorkspaceScope
+pub fn awaken_runtime_contract::runs::scope::WorkspaceScope::non_empty(&self) -> core::option::Option<&str>
+#[non_exhaustive] pub enum awaken_runtime_contract::runs::RunErrorClassification
+pub awaken_runtime_contract::runs::RunErrorClassification::Conflict
+pub awaken_runtime_contract::runs::RunErrorClassification::Internal
+pub awaken_runtime_contract::runs::RunErrorClassification::InvalidRequest
+pub awaken_runtime_contract::runs::RunErrorClassification::NotFound
+pub awaken_runtime_contract::runs::RunErrorClassification::Unavailable
+pub awaken_runtime_contract::runs::RunErrorClassification::UnsupportedOutputModes
+pub enum awaken_runtime_contract::runs::RunErrorKind
+pub awaken_runtime_contract::runs::RunErrorKind::BadRequest
+pub awaken_runtime_contract::runs::RunErrorKind::Conflict
+pub awaken_runtime_contract::runs::RunErrorKind::Internal
+pub awaken_runtime_contract::runs::RunErrorKind::Unavailable
+pub enum awaken_runtime_contract::runs::RunMode
+pub awaken_runtime_contract::runs::RunMode::Local
+pub awaken_runtime_contract::runs::RunMode::OwnerScoped(alloc::sync::Arc<dyn awaken_runtime_contract::runs::OwnedRuns>)
+impl awaken_runtime_contract::runs::RunMode
+pub async fn awaken_runtime_contract::runs::RunMode::on_stream_disconnect(&self, &dyn awaken_runtime_contract::runs::Runs, &str) -> core::result::Result<(), awaken_runtime_contract::runs::error::RunError>
+pub enum awaken_runtime_contract::runs::RunResume
+pub awaken_runtime_contract::runs::RunResume::ClientResult
+pub awaken_runtime_contract::runs::RunResume::ClientResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_runtime_contract::runs::RunResume::ClientResult::is_error: bool
+pub awaken_runtime_contract::runs::RunResume::Permission(awaken_agent_contract::agent::awaiting::PermissionDecision)
+pub struct awaken_runtime_contract::runs::DelegatedRun
+pub awaken_runtime_contract::runs::DelegatedRun::agent_id: alloc::string::String
+pub awaken_runtime_contract::runs::DelegatedRun::parent_call_id: alloc::string::String
+pub awaken_runtime_contract::runs::DelegatedRun::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_runtime_contract::runs::DelegatedRun::status: awaken_agent_contract::agent::delegation::DelegationStatus
+pub struct awaken_runtime_contract::runs::EventForwardingSink
+impl awaken_runtime_contract::runs::EventForwardingSink
+pub fn awaken_runtime_contract::runs::EventForwardingSink::new(impl core::ops::function::Fn(awaken_agent_contract::event::agent::AgentEvent) -> core::result::Result<(), awaken_agent_contract::stream::sink::Error> + core::marker::Send + core::marker::Sync + 'static) -> Self
+impl awaken_agent_contract::stream::sink::Sink for awaken_runtime_contract::runs::EventForwardingSink
+pub fn awaken_runtime_contract::runs::EventForwardingSink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_runtime_contract::runs::Pending
+pub awaken_runtime_contract::runs::Pending::client_executed: bool
+pub awaken_runtime_contract::runs::Pending::input: serde_json::value::Value
+pub awaken_runtime_contract::runs::Pending::name: alloc::string::String
+pub awaken_runtime_contract::runs::Pending::tool_use_id: alloc::string::String
+impl awaken_runtime_contract::runs::Pending
+pub fn awaken_runtime_contract::runs::Pending::from_await_target(&awaken_agent_contract::agent::awaiting::AwaitTarget) -> core::option::Option<Self>
+pub fn awaken_runtime_contract::runs::Pending::from_resume_ticket(&awaken_agent_contract::agent::awaiting::ResumeTicket) -> core::option::Option<Self>
+pub struct awaken_runtime_contract::runs::RunError
+pub awaken_runtime_contract::runs::RunError::code: alloc::string::String
+pub awaken_runtime_contract::runs::RunError::kind: awaken_runtime_contract::runs::error::RunErrorKind
+pub awaken_runtime_contract::runs::RunError::message: alloc::string::String
+impl awaken_runtime_contract::runs::error::RunError
+pub fn awaken_runtime_contract::runs::error::RunError::bad_request(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::bad_request_classified(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::classification(&self) -> awaken_runtime_contract::runs::error::RunErrorClassification
+pub fn awaken_runtime_contract::runs::error::RunError::classified(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::conflict(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::conflict_classified(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::internal(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::is_unclassified_internal(&self) -> bool
+pub fn awaken_runtime_contract::runs::error::RunError::unavailable(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::runs::error::RunError::unavailable_classified(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_runtime_contract::runs::StepOutcome
+pub awaken_runtime_contract::runs::StepOutcome::new_messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+impl awaken_runtime_contract::runs::StepOutcome
+pub fn awaken_runtime_contract::runs::StepOutcome::await_reason(&self) -> core::option::Option<&awaken_agent_contract::agent::awaiting::AwaitReason>
+pub fn awaken_runtime_contract::runs::StepOutcome::awaiting(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, core::option::Option<awaken_runtime_contract::runs::Pending>) -> Self
+pub fn awaken_runtime_contract::runs::StepOutcome::delegated_runs(&self) -> &[awaken_runtime_contract::runs::DelegatedRun]
+pub fn awaken_runtime_contract::runs::StepOutcome::ended(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_agent_contract::agent::run::EndCause) -> Self
+pub fn awaken_runtime_contract::runs::StepOutcome::failure(&self) -> core::option::Option<&awaken_agent_contract::agent::run::Failure>
+pub fn awaken_runtime_contract::runs::StepOutcome::pending(&self) -> core::option::Option<&awaken_runtime_contract::runs::Pending>
+pub fn awaken_runtime_contract::runs::StepOutcome::run_id(&self) -> core::option::Option<&awaken_agent_contract::agent::run::Id>
+pub fn awaken_runtime_contract::runs::StepOutcome::state(&self) -> &awaken_agent_contract::agent::run::RunState
+pub fn awaken_runtime_contract::runs::StepOutcome::terminal_event(&self) -> awaken_agent_contract::event::agent::Fact
+pub fn awaken_runtime_contract::runs::StepOutcome::with_await_reason(self, awaken_agent_contract::agent::awaiting::AwaitReason) -> Self
+pub fn awaken_runtime_contract::runs::StepOutcome::with_delegated_runs(self, alloc::vec::Vec<awaken_runtime_contract::runs::DelegatedRun>) -> Self
+pub fn awaken_runtime_contract::runs::StepOutcome::with_run_id(self, awaken_agent_contract::agent::run::Id) -> Self
+pub struct awaken_runtime_contract::runs::StopReceipt
+pub awaken_runtime_contract::runs::StopReceipt::id: alloc::string::String
+pub awaken_runtime_contract::runs::StopReceipt::thread_id: alloc::string::String
+impl awaken_runtime_contract::runs::StopReceipt
+pub fn awaken_runtime_contract::runs::StopReceipt::issue(&str) -> Self
+pub trait awaken_runtime_contract::runs::OwnedRuns: awaken_runtime_contract::runs::Runs
+pub fn awaken_runtime_contract::runs::OwnedRuns::resume_for_owner<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, &'life4 str, awaken_runtime_contract::runs::RunResume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::error::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
+pub fn awaken_runtime_contract::runs::OwnedRuns::resume_streaming_for_owner<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, &'life4 str, awaken_runtime_contract::runs::RunResume, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::error::RunError>> + core::marker::Send + 'async_trait)>> where Self: core::marker::Sync + 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
+pub fn awaken_runtime_contract::runs::OwnedRuns::run_streaming_for_owner<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::error::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub trait awaken_runtime_contract::runs::Runs: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::runs::Runs::history<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_runtime_contract::runs::error::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::runs::Runs::interrupt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::runs::error::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::runs::Runs::model(&self) -> alloc::string::String
+pub fn awaken_runtime_contract::runs::Runs::pending<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_runtime_contract::runs::Pending>, awaken_runtime_contract::runs::error::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::runs::Runs::resume<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, awaken_runtime_contract::runs::RunResume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::error::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_runtime_contract::runs::Runs::resume_streaming<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, awaken_runtime_contract::runs::RunResume, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::error::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_runtime_contract::runs::Runs::run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::error::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_contract::runs::Runs::run_streaming<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::error::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_contract::runs::Runs::stop<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::runs::StopReceipt, awaken_runtime_contract::runs::error::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::runs::Runs::usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(u64, u64), awaken_runtime_contract::runs::error::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::runs::blocks_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
+pub fn awaken_runtime_contract::runs::paginate_history<'a>(&'a [awaken_agent_contract::agent::message::Message], core::option::Option<&str>, core::option::Option<usize>) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, awaken_agent_contract::agent::message::Message>, awaken_agent_contract::page::UnknownCursor>
 pub mod awaken_runtime_contract::runtime_context
 pub enum awaken_runtime_contract::runtime_context::AttemptOwnershipError
 pub awaken_runtime_contract::runtime_context::AttemptOwnershipError::Lost

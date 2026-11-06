@@ -12,7 +12,7 @@ use awaken_agent_contract::event::{
     Delta, Fact, HistorySink, StreamTerminalDecision, StreamTerminalKind, ToolUseRef, Transcoder,
     decide_stream_terminal, fold_history, fold_messages,
 };
-use awaken_session_application_contract::{StepOutcome, blocks_text};
+use awaken_runtime_contract::runs::{StepOutcome, blocks_text};
 use serde_json::{Value, json};
 
 use crate::types::AgUiEvent;
@@ -504,7 +504,7 @@ mod tests {
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Failure};
-    use awaken_session_application_contract::Pending;
+    use awaken_runtime_contract::runs::Pending;
     use serde_json::json;
 
     #[test]

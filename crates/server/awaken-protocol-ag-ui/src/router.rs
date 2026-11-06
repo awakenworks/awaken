@@ -1,11 +1,11 @@
 // @formal surface requirement=protocol.ui_adapters.stream_projection
 // @formal reason: Static owner: AG-UI route, resume, and SSE anti-corruption mapping over the neutral
-// @formal reason: RunApplication port. Dynamic path: an AG-UI request is decoded into one Run or matching
+// @formal reason: Runs port. Dynamic path: an AG-UI request is decoded into one Run or matching
 // @formal reason: pending-tool resume and committed Runtime outcomes are projected back to the protocol
 // @formal reason: stream; Runtime remains the lifecycle and permission authority. Evidence:
 // @formal reason: protocol.ui_adapters.stream_projection and AG-UI router and streaming tests; this is a
 // @formal reason: product-requirement classification, not a direct proof claim.
-//! The axum router: AG-UI routes over a `RunApplication`. Handlers decode the
+//! The axum router: AG-UI routes over a `Runs`. Handlers decode the
 //! `RunAgentInput`, drive one turn or resume through the port, and project the
 //! committed step into an AG-UI SSE event stream.
 
@@ -31,19 +31,20 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_api_contract::CursorPage;
-use awaken_session_application_contract::{
-    EventForwardingSink, OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError,
-    RunMode, RunResume, StepOutcome, paginate_history,
+use awaken_runtime_contract::runs::scope::{
+    PresentedThreadId, ResolvedAgentId, ResolvedResourceId, WorkspaceScope,
 };
-use awaken_session_types::RunErrorKind;
-use awaken_tenancy::{PresentedThreadId, ResolvedAgentId, ResolvedResourceId, WorkspaceScope};
+use awaken_runtime_contract::runs::{
+    EventForwardingSink, OwnedRuns, Pending, RunError, RunErrorKind, RunMode, RunResume, Runs,
+    StepOutcome, paginate_history,
+};
 
 use crate::encoder::{AgUiEncoder, encode_history, encode_step};
 use crate::request::{ToolResultInput, process};
 use crate::types::{AgUiEvent, RunAgentInput};
 
-type Runtime = Arc<dyn RunApplication>;
-type ScopedRuntime = Arc<dyn OwnerScopedRunApplication>;
+type Runtime = Arc<dyn Runs>;
+type ScopedRuntime = Arc<dyn OwnedRuns>;
 type RuntimeState = (Runtime, RunMode);
 
 struct ThreadIds {
@@ -83,7 +84,7 @@ pub fn router(runtime: Runtime, local_workspace: String) -> Router {
 /// AG-UI wire and the Session Run lifecycle retain their one implementation.
 pub fn router_with_owner_scope<T>(runtime: Arc<T>) -> Router
 where
-    T: OwnerScopedRunApplication + 'static,
+    T: OwnedRuns + 'static,
 {
     let unscoped: Runtime = runtime.clone();
     let scoped: ScopedRuntime = runtime;
@@ -187,7 +188,7 @@ async fn interrupt_threaded(
         .map(|Extension(thread)| thread.0)
         .unwrap_or(thread_id);
     if thread.trim().is_empty() {
-        return query_error(RunApplicationError::bad_request("thread id is required"));
+        return query_error(RunError::bad_request("thread id is required"));
     }
     match rt.stop(&thread).await {
         Ok(receipt) => (StatusCode::ACCEPTED, Json(receipt)).into_response(),
@@ -245,7 +246,7 @@ async fn run(
             return sse_error(
                 &error_thread,
                 &error_run,
-                RunApplicationError::bad_request(error.to_string()),
+                RunError::bad_request(error.to_string()),
             );
         }
     };
@@ -378,16 +379,16 @@ async fn resume_step(
     operation_id: &str,
     thread: &str,
     tool_results: &[ToolResultInput],
-) -> Result<StepOutcome, RunApplicationError> {
+) -> Result<StepOutcome, RunError> {
     let pending = rt
         .pending(thread)
         .await?
-        .ok_or_else(|| RunApplicationError::bad_request("no awaiting run to resume"))?;
+        .ok_or_else(|| RunError::bad_request("no awaiting run to resume"))?;
     let result = tool_results
         .iter()
         .find(|r| r.tool_call_id == pending.tool_use_id)
         .ok_or_else(|| {
-            RunApplicationError::bad_request(format!(
+            RunError::bad_request(format!(
                 "no tool result matches the awaiting tool {}",
                 pending.tool_use_id
             ))
@@ -465,12 +466,7 @@ fn sse_response(events: Vec<AgUiEvent>) -> Response {
 
 /// The AG-UI error tail. When the run has not yet been bracketed live, it opens
 /// with `RUN_STARTED` first; when it already streamed, only `RUN_ERROR` is added.
-fn error_events(
-    thread: &str,
-    run_id: &str,
-    err: RunApplicationError,
-    started: bool,
-) -> Vec<AgUiEvent> {
+fn error_events(thread: &str, run_id: &str, err: RunError, started: bool) -> Vec<AgUiEvent> {
     let mut out = Vec::new();
     if !started {
         out.push(AgUiEvent::RunStarted {
@@ -483,11 +479,11 @@ fn error_events(
 }
 
 /// A run bracketed by `RUN_STARTED` / `RUN_ERROR` for a non-streaming failure.
-fn sse_error(thread: &str, run_id: &str, err: RunApplicationError) -> Response {
+fn sse_error(thread: &str, run_id: &str, err: RunError) -> Response {
     sse_response(error_events(thread, run_id, err, false))
 }
 
-fn query_error(error: RunApplicationError) -> Response {
+fn query_error(error: RunError) -> Response {
     let status = match error.kind {
         RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
         RunErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,

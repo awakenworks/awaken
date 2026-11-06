@@ -5,9 +5,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
-};
+use awaken_runtime_contract::runs::{Pending, RunError, RunResume, Runs, StepOutcome};
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Request, StatusCode};
 use serde_json::Value;
@@ -20,14 +18,14 @@ struct PersistedRuntime {
 }
 
 #[async_trait::async_trait]
-impl RunApplication for PersistedRuntime {
+impl Runs for PersistedRuntime {
     async fn run(
         &self,
         _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("history tests never drive a run")
     }
 
@@ -37,17 +35,17 @@ impl RunApplication for PersistedRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<StepOutcome, RunError> {
         unreachable!("history tests never resume")
     }
 
-    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
     }
 
-    async fn history(&self, thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+    async fn history(&self, thread: &str) -> Result<Vec<Message>, RunError> {
         if self.unavailable {
-            return Err(RunApplicationError::unavailable("history store offline"));
+            return Err(RunError::unavailable("history store offline"));
         }
         Ok(if thread == self.thread {
             self.messages.clone()

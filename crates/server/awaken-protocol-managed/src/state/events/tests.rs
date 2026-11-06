@@ -45,10 +45,10 @@ use awaken_managed_session_events::{
     budget_reach_close_cursor, budget_reach_projection_close_cursor,
     message_projection_ordinal_bound,
 };
-use awaken_session_application_contract::Pending;
+use awaken_runtime_contract::runs::{Pending, RunError};
+
 use awaken_session_execution_contract::OutcomeIteration;
 use awaken_session_execution_contract::SessionRuns;
-use awaken_session_types::RunError;
 use awaken_tool_contract::tool_batch::ToolBatch;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -1331,7 +1331,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
                 "IR6 closed winner remains closed: {actual:?}"
             ),
             "absent" => assert!(
-                matches!(actual, Err(StateError::Run(ref error)) if error.message == "scripted cold recovery snapshot failure" && error.code == "unavailable" && error.kind == awaken_session_types::RunErrorKind::Unavailable),
+                matches!(actual, Err(StateError::Run(ref error)) if error.message == "scripted cold recovery snapshot failure" && error.code == "unavailable" && error.kind == awaken_runtime_contract::runs::RunErrorKind::Unavailable),
                 "IR7 absent retains original failure: {actual:?}"
             ),
             _ => unreachable!(),
@@ -1866,9 +1866,11 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
     // The ownership guard is fail-closed: an unstamped request is refused
     // before the handler, so this fixture supplies the edge stamp the
     // composition root would have installed.
-    let app = crate::router(state.clone()).layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-        awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
-    )));
+    let app = crate::router(state.clone()).layer(axum::Extension(
+        awaken_runtime_contract::runs::scope::WorkspaceScope(
+            awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
+        ),
+    ));
     let response = app
         .clone()
         .oneshot(
@@ -3900,7 +3902,9 @@ async fn cross_replica_pagination_never_rejects_a_cursor_using_an_older_prefix()
             format!("/v1/sessions/{}/events", session.id)
         };
         let app = crate::router(lagging.clone()).layer(axum::Extension(
-            awaken_tenancy::WorkspaceScope(awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string()),
+            awaken_runtime_contract::runs::scope::WorkspaceScope(
+                awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
+            ),
         ));
         let padded_old_cursor = format!("%20{}%20", old.events[0].id);
         for (rule, cursor, changes, expected) in [

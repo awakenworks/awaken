@@ -430,7 +430,7 @@ pub trait DispatchCommitAuthority: Send + Sync {
 /// ```compile_fail,E0308
 /// use awaken_agent_contract::RunId;
 /// use awaken_dispatch_contract::{DispatchOutcome, DispatchSettlement};
-/// use awaken_session_application_contract::SessionWorkGrant;
+/// use awaken_session_application_contract::{SessionWorkGrant};
 /// fn work_epoch_cannot_settle_dispatch(dispatch: &dyn DispatchSettlement, run: &RunId, work: &SessionWorkGrant) {
 ///     let pending = dispatch.settle(run, work.epoch(), DispatchOutcome::Done, &[]);
 ///     drop(pending);

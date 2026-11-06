@@ -38,10 +38,7 @@ impl crate::terminal_effects::TerminalEffects {
             ) -> DF
             + Send,
         DF: std::future::Future<
-                Output = Result<
-                    Vec<awaken_session_application_contract::DelegatedRun>,
-                    RealizationError,
-                >,
+                Output = Result<Vec<awaken_runtime_contract::runs::DelegatedRun>, RealizationError>,
             > + Send,
         B: FnOnce(String, String) -> BF + Send,
         BF: std::future::Future<Output = bool> + Send,

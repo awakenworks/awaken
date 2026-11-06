@@ -63,9 +63,9 @@ async fn native_and_acp_session_creates_share_the_organization_bucket() {
             OrgAdmissionEdge::new(limiter, MANAGED_ORG_ADMISSION),
             admit_by_org_bucket,
         ))
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            "workspace_shared".into(),
-        )));
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("workspace_shared".into()),
+        ));
     for (rule, agent) in [("N1", "native:claude"), ("N2", "acp:claude-code")] {
         let response = app
             .clone()
@@ -135,9 +135,9 @@ async fn application_access_mint_uses_the_existing_create_bucket() {
             OrgAdmissionEdge::new(limiter, MANAGED_ORG_ADMISSION),
             admit_by_org_bucket,
         ))
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            "workspace_application".into(),
-        )));
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("workspace_application".into()),
+        ));
 
     let mint = app
         .clone()

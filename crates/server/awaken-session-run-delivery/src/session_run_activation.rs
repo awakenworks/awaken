@@ -12,8 +12,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::{SessionRunReservationActivation, SessionRunReservations as _};
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_dispatch_execution::DispatchPublication;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_execution_contract::{SessionRunActivation, SessionRunDelivery};
-use awaken_session_types::RunError;
 
 use crate::SessionCommit;
 

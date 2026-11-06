@@ -3,7 +3,7 @@
 
 use awaken_protocol_managed::repositories_router;
 use awaken_resource_contract::{RepositoryCredentialValidator, ResourceRegistryError};
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::{
     Router,
     body::Body,

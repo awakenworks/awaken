@@ -315,7 +315,7 @@ async fn run_prepared_session_messages(
     agent: &str,
     thread: &str,
     messages: Vec<Message>,
-) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError> {
+) -> Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::RunError> {
     managed
         .realization_executor
         .validate_thread_resource_bindings(thread)
@@ -332,7 +332,7 @@ async fn run_prepared_session(
     agent: &str,
     thread: &str,
     content: Vec<ContentBlock>,
-) -> Result<awaken_session_application_contract::StepOutcome, awaken_session_types::RunError> {
+) -> Result<awaken_runtime_contract::runs::StepOutcome, awaken_runtime_contract::runs::RunError> {
     run_prepared_session_messages(managed, agent, thread, vec![crate::user_message(content)]).await
 }
 
@@ -458,7 +458,7 @@ async fn install_pinned_managed_skill_session(
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
     version: &awaken_skill_store::SkillVersion,
     seed_version: bool,
-) -> Result<(), awaken_session_types::RunError> {
+) -> Result<(), awaken_runtime_contract::runs::RunError> {
     install_pinned_managed_skill_session_with_tools(
         host,
         managed,
@@ -484,7 +484,7 @@ async fn install_pinned_managed_skill_session_with_tools(
     seed_version: bool,
     tools: Option<awaken_session_configuration_contract::SessionToolConfiguration>,
     system_prompt: awaken_session_configuration_contract::SessionSystemPromptSelection,
-) -> Result<(), awaken_session_types::RunError> {
+) -> Result<(), awaken_runtime_contract::runs::RunError> {
     let workspace = host.run_assembly.local_workspace().to_string();
     if seed_version {
         host.capabilities
@@ -540,8 +540,8 @@ fn pinned_skill_resources(
 /// accidentally become a second coordination implementation.
 struct RejectingSessionAgentCoordination;
 
-fn reject_environment_test_coordination<T>() -> Result<T, awaken_session_types::RunError> {
-    Err(awaken_session_types::RunError::internal(
+fn reject_environment_test_coordination<T>() -> Result<T, awaken_runtime_contract::runs::RunError> {
+    Err(awaken_runtime_contract::runs::RunError::internal(
         "environment test must not invoke Session coordination",
     ))
 }
@@ -558,7 +558,10 @@ impl awaken_session_execution_contract::SessionAgentCoordination
         _agent: &str,
         _run: &awaken_agent_contract::agent::run::Id,
         _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
-    ) -> Result<Option<awaken_session_types::SessionRevision>, awaken_session_types::RunError> {
+    ) -> Result<
+        Option<awaken_session_types::SessionRevision>,
+        awaken_runtime_contract::runs::RunError,
+    > {
         reject_environment_test_coordination()
     }
 
@@ -572,7 +575,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination
         _preparation: awaken_session_execution_contract::PreparedSessionRunActivity,
     ) -> Result<
         awaken_session_execution_contract::SessionRunActivityAdmission,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         reject_environment_test_coordination()
     }
@@ -585,7 +588,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination
         _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
         awaken_session_execution_contract::SessionRunActivityAdmission,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         reject_environment_test_coordination()
     }
@@ -595,7 +598,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination
         _session_id: &SessionId,
         _thread_id: &awaken_agent_contract::agent::thread::Id,
         _run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<bool, awaken_session_types::RunError> {
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         Ok(true)
     }
 
@@ -604,7 +607,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination
         _session_id: &SessionId,
     ) -> Result<
         Vec<awaken_session_execution_contract::SessionAgentRosterEntry>,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         reject_environment_test_coordination()
     }
@@ -614,7 +617,7 @@ impl awaken_session_execution_contract::SessionAgentCoordination
         _command: awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<
         awaken_session_execution_contract::SessionAgentMessageReceipt,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         reject_environment_test_coordination()
     }
@@ -622,14 +625,14 @@ impl awaken_session_execution_contract::SessionAgentCoordination
     async fn settle_session_agent_boundary(
         &self,
         _command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         reject_environment_test_coordination()
     }
 
     async fn finalize_session_agent_boundary(
         &self,
         _command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         reject_environment_test_coordination()
     }
 
@@ -637,14 +640,14 @@ impl awaken_session_execution_contract::SessionAgentCoordination
         &self,
         _session_id: &SessionId,
         _child_thread_id: &awaken_agent_contract::agent::thread::Id,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         reject_environment_test_coordination()
     }
 
     async fn reply_session_thread_tool(
         &self,
         _command: awaken_session_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         reject_environment_test_coordination()
     }
 }
@@ -1316,7 +1319,7 @@ async fn install_complete_test_session(
     thread: &str,
     init: awaken_session_configuration_contract::SessionInit,
     system_prompt: awaken_session_configuration_contract::SessionSystemPromptSelection,
-) -> Result<(), awaken_session_types::RunError> {
+) -> Result<(), awaken_runtime_contract::runs::RunError> {
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &*managed.run_assembly,
         thread,
@@ -1333,7 +1336,7 @@ trait CompleteTestSessionFixture {
         &self,
         thread: &str,
         init: awaken_session_configuration_contract::SessionInit,
-    ) -> Result<(), awaken_session_types::RunError>;
+    ) -> Result<(), awaken_runtime_contract::runs::RunError>;
 }
 
 #[async_trait::async_trait]
@@ -1342,7 +1345,7 @@ impl CompleteTestSessionFixture for Arc<crate::ExecutorComponents> {
         &self,
         thread: &str,
         init: awaken_session_configuration_contract::SessionInit,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         install_complete_test_session(
             self,
             thread,
@@ -1362,7 +1365,7 @@ async fn install_complete_test_session_for_realization(
     thread: &str,
     init: awaken_session_configuration_contract::SessionInit,
     system_prompt: awaken_session_configuration_contract::SessionSystemPromptSelection,
-) -> Result<(), awaken_session_types::RunError> {
+) -> Result<(), awaken_runtime_contract::runs::RunError> {
     managed
         .run_assembly
         .install_test_environment_binding_sink(Arc::new(BindingOrderSink {
@@ -1445,7 +1448,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Bindin
         intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_types::RunError,
+        awaken_runtime_contract::runs::RunError,
     > {
         self.authorize_calls.fetch_add(1, Ordering::SeqCst);
         if self
@@ -1459,10 +1462,12 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Bindin
                 },
             )
         } else if self.require_realization && intent.realization().is_none() {
-            Err(awaken_session_types::RunError::unavailable_classified(
-                "session_realization_stale",
-                "replacement realization is not installed",
-            ))
+            Err(
+                awaken_runtime_contract::runs::RunError::unavailable_classified(
+                    "session_realization_stale",
+                    "replacement realization is not installed",
+                ),
+            )
         } else {
             Ok(
                 awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized {
@@ -1475,8 +1480,10 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Bindin
     async fn persist(
         &self,
         receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentState,
+        awaken_runtime_contract::runs::RunError,
+    > {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let host = self.host.upgrade().expect("host remains live");
         self.observed_before_publish.store(
@@ -1489,7 +1496,7 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Bindin
             Ordering::SeqCst,
         );
         if self.fail {
-            Err(awaken_session_types::RunError::unavailable(
+            Err(awaken_runtime_contract::runs::RunError::unavailable(
                 "binding store unavailable",
             ))
         } else {

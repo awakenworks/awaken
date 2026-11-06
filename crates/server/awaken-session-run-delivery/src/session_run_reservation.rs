@@ -16,9 +16,9 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::{SessionRunReservationOutcome, SessionRunReservations};
 use awaken_dispatch_execution::session_dispatch::DispatchPreparation;
 use awaken_ext_skills::SkillRegistry;
+use awaken_runtime_contract::runs::RunError;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RunActivation};
 use awaken_session_execution_contract::{AdmitSessionRun, SessionRunReservation};
-use awaken_session_types::RunError;
 use awaken_worker_contract::PlacementRequirements;
 
 /// How long a reservation stays exclusive to the Session that reserved it

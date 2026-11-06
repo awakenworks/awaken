@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent};
-use awaken_session_application_contract::Pending;
+use awaken_runtime_contract::runs::Pending;
 use awaken_session_contract::PersistedSession;
 use awaken_session_contract::SessionUsage;
 

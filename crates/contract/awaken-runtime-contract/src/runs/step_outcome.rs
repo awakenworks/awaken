@@ -11,7 +11,18 @@
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 
-use crate::{DelegatedRun, Pending};
+use super::Pending;
+use awaken_agent_contract::agent::delegation::DelegationStatus;
+
+/// Stable child-Run relationship projected at a session boundary. Runtime owns
+/// the relationship; Managed and other adapters only render it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegatedRun {
+    pub run_id: RunId,
+    pub parent_call_id: String,
+    pub agent_id: String,
+    pub status: DelegationStatus,
+}
 
 /// The result of running one settled Step (a new Run, or a resume).
 ///

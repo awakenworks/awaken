@@ -218,8 +218,10 @@ impl SessionCommitSource for LocalAuthority {
     async fn open_for_read(
         &self,
         session: &str,
-    ) -> Result<Arc<awaken_session_run_delivery::SessionCommit>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Arc<awaken_session_run_delivery::SessionCommit>,
+        awaken_runtime_contract::runs::RunError,
+    > {
         awaken_session_run_delivery::AuthorityCommits::new(self.runtime.clone())
             .open_for_read(session)
             .await
@@ -228,7 +230,7 @@ impl SessionCommitSource for LocalAuthority {
     async fn durable_thread_exists(
         &self,
         thread: &str,
-    ) -> Result<bool, awaken_session_types::RunError> {
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         awaken_session_run_delivery::AuthorityCommits::new(self.runtime.clone())
             .durable_thread_exists(thread)
             .await
@@ -395,8 +397,10 @@ impl SessionCommitSource for UpstreamAuthority {
     async fn open_for_read(
         &self,
         _session: &str,
-    ) -> Result<Arc<awaken_session_run_delivery::SessionCommit>, awaken_session_types::RunError>
-    {
+    ) -> Result<
+        Arc<awaken_session_run_delivery::SessionCommit>,
+        awaken_runtime_contract::runs::RunError,
+    > {
         Ok(Arc::new(
             awaken_session_run_delivery::SessionCommit::Remote(
                 awaken_session_run_delivery::WorkerRecoveryCommit::new(),
@@ -407,7 +411,7 @@ impl SessionCommitSource for UpstreamAuthority {
     async fn durable_thread_exists(
         &self,
         _thread: &str,
-    ) -> Result<bool, awaken_session_types::RunError> {
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
         Ok(false)
     }
 }

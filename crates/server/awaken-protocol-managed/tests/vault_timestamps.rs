@@ -78,7 +78,9 @@ async fn call(
     let mut request = builder.body(body).unwrap();
     request
         .extensions_mut()
-        .insert(awaken_tenancy::WorkspaceScope("default".to_string()));
+        .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+            "default".to_string(),
+        ));
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -319,25 +321,26 @@ async fn idempotent_credential_replay_keeps_the_first_creation_instant() {
         "secret_value": "sk-replay", // awaken-allow(secret):
         "networking": { "type": "unrestricted" }
     });
-    let send = |app: Router, body: Value| {
-        let uri = uri.clone();
-        async move {
-            let mut request = Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("idempotency-key", "timestamps-replay")
-                .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                .unwrap();
-            request
-                .extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope("default".to_string()));
-            let response = app.oneshot(request).await.unwrap();
-            let status = response.status();
-            let bytes = response.into_body().collect().await.unwrap().to_bytes();
-            (status, serde_json::from_slice::<Value>(&bytes).unwrap())
-        }
-    };
+    let send =
+        |app: Router, body: Value| {
+            let uri = uri.clone();
+            async move {
+                let mut request = Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", "timestamps-replay")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap();
+                request.extensions_mut().insert(
+                    awaken_runtime_contract::runs::scope::WorkspaceScope("default".to_string()),
+                );
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+            }
+        };
     let (status, first) = send(h.app.clone(), body.clone()).await;
     assert_eq!(status, StatusCode::OK, "{first}");
     h.clock.set(LATER_MS);

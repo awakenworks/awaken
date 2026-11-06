@@ -197,9 +197,9 @@ impl<'a> DispatchPreparation<'a> {
                 self.publication_closure
                     .exact_source(&self.activation.snapshot, &publications, &workspace)
                     .map_err(|error| {
-                        AdmissionError::Run(awaken_session_types::RunError::unavailable(format!(
-                            "retained Agent execution publications are invalid: {error}"
-                        )))
+                        AdmissionError::Run(awaken_runtime_contract::runs::RunError::unavailable(
+                            format!("retained Agent execution publications are invalid: {error}"),
+                        ))
                     })?;
                 publications
             }

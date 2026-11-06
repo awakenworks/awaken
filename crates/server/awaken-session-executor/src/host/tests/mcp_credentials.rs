@@ -1730,10 +1730,10 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         async fn stage_mcp_attachment(
             &self,
             request: StageMcpAttachment,
-        ) -> Result<McpRealizationReceipt, awaken_session_types::RunError> {
+        ) -> Result<McpRealizationReceipt, awaken_runtime_contract::runs::RunError> {
             self.calls.lock().unwrap().push("stage");
             if self.fail_stage.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(awaken_session_types::RunError::classified(
+                return Err(awaken_runtime_contract::runs::RunError::classified(
                     "external_stage_rejected",
                     "external realizer rejected stage",
                 ));
@@ -1751,7 +1751,7 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         async fn publish_mcp_generation(
             &self,
             _generation: McpGenerationRef,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             self.calls.lock().unwrap().push("publish");
             Ok(())
         }
@@ -1759,7 +1759,7 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         async fn drain_mcp_generation(
             &self,
             _generation: McpGenerationRef,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             self.calls.lock().unwrap().push("drain");
             Ok(())
         }

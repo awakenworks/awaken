@@ -42,13 +42,13 @@ impl DeliveryLock {
     }
 }
 
-impl From<DeliveryLock> for awaken_session_types::RunError {
+impl From<DeliveryLock> for awaken_runtime_contract::runs::RunError {
     fn from(error: DeliveryLock) -> Self {
         Self::unavailable_classified(error.code(), error.to_string())
     }
 }
 
-impl From<crate::CompletionSignalClosed> for awaken_session_types::RunError {
+impl From<crate::CompletionSignalClosed> for awaken_runtime_contract::runs::RunError {
     fn from(error: crate::CompletionSignalClosed) -> Self {
         Self::internal(error.to_string())
     }
@@ -72,10 +72,10 @@ mod tests {
             DeliveryLock::StepProjections,
             DeliveryLock::OutcomeCommands,
         ] {
-            let run = awaken_session_types::RunError::from(lock);
+            let run = awaken_runtime_contract::runs::RunError::from(lock);
             assert_eq!(
                 run.kind,
-                awaken_session_types::RunErrorKind::Unavailable,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable,
                 "{lock}"
             );
             let expected = if lock == DeliveryLock::MemoryExecutionContext {

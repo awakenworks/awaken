@@ -1,8 +1,9 @@
 // @formal surface exclude=read_model_contract
 // @formal reason: Session-consumer vocabulary and a read-only scoped query port; grants no execution, recovery or closure authority.
 //! Operational observations consumed by the Session application boundary.
-use crate::{RunError, SessionId};
+use crate::SessionId;
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_runtime_contract::runs::RunError;
 use serde::{Deserialize, Serialize};
 
 /// Evidence only; terminal Run truth and delivery settlement remain separate.

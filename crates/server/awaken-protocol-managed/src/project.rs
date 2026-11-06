@@ -12,7 +12,7 @@
 
 use awaken_agent_contract::event::{Fact, Transcoder};
 use awaken_managed_session_events::{ToolUseFamily, TranscriptFold};
-use awaken_session_application_contract::Pending;
+use awaken_runtime_contract::runs::Pending;
 
 use crate::types::{EvaluatedPermission, OutboundKind, StopReason};
 use awaken_session_configuration_contract::{AgentCapabilities, CustomTool};

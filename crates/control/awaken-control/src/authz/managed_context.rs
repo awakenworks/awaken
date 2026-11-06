@@ -43,12 +43,12 @@ pub(crate) fn with_composed_workspace(router: Router, workspace: Option<String>)
             async move {
                 if request
                     .extensions()
-                    .get::<awaken_tenancy::WorkspaceScope>()
+                    .get::<awaken_runtime_contract::runs::scope::WorkspaceScope>()
                     .is_none()
                 {
-                    request
-                        .extensions_mut()
-                        .insert(awaken_tenancy::WorkspaceScope(workspace));
+                    request.extensions_mut().insert(
+                        awaken_runtime_contract::runs::scope::WorkspaceScope(workspace),
+                    );
                 }
                 next.run(request).await
             }
@@ -60,7 +60,7 @@ pub(crate) fn with_composed_workspace(router: Router, workspace: Option<String>)
 mod tests {
     use awaken_iam_contract::{AccountId, PrincipalRef};
     use awaken_resource_contract::MemoryActor;
-    use awaken_tenancy::WorkspaceScope;
+    use awaken_runtime_contract::runs::scope::WorkspaceScope;
     use axum::{
         Json, Router,
         body::{Body, to_bytes},

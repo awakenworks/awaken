@@ -533,7 +533,10 @@ fn a_repository_binding_conflict_projects_a_run_conflict() {
     });
     assert_eq!(error.disposition(), Disposition::Retry);
     let projected = RunError::from(error);
-    assert_eq!(projected.kind, awaken_session_types::RunErrorKind::Conflict);
+    assert_eq!(
+        projected.kind,
+        awaken_runtime_contract::runs::RunErrorKind::Conflict
+    );
     assert_eq!(projected.code, "conflict");
     assert_eq!(
         projected.message,

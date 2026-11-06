@@ -8,15 +8,17 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_runtime_contract::runs::{RunError, RunResume, StepOutcome};
+
+use awaken_session_application_contract::DelegatedRunSnapshot;
 use awaken_session_application_contract::LiveInboxError;
-use awaken_session_application_contract::{DelegatedRunSnapshot, RunResume, StepOutcome};
 use awaken_session_contract::SessionThreadToolReplyDelivery;
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, ChildRunCoordination, CoordinatedRunCommand,
     SessionAgentMessageReceipt, SessionAgentReportContinuation, SessionRunActivation,
     SessionRunDelivery, SessionRunReservation, SessionThreadLiveSubscription,
 };
-use awaken_session_types::{RunError, SessionId};
+use awaken_session_types::SessionId;
 
 use super::thread_runs::ThreadRun;
 use super::{SETTLED_RECONCILIATION_INTERVAL, WorkerPlacedSessions};
@@ -419,13 +421,13 @@ impl awaken_session_execution_contract::StreamingRuns for WorkerPlacedSessions {
     async fn pending_tool(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_application_contract::Pending>, RunError> {
+    ) -> Result<Option<awaken_runtime_contract::runs::Pending>, RunError> {
         self.ports.reads.pending_tool(thread).await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_application_contract::RunApplication for WorkerPlacedSessions {
+impl awaken_runtime_contract::runs::Runs for WorkerPlacedSessions {
     async fn run(
         &self,
         _operation_id: &str,
@@ -479,7 +481,7 @@ impl awaken_session_application_contract::RunApplication for WorkerPlacedSession
     async fn pending(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_application_contract::Pending>, RunError> {
+    ) -> Result<Option<awaken_runtime_contract::runs::Pending>, RunError> {
         self.ports.reads.pending_tool(thread).await
     }
 

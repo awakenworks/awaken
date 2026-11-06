@@ -1,10 +1,10 @@
 use super::*;
 use awaken_agent_contract::agent::run::EndCause;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_contract::SessionThreadToolReplyCommand;
 use awaken_session_execution_contract::{
     SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentRosterEntry,
 };
-use awaken_session_types::RunError;
 use std::sync::Mutex;
 
 #[derive(Debug, PartialEq)]

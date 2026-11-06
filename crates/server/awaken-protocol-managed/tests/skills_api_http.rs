@@ -9,7 +9,7 @@
 //! create content types, and the error arms.
 
 use awaken_protocol_managed::skills_router;
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

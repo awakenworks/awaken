@@ -68,10 +68,10 @@ pub fn map_admission_error(error: impl Into<crate::AdmissionError>) -> crate::Er
 }
 
 fn classified_run_error(
-    error: awaken_session_types::RunError,
+    error: awaken_runtime_contract::runs::RunError,
 ) -> awaken_runtime_contract::execution::Error {
     use awaken_runtime_contract::diagnostic::{RuntimeDiagnostic, RuntimeErrorKind};
-    use awaken_session_types::RunErrorKind;
+    use awaken_runtime_contract::runs::RunErrorKind;
     let kind = match error.kind {
         RunErrorKind::BadRequest => RuntimeErrorKind::InvalidRequest,
         RunErrorKind::Conflict => RuntimeErrorKind::Conflict,
@@ -158,11 +158,11 @@ fn a_deferral_is_due_no_later_than_its_owners_hint_or_the_backoff() {
 #[cfg(test)]
 mod retry_hint_tests {
     use super::*;
+    use awaken_runtime_contract::runs::RunError;
     use awaken_session_execution_contract::{
         ENVIRONMENT_PROVISIONING_CODE, SessionRealizationDriveError,
         SessionRealizationEffectFailure,
     };
-    use awaken_session_types::RunError;
     use std::time::Duration;
 
     #[test]

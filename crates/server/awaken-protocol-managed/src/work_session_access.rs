@@ -205,7 +205,9 @@ pub async fn work_session_guard(
         );
     }
     req.extensions_mut()
-        .insert(awaken_tenancy::WorkspaceScope(scope.workspace_id));
+        .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+            scope.workspace_id,
+        ));
     req.extensions_mut().insert(access);
     next.run(req).await
 }

@@ -489,9 +489,9 @@ mod tests {
             "Model A",
             "2024-01-01T00:00:00Z",
         )]))
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            "default".into(),
-        )));
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("default".into()),
+        ));
         for (rule, uri, capability, fallback) in [
             ("R1", "/v1/models", false, false),
             ("R2", "/v1/models", true, true),
@@ -532,9 +532,9 @@ mod tests {
             ModelEntry::new("b", "B", "2024-01-01T00:00:00Z"),
             ModelEntry::new("c", "C", "2024-01-01T00:00:00Z"),
         ]))
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            "default".into(),
-        )));
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("default".into()),
+        ));
         for (rule, uri, expected, has_more) in [
             ("R1", "/v1/models?limit=1", vec!["a"], true),
             ("R2", "/v1/models?after_id=a&limit=1", vec!["b"], true),
@@ -611,9 +611,9 @@ mod tests {
             ModelEntry::new("a", "A", "2024-01-01T00:00:00Z"),
             ModelEntry::new("b", "B", "2024-01-01T00:00:00Z"),
         ]))
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            "workspace-a".into(),
-        )));
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("workspace-a".into()),
+        ));
         for (surface, beta_query, header) in [
             ("GA", "", false),
             ("header-Beta", "", true),
@@ -695,7 +695,7 @@ mod tests {
         // an inactive filter cannot hide source failure or manufacture history.
         let inventory = Arc::new(UnavailableInventory::default());
         let app = models_router_with_inventory(inventory.clone()).layer(axum::Extension(
-            awaken_tenancy::WorkspaceScope("workspace-a".into()),
+            awaken_runtime_contract::runs::scope::WorkspaceScope("workspace-a".into()),
         ));
         for beta in ["", "&beta=true"] {
             for query in [
@@ -745,7 +745,7 @@ mod tests {
         let inventory = Arc::new(WorkspaceInventory::default());
         for workspace in ["a", "b"] {
             let app = models_router_with_inventory(inventory.clone()).layer(axum::Extension(
-                awaken_tenancy::WorkspaceScope(workspace.into()),
+                awaken_runtime_contract::runs::scope::WorkspaceScope(workspace.into()),
             ));
             for beta in [false, true] {
                 for path in [
@@ -802,9 +802,9 @@ mod tests {
             "Model A",
             "2024-01-01T00:00:00Z",
         )]))
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            "default".into(),
-        )));
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("default".into()),
+        ));
         let response = app
             .oneshot(
                 axum::http::Request::builder()
@@ -828,7 +828,9 @@ mod tests {
         // K1 fixed fixture models do not use this live source. Decision table:
         // D1 !C1+list=>E1; D2 !C1+retrieve=>E1.
         let app = models_router_with_inventory(Arc::new(UnavailableInventory::default())).layer(
-            axum::Extension(awaken_tenancy::WorkspaceScope("default".into())),
+            axum::Extension(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                "default".into(),
+            )),
         );
         for (rule, path) in [("D1", "/v1/models"), ("D2", "/v1/models/model-a")] {
             let response = app
@@ -860,9 +862,9 @@ mod tests {
                 first_published_at_unix_ms: Some(1_704_067_200_000),
             },
         ])))
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            "default".into(),
-        )));
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("default".into()),
+        ));
         for path in ["/v1/models", "/v1/models/model-a"] {
             let response = known
                 .clone()
@@ -891,9 +893,9 @@ mod tests {
                     first_published_at_unix_ms: time,
                 },
             ])))
-            .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-                "default".into(),
-            )));
+            .layer(axum::Extension(
+                awaken_runtime_contract::runs::scope::WorkspaceScope("default".into()),
+            ));
             for path in ["/v1/models", "/v1/models/model-a"] {
                 let response = unknown
                     .clone()
@@ -918,9 +920,9 @@ mod tests {
                 first_published_at_unix_ms: None,
             },
         ])))
-        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-            "default".into(),
-        )));
+        .layer(axum::Extension(
+            awaken_runtime_contract::runs::scope::WorkspaceScope("default".into()),
+        ));
         for (path, expected) in [
             ("/v1/models?limit=1", StatusCode::OK),
             ("/v1/models/model-a", StatusCode::OK),

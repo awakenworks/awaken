@@ -17,8 +17,8 @@ use std::sync::Arc;
 use crate::host::capability;
 
 // The existing Workspace and Agent read outcomes used by admission callbacks.
-type WorkspaceProjectionResult = Result<String, awaken_session_types::RunError>;
-type AgentProjectionResult = Result<Option<String>, awaken_session_types::RunError>;
+type WorkspaceProjectionResult = Result<String, awaken_runtime_contract::runs::RunError>;
+type AgentProjectionResult = Result<Option<String>, awaken_runtime_contract::runs::RunError>;
 
 /// Capability assembly for one process. Consumers: Session context assembly,
 /// child Run launching, claimed-Run admission and the Session application's
@@ -91,8 +91,10 @@ impl RunCapabilities {
         impl Fn(&str) -> WorkspaceProjectionResult + Send + Sync + 'static + use<>,
         impl Fn(&str) -> AgentProjectionResult + Send + Sync + 'static + use<>,
     ) {
-        fn unavailable() -> awaken_session_types::RunError {
-            awaken_session_types::RunError::unavailable("Session projection owner is unavailable")
+        fn unavailable() -> awaken_runtime_contract::runs::RunError {
+            awaken_runtime_contract::runs::RunError::unavailable(
+                "Session projection owner is unavailable",
+            )
         }
 
         let workspace_sessions = Arc::downgrade(&self.installed_sessions);
@@ -104,13 +106,13 @@ impl RunCapabilities {
                 sessions
                     .realizations()
                     .workspace(thread, &local_workspace)
-                    .map_err(awaken_session_types::RunError::from)
+                    .map_err(awaken_runtime_contract::runs::RunError::from)
             },
             move |thread| {
                 let sessions = agent_sessions.upgrade().ok_or_else(unavailable)?;
                 sessions
                     .agent_projection(thread)
-                    .map_err(awaken_session_types::RunError::from)
+                    .map_err(awaken_runtime_contract::runs::RunError::from)
             },
         )
     }

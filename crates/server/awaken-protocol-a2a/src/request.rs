@@ -9,7 +9,7 @@ use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::fresh_process_id;
-use awaken_session_application_contract::{Pending, RunApplicationError, RunResume};
+use awaken_runtime_contract::runs::{Pending, RunError, RunResume};
 use serde_json::Value;
 
 use crate::types::{Part, SendMessageRequest};
@@ -120,10 +120,10 @@ pub(crate) fn resume_for_pending(
     text: &str,
     approval: Option<&ApprovalDecision>,
     pending: &Pending,
-) -> Result<RunResume, RunApplicationError> {
+) -> Result<RunResume, RunError> {
     if pending.client_executed {
         if approval.is_some() {
-            return Err(RunApplicationError::bad_request(
+            return Err(RunError::bad_request(
                 "A2A tool-approval decision cannot answer a client-executed tool",
             ));
         }
@@ -136,10 +136,8 @@ pub(crate) fn resume_for_pending(
             Some(ApprovalDecision::Permission(decision)) => {
                 Ok(RunResume::Permission(decision.clone()))
             }
-            Some(ApprovalDecision::Invalid(message)) => {
-                Err(RunApplicationError::bad_request(message.clone()))
-            }
-            None => Err(RunApplicationError::bad_request(
+            Some(ApprovalDecision::Invalid(message)) => Err(RunError::bad_request(message.clone())),
+            None => Err(RunError::bad_request(
                 "A2A built-in tool approval requires a structured tool-approval DataPart",
             )),
         }

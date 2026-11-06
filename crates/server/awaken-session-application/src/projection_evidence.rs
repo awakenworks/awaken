@@ -19,6 +19,7 @@ use crate::agent_configuration::{
 };
 
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_contract::PersistedSession;
 use awaken_session_contract::{SessionEventBatch, SessionEventCommand};
 use awaken_session_execution_contract::{
@@ -27,7 +28,6 @@ use awaken_session_execution_contract::{
     outcome_terminal_commit_cursor, projection_validation_needs_trailing_root,
     same_thread_projection_prefix,
 };
-use awaken_session_types::RunError;
 
 use crate::{
     RecoveredSessionProjection, SessionMutationError, SessionProjectionReads,

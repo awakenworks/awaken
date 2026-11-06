@@ -7,7 +7,7 @@
 //! application, served by [`RunAssembly`]: the realization executor performs
 //! the effect, this component supplies the Session context facts around it.
 
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use super::RunAssembly;
 use crate::session_execution_error::to_run_error;

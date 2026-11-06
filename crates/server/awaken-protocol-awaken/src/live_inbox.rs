@@ -7,12 +7,12 @@ use std::sync::Arc;
 
 use crate::common::{ExtensionRejection, RequiredWorkspaceScope, extension_rejection};
 use awaken_agent_contract::agent::content::ContentBlock;
+#[cfg(test)]
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use awaken_session_application_contract::{
     LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot,
 };
-#[cfg(test)]
-use awaken_tenancy::WorkspaceScope;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, put};

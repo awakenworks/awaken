@@ -92,7 +92,12 @@ RULES = (
 # behaviour for an implementation that does not override it. An entry is a
 # decision someone made and can be argued with.
 DEGRADING_DEFAULT_EXEMPTIONS: dict[str, str] = {
-    "RunApplication::resume_streaming": (
+    "Runs::run_streaming": (
+        "Live observation is best effort; without a live producer the same Run "
+        "command settles and returns the authoritative outcome. AG-UI and AI SDK "
+        "streaming tests cover the committed-outcome fallback."
+    ),
+    "Runs::resume_streaming": (
         "Best-effort observation of the same authoritative resume mutation. "
         "Non-live engines return the committed outcome; the sole protocol encoder "
         "projects that outcome as its documented fallback. SessionRunApplication "
@@ -162,7 +167,7 @@ DEGRADING_DEFAULT_EXEMPTIONS: dict[str, str] = {
 # *new* instances today rather than only after the migration finishes — the
 # failure mode of a file allow-list, which freezes the debt and guards nothing.
 # Lower this number as instances are converted or registered; never raise it.
-UNTRIAGED_BASELINE = 12
+UNTRIAGED_BASELINE = 11
 DEGRADING_DEFAULT_RATCHET = {
     "owner": "chaizhenhua",
     "expires": "2026-12-31",

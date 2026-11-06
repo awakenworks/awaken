@@ -2,7 +2,7 @@
 // @formal owner crates/server/awaken-session-application/src/run_admission.rs
 // @formal reason: cfg(test) only; verifies failure classes and permanent versus transient effects at the application boundary.
 use super::*;
-use awaken_session_types::RunErrorKind;
+use awaken_runtime_contract::runs::RunErrorKind;
 
 #[test]
 fn admission_keeps_durable_failures_permanent_through_each_adapter() {

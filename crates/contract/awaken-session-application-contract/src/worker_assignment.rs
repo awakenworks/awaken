@@ -1,7 +1,8 @@
 // @formal surface obligation=session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal reason: Session-owned projection and lease ports carry only Session coordinates, never Environment queue rows.
 //! Required Session Worker assignment and lease observations.
-use awaken_session_types::{RunError, SessionId, SessionWorkLease};
+use awaken_runtime_contract::runs::RunError;
+use awaken_session_types::{SessionId, SessionWorkLease};
 
 /// Session lifecycle intent. Enqueue reconciles; wake requires new admitted
 /// work; retire follows the terminal fence. These operations never run a Worker.

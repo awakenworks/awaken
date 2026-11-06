@@ -548,8 +548,11 @@ async fn accepted_and_rejected_receipt_payload_mismatches_fail_closed_without_ad
     // closed through the shared hash checker as a known permanent authority
     // fault; no receipt is treated as absence and no activity/root write follows.
     // There is no copied key/hash compiler or transient retry classification.
-    let assert_corruption = |error: awaken_session_types::RunError| {
-        assert_eq!(error.kind, awaken_session_types::RunErrorKind::Internal);
+    let assert_corruption = |error: awaken_runtime_contract::runs::RunError| {
+        assert_eq!(
+            error.kind,
+            awaken_runtime_contract::runs::RunErrorKind::Internal
+        );
         assert_eq!(error.code, "session_application_invalid");
         assert!(!error.is_unclassified_internal());
     };

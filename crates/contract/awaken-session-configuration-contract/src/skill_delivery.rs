@@ -11,7 +11,7 @@
 
 use awaken_agent_contract::AgentSkillKind;
 use awaken_resource_contract::{SkillStoreError, SkillVersion, skill_stem};
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::RunError;
 
 use crate::{ResolvedSkillBinding, SkillBundleSource};
 
@@ -190,7 +190,7 @@ mod tests {
     use super::*;
     use crate::SkillBundleSourceError;
     use awaken_resource_contract::{SkillBundleFile, skill_bundle_sha256};
-    use awaken_session_types::RunErrorKind;
+    use awaken_runtime_contract::runs::RunErrorKind;
 
     fn version(skill_id: &str, body: &[u8]) -> SkillVersion {
         let files = vec![SkillBundleFile {

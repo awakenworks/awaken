@@ -427,7 +427,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     };
     assert_eq!(
         stale_error.kind,
-        awaken_session_types::RunErrorKind::Internal,
+        awaken_runtime_contract::runs::RunErrorKind::Internal,
         "R4 encoder rejection remains closed"
     );
     let mut foreign_input = input.clone();
@@ -449,7 +449,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     };
     assert_eq!(
         foreign_error.kind,
-        awaken_session_types::RunErrorKind::Internal,
+        awaken_runtime_contract::runs::RunErrorKind::Internal,
         "R5 encoder rejection remains closed"
     );
     assert_eq!(
@@ -475,7 +475,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     };
     assert_eq!(
         zero_error.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "R3 zero revision rejects at outer admission"
     );
     assert_eq!(
@@ -636,7 +636,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     };
     assert_eq!(
         failed.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
+        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
         "C7 original missing fence error"
     );
     assert_eq!(
@@ -783,7 +783,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     };
     assert_eq!(
         missing.kind,
-        awaken_session_types::RunErrorKind::Internal,
+        awaken_runtime_contract::runs::RunErrorKind::Internal,
         "R8 missing encoder"
     );
     assert_eq!(missing.code, "internal", "R8 original error classification");
@@ -2115,7 +2115,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                 .expect_err("M0 unavailable writable Memory must fail before source effects");
             assert_eq!(
                 error.kind,
-                awaken_session_types::RunErrorKind::Unavailable,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable,
                 "M0/E2",
             );
             assert_eq!(

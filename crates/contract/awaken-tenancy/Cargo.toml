@@ -15,6 +15,7 @@ authority = "tenancy"
 separation = "contract"
 
 [dependencies]
+awaken-runtime-contract.workspace = true
 awaken-agent-contract.workspace = true
 # The Org request-admission port (`org_admission::OrgRequestAdmission`).
 async-trait.workspace = true

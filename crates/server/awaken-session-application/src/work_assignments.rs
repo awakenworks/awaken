@@ -12,13 +12,14 @@
 
 use std::sync::Arc;
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_application_contract::{
     SessionWorkAcquisition, SessionWorkGrant, SessionWorkOwnership, SessionWorkerAssignment,
     SessionWorkerLeases,
 };
 use awaken_session_contract::SessionRepository;
 use awaken_session_contract::{PersistedSession, SessionRepositoryError};
-use awaken_session_types::{RunError, SessionId};
+use awaken_session_types::SessionId;
 use awaken_time::WallClockExt as _;
 
 use crate::recovery_scan::scan_recovery_candidates;

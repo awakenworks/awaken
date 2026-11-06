@@ -16,7 +16,8 @@ mod task_attention;
 use crate::SessionRootReads as _;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_session_application_contract::{Pending, RunResume, StepOutcome};
+use awaken_runtime_contract::runs::{Pending, RunError, RunResume, StepOutcome};
+
 use awaken_session_contract::{
     SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
     SessionThreadToolReplyDelivery,
@@ -30,7 +31,6 @@ use awaken_session_execution_contract::{
     session_agent_boundary_action, session_agent_report_text, session_agent_run_boundary,
     session_run_activity_operation_id,
 };
-use awaken_session_types::RunError;
 
 use std::sync::Arc;
 
@@ -222,10 +222,9 @@ impl SessionCoordination {
         activity_epoch: u64,
         result: &Result<T, RunError>,
     ) -> Result<(), RunError> {
-        if result
-            .as_ref()
-            .is_err_and(|error| error.kind == awaken_session_types::RunErrorKind::BadRequest)
-        {
+        if result.as_ref().is_err_and(|error| {
+            error.kind == awaken_runtime_contract::runs::RunErrorKind::BadRequest
+        }) {
             // A caller rejection proves the Runtime did not durably accept the
             // operation. Dependency/internal failures deliberately retain the
             // activity receipt: enqueue/delivery may have committed before its
@@ -518,7 +517,7 @@ impl SessionCoordination {
 
     /// Resume the primary Thread through the same exact-ticket, activity-transfer,
     /// durable Inbox path used by Managed Event replies, then observe the next
-    /// committed Step. This replaces the former inline `RunApplication::resume`
+    /// committed Step. This replaces the former inline `Runs::resume`
     /// execution path without introducing another resume state machine.
     pub async fn resume_session_run(
         &self,
@@ -658,7 +657,7 @@ fn activity_admission_result(
             session_activity_epoch,
         }),
         Err(error)
-            if error.kind == awaken_session_types::RunErrorKind::BadRequest
+            if error.kind == awaken_runtime_contract::runs::RunErrorKind::BadRequest
                 || error.code == "budget_reached" =>
         {
             Ok(SessionRunActivityAdmission::Rejected)

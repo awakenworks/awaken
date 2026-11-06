@@ -90,8 +90,8 @@ where
     ) -> Result<Self, Self::Rejection> {
         match parts
             .extensions
-            .get::<awaken_tenancy::WorkspaceScope>()
-            .and_then(awaken_tenancy::WorkspaceScope::non_empty)
+            .get::<awaken_runtime_contract::runs::scope::WorkspaceScope>()
+            .and_then(awaken_runtime_contract::runs::scope::WorkspaceScope::non_empty)
         {
             Some(workspace) => Ok(Self(workspace.to_owned())),
             None => Err((

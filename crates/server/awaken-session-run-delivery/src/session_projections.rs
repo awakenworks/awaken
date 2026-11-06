@@ -23,6 +23,7 @@ use awaken_dispatch_execution::session_dispatch::{
     DispatchAdmissionReads, InstalledDispatchInputs,
 };
 use awaken_runtime_contract::resolved::ResolvedModelCandidate;
+use awaken_runtime_contract::runs::RunError;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, PublishedAgentSnapshotSource};
 use awaken_session_configuration_contract::resource::SessionResourceManifest;
 use awaken_session_configuration_contract::{
@@ -31,7 +32,6 @@ use awaken_session_configuration_contract::{
 use awaken_session_execution_contract::{
     CanonicalSessionProjection, FrozenProjectionReceipt, FrozenSessionProjection,
 };
-use awaken_session_types::RunError;
 
 use crate::DeliveryLock;
 

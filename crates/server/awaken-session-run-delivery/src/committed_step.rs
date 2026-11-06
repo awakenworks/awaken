@@ -10,8 +10,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource as _};
-use awaken_session_application_contract::Pending;
-use awaken_session_types::RunError;
+use awaken_runtime_contract::runs::{Pending, RunError};
 
 use crate::{
     SessionCommit, ThreadEvent, ThreadEventHub, delegation_registry_from_snapshot,
@@ -37,7 +36,7 @@ pub struct CommittedStepReceipt {
     pub state: RunState,
     pub pending: Option<Pending>,
     pub await_reason: Option<AwaitReason>,
-    pub delegated_runs: Vec<awaken_session_application_contract::DelegatedRun>,
+    pub delegated_runs: Vec<awaken_runtime_contract::runs::DelegatedRun>,
     proof: CommittedStepProof,
 }
 
@@ -56,7 +55,7 @@ pub struct VerifiedStepProjection {
     pub state: RunState,
     pub pending: Option<Pending>,
     pub await_reason: Option<AwaitReason>,
-    pub delegated_runs: Vec<awaken_session_application_contract::DelegatedRun>,
+    pub delegated_runs: Vec<awaken_runtime_contract::runs::DelegatedRun>,
 }
 
 impl CommittedStepReceipt {

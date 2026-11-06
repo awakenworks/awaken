@@ -815,19 +815,19 @@ mod environment_renewal {
             _session_id: &awaken_session_types::SessionId,
             _worker_owner: &str,
             _acquisition: SessionWorkAcquisition,
-        ) -> Result<SessionWorkOwnership, awaken_session_types::RunError> {
+        ) -> Result<SessionWorkOwnership, awaken_runtime_contract::runs::RunError> {
             Ok(self.0.clone())
         }
         async fn release_session_work(
             &self,
             _lease: &SessionWorkGrant,
-        ) -> Result<bool, awaken_session_types::RunError> {
+        ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
             Ok(false)
         }
         async fn release_worker_session_work(
             &self,
             _worker_owner: &str,
-        ) -> Result<usize, awaken_session_types::RunError> {
+        ) -> Result<usize, awaken_runtime_contract::runs::RunError> {
             Ok(0)
         }
     }

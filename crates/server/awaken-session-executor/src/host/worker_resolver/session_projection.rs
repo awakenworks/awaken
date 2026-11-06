@@ -185,7 +185,7 @@ mod tests {
             request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
         ) -> Result<
             awaken_session_configuration_contract::mcp::McpRealizationReceipt,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             let first_stage = {
                 let mut calls = self.calls.lock().unwrap();
@@ -214,7 +214,7 @@ mod tests {
                     })
                 });
             if !resident {
-                return Err(awaken_session_types::RunError::classified(
+                return Err(awaken_runtime_contract::runs::RunError::classified(
                     "test_session_runtime_missing",
                     "MCP stage ran before the frozen Environment was resident",
                 ));
@@ -233,7 +233,7 @@ mod tests {
         async fn publish_mcp_generation(
             &self,
             _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             self.calls.lock().unwrap().push("publish");
             Ok(())
         }
@@ -241,7 +241,7 @@ mod tests {
         async fn drain_mcp_generation(
             &self,
             _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
-        ) -> Result<(), awaken_session_types::RunError> {
+        ) -> Result<(), awaken_runtime_contract::runs::RunError> {
             self.calls.lock().unwrap().push("drain");
             Ok(())
         }
@@ -314,7 +314,7 @@ mod tests {
             intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
         ) -> Result<
             awaken_session_contract::SessionEnvironmentEffectAuthorization,
-            awaken_session_types::RunError,
+            awaken_runtime_contract::runs::RunError,
         > {
             if let Some((_, delegate)) = &self.root_authority {
                 return delegate.authorize(intent).await;
@@ -339,7 +339,7 @@ mod tests {
                     Some(&transition_fingerprint),
                 )
                 .map_err(|error| {
-                    awaken_session_types::RunError::classified(
+                    awaken_runtime_contract::runs::RunError::classified(
                         "test_environment_effect_rejected",
                         error.to_string(),
                     )
@@ -349,8 +349,10 @@ mod tests {
         async fn persist(
             &self,
             receipt: awaken_session_contract::SessionEnvironmentReceipt,
-        ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_types::RunError>
-        {
+        ) -> Result<
+            awaken_session_contract::SessionEnvironmentState,
+            awaken_runtime_contract::runs::RunError,
+        > {
             // The recovery oracle counts Create/Adopt root receipts. Resource
             // reservations still commit below, but are a distinct effect kind.
             if !matches!(receipt.kind, awaken_session_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation { .. }) {
@@ -362,7 +364,7 @@ mod tests {
                 let template = self.projection.lock().unwrap().clone();
                 let projection = roots.read_projection(thread.as_str(), &template).await?;
                 if projection.environment != committed {
-                    return Err(awaken_session_types::RunError::unavailable(
+                    return Err(awaken_runtime_contract::runs::RunError::unavailable(
                         "Root advanced after its Environment receipt readback",
                     ));
                 }
@@ -633,7 +635,7 @@ mod tests {
             .acquire_realization_with(session_id.as_str(), |_| ())
             .await
             .map_err(|error| {
-                awaken_session_types::RunError::from(
+                awaken_runtime_contract::runs::RunError::from(
                     crate::realization_error::RealizationError::from(error),
                 )
             })?

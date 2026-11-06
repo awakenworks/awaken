@@ -24,7 +24,7 @@ pub trait McpInputHost: McpGenerationAuthority {
     fn active_mcp_projections(
         &self,
         session: &str,
-    ) -> Result<Vec<McpGenerationProjection>, awaken_session_types::RunError>;
+    ) -> Result<Vec<McpGenerationProjection>, awaken_runtime_contract::runs::RunError>;
 
     /// Cancel one exact durable Run; `false` when cancellation was not accepted.
     async fn cancel_durable_run(&self, session: &str, run_id: &str) -> bool;
@@ -60,7 +60,7 @@ struct SessionMcpInput {
 fn admitted_by_root(
     host: &dyn McpInputHost,
     bound: &McpGenerationRef,
-) -> Result<bool, awaken_session_types::RunError> {
+) -> Result<bool, awaken_runtime_contract::runs::RunError> {
     let projections = host.active_mcp_projections(bound.session_id().as_str())?;
     input_admitted(
         bound,
@@ -75,8 +75,8 @@ fn admitted_by_root(
 fn input_admitted<'a>(
     bound: &McpGenerationRef,
     visible: impl IntoIterator<Item = &'a McpGenerationRef>,
-    root: impl Fn(&McpGenerationRef) -> Result<Option<bool>, awaken_session_types::RunError>,
-) -> Result<bool, awaken_session_types::RunError> {
+    root: impl Fn(&McpGenerationRef) -> Result<Option<bool>, awaken_runtime_contract::runs::RunError>,
+) -> Result<bool, awaken_runtime_contract::runs::RunError> {
     for current in visible {
         // The canonical realization owner may extend the same lease without
         // reconnecting this stream: only a renewal of the bound fence (same
@@ -177,7 +177,9 @@ impl McpNotificationHandler for SessionMcpInput {
                 .await
             {
                 Ok(_) => return,
-                Err(error) if error.kind == awaken_session_types::RunErrorKind::BadRequest => {
+                Err(error)
+                    if error.kind == awaken_runtime_contract::runs::RunErrorKind::BadRequest =>
+                {
                     tracing::warn!(
                         code = "mcp_input_rejected",
                         "MCP input admission rejected; provider payload omitted"
@@ -390,10 +392,12 @@ mod tests {
         let renewed = phone_fence("s1", 200);
         let foreign = phone_fence("s2", 200);
         let poisoned = || {
-            Err(awaken_session_types::RunError::unavailable_classified(
-                "session_realization_lock_poisoned",
-                "installed Sessions lock poisoned",
-            ))
+            Err(
+                awaken_runtime_contract::runs::RunError::unavailable_classified(
+                    "session_realization_lock_poisoned",
+                    "installed Sessions lock poisoned",
+                ),
+            )
         };
         assert!(
             input_admitted(&bound, [&renewed], |_| Ok(Some(true))).unwrap(),
@@ -431,7 +435,7 @@ mod tests {
         fn mcp_generation_root_authority(
             &self,
             _generation: &McpGenerationRef,
-        ) -> Result<Option<bool>, awaken_session_types::RunError> {
+        ) -> Result<Option<bool>, awaken_runtime_contract::runs::RunError> {
             Ok(Some(true))
         }
     }
@@ -441,11 +445,13 @@ mod tests {
         fn active_mcp_projections(
             &self,
             _session: &str,
-        ) -> Result<Vec<McpGenerationProjection>, awaken_session_types::RunError> {
-            Err(awaken_session_types::RunError::unavailable_classified(
-                "session_realization_lock_poisoned",
-                "installed Sessions lock poisoned",
-            ))
+        ) -> Result<Vec<McpGenerationProjection>, awaken_runtime_contract::runs::RunError> {
+            Err(
+                awaken_runtime_contract::runs::RunError::unavailable_classified(
+                    "session_realization_lock_poisoned",
+                    "installed Sessions lock poisoned",
+                ),
+            )
         }
 
         async fn cancel_durable_run(&self, _session: &str, _run_id: &str) -> bool {

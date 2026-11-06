@@ -11,8 +11,9 @@ use awaken_executable_environment_contract::{
     EnvironmentImageBuildError, ExecutableEnvironmentRegistrationError, ResolvedSessionEnvironment,
     SessionEnvironmentProjectionSource,
 };
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_application_contract::{SessionWorkerAssignment, SessionWorkerLeases};
-use awaken_session_types::{RunError, SessionId, SessionWorkLease};
+use awaken_session_types::{SessionId, SessionWorkLease};
 
 #[derive(Default)]
 pub(super) struct UnusedEnvironmentPorts {

@@ -238,7 +238,9 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         .body(axum::body::Body::empty())
         .unwrap();
     read.extensions_mut()
-        .insert(awaken_tenancy::WorkspaceScope("workspace-a".into()));
+        .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+            "workspace-a".into(),
+        ));
     let response = awaken_protocol_managed::router(managed.clone())
         .oneshot(read)
         .await

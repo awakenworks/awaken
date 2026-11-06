@@ -4,7 +4,7 @@
 //! input files/HTTP, never command-line arguments or model calls.
 use awaken_credential_vault::{InMemorySecretStore, repo::InMemoryCredentialRepo};
 use awaken_protocol_managed::VaultState;
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::{
     Extension,
     extract::{Request, State},

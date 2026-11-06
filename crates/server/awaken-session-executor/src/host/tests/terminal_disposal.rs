@@ -457,7 +457,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         .expect_err("T4 retired generation fails closed");
     assert_eq!(
         replay_error.kind,
-        awaken_session_types::RunErrorKind::Unavailable
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable
     );
     let mut missing = awaken_session_contract::SessionCleanupOperation::default();
     assert!(missing.request(&awaken_session_types::SessionId::from("never-existed")));
@@ -498,7 +498,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         .expect_err("T4 unknown generation fails closed");
     assert_eq!(
         missing_error.kind,
-        awaken_session_types::RunErrorKind::Unavailable
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable
     );
 }
 

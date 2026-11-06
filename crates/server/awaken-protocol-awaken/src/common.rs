@@ -1,7 +1,7 @@
 // @formal surface requirement=protocol.adapters.adapter_projection
 // @formal reason: Existing native scope/error or route assembly projection, without a second Session or authorization owner.
 //! Common framing for Awaken-native JSON operations.
-use awaken_tenancy::WorkspaceScope;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::{
     Json,
     http::StatusCode,

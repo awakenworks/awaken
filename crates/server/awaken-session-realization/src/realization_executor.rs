@@ -159,7 +159,7 @@ impl RealizationExecutor {
         realization_lease: Option<
             &awaken_session_configuration_contract::resource::SessionRealizationLease,
         >,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.staging
             .apply_session_inputs_with_context(
                 self.peers(),
@@ -175,7 +175,7 @@ impl RealizationExecutor {
     pub async fn validate_thread_resource_bindings(
         &self,
         thread: &str,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.staging
             .validate_thread_resource_bindings(self.peers(), thread)
             .await
@@ -186,7 +186,7 @@ impl RealizationExecutor {
         &self,
         thread: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.staging
             .validate_prospective_session_layout(self.peers(), thread, layout)
     }
@@ -197,7 +197,7 @@ impl RealizationExecutor {
         thread: &str,
         manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest,
         claim: Option<&awaken_worker_contract::RunClaim>,
-    ) -> Result<(), awaken_session_types::RunError> {
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
         self.staging
             .install_dispatched_resources(self.peers(), thread, manifest, claim)
             .await

@@ -687,14 +687,14 @@ pub fn edge_stamped(inner: axum::Router) -> axum::Router {
         |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
             if request
                 .extensions()
-                .get::<awaken_tenancy::WorkspaceScope>()
+                .get::<awaken_runtime_contract::runs::scope::WorkspaceScope>()
                 .is_none()
             {
-                request
-                    .extensions_mut()
-                    .insert(awaken_tenancy::WorkspaceScope(
+                request.extensions_mut().insert(
+                    awaken_runtime_contract::runs::scope::WorkspaceScope(
                         awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
-                    ));
+                    ),
+                );
             }
             next.run(request).await
         },

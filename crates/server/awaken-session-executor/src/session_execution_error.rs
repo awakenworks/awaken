@@ -3,9 +3,9 @@
 //! failure enters it in exactly one place, `From<RealizationError>`, through
 //! the realization's own Run projection, so its disposition survives.
 
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_execution_contract::ApplicationError;
 use awaken_session_mcp::{McpError, McpErrorKind};
-use awaken_session_types::RunError;
 
 /// A Session execution failure classified by fault: `BadRequest` is the caller's (bad id,
 /// wrong binding, no await), `Internal` is the runtime's. Each adapter maps this
@@ -99,12 +99,18 @@ pub(crate) fn from_run_error(error: RunError) -> SessionExecutionError {
     SessionExecutionError {
         message: error.message,
         kind: match error.kind {
-            awaken_session_types::RunErrorKind::BadRequest => SessionExecutionErrorKind::BadRequest,
-            awaken_session_types::RunErrorKind::Internal => SessionExecutionErrorKind::Internal,
-            awaken_session_types::RunErrorKind::Unavailable => {
+            awaken_runtime_contract::runs::RunErrorKind::BadRequest => {
+                SessionExecutionErrorKind::BadRequest
+            }
+            awaken_runtime_contract::runs::RunErrorKind::Internal => {
+                SessionExecutionErrorKind::Internal
+            }
+            awaken_runtime_contract::runs::RunErrorKind::Unavailable => {
                 SessionExecutionErrorKind::Unavailable
             }
-            awaken_session_types::RunErrorKind::Conflict => SessionExecutionErrorKind::Conflict,
+            awaken_runtime_contract::runs::RunErrorKind::Conflict => {
+                SessionExecutionErrorKind::Conflict
+            }
         },
         code: error.code,
     }
@@ -250,7 +256,7 @@ mod tests {
         let run = RunError::from(lock);
         assert_eq!(
             run.kind,
-            awaken_session_types::RunErrorKind::Unavailable,
+            awaken_runtime_contract::runs::RunErrorKind::Unavailable,
             "{lock}"
         );
         assert_eq!(run.code, EXECUTOR_LOCK_POISONED_CODE, "{lock}");
@@ -270,7 +276,7 @@ mod tests {
             let run = to_run_error(host);
             assert_eq!(
                 run.kind,
-                awaken_session_types::RunErrorKind::Unavailable,
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable,
                 "D2"
             );
             assert_eq!(run.code, expected, "D2");
@@ -311,7 +317,10 @@ mod tests {
         // Conflict with the Host's code, and the inverse restores the Host's
         // Conflict, so every adapter answers 409 conflict.
         let projected = to_run_error(SessionExecutionError::conflict("raced"));
-        assert_eq!(projected.kind, awaken_session_types::RunErrorKind::Conflict);
+        assert_eq!(
+            projected.kind,
+            awaken_runtime_contract::runs::RunErrorKind::Conflict
+        );
         assert_eq!(projected.code, "conflict");
         let host = from_run_error(projected);
         assert_eq!(host.kind, SessionExecutionErrorKind::Conflict);

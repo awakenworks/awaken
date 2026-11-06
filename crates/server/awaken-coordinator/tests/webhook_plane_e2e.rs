@@ -16,8 +16,8 @@ use awaken_deployment_application::{
     DeploymentLaunchOutcome, DeploymentSchedule, DeploymentSeedEvent, DeploymentSessionLauncher,
 };
 use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
+use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use awaken_session_store::SqliteManagedSessionRepository;
-use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::verify;
 use axum::Router;
 use axum::body::Body;
