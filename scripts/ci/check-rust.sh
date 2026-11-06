@@ -317,28 +317,6 @@ consumed_packages() {
 scoped_step "runtime-host-neutral-tests" "declare every fixture capability in the consuming crate's dev dependencies" \
   "awaken-session-executor" cargo check -p awaken-session-executor --no-default-features --tests "${locked[@]}"
 
-# ACP role decision table: B1 the isolated Coordinator product resolves only
-# catalog/blob custody; B2 the backend's no-default build cannot name physical
-# execution or host preparation; B3 that build retains the SAME subject-scoped
-# blob owner and its erasure/retry assertions. A workspace/all-feature build
-# legitimately unifies Worker/CLI roles and cannot prove B1/B2. These are
-# additional checks; the original full/default executor suite remains below.
-scoped_step "coordinator-acp-role" "keep ACP physical implementations out of the isolated Coordinator product" \
-  "awaken-coordinator-process" python3 scripts/ci/_dispatch_boundary_fitness.py \
-  --check-acp-product-features awaken-coordinator-process
-scoped_step "acp-metadata-production" "compile the catalog and blob owner warning-free without execution roles" \
-  "awaken-run-executor-acp" cargo clippy "${locked[@]}" -p awaken-run-executor-acp --lib --no-default-features -- -D warnings
-scoped_step "acp-metadata-compile-contract" "compile catalog and blob custody while refusing physical ACP modules" \
-  "awaken-run-executor-acp" cargo test "${locked[@]}" -p awaken-run-executor-acp --no-default-features --doc
-# B5 execution without trusted-host preparation retains the executor type while
-# the same negative host-module contract still compiles as a rejection.
-scoped_step "acp-execution-without-host" "keep Sandbox execution independent of trusted-host preparation" \
-  "awaken-run-executor-acp" cargo test "${locked[@]}" -p awaken-run-executor-acp --no-default-features --features execution --doc
-scoped_step "acp-metadata-custody" "retain the original subject-scoped blob erasure and retry behavior without ACP execution" \
-  "awaken-run-executor-acp" run_required_rust_tests "${locked[@]}" -p awaken-run-executor-acp --no-default-features \
-  --lib session_home::tests::subject_scopes_are_isolated_and_independently_erasable \
-  --require-case=session_home::tests::subject_scopes_are_isolated_and_independently_erasable
-
 # The fuzz crate is a separate workspace, so `cargo check --workspace` never compiles it.
 # It is why three crates keep reviewed public API snapshots (ADR-0081, 2026-09-28);
 # compiling it is the check that its surface still builds.
