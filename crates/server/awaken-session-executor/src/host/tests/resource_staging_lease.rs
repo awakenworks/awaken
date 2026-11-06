@@ -1165,14 +1165,14 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
             .is_err(),
         "E2"
     );
-    let epoch = match awaken_session_execution_contract::session_realization_assignment(
+    let epoch = match awaken_session_contract::session_realization_assignment(
         Some(old.epoch),
         true,
         true,
         true,
         true,
     ) {
-        awaken_session_execution_contract::SessionRealizationAssignment::Assign { epoch } => epoch,
+        awaken_session_contract::SessionRealizationAssignment::Assign { epoch } => epoch,
         other => panic!("R2 requires a successor, got {other:?}"),
     };
     f.lease.epoch = epoch;

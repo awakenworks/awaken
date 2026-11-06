@@ -340,154 +340,31 @@ impl SessionRealizations {
         for attempt in 0..ROOT_CAS_ATTEMPTS {
             let (owner_scope, mut session) =
                 self.session_for_realization(&command.session_id).await?;
-            // Retained execution carries its original generation even when a
-            // later replacement is pending. Choose under this same root CAS;
-            // never stage a different generation and rely on Worker rejection.
-            let activate_pending_resources = match command.expected_resources.as_ref() {
-                None => true,
-                Some(expected) => {
-                    if expected.workspace_id != owner_scope {
-                        return Err(SessionRealizationControlFailure::Invalid(
-                            "claimed Resource Workspace does not match the Session".into(),
-                        ));
-                    }
-                    if session.resources.retained_generation(expected.revision)
-                        != Some(&expected.resources)
-                    {
-                        return Err(SessionRealizationControlFailure::Invalid(
-                            "claimed Resource generation is neither active nor pending".into(),
-                        ));
-                    }
-                    expected.revision != session.resources.active_revision()
+            let target = &command.target;
+            let decision = session.assignment().begin(
+                awaken_session_contract::SessionRealizationBeginRequest::new(
+                    &owner_scope,
+                    &target.owner,
+                    &target.runtime_incarnation,
+                    target.lease_expires_at_unix_ms,
+                    target.reassign_existing_lease,
+                    command.expected_resources.as_ref(),
+                ),
+                self.clock.now_ms(),
+            )?;
+            let (assigned, activate_pending_resources) = match decision {
+                awaken_session_contract::SessionRealizationBegin::Unchanged {
+                    activate_pending_resources,
+                } => {
+                    return self
+                        .next_action(owner_scope, &session, false, activate_pending_resources)
+                        .await;
                 }
+                awaken_session_contract::SessionRealizationBegin::Claimed {
+                    assigned,
+                    activate_pending_resources,
+                } => (assigned, activate_pending_resources),
             };
-            let now = self.clock.now_ms();
-            let existing_live = session
-                .realization
-                .as_ref()
-                .is_some_and(|lease| realization_lease_is_live_at(lease.expires_at_unix_ms, now));
-            let same_owner = session
-                .realization
-                .as_ref()
-                .is_some_and(|lease| lease.owner == command.target.owner);
-            let same_incarnation = session.realization.as_ref().is_some_and(|lease| {
-                lease.runtime_incarnation == command.target.runtime_incarnation
-            });
-            let assignment = awaken_session_execution_contract::session_realization_assignment(
-                session.realization.as_ref().map(|lease| lease.epoch),
-                existing_live,
-                same_owner,
-                same_incarnation,
-                command.target.reassign_existing_lease,
-            );
-            if assignment
-                == awaken_session_execution_contract::SessionRealizationAssignment::StaleOwnership
-            {
-                return Err(SessionRealizationControlFailure::StaleOwnership);
-            }
-            if assignment
-                == awaken_session_execution_contract::SessionRealizationAssignment::EpochExhausted
-            {
-                return Err(SessionRealizationControlFailure::Invalid(
-                    "Session realization lease epoch is exhausted".into(),
-                ));
-            }
-
-            let requested = session
-                .mcp
-                .attachments
-                .iter()
-                .filter(|attachment| attachment.state == McpAttachmentState::Requested)
-                .map(|attachment| attachment.generation.clone())
-                .collect::<Vec<_>>();
-            // One authenticated logical owner may immediately fence its prior
-            // process incarnation after restart. A different owner can do so
-            // only when the claim-authenticated topology edge explicitly asks
-            // Control to reassign this otherwise independent Session lease.
-            let needs_assignment = matches!(
-                assignment,
-                awaken_session_execution_contract::SessionRealizationAssignment::Assign { .. }
-            );
-            if !needs_assignment && requested.is_empty() {
-                return self
-                    .next_action(owner_scope, &session, false, activate_pending_resources)
-                    .await;
-            }
-
-            let lease =
-                if let awaken_session_execution_contract::SessionRealizationAssignment::Assign {
-                    epoch,
-                } = assignment
-                {
-                    SessionRealizationLease {
-                        owner: command.target.owner.clone(),
-                        runtime_incarnation: command.target.runtime_incarnation.clone(),
-                        epoch,
-                        expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
-                    }
-                } else {
-                    session
-                        .realization
-                        .clone()
-                        .expect("a live assignment was checked")
-                };
-            if activate_pending_resources && session.resources.pending.is_some() {
-                session.resources().start_attempt().map_err(unavailable)?;
-            }
-            let to_claim = if needs_assignment {
-                session
-                    .mcp
-                    .attachments
-                    .iter()
-                    .filter(|attachment| {
-                        matches!(
-                            attachment.state,
-                            McpAttachmentState::Requested
-                                | McpAttachmentState::Realizing
-                                | McpAttachmentState::Active
-                        )
-                    })
-                    .map(|attachment| attachment.generation.clone())
-                    .collect::<Vec<_>>()
-            } else {
-                requested
-            };
-            for generation in to_claim {
-                let realization_id = awaken_agent_contract::stable_fingerprint(&(
-                    &session.session_id,
-                    &generation,
-                    &lease.runtime_incarnation,
-                    lease.epoch,
-                ));
-                let claim = crate::session_mcp::McpRealizationClaim {
-                    realization_id,
-                    runtime_incarnation: lease.runtime_incarnation.clone(),
-                    lease_epoch: lease.epoch,
-                    lease_expires_at_unix_ms: lease.expires_at_unix_ms,
-                    stage_idempotency_key: format!(
-                        "stage:{}:{}:{}:{}",
-                        session.session_id,
-                        generation.attachment_id().0,
-                        generation.version(),
-                        lease.epoch
-                    ),
-                };
-                let result = if needs_assignment {
-                    session.mcp().claim_recovery(&generation, claim)
-                } else {
-                    session.mcp().claim_realization(&generation, claim)
-                };
-                result.map_err(unavailable)?;
-            }
-            let counted = needs_assignment
-                && matches!(
-                    session.execution,
-                    SessionExecutionState::Preparing | SessionExecutionState::Activating
-                );
-            session
-                .assignment()
-                .claim(lease, counted)
-                .map_err(unavailable)?;
             match self
                 .mutations
                 .commit_session_snapshot_with_outcome(
@@ -503,7 +380,7 @@ impl SessionRealizations {
                         .next_action(
                             owner_scope,
                             &commit.into_session(),
-                            needs_assignment,
+                            assigned,
                             activate_pending_resources,
                         )
                         .await;

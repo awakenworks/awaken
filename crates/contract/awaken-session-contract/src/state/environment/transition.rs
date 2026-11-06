@@ -411,8 +411,8 @@ const fn is_stale(facts: SessionEnvironmentFacts) -> bool {
     matches!(facts.lease, RealizationLeaseStanding::Stale)
 }
 
-/// session-application `session_for_realization`: terminal first, then the
-/// realization-effect gate.
+/// `SessionAssignmentOperations::begin` and session-application
+/// `session_for_realization`: terminal first, then the realization-effect gate.
 const fn begin_realization(facts: SessionEnvironmentFacts) -> Outcome {
     if !is_active(facts) {
         return Err(SessionEnvironmentRejection::Terminal);

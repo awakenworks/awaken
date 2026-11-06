@@ -276,42 +276,8 @@ impl SessionRealizationTarget {
     }
 }
 
-/// Assignment result for one atomically loaded Session realization fence.
-/// The aggregate applies the returned epoch in the same root-CAS commit that
-/// installs the owner; callers cannot mint or reinterpret an epoch themselves.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionRealizationAssignment {
-    Reuse,
-    Assign { epoch: u64 },
-    StaleOwnership,
-    EpochExhausted,
-}
-
-/// Closed owner/incarnation/epoch arbitration used by the real Session root
-/// mutation. `current_epoch` is `None` only when no fence has ever existed.
-#[must_use]
-pub const fn session_realization_assignment(
-    current_epoch: Option<u64>,
-    current_is_live: bool,
-    same_owner: bool,
-    same_runtime_incarnation: bool,
-    reassign_existing_lease: bool,
-) -> SessionRealizationAssignment {
-    if current_is_live && !same_owner && !reassign_existing_lease {
-        return SessionRealizationAssignment::StaleOwnership;
-    }
-    let needs_assignment = !current_is_live || !same_runtime_incarnation || reassign_existing_lease;
-    if !needs_assignment {
-        return SessionRealizationAssignment::Reuse;
-    }
-    match current_epoch {
-        None => SessionRealizationAssignment::Assign { epoch: 1 },
-        Some(epoch) => match epoch.checked_add(1) {
-            Some(epoch) => SessionRealizationAssignment::Assign { epoch },
-            None => SessionRealizationAssignment::EpochExhausted,
-        },
-    }
-}
+#[cfg(kani)]
+use awaken_session_contract::{SessionRealizationAssignment, session_realization_assignment};
 
 #[cfg(kani)]
 /// @obligation session_realization.concurrent_drivers_preserve_one_owner_fence
