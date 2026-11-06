@@ -63,7 +63,7 @@ pub use attempt_decorator::{
     WorkerApplicationCapabilities, WorkerApplicationDependencies,
 };
 use awaken_worker_contract::WorkerShutdown;
-pub use bootstrap::{WorkerDaemonConfig, WorkerUpstreamSecurity, worker_upstream};
+pub use bootstrap::{PodIdentity, WorkerDaemonConfig, WorkerUpstreamSecurity, worker_upstream};
 pub use credential_files::WorkerCredentialFileResolver;
 #[cfg(feature = "container-k8s")]
 pub use k8s_create_client::WorkerK8sCreateClient;

@@ -188,6 +188,11 @@ environment (the language for reaching an agent process in an environment, read 
 sandbox, dispatch, credentials and execution alike); `awaken-sandbox-fs` → storage
 (capability file-system infrastructure). `awaken-connection-plan` stays in dispatch:
 moving it to execution would add a sandbox → execution edge.
+*Note 2026-11-06: `awaken-connection-plan` moved to sandbox instead (its readers are the
+container sandboxes and the MCP protocol; protocols sit above sandbox, so no upward edge),
+`awaken-durable-projection` to storage (neutral projection mechanics), and
+`awaken-execution-composition` became an `apps` composition root (only the CLI, Worker and
+scenario-host roots link it). That cleared eleven `context-contract-seam` entries.*
 
 **Contexts are ordered.** Listing allowed context pairs does not stop cycles: the 70
 pairs seeded from the graph held 19 two-way pairs, and all eleven Platform contexts

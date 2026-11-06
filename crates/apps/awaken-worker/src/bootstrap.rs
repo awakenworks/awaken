@@ -8,16 +8,76 @@ use std::sync::Arc;
 use awaken_worker_transport_security::{WorkerBootstrap, WorkerBootstrapInput};
 use serde::Deserialize;
 
-// Cargo features are additive across consumers. A transport dependency can
-// parse Pod identities while this Worker lacks its Kubernetes integration.
+const POD_IDENTITY_UNAVAILABLE: &str =
+    "Pod-bound Worker transport requires the container-k8s build feature";
+
+/// The Worker's Pod-bound transport integration, selected once by the
+/// composition root and passed to configuration admission and upstream
+/// construction. `None` means this Worker was composed without Kubernetes
+/// identity support, so a Pod identity is refused before any projection I/O.
+/// The refusal is a value, not a `cfg`: a dependency that enables the
+/// transport's Kubernetes parser cannot reopen it.
+#[derive(Clone, Copy)]
+pub struct PodIdentity {
+    remote_upstream: PodRemoteUpstream,
+}
+
+/// Build the authenticated remote upstream from a Pod projection directory,
+/// the resolved Worker ID, the server URL and an optional private CA.
+type PodRemoteUpstream = fn(
+    &Path,
+    &str,
+    &str,
+    Option<&[u8]>,
+) -> Result<awaken_worker_transport_security::WorkerUpstream, String>;
+
+impl std::fmt::Debug for PodIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PodIdentity")
+    }
+}
+
+impl PodIdentity {
+    /// The integration this Worker build carries: Kubernetes projected tokens
+    /// with the `container-k8s` feature, otherwise none.
+    #[must_use]
+    pub fn installed() -> Option<Self> {
+        #[cfg(feature = "container-k8s")]
+        {
+            Some(Self {
+                remote_upstream: kubernetes_remote_upstream,
+            })
+        }
+        #[cfg(not(feature = "container-k8s"))]
+        {
+            None
+        }
+    }
+}
+
+#[cfg(feature = "container-k8s")]
+fn kubernetes_remote_upstream(
+    directory: &Path,
+    worker_id: &str,
+    server: &str,
+    server_ca_certificate: Option<&[u8]>,
+) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
+    let authorizer = awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer::from_projected_directory(directory)?;
+    if authorizer.pod().worker_id() != worker_id {
+        return Err("Worker Pod projection changed after bootstrap resolution".into());
+    }
+    authorizer.into_remote_upstream(server, server_ca_certificate)
+}
+
 // Admit the process-owned capability before projection I/O or publication of
 // a supposedly validated Worker configuration; parsing remains transport-owned.
 fn resolve_worker_bootstrap(
     input: WorkerBootstrapInput,
     data_dir: &Path,
+    pod_identity: Option<PodIdentity>,
 ) -> Result<WorkerBootstrap, String> {
-    if input.kubernetes_identity_directory.is_some() && !cfg!(feature = "container-k8s") {
-        return Err("Pod-bound Worker transport requires the container-k8s build feature".into());
+    if input.kubernetes_identity_directory.is_some() && pod_identity.is_none() {
+        return Err(POD_IDENTITY_UNAVAILABLE.into());
     }
     WorkerBootstrap::resolve(input, data_dir)
 }
@@ -34,12 +94,14 @@ pub enum WorkerUpstreamSecurity<'a> {
 /// The Worker's upstream to its Coordinator, built from its resolved
 /// bootstrap. One credential-loading boundary for standalone and embedded startup.
 /// Credential parsing and secure remote admission remain transport-owned.
-/// `clock` is the Worker process's one clock; its signed request
-/// assertions are stamped with it.
+/// `pod_identity` is the composition root's Pod integration (see
+/// [`PodIdentity`]). `clock` is the Worker process's one clock; its signed
+/// request assertions are stamped with it.
 pub fn worker_upstream(
     bootstrap: &WorkerBootstrap,
     server: impl Into<String>,
     security: WorkerUpstreamSecurity<'_>,
+    pod_identity: Option<PodIdentity>,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
     let server = server.into();
@@ -47,27 +109,14 @@ pub fn worker_upstream(
         if bootstrap.request_credential_file.is_some() {
             return Err("Worker cannot mix Pod-bound tokens and signing credentials".into());
         }
-        #[cfg(feature = "container-k8s")]
-        {
-            let authorizer = awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer::from_projected_directory(directory)?;
-            if authorizer.pod().worker_id() != bootstrap.worker_id {
-                return Err("Worker Pod projection changed after bootstrap resolution".into());
-            }
-            let ca = match security {
-                WorkerUpstreamSecurity::Local => None,
-                WorkerUpstreamSecurity::Remote {
-                    server_ca_certificate,
-                } => server_ca_certificate,
-            };
-            return authorizer.into_remote_upstream(&server, ca);
-        }
-        #[cfg(not(feature = "container-k8s"))]
-        {
-            let _ = directory;
-            return Err(
-                "Pod-bound Worker transport requires the container-k8s build feature".into(),
-            );
-        }
+        let pod_identity = pod_identity.ok_or(POD_IDENTITY_UNAVAILABLE)?;
+        let ca = match security {
+            WorkerUpstreamSecurity::Local => None,
+            WorkerUpstreamSecurity::Remote {
+                server_ca_certificate,
+            } => server_ca_certificate,
+        };
+        return (pod_identity.remote_upstream)(directory, &bootstrap.worker_id, &server, ca);
     }
     use awaken_worker_transport_security::{
         WorkerUpstream, parse_projected_signing_credentials, projected_request_authorizer,
@@ -173,10 +222,15 @@ pub struct WorkerDaemonConfig {
     pub worker: WorkerBootstrap,
     runtime: awaken_deployment_config::DeploymentConfig,
     local_credential_bindings_file: Option<PathBuf>,
+    pod_identity: Option<PodIdentity>,
 }
 
 impl WorkerDaemonConfig {
-    pub fn load(path: &Path, server_override: Option<String>) -> Result<Self, String> {
+    pub fn load(
+        path: &Path,
+        server_override: Option<String>,
+        pod_identity: Option<PodIdentity>,
+    ) -> Result<Self, String> {
         let source = std::fs::read_to_string(path)
             .map_err(|error| format!("read Worker config {}: {error}", path.display()))?;
         let file: WorkerFileConfig = toml::from_str(&source)
@@ -219,6 +273,7 @@ impl WorkerDaemonConfig {
                 credential_observation_ttl_secs: file.worker_credential_observation_ttl_secs,
             },
             &data_dir,
+            pod_identity,
         )?;
         let mut runtime = awaken_deployment_config::DeploymentConfig::ephemeral();
         // `data_dir` is the standalone Worker's installation-stable root. The
@@ -301,6 +356,7 @@ impl WorkerDaemonConfig {
             worker,
             runtime,
             local_credential_bindings_file: file.worker_local_credential_bindings_file,
+            pod_identity,
         })
     }
 
@@ -358,6 +414,7 @@ impl WorkerDaemonConfig {
             WorkerUpstreamSecurity::Remote {
                 server_ca_certificate: certificate.as_deref(),
             },
+            self.pod_identity,
             clock.clone(),
         )?;
 
@@ -484,7 +541,7 @@ mod tests {
                 source.push_str(&format!("k8s_image_prewarm={policy}\n"));
             }
             std::fs::write(&path, source).unwrap();
-            let result = WorkerDaemonConfig::load(&path, None);
+            let result = WorkerDaemonConfig::load(&path, None, None);
             assert_eq!(result.is_ok(), accepts, "{tier}/{policy:?}");
             if let Ok(config) = result {
                 assert_eq!(
@@ -518,7 +575,7 @@ mod tests {
                 format!("worker_server='http://coordinator'\n{authored}\n"),
             )
             .unwrap();
-            let result = WorkerDaemonConfig::load(&path, None);
+            let result = WorkerDaemonConfig::load(&path, None, None);
             match expected {
                 Some(filter) => assert_eq!(
                     result.unwrap().observability,
@@ -536,21 +593,28 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "container-k8s")]
     #[test]
     fn pod_bootstrap_freezes_projected_identity_and_never_falls_back_to_signing() {
-        // P1 supported feature + complete projection => derive exact Worker ID
-        // and use the existing HTTPS upstream with a rotating Pod bearer. P2
-        // unsupported feature/missing metadata/mismatched authored ID => reject.
-        // P3 signer and Pod token together => reject even after public config
-        // mutation. P4 metadata replacement after resolve => reject; rotating
-        // token alone remains supported by the transport's own decision table.
+        // P1 installed integration + complete projection => derive exact Worker
+        // ID and use the existing HTTPS upstream with a rotating Pod bearer. P2
+        // missing metadata/mismatched authored ID => reject. P3 signer and Pod
+        // token together => reject even after public config mutation. P4
+        // metadata replacement after resolve => reject; rotating token alone
+        // remains supported by the transport's own decision table. The absent
+        // integration is the plain unit test below.
+        let pod = PodIdentity::installed();
+        assert!(
+            pod.is_some(),
+            "the container-k8s Worker carries its Pod integration"
+        );
         let directory = tempfile::tempdir().unwrap();
         let input = || WorkerBootstrapInput {
             kubernetes_identity_directory: Some(directory.path().into()),
             ..Default::default()
         };
         assert!(
-            resolve_worker_bootstrap(input(), directory.path()).is_err(),
+            resolve_worker_bootstrap(input(), directory.path(), pod).is_err(),
             "P2 missing"
         );
         for (name, value) in [
@@ -573,112 +637,97 @@ mod tests {
             ),
         )
         .unwrap();
-        let loaded = WorkerDaemonConfig::load(&config_path, None);
+        let loaded = WorkerDaemonConfig::load(&config_path, None, pod).expect("P5");
+        assert_eq!(loaded.worker.worker_id, "k8s:workers:worker-a:uid-a", "P5");
         assert_eq!(
-            loaded.is_ok(),
-            cfg!(feature = "container-k8s"),
-            "P5 {loaded:?}"
+            loaded.worker.kubernetes_identity_directory.as_deref(),
+            Some(directory.path()),
+            "P5"
         );
-        #[cfg(feature = "container-k8s")]
-        {
-            let loaded = loaded.unwrap();
-            assert_eq!(loaded.worker.worker_id, "k8s:workers:worker-a:uid-a", "P5");
-            assert_eq!(
-                loaded.worker.kubernetes_identity_directory.as_deref(),
-                Some(directory.path()),
-                "P5"
-            );
-        }
-        let resolved = resolve_worker_bootstrap(input(), directory.path());
+        let mut worker = resolve_worker_bootstrap(input(), directory.path(), pod).expect("P1");
+        assert_eq!(worker.worker_id, "k8s:workers:worker-a:uid-a");
+        let upstream = worker_upstream(
+            &worker,
+            "https://coordinator",
+            WorkerUpstreamSecurity::Local,
+            pod,
+            awaken_time::system_clock(),
+        )
+        .unwrap();
+        let request = upstream
+            .authorize_request(
+                "POST",
+                "/v1/worker/register",
+                upstream
+                    .client()
+                    .post("https://coordinator/v1/worker/register"),
+            )
+            .unwrap()
+            .build()
+            .unwrap();
         assert_eq!(
-            resolved.is_ok(),
-            cfg!(feature = "container-k8s"),
-            "P1/P2 feature"
+            request.headers()["authorization"],
+            "Bearer fixture-token",
+            "P1"
         );
-        #[cfg(feature = "container-k8s")]
-        {
-            let mut worker = resolved.unwrap();
-            assert_eq!(worker.worker_id, "k8s:workers:worker-a:uid-a");
-            let upstream = worker_upstream(
+        assert!(
+            worker_upstream(
+                &worker,
+                "http://coordinator",
+                WorkerUpstreamSecurity::Local,
+                pod,
+                awaken_time::system_clock()
+            )
+            .is_err(),
+            "P1 still HTTPS"
+        );
+        let mut mismatch = input();
+        mismatch.worker_id = Some("foreign".into());
+        assert!(
+            resolve_worker_bootstrap(mismatch, directory.path(), pod).is_err(),
+            "P2 mismatch"
+        );
+        worker.request_credential_file = Some(directory.path().join("signer"));
+        assert!(
+            worker_upstream(
                 &worker,
                 "https://coordinator",
                 WorkerUpstreamSecurity::Local,
-                awaken_time::system_clock(),
+                pod,
+                awaken_time::system_clock()
             )
-            .unwrap();
-            let request = upstream
-                .authorize_request(
-                    "POST",
-                    "/v1/worker/register",
-                    upstream
-                        .client()
-                        .post("https://coordinator/v1/worker/register"),
-                )
-                .unwrap()
-                .build()
-                .unwrap();
-            assert_eq!(
-                request.headers()["authorization"],
-                "Bearer fixture-token",
-                "P1"
-            );
-            assert!(
-                worker_upstream(
-                    &worker,
-                    "http://coordinator",
-                    WorkerUpstreamSecurity::Local,
-                    awaken_time::system_clock()
-                )
-                .is_err(),
-                "P1 still HTTPS"
-            );
-            let mut mismatch = input();
-            mismatch.worker_id = Some("foreign".into());
-            assert!(
-                resolve_worker_bootstrap(mismatch, directory.path()).is_err(),
-                "P2 mismatch"
-            );
-            worker.request_credential_file = Some(directory.path().join("signer"));
-            assert!(
-                worker_upstream(
-                    &worker,
-                    "https://coordinator",
-                    WorkerUpstreamSecurity::Local,
-                    awaken_time::system_clock()
-                )
-                .is_err(),
-                "P3 mutation"
-            );
-            worker.request_credential_file = None;
-            std::fs::write(directory.path().join("uid"), "replacement").unwrap();
-            assert!(
-                worker_upstream(
-                    &worker,
-                    "https://coordinator",
-                    WorkerUpstreamSecurity::Local,
-                    awaken_time::system_clock()
-                )
-                .is_err(),
-                "P4"
-            );
-        }
+            .is_err(),
+            "P3 mutation"
+        );
+        worker.request_credential_file = None;
+        std::fs::write(directory.path().join("uid"), "replacement").unwrap();
+        assert!(
+            worker_upstream(
+                &worker,
+                "https://coordinator",
+                WorkerUpstreamSecurity::Local,
+                pod,
+                awaken_time::system_clock()
+            )
+            .is_err(),
+            "P4"
+        );
         let mut mixed = input();
         mixed.request_credential_file = Some(directory.path().join("signer"));
         assert!(
-            resolve_worker_bootstrap(mixed, directory.path()).is_err(),
+            resolve_worker_bootstrap(mixed, directory.path(), pod).is_err(),
             "P3"
         );
     }
 
-    #[cfg(not(feature = "container-k8s"))]
     #[test]
     fn unavailable_pod_identity_rejects_before_projection_io_and_after_dto_mutation() {
-        // U1 the Worker integration is absent; U2 another consumer may enable
-        // the transport dependency's Kubernetes parser; U3 the projection does
-        // not exist; U4 a caller mutates the compatibility DTO after parsing.
-        // U1+U2+U3 must reject for the Worker's capability before projection I/O.
-        // U1+U4 must also reject at use, without selecting signing or local auth.
-        // check-rust.sh executes this real dependency-only feature graph.
+        // U1 the composition installed no Pod integration (`None`), whatever
+        // features a dependency enabled; U2 the projection does not exist; U3
+        // a caller mutates the compatibility DTO after parsing. U1+U2 must
+        // reject at Worker configuration admission before projection I/O.
+        // U1+U3 must also reject at use, without selecting signing or local
+        // auth. U4 an installed integration, not a feature, builds the upstream.
         let directory = tempfile::tempdir().unwrap();
         let missing = directory.path().join("missing-projection");
         let error = resolve_worker_bootstrap(
@@ -687,9 +736,10 @@ mod tests {
                 ..Default::default()
             },
             directory.path(),
+            None,
         )
         .unwrap_err();
-        assert!(error.contains("container-k8s"), "U1/U2/U3 {error}");
+        assert!(error.contains("container-k8s"), "U1/U2 {error}");
         assert!(!missing.exists(), "the projection was never provisioned");
 
         let config = directory.path().join("worker.toml");
@@ -701,7 +751,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let error = WorkerDaemonConfig::load(&config, None).unwrap_err();
+        let error = WorkerDaemonConfig::load(&config, None, None).unwrap_err();
         assert!(
             error.contains("container-k8s"),
             "configuration admission: {error}"
@@ -720,11 +770,28 @@ mod tests {
             &forged,
             "https://coordinator",
             WorkerUpstreamSecurity::Local,
+            None,
             awaken_time::system_clock(),
         )
         .err()
-        .expect("U4 compatibility DTO mutation cannot grant an unavailable integration");
-        assert!(error.contains("container-k8s"), "U4 {error}");
+        .expect("U3 compatibility DTO mutation cannot grant an unavailable integration");
+        assert!(error.contains("container-k8s"), "U3 {error}");
+
+        let installed = PodIdentity {
+            remote_upstream: |_, worker_id, _, _| {
+                Err(format!("installed Pod upstream for {worker_id}"))
+            },
+        };
+        let error = worker_upstream(
+            &forged,
+            "https://coordinator",
+            WorkerUpstreamSecurity::Local,
+            Some(installed),
+            awaken_time::system_clock(),
+        )
+        .err()
+        .expect("U4 the fixture integration refuses");
+        assert_eq!(error, "installed Pod upstream for worker-a", "U4");
     }
 
     #[test]
@@ -751,6 +818,7 @@ mod tests {
                 &worker,
                 "http://coordinator",
                 WorkerUpstreamSecurity::Local,
+                None,
                 awaken_time::system_clock()
             )
             .is_ok(),
@@ -761,6 +829,7 @@ mod tests {
                 &worker,
                 "https://coordinator",
                 remote(),
+                None,
                 awaken_time::system_clock()
             )
             .is_err(),
@@ -784,6 +853,7 @@ mod tests {
                         &worker,
                         "https://coordinator",
                         security,
+                        None,
                         awaken_time::system_clock()
                     )
                     .is_ok(),
@@ -797,6 +867,7 @@ mod tests {
                 &worker,
                 "http://coordinator",
                 WorkerUpstreamSecurity::Local,
+                None,
                 awaken_time::system_clock()
             )
             .is_ok(),
@@ -807,6 +878,7 @@ mod tests {
                 &worker,
                 "http://coordinator",
                 remote(),
+                None,
                 awaken_time::system_clock()
             )
             .is_err(),
@@ -819,6 +891,7 @@ mod tests {
                 WorkerUpstreamSecurity::Remote {
                     server_ca_certificate: Some(b"invalid")
                 },
+                None,
                 awaken_time::system_clock()
             )
             .is_err(),
@@ -831,6 +904,7 @@ mod tests {
                     &worker,
                     "https://coordinator",
                     security,
+                    None,
                     awaken_time::system_clock()
                 )
                 .is_err(),
@@ -856,7 +930,7 @@ mod tests {
                             "worker_server='http://coordinator:3000'\nsandbox_tier='{tier}'\nsandbox_trusted_host_enabled={consent}\nacp_clis={clis}\nworker_local_credential_bindings_file='{binding}'\n"
                         )).unwrap();
                         assert_eq!(
-                            WorkerDaemonConfig::load(&path, None).is_ok(),
+                            WorkerDaemonConfig::load(&path, None, None).is_ok(),
                             matches!(tier, "local" | "namespace")
                                 && consent
                                 && clis == "['codex', 'claude']"
@@ -990,7 +1064,7 @@ mod tests {
                     directory.path().display(), signer.display()
                 )).unwrap();
                 std::fs::write(&bindings, serde_json::to_vec(&rows).unwrap()).unwrap();
-                let config = WorkerDaemonConfig::load(&path, None).unwrap();
+                let config = WorkerDaemonConfig::load(&path, None, None).unwrap();
                 let mut missing = host_adapters();
                 missing.discovery = Arc::new(MissingHostFixture);
                 let error = config
@@ -1176,7 +1250,7 @@ mod tests {
         );
         write(&default_source);
         assert_eq!(
-            WorkerDaemonConfig::load(&path, None)
+            WorkerDaemonConfig::load(&path, None, None)
                 .expect("R1 default syntax")
                 .runtime
                 .sandbox_tier,
@@ -1186,7 +1260,7 @@ mod tests {
         // R1 owns portable configuration/assembly. Native backend availability
         // is independently required by the platform portability gate.
         write(&format!("{default_source}sandbox_tier='local'\n"));
-        let resolved = WorkerDaemonConfig::load(&path, None).expect("R1");
+        let resolved = WorkerDaemonConfig::load(&path, None, None).expect("R1");
         assert!(resolved.runtime.database_url.is_none(), "R1");
         assert_eq!(
             resolved.runtime.storage_dir.as_deref(),
@@ -1217,7 +1291,8 @@ mod tests {
             "role='worker'\nworker_server='https://coordinator:3000'\nworker_request_credential_file='{}'\nsandbox_tier='docker'\npackage_build_host_network=true\n",
             credential.display()
         ));
-        let package_host = WorkerDaemonConfig::load(&path, None).expect("PBN host build config");
+        let package_host =
+            WorkerDaemonConfig::load(&path, None, None).expect("PBN host build config");
         assert!(package_host.runtime.sandbox.package_build_host_network);
 
         // Sandbox configuration cause/effect decision table: S1 K8s tier plus
@@ -1230,7 +1305,7 @@ mod tests {
             "role='worker'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\nsandbox_tier='k8s'\nk8s_namespace='agents'\nk8s_image_pull_secrets=['registry-auth']\ncontainer_image='awaken-sandbox:local'\npackage_image_registry='registry.example/team/'\npackage_image_builder='k8s'\nsandbox_inherit_agent_stderr=true\n",
             credential.display()
         ));
-        let k8s = WorkerDaemonConfig::load(&path, None).expect("S1");
+        let k8s = WorkerDaemonConfig::load(&path, None, None).expect("S1");
         assert_eq!(k8s.runtime.sandbox.k8s_namespace, "agents", "S1");
         assert_eq!(
             k8s.runtime.container_image.as_deref(),
@@ -1274,7 +1349,7 @@ mod tests {
             write(&format!(
                 "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='k8s'\nk8s_continuation_volume={policy}\n"
             ));
-            let result = WorkerDaemonConfig::load(&path, None);
+            let result = WorkerDaemonConfig::load(&path, None, None);
             assert_eq!(result.is_ok(), accepts, "KP {policy}: {result:?}");
             if let Ok(config) = result {
                 assert_eq!(
@@ -1315,7 +1390,7 @@ mod tests {
             write(&format!(
                 "role='worker'\nworker_server='http://coordinator:3000'\n{body}"
             ));
-            let loaded = WorkerDaemonConfig::load(&path, None);
+            let loaded = WorkerDaemonConfig::load(&path, None, None);
             match expected {
                 Some(secs) => assert_eq!(
                     loaded
@@ -1337,16 +1412,16 @@ mod tests {
         write(
             "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='k8s'\nk8s_namespace='  '\n",
         );
-        assert!(WorkerDaemonConfig::load(&path, None).is_err(), "S2");
+        assert!(WorkerDaemonConfig::load(&path, None, None).is_err(), "S2");
         write(
             "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='k8s'\nk8s_network_policy_enforcement='awaken-restricted-egress-v1'\n",
         );
-        assert!(WorkerDaemonConfig::load(&path, None).is_err(), "S3");
+        assert!(WorkerDaemonConfig::load(&path, None, None).is_err(), "S3");
         write(
             "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='namespace'\nsandbox_trusted_host_enabled=true\n",
         );
         assert!(
-            WorkerDaemonConfig::load(&path, None)
+            WorkerDaemonConfig::load(&path, None, None)
                 .expect("S4")
                 .runtime
                 .trusted_host_enabled(),
@@ -1358,7 +1433,7 @@ mod tests {
             write(&format!(
                 "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='{tier}'\nsandbox_trusted_host_enabled={trusted}\nsandbox_trusted_host_scoped_execution=true\n"
             ));
-            let result = WorkerDaemonConfig::load(&path, None);
+            let result = WorkerDaemonConfig::load(&path, None, None);
             let allowed = cfg!(target_os = "linux") && (tier == "local" || trusted);
             assert_eq!(result.is_ok(), allowed, "S5 {tier} {trusted}");
             if let Ok(config) = result {
@@ -1390,7 +1465,10 @@ mod tests {
             "role='worker'\nworker_server='http://coordinator:3000'\nruntime_database_url='postgres://authority'\n",
         ] {
             write(source);
-            assert!(WorkerDaemonConfig::load(&path, None).is_err(), "R2/R3");
+            assert!(
+                WorkerDaemonConfig::load(&path, None, None).is_err(),
+                "R2/R3"
+            );
         }
 
         std::fs::write(
@@ -1402,7 +1480,7 @@ mod tests {
             "role='worker'\nmode='server'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
             credential.display()
         ));
-        let error = WorkerDaemonConfig::load(&path, None)
+        let error = WorkerDaemonConfig::load(&path, None, None)
             .expect("R4 config syntax remains valid")
             .build()
             .await
@@ -1415,7 +1493,7 @@ mod tests {
             "role='worker'\nmode='server'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
             missing_credential.display()
         ));
-        let error = WorkerDaemonConfig::load(&path, None)
+        let error = WorkerDaemonConfig::load(&path, None, None)
             .expect("R4 missing projection is a startup-time cause")
             .build()
             .await
