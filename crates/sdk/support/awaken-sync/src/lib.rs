@@ -54,7 +54,7 @@ use std::sync::{
 /// `Result::unwrap`/`expect` need `E: Debug`, so unwrapping a poison refusal
 /// away does not compile. Propagate it with `?` instead.
 ///
-/// ```compile_fail,E0599
+/// ```compile_fail,E0277
 /// let lock = awaken_sync::InvariantLock::new(0_u8);
 /// let _guard = lock.lock().expect("an invariant lock refuses poison");
 /// ```
@@ -103,7 +103,7 @@ impl fmt::Display for LockPoisoned {
 /// the same reason as [`LockPoisoned`]: a poisoned `try_lock` cannot be
 /// unwrapped away either.
 ///
-/// ```compile_fail,E0599
+/// ```compile_fail,E0277
 /// let lock = awaken_sync::InvariantLock::new(0_u8);
 /// let _guard = lock.try_lock().unwrap();
 /// ```
