@@ -11,7 +11,9 @@ pub use aggregate::{
     SessionAggregateCommandError, SessionAssignmentOperations, SessionBudgetOperations,
     SessionCleanupOperations, SessionConfigurationOperations, SessionEnvironmentOperations,
     SessionEventsOperations, SessionLifecycleOperations, SessionMcpOperations,
-    SessionResourcesOperations, session_activity_open_plan, session_root_update_observation,
+    SessionRealizationAssignment, SessionRealizationBegin, SessionRealizationBeginRejection,
+    SessionRealizationBeginRequest, SessionResourcesOperations, session_activity_open_plan,
+    session_realization_assignment, session_root_update_observation,
 };
 mod archive_intent;
 mod environment;
@@ -100,8 +102,8 @@ pub(crate) use crate::event::{
 };
 pub use realization_progress::SessionRealizationProgress;
 pub use resource_activation::{
-    ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceReferences,
-    SessionResourceState,
+    ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceLocalApply,
+    SessionResourceReconciliationInstruction, SessionResourceReferences, SessionResourceState,
 };
 pub use session_repo::{
     IdempotencyRecord, PersistedSession, ScopedPersistedSession, SessionActivitySettlementPlan,

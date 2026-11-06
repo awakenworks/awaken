@@ -18,7 +18,8 @@ use awaken_session_configuration_contract::resource::{
     ResolvedInput, ResolvedInputSource, ResolvedSessionResources,
 };
 use awaken_session_contract::{
-    ActivationState, PersistedSession, SessionAggregate, SessionExecutionState,
+    PersistedSession, SessionAggregate, SessionExecutionState, SessionResourceLocalApply,
+    SessionResourceReconciliationInstruction,
 };
 use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
@@ -31,10 +32,8 @@ use super::{
     credentials::{internal, mutation_failure, repository_preparation},
 };
 
-mod ordinary_reconciliation_gate;
 mod purge_guard;
 
-use ordinary_reconciliation_gate::ordinary_resource_reconciliation_allowed;
 pub use purge_guard::SessionResourcePurgeGuard;
 pub(crate) use purge_guard::resource_targets;
 
@@ -424,26 +423,18 @@ impl SessionResourceReconciliation {
             .credentials
             .ensure_repository_credentials_pinned(owner_scope, session)
             .await?;
-        if !session.is_terminal() && !session.requires_external_environment_owner() {
-            if session.execution != SessionExecutionState::Idle {
-                // Resource changes remain deferred while a Run owns execution.
-                // Select that existing rule before constructing the complete
-                // activation/retirement future on the supervisor poll stack.
-                return Ok(session);
-            }
-            if !session.resources.needs_reconciliation()
-                && session.resources.active.inputs().is_empty()
-                && session.resources.activations.is_empty()
-            {
-                // This is the exact no-op branch below, selected before constructing
-                // the full activation/retirement future. `needs_reconciliation` is
-                // the canonical pending/activation/retirement-work predicate.
-                return Ok(session);
-            }
+        // The aggregate decides once. A Hold (Resource changes deferred while a
+        // Run owns execution, or nothing to converge) returns here, before the
+        // complete activation/retirement future is constructed on the
+        // supervisor poll stack; every other step consumes the same value.
+        let instruction = SessionResourceReconciliationInstruction::decide(&session);
+        if instruction == SessionResourceReconciliationInstruction::Hold {
+            return Ok(session);
         }
         self.reconcile_prepared_resources(
             owner_scope,
             crate::mutation::aggregate_from_snapshot(session).map_err(repository_preparation)?,
+            instruction,
         )
         .await
         .map(SessionAggregate::into_snapshot)
@@ -475,27 +466,33 @@ impl SessionResourceReconciliation {
         &self,
         owner_scope: &str,
         mut session: SessionAggregate,
+        instruction: SessionResourceReconciliationInstruction,
     ) -> Result<SessionAggregate, SessionPreparationError> {
-        if !session.is_terminal() && session.requires_external_environment_owner() {
-            return if session.resources.pending.is_none() {
-                self.retire_detached_generation(owner_scope, session).await
-            } else {
-                Ok(session)
-            };
-        }
+        let apply = match instruction {
+            SessionResourceReconciliationInstruction::Hold => return Ok(session),
+            SessionResourceReconciliationInstruction::RetireDetachedGeneration => {
+                return self.retire_detached_generation(owner_scope, session).await;
+            }
+            SessionResourceReconciliationInstruction::ReleaseTerminal => {
+                return self
+                    .reconcile_terminal_resource_candidate(owner_scope, session)
+                    .await;
+            }
+            SessionResourceReconciliationInstruction::ApplyLocally(apply) => apply,
+        };
         let session_id = session.session_id.clone();
-        if ordinary_resource_reconciliation_allowed(
-            session.is_terminal(),
-            session.execution == SessionExecutionState::Idle,
-        ) {
-            // Only ordinary activation needs a local effects role. Terminal
-            // roots must reach their existing cleanup owner even when this
-            // Coordinator delegates every realization to registered Workers.
-            let effects_runtime = self
-                .placement
-                .realization_effects()
-                .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
-            if let Some(desired) = session.resources.pending.clone() {
+        // Only ordinary activation needs a local effects role. Terminal roots
+        // reach their existing cleanup owner even when this Coordinator
+        // delegates every realization to registered Workers.
+        let effects_runtime = self
+            .placement
+            .realization_effects()
+            .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
+        match apply {
+            SessionResourceLocalApply::InstallPending => {
+                let desired = session.resources.pending.clone().ok_or_else(|| {
+                    internal("resource install decided without a pending manifest")
+                })?;
                 let previous = session.resources.active.clone();
                 let previous_revision = session.resources.active_revision();
                 let transition = crate::session_resource::SessionResourceTransition::new(
@@ -550,56 +547,44 @@ impl SessionResourceReconciliation {
                         ResourceSettlement::Commit,
                     )
                     .await?;
-                return self
-                    .retire_detached_generation(owner_scope, committed)
-                    .await;
-            }
-
-            if session
-                .resources
-                .activations
-                .iter()
-                .any(|activation| activation.state == ActivationState::Releasing)
-            {
-                return Err(internal(
-                    "resource activation has Releasing records without a pending manifest",
-                ));
-            }
-            if session.resources.active.inputs().is_empty()
-                && session.resources.activations.is_empty()
-            {
-                return self.retire_detached_generation(owner_scope, session).await;
-            }
-            let (active_revision, active_resources) = session.resources.active_generation();
-            let active = crate::session_resource::SessionResourceManifest::at_revision(
-                owner_scope,
-                active_revision,
-                active_resources.clone(),
-            );
-            let transition =
-                crate::session_resource::SessionResourceTransition::new(active.clone(), active)
-                    .map_err(internal)?;
-            effects_runtime
-                .apply_session_inputs(session_id.as_str(), &transition)
-                .await
-                .map_err(SessionPreparationError::Rejected)?;
-            if session.resources.activations.is_empty() {
-                session.resources().adopt_legacy_active();
-                session = self
-                    .resource_references
-                    .commit(owner_scope, session, "resource-adopt-legacy", Vec::new())
+                self.retire_detached_generation(owner_scope, committed)
                     .await
-                    .and_then(|commit| {
-                        crate::mutation::aggregate_from_snapshot(commit.into_session())
-                            .map_err(crate::mutation::repository_failure)
-                    })
-                    .map_err(mutation_failure)?;
             }
-            return self.retire_detached_generation(owner_scope, session).await;
+            SessionResourceLocalApply::RefuseReleasingWithoutPending => Err(internal(
+                "resource activation has Releasing records without a pending manifest",
+            )),
+            SessionResourceLocalApply::RetireDetachedGeneration => {
+                self.retire_detached_generation(owner_scope, session).await
+            }
+            SessionResourceLocalApply::ReapplyActive { adopt_legacy } => {
+                let (active_revision, active_resources) = session.resources.active_generation();
+                let active = crate::session_resource::SessionResourceManifest::at_revision(
+                    owner_scope,
+                    active_revision,
+                    active_resources.clone(),
+                );
+                let transition =
+                    crate::session_resource::SessionResourceTransition::new(active.clone(), active)
+                        .map_err(internal)?;
+                effects_runtime
+                    .apply_session_inputs(session_id.as_str(), &transition)
+                    .await
+                    .map_err(SessionPreparationError::Rejected)?;
+                if adopt_legacy {
+                    session.resources().adopt_legacy_active();
+                    session = self
+                        .resource_references
+                        .commit(owner_scope, session, "resource-adopt-legacy", Vec::new())
+                        .await
+                        .and_then(|commit| {
+                            crate::mutation::aggregate_from_snapshot(commit.into_session())
+                                .map_err(crate::mutation::repository_failure)
+                        })
+                        .map_err(mutation_failure)?;
+                }
+                self.retire_detached_generation(owner_scope, session).await
+            }
         }
-
-        self.reconcile_terminal_resource_candidate(owner_scope, session)
-            .await
     }
 
     async fn reconcile_terminal_resource_candidate(
@@ -888,8 +873,15 @@ mod placement_regression_tests {
             .session_aggregate(&awaken_session_types::SessionId::from(id))
             .await
             .unwrap();
+        let instruction =
+            awaken_session_contract::SessionResourceReconciliationInstruction::decide(&root);
+        assert_eq!(
+            instruction,
+            awaken_session_contract::SessionResourceReconciliationInstruction::ReleaseTerminal,
+            "R1 the aggregate routes the terminal root to cleanup"
+        );
         let settled = worker
-            .reconcile_prepared_resources("workspace", root)
+            .reconcile_prepared_resources("workspace", root, instruction)
             .await
             .expect("R1 terminal queue remains reachable");
         assert!(settled.is_terminal());
