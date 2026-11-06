@@ -145,7 +145,8 @@ from unittest import mock
 import check_native_services as gate
 
 INPUT_GLOBS = (
-    "scripts/ci/**", ".github/workflows/windows-native-services.yml",
+    ".github/workflows/windows-native-services.yml",
+    "scripts/ci/test_inventory_ledger.json",
     # The work-tier selection tests it imports read the acceptance ledger.
     "docs/design/session-execution-test-acceptance/**",
     "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/**",

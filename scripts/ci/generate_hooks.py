@@ -45,16 +45,18 @@ from __future__ import annotations
 import argparse
 import ast
 import difflib
+import functools
 import json
 import re
 import shlex
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # lefthook.yml and every scripts/ci module whose INPUT_GLOBS this renderer
 # reads.  The renderer is itself a gate with inputs, so its own hook trigger is
 # rendered from this declaration rather than written by hand.
-INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/*.py", "scripts/ci/check-rust.sh")
+INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/*.py", "scripts/ci/*.sh",
+                                 "scripts/ci/pre-commit/*.sh", "scripts/ci/pre-push/*.sh")
 
 ROOT = Path(__file__).resolve().parents[2]
 HOOKS = ROOT / "lefthook.yml"
@@ -173,8 +175,25 @@ def invoked_scripts(block: str, *, expand_rust_gate: bool = True) -> set[str]:
         modes = re.findall(r"scripts/ci/check-rust\.sh (--[a-z-]+)(?:\s|$)", block)
         if len(modes) != 1:
             raise SystemExit("generate_hooks: Rust hook needs one literal mode")
-        scripts.update(INVOCATION.findall(gate_mode_source((ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"), modes[0])))
+        source = gate_mode_source((ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"), modes[0])
+        scripts.update(INVOCATION.findall(source))
+        # The gate itself and the shell helpers this mode sources or runs: a
+        # change to them changes what the gate does, like a Python callee.
+        scripts.add("check-rust.sh")
+        scripts.update(rust_gate_shell_callees(source))
     return scripts
+
+
+def rust_gate_shell_callees(source: str) -> set[str]:
+    """Shell files one Rust-gate mode source sources or runs (not ones it only reads)."""
+    callees = set()
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.split()[0] in SHELL_DATA_COMMANDS:
+            continue
+        callees.update(name for name in re.findall(r"scripts/ci/([A-Za-z0-9_.-]+\.sh)\b", stripped)
+                       if (SCRIPTS / name).is_file())
+    return callees
 
 
 def hook_run(block: str, *, unwrap=True) -> str:
@@ -320,42 +339,50 @@ def declared_input_globs(scripts: Path) -> dict[str, tuple[str, ...]]:
 
     declarations: dict[str, tuple[str, ...]] = {}
     for path in sorted(scripts.glob("*.py")):
-        try:
-            module = ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError as error:  # pragma: no cover - a broken checker fails elsewhere
-            raise SystemExit(f"generate_hooks: cannot parse {path}: {error}")
-        for node in module.body:
-            if isinstance(node, ast.AnnAssign):
-                targets = [node.target]
-                value = node.value
-            elif isinstance(node, ast.Assign):
-                targets = node.targets
-                value = node.value
-            else:
-                continue
-            if not any(
-                isinstance(target, ast.Name) and target.id == "INPUT_GLOBS"
-                for target in targets
-            ):
-                continue
-            if not isinstance(value, ast.Tuple):
-                raise SystemExit(f"generate_hooks: {path.name} INPUT_GLOBS must be a tuple")
-            patterns: list[str] = []
-            for item in value.elts:
-                if not isinstance(item, ast.Constant) or not isinstance(item.value, str):
-                    raise SystemExit(
-                        f"generate_hooks: {path.name} INPUT_GLOBS must hold string literals"
-                    )
-                if not PATTERN.fullmatch(item.value):
-                    raise SystemExit(
-                        f"generate_hooks: {path.name} declares an unrenderable glob "
-                        f"{item.value!r} (a comma or brace would break the alternation)"
-                    )
-                patterns.append(item.value)
-            if not patterns:
-                raise SystemExit(f"generate_hooks: {path.name} INPUT_GLOBS is empty")
-            declarations[path.name] = tuple(patterns)
+        declared = input_globs_of(path)
+        if declared is not None:
+            declarations[path.name] = declared
     return declarations
+
+
+def input_globs_of(path: Path) -> tuple[str, ...] | None:
+    """One module's literal ``INPUT_GLOBS``, or None when it declares none."""
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError as error:  # pragma: no cover - a broken checker fails elsewhere
+        raise SystemExit(f"generate_hooks: cannot parse {path}: {error}")
+    for node in module.body:
+        if isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+            value = node.value
+        elif isinstance(node, ast.Assign):
+            targets = node.targets
+            value = node.value
+        else:
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "INPUT_GLOBS"
+            for target in targets
+        ):
+            continue
+        if not isinstance(value, ast.Tuple):
+            raise SystemExit(f"generate_hooks: {path.name} INPUT_GLOBS must be a tuple")
+        patterns: list[str] = []
+        for item in value.elts:
+            if not isinstance(item, ast.Constant) or not isinstance(item.value, str):
+                raise SystemExit(
+                    f"generate_hooks: {path.name} INPUT_GLOBS must hold string literals"
+                )
+            if not PATTERN.fullmatch(item.value):
+                raise SystemExit(
+                    f"generate_hooks: {path.name} declares an unrenderable glob "
+                    f"{item.value!r} (a comma or brace would break the alternation)"
+                )
+            patterns.append(item.value)
+        if not patterns:
+            raise SystemExit(f"generate_hooks: {path.name} INPUT_GLOBS is empty")
+        return tuple(patterns)
+    return None
 
 
 def _hook_nodes(hooks: str):
@@ -580,18 +607,130 @@ def local_imports(name: str, scripts: Path = SCRIPTS) -> list[str]:
     return sorted(found)
 
 
+# A `scripts/ci` path named in a shell line, literally or through the script's
+# own directory variable (`$script_dir/x.sh`, `"$deadline_dir/deadline.py"`).
+SHELL_REFERENCE = re.compile(
+    r"(?:scripts/ci/|\$\{?[A-Za-z_]*dir\}?\"?/)((?:pre-commit/|pre-push/)?[A-Za-z0-9_.-]+\.(?:sh|py))\b")
+# Shell commands that only read, print or compare the file they name: the
+# reference is data (the file itself), not code that runs its own callees.
+SHELL_DATA_COMMANDS = frozenset({
+    "grep", "sed", "awk", "cat", "echo", "printf", "cmp", "diff", "test", "[", "[[", "rm", "cp",
+    "ln", "mv", "touch", "head", "tail", "wc", "chmod", "stat", "readlink", "dirname", "basename",
+    "git", "sha256sum", "local", "usage"})
+PYTHON_REFERENCE = re.compile(r"(?:^|/)((?:pre-commit/|pre-push/)?[A-Za-z0-9_.-]+\.(?:sh|py))$")
+
+
+SUBPROCESS_CALLS = frozenset({"run", "Popen", "call", "check_call", "check_output", "execv", "execvp",
+                              "execve", "spawnv", "run_command", "_run"})
+
+
+@functools.lru_cache(maxsize=None)
+def script_edges(name: str, scripts: Path = SCRIPTS) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """``(runs, reads, mentions)``: the ``scripts`` files one script references.
+
+    *runs* is code that executes when ``name`` does: a Python ``import`` (lazy
+    ones included), a script path inside a subprocess call, and in shell a
+    ``source``/``.`` or a command line naming the file. *reads* is a shell line
+    whose command only reads, prints or compares the file (grep, cat, echo...).
+    *mentions* is any other Python string naming a file: a test's subject or
+    a checker's data, which its own INPUT_GLOBS (held by _input_closure.py at
+    run time) must declare. Parsed, never run; comments/docstrings do not count.
+    """
+
+    path = scripts / name
+    empty = frozenset()
+    if not path.is_file():
+        return empty, empty, empty
+    text = path.read_text(encoding="utf-8", errors="replace")
+    runs: set[str] = set()
+    reads: set[str] = set()
+    mentions: set[str] = set()
+    if name.endswith(".sh"):
+        parent = PurePosixPath(name).parent
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            first = stripped.split()[0].lstrip("({!")
+            for match in SHELL_REFERENCE.finditer(stripped):
+                target = match.group(1)
+                if not match.group(0).startswith("scripts/ci/"):
+                    target = (parent / target).as_posix()
+                data = first in SHELL_DATA_COMMANDS or stripped[:match.start()].rstrip().endswith(("<", ">"))
+                (reads if data else runs).add(target)
+    elif name.endswith(".py"):
+        try:
+            module = ast.parse(text)
+        except SyntaxError:
+            return empty, empty, empty
+        documentation = {
+            id(node.body[0].value) for node in ast.walk(module)
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant)}
+
+        def named(node: ast.AST) -> str | None:
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and len(node.value) < 200:
+                match = PYTHON_REFERENCE.search(node.value.strip())
+                return match.group(1) if match else None
+            return None
+
+        for node in ast.walk(module):
+            if isinstance(node, ast.Import):
+                runs.update(f"{alias.name.split('.')[0]}.py" for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                runs.add(f"{node.module.split('.')[0]}.py")
+            elif isinstance(node, ast.Call):
+                function = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+                if function in SUBPROCESS_CALLS:
+                    runs.update(found for child in ast.walk(node) if (found := named(child)))
+            elif id(node) not in documentation and (found := named(node)):
+                mentions.add(found)
+    exists = lambda found: {item for item in found if item != name and (scripts / item).is_file()}
+    runs = exists(runs)
+    reads = exists(reads) - runs
+    return frozenset(runs), frozenset(reads), frozenset(exists(mentions) - runs - reads)
+
+
+def script_closure(name: str, scripts: Path = SCRIPTS, *, mentions: bool = False) -> list[str]:
+    """Every ``scripts`` file ``name`` executes (transitively) or reads.
+
+    Executed files are followed further; a file that is only read (or, with
+    ``mentions``, named by a Python string) contributes itself. This is the
+    input closure of running ``name``: Python imports, shell ``source`` and
+    shell callees, which ``local_imports`` alone missed, so hooks over shell
+    gates used to widen to ``scripts/ci/**`` instead.
+    """
+
+    found: set[str] = set()
+    pending = [name]
+    expanded: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current in expanded:
+            continue
+        expanded.add(current)
+        runs, reads, named = script_edges(current, scripts)
+        found |= runs | reads | (named if mentions else set())
+        pending.extend(runs - expanded)
+    found.discard(name)
+    return sorted(found)
+
+
 def trigger_patterns(name: str, declarations: dict[str, tuple[str, ...]],
                      scripts: Path = SCRIPTS) -> list[str]:
-    """The trigger of one checker: its declaration, itself and the modules it imports."""
+    """The trigger of one checker: its declaration, itself and what it runs or reads.
 
-    patterns = sorted(set(declarations[name]))
+    A shell script needs no declaration: its trigger is itself and its closure.
+    """
+
+    patterns = sorted(set(declarations.get(name, ())))
     if UNIVERSAL in patterns:
         return [UNIVERSAL]
     # `scripts` selects the bytes to inspect, including a copied fixture. The
     # hook's authored coordinate remains scripts/ci in that repository; a
     # fixture nested under this checkout must not inherit its temporary prefix.
     prefix = "scripts/ci"
-    for module in [name, *local_imports(name, scripts)]:
+    for module in [name, *script_closure(name, scripts)]:
         own = f"{prefix}/{module}"
         if not any(glob_matches(pattern, own) for pattern in patterns):
             patterns.append(own)
@@ -668,7 +807,7 @@ def undeclared_invocations(hooks: str, declarations: dict[str, tuple[str, ...]])
         body_end = _body_end(lines, header + 1, end)
         block = _without_generated(lines[header + 1:body_end])
         for name in invoked_scripts("".join(block), expand_rust_gate=False):
-            if name not in declarations:
+            if name not in declarations and not name.endswith(".sh"):
                 undeclared.add(name)
     return sorted(undeclared)
 
@@ -687,8 +826,10 @@ def render(hooks: str, declarations: dict[str, tuple[str, ...]]) -> str:
         scripts = sorted(
             {
                 name
+                # Direct Python calls are declared (undeclared_invocations);
+                # the Rust gate's own Python and shell callees need none.
                 for name in invoked_scripts("".join(cleaned))
-                if name in declarations
+                if name in declarations or (SCRIPTS / name).is_file()
             }
         )
         marked = any(line.strip().startswith(MARKER_BEGIN) for line in block)
@@ -877,28 +1018,31 @@ def selftest() -> None:
     quick = gate_mode_source(gate, "--quick")
     assert "rust_test_plan.py" in quick and "check_dependency_sources.py" in quick
     assert "check_formal_coverage.py" not in quick and "check_formal_surface.py" not in quick
-    assert "gate_tools.py" not in quick and "--no-run --timings" not in quick
+    assert "--no-run --timings" not in quick
     early = gate.replace('mode="${1:---full}"\n', 'python3 scripts/ci/prefix_probe.py\nmode="${1:---full}"\n')
     assert "prefix_probe.py" in gate_mode_source(early, "--quick"), "T1 early common prefix must be retained"
     assert "suffix_probe.py" in gate_mode_source(gate + "\npython3 scripts/ci/suffix_probe.py\n", "--quick"), "T1 common suffix is retained"
-    loop = gate.replace("for materializer_profile in bare brokered; do\n",
-                        "for materializer_profile in bare brokered; do\n  python3 scripts/ci/loop_probe.py\n")
-    assert "loop_probe.py" in gate_mode_source(loop, "--quick"), "T1 loop is retained"
+    # Each probe is injected at a fixed anchor and must actually land there, so a
+    # gate edit that removes the anchor fails here instead of passing vacuously.
+    loop = gate.replace('mode="${1:---full}"\n',
+                        'mode="${1:---full}"\nfor probe in one two; do\n  python3 scripts/ci/loop_probe.py\ndone\n')
+    assert loop != gate and "loop_probe.py" in gate_mode_source(loop, "--quick"), "T1 loop is retained"
     self_test = gate.replace('if [ "$mode" = "--self-test" ]; then\n',
                              'if [ "$mode" = "--self-test" ]; then\n  python3 scripts/ci/self_probe.py\n')
+    assert self_test != gate, "T3 fixture anchor is missing"
     assert "self_probe.py" not in gate_mode_source(self_test, "--quick"), "T3 early-exit mode is excluded"
     # T1 compound-mode cause: matching mode + opaque false condition takes the
     # real else branch. Both outcomes of that condition must own their inputs.
-    compound = gate.replace('if [ "$mode" = "--quick" ]; then',
-                            'if [ "$mode" = "--quick" ] && test -n "${OPAQUE:-}"; then')
-    compound = compound.replace('    else\n      step "check"',
-                                '    else\n      python3 scripts/ci/compound_else_probe.py\n      step "check"')
+    compound = gate.replace('  if [ "$mode" = "--push" ]; then\n    # Without',
+                            '  if [ "$mode" = "--quick" ] && test -n "${OPAQUE:-}"; then\n    # Without')
+    compound = compound.replace('  else\n    scope_base=HEAD',
+                                '  else\n    python3 scripts/ci/compound_else_probe.py\n    scope_base=HEAD')
     assert "rust_test_plan.py" in gate_mode_source(compound, "--quick")
     assert "compound_else_probe.py" in gate_mode_source(compound, "--quick"), "T1 compound else must be retained"
     for broken in (gate.replace("  --quick|--push)\n", "  --push)\n"),
-                   gate.replace('if [ "$mode" = "--quick" ]; then', 'if test "$mode" = "--quick"; then'),
-                   gate.replace("python3 scripts/ci/rust_test_plan.py --base", 'python3 "$checker" --base'),
-                   gate.replace("python3 scripts/ci/rust_test_plan.py --base", 'eval "$checker" --base'),
+                   gate.replace('if [ "$mode" = "--full" ]; then', 'if test "$mode" = "--full"; then'),
+                   gate.replace("  python3 scripts/ci/check_dependency_sources.py", '  python3 "$checker"'),
+                   gate.replace("  python3 scripts/ci/check_dependency_sources.py", '  eval "$checker"'),
                    gate.replace('mode="${1:---full}"\n', 'mode="${1:---full}"\nmode="--push"\n'),
                    gate.replace('mode="${1:---full}"\n', 'mode="${1:---full}"\nreadonly mode="--push"\n'),
                    gate.replace("  --full)\n", '  "$dynamic")\n')):
@@ -908,12 +1052,168 @@ def selftest() -> None:
             pass
         else:
             raise AssertionError("T4 unsupported control shape accepted")
-    inputs = declared_input_globs(SCRIPTS)["rust_test_plan.py"]
-    assert not any(glob_matches(pattern, "docs/design.md") for pattern in inputs), "T5 docs fastpath"
-    for path in ("Cargo.toml", "crates/contract/foo/Cargo.toml", "lefthook.yml", "rust-toolchain.toml",
-                 ".cargo/config.toml", ".config/rust-tests.toml", "fuzz/fuzz_targets/foo.rs", "scripts/ci/check-rust.sh"):
+    # T5/T6 over the rendered rust-quick trigger itself: Rust build inputs and
+    # the gate's executed closure (Python and shell callees) fire it; docs and
+    # a CI script the gate never runs (the formal runner and its tests) do not.
+    declarations = declared_input_globs(SCRIPTS)
+    inputs = [pattern for name in invoked_scripts("run: scripts/ci/check-rust.sh --quick")
+              for pattern in trigger_patterns(name, declarations)]
+    for path in ("docs/design.md", "scripts/ci/check_formal.sh", "scripts/ci/test_formal_run_evidence.py"):
+        assert not any(glob_matches(pattern, path) for pattern in inputs), f"T5 {path} starts the Rust gate"
+    for path in ("Cargo.toml", "crates/contract/foo/Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
+                 ".config/rust-tests.toml", "fuzz/fuzz_targets/foo.rs", "scripts/ci/check-rust.sh",
+                 "scripts/ci/_cargo_target.sh", "scripts/ci/_rust_test_execution.sh",
+                 "scripts/ci/nextest_execution.py", "scripts/ci/check_dependency_sources.py"):
         assert any(glob_matches(pattern, path) for pattern in inputs), f"T6 uncovered {path}"
+    # S-trigger: shell callees. S1 `source`/command lines run a file and are
+    # followed; S2 a read-only command names data, which is not followed; S3 a
+    # Python subprocess call runs its script; S4 another Python string is only
+    # a mention (a test subject), not part of the trigger closure.
+    with tempfile.TemporaryDirectory() as directory:
+        scripts = Path(directory)
+        (scripts / "gate.sh").write_text(
+            "# python3 scripts/ci/commented.py\nsource scripts/ci/_helper.sh\n"
+            "python3 scripts/ci/check_x.py\ngrep -q x scripts/ci/data.sh\n", encoding="utf-8")
+        (scripts / "_helper.sh").write_text("bash scripts/ci/deep.sh\n", encoding="utf-8")
+        (scripts / "data.sh").write_text("python3 scripts/ci/hidden.py\n", encoding="utf-8")
+        (scripts / "test_x.py").write_text(
+            "import subprocess\nsubprocess.run(['bash', 'scripts/ci/gate.sh'])\nSUBJECT = 'scripts/ci/data.sh'\n",
+            encoding="utf-8")
+        for name in ("commented.py", "check_x.py", "deep.sh", "hidden.py"):
+            (scripts / name).write_text("\n", encoding="utf-8")
+        assert script_closure("gate.sh", scripts) == ["_helper.sh", "check_x.py", "data.sh", "deep.sh"], "S1/S2"
+        assert "gate.sh" in script_closure("test_x.py", scripts), "S3"
+        assert "hidden.py" not in script_closure("test_x.py", scripts, mentions=True), "S2 data is not followed"
+        assert "data.sh" in script_closure("test_x.py", scripts, mentions=True), "S4 mention"
+        # Rule T: R1 a changed script selects the tests whose entry runs,
+        # reads or names it (test_x.py names data.sh, runs gate.sh); R2 an
+        # unrelated file selects nothing; R3 a test some pre-commit job already
+        # runs for that path is reported as covered, not run twice; R4 an
+        # orphan test_*.py that no gate names is still in the inventory.
+        (scripts / "check-all.sh").write_text("run static x python3 scripts/ci/check_x.py --self-test\n",
+                                              encoding="utf-8")
+        (scripts / "check_x.py").write_text("import _shared\n", encoding="utf-8")
+        (scripts / "_shared.py").write_text("\n", encoding="utf-8")
+        script_edges.cache_clear()  # check_x.py was rewritten after its edges were read
+        hooks = ("commit-checks:\n  jobs:\n    - name: x\n      glob: \"scripts/ci/_shared.py\"\n"
+                 "      run: python3 scripts/ci/check_x.py --self-test\n")
+        assert set(script_tests(scripts, hooks)) == {"python3 scripts/ci/check_x.py --self-test",
+                                                     "python3 scripts/ci/test_x.py"}, "R4"
+        picked = lambda path: {command: covered for command, _, covered
+                               in selected_script_tests([path], scripts, hooks)}
+        assert picked("scripts/ci/data.sh") == {"python3 scripts/ci/test_x.py": ""}, "R1 mention"
+        assert picked("scripts/ci/deep.sh") == {"python3 scripts/ci/test_x.py": ""}, "R1 runs"
+        assert picked("scripts/ci/hidden.py") == {}, "R2"
+        assert picked("docs/a.md") == {}, "R2"
+        # test_x.py runs gate.sh, which runs check_x.py, which imports _shared.py.
+        assert picked("scripts/ci/_shared.py") == {"python3 scripts/ci/check_x.py --self-test": "x",
+                                                   "python3 scripts/ci/test_x.py": ""}, "R3"
     print("generate_hooks self-test: generated globs follow their declarations")
+
+
+# A script's tests run on the commit that changes it (rule T). The test
+# inventory is what the gates already run: every scripts/ci self-test and
+# test_*.py named in a gate script, plus any test_*.py nothing names (an orphan
+# would otherwise never run). No second list is kept.
+TEST_COMMAND = re.compile(
+    r"python3 (?:-m unittest )?scripts/ci/(test_[A-Za-z0-9_]+\.py)\b"
+    r"|python3 scripts/ci/([A-Za-z0-9_]+\.py) --self-?test\b(?: (?!-)[a-z][a-z-]*)?"
+    r"|scripts/ci/([A-Za-z0-9_.-]+\.sh) --self-test\b")
+
+
+def script_tests(scripts: Path = SCRIPTS, hooks: str | None = None) -> dict[str, str]:
+    """``{command: entry script}`` for every test the gates run over ``scripts``."""
+    found: dict[str, str] = {}
+    sources = [path.read_text(encoding="utf-8") for path in sorted(scripts.glob("*.sh"))]
+    sources.append(HOOKS.read_text(encoding="utf-8") if hooks is None else hooks)
+    for source in sources:
+        for line in source.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            for match in TEST_COMMAND.finditer(line):
+                command = match.group(0).replace("--selftest", "--self-test").replace(" -m unittest", "")
+                found.setdefault(command, next(group for group in match.groups() if group))
+    imported = {module for test in scripts.glob("test_*.py") for module in local_imports(test.name, scripts)}
+    for test in sorted(scripts.glob("test_*.py")):
+        if test.name not in found.values() and test.name not in imported:
+            found[f"python3 scripts/ci/{test.name}"] = test.name
+    return found
+
+
+def hook_triggers(hooks: str) -> dict[str, list[str]]:
+    """Every pre-commit job's command body and rendered glob (``**/*`` when none)."""
+    triggers = {}
+    for name, block in command_blocks(hooks).items():
+        glob = re.search(r'(?m)^\s+glob: "(.*)"$', block)
+        triggers[name] = (_expand_braces(glob.group(1)) if glob else [UNIVERSAL], hook_run(block))
+    return triggers
+
+
+def selected_script_tests(paths: list[str], scripts: Path = SCRIPTS,
+                          hooks: str | None = None) -> list[tuple[str, str, str]]:
+    """``(command, reason, covered-by)`` for the tests a change to ``paths`` must run.
+
+    A test is selected when a changed path is its entry script, anything that
+    script runs or reads, or a file the entry itself names. A test some pre-commit job already runs for one
+    of these paths is reported as covered by that job instead of run twice.
+    """
+    changed = {path.removeprefix("scripts/ci/") for path in paths if path.startswith("scripts/ci/")}
+    if not changed:
+        return []
+    hooks = HOOKS.read_text(encoding="utf-8") if hooks is None else hooks
+    jobs = hook_triggers(hooks)
+    selected = []
+    for command, entry in script_tests(scripts, hooks).items():
+        # The entry, what it runs or reads, and what the entry itself names
+        # (its subject); names inside its helpers are their data, not tests.
+        subjects = {entry, *script_closure(entry, scripts), *script_edges(entry, scripts)[2]} & changed
+        if not subjects:
+            continue
+        subject = sorted(subjects)[0]
+        covering = sorted(job for job, (patterns, body) in jobs.items() if command in body
+                          and any(glob_matches(pattern, f"scripts/ci/{name}") for pattern in patterns
+                                  for name in subjects))
+        selected.append((command, f"scripts/ci/{subject}", covering[0] if covering else ""))
+    return selected
+
+
+def run_script_tests(paths: list[str]) -> int:
+    """Run every selected test not already run by another pre-commit job."""
+    import subprocess
+    import time
+    failed = []
+    for command, reason, covered in selected_script_tests(paths):
+        if covered:
+            print(f"↷ {command} (runs in pre-commit job {covered})", flush=True)
+            continue
+        started = time.monotonic()
+        result = subprocess.run(shlex.split(command), cwd=ROOT, capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL)
+        took = time.monotonic() - started
+        if result.returncode == 0:
+            print(f"✓ {command} ({took:.1f}s; tests {reason})", flush=True)
+            continue
+        failed.append(command)
+        print(f"✗ {command} (exit {result.returncode}; tests {reason})\n"
+              + "\n".join((result.stdout + result.stderr).splitlines()[-60:]))
+    if failed:
+        print("\nrule: a changed CI script's own tests run on the commit that changes it\n"
+              "fix: make the failing tests above pass; rerun one with the printed command", file=sys.stderr)
+        return 1
+    return 0
+
+
+def explain(paths: list[str]) -> list[str]:
+    """Why each pre-commit job and script test runs (or not) for ``paths``."""
+    lines = []
+    hooks = HOOKS.read_text(encoding="utf-8")
+    for job, (patterns, _) in hook_triggers(hooks).items():
+        hits = [(path, pattern) for path in paths for pattern in patterns if glob_matches(pattern, path)]
+        lines.append(f"{'runs ' if hits else 'skips'} {job}"
+                     + (f": {hits[0][0]} matches {hits[0][1]}" if hits else ""))
+    for command, reason, covered in selected_script_tests(paths, hooks=hooks):
+        lines.append(f"test  {command}: tests {reason}" + (f" (inside {covered})" if covered else ""))
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -924,10 +1224,19 @@ def main(argv: list[str] | None = None) -> int:
         help="fail when lefthook.yml is stale, printing the diff",
     )
     parser.add_argument("--self-test", action="store_true", help="run the decision table")
+    parser.add_argument("--script-tests", nargs="*", metavar="PATH",
+                        help="run the tests of the changed scripts/ci files (pre-commit rule T)")
+    parser.add_argument("--explain", nargs="+", metavar="PATH",
+                        help="print which pre-commit jobs and script tests these paths start, and why")
     args = parser.parse_args(argv)
 
     if args.self_test:
         selftest()
+        return 0
+    if args.script_tests is not None:
+        return run_script_tests(args.script_tests)
+    if args.explain:
+        print("\n".join(explain(args.explain)))
         return 0
 
     current = HOOKS.read_text(encoding="utf-8")

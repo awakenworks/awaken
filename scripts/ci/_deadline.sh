@@ -25,6 +25,42 @@ awaken_host_cargo_directory() {
   printf '%s\n' "$directory"
 }
 
+# One line: who holds the host build lane now and how many wait. Reads the
+# host admission queue (the `cargo` wrapper's own records); informational only.
+awaken_admission_holder() {
+  python3 - "${AWAKEN_ADMISSION_STATE:-$HOME/.local/state/awaken-worktree-gc}" <<'PY'
+import json, sys, time
+from pathlib import Path
+holder, queued = None, 0
+for ticket in sorted((Path(sys.argv[1]) / "admission-queue").glob("*.json")):
+    try:
+        record = json.loads(Path(json.loads(ticket.read_text())["observation"]).read_text())
+    except (OSError, ValueError, KeyError, TypeError):
+        continue
+    if record.get("status") == "queued":
+        queued += 1
+    elif record.get("holds_execution_lane") and record.get("status") in ("admission", "running"):
+        holder = record
+if holder is None:
+    print(f"no current holder recorded; {queued} queued")
+else:
+    held = time.time() - (holder.get("lane_started_at_unix") or holder.get("created_at_unix") or time.time())
+    command = " ".join(str(item) for item in holder.get("arguments", []))[:120]
+    print(f"held {held:.0f}s by pid {holder.get('pid')} ({holder.get('workload_kind', '?')}) "
+          f"in {holder.get('cwd', '?')}: cargo {command}; {queued} queued")
+PY
+}
+
+# Print the wait and the current holder every 30 s until <marker> exists.
+awaken_report_admission_wait() {
+  local marker="$1" waited=0
+  while sleep 30; do
+    [ ! -e "$marker" ] || return 0
+    waited=$((waited + 30))
+    echo "[admission] waiting ${waited}s for the host build lane; $(awaken_admission_holder 2>/dev/null || echo 'holder unknown')" >&2
+  done
+}
+
 run_with_deadline() (
   local admitted_job=0 cooperative_job=0
   if [ "${1:-}" = --admit ]; then

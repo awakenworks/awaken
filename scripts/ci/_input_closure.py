@@ -58,6 +58,9 @@ INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/*.py")
 ROOT = Path(__file__).resolve().parents[2]
 # Flags that make a checker write a baseline or the index; the audit drops them.
 WRITE_FLAGS = frozenset({"--stage", "--tighten"})
+# A mode that runs other tests (rule T in generate_hooks.py) is not a checker:
+# what it reads is what the selected tests read, so it is not an audit subject.
+RUNNER_FLAGS = frozenset({"--script-tests"})
 STAGED_FILES = "{staged_files}"
 
 
@@ -188,6 +191,8 @@ def invocations(hooks: str) -> list[tuple[str, list[str]]]:
                 continue
             words = shlex.split(part)
             if len(words) >= 2 and words[0] == "python3" and re.fullmatch(r"scripts/ci/\w+\.py", words[1]):
+                if RUNNER_FLAGS & set(words):
+                    continue  # a test runner's reads are its tests', which own their own inputs
                 found.append((command, words[1:]))
     return found
 

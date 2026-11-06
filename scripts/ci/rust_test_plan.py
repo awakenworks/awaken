@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter, deque
+from collections import deque
 import contextlib
 import hashlib
 import io
@@ -26,7 +26,18 @@ from _crate_boundary_workspace import crate_manifests
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / ".config/rust-tests.toml"
-INPUT_GLOBS = ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/**', 'fuzz/**', 'apps/**', 'tests/**', 'xtask/**', 'e2e/fixtures/**', '.cargo/**', '.config/**', 'scripts/ci/**', 'lefthook.yml', 'scripts/ci/test_inventory.txt', 'scripts/ci/modularity_baseline.json')
+# Rust build inputs (R): what Cargo reads to resolve and compile the graph.
+# The gate's own scripts (G) are not declared here: generate_hooks.py derives
+# them from what check-rust.sh actually runs, so a docs or unrelated CI-script
+# change never starts the Rust gate, and a gate-script change runs only the
+# steps that execute it (gate_plan below).
+INPUT_GLOBS = ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'deny.toml', '.cargo/**', '.config/**',
+               'crates/**', 'fuzz/**', 'apps/**', 'tests/**', 'xtask/**', 'e2e/fixtures/**')
+GATE = "check-rust.sh"
+# The selector itself: a change here can alter what every other path selects,
+# so it never narrows its own run. Their Python imports and the helpers the
+# gate sources for every step count as the selector too.
+SELECTOR = ("rust_test_plan.py", "crate_test.py", "generate_hooks.py", GATE)
 
 
 def workspace_features() -> str:
@@ -124,21 +135,87 @@ def affected_packages(metadata: dict, changed: list[str], root: Path = ROOT) -> 
 
 
 # Scope decision table for the separate-graph gate steps (check-rust.sh and the
-# public API gate). P1 no changed path is a declared Rust gate input (this
-# planner's INPUT_GLOBS and the SDK consumer checker's, matched the way the
-# rendered hook globs match) -> "none". P2 every input lies in a member crate ->
-# "packages": the changed owners and their transitive consumers. P3 a manifest,
-# lockfile, toolchain, Cargo config, gate script or other unowned input ->
-# "whole": every member stays selected, exactly as before scoping existed.
-def gate_inputs() -> tuple[str, ...]:
-    declared = generate_hooks.declared_input_globs(ROOT / "scripts/ci")
-    return tuple(dict.fromkeys((*INPUT_GLOBS, *declared["check_sdk_consumer.py"])))
+# public API gate). Three scopes, plus the gate scripts a change reaches:
+# P1 no Rust build input (R) and no gate script (G) changed -> "none".
+# P2 a selector (SELECTOR, its imports, a helper the gate sources) changed, or
+#    any G file of a gate other than check-rust.sh -> "whole" (fail-closed).
+# P3 a manifest, lockfile, toolchain, Cargo config or unowned R input -> "whole".
+# P4 R inputs inside member crates -> "packages": changed owners and their
+#    transitive consumers.
+# P5 only G files changed -> "packages" with no package; the steps whose
+#    command runs a changed G file (the `script=` lines) still run.
+HOOK_MODES = ("--quick", "--push")
+
+
+def gate_scripts(entry: str = GATE, modes: tuple[str, ...] = HOOK_MODES) -> set[str]:
+    """G: every scripts/ci file the gate runs or reads in the given hook modes."""
+    names = {entry, *generate_hooks.script_closure(entry)}
+    if entry == GATE:
+        names = {entry}
+        for mode in modes:
+            for name in generate_hooks.invoked_scripts(f"run: scripts/ci/{GATE} {mode}"):
+                names |= {name, *generate_hooks.script_closure(name)}
+    return {f"scripts/ci/{name}" for name in names}
+
+
+def selector_scripts(entry: str = GATE) -> set[str]:
+    names = set(SELECTOR)
+    for name in SELECTOR:
+        if name.endswith(".py"):
+            names |= set(generate_hooks.local_imports(name))
+    gate = (ROOT / "scripts/ci" / GATE).read_text(encoding="utf-8")
+    names |= set(re.findall(r"(?m)^source scripts/ci/([A-Za-z0-9_.-]+)$", gate))
+    if entry != GATE:
+        names |= {entry, *generate_hooks.script_closure(entry)}
+    return {f"scripts/ci/{name}" for name in names}
+
+
+def gate_inputs(modes: tuple[str, ...] = HOOK_MODES) -> tuple[str, ...]:
+    """R plus G: every path whose change can alter what the Rust gate runs."""
+    return tuple(dict.fromkeys((*rust_inputs(), *sorted(gate_scripts(GATE, modes)))))
+
+
+def rust_inputs() -> tuple[str, ...]:
+    """R: this planner's declaration plus the out-of-workspace SDK consumer's."""
+    declared = generate_hooks.input_globs_of(ROOT / "scripts/ci/check_sdk_consumer.py") or ()
+    sdk = (glob for glob in declared if not glob.startswith("scripts/"))
+    return tuple(dict.fromkeys((*INPUT_GLOBS, *sdk)))
+
+
+def gate_plan(metadata: dict, changed: list[str], root: Path = ROOT, entry: str = GATE,
+              modes: tuple[str, ...] = HOOK_MODES) -> tuple[str, list[str], str, list[str]]:
+    """(scope, packages, reason, reached gate scripts) for one change set."""
+    rust = rust_inputs()
+    built = [path for path in changed if any(generate_hooks.glob_matches(glob, path) for glob in rust)]
+    gate = gate_scripts(entry, modes)
+    scripts = [path for path in changed if path in gate]
+    if not built and not scripts:
+        return "none", [], "no Rust build input or gate script changed", []
+    everything = sorted(p["name"] for p in crate_test._members(metadata).values())
+    selector = [path for path in scripts if path in selector_scripts(entry)]
+    if selector or (entry != GATE and scripts):
+        return "whole", everything, "gate selector changed: " + (selector or scripts)[0], []
+    reached = sorted(name for name in (path.removeprefix("scripts/ci/") for path in gate)
+                     if f"scripts/ci/{name}" in scripts
+                     or set(scripts) & {f"scripts/ci/{item}" for item in generate_hooks.script_closure(name)})
+    if not built:
+        return "packages", [], "only gate scripts changed: " + ", ".join(scripts), reached
+    selected, reason = affected_packages(metadata, built, root)
+    if reason == "changed owners and transitive consumers, including test dependencies":
+        return "packages", selected, reason, reached
+    return "whole", selected, reason, reached
 
 
 def gate_scope(metadata: dict, changed: list[str], root: Path = ROOT,
                inputs: tuple[str, ...] | None = None) -> tuple[str, list[str], str]:
-    """Classify a change as "none", "packages" or "whole" for a scoped gate step."""
-    inputs = gate_inputs() if inputs is None else inputs
+    """Classify a change as "none", "packages" or "whole" for a scoped gate step.
+
+    With ``inputs``, only that declared subset is classified by ownership (no
+    gate-script rule); callers use it to ask about one external input set.
+    """
+    if inputs is None:
+        kind, selected, reason, _ = gate_plan(metadata, changed, root)
+        return kind, selected, reason
     relevant = [path for path in changed if any(generate_hooks.glob_matches(glob, path) for glob in inputs)]
     if not relevant:
         return "none", [], "no declared Rust gate input changed"
@@ -146,114 +223,6 @@ def gate_scope(metadata: dict, changed: list[str], root: Path = ROOT,
     if reason == "changed owners and transitive consumers, including test dependencies":
         return "packages", selected, reason
     return "whole", selected, reason
-
-
-
-# These are data inputs to whole-tree static checks, not executable inputs.
-# Keep INPUT_GLOBS and gate_scope conservative: public API and push qualification
-# retain their existing policy. Only the explicit local affected-test planner
-# may separate these inputs, and it must run the complete static lane first.
-# Exact data inputs are derived from this owner's input declaration. The
-# content classifier below still rejects every path except its two schemas.
-STATIC_EXECUTION_INPUTS = frozenset(
-    path for path in INPUT_GLOBS
-    if path.endswith((".txt", ".json")) and not any(char in path for char in "*?[")
-)
-
-
-def static_metadata_tightens(path: str, before: bytes, after: bytes) -> bool:
-    """Recognize only pointwise stronger floors/ceilings under the same schema."""
-    try:
-        old_text, new_text = before.decode("utf-8"), after.decode("utf-8")
-        if path == "scripts/ci/test_inventory.txt":
-            old, new = (Counter(line for line in text.splitlines() if line)
-                        for text in (old_text, new_text))
-            names = set(old) | set(new)
-            return (all(re.fullmatch(r"\$?[^\W\d]\w*", name) for name in names)
-                    and all(new[name] >= count for name, count in old.items()))
-        if path != "scripts/ci/modularity_baseline.json":
-            return False
-
-        def unique(pairs):
-            value = {}
-            for key, item in pairs:
-                if key in value:
-                    raise ValueError("duplicate metadata key")
-                value[key] = item
-            return value
-
-        old, new = (json.loads(text, object_pairs_hook=unique)
-                    for text in (old_text, new_text))
-        numeric = {"super-glob", "module-cycle", "long-function", "crate-line-ceiling"}
-        structured = {"impl-spread": {"files", "methods"}, "crate-budget": {"deps"}}
-        frozen = {"unreachable-pub-pending", "growth_reasons", "$comment"}
-        if (not isinstance(old, dict) or not isinstance(new, dict)
-                or old.keys() != new.keys()
-                or set(old) - numeric - structured.keys() - frozen):
-            return False
-
-        def ceiling(a, b):
-            return type(a) is int and type(b) is int and 0 <= b <= a
-
-        for rule in old:
-            a, b = old[rule], new[rule]
-            if rule in frozen:
-                if json.dumps(a, sort_keys=True) != json.dumps(b, sort_keys=True):
-                    return False
-                continue
-            if not isinstance(a, dict) or not isinstance(b, dict) or a.keys() != b.keys():
-                return False
-            for key in a:
-                if rule in numeric:
-                    if not ceiling(a[key], b[key]):
-                        return False
-                    continue
-                previous, candidate = a[key], b[key]
-                allowed = structured[rule]
-                required = allowed
-                if (not isinstance(previous, dict) or not isinstance(candidate, dict)
-                        or previous.keys() != candidate.keys()
-                        or set(previous) - allowed - {"reason"}
-                        or not required <= previous.keys()
-                        or not isinstance(previous.get("reason"), str)
-                        or not previous["reason"].strip()
-                        or previous["reason"] != candidate.get("reason")):
-                    return False
-                if any(not ceiling(previous[field], candidate[field])
-                       for field in previous.keys() & allowed):
-                    return False
-        return True
-    except (UnicodeError, ValueError, TypeError, RecursionError):
-        return False
-
-
-def rust_execution_inputs(base: str, changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str]]:
-    """Preserve base/index/WT axes; a cancelling or ambiguous edit stays global."""
-    runtime, static = [], []
-    for path in changed:
-        admitted = False
-        if path in STATIC_EXECUTION_INPUTS:
-            try:
-                read = lambda *args: formal_sources.git_output(root, *args)
-                tree = read("ls-tree", "-z", base, "--", path).split(b"\0")
-                index = read("ls-files", "--stage", "-z", "--", path).split(b"\0")
-                tree, index = [item for item in tree if item], [item for item in index if item]
-                target = root / path
-                if (len(tree) == len(index) == 1
-                        and tree[0].split(b"\t", 1)[0].split()[:2] == [b"100644", b"blob"]
-                        and index[0].split(b"\t", 1)[0].split()[::2] == [b"100644", b"0"]
-                        and not target.is_symlink()
-                        and target.resolve().is_relative_to(root.resolve())):
-                    original = read("show", base + ":" + path)
-                    staged = formal_sources.file_bytes(root, path, True)
-                    working = formal_sources.file_bytes(root, path, False)
-                    if staged is not None and working is not None:
-                        admitted = (static_metadata_tightens(path, original, staged)
-                                    and static_metadata_tightens(path, staged, working))
-            except (OSError, ValueError, IndexError, subprocess.CalledProcessError):
-                pass  # Unknown inputs retain the original whole fallback.
-        (static if admitted else runtime).append(path)
-    return runtime, static
 
 
 def git_output(*arguments: str) -> bytes:
@@ -290,42 +259,22 @@ def changed_sources(base: str) -> list[str]:
     ) - {""})
 
 
-def compile_scope(metadata: dict, changed: list[str], original: list[str], root: Path = ROOT, target_reason: str = "") -> tuple[list[str], list[str], str]:
-    """Keep every Cargo peer that can contribute to a retained dependency unit.
-
-    This deliberately uses package overlap, not a feature solver. If an excluded
-    root shares no resolved package with the retained closure, its normal/dev/
-    build requests cannot change any retained unit's features. Ambiguous flags,
-    global inputs, no changed source or a whole connected component stay whole.
-    """
-    selected, reason = affected_packages(metadata, changed, root)
-    packages = {p["name"]: p for p in metadata["packages"] if p["id"] in metadata["workspace_members"]}
-    if target_reason:
-        return original, sorted(packages), "whole: " + target_reason
-    if not selected or len(selected) == len(packages) or reason != "changed owners and transitive consumers, including test dependencies":
-        return original, sorted(packages), "whole: " + reason
-    if original[:4] != ["cargo", "check", "--workspace", "--all-targets"]:
-        return original, sorted(packages), "whole: unsupported compile command shape"
-    flags = original[4:]
-    feature_owners: set[str] = set()
-    index = 0
-    while index < len(flags):
-        argument = flags[index]
-        if argument in ("--locked", "--message-format=json", "--timings"):
-            index += 1
-        elif argument == "--features" and index + 1 < len(flags):
-            for feature in flags[index + 1].replace(" ", ",").split(","):
-                owner, separator, name = feature.partition("/")
-                if not separator or not name or owner not in packages:
-                    return original, sorted(packages), "whole: unowned compile feature"
-                feature_owners.add(owner)
-            index += 2
+def explain(changed: list[str], entry: str = GATE, modes: tuple[str, ...] = HOOK_MODES) -> list[str]:
+    """One line per changed path: why the gate counts it (or ignores it)."""
+    rust = rust_inputs()
+    gate, selector = gate_scripts(entry, modes), selector_scripts(entry)
+    lines = []
+    for path in changed:
+        if path in selector:
+            why = "gate selector -> whole gate"
+        elif path in gate:
+            why = "gate script -> the steps that run it"
+        elif any(generate_hooks.glob_matches(glob, path) for glob in rust):
+            why = "Rust build input -> owners and consumers (whole if unowned or a manifest)"
         else:
-            return original, sorted(packages), "whole: unsupported target/profile/config flag"
-    names = crate_test.peer_packages(metadata, {*selected, *feature_owners})
-    if len(names) == len(packages):
-        return original, names, "whole: shared-unit peer closure reaches the workspace"
-    return ["cargo", "check", *(part for name in names for part in ("-p", name)), "--all-targets", *flags], names, "affected owners and all potentially shared-unit contributing peers"
+            why = "not a Rust gate input -> ignored"
+        lines.append(f"explain: {path}: {why}")
+    return lines
 
 
 class PlanTests(unittest.TestCase):
@@ -356,7 +305,7 @@ class PlanTests(unittest.TestCase):
         from formal_sources import detached_git_environment
         self.detached_environment = detached_git_environment
         # Fixtures author their compile graph; caller linker/target overrides
-        # are independent inputs exercised by native_graph_reason's own table.
+        # are independent inputs.
         values = {key: value for key, value in detached_git_environment().items()
                   if key not in crate_test.COMPILE_ENVIRONMENT_OVERRIDES}
         environment = mock.patch.dict(os.environ, values, clear=True)
@@ -372,8 +321,8 @@ class PlanTests(unittest.TestCase):
         self.git(root, "config", "user.email", "planner@example.invalid", environment=environment)
         self.git(root, "config", "commit.gpgsign", "false", environment=environment)
         self.git(root, "config", "core.hooksPath", str(Path(directory) / "no-hooks"), environment=environment)
-        from formal_plan import script_closure
-        for relative in script_closure(ROOT, ("scripts/ci/rust_test_plan.py",)):
+        for relative in ("scripts/ci/rust_test_plan.py",
+                         *(f"scripts/ci/{name}" for name in generate_hooks.script_closure("rust_test_plan.py"))):
             script = root / relative
             script.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative, script)
@@ -400,170 +349,6 @@ class PlanTests(unittest.TestCase):
     def git(self, root: Path, *arguments: str, environment: dict | None = None) -> bytes:
         return subprocess.check_output(["git", "-C", str(root), *arguments],
                                        env=self.detached_environment() if environment is None else environment, stderr=subprocess.PIPE)
-
-    def test_static_metadata_admits_only_pointwise_stronger_original_shapes(self) -> None:
-        self.assertEqual(STATIC_EXECUTION_INPUTS, frozenset({
-            "scripts/ci/test_inventory.txt", "scripts/ci/modularity_baseline.json",
-        }))
-        floor = "scripts/ci/test_inventory.txt"
-        for before, after, expected in [
-            (b"kept\nkept\n", b"kept\nkept\nnew\n", True),
-            (b"kept\nkept\n", b"kept\nnew\nnew\n", False),
-            (b"kept\n", b"kept\n", True),
-            (b"kept\n", b"replacement\n", False),
-            (b"kept\n", b"kept\n invalid \n", False),
-            (b"$name\n", b"$name\nother\n", True),
-        ]:
-            with self.subTest(before=before, after=after):
-                self.assertEqual(static_metadata_tightens(floor, before, after), expected)
-        path = "scripts/ci/modularity_baseline.json"
-        old = {"impl-spread": {"crate::Owner": {"files": 4, "methods": 58, "reason": "split owner"}},
-               "super-glob": {"crate": 3}, "unreachable-pub-pending": ["pending"],
-               "crate-line-ceiling": {"crate": 6000}, "crate-budget": {"crate": {"deps": 3, "reason": "review"}}}
-        encode = lambda value: json.dumps(value).encode()
-        new = json.loads(json.dumps(old)); new["impl-spread"]["crate::Owner"]["methods"] = 57
-        new["crate-line-ceiling"]["crate"] = 5500; new["crate-budget"]["crate"]["deps"] = 2
-        self.assertTrue(static_metadata_tightens(path, encode(old), encode(new)))
-        for fault in ("increase", "boolean", "negative", "float", "reason", "remove", "new-key", "pending", "unknown",
-                      "ceiling-raise", "ceiling-new", "budget-lines", "budget-deps"):
-            candidate = json.loads(json.dumps(new))
-            row = candidate["impl-spread"]["crate::Owner"]
-            if fault == "increase": candidate["super-glob"]["crate"] = 4
-            elif fault == "boolean": row["methods"] = True
-            elif fault == "negative": row["methods"] = -1
-            elif fault == "float": row["methods"] = 57.0
-            elif fault == "reason": row["reason"] = "another review"
-            elif fault == "remove": del candidate["impl-spread"]["crate::Owner"]
-            elif fault == "new-key": candidate["super-glob"]["other"] = 0
-            elif fault == "pending": candidate["unreachable-pub-pending"] = []
-            elif fault == "ceiling-raise": candidate["crate-line-ceiling"]["crate"] = 6001
-            elif fault == "ceiling-new": candidate["crate-line-ceiling"]["other"] = 1000
-            elif fault == "budget-lines": candidate["crate-budget"]["crate"]["lines"] = 1
-            elif fault == "budget-deps": candidate["crate-budget"]["crate"]["deps"] = 4
-            else: candidate["future-rule"] = {}
-            with self.subTest(fault=fault):
-                self.assertFalse(static_metadata_tightens(path, encode(old), encode(candidate)))
-        self.assertFalse(static_metadata_tightens(path, b'{"super-glob":{},"super-glob":{}}', b'{}'))
-        self.assertFalse(static_metadata_tightens(path, b"not-json", encode(new)))
-        self.assertFalse(static_metadata_tightens("scripts/ci/unknown.json", b"{}", b"{}"))
-        self.assertFalse(static_metadata_tightens(path, b'{"growth_reasons":{"opaque":1}}',
-                                                  b'{"growth_reasons":{"opaque":true}}'))
-        self.assertFalse(static_metadata_tightens(path, b"[" * 1500, b"{}"))
-
-    def test_execution_scope_separates_static_plans_without_executing_or_accepting_races(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root, metadata = self.fixture_repository(directory)
-            name = "scripts/ci/test_inventory.txt"
-            file = root / name
-            file.write_bytes(b"kept\n")
-            self.git(root, "add", name)
-            self.git(root, "commit", "--quiet", "-m", "floor")
-            file.write_bytes(b"kept\nadded\n")
-            original_output = subprocess.check_output
-            original_scope = gate_scope
-            for flag, race in (("--gate-scope", False), ("--execution-scope", False),
-                               ("--execution-scope", True)):
-                with self.subTest(flag=flag, race=race):
-                    printed, errors = io.StringIO(), io.StringIO()
-                    def output(command, **kwargs):
-                        if Path(command[0]).stem.lower() == "cargo":
-                            if race:
-                                file.write_bytes(b"kept\nadded\nlate\n")
-                            return json.dumps(metadata).encode()
-                        return original_output(command, **kwargs)
-                    with mock.patch.dict(globals(), ROOT=root), \
-                            mock.patch.object(sys, "argv", [__file__, flag, "--base", "HEAD"]), \
-                            mock.patch.dict(globals(), gate_scope=lambda m, paths: original_scope(m, paths, root, ("scripts/ci/**", "crates/**"))), \
-                            mock.patch.object(subprocess, "check_output", side_effect=output), \
-                            mock.patch.object(crate_test, "execute_commands") as execution, \
-                            contextlib.redirect_stdout(printed), contextlib.redirect_stderr(errors):
-                        status = main()
-                    execution.assert_not_called()
-                    if race:
-                        self.assertNotEqual(status, 0)
-                        self.assertEqual(printed.getvalue(), "")
-                        self.assertIn("Source changed during execution-scope planning", errors.getvalue())
-                    elif flag == "--gate-scope":
-                        self.assertEqual(status, 0, errors.getvalue())
-                        self.assertTrue(printed.getvalue().startswith("scope=whole\n"))
-                    else:
-                        self.assertEqual(status, 0, errors.getvalue())
-                        plan = json.loads(printed.getvalue())
-                        self.assertEqual((plan["scope"], plan["packages"], plan["static_inputs"]),
-                                         ("none", [], [name]))
-                        self.assertEqual(plan["static_scope"], "whole")
-                        self.assertFalse(plan["execution_performed"])
-                        self.assertFalse(plan["full_gate"])
-                        self.assertEqual(len(plan["source_digest"]), 64)
-
-    def test_static_execution_partition_preserves_index_working_and_unknown_inputs(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root, metadata = self.fixture_repository(directory)
-            name = "scripts/ci/test_inventory.txt"
-            file = root / name
-            file.write_bytes(b"kept\n")
-            self.git(root, "add", name)
-            self.git(root, "commit", "--quiet", "-m", "floor")
-            file.write_bytes(b"kept\nadded\n")
-            self.git(root, "add", name)
-            file.write_bytes(b"kept\n")
-            # The index grew but WT weakened it. HEAD->WT equality must not hide it.
-            self.assertEqual(rust_execution_inputs("HEAD", [name], root), ([name], []))
-            file.write_bytes(b"kept\nadded\nmore\n")
-            cause = "crates/kernel/src/lib.rs"
-            self.assertEqual(rust_execution_inputs("HEAD", [name, cause], root), ([cause], [name]))
-            declared = ("scripts/ci/**", "crates/**", "Cargo.lock", "examples/sdk-consumer/**")
-            runtime, static = rust_execution_inputs("HEAD", [name, cause], root)
-            self.assertEqual(gate_scope(metadata, runtime, root, declared)[0], "packages")
-            self.assertEqual(gate_scope(metadata, [name, cause], root, declared)[0], "whole")
-            for unknown in ("Cargo.lock", "scripts/ci/test_inventory_ledger.json",
-                            "scripts/ci/check_test_inventory.py", "examples/sdk-consumer/src/main.rs"):
-                runtime, _ = rust_execution_inputs("HEAD", [name, unknown], root)
-                self.assertEqual(gate_scope(metadata, runtime, root, declared)[0], "whole")
-            with mock.patch.object(Path, "is_symlink", return_value=True):
-                self.assertEqual(rust_execution_inputs("HEAD", [name], root), ([name], []))
-            self.assertEqual(rust_execution_inputs("HEAD", [name, "Cargo.lock"], root), (["Cargo.lock"], [name]))
-            file.unlink()
-            self.assertEqual(rust_execution_inputs("HEAD", [name], root), ([name], []))
-
-    def test_local_static_lane_precedes_rust_and_failure_never_runs_rust(self) -> None:
-        execute = crate_test.execute_commands
-        for with_rust in (False, True):
-            for static_status in (0, 23):
-                with self.subTest(with_rust=with_rust, static_status=static_status), tempfile.TemporaryDirectory() as directory:
-                    root, metadata = self.fixture_repository(directory)
-                    name = "scripts/ci/test_inventory.txt"
-                    (root / name).write_bytes(b"kept\n")
-                    self.git(root, "add", name)
-                    self.git(root, "commit", "--quiet", "-m", "floor")
-                    (root / name).write_bytes(b"kept\nnew\n")
-                    if with_rust:
-                        (root / "crates/kernel/src/lib.rs").write_text("pub const VALUE: u8 = 2;\n")
-                    calls = []
-                    def run(command, **kwargs):
-                        calls.append(command)
-                        status = static_status if "--group" in command else 0
-                        return subprocess.CompletedProcess(command, status)
-                    def execute_plan(commands, environment, **kwargs):
-                        return execute(commands, environment, run=run, **kwargs)
-                    target = Path(directory) / "evidence"
-                    with mock.patch.dict(globals(), ROOT=root, PROFILE=root / ".config/rust-tests.toml"), \
-                            mock.patch.object(crate_test, "full_graph_metadata", return_value=metadata), \
-                            mock.patch.object(crate_test, "execute_commands", side_effect=execute_plan), \
-                            mock.patch.dict(os.environ, CARGO_TARGET_DIR=str(target)), \
-                            mock.patch.object(sys, "argv", [__file__, "--base", "HEAD", "--run"]), \
-                            contextlib.redirect_stdout(io.StringIO()):
-                        status = main()
-                    self.assertEqual(status, static_status)
-                    self.assertIn("--group", calls[0])
-                    self.assertEqual(calls[0][-1], "static")
-                    self.assertEqual(len(calls), 1 + int(with_rust and not static_status))
-                    receipt = json.loads(next((target / "test-timings").glob("affected-*.json")).read_text())
-                    self.assertEqual(receipt["static_inputs"], [name])
-                    self.assertEqual(receipt["static_scope"], "whole")
-                    self.assertFalse(receipt["full_gate"])
-                    self.assertTrue(receipt["source_unchanged"])
-                    self.assertEqual(receipt["selected_packages"], ["application", "cli", "kernel"] if with_rust else [])
 
     def test_production_selection_leaves_out_tooling_and_test_support(self) -> None:
         # S1 a tooling crate -> --exclude, none of its features. S2 test-support,
@@ -592,9 +377,10 @@ class PlanTests(unittest.TestCase):
                              ["--exclude=kit", "--features", "product/implicit,product/postgres"])
 
     def test_gate_scope_follows_the_decision_table(self) -> None:
-        # P1 no declared Rust gate input -> none; P2 member sources -> owners
-        # plus transitive consumers; P3 a manifest, lockfile, gate script or an
-        # unowned declared input (the SDK consumer workspace) -> whole.
+        # P1 no R and no G input -> none; P4 member sources -> owners plus
+        # transitive consumers; P3 a manifest, lockfile or unowned R input
+        # (the SDK consumer workspace) -> whole. With an explicit input set the
+        # ownership classification alone applies (external callers).
         root = Path("/repository")
         names = ("kernel", "application", "cli", "other")
         edges = {"kernel": (), "application": ("kernel",), "cli": ("application",), "other": ()}
@@ -622,8 +408,43 @@ class PlanTests(unittest.TestCase):
                     self.assertEqual(actual_packages, packages)
         declared = gate_inputs()
         for path in ("crates/sdk/runtime/awaken-runtime/src/lib.rs", "Cargo.lock", "fuzz/Cargo.toml",
-                     "examples/sdk-consumer/Cargo.toml", "scripts/ci/check-rust.sh", "lefthook.yml"):
+                     "examples/sdk-consumer/Cargo.toml", "scripts/ci/check-rust.sh", "scripts/ci/check_sdk_consumer.py"):
             self.assertTrue(any(generate_hooks.glob_matches(glob, path) for glob in declared), path)
+        quick = gate_inputs(("--quick",))
+        for path in ("scripts/ci/check_formal.sh", "scripts/ci/test_formal_run_evidence.py", "lefthook.yml",
+                     "docs/design/test-validation.md", "scripts/ci/test_inventory.txt"):
+            self.assertFalse(any(generate_hooks.glob_matches(glob, path) for glob in quick), path)
+
+    def test_gate_plan_separates_rust_inputs_gate_scripts_and_the_selector(self) -> None:
+        # G1 a CI script the gate never runs -> none (rust-quick has nothing to
+        # do); G2 a gate script that is not the selector -> packages with no
+        # package, and the reached script names its steps; G3 the selector or
+        # a helper the gate sources -> whole; G4 R plus G -> owners and the
+        # reached script; G5 any script of another gate's closure -> whole.
+        root = Path("/repository")
+        names = ("kernel", "other")
+        metadata = {
+            "workspace_members": list(names),
+            "packages": [{"id": n, "name": n, "manifest_path": str(root / "crates" / n / "Cargo.toml")} for n in names],
+            "resolve": {"nodes": [{"id": n, "deps": []} for n in names]},
+        }
+        self.assertEqual(gate_plan(metadata, ["scripts/ci/check_formal.sh", "docs/a.md"], root,
+                                   modes=("--quick",))[0], "none", "G1")
+        self.assertEqual(gate_plan(metadata, ["scripts/ci/test_formal_run_evidence.py"], root)[0], "none", "G1")
+        kind, packages, reason, reached = gate_plan(metadata, ["scripts/ci/check_dependency_sources.py"], root)
+        self.assertEqual((kind, packages), ("packages", []), reason)
+        self.assertIn("check_dependency_sources.py", reached, "G2")
+        self.assertNotIn("check_rustfmt.py", reached, "G2 unrelated steps stay skipped")
+        for selector in ("scripts/ci/rust_test_plan.py", "scripts/ci/crate_test.py", "scripts/ci/generate_hooks.py",
+                         "scripts/ci/check-rust.sh", "scripts/ci/_cargo_target.sh", "scripts/ci/formal_sources.py"):
+            with self.subTest(selector=selector):
+                self.assertEqual(gate_plan(metadata, [selector], root)[:2], ("whole", list(names)), "G3")
+        kind, packages, _, reached = gate_plan(
+            metadata, ["crates/kernel/src/lib.rs", "scripts/ci/check_sdk_consumer.py"], root)
+        self.assertEqual((kind, packages), ("packages", ["kernel"]), "G4")
+        self.assertIn("check_sdk_consumer.py", reached, "G4")
+        public = gate_plan(metadata, ["scripts/ci/check_public_api.sh"], root, "check_public_api.sh")
+        self.assertEqual(public[0], "whole", "G5")
 
     def test_embedded_e2e_fixture_inputs_cannot_skip_rust_ownership(self) -> None:
         root = ROOT
@@ -641,7 +462,7 @@ class PlanTests(unittest.TestCase):
 
     def planner_cli(self, directory: str, root: Path, metadata: dict, *, metadata_status: int = 0,
                     execution_status: int = 0, mutate: str = "", broken_metadata: bool = False,
-                    run: bool = True, check_command: list[str] | None = None) -> tuple[subprocess.CompletedProcess, list[str], list[dict]]:
+                    run: bool = True) -> tuple[subprocess.CompletedProcess, list[str], list[dict]]:
         # The fixture controls the original subprocess boundary, not Cargo's
         # dependency solver or compile behavior. Real Git supplies the subject.
         outer = Path(directory)
@@ -701,8 +522,7 @@ else:
                            AWAKEN_FIXTURE_PROGRAM=sys.executable, AWAKEN_FIXTURE_SCRIPT=str(shim),
                            W41_FIXTURE_METADATA_STATUS=str(metadata_status), W41_FIXTURE_EXECUTION_STATUS=str(execution_status),
                            W41_FIXTURE_MUTATE=mutate, W41_FIXTURE_BROKEN=str(int(broken_metadata)))
-        result = subprocess.run([sys.executable, "-B", str(root / "scripts/ci/rust_test_plan.py"), "--base", "HEAD", *(["--run"] if run else []),
-                                 *(["--check-command", *check_command] if check_command is not None else [])],
+        result = subprocess.run([sys.executable, "-B", str(root / "scripts/ci/rust_test_plan.py"), "--base", "HEAD", *(["--run"] if run else [])],
                                 cwd=root, env=environment, capture_output=True, text=True)
         calls = [json.loads(line) for line in calls_path.read_text().splitlines()] if calls_path.exists() else []
         receipts = [json.loads(path.read_text()) for path in (target / "test-timings").glob("affected-*.json") if path.is_file()]
@@ -1073,138 +893,6 @@ else:
         with self.assertRaises(ValueError):
             affected_packages(metadata, ["crates/kernel/src/lib.rs"])
 
-    def test_compile_peer_closure_preserves_dependency_kinds_and_package_ids(self) -> None:
-        # B1/B2/B3/B4/B7 decision table: changed root + an excluded peer shares
-        # a dependency unit -> retain that peer regardless of default/dev/build/
-        # target/optional provenance. A peer connected only through a newly
-        # retained peer is also retained (fixed point). A different package ID
-        # with the same crate name, or a disjoint root, contributes no such unit.
-        # This is potential-contribution closure, not node.features equivalence.
-        original = ["cargo", "check", "--workspace", "--all-targets", "--features", "cli/pod", "--locked"]
-        names = ("kernel", "peer", "second", "cli", "other")
-        metadata = {
-            "workspace_members": list(names),
-            "packages": [{"id": n, "name": n, "manifest_path": str(ROOT / "crates" / n / "Cargo.toml")} for n in names]
-                        + [{"id": n, "name": "shared", "manifest_path": "/registry/shared/Cargo.toml"} for n in ("shared@1", "shared@2", "bridge")],
-            "resolve": {"nodes": [{"id": n, "deps": [{"name": "renamed", "pkg": d, "dep_kinds": [{"kind": kind, "target": "cfg(unix)"}]} for d in deps]}
-                                     for n, deps, kind in (("kernel", ("shared@1",), None), ("peer", ("shared@1", "bridge"), "dev"),
-                                                          ("second", ("bridge",), "build"), ("cli", (), None), ("other", ("shared@2",), None),
-                                                          ("shared@1", (), None), ("shared@2", (), None), ("bridge", (), None))]},
-        }
-        command, selected, reason = compile_scope(metadata, ["crates/kernel/src/lib.rs"], original)
-        self.assertEqual(selected, ["cli", "kernel", "peer", "second"])
-        self.assertEqual(command, ["cargo", "check", "-p", "cli", "-p", "kernel", "-p", "peer", "-p", "second", "--all-targets", *original[4:]])
-        self.assertIn("potentially", reason)
-        self.assertNotIn("-E", command)
-        # B12 diagnostic HTML timings change no target/feature selection and
-        # survive projection verbatim. Unknown timing formats stay whole.
-        timed, timed_selected, _ = compile_scope(metadata, ["crates/kernel/src/lib.rs"], [*original, '--timings'])
-        self.assertEqual(timed, [*command, '--timings'])
-        self.assertEqual(timed_selected, selected)
-        unknown = [*original, '--timings=json']
-        self.assertEqual(compile_scope(metadata, ["crates/kernel/src/lib.rs"], unknown)[0], unknown)
-        for kind in (None, "dev", "build"):
-            metadata["resolve"]["nodes"][1]["deps"][0]["dep_kinds"][0]["kind"] = kind
-            self.assertEqual(compile_scope(metadata, ["crates/kernel/src/lib.rs"], original)[1], selected)
-        metadata["resolve"]["nodes"][-1]["deps"] = [{"pkg": "shared@2"}]
-        self.assertEqual(compile_scope(metadata, ["crates/kernel/src/lib.rs"], original)[0], original)
-
-    def test_compile_whole_fallback_is_explicit_before_execution(self) -> None:
-        # B5/B6/B8/B9: clean/manual, docs-only, global/config/hooks/fuzz,
-        # manifests (owned too), deleted/unowned sources or an unsupported
-        # target/profile/feature request -> original whole argv, never no-work
-        # or an altered feature graph. Invalid metadata is refusal, not fallback.
-        with tempfile.TemporaryDirectory() as directory:
-            root, metadata = self.fixture_repository(directory)
-            original = ["cargo", "check", "--workspace", "--all-targets", "--locked"]
-            for paths in ([], ["docs/readme.md"], ["Cargo.lock"], [".cargo/config.toml"], [".config/rust-tests.toml"],
-                          ["lefthook.yml"], ["scripts/ci/crate_test.py"], ["fuzz/fuzz_targets/new.rs"],
-                          ["crates/kernel/Cargo.toml"], ["crates/deleted/src/lib.rs"],
-                          ["docs/readme.md", "crates/kernel/Cargo.toml"], ["docs/readme.md", "lefthook.yml"]):
-                with self.subTest(paths=paths):
-                    command, selected, reason = compile_scope(metadata, paths, original, root)
-                    self.assertEqual(command, original)
-                    self.assertEqual(selected, ["application", "cli", "kernel", "other"])
-                    self.assertTrue(reason.startswith("whole:"), reason)
-            for flags in (["--target", "x86_64-unknown-linux-gnu"], ["--release"], ["--no-default-features"],
-                          ["--features", "foreign/feature"], ["--features", "kernel-feature"], ["--features"]):
-                command = [*original, *flags]
-                self.assertEqual(compile_scope(metadata, ["crates/kernel/src/lib.rs"], command, root)[0], command)
-            metadata["resolve"]["nodes"][0]["deps"] = [{"pkg": "missing-unit"}]
-            with self.assertRaisesRegex(ValueError, "omits a dependency node"):
-                compile_scope(metadata, ["crates/kernel/src/lib.rs"], original, root)
-
-    def test_compile_cli_binds_original_actual_argv_and_working_subject(self) -> None:
-        # B10/B11: actual CLI reads the same index+WT+untracked identity and
-        # authored last-step features; its subprocess argv equals its ordinary
-        # local-affected-check receipt. The old nextest -E mode remains separate.
-        with tempfile.TemporaryDirectory() as directory:
-            root, metadata = self.fixture_repository(directory)
-            source = root / "crates/kernel/src/lib.rs"
-            source.write_text("pub const VALUE: u8 = 2;\n")
-            self.git(root, "add", str(source))
-            source.write_text("pub const VALUE: u8 = 1;\n")
-            original = ["cargo", "check", "--workspace", "--all-targets", "--features", "cli/pod", "--locked"]
-            result, calls, receipts = self.planner_cli(directory, root, metadata, check_command=original)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(calls, ["metadata", "check"])
-            receipt = receipts[0]
-            self.assertEqual(receipt["kind"], "local-affected-check")
-            self.assertEqual(receipt["original_command"], original)
-            self.assertEqual(receipt["selected_packages"], ["application", "cli", "kernel"])
-            actual = [json.loads(line) for line in (Path(directory) / "argv.jsonl").read_text().splitlines()]
-            self.assertEqual(actual[-1], receipt["command"][1:])
-            self.assertEqual(receipt["source_kind"], "working-tree")
-            self.assertTrue(receipt["source_unchanged"])
-            self.assertFalse(receipt["full_gate"])
-            self.assertIn("--all-targets", actual[-1])
-            self.assertIn("cli/pod", actual[-1])
-            self.assertNotIn("-E", actual[-1])
-
-    def test_compile_cli_refusal_source_change_and_execution_failure_never_retry(self) -> None:
-        # B12/B13 decision table at the existing process boundary:
-        # metadata75/23 -> exact status, no check/receipt; source mutation in
-        # metadata -> refusal before check; check75/23 -> exact status and one
-        # failed ordinary receipt, never retry whole; check mutates source ->
-        # refusal even if its status was0. No row changes profiles or admission.
-        original = ["cargo", "check", "--workspace", "--all-targets", "--locked"]
-        for metadata_status, execution_status, mutate, expected, calls_expected in (
-            (75, 0, "", 75, ["metadata"]), (23, 0, "", 23, ["metadata"]),
-            (0, 0, "metadata", 1, ["metadata"]), (0, 75, "", 75, ["metadata", "check"]),
-            (0, 23, "", 23, ["metadata", "check"]), (0, 0, "execution", 1, ["metadata", "check"]),
-        ):
-            with self.subTest(metadata=metadata_status, execution=execution_status, mutate=mutate), tempfile.TemporaryDirectory() as directory:
-                root, metadata = self.fixture_repository(directory)
-                (root / "crates/kernel/src/lib.rs").write_text("pub const VALUE: u8 = 2;\n")
-                result, calls, receipts = self.planner_cli(directory, root, metadata, metadata_status=metadata_status,
-                                                         execution_status=execution_status, mutate=mutate, check_command=original)
-                self.assertEqual(result.returncode, expected, result.stderr)
-                self.assertEqual(calls, calls_expected)
-                self.assertEqual(len(receipts), int("check" in calls))
-                if receipts:
-                    self.assertEqual(receipts[0]["exit_code"], expected)
-                    self.assertEqual(receipts[0]["source_unchanged"], mutate != "execution")
-
-    def test_compile_cli_config_appearance_refuses_without_claiming_source_change(self) -> None:
-        # B8/B13: private CARGO_HOME starts with no config; the metadata/check
-        # boundary creates one outside the repo. Planning appearance -> zero
-        # compile; execution appearance -> failed receipt even if check0. Repo
-        # source_unchanged remains its actual Git fact; do not call a contextual
-        # failure a source change, print private values, or retry whole.
-        original = ["cargo", "check", "--workspace", "--all-targets", "--locked"]
-        for mutate, expected_calls in (("metadata-config", ["metadata"]), ("execution-config", ["metadata", "check"])):
-            with self.subTest(mutate=mutate), tempfile.TemporaryDirectory() as directory:
-                root, metadata = self.fixture_repository(directory)
-                (root / "crates/kernel/src/lib.rs").write_text("pub const VALUE: u8 = 2;\n")
-                result, calls, receipts = self.planner_cli(directory, root, metadata, mutate=mutate, check_command=original)
-                self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertEqual(calls, expected_calls)
-                self.assertIn("Compile target admission changed", result.stderr)
-                self.assertNotIn("private-value", result.stderr)
-                if receipts:
-                    self.assertTrue(receipts[0]["source_unchanged"])
-                    self.assertEqual(receipts[0]["exit_code"], 1)
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -1215,49 +903,50 @@ def main() -> int:
     parser.add_argument("--source-digest", action="store_true")
     parser.add_argument("--base")
     parser.add_argument("--run", action="store_true")
-    parser.add_argument("--check-command", nargs=argparse.REMAINDER)
-    scope_modes = parser.add_mutually_exclusive_group()
-    scope_modes.add_argument("--gate-scope", action="store_true")
-    scope_modes.add_argument("--execution-scope", action="store_true")
+    parser.add_argument("--gate-scope", action="store_true")
+    parser.add_argument("--entry", default=GATE, help="gate script whose scope is planned (default check-rust.sh)")
+    parser.add_argument("--explain", action="store_true", help="also print why each changed path counts (stderr)")
+    parser.add_argument("--mode", choices=[mode.removeprefix("--") for mode in HOOK_MODES],
+                        help="plan for one check-rust.sh hook mode, quick or push (default both)")
     args = parser.parse_args()
     if args.production_selection:
         if len(sys.argv) != 2:
             parser.error("--production-selection is a standalone mode")
         print("\n".join(production_selection()))
         return 0
-    if args.gate_scope or args.execution_scope:
-        if not args.base or args.run or args.check_command is not None or args.features or args.self_test or args.source_digest:
-            parser.error(("--execution-scope" if args.execution_scope else "--gate-scope") + " takes only --base")
+    if args.gate_scope:
+        if not args.base or args.run or args.features or args.self_test or args.source_digest:
+            parser.error("--gate-scope takes only --base, --entry and --explain")
         try:
             base = git_output("rev-parse", "--verify", "--end-of-options", args.base + "^{commit}").decode().strip()
-            subject = source_snapshot()[0] if args.execution_scope else None
             changed = changed_sources(base)
-            environment = crate_test.environment(ROOT)
-            # Every feature and platform: an edge that exists in any graph a
-            # scoped step compiles must reach the consumer set.
-            metadata = json.loads(subprocess.check_output(crate_test.native_command(
-                ["cargo", "metadata", "--locked", "--format-version", "1", "--all-features"], environment),
-                cwd=ROOT, env=environment))
-            runtime_inputs, static_inputs = rust_execution_inputs(base, changed, ROOT) if args.execution_scope else (changed, [])
-            kind, packages, reason = gate_scope(metadata, runtime_inputs)
-            if args.execution_scope and source_snapshot()[0] != subject:
-                raise ValueError("Source changed during execution-scope planning")
+            modes = ("--" + args.mode,) if args.mode else HOOK_MODES
+            if args.explain:
+                for line in explain(changed, args.entry, modes):
+                    print(line, file=sys.stderr)
+            if not any(generate_hooks.glob_matches(glob, path) for path in changed
+                       for glob in (*rust_inputs(), *sorted(gate_scripts(args.entry, modes)))):
+                kind, packages, reason, scripts = "none", [], "no Rust build input or gate script changed", []
+            else:
+                environment = crate_test.environment(ROOT)
+                # Every feature and platform: an edge that exists in any graph a
+                # scoped step compiles must reach the consumer set.
+                metadata = json.loads(subprocess.check_output(crate_test.native_command(
+                    ["cargo", "metadata", "--locked", "--format-version", "1", "--all-features"], environment),
+                    cwd=ROOT, env=environment))
+                kind, packages, reason, scripts = gate_plan(metadata, changed, ROOT, args.entry, modes)
         except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
             print(f"Cannot establish the gate scope: {error}", file=sys.stderr)
             return 1
-        if args.execution_scope:
-            print(json.dumps(dict(scope=kind, packages=packages, reason=reason,
-                                  static_scope="whole", static_inputs=static_inputs,
-                                  source_digest=subject, full_gate=False,
-                                  execution_performed=False), indent=2))
-            return 0
         print(f"scope={kind}")
         print(f"reason={reason}")
+        for script in scripts:
+            print(f"script={script}")
         for package in packages:
             print(package)
         return 0
     if args.features or args.self_test or args.source_digest:
-        if args.base or args.run or args.check_command is not None or sum((args.features, args.self_test, args.source_digest)) != 1:
+        if args.base or args.run or sum((args.features, args.self_test, args.source_digest)) != 1:
             parser.error("--features, --source-digest and --self-test are standalone modes")
         if args.source_digest:
             print(source_snapshot()[0])
@@ -1274,46 +963,23 @@ def main() -> int:
         fingerprint, facts = working_subject()
         base = git_output("rev-parse", "--verify", "--end-of-options", args.base + "^{commit}").decode().strip()
         changed = changed_sources(base)
-        if args.check_command is not None and args.check_command[:2] != ["cargo", "check"]:
-            parser.error("--check-command requires the original cargo check argv")
-        original = args.check_command
-        if original is None:
-            feature_names, companions = crate_test.load_profile(PROFILE)
-            features = ",".join(feature_names)
-        else:
-            features = ",".join(original[i + 1] for i, value in enumerate(original[:-1]) if value == "--features")
+        feature_names, companions = crate_test.load_profile(PROFILE)
         environment = crate_test.environment(ROOT)
-        target_reason = crate_test.native_graph_reason(ROOT, environment) if original is not None else ""
-        metadata = crate_test.full_graph_metadata(features.split(",") if features else [], root=ROOT,
-                                                  environment=environment, host_only=original is not None and not target_reason)
-        if original is not None:
-            command, selected, reason = compile_scope(metadata, changed, original, ROOT, target_reason)
-            commands = [command]
-        else:
-            runtime_inputs, static_inputs = rust_execution_inputs(base, changed, ROOT)
-            selected, reason = affected_packages(metadata, runtime_inputs, ROOT)
-            errors = crate_test.companion_errors(metadata, companions, ROOT)
-            if errors:
-                raise crate_test.PlanError("; ".join(errors))
-            commands = crate_test.plan_packages(metadata, feature_names, companions, selected, []) if selected else []
-            if static_inputs:
-                commands.insert(0, [sys.executable, "scripts/ci/_native_shell.py",
-                                    "scripts/ci/check-all.sh", "--group", "static"])
-            command = commands[-1] if commands else []
+        metadata = crate_test.full_graph_metadata(feature_names, root=ROOT, environment=environment, host_only=False)
+        selected, reason = affected_packages(metadata, changed, ROOT)
+        errors = crate_test.companion_errors(metadata, companions, ROOT)
+        if errors:
+            raise crate_test.PlanError("; ".join(errors))
+        commands = crate_test.plan_packages(metadata, feature_names, companions, selected, []) if selected else []
+        command = commands[-1] if commands else []
         plan = {"schema_version": 1, "kind": "local-affected", "revision": facts["revision"].decode().strip(), "base": base, "changed": changed, "selected_packages": selected, "reason": reason, "command": command if selected else [], "full_gate": False,
                 "source_kind": "working-tree", "source_digest": fingerprint, "index_tree": facts["index_tree"].decode().strip(),
                 "untracked_files": {name: hashlib.sha256(data).hexdigest() for name, data in facts["untracked"].items()}}
-        if original is not None:
-            plan.update(kind="local-affected-check", original_command=original)
         plan["commands"] = commands
-        if original is None:
-            plan.update(static_inputs=static_inputs, static_scope="whole" if static_inputs else None)
         # Metadata projects the first capture. This fresh final fence still
         # refuses any late source axis, including no-run/no-work plans.
         if source_snapshot()[0] != fingerprint:
             raise ValueError("Source changed during affected planning; no execution started")
-        if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
-            raise ValueError("Compile target admission changed during planning; no execution started")
         print(json.dumps(plan, indent=2), flush=True)
         if not args.run or not commands:
             return 0
@@ -1323,14 +989,10 @@ def main() -> int:
         receipt.with_suffix(".patch").write_bytes(facts["patch"])
         if source_snapshot()[0] != fingerprint:
             raise ValueError("Source changed before affected execution; no execution started")
-        if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
-            raise ValueError("Compile target admission changed before execution; no execution started")
         started = time.monotonic()
         def verify():
             if source_snapshot()[0] != fingerprint:
                 raise ValueError("Source changed before or during affected execution")
-            if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
-                raise ValueError("Compile target admission changed during execution")
         def record(rows):
             plan.update(status="running", rows=rows)
             receipt.write_text(json.dumps(plan, indent=2), encoding="utf-8")
@@ -1343,9 +1005,6 @@ def main() -> int:
             unchanged = False
         if not unchanged:
             print("Source changed during affected execution; result cannot qualify this tree", file=sys.stderr)
-            status = status or 1
-        if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
-            print("Compile target admission changed during execution; result cannot qualify this context", file=sys.stderr)
             status = status or 1
         plan.update(status="passed" if status == 0 else "failed", rows=rows, exit_code=status,
                     source_unchanged=unchanged, duration_seconds=time.monotonic() - started)
