@@ -199,13 +199,21 @@ def current_inputs() -> tuple[dict[str, object], str, set[str], dict[str, str]]:
 
 # Stub cargo variants for the tool-query decision table: every other
 # subcommand must still succeed, so the gate reaches the query it is about.
+# A stand-in for `cargo nextest` that answers the required runner with one passing
+# case: its list JSON, then its JUnit report and run ID. No Rust is built.
+FAKE_NEXTEST = """  "nextest list "*)
+    printf '%s' '{"rust-suites":{"pkg":{"testcases":{"reliability_fixture":{"ignored":false,"filter-match":{"status":"matches"}}}}}}' ;;
+  "nextest run --no-run "*) ;;
+  "nextest run "*)
+    mkdir -p "$CARGO_TARGET_DIR/nextest/required"
+    printf '%s' '<testsuites uuid="fixture-run"><testsuite name="pkg"><testcase name="reliability_fixture"/></testsuite></testsuites>' > "$CARGO_TARGET_DIR/nextest/required/junit.xml"
+    echo 'Nextest run ID fixture-run' ;;
+"""
 QUERY_FAILS_CARGO = """#!/usr/bin/env bash
 if [ "$1" = awaken-ci-deadline ]; then entry=$(command -v "cargo-$1"); exec "$entry" "$@"; fi
 case "$*" in
   "install --list") exit 3 ;;
-  *--list*) echo 'reliability_fixture: test' ;;
-  *--show-output*) echo 'test reliability_fixture ... ok'; echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
-  *"heartbeat_snapshot_never_mixes_concurrent_publication_batches"*)
+""" + FAKE_NEXTEST + """  *"heartbeat_snapshot_never_mixes_concurrent_publication_batches"*)
     echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
 esac
 """
@@ -213,9 +221,7 @@ PARTIAL_LIST_CARGO = """#!/usr/bin/env bash
 if [ "$1" = awaken-ci-deadline ]; then entry=$(command -v "cargo-$1"); exec "$entry" "$@"; fi
 case "$*" in
   "install --list") echo 'cargo-mutants 1' ;;
-  *--list*) echo 'reliability_fixture: test' ;;
-  *--show-output*) echo 'test reliability_fixture ... ok'; echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
-  *"heartbeat_snapshot_never_mixes_concurrent_publication_batches"*)
+""" + FAKE_NEXTEST + """  *"heartbeat_snapshot_never_mixes_concurrent_publication_batches"*)
     echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
 esac
 """
@@ -256,9 +262,22 @@ class ReliabilityCheckerTests(unittest.TestCase):
         # D0/Q0: actual required execution imports its transitive closure and
         # reads a real private index, before reaching the tool decision. Reuse
         # the same fixture owner; no stale copy list or fake Git source proof.
-        from check_rust_test_execution import ExecutionTests
-        return ExecutionTests.runner_fixture(root, "scripts/ci/check-reliability.sh",
-                                              "scripts/ci/_cargo_target.sh", "scripts/ci/_provider_environment.sh")
+        from formal_plan import script_closure
+        from formal_sources import detached_git_environment
+        inputs = script_closure(ROOT, ("scripts/ci/_native_shell.py", "scripts/ci/_rust_test_execution.sh",
+                                       "scripts/ci/nextest_execution.py", "scripts/ci/check-reliability.sh",
+                                       "scripts/ci/_cargo_target.sh", "scripts/ci/_provider_environment.sh"))
+        for relative in sorted(inputs):
+            (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / relative, root / relative)
+        # Python bytecode is run output; every source edit stays bound to the required run.
+        (root / ".gitignore").write_text("target/\n__pycache__/\n*.py[cod]\n", encoding="utf-8")
+        values = detached_git_environment()
+        for arguments in (("init", "--quiet"), ("config", "core.autocrlf", "false"), ("add", "."),
+                          ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                           "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "fixture")):
+            subprocess.run(["git", "-C", str(root), *arguments], env=values, check=True)
+        return root / "scripts/ci"
 
     @staticmethod
     def python_adapter() -> str:
@@ -266,7 +285,7 @@ class ReliabilityCheckerTests(unittest.TestCase):
         # tests. Source capture, required list/run and deadline must execute.
         return f'''#!/usr/bin/env bash
 case "$1" in
-  *deadline.py|*cargo-awaken-ci-deadline|*check_rust_test_execution.py) exec {shlex.quote(Path(sys.executable).as_posix())} "$@" ;;
+  *deadline.py|*cargo-awaken-ci-deadline|*nextest_execution.py) exec {shlex.quote(Path(sys.executable).as_posix())} "$@" ;;
   *) exit 0 ;;
 esac
 '''
@@ -363,9 +382,7 @@ printf '\\n' >> "$CALL_LOG"
 printf '%s|%s|%s\\n' "$CARGO_TARGET_DIR" "${CARGO_BUILD_BUILD_DIR:-}" "$1" >> "$CALL_TARGET_LOG"
 case "$*" in
   "install --list") echo 'cargo-fuzz 1'; echo 'cargo-mutants 1' ;;
-  *--list*) echo 'reliability_fixture: test' ;;
-  *--show-output*) echo 'test reliability_fixture ... ok'; echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
-  "+nightly metadata --locked --format-version 1")
+''' + FAKE_NEXTEST + '''  "+nightly metadata --locked --format-version 1")
     [ "$FAIL_FUZZ_LOCK" != 1 ] || exit 41 ;;
   "mutants "*)
     while [ "$1" != '--output' ]; do shift; done

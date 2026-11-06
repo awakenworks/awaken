@@ -2,7 +2,7 @@
 
 Exclusions never become passing evidence. A changed classification, source
 binding or ignore attribute requires a reviewed selection change. Unknown
-ignored tests are still rejected by check_rust_test_execution.
+ignored tests are still rejected by nextest_execution.qualify.
 """
 from pathlib import Path
 import json

@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 import check_native_services as gate
-from _native_service_receipt_fixture import FIXTURE_OWNER, postgres_receipts
+from _native_service_receipt_fixture import FIXTURE_OWNER, postgres_receipts, write_receipt
 import native_services as services
 import _native_postgres as pg
 import _native_s3 as s3
@@ -128,9 +128,8 @@ class NativeInstallTests(unittest.TestCase):
 
 class NativeReceiptIdentityTests(unittest.TestCase):
     def verify(self, base, paths, scope="core"):
-        import check_rust_test_execution as execution
         log="".join("execution evidence: "+str(path)+"\n" for path in paths)
-        with mock.patch.object(execution,"verify_preparation"),mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
+        with mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
             return gate.reconcile_postgres(log,"source",scope,fixture_owner=FIXTURE_OWNER)
 
     def test_same_source_receipt_requires_this_service_and_this_fixture(self):
@@ -158,7 +157,7 @@ class NativeReceiptIdentityTests(unittest.TestCase):
                 self.verify(base,duplicated)
             # Distinct directories with valid same-package evidence still cannot
             # stand in for the other phase. The old package Counter admitted it.
-            for name in ("results.json","list.log","results.log"):
+            for name in ("results.json","list.json","junit.xml"):
                 (paths[destination]/name).write_bytes((paths[source]/name).read_bytes())
             with self.assertRaisesRegex(ValueError,"canonical backend phase"):
                 self.verify(base,paths)
@@ -205,15 +204,17 @@ class NativeReceiptIdentityTests(unittest.TestCase):
                     self.verify(base,paths)
 
     def test_receipt_hash_cannot_describe_different_bytes_than_were_verified(self):
-        import check_rust_test_execution as execution
+        import nextest_execution as execution
         with tempfile.TemporaryDirectory() as temporary:
             base=Path(temporary);paths=postgres_receipts(base,"core")
             path=paths[0]/"results.json"
-            def mutate(*_args):
+            qualify=execution.qualify
+            def mutate(*args):
                 document=json.loads(path.read_text());document["later_writer"]=True
                 path.write_text(json.dumps(document),encoding="utf-8")
+                return qualify(*args)
             log="".join("execution evidence: "+str(path)+"\n" for path in paths)
-            with mock.patch.object(execution,"verify_preparation",side_effect=mutate),mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
+            with mock.patch.object(execution,"qualify",side_effect=mutate),mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
                 with self.assertRaisesRegex(ValueError,"changed during verification"):
                     gate.reconcile_postgres(log,"source",fixture_owner=FIXTURE_OWNER)
 
@@ -223,19 +224,14 @@ class ExecutionReceiptTests(unittest.TestCase):
         receipts=[]
         for name,cases in [("one",["wake::nats_tests::nats_wake_signal_notifies_a_waiter","wake::nats_tests::nats_fixture_absence_and_configured_failure_are_distinct"]),
                            ("two",["hand::tests::run_nats_serves_a_real_tool_when_a_broker_is_reachable","hand::tests::nats_fixture_absence_and_configured_failure_are_distinct"])]:
-            directory=base/"test-timings"/name;directory.mkdir(parents=True)
             doc={"status":"passed","exit_code":0,"source_unchanged":True,"source_digest":"source",
-                "selected_cases":sorted(cases),"required_cases":cases,"executed_cases":[[x,"ok"] for x in cases],"arguments":[],
+                "selected_cases":sorted(cases),"required_cases":cases,"arguments":[],
                 "execution_inputs":{"fixture":{"kind":"nats","owner":FIXTURE_OWNER},"crash_backend":None}}
-            (directory/"results.json").write_text(json.dumps(doc),encoding="utf-8")
-            (directory/"list.log").write_text("".join(x+": test\n" for x in cases),encoding="utf-8")
-            (directory/"results.log").write_text("".join("test "+x+" ... ok\n" for x in cases)+"test result: ok. 2 passed; 0 failed; 0 ignored;\nVERIFIED live NATS fixture\n",encoding="utf-8")
-            receipts.append(directory)
+            receipts.append(write_receipt(base/"test-timings"/name,doc,sorted(cases),"VERIFIED live NATS fixture"))
         return receipts
 
     def test_postgres_requires_all_domains_and_boolean_live_fixture_flags(self):
-        import check_rust_test_execution as q
-        with tempfile.TemporaryDirectory() as directory,mock.patch.object(q,"verify_preparation"):
+        with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);receipts=postgres_receipts(base,"core")
             log="".join("execution evidence: "+str(path)+"\n" for path in receipts)
             with mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
@@ -252,8 +248,7 @@ class ExecutionReceiptTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,"omitted or duplicated"):gate.reconcile_postgres(log,"source",fixture_owner=FIXTURE_OWNER)
 
     def test_actual_names_source_and_live_marker_are_all_required(self):
-        import check_rust_test_execution as q
-        with tempfile.TemporaryDirectory() as directory,mock.patch.object(q,"verify_preparation"):
+        with tempfile.TemporaryDirectory() as directory:
             base=Path(directory)
             receipts=self.make_receipts(base)
             log="".join("execution evidence: "+str(p)+"\n" for p in receipts)
@@ -261,16 +256,16 @@ class ExecutionReceiptTests(unittest.TestCase):
                 self.assertEqual(len(gate.reconcile_nats(log,"source",fixture_owner=FIXTURE_OWNER)),2)
                 with self.assertRaisesRegex(ValueError,"both complete"):gate.reconcile_nats("","source",fixture_owner=FIXTURE_OWNER)
                 with self.assertRaisesRegex(ValueError,"qualify this source"):gate.reconcile_nats(log,"other-source",fixture_owner=FIXTURE_OWNER)
-                path=receipts[0]/"results.log";original=path.read_text(encoding="utf-8")
-                for changed in (original.replace("VERIFIED live NATS fixture",""),
-                                original.replace(" ... ok"," ... ignored",1),
-                                original.replace(" ... ok"," ... FAILED",1),
-                                original+"SKIPPED NATS fixture\n"):
-                    path.write_text(changed,encoding="utf-8")
-                    with self.subTest(output=changed),self.assertRaises(ValueError):gate.reconcile_nats(log,"source",fixture_owner=FIXTURE_OWNER)
-                path.write_text(original,encoding="utf-8")
+                for name,old,new in (("junit.xml","VERIFIED live NATS fixture",""),
+                                     ("list.json",'"ignored": false','"ignored": true'),
+                                     ("junit.xml","</testcase>","<failure/></testcase>"),
+                                     ("junit.xml","</system-out>","\nSKIPPED NATS fixture\n</system-out>")):
+                    path=receipts[0]/name;original=path.read_text(encoding="utf-8")
+                    path.write_text(original.replace(old,new,1),encoding="utf-8")
+                    with self.subTest(name=name,new=new),self.assertRaises(ValueError):gate.reconcile_nats(log,"source",fixture_owner=FIXTURE_OWNER)
+                    path.write_text(original,encoding="utf-8")
                 doc_path=receipts[0]/"results.json";doc=json.loads(doc_path.read_text())
-                doc["executed_cases"]=[];doc_path.write_text(json.dumps(doc),encoding="utf-8")
+                doc["selected_cases"]=[];doc_path.write_text(json.dumps(doc),encoding="utf-8")
                 with self.assertRaisesRegex(ValueError,"identities differ"):gate.reconcile_nats(log,"source",fixture_owner=FIXTURE_OWNER)
 
 
@@ -555,20 +550,16 @@ class S3ExecutionReceiptTests(unittest.TestCase):
         ]
         receipts=[]
         for index,cases in enumerate(phases):
-            path=base/'test-timings'/str(index);path.mkdir(parents=True)
             doc={'status':'passed','exit_code':0,'source_unchanged':True,'source_digest':'source',
-                 'selected_cases':sorted(cases),'required_cases':cases,'executed_cases':[[case,'ok'] for case in cases],
+                 'selected_cases':sorted(cases),'required_cases':cases,
                  'arguments':['-p','awaken-file-store'],'s3_fixture_required':True,'s3_fixture_configured':True,
                  'execution_inputs':{'fixture':{'kind':'s3','owner':FIXTURE_OWNER},'crash_backend':None}}
-            (path/'results.json').write_text(json.dumps(doc),encoding='utf-8')
-            (path/'list.log').write_text(''.join(case+': test\n' for case in cases),encoding='utf-8')
-            (path/'results.log').write_text(''.join('test '+case+' ... ok\n' for case in cases)+'test result: ok. '+str(len(cases))+' passed; 0 failed; 0 ignored;\n'+('VERIFIED live S3 fixture\n' if index else ''),encoding='utf-8')
-            receipts.append(path)
+            receipts.append(write_receipt(base/'test-timings'/str(index),doc,sorted(cases),
+                                          'VERIFIED live S3 fixture' if index else ''))
         return receipts
 
     def test_s3_requires_every_real_phase_exact_source_and_boolean_fixture_flags(self):
-        import check_rust_test_execution as q
-        with tempfile.TemporaryDirectory() as directory,mock.patch.object(q,'verify_preparation'):
+        with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);receipts=self.make_receipts(base)
             def references(rows):return ''.join('execution evidence: '+str(path)+'\n' for path in rows)
             log=references(receipts)
@@ -585,13 +576,13 @@ class S3ExecutionReceiptTests(unittest.TestCase):
                             gate.reconcile_s3(log,'source',fixture_owner=FIXTURE_OWNER)
                 path.write_text(json.dumps(original),encoding='utf-8')
                 for index in (1,2,3):
-                    path=receipts[index]/'results.log';original_output=path.read_text()
-                    for changed in (original_output.replace('VERIFIED live S3 fixture',''),
-                                    original_output.replace(' ... ok',' ... ignored',1),
-                                    original_output+'SKIPPED S3 fixture\n'):
-                        path.write_text(changed,encoding='utf-8')
-                        with self.subTest(phase=index),self.assertRaises(ValueError):gate.reconcile_s3(log,'source',fixture_owner=FIXTURE_OWNER)
-                    path.write_text(original_output,encoding='utf-8')
+                    for name,old,new in (('junit.xml','VERIFIED live S3 fixture',''),
+                                         ('list.json','"ignored": false','"ignored": true'),
+                                         ('junit.xml','</system-out>','\nSKIPPED S3 fixture\n</system-out>')):
+                        path=receipts[index]/name;original_output=path.read_text()
+                        path.write_text(original_output.replace(old,new,1),encoding='utf-8')
+                        with self.subTest(phase=index,name=name),self.assertRaises(ValueError):gate.reconcile_s3(log,'source',fixture_owner=FIXTURE_OWNER)
+                        path.write_text(original_output,encoding='utf-8')
 
 class S3InstallTests(unittest.TestCase):
     @unittest.skipUnless(os.name=='nt','native Windows installer')
@@ -815,22 +806,20 @@ class SessionCapacityObservationSelectionTests(unittest.TestCase):
         import _native_service_receipt_fixture as fixture
         from _native_postgres_scopes import postgres_phases
         phases = self.verify(self.text())
-        # Synthetic tool I/O only. Preparation is deliberately mocked here;
-        # this is an omission/refusal unit test, never a real-service receipt.
+        # Synthetic tool I/O only: an omission/refusal unit test, never a real-service receipt.
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             with mock.patch.object(fixture, "postgres_phases", return_value=phases):
                 paths = postgres_receipts(base, "storage-observations")
             session = paths[next(i for i, phase in enumerate(phases) if phase.package == "awaken-session-store")]
-            raw = (session / "results.log").read_text(encoding="utf-8")
+            raw = (session / "junit.xml").read_text(encoding="utf-8")
             log = "".join("execution evidence: " + str(path) + "\n" for path in paths)
-            with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(base)}), \
-                    mock.patch("check_rust_test_execution.verify_preparation"):
+            with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(base)}):
                 for outcome, accepted in ((self.observation(), True),
                                           (self.observation(global_count="100000"), False),
                                           ("", False)):
-                    (session / "results.log").write_text(
-                        raw.replace("test result:", outcome + "test result:", 1), encoding="utf-8")
+                    (session / "junit.xml").write_text(
+                        raw.replace("<system-out>", "<system-out>" + outcome, 1), encoding="utf-8")
                     if accepted:
                         receipts = gate.reconcile_postgres(log, "source", "storage-observations", fixture_owner=FIXTURE_OWNER)
                         observed = next(row["capacity_observation"] for row in receipts if "capacity_observation" in row)
