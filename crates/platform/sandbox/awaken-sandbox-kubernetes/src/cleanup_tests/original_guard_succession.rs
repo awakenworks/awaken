@@ -219,7 +219,10 @@ async fn original_guard_revocation_after_cas_keeps_the_original_claim() {
     tokio::time::timeout(Duration::from_secs(5), reached.notified())
         .await
         .unwrap();
-    *authority.current.lock().unwrap() = None;
+    *authority
+        .current
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
     release.add_permits(1);
     assert!(
         tokio::time::timeout(Duration::from_secs(5), task)
@@ -246,7 +249,10 @@ async fn original_guard_revocation_after_cas_keeps_the_original_claim() {
                 .is_some()
         );
     }
-    *authority.current.lock().unwrap() =
+    *authority
+        .current
+        .lock()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}")) =
         Some((authorization.effect_fence().clone(), Duration::from_secs(1)));
     runtime
         .remove_exact_incarnation(

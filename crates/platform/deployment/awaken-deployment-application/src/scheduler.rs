@@ -312,7 +312,10 @@ mod tests {
         let deployment = application.create(command(true)).await.unwrap();
         let scheduled = 1_767_603_600_000;
         {
-            let mut deployments = application.deployments.lock().unwrap();
+            let mut deployments = application
+                .deployments
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
             deployments.get_mut(&deployment.id).unwrap().next_fire_ms = Some(scheduled);
         }
         let due =
@@ -320,7 +323,7 @@ mod tests {
         let before = application
             .deployments
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .get(&deployment.id)
             .unwrap()
             .clone();
@@ -336,13 +339,20 @@ mod tests {
             application
                 .deployments
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
                 .get(&deployment.id)
                 .unwrap(),
             &before,
             "D1/E1 no cursor mutation"
         );
-        assert!(application.runs.lock().unwrap().is_empty(), "D1/E1");
+        assert!(
+            application
+                .runs
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                .is_empty(),
+            "D1/E1"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 0, "D1/E1");
 
         refresh.fail.store(false, Ordering::SeqCst);
@@ -369,7 +379,10 @@ mod tests {
         });
         let deployment = application.create(create).await.unwrap();
         {
-            let mut records = application.deployments.lock().unwrap();
+            let mut records = application
+                .deployments
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
             records.get_mut(&deployment.id).unwrap().next_fire_ms = None;
         }
         assert!(application.tick(MONDAY_0900).unwrap().is_empty(), "S1");

@@ -827,14 +827,18 @@ async fn live_inline_mount_updates_and_revokes_the_namespace_bind_layout() {
         sandbox
             .layout
             .read()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .iter()
             .any(|mount| mount.dest == mount_path && mount.read_only)
     );
     let backing = sandbox.root.resolve(mount_path).unwrap();
     assert_eq!(std::fs::read(&backing).unwrap(), b"live");
 
-    let before = sandbox.layout.read().unwrap().len();
+    let before = sandbox
+        .layout
+        .read()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+        .len();
     assert!(
         sandbox
             .attach(pc::MountRequirement {
@@ -851,11 +855,24 @@ async fn live_inline_mount_updates_and_revokes_the_namespace_bind_layout() {
             .await
             .is_err()
     );
-    assert_eq!(sandbox.layout.read().unwrap().len(), before);
+    assert_eq!(
+        sandbox
+            .layout
+            .read()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .len(),
+        before
+    );
 
     sandbox.remove_mount(mount_path).unwrap();
     assert!(!backing.exists());
-    assert!(sandbox.layout.read().unwrap().is_empty());
+    assert!(
+        sandbox
+            .layout
+            .read()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .is_empty()
+    );
 }
 
 #[cfg(target_os = "linux")]

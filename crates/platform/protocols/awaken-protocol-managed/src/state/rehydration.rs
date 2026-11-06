@@ -588,7 +588,7 @@ mod tests {
             let agent_id = state
                 .sessions
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
                 .get(id)
                 .map(|record| record.agent_id.clone());
             assert_eq!(agent_id.as_deref(), Some("coder"), "{rule}/E1");
@@ -611,7 +611,11 @@ mod tests {
                     "{rule}/E2 {purpose:?}"
                 );
                 assert!(
-                    !state.sessions.lock().unwrap().contains_key(id),
+                    !state
+                        .sessions
+                        .lock()
+                        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                        .contains_key(id),
                     "{rule}/E2 no record"
                 );
                 assert!(state.owner_scope(id).is_none(), "{rule}/E2 no owner");

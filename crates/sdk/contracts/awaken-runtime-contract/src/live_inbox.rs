@@ -709,7 +709,11 @@ mod tests {
     fn poison(inbox: &LiveInbox) {
         let holder = inbox.clone();
         let crashed = std::thread::spawn(move || {
-            let _guard = holder.shared.state.lock().expect("first holder");
+            let _guard = holder
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("first holder: {poisoned}"));
             panic!("a holder panics mid-update");
         })
         .join();

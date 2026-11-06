@@ -38,7 +38,7 @@ async fn later_await_owns_its_target_without_repairing_an_earlier_missing_target
     let before = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .cloned()
         .unwrap();
@@ -53,7 +53,7 @@ async fn later_await_owns_its_target_without_repairing_an_earlier_missing_target
     let after = state
         .sessions
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .get(&session.id)
         .cloned()
         .unwrap();

@@ -67,6 +67,5 @@ pub fn awaken_sync::LeafRwLock<T>::from(T) -> Self
 pub struct awaken_sync::LockPoisoned
 impl awaken_sync::LockPoisoned
 pub const fn awaken_sync::LockPoisoned::guarded(&self) -> &'static str
-impl core::error::Error for awaken_sync::LockPoisoned
 impl core::fmt::Display for awaken_sync::LockPoisoned
 pub fn awaken_sync::LockPoisoned::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result

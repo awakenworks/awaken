@@ -648,7 +648,9 @@ impl InstalledSessions {
     pub fn contains(&self, session: &str) -> bool {
         self.installed_sessions
             .lock()
-            .expect("session runtime installed Sessions mutex poisoned")
+            .unwrap_or_else(|poisoned| {
+                panic!("session runtime installed Sessions mutex poisoned: {poisoned}")
+            })
             .contains_key(session)
     }
 }

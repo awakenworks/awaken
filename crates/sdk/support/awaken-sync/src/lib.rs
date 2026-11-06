@@ -47,8 +47,31 @@ use std::sync::{
 /// half-written, so the operation that needed it is refused.
 ///
 /// It names the guarded type for diagnostics; the owning crate decides the
-/// error class once, in its `From<LockPoisoned>` conversion.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// error class once, in its `From<LockPoisoned>` conversion, and stores the
+/// [`guarded`](Self::guarded) name or the [`Display`](fmt::Display) text.
+///
+/// The refusal is deliberately not `Debug` (and so not `std::error::Error`):
+/// `Result::unwrap`/`expect` need `E: Debug`, so unwrapping a poison refusal
+/// away does not compile. Propagate it with `?` instead.
+///
+/// ```compile_fail,E0599
+/// let lock = awaken_sync::InvariantLock::new(0_u8);
+/// let _guard = lock.lock().expect("an invariant lock refuses poison");
+/// ```
+///
+/// ```
+/// struct Unavailable(&'static str);
+/// impl From<awaken_sync::LockPoisoned> for Unavailable {
+///     fn from(poisoned: awaken_sync::LockPoisoned) -> Self {
+///         Self(poisoned.guarded())
+///     }
+/// }
+/// fn read(lock: &awaken_sync::InvariantLock<u8>) -> Result<u8, Unavailable> {
+///     Ok(*lock.lock()?)
+/// }
+/// assert_eq!(read(&awaken_sync::InvariantLock::new(7)).ok(), Some(7));
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LockPoisoned {
     guarded: &'static str,
 }
@@ -76,10 +99,15 @@ impl fmt::Display for LockPoisoned {
     }
 }
 
-impl std::error::Error for LockPoisoned {}
-
-/// Why [`InvariantLock::try_lock`] did not return a guard.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why [`InvariantLock::try_lock`] did not return a guard. Not `Debug`, for
+/// the same reason as [`LockPoisoned`]: a poisoned `try_lock` cannot be
+/// unwrapped away either.
+///
+/// ```compile_fail,E0599
+/// let lock = awaken_sync::InvariantLock::new(0_u8);
+/// let _guard = lock.try_lock().unwrap();
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TryLockFailure {
     /// Another holder has the lock now.
     WouldBlock,

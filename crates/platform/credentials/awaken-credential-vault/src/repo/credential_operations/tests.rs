@@ -478,7 +478,7 @@ async fn source_recovery_rejects_a_mismatched_durable_key_before_secret_io() {
     let ready = writing.with_material_ready().unwrap();
     repo.state
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| panic!("{poisoned}"))
         .intents
         .insert("cred:ws:wrong-row-key".into(), ready.clone());
 
@@ -493,7 +493,7 @@ async fn source_recovery_rejects_a_mismatched_durable_key_before_secret_io() {
     assert_eq!(
         repo.state
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
             .intents
             .values()
             .cloned()

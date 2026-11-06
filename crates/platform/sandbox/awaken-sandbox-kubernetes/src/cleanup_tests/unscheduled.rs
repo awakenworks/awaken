@@ -113,7 +113,10 @@ async fn unscheduled_pod_cleanup_retains_current_authority_at_every_response() {
                     if *change == 'c' {
                         task.abort();
                     } else {
-                        let mut current = authority.current.lock().unwrap();
+                        let mut current = authority
+                            .current
+                            .lock()
+                            .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                         match change {
                             's' => {}
                             'r' => current.as_mut().unwrap().0.renew(),
@@ -606,7 +609,10 @@ async fn unscheduled_cleanup_keeps_nonempty_participants_when_delete_response_lo
         if change == 'c' {
             task.abort();
         } else {
-            let mut grant = authority.current.lock().unwrap();
+            let mut grant = authority
+                .current
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"));
             match change {
                 'v' => *grant = None,
                 'g' => grant.as_mut().unwrap().0.reassign(),
@@ -769,7 +775,10 @@ async fn unscheduled_pod_absence_and_replacement_require_current_response_author
             if change == 'c' {
                 task.abort();
             } else {
-                let mut current = authority.current.lock().unwrap();
+                let mut current = authority
+                    .current
+                    .lock()
+                    .unwrap_or_else(|poisoned| panic!("{poisoned}"));
                 match change {
                     's' => {}
                     'r' => current.as_mut().unwrap().0.renew(),

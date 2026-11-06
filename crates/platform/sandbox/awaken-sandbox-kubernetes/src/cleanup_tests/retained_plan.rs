@@ -336,7 +336,10 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
             .with_clock(clock);
         let authority = EffectAuthority::new(&terminal);
         if row == "revoked" {
-            *authority.current.lock().unwrap() = None;
+            *authority
+                .current
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
         }
         if row == "configuration" {
             spec.outputs_path = "/different-outputs".into();
