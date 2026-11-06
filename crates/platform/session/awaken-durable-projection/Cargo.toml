@@ -7,7 +7,9 @@ license.workspace = true
 [package.metadata.awaken]
 context = "coordinator"
 product = "platform"
-bounded_context = "session"
+# Agent/Environment-neutral high-water mechanics for durable projections: the
+# shared storage kernel the config and environment catalogs both build on.
+bounded_context = "storage"
 layer = "application"
 authority = "coordinator-projection"
 

@@ -6,9 +6,11 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
+# A composition root: only the CLI, Worker and scenario-host roots link it, and
+# it wires concrete sandbox, environment and executor adapters together, so it
+# is an application crate, not a member of one Platform context.
 context = "worker"
-product = "platform"
-bounded_context = "execution"
+product = "apps"
 layer = "bootstrap"
 authority = "execution-composition"
 separation = "process"
