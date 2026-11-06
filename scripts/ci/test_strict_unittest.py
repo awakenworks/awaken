@@ -70,6 +70,13 @@ class Arguments(unittest.TestCase):
         task.finish(1)
 
     def test_exact_flag_executes_and_unknown_or_abbreviated_flags_refuse(self):
+        # A1 exact flag executes the entrypoint's complete nonempty inventory;
+        # A2 abbreviated/unknown flags exit 2 before any test summary. Derive
+        # the inventory through unittest instead of freezing another suite's
+        # case count (which hid execution whenever that suite grew).
+        import test_coverage_summary
+        count = unittest.defaultTestLoader.loadTestsFromModule(test_coverage_summary).countTestCases()
+        self.assertGreater(count, 0)
         entry = Path(__file__).with_name("test_coverage_summary.py")
         for flag, expected in (("--locals", 0), ("--local", 2), ("--awaken-gate-argument-probe", 2)):
             with self.subTest(flag=flag):
@@ -77,9 +84,9 @@ class Arguments(unittest.TestCase):
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
                 if expected:
                     self.assertIn("usage: test_coverage_summary.py", result.stderr)
-                    self.assertNotIn("Ran 2 tests", result.stderr)
+                    self.assertNotRegex(result.stderr, r"Ran \d+ tests?")
                 else:
-                    self.assertIn("Ran 2 tests", result.stderr)
+                    self.assertIn(f"Ran {count} tests", result.stderr)
 
 
 if __name__ == "__main__":

@@ -242,7 +242,7 @@ fn mcp_transport_error(
 
     let message = format!("mcp server `{server_name}` at {target}: {error}");
     match error {
-        McpTransportError::ServerError(ref detail) if detail.starts_with("auth challenge:") => {
+        McpTransportError::AuthenticationRequired(_) => {
             McpError::classified("mcp_authentication_failed", message)
         }
         McpTransportError::TransportError(_) | McpTransportError::Timeout(_) => {
@@ -506,7 +506,7 @@ mod acp_projection_tests {
         for (rule, source, kind, code) in [
             (
                 "R1",
-                McpTransportError::ServerError("auth challenge: bearer".into()),
+                McpTransportError::AuthenticationRequired("auth challenge: bearer".into()),
                 McpErrorKind::Internal,
                 "mcp_authentication_failed",
             ),

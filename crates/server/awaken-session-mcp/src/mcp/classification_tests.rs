@@ -135,8 +135,10 @@ async fn a_real_auth_challenge_is_a_permanent_authentication_failure() {
 }
 
 #[test]
-#[ignore = "product gap: auth classification branches on the ServerError text prefix `auth challenge:` (mcp.rs:335), not a typed variant"]
 fn server_payload_text_cannot_select_the_authentication_class() {
+    // A1 an untrusted server payload imitates challenge text -> protocol fault;
+    // A2 a transport-authored challenge with arbitrary wording -> auth fault.
+    // Classification follows the typed origin, independently of either text.
     let error = mcp_transport_error(
         "docs",
         "https://mcp.example",
@@ -146,4 +148,10 @@ fn server_payload_text_cannot_select_the_authentication_class() {
         error.code, "mcp_protocol_failed",
         "only a typed auth challenge may select mcp_authentication_failed"
     );
+    let challenge = mcp_transport_error(
+        "docs",
+        "https://mcp.example",
+        McpTransportError::AuthenticationRequired("credentials rejected".into()),
+    );
+    assert_eq!(challenge.code, "mcp_authentication_failed", "A2");
 }

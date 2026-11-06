@@ -8,18 +8,20 @@
 # (server + protocols + config + runtime-core + ingress), the same principled
 # exclusions as scripts/ci/e2e-coverage.sh.
 #
-# Usage: scripts/ci/combined-coverage.sh   (from the repo root)
+# Usage: scripts/ci/combined-coverage.sh [--rust-only] (from the repo root)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
-# This gate takes no arguments. Accepting one silently is how a caller's
-# intent ("only the links", "--quick") disappears into a full run that
-# answers a different question; refuse before any work.
-if [ "$#" -ne 0 ]; then
-  echo "usage: scripts/ci/combined-coverage.sh" >&2
-  exit 2
-fi
+# Full qualification keeps the no-argument composition. The explicit local
+# Rust scope retains the same Rust graph/doctests but makes no service-E2E
+# claim. Unknown or conflicting scope requests refuse before any work.
+execution_scope=combined
+case "$#:${1:-}" in
+  0:) ;;
+  1:--rust-only) execution_scope=rust-workspace ;;
+  *) echo "usage: scripts/ci/combined-coverage.sh [--rust-only]" >&2; exit 2 ;;
+esac
 source scripts/ci/_provider_environment.sh
 source scripts/ci/_deadline.sh
 awaken_unset_ambient_api_keys
@@ -32,6 +34,7 @@ export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
 eval "$(cargo llvm-cov show-env --sh)"
 # Retain the isolated instrumented build cache; only counters must start fresh.
 cargo llvm-cov clean --workspace --profraw-only --locked
+mkdir -p "$CARGO_TARGET_DIR"
 export LLVM_PROFILE_FILE="$CARGO_LLVM_COV_TARGET_DIR/awaken-%p-%12m.profraw"
 workspace_features="$(python3 scripts/ci/rust_test_plan.py --features)"
 source_digest="$(python3 scripts/ci/rust_test_plan.py --source-digest)"
@@ -44,11 +47,15 @@ cargo nextest run --workspace --locked --features "$workspace_features"
 run_with_deadline "${AWAKEN_COVERAGE_DOCTEST_TIMEOUT_SECONDS:-600}" env RUSTC_BOOTSTRAP=1 cargo test --workspace --doc --locked --features "$workspace_features"
 
 echo "[2/3] build the server binary and drive the TS e2e suite"
+if [ "$execution_scope" = combined ]; then
 cargo build --locked --quiet --features "$workspace_features" -p awaken-scenario-host --bin awaken-scenario-host
 python3 scripts/ci/check_node_dependencies.py
 tsx_loader_url="$(cd e2e && node -p "require('node:url').pathToFileURL(require.resolve('tsx')).href")"
 export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$tsx_loader_url"
 npm --prefix e2e run test:deterministic
+else
+  echo "Rust-workspace coverage only: service E2E qualification was not requested"
+fi
 
 echo "[3/3] combined coverage report"
 IGNORE="$(python3 scripts/ci/check_changed_e2e_line_coverage.py --print-ignore-filename-regex)"
@@ -57,7 +64,9 @@ lcov_arguments=()
 for report in "$evidence"/lcov/*.lcov; do lcov_arguments+=(--lcov-path "$report"); done
 test "$(python3 scripts/ci/rust_test_plan.py --source-digest)" = "$source_digest" || { echo "source changed during combined coverage" >&2; exit 1; }
 python3 scripts/ci/coverage_summary.py --metadata "$evidence/metadata.json" "${lcov_arguments[@]}" \
-  --revision "$source_revision" --source-digest "$source_digest" --output "$evidence/per-crate.json"
+  --execution-scope "$execution_scope" --revision "$source_revision" --source-digest "$source_digest" --output "$evidence/per-crate.json"
+if [ "$execution_scope" = combined ]; then
 python3 scripts/ci/check_changed_e2e_line_coverage.py --base "${AWAKEN_COVERAGE_BASE:-origin/main}" \
   --minimum "${AWAKEN_CHANGED_E2E_MINIMUM:-0.95}" --ignore-filename-regex "$IGNORE" "${lcov_arguments[@]}" \
   --unreachable-manifest scripts/ci/e2e_unreachable.toml --maximum-unreachable-fraction 0.15
+fi

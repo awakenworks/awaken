@@ -44,7 +44,13 @@ pub(crate) trait RecordBackend: Send + Sync {
     async fn insert(
         &self,
         record: &EnvironmentImageBuildRecord,
-    ) -> Result<bool, EnvironmentImageBuildError>;
+        binding_key: Option<&str>,
+    ) -> Result<String, EnvironmentImageBuildError>;
+
+    async fn pinned_key(
+        &self,
+        binding_key: &str,
+    ) -> Result<Option<String>, EnvironmentImageBuildError>;
 
     async fn get(
         &self,
@@ -76,22 +82,43 @@ impl<B: RecordBackend> EnvironmentImageBuildStore for DurableEnvironmentImageBui
         &self,
         demand: EnvironmentImageBuildDemand,
         now_ms: u64,
-    ) -> Result<(), EnvironmentImageBuildError> {
+        binding_key: Option<&str>,
+    ) -> Result<EnvironmentImageBuildDemand, EnvironmentImageBuildError> {
+        validate_binding_key(binding_key)?;
         let record = EnvironmentImageBuildRecord {
             demand: demand.clone(),
             state: EnvironmentImageBuildState::default(),
             updated_at_ms: now_ms,
         };
-        if self.backend.insert(&record).await? {
-            return Ok(());
-        }
-        match self.backend.get(&demand.build_key).await? {
-            Some(existing) if existing.record.demand.same_recipe(&demand) => Ok(()),
+        let selected = self.backend.insert(&record, binding_key).await?;
+        match self.backend.get(&selected).await? {
+            Some(existing)
+                if existing.record.demand.config == demand.config
+                    && (selected != demand.build_key
+                        || existing.record.demand.same_recipe(&demand)) =>
+            {
+                Ok(existing.record.demand)
+            }
             Some(_) => Err(EnvironmentImageBuildError::Conflict(demand.build_key)),
             None => Err(EnvironmentImageBuildError::Storage(
                 "image-build job disappeared after insert conflict".into(),
             )),
         }
+    }
+
+    async fn pinned_demand(
+        &self,
+        binding_key: &str,
+    ) -> Result<Option<EnvironmentImageBuildDemand>, EnvironmentImageBuildError> {
+        validate_binding_key(Some(binding_key))?;
+        let Some(key) = self.backend.pinned_key(binding_key).await? else {
+            return Ok(None);
+        };
+        self.backend
+            .get(&key)
+            .await?
+            .map(|record| Some(record.record.demand))
+            .ok_or_else(|| storage("image-build binding references a missing job"))
     }
 
     async fn get(
@@ -169,6 +196,15 @@ impl<B: RecordBackend> EnvironmentImageBuildStore for DurableEnvironmentImageBui
     }
 }
 
+fn validate_binding_key(binding_key: Option<&str>) -> Result<(), EnvironmentImageBuildError> {
+    if binding_key.is_some_and(|key| key.trim().is_empty()) {
+        return Err(EnvironmentImageBuildError::Conflict(
+            "empty image-build binding".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl<B: RecordBackend> DurableEnvironmentImageBuildStore<B> {
     async fn transition(
         &self,
@@ -216,14 +252,14 @@ pub(crate) mod tests {
         let mut demand = crate::test_demand();
         demand.build_key.push_str(":conformance");
         assert!(store.get(&demand.build_key).await.unwrap().is_none());
-        store.ensure(demand.clone(), 100).await.unwrap();
-        store.ensure(demand.clone(), 101).await.unwrap();
+        store.ensure(demand.clone(), 100, None).await.unwrap();
+        store.ensure(demand.clone(), 101, None).await.unwrap();
         let original = store.get(&demand.build_key).await.unwrap().unwrap();
         let mut conflict = demand.clone();
         conflict.base_image.push_str("-different");
         assert!(
             matches!(
-                store.ensure(conflict, 102).await,
+                store.ensure(conflict, 102, None).await,
                 Err(EnvironmentImageBuildError::Conflict(_))
             ),
             "R2"
@@ -315,6 +351,111 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn memory_obeys_the_same_lifecycle() {
-        lifecycle(&crate::InMemoryEnvironmentImageBuildStore::new()).await;
+        let store = crate::InMemoryEnvironmentImageBuildStore::new();
+        lifecycle(&store).await;
+        pinning(&store).await;
+    }
+
+    pub(crate) async fn pinning(
+        store: &dyn EnvironmentImageBuildStore,
+    ) -> EnvironmentImageBuildDemand {
+        // | Rule | binding             | resolved candidate | Effect                    |
+        // | P1   | absent              | A                  | atomically pin + queue A  |
+        // | P2   | exact existing      | B                  | reuse A, no B job         |
+        // | P3   | distinct binding    | B                  | independent recipe B      |
+        // | P4   | distinct binding    | A                  | share existing A job      |
+        // | P5   | racing same binding | C / D              | one winner, no loser job  |
+        // | P6   | empty               | any                | refuse before mutation    |
+        // Every backend executes this same table; native callers also verify
+        // persistence across reopen. A pin stores only a job link, never a
+        // second copy of Ready state or an independently mutable recipe.
+        let mut a = crate::test_demand();
+        a.build_key.push_str(":pin-a");
+        let mut b = a.clone();
+        b.build_key.push_str(":b");
+        b.base_image = "base@sha256:b".into();
+        assert_eq!(
+            store.ensure(a.clone(), 1, Some("pin-one")).await.unwrap(),
+            a,
+            "P1"
+        );
+        assert_eq!(
+            store.ensure(b.clone(), 2, Some("pin-one")).await.unwrap(),
+            a,
+            "P2"
+        );
+        assert!(
+            store.get(&b.build_key).await.unwrap().is_none(),
+            "P2 no orphan queue work"
+        );
+        assert_eq!(
+            store.pinned_demand("pin-one").await.unwrap(),
+            Some(a.clone()),
+            "P2"
+        );
+        assert!(store.pinned_demand("unknown-pin").await.unwrap().is_none());
+        assert_eq!(
+            store.ensure(b.clone(), 3, Some("pin-two")).await.unwrap(),
+            b,
+            "P3"
+        );
+        assert_eq!(
+            store.ensure(a.clone(), 4, Some("pin-share")).await.unwrap(),
+            a,
+            "P4"
+        );
+        let mut conflict = a.clone();
+        conflict.base_image = "forged-recipe".into();
+        assert!(
+            matches!(
+                store.ensure(conflict, 4, Some("pin-invalid")).await,
+                Err(EnvironmentImageBuildError::Conflict(_))
+            ),
+            "P6 conflicting key is not a pin"
+        );
+        assert!(
+            store.pinned_demand("pin-invalid").await.unwrap().is_none(),
+            "P6 no partial binding on refusal"
+        );
+        let mut c = a.clone();
+        c.build_key.push_str(":c");
+        c.base_image = "base@sha256:c".into();
+        let mut d = a.clone();
+        d.build_key.push_str(":d");
+        d.base_image = "base@sha256:d".into();
+        let (left, right) = tokio::join!(
+            store.ensure(c.clone(), 5, Some("pin-race")),
+            store.ensure(d.clone(), 5, Some("pin-race"))
+        );
+        let winner = left.unwrap();
+        assert_eq!(winner, right.unwrap(), "P5 same selected recipe");
+        let loser = if winner.build_key == c.build_key {
+            &d
+        } else {
+            &c
+        };
+        assert!(
+            store.get(&loser.build_key).await.unwrap().is_none(),
+            "P5 losing transaction leaves no job"
+        );
+        assert!(
+            matches!(
+                store.ensure(a.clone(), 6, Some("")).await,
+                Err(EnvironmentImageBuildError::Conflict(_))
+            ),
+            "P6"
+        );
+        let mut claims = 0;
+        while let Some(claim) = store.claim_next("pin-worker", 10_000, 50).await.unwrap() {
+            claims += 1;
+            assert!(
+                store
+                    .complete(&claim, "image@sha256:pin", 10_001)
+                    .await
+                    .unwrap()
+            );
+        }
+        assert_eq!(claims, 3, "P1-P5 only A, B and one race winner are built");
+        a
     }
 }

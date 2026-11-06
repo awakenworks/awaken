@@ -117,6 +117,21 @@ OCI Registry. The Kubernetes Job owns no durable lifecycle state, and neither
 Runtime Host nor the Session Pod installs Environment packages after a prepared
 digest has been frozen.
 
+The image-build store also retains the first resolved recipe binding for one
+immutable registration fingerprint and selected authored base reference. The
+binding contains only the existing job key; it does not copy build state or
+create another image queue. Job insertion and first binding selection share
+one backend transaction/lock. A concurrent losing resolver reuses the winner
+without leaving an unreferenced build job. Different registrations can share
+one content-identical job. Subsequent readiness reads do not resolve a mutable
+tag again; an unavailable pinned image follows the original job's retry path.
+
+This realization binding does not rewrite any already-frozen Session image
+fact. Preexisting unbound jobs remain recipe records and are not retroactive
+proof of a registration binding; their first binding is established through
+the same admission operation. The portable migration appends the binding
+relation while preserving the original job migration and its checksum.
+
 The 2026-08-28 package-realization amendment gives these Kubernetes objects one
 versioned typed structural contract. The public
 `awaken_sandbox_container::k8s_package_realization` module is the only owner for

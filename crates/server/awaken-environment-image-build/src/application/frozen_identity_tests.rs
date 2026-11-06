@@ -12,6 +12,7 @@ use crate::InMemoryEnvironmentImageBuildStore;
 struct RepointableBuilder {
     digest: Mutex<String>,
     builds: AtomicUsize,
+    resolutions: AtomicUsize,
 }
 
 #[async_trait]
@@ -20,6 +21,7 @@ impl EnvironmentImageBuilder for RepointableBuilder {
         &self,
         reference: &str,
     ) -> Result<String, EnvironmentImageBuildError> {
+        self.resolutions.fetch_add(1, Ordering::SeqCst);
         Ok(format!("{reference}@{}", self.digest.lock().unwrap()))
     }
 
@@ -41,12 +43,16 @@ impl EnvironmentImageBuilder for RepointableBuilder {
 }
 
 #[tokio::test]
-#[ignore = "product gap: readiness recomputes a frozen revision's demand from the current mutable base tag (application.rs:60-61)"]
 async fn a_frozen_revision_keeps_its_admitted_image_after_the_base_tag_moves() {
+    // F1 first realization pins one resolved recipe; F2 moving the same base
+    // tag cannot change that pin; F3 repeated readiness reuses it without any
+    // new base resolution/build. A new explicit base or changed registration
+    // has its own binding (covered by the existing policy/recipe tables).
     let store = Arc::new(InMemoryEnvironmentImageBuildStore::new());
     let builder = Arc::new(RepointableBuilder {
         digest: Mutex::new("sha256:v1".into()),
         builds: AtomicUsize::new(0),
+        resolutions: AtomicUsize::new(0),
     });
     let builds = EnvironmentImageBuildCoordinator::new(
         store,
@@ -77,4 +83,35 @@ async fn a_frozen_revision_keeps_its_admitted_image_after_the_base_tag_moves() {
         "the frozen revision keeps its admitted immutable image"
     );
     assert_eq!(builder.builds.load(Ordering::SeqCst), 1, "no rebuild");
+    for _ in 0..20 {
+        assert_eq!(
+            builds
+                .ready_image_now(&frozen, None)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(admitted.as_str()),
+            "F3"
+        );
+    }
+    assert_eq!(
+        builder.resolutions.load(Ordering::SeqCst),
+        1,
+        "F1-F3 one base lookup for all 23 readiness/registration calls"
+    );
+    // F4 an altered immutable fingerprint refuses before a pin lookup/resolve.
+    let mut invalid = frozen.clone();
+    invalid.fingerprint = "tampered".into();
+    assert!(
+        matches!(
+            builds.ready_image_now(&invalid, None).await,
+            Err(EnvironmentImageBuildError::Conflict(_))
+        ),
+        "F4"
+    );
+    assert_eq!(
+        builder.resolutions.load(Ordering::SeqCst),
+        1,
+        "F4 no resolver effect"
+    );
 }

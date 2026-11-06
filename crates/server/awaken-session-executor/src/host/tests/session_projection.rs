@@ -1875,9 +1875,9 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
 async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host() {
     use awaken_agent_contract::{
         credential::CredentialAccess, credential::CredentialExecutionPolicy,
-        credential::CredentialMaterialSource, credential::CredentialRef,
-        credential::CredentialUsage, credential::ModelExposurePolicy,
-        credential::PlaintextBoundary, credential::PlaintextHolder,
+        credential::CredentialMaterialSource, credential::CredentialUsage,
+        credential::ModelExposurePolicy, credential::PlaintextBoundary,
+        credential::PlaintextHolder,
     };
 
     #[derive(Clone)]
@@ -1923,8 +1923,8 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
     }
 
     let dependencies = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
-    let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-    let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+    let (credentials, secrets, credential) =
+        super::mcp_plaintext_boundary::platform_credential().await;
     let host = (dependencies.with_credentials(credentials.clone(), secrets.clone()))
         .build()
         .unwrap();
@@ -1963,10 +1963,7 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
         prompts_as_skills: false,
         credential: Some(
             CredentialAccess::new(
-                CredentialRef {
-                    id: "credential-never-stored".into(),
-                    revision: 7,
-                },
+                super::mcp_plaintext_boundary::credential_ref(&credential),
                 CredentialMaterialSource::ControlPlaneReference,
                 CredentialUsage::HttpHeader {
                     name: "authorization".into(),

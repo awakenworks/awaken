@@ -67,6 +67,23 @@ pub struct HarvestedArtifacts {
 }
 
 impl ArtifactHarvester {
+    fn capture_replacement(
+        workspace: String,
+        thread: &str,
+        expected_revision: u64,
+        file_ids: Vec<String>,
+        fence: Option<&ResourceOperationFence>,
+    ) -> Result<awaken_resource_contract::ReplaceArtifactCapture, ArtifactPublicationError> {
+        let mut replacement = awaken_resource_contract::ReplaceArtifactCapture::new(
+            workspace,
+            thread.into(),
+            expected_revision,
+            file_ids,
+        );
+        replacement.bind_run_origin(fence.and_then(ResourceOperationFence::run_claim_identity))?;
+        Ok(replacement)
+    }
+
     pub fn new(
         sessions: crate::session_realizations::SessionRealizations,
         local_workspace: String,
@@ -264,15 +281,16 @@ impl ArtifactHarvester {
             receipt.verify(&publication)?;
             receipts.push(receipt);
         }
-        let replacement = awaken_resource_contract::ReplaceArtifactCapture::new(
+        let replacement = Self::capture_replacement(
             workspace,
-            thread.into(),
+            thread,
             expected_revision,
             receipts
                 .iter()
                 .map(|receipt| receipt.record.id.clone())
                 .collect(),
-        );
+            fence.as_ref(),
+        )?;
         let outcome = self
             .publisher
             .replace_capture(replacement.clone(), fence.as_ref())

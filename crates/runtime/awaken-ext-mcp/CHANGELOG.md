@@ -6,6 +6,7 @@ Notable changes to `awaken-ext-mcp`. Versions follow the [SDK versioning policy]
 
 ### Breaking
 
+- HTTP authentication failures use `McpTransportError::AuthenticationRequired` from the pending `awaken-mcp-wire` `0.2.0`; callers classify the typed variant instead of parsing a `ServerError` message.
 - Its public API names types of `awaken-agent-contract` 2.0, `awaken-tool-contract` 2.0 and `awaken-runtime-contract` 2.0; a caller upgrades them together, because a 1.x type is a different type.
 
 ### Added

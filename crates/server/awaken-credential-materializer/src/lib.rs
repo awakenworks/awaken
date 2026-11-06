@@ -367,13 +367,12 @@ impl PinnedCredentialMaterializer {
         Ok(resolved.material)
     }
 
-    async fn resolve_validated(
+    fn exact_resolver(
         &self,
         access: &CredentialAccess,
         selected_holder: &PlaintextHolder,
-        binding: CredentialMaterialBinding,
-        expected_provider: Option<ExpectedProviderTarget<'_>>,
-    ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
+        binding: &CredentialMaterialBinding,
+    ) -> Result<(&dyn CredentialMaterialResolver, bool), CredentialMaterialError> {
         binding.validate()?;
         if !access
             .policy
@@ -390,11 +389,6 @@ impl PinnedCredentialMaterializer {
             &access.usage,
         )
         .map_err(|_| CredentialMaterialError::BindingMismatch)?;
-        let external_request = awaken_credential_contract::CredentialMaterialCapability {
-            holder: selected_holder.clone(),
-            source: access.material_source,
-            envelope: access.envelope.is_some(),
-        };
         let external = access.envelope.is_some()
             || access.material_source == CredentialMaterialSource::WorkerReference
             || !self.has_local_authority();
@@ -417,7 +411,52 @@ impl PinnedCredentialMaterializer {
                 return Err(CredentialMaterialError::Unavailable);
             }
         };
-        if external && !resolver.material_capabilities().contains(&external_request) {
+        Ok((resolver.as_ref(), external))
+    }
+
+    /// Validate a mediated reference without crossing its plaintext boundary.
+    pub async fn validate_reference_for_workspace(
+        &self,
+        access: &CredentialAccess,
+        selected_holder: &PlaintextHolder,
+        realization: CredentialRealizationKind,
+        workspace: &str,
+        target: &impl serde::Serialize,
+    ) -> Result<(), CredentialMaterialError> {
+        admit_exact_adapter(
+            access,
+            selected_holder,
+            realization,
+            &self.realization_capabilities(selected_holder.clone(), realization),
+            self.clock.now_ms(),
+        )
+        .map_err(admission_material_error)?;
+        let binding = CredentialMaterialBinding::for_target(workspace, target, &access.usage);
+        self.exact_resolver(access, selected_holder, &binding)?
+            .0
+            .validate_reference(CredentialMaterialRequest {
+                access,
+                selected_holder,
+                binding: &binding,
+                expected_provider: None,
+            })
+            .await
+    }
+
+    async fn resolve_validated(
+        &self,
+        access: &CredentialAccess,
+        selected_holder: &PlaintextHolder,
+        binding: CredentialMaterialBinding,
+        expected_provider: Option<ExpectedProviderTarget<'_>>,
+    ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
+        let (resolver, external) = self.exact_resolver(access, selected_holder, &binding)?;
+        let capability = awaken_credential_contract::CredentialMaterialCapability {
+            holder: selected_holder.clone(),
+            source: access.material_source,
+            envelope: access.envelope.is_some(),
+        };
+        if external && !resolver.material_capabilities().contains(&capability) {
             return Err(CredentialMaterialError::Unavailable);
         }
         let resolved = resolver
@@ -525,6 +564,16 @@ impl CredentialMaterialResolver for PinnedCredentialMaterializer {
         &self,
     ) -> std::collections::BTreeSet<awaken_credential_contract::CredentialMaterialCapability> {
         self.installed_material_capabilities()
+    }
+
+    async fn validate_reference(
+        &self,
+        request: CredentialMaterialRequest<'_>,
+    ) -> Result<(), CredentialMaterialError> {
+        self.exact_resolver(request.access, request.selected_holder, request.binding)?
+            .0
+            .validate_reference(request)
+            .await
     }
 
     async fn resolve_exact(

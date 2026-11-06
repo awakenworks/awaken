@@ -65,8 +65,26 @@ impl RecordBackend for SqliteRecordBackend {
     async fn insert(
         &self,
         record: &EnvironmentImageBuildRecord,
-    ) -> Result<bool, EnvironmentImageBuildError> {
+        binding_key: Option<&str>,
+    ) -> Result<String, EnvironmentImageBuildError> {
         let (demand, state, updated) = VersionedRecord::encode_record(record)?;
+        let mut transaction = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage)?;
+        if let Some(binding) = binding_key
+            && let Some(selected) = sqlx::query_scalar::<_, String>(
+                "SELECT build_key FROM environment_image_build_binding WHERE binding_key=?1",
+            )
+            .bind(binding)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(storage)?
+        {
+            transaction.commit().await.map_err(storage)?;
+            return Ok(selected);
+        }
         let inserted = sqlx::query(
             "INSERT INTO environment_image_build_job \
              (build_key, version, demand_json, state_kind, state_json, updated_at_ms) \
@@ -77,10 +95,62 @@ impl RecordBackend for SqliteRecordBackend {
         .bind(record.state.kind())
         .bind(state)
         .bind(updated)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
-        .map_err(storage)?;
-        Ok(inserted.rows_affected() == 1)
+        .map_err(storage)?
+        .rows_affected();
+        if inserted == 0 {
+            let stored: String = sqlx::query_scalar(
+                "SELECT demand_json FROM environment_image_build_job WHERE build_key=?1",
+            )
+            .bind(&record.demand.build_key)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(storage)?;
+            let demand: awaken_executable_environment_contract::EnvironmentImageBuildDemand =
+                serde_json::from_str(&stored).map_err(storage)?;
+            if !demand.same_recipe(&record.demand) {
+                transaction.rollback().await.map_err(storage)?;
+                return Err(EnvironmentImageBuildError::Conflict(
+                    record.demand.build_key.clone(),
+                ));
+            }
+        }
+        let selected = if let Some(binding) = binding_key {
+            sqlx::query("INSERT INTO environment_image_build_binding (binding_key, build_key) VALUES (?1, ?2) ON CONFLICT DO NOTHING")
+                .bind(binding).bind(&record.demand.build_key)
+                .execute(&mut *transaction).await.map_err(storage)?;
+            sqlx::query_scalar::<_, String>(
+                "SELECT build_key FROM environment_image_build_binding WHERE binding_key=?1",
+            )
+            .bind(binding)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(storage)?
+        } else {
+            record.demand.build_key.clone()
+        };
+        if selected != record.demand.build_key {
+            // A different resolver won the immutable pin. Roll back this
+            // candidate job as well, so the loser leaves no orphan queue work.
+            transaction.rollback().await.map_err(storage)?;
+        } else {
+            transaction.commit().await.map_err(storage)?;
+        }
+        Ok(selected)
+    }
+
+    async fn pinned_key(
+        &self,
+        binding_key: &str,
+    ) -> Result<Option<String>, EnvironmentImageBuildError> {
+        sqlx::query_scalar(
+            "SELECT build_key FROM environment_image_build_binding WHERE binding_key=?1",
+        )
+        .bind(binding_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)
     }
 
     async fn get(
@@ -179,11 +249,17 @@ mod tests {
             .await
             .unwrap();
         let demand = crate::durable::tests::lifecycle(store.as_ref()).await;
+        let pin = crate::durable::tests::pinning(store.as_ref()).await;
         drop(store);
 
         let reopened = open_sqlite_environment_image_build_store(&path)
             .await
             .unwrap();
+        assert_eq!(
+            reopened.pinned_demand("pin-one").await.unwrap(),
+            Some(pin),
+            "P7 immutable pin survives a new store/pool"
+        );
         assert!(
             matches!(
                 reopened.get(&demand.build_key).await.unwrap().unwrap().state,
@@ -198,6 +274,80 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "R5"
+        );
+    }
+
+    #[tokio::test]
+    async fn registration_pin_upgrade_preserves_existing_ready_recipe() {
+        // U1 a v1 database already owns a Ready recipe; U2 opening the new
+        // bundle appends the pin relation. E1 the old Ready state/image remain;
+        // E2 no historical binding is fabricated; E3 first explicit pin links
+        // the same job without new queue work. The migration owner supplies
+        // the original v1 statement rather than a second SQL fixture copy.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("image-upgrade.db");
+        let pool = EmbeddedSqlite::file(&path).open().await.unwrap();
+        let full = environment_image_build_bundle().unwrap();
+        let old = awaken_scoped_migration::MigrationBundle::new(
+            full.bundle_id(),
+            vec![full.migrations()[0].clone()],
+        )
+        .unwrap();
+        SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS)
+            .unwrap()
+            .run_bundle(&old)
+            .await
+            .unwrap();
+        let backend = SqliteRecordBackend { pool };
+        let demand = crate::test_demand();
+        let record = EnvironmentImageBuildRecord {
+            demand: demand.clone(),
+            state: EnvironmentImageBuildState::Ready {
+                image: "image@sha256:legacy".into(),
+                ready_at_ms: 100,
+                attempt: 1,
+            },
+            updated_at_ms: 100,
+        };
+        backend.insert(&record, None).await.unwrap();
+        backend.pool.sqlx().close().await;
+        drop(backend);
+        let upgraded = open_sqlite_environment_image_build_store(&path)
+            .await
+            .unwrap();
+        assert_eq!(
+            upgraded.get(&demand.build_key).await.unwrap(),
+            Some(record),
+            "U1/E1"
+        );
+        assert!(
+            upgraded
+                .pinned_demand("first-new-binding")
+                .await
+                .unwrap()
+                .is_none(),
+            "U2/E2"
+        );
+        assert_eq!(
+            upgraded
+                .ensure(demand.clone(), 200, Some("first-new-binding"))
+                .await
+                .unwrap(),
+            demand,
+            "U2/E3"
+        );
+        assert_eq!(
+            upgraded.pinned_demand("first-new-binding").await.unwrap(),
+            Some(demand),
+            "U2/E3"
+        );
+        assert!(
+            upgraded
+                .claim_next("worker", 201, 10)
+                .await
+                .unwrap()
+                .is_none(),
+            "U2/E3 no rebuild"
         );
     }
 

@@ -484,7 +484,7 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(start_paused = true)]
 async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
     /* Renewal failure cause/effect table: C1 Control does not answer before its
      * authority-derived request deadline; C2 the prior durable lease is either

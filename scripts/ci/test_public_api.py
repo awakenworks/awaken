@@ -39,7 +39,7 @@ sys.stdout.reconfigure(newline="\\n")
 name, args = Path(sys.argv[0]).name, sys.argv[1:]
 if name == "rustc":
     sys.exit(1 if os.environ.get("API_TEST_NO_NIGHTLY") else 0)
-if args == ["public-api", "--version"]:
+if name == "cargo-public-api" and args == ["--version"]:
     if os.environ.get("API_TEST_VERSION_QUERY_ERROR"):
         print("error: could not execute cargo-public-api", file=sys.stderr)
         sys.exit(101)

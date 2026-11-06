@@ -25,7 +25,7 @@
 //! request — on success only a classified read-only request is retried with the
 //! fresh credential; effectful or unknown methods surface the original challenge
 //! without replay. Refresh failure likewise surfaces the challenge (including `WWW-Authenticate`) as a
-//! [`McpTransportError::ServerError`] prefixed with `auth challenge:`.
+//! [`McpTransportError::AuthenticationRequired`], retaining the challenge detail.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -482,7 +482,7 @@ fn challenge_from(response: &reqwest::Response) -> AuthChallenge {
 }
 
 fn unauthorized_error(challenge: &AuthChallenge) -> McpTransportError {
-    McpTransportError::ServerError(format!("auth challenge: {challenge}"))
+    McpTransportError::AuthenticationRequired(format!("auth challenge: {challenge}"))
 }
 
 /// Assembles an [`HttpTransport`]: URL plus optional credential, custom
@@ -1589,8 +1589,8 @@ mod tests {
         let (url, _server) = serve(vec![unauthorized_response()]).await;
         let transport = HttpTransportBuilder::new(url).build();
         let err = transport.list_tools().await.expect_err("401 surfaces");
-        let McpTransportError::ServerError(message) = err else {
-            panic!("expected ServerError, got {err:?}");
+        let McpTransportError::AuthenticationRequired(message) = err else {
+            panic!("expected a typed authentication challenge, got {err:?}");
         };
         assert!(message.starts_with("auth challenge: HTTP 401"), "{message}");
         assert!(message.contains("Bearer realm=\"mcp\""), "{message}");

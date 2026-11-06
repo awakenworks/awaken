@@ -59,12 +59,22 @@ impl EnvironmentImageBuildCoordinator {
         registration: &ExecutableEnvironmentRegistration,
         base_image: Option<&str>,
     ) -> Result<Option<EnvironmentImageBuildDemand>, EnvironmentImageBuildError> {
+        registration
+            .validate()
+            .map_err(|error| EnvironmentImageBuildError::Conflict(error.to_string()))?;
         if registration.definition.config.is_self_hosted()
             || registration.definition.config.packages().is_empty()
         {
             return Ok(None);
         }
         let base_image = registration.package_base_image(base_image.unwrap_or(&self.base_image));
+        let binding_key = EnvironmentImageBuildDemand::binding_key(registration, base_image);
+        if let Some(pinned) = self.store.pinned_demand(&binding_key).await? {
+            return Ok(EnvironmentImageBuildDemand::from_registration(
+                registration,
+                &pinned.base_image,
+            ));
+        }
         let base_image = self.builder.base_image_identity(base_image).await?;
         Ok(EnvironmentImageBuildDemand::from_registration(
             registration,
@@ -77,13 +87,22 @@ impl EnvironmentImageBuildCoordinator {
         registration: &ExecutableEnvironmentRegistration,
         base_image: Option<&str>,
     ) -> Result<Option<EnvironmentImageBuildDemand>, EnvironmentImageBuildError> {
-        let demand = self.demand(registration, base_image).await?;
-        if let Some(demand) = &demand {
-            self.store
-                .ensure(demand.clone(), self.clock.now_ms())
-                .await?;
-        }
-        Ok(demand)
+        let Some(demand) = self.demand(registration, base_image).await? else {
+            return Ok(None);
+        };
+        let base_reference =
+            registration.package_base_image(base_image.unwrap_or(&self.base_image));
+        let binding_key = EnvironmentImageBuildDemand::binding_key(registration, base_reference);
+        // Job insertion and first binding selection are atomic in the existing
+        // store. A racing resolver adopts the winner without orphan queue work.
+        let selected = self
+            .store
+            .ensure(demand, self.clock.now_ms(), Some(&binding_key))
+            .await?;
+        Ok(EnvironmentImageBuildDemand::from_registration(
+            registration,
+            &selected.base_image,
+        ))
     }
 
     pub fn new(
@@ -792,7 +811,7 @@ mod tests {
         )
         .unwrap();
         store
-            .ensure(policy_demand.clone(), clock.now_ms())
+            .ensure(policy_demand.clone(), clock.now_ms(), None)
             .await
             .unwrap();
         assert!(coordinator.run_once("builder-a").await.unwrap(), "R6");
@@ -1013,7 +1032,8 @@ mod tests {
             &self,
             demand: EnvironmentImageBuildDemand,
             now: u64,
-        ) -> Result<(), EnvironmentImageBuildError> {
+            binding_key: Option<&str>,
+        ) -> Result<EnvironmentImageBuildDemand, EnvironmentImageBuildError> {
             self.ensures.lock().unwrap().push(demand.source_revision);
             if demand.source_revision == EnvironmentRevision(2)
                 && self.unavailable.load(Ordering::SeqCst)
@@ -1022,7 +1042,13 @@ mod tests {
                     "latest build demand remains unavailable".into(),
                 ));
             }
-            self.inner.ensure(demand, now).await
+            self.inner.ensure(demand, now, binding_key).await
+        }
+        async fn pinned_demand(
+            &self,
+            binding_key: &str,
+        ) -> Result<Option<EnvironmentImageBuildDemand>, EnvironmentImageBuildError> {
+            self.inner.pinned_demand(binding_key).await
         }
         async fn get(
             &self,

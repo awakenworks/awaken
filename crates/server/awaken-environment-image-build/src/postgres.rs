@@ -77,8 +77,22 @@ impl RecordBackend for PostgresRecordBackend {
     async fn insert(
         &self,
         record: &EnvironmentImageBuildRecord,
-    ) -> Result<bool, EnvironmentImageBuildError> {
+        binding_key: Option<&str>,
+    ) -> Result<String, EnvironmentImageBuildError> {
         let (demand, state, updated) = VersionedRecord::encode_record(record)?;
+        let mut transaction = self.pool.begin().await.map_err(storage)?;
+        if let Some(binding) = binding_key
+            && let Some(selected) = sqlx::query_scalar::<_, String>(
+                "SELECT build_key FROM environment_image_build_binding WHERE binding_key=$1",
+            )
+            .bind(binding)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(storage)?
+        {
+            transaction.commit().await.map_err(storage)?;
+            return Ok(selected);
+        }
         let inserted = sqlx::query(
             "INSERT INTO environment_image_build_job \
              (build_key, version, demand_json, state_kind, state_json, updated_at_ms) \
@@ -89,11 +103,62 @@ impl RecordBackend for PostgresRecordBackend {
         .bind(record.state.kind())
         .bind(state)
         .bind(updated)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(storage)?
         .rows_affected();
-        Ok(inserted == 1)
+        if inserted == 0 {
+            let stored: String = sqlx::query_scalar(
+                "SELECT demand_json FROM environment_image_build_job WHERE build_key=$1",
+            )
+            .bind(&record.demand.build_key)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(storage)?;
+            let demand: awaken_executable_environment_contract::EnvironmentImageBuildDemand =
+                serde_json::from_str(&stored).map_err(storage)?;
+            if !demand.same_recipe(&record.demand) {
+                transaction.rollback().await.map_err(storage)?;
+                return Err(EnvironmentImageBuildError::Conflict(
+                    record.demand.build_key.clone(),
+                ));
+            }
+        }
+        let selected = if let Some(binding) = binding_key {
+            sqlx::query("INSERT INTO environment_image_build_binding (binding_key, build_key) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+                .bind(binding).bind(&record.demand.build_key)
+                .execute(&mut *transaction).await.map_err(storage)?;
+            sqlx::query_scalar::<_, String>(
+                "SELECT build_key FROM environment_image_build_binding WHERE binding_key=$1",
+            )
+            .bind(binding)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(storage)?
+        } else {
+            record.demand.build_key.clone()
+        };
+        if selected != record.demand.build_key {
+            // A different resolver won the immutable pin. Roll back this
+            // candidate job as well, so the loser leaves no orphan queue work.
+            transaction.rollback().await.map_err(storage)?;
+        } else {
+            transaction.commit().await.map_err(storage)?;
+        }
+        Ok(selected)
+    }
+
+    async fn pinned_key(
+        &self,
+        binding_key: &str,
+    ) -> Result<Option<String>, EnvironmentImageBuildError> {
+        sqlx::query_scalar(
+            "SELECT build_key FROM environment_image_build_binding WHERE binding_key=$1",
+        )
+        .bind(binding_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)
     }
 
     async fn get(
@@ -247,9 +312,10 @@ mod tests {
             .expect("P1 migrate");
         let build_store = store(pool.clone());
         crate::durable::tests::lifecycle(build_store.as_ref()).await;
+        crate::durable::tests::pinning(build_store.as_ref()).await;
         let demand = crate::test_demand();
         build_store
-            .ensure(demand.clone(), 100)
+            .ensure(demand.clone(), 100, None)
             .await
             .expect("P1 pending row");
 

@@ -32,6 +32,24 @@ class CoverageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             summarize({"workspace_members": [], "packages": []}, [], root, {})
 
+    def test_cached_file_ownership_preserves_prefixes_nested_roots_and_order(self) -> None:
+        # Decision table: O1 exact src prefix -> owned; O2 a similar directory
+        # prefix -> unowned; O3 nested workspace src roots -> preserve every
+        # matching owner's original counts; O4 duplicate LCOV groups -> max
+        # hits, not an inflated denominator; O5 absent branch data -> None.
+        root = Path("/repo")
+        directories = {"nested": "crates/a/src/nested", "other": "crates/ab", "a": "crates/a"}
+        metadata = {"workspace_members": list(directories), "packages": [
+            {"id": name, "name": name, "manifest_path": str(root / directory / "Cargo.toml")}
+            for name, directory in directories.items()]}
+        document = "SF:crates/a/src/lib.rs\nDA:1,1\nend_of_record\nSF:crates/a/src/nested/src/lib.rs\nDA:1,0\nend_of_record\nSF:crates/ab_extra/src/lib.rs\nDA:1,9\nend_of_record\n"
+        rows = summarize(metadata, [document, document], root, {})
+        self.assertEqual([row["crate"] for row in rows], ["a", "nested", "other"])
+        self.assertEqual(rows[0]["lines"], {"covered": 1, "total": 2})
+        self.assertEqual(rows[1]["lines"], {"covered": 0, "total": 1})
+        self.assertIsNone(rows[2]["lines"])
+        self.assertTrue(all(row["branches"] is None for row in rows))
+
 
 if __name__ == "__main__":
     main()

@@ -14,6 +14,14 @@ struct RecordingMediator {
     url: String,
     fail: std::sync::atomic::AtomicBool,
     provisioned: std::sync::Mutex<Vec<awaken_agent_contract::credential::CredentialRef>>,
+    gate: Arc<ProvisionGate>,
+}
+
+struct ProvisionGate {
+    pause: std::sync::atomic::AtomicBool,
+    entered: tokio::sync::Notify,
+    resume: tokio::sync::Semaphore,
+    revoked: std::sync::atomic::AtomicUsize,
 }
 
 impl awaken_credential_materializer::PlatformMcpEgressProvisioner for RecordingMediator {
@@ -28,6 +36,7 @@ impl awaken_credential_materializer::PlatformMcpEgressProvisioner for RecordingM
         Arc::new(RecordingAllocation {
             url: self.url.clone(),
             fail: self.fail.load(std::sync::atomic::Ordering::SeqCst),
+            gate: self.gate.clone(),
         })
     }
 }
@@ -37,6 +46,7 @@ impl awaken_credential_materializer::PlatformMcpEgressProvisioner for RecordingM
 struct RecordingAllocation {
     url: String,
     fail: bool,
+    gate: Arc<ProvisionGate>,
 }
 
 #[async_trait::async_trait]
@@ -47,6 +57,10 @@ impl awaken_credential_materializer::PlatformMcpEgressAllocation for RecordingAl
         awaken_credential_materializer::MediatedMcpRoute,
         awaken_credential_contract::CredentialMaterialError,
     > {
+        if self.gate.pause.load(std::sync::atomic::Ordering::SeqCst) {
+            self.gate.entered.notify_one();
+            self.gate.resume.acquire().await.unwrap().forget();
+        }
         if self.fail {
             return Err(awaken_credential_contract::CredentialMaterialError::Unavailable);
         }
@@ -59,6 +73,9 @@ impl awaken_credential_materializer::PlatformMcpEgressAllocation for RecordingAl
     async fn revoke_and_wait(
         &self,
     ) -> Result<(), awaken_credential_contract::CredentialMaterialError> {
+        self.gate
+            .revoked
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }
@@ -82,7 +99,11 @@ struct PlatformFixture {
 /// One stored Vault credential whose secret is the sentinel and whose
 /// descriptor authorizes exactly the upstream MCP audience, so a Host that
 /// resolved Platform-held material would obtain the sentinel.
-async fn platform_fixture() -> PlatformFixture {
+pub(super) async fn platform_credential() -> (
+    Arc<awaken_credential_vault::repo::InMemoryCredentialRepo>,
+    Arc<awaken_credential_vault::InMemorySecretStore>,
+    awaken_credential_vault::CredentialSource,
+) {
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let mut credential = awaken_credential_vault::repo::enter_credential(
@@ -124,11 +145,26 @@ async fn platform_fixture() -> PlatformFixture {
     awaken_credential_vault::repo::CredentialRepo::put(credentials.as_ref(), credential.clone())
         .await
         .unwrap();
+    (credentials, secrets, credential)
+}
+
+async fn platform_fixture() -> PlatformFixture {
     let (mediated_url, _seen) = crate::test_mcp::start(None).await;
+    platform_fixture_at(mediated_url).await
+}
+
+async fn platform_fixture_at(mediated_url: String) -> PlatformFixture {
+    let (credentials, secrets, credential) = platform_credential().await;
     let mediator = Arc::new(RecordingMediator {
         url: mediated_url,
         fail: std::sync::atomic::AtomicBool::new(false),
         provisioned: std::sync::Mutex::new(Vec::new()),
+        gate: Arc::new(ProvisionGate {
+            pause: std::sync::atomic::AtomicBool::new(false),
+            entered: tokio::sync::Notify::new(),
+            resume: tokio::sync::Semaphore::new(0),
+            revoked: std::sync::atomic::AtomicUsize::new(0),
+        }),
     });
     let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
@@ -147,7 +183,7 @@ async fn platform_fixture() -> PlatformFixture {
     }
 }
 
-fn credential_ref(
+pub(super) fn credential_ref(
     credential: &awaken_credential_vault::CredentialSource,
 ) -> awaken_agent_contract::credential::CredentialRef {
     awaken_agent_contract::credential::CredentialRef {
@@ -322,11 +358,12 @@ async fn platform_mcp_receipt_projection_and_refusal_carry_no_plaintext() {
     );
 }
 
-/// The Host forwards a disabled credential's reference to the mediator; only a
-/// real mediator could refuse it, and none exists in this product.
 #[tokio::test]
-#[ignore = "product gap: no production PlatformMcpEgressProvisioner enforces revocation; the Host mediates a Disabled credential unchecked"]
 async fn disabled_platform_credential_is_refused_before_a_mediated_route() {
+    // D1 active credential becomes Disabled before staging => reference-only
+    // refusal, zero mediator preparations and no usable projection. Source
+    // metadata is checked by the existing Vault authority, never by resolving
+    // the Platform-held secret into this caller.
     let fixture = platform_fixture().await;
     let mut disabled = fixture.credential.clone();
     disabled.status = awaken_credential_vault::CredentialStatus::Disabled;
@@ -359,5 +396,113 @@ async fn disabled_platform_credential_is_refused_before_a_mediated_route() {
             .mcp_projection(&generation)
             .is_none_or(|projection| projection.server.is_none()),
         "no usable projection"
+    );
+}
+
+#[tokio::test]
+async fn platform_credential_revoked_during_provision_is_drained_without_publication() {
+    // D2: Active -> provision barrier -> Disabled -> refusal and owned drain.
+    revoked_platform_preparation(None).await;
+}
+
+#[tokio::test]
+async fn platform_credential_revoked_during_initialize_is_drained_without_publication() {
+    // D3: Active at provision return -> initialize barrier -> Disabled -> no
+    // receipt/wiring/server publication; drain the original minted allocation.
+    let gate = Arc::new(crate::test_mcp::InitializeGate::new());
+    revoked_platform_preparation(Some(gate)).await;
+}
+
+async fn revoked_platform_preparation(initialize: Option<Arc<crate::test_mcp::InitializeGate>>) {
+    // | Rule | source before IO | source after IO | Effect                    |
+    // | D2   | Active/provision | Disabled        | refuse + retain/drain owner|
+    // | D3   | Active/initialize| Disabled        | refuse + retain/drain owner|
+    // D1 above covers zero-effect refusal. D2/D3 observe an already
+    // created allocation: it must not claim zero effects or discard cleanup.
+    // Each barrier commits revocation before its original IO returns.
+    let fixture = if let Some(gate) = &initialize {
+        let (url, _seen) = crate::test_mcp::start_with_initialize_gate(gate.clone()).await;
+        platform_fixture_at(url).await
+    } else {
+        platform_fixture().await
+    };
+    let request = platform_request(
+        &fixture.host,
+        "mcp-revoked-in-flight",
+        credential_ref(&fixture.credential),
+    );
+    let generation = request.generation.clone();
+    fixture
+        .mediator
+        .gate
+        .pause
+        .store(initialize.is_none(), std::sync::atomic::Ordering::SeqCst);
+    let (staged, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(
+            fixture.host.run_assembly.stage_mcp_attachment(request),
+            async {
+                if let Some(gate) = &initialize {
+                    gate.entered().await;
+                } else {
+                    fixture.mediator.gate.entered.notified().await;
+                }
+                let mut disabled = fixture.credential.clone();
+                disabled.status = awaken_credential_vault::CredentialStatus::Disabled;
+                awaken_credential_vault::repo::CredentialRepo::put(
+                    fixture.credentials.as_ref(),
+                    disabled,
+                )
+                .await
+                .unwrap();
+                if let Some(gate) = &initialize {
+                    gate.release();
+                } else {
+                    fixture.mediator.gate.resume.add_permits(1);
+                }
+            }
+        )
+    })
+    .await
+    .expect("D2 provision and revocation settle");
+    assert!(
+        staged.is_err(),
+        "D2 no receipt from stale credential metadata"
+    );
+    assert_eq!(
+        fixture.mediator.provisioned.lock().unwrap().len(),
+        1,
+        "D2 real preparation happened"
+    );
+    let projection = fixture
+        .host
+        .run_assembly
+        .mcp_projection(&generation)
+        .expect("D2 cleanup responsibility retained");
+    assert!(
+        projection.server.is_none() && projection.native_wiring.is_none(),
+        "D2/D3 no server or wiring published"
+    );
+    fixture
+        .host
+        .run_assembly
+        .drain_mcp_generation(generation.clone())
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .mediator
+            .gate
+            .revoked
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0,
+        "D2 original allocation acknowledged revocation"
+    );
+    assert!(
+        fixture
+            .host
+            .run_assembly
+            .mcp_projection(&generation)
+            .is_none_or(|p| p.server.is_none() && p.native_wiring.is_none()),
+        "D2 remains unavailable"
     );
 }

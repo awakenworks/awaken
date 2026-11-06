@@ -1730,7 +1730,7 @@ mod tests {
 
         for mode in modes {
             for capability in capabilities {
-                let supported = mode.is_supported_by(capability);
+                let supported = crate::tool::recovery_capability_expected(mode, capability);
                 let mut requested = candidate(mode, 3, ToolCallPhase::Requested);
                 assert_eq!(
                     recover_and_enter(&mut requested, capability),
@@ -2266,7 +2266,7 @@ mod verification {
             CallPhaseView::Requested
         };
         let actual = recovery_transition(phase, &policy, capability).unwrap();
-        let supported = mode.is_supported_by(capability);
+        let supported = crate::tool::recovery_capability_expected(mode, capability);
         let expected = if !executing {
             if supported {
                 RecoveryTransition::Enter(1)

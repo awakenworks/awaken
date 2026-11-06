@@ -279,6 +279,10 @@ pub enum ToolContent {
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpTransportError {
+    /// An authentication challenge observed by the transport, never inferred
+    /// from a JSON-RPC server's human-readable error payload.
+    #[error("Authentication required: {0}")]
+    AuthenticationRequired(String),
     /// The transport rejected the request before admitting any send. Other
     /// errors (including server/protocol errors) do not prove no side effects.
     #[error("Request not dispatched: {0}")]

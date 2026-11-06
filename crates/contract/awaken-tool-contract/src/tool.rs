@@ -300,6 +300,35 @@ impl ToolRecoveryMode {
     }
 }
 
+/// Independent specification table shared only by native tests and proofs.
+/// Keep expectations as data: calling the production predicate here would
+/// let a wrong capability mapping change both the result and its oracle.
+#[cfg(any(test, kani))]
+pub(crate) const fn recovery_capability_expected(
+    mode: ToolRecoveryMode,
+    capability: ToolRecoveryCapability,
+) -> bool {
+    let row = match mode {
+        ToolRecoveryMode::NeverReplay => 0,
+        ToolRecoveryMode::ReplaySafe => 1,
+        ToolRecoveryMode::Idempotent => 2,
+        ToolRecoveryMode::DurableRequest => 3,
+    };
+    let column = match capability {
+        ToolRecoveryCapability::NonRecoverable => 0,
+        ToolRecoveryCapability::ReplaySafe => 1,
+        ToolRecoveryCapability::Idempotent => 2,
+        ToolRecoveryCapability::DurableRequest => 3,
+    };
+    const EXPECTED: [[bool; 4]; 4] = [
+        [true, true, true, true],
+        [false, true, false, false],
+        [false, false, true, false],
+        [false, false, false, true],
+    ];
+    EXPECTED[row][column]
+}
+
 /// Per-tool operational recovery settings pinned into the resolved snapshot.
 ///
 /// Fields are deliberately private: callers cannot bypass the non-zero attempt
@@ -1666,17 +1695,38 @@ mod recovery_tests {
 
     #[test]
     fn configuration_can_only_match_or_reduce_capability() {
-        assert!(
-            ToolRecoveryMode::NeverReplay.is_supported_by(ToolRecoveryCapability::DurableRequest)
+        // Causes: four configured recovery modes x four trusted capabilities.
+        // R1 NeverReplay is always safe (four cells); R2 a replay mode admits
+        // exactly its matching capability (three cells); R3 every other pair
+        // refuses (nine cells). All 16 expectations are independent table data.
+        // NC widens one formerly unasserted off-diagonal pair. The same oracle
+        // must detect exactly that bad mapping even when other cells stay valid.
+        let mut mutation_mismatches = 0;
+        for mode in [
+            ToolRecoveryMode::NeverReplay,
+            ToolRecoveryMode::ReplaySafe,
+            ToolRecoveryMode::Idempotent,
+            ToolRecoveryMode::DurableRequest,
+        ] {
+            for capability in [
+                ToolRecoveryCapability::NonRecoverable,
+                ToolRecoveryCapability::ReplaySafe,
+                ToolRecoveryCapability::Idempotent,
+                ToolRecoveryCapability::DurableRequest,
+            ] {
+                let expected = recovery_capability_expected(mode, capability);
+                let actual = mode.is_supported_by(capability);
+                assert_eq!(actual, expected, "R1-R3 {mode:?}/{capability:?}");
+                let widened = (mode == ToolRecoveryMode::ReplaySafe
+                    && capability == ToolRecoveryCapability::Idempotent)
+                    || actual;
+                mutation_mismatches += usize::from(widened != expected);
+            }
+        }
+        assert_eq!(
+            mutation_mismatches, 1,
+            "NC the independent oracle detects a single wrong mapping"
         );
-        assert!(
-            ToolRecoveryMode::DurableRequest
-                .is_supported_by(ToolRecoveryCapability::DurableRequest)
-        );
-        assert!(
-            !ToolRecoveryMode::ReplaySafe.is_supported_by(ToolRecoveryCapability::NonRecoverable)
-        );
-        assert!(!ToolRecoveryMode::Idempotent.is_supported_by(ToolRecoveryCapability::ReplaySafe));
     }
 
     #[test]

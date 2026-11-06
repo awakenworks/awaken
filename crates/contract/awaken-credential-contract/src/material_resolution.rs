@@ -270,6 +270,17 @@ pub trait CredentialMaterialResolver: Send + Sync {
         BTreeSet::new()
     }
 
+    /// Revalidate exact source metadata without loading or returning material.
+    /// A caller that must remain outside the plaintext boundary uses this
+    /// operation before delegating an effect. Unsupported adapters deny; they
+    /// must never implement it by resolving a secret into the caller process.
+    async fn validate_reference(
+        &self,
+        _request: CredentialMaterialRequest<'_>,
+    ) -> Result<(), CredentialMaterialError> {
+        Err(CredentialMaterialError::Unavailable)
+    }
+
     async fn resolve_exact(
         &self,
         request: CredentialMaterialRequest<'_>,

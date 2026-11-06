@@ -22,9 +22,11 @@
 //! `awaken-protocol-managed-testkit`, `awaken-session-application`, `awaken-store-conformance`,
 //! `awaken-work-store`.
 
+mod image_build_demand;
 mod image_realization;
 mod registration;
 
+pub use image_build_demand::EnvironmentImageBuildDemand;
 pub use image_realization::*;
 pub use registration::*;
 

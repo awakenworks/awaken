@@ -39,14 +39,25 @@ def summarize(metadata: dict, documents: list[str], root: Path, excluded: dict[s
                 key = (current, int(number), block, branch)
                 if key[1] not in excluded.get(current, set()):
                     branches[key] = max(branches.get(key, 0), 0 if hits == "-" else int(hits))
-    result = []
-    for name, directory in sorted(packages):
-        def counts(values: dict) -> dict | None:
-            # Only production source is counted; integration tests/build scripts
-            # and dependencies cannot inflate a crate's production percentage.
-            owned = [hits for key, hits in values.items() if key[0].startswith(directory + "/src/")]
-            return {"covered": sum(hits > 0 for hits in owned), "total": len(owned)} if owned else None
-        result.append({"crate": name, "path": directory, "lines": counts(lines), "branches": counts(branches)})
+    # Match ownership once per source file, then aggregate each measured key
+    # once. Scanning all line/branch records separately for every crate made
+    # report cost proportional to crates * measured records.
+    packages = sorted(packages)
+    result = [{"crate": name, "path": directory, "lines": None, "branches": None}
+              for name, directory in packages]
+    owners: dict[str, tuple[int, ...]] = {}
+    for kind, values in (("lines", lines), ("branches", branches)):
+        for key, hits in values.items():
+            path = key[0]
+            if path not in owners:
+                owners[path] = tuple(index for index, (_, directory) in enumerate(packages)
+                                     if path.startswith(directory + "/src/"))
+            for index in owners[path]:
+                counts = result[index][kind]
+                if counts is None:
+                    counts = result[index][kind] = {"covered": 0, "total": 0}
+                counts["covered"] += int(hits > 0)
+                counts["total"] += 1
     return result
 
 
@@ -54,6 +65,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--metadata", type=Path, required=True)
     parser.add_argument("--lcov-path", type=Path, action="append", required=True)
+    parser.add_argument("--execution-scope", choices=("combined", "rust-workspace"), required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--source-digest", required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -74,7 +86,7 @@ def main() -> int:
                 except ValueError:
                     continue
     excluded = {p: test_only_lines(p) for p in files}
-    report = {"revision": args.revision, "source_digest": args.source_digest, "scope": "workspace-production", "crates": summarize(metadata, documents, ROOT, excluded), "unmeasured": "null means unavailable or not linked; it never means zero coverage"}
+    report = {"revision": args.revision, "source_digest": args.source_digest, "scope": "workspace-production", "execution_scope": args.execution_scope, "crates": summarize(metadata, documents, ROOT, excluded), "unmeasured": "null means unavailable or not linked; it never means zero coverage"}
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"Per-crate coverage: {args.output}")
     return 0
