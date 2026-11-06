@@ -40,7 +40,6 @@ import tomllib
 import unittest
 from unittest import mock
 from pathlib import Path
-from types import MappingProxyType
 import formal_sources
 
 WINDOWS = os.name == "nt"
@@ -282,7 +281,7 @@ def environment(root: Path = ROOT) -> dict[str, str]:
 
 
 def execute_commands(commands: list[list[str]], values: dict[str, str], *, root: Path = ROOT,
-                     verify=None, record=None, run=None, assess_result=None) -> tuple[int, list[dict]]:
+                     verify=None, record=None, run=None) -> tuple[int, list[dict]]:
     # Every real adapter joins this lifecycle. Tests replace the observer port
     # explicitly; neither the runner nor environment selects an unobserved path.
     from ci_performance import TaskRun
@@ -308,7 +307,7 @@ def execute_commands(commands: list[list[str]], values: dict[str, str], *, root:
             record(rows)
     try:
         status, rows = _execute_commands(commands, values, root=root, verify=verify, record=retain,
-                                        run=run, assess_result=assess_result)
+                                        run=run)
     except BaseException as error:
         interrupted = 130 if isinstance(error, KeyboardInterrupt) else (
             error.code if isinstance(error, SystemExit) and isinstance(error.code, int) else 1)
@@ -326,7 +325,7 @@ def execute_commands(commands: list[list[str]], values: dict[str, str], *, root:
 
 
 def _execute_commands(commands: list[list[str]], values: dict[str, str], *, root: Path = ROOT,
-                      verify=None, record=None, run=None, assess_result=None) -> tuple[int, list[dict]]:
+                      verify=None, record=None, run=None) -> tuple[int, list[dict]]:
     """One ordinary sequence; original failure outranks source/evidence faults."""
     if run is None:
         def run(command, **kwargs):
@@ -358,22 +357,6 @@ def _execute_commands(commands: list[list[str]], values: dict[str, str], *, root
         except (OSError, ValueError, subprocess.CalledProcessError) as error:
             row["subject_error"] = str(error)
             status = status or 1
-        # A caller may recognize a complete semantic report whose program uses
-        # exit 1 for the reported finding. Preserve that original observation;
-        # admission, compiler, signal, spawn and source failures are never such
-        # reports. With no assessor this is the original command sequence.
-        if (assess_result is not None and error_text is None
-                and "subject_error" not in row and status in (0, 1)):
-            try:
-                semantic = assess_result(MappingProxyType({**row, "command": tuple(command)}))
-                if semantic is not None:
-                    if status != 1 or not isinstance(semantic, str) or not semantic.strip():
-                        raise ValueError("only an explicit exit-1 semantic report can be accepted")
-                    row["semantic_result"] = semantic
-                    status = 0
-            except (OSError, ValueError, TypeError) as error:
-                row["assessment_error"] = str(error)
-                status = row["exit_code"] or 1
         if status != row["exit_code"]:
             row["result_exit_code"] = status
         try:
@@ -542,71 +525,6 @@ class CrateTestPlan(unittest.TestCase):
         status, rows = execute_commands([["missing"], ["must-not-run"]], {}, run=missing)
         self.assertEqual(status, 1)
         self.assertEqual(rows[0]["error"], "exact spawn fault")
-
-    def test_semantic_report_keeps_original_status_and_cannot_absorb_failures(self):
-        # N15 cause/effect graph: C1 an assessor is explicitly installed;
-        # C2 raw1 is a complete recognized report; C3 spawn/source/record is
-        # certain; C4 raw is an ordinary failure (75/101/124/signal143).
-        # R1 !C1 => unchanged raw status. R2 C1+C2+C3 => semantic success,
-        # original exit1 retained. R3 C1+!C2 => refusal. R4 !C3 or C4 =>
-        # original failure, no dependent command and no assessor on uncertainty.
-        # R5 raw0 cannot be relabelled an exit1 report. These rows extend, rather
-        # than replace, N7-N10's original source/evidence precedence table.
-        for raw in (0, 1, 75, 101, 124, -15):
-            for cause in ("recognized", "unknown", "subject", "record", "spawn"):
-                calls, assessed, reads = [], [], []
-                def run(command, **kwargs):
-                    calls.append(command)
-                    if cause == "spawn":
-                        raise OSError("spawn uncertain")
-                    return subprocess.CompletedProcess(command, 0 if command == ["second"] else raw)
-                def verify():
-                    reads.append(1)
-                    if cause == "subject" and len(reads) == 2:
-                        raise ValueError("source changed")
-                def assess(row):
-                    assessed.append(row)
-                    if row["command"] == ("second",) or raw == 0:
-                        return None
-                    if cause == "unknown":
-                        raise ValueError("incomplete or unknown report")
-                    return "accepted_major"
-                def record(rows):
-                    if cause == "record":
-                        raise OSError("record uncertain")
-                status, rows = execute_commands([["first"], ["second"]], {},
-                    verify=verify, record=record, run=run, assess_result=assess)
-                normalized = 143 if raw == -15 else raw
-                accepted = raw == 1 and cause == "recognized"
-                expected = 0 if accepted or (raw == 0 and cause in ("recognized", "unknown")) else (1 if cause == "spawn" else normalized or 1)
-                with self.subTest(raw=raw, cause=cause):
-                    self.assertEqual(status, expected)
-                    self.assertEqual(rows[0]["exit_code"], 1 if cause == "spawn" else normalized)
-                    self.assertEqual(len(calls), 2 if expected == 0 else 1)
-                    if raw not in (0, 1) or cause in ("spawn", "subject"):
-                        self.assertEqual(assessed, [])
-                    if accepted:
-                        self.assertEqual(rows[0]["semantic_result"], "accepted_major")
-                        self.assertEqual(rows[0]["result_exit_code"], 0)
-                    if raw == 1 and cause == "record":
-                        self.assertEqual(rows[0]["semantic_result"], "accepted_major")
-                        self.assertEqual(rows[0]["result_exit_code"], 1)
-                        self.assertEqual(calls, [["first"]])
-        # R5 and R6: invalid labels or an attempt to rewrite raw observations
-        # refuse rather than turning the assessor into another status owner.
-        for raw in (0, 1):
-            for verdict in ("", False, "accepted_major"):
-                if raw == 1 and verdict == "accepted_major":
-                    continue
-                status, rows = execute_commands([["first"]], {},
-                    run=lambda c, **k: subprocess.CompletedProcess(c, raw),
-                    assess_result=lambda row, value=verdict: value)
-                self.assertEqual((status, rows[0]["exit_code"]), (1, raw))
-        def rewrite(row):
-            row["exit_code"] = 0
-        status, rows = execute_commands([["first"]], {},
-            run=lambda c, **k: subprocess.CompletedProcess(c, 1), assess_result=rewrite)
-        self.assertEqual((status, rows[0]["exit_code"]), (1, 1))
 
     def test_companion_git_refusal_is_not_a_stale_row(self):
         # N6/N7: grep miss1 is an ordinary stale row;75/128 is an exact-source
