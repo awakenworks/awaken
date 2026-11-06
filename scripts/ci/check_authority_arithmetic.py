@@ -24,15 +24,15 @@ import _crate_boundary_workspace
 
 ROOT = Path(__file__).resolve().parents[2]
 RULES = {
-    "crates/stores/awaken-work-store/src/session_access.rs": ("lease_epoch + 1",),
-    "crates/server/awaken-dispatch/src/postgres.rs": (".max(0)",),
-    "crates/server/awaken-dispatch/src/sqlite.rs": (".max(0)",),
-    "crates/server/awaken-worker-registry/src/transition.rs": ("saturating_add(1)",),
-    "crates/server/awaken-sandbox-policy-store/src/lib.rs": ("saturating_add(1)",),
-    "crates/contract/awaken-executable-environment-contract/src/image_realization.rs": (
+    "crates/platform/environment/awaken-work-store/src/session_access.rs": ("lease_epoch + 1",),
+    "crates/platform/dispatch/awaken-dispatch/src/postgres.rs": (".max(0)",),
+    "crates/platform/dispatch/awaken-dispatch/src/sqlite.rs": (".max(0)",),
+    "crates/platform/dispatch/awaken-worker-registry/src/transition.rs": ("saturating_add(1)",),
+    "crates/platform/config/awaken-sandbox-policy-store/src/lib.rs": ("saturating_add(1)",),
+    "crates/platform/environment/awaken-executable-environment-contract/src/image_realization.rs": (
         "saturating_add(1)",
     ),
-    "crates/stores/awaken-session-store/src/row_codec.rs": (
+    "crates/platform/session/awaken-session-store/src/row_codec.rs": (
         'expect("managed Session revision',
         'expect("Session aggregate is an object',
     ),
@@ -150,7 +150,7 @@ def self_test() -> int:
         # X5: a second SQL increment bypasses the proved numeric transition.
         # Green fixture -> introduce the exact old bypass -> one semantic
         # rejection -> restore -> green; no unrelated error counts as a kill.
-        claim_path = fixture / "crates/stores/awaken-work-store/src/session_access.rs"
+        claim_path = fixture / "crates/platform/environment/awaken-work-store/src/session_access.rs"
         claim_path.parent.mkdir(parents=True)
         claim_path.write_text("lease_epoch = ?7", encoding="utf-8")
         assert violations(fixture) == []

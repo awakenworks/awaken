@@ -249,15 +249,15 @@ Three renames in this ADR were never applied, and later ADRs and the code use th
 old names. They are withdrawn; the other renames stand.
 
 - `FileStore` → `File` (port `Files`): withdrawn. The ports are `FileStore` and
-  `FileCatalog` (`crates/contract/awaken-resource-contract/src/lib.rs:337`, `:287`),
+  `FileCatalog` (`crates/platform/resources/awaken-resource-contract/src/lib.rs:337`, `:287`),
   as ADR-0038 A4 uses them.
 - `SkillStore` → `SkillRegistry`: withdrawn. `SkillStore` is the durable Skill
   repository (`awaken-resource-contract/src/lib.rs:651`); `SkillRegistry` is a
   different trait, the runtime skill lookup owned by `awaken-ext-skills`
-  (`crates/runtime/awaken-ext-skills/src/registry.rs:19`), as
+  (`crates/sdk/extensions/awaken-ext-skills/src/registry.rs:19`), as
   [ADR-0036](0036-skills-as-runtime-extension-single-tool.md) D4 decides.
 - wake hint → `Signal`: withdrawn. The seam stays `WakeSignal`
-  (`crates/shared/awaken-dispatch-execution/src/wake.rs:31`), as ADR-0019 and
+  (`crates/platform/execution/awaken-dispatch-execution/src/wake.rs:31`), as ADR-0019 and
   ADR-0024 use it.
 
 Also: no type named `MemoryStore` exists; the memory port is `MemoryRepository`

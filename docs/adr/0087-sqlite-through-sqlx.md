@@ -171,9 +171,9 @@ lockfile already resolves rusqlite 0.32.1, and awaken-cloud pins
   [ADR-0045](0045-connection-plan-and-network-topology.md) covers only the network channel
   factory and says nothing about databases. This ADR does not build on it; the
   embedded connection policy is owned by `awaken-sqlite-pool` (decision 3,
-  `crates/stores/awaken-sqlite-pool/Cargo.toml:2`).
+  `crates/platform/storage/awaken-sqlite-pool/Cargo.toml:2`).
 - Earlier decisions this ADR changes: [ADR-0012](0012-sqlite-and-postgres-store-backends.md)
   D2/D3 named rusqlite with `spawn_blocking`; no manifest under `crates/` depends on rusqlite and
-  `crates/stores/awaken-store-sqlite/Cargo.toml:24` uses sqlx.
+  `crates/platform/committed-truth/awaken-store-sqlite/Cargo.toml:24` uses sqlx.
   [ADR-0008](0008-durable-postgres-commit-backend.md) D1 allowed only
   `awaken-store-postgres` to name `sqlx`; 32 manifests name it today.

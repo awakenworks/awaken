@@ -253,7 +253,7 @@ reviewable series; the series that empties `sdk-standalone` removes the rule's e
 - `awaken-credential` → removed. The Context lists it as an SDK leaf, and the
   Consequences say it "grows from a three-item port crate". The 2026-10-08 amendment
   (item 1) moved the vocabulary and the three port items into the `credential` module
-  of `awaken-agent-contract` instead (`crates/contract/awaken-agent-contract/src/lib.rs:7`).
+  of `awaken-agent-contract` instead (`crates/sdk/contracts/awaken-agent-contract/src/lib.rs:7`).
   No public-API snapshot for `awaken-credential` is added; the moved items are covered
   by the `awaken-agent-contract` snapshot.
 - Item 7 has landed: `awaken-runtime-contract` no longer depends on

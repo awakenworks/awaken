@@ -3,22 +3,23 @@
     "name": "installation_oracle_detects_a_removed_final_binding_or_a_kept_old_provider",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/environment_installation_order.rs",
         "line": 525,
-        "file_sha256": "fa7384e5c69aba9a9ea0436f442313eb3a235cfe629278ac83bfc588b716bbca"
+        "file_sha256": "fa7384e5c69aba9a9ea0436f442313eb3a235cfe629278ac83bfc588b716bbca",
+        "relocated_from": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs:525"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/environment_installation_order.rs",
         "line": 541
       },
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/environment_installation_order.rs",
         "line": 557
       },
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/environment_installation_order.rs",
         "line": 576
       }
     ],
@@ -52,22 +53,23 @@
     "name": "foreign_owner_is_rejected_before_reads_or_effects_and_matches_missing",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 513,
-        "file_sha256": "bc23781916846bfcd05426b70fb61db1b136ab23a44d00698abca05c03d74a2e"
+        "file_sha256": "8479d19412e8f61c4b35b695c28ce46a8d136c81e7e01f13416228ce66d3e8da",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs:503"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 516
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 518
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 522
       }
     ],
@@ -113,18 +115,19 @@
     "name": "http_only_owner_validation_is_detected_by_the_matrix",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 533,
-        "file_sha256": "bc23781916846bfcd05426b70fb61db1b136ab23a44d00698abca05c03d74a2e"
+        "file_sha256": "8479d19412e8f61c4b35b695c28ce46a8d136c81e7e01f13416228ce66d3e8da",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs:523"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 543
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 547
       }
     ],
@@ -170,9 +173,10 @@
     "name": "owner_scoped_event_append_refuses_a_foreign_owner_like_missing",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 591,
-        "file_sha256": "bc23781916846bfcd05426b70fb61db1b136ab23a44d00698abca05c03d74a2e"
+        "file_sha256": "8479d19412e8f61c4b35b695c28ce46a8d136c81e7e01f13416228ce66d3e8da",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs:581"
       }
     ],
     "execution_witnesses": [
@@ -202,15 +206,15 @@
     "id": "B119",
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 599
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 600
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 547
       }
     ]
@@ -219,9 +223,10 @@
     "name": "foreign_run_admission_is_indistinguishable_from_missing",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 554,
-        "file_sha256": "bc23781916846bfcd05426b70fb61db1b136ab23a44d00698abca05c03d74a2e"
+        "file_sha256": "8479d19412e8f61c4b35b695c28ce46a8d136c81e7e01f13416228ce66d3e8da",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs:544"
       }
     ],
     "execution_witnesses": [
@@ -251,11 +256,11 @@
     "id": "B120",
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 575
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/ownership_rejection.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/ownership_rejection.rs",
         "line": 579
       }
     ]
@@ -264,22 +269,23 @@
     "name": "paused_or_failed_activity_cas_executes_nothing_and_leaves_a_repairable_reservation",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/pre_activation.rs",
         "line": 128,
-        "file_sha256": "834630cbaf76b2e4da0bf5594ee6751a8976dad70b9515533129c95dc6be5bd2"
+        "file_sha256": "834630cbaf76b2e4da0bf5594ee6751a8976dad70b9515533129c95dc6be5bd2",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs:128"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/pre_activation.rs",
         "line": 151
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/pre_activation.rs",
         "line": 153
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/pre_activation.rs",
         "line": 154
       }
     ],
@@ -314,22 +320,23 @@
     "name": "return_code_alone_cannot_sign_off_zero_execution",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/pre_activation.rs",
         "line": 299,
-        "file_sha256": "834630cbaf76b2e4da0bf5594ee6751a8976dad70b9515533129c95dc6be5bd2"
+        "file_sha256": "834630cbaf76b2e4da0bf5594ee6751a8976dad70b9515533129c95dc6be5bd2",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs:299"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/pre_activation.rs",
         "line": 316
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/pre_activation.rs",
         "line": 317
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/pre_activation.rs",
         "line": 329
       }
     ],
@@ -363,9 +370,10 @@
     "name": "failed_activity_cas_reports_a_pending_admission_that_repair_settles_once",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/pre_activation.rs",
         "line": 344,
-        "file_sha256": "3ff59663708cff77dd3b597a8916d474fa8ac1028db77b69525b207ef6b9f79b"
+        "file_sha256": "3ff59663708cff77dd3b597a8916d474fa8ac1028db77b69525b207ef6b9f79b",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs:344"
       }
     ],
     "execution_witnesses": [
@@ -395,15 +403,15 @@
     "id": "B123",
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/pre_activation.rs",
         "line": 363
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/pre_activation.rs",
         "line": 371
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/pre_activation.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/pre_activation.rs",
         "line": 383
       }
     ]
@@ -412,22 +420,23 @@
     "name": "forged_reply_coordinates_are_rejected_with_zero_facts_and_zero_drive",
     "source_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 111,
-        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95"
+        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95",
+        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs:111"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 127
       },
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 128
       },
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 129
       }
     ],
@@ -462,22 +471,23 @@
     "name": "reply_id_of_one_session_is_rejected_by_another_session",
     "source_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 272,
-        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95"
+        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95",
+        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs:272"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 282
       },
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 283
       },
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 284
       }
     ],
@@ -512,22 +522,23 @@
     "name": "ambiguous_legacy_reply_id_is_rejected_with_zero_facts_and_zero_drive",
     "source_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 311,
-        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95"
+        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95",
+        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs:311"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 328
       },
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 342
       },
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 362
       }
     ],
@@ -561,9 +572,10 @@
     "name": "application_append_rejects_forged_reply_coordinates",
     "source_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 429,
-        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95"
+        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95",
+        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs:429"
       }
     ],
     "execution_witnesses": [
@@ -594,11 +606,11 @@
     "id": "B127",
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 436
       },
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 436
       }
     ]
@@ -607,9 +619,10 @@
     "name": "application_append_rejects_version_less_new_reply",
     "source_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 445,
-        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95"
+        "file_sha256": "0f41fe790c0a64d93ce5b48beaeabcc77d83f240af601328d40aea640620df95",
+        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs:445"
       }
     ],
     "execution_witnesses": [
@@ -650,11 +663,11 @@
     "id": "B128",
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 452
       },
       {
-        "path": "crates/server/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/reply_coordinates.rs",
         "line": 456
       }
     ]
@@ -663,22 +676,23 @@
     "name": "invalid_batches_are_classified_and_have_zero_effect",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
         "line": 179,
-        "file_sha256": "09e3d0d39fad4f610293e25a93d42782ae95b9aba4cd091e6cdfa3503891ce59"
+        "file_sha256": "09e3d0d39fad4f610293e25a93d42782ae95b9aba4cd091e6cdfa3503891ce59",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs:179"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
         "line": 183
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
         "line": 251
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
         "line": 275
       }
     ],
@@ -715,18 +729,19 @@
     "name": "grammar_valid_payloads_still_fail_business_admission",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
         "line": 327,
-        "file_sha256": "09e3d0d39fad4f610293e25a93d42782ae95b9aba4cd091e6cdfa3503891ce59"
+        "file_sha256": "09e3d0d39fad4f610293e25a93d42782ae95b9aba4cd091e6cdfa3503891ce59",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs:327"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
         "line": 351
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
         "line": 358
       }
     ],

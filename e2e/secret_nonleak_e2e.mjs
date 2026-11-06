@@ -10,7 +10,7 @@
 //           material ("no-secret-serialization test: plan serializes a ref, no
 //           `authorization`/`bearer` material").
 // The redaction primitive backing both is `RedactedString`
-// (`crates/contract/awaken-agent-contract/src/secret.rs`): redacted Debug/Display,
+// (`crates/sdk/contracts/awaken-agent-contract/src/secret.rs`): redacted Debug/Display,
 // deliberately NOT Serialize/Deserialize, zeroize-on-drop, `expose_secret()` the
 // single trust boundary, and `preview()` yielding a masked `sk-a***wxyz`.
 //

@@ -69,6 +69,6 @@ implementation rather than discovered per backend.
 ## Amendment 2026-10-09: names and references
 
 - The "run-store port" that exposes `RunRecord` is now `CommittedThreadView`
-  (`crates/contract/awaken-agent-contract/src/thread/read/committed_thread_view.rs:42`),
+  (`crates/sdk/contracts/awaken-agent-contract/src/thread/read/committed_thread_view.rs:42`),
   with committed events read through `CheckpointReader` (`.../read/checkpoint.rs:29`).
   [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md) made the rename. D1-D4 are unchanged.

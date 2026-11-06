@@ -129,9 +129,9 @@ introduced.
 
 D3's `ConfigStore` port was renamed `ConfigRegistry` by
 [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md) D1.
-Current trait: `crates/control/awaken-agent-config/src/store.rs:479`; its SQLite
+Current trait: `crates/platform/config/awaken-agent-config/src/store.rs:479`; its SQLite
 and Postgres adapters live in `awaken-config-store` under the `config` namespace
-(`crates/control/awaken-config-store/src/sqlite.rs:35`, `postgres.rs:35`).
+(`crates/platform/config/awaken-config-store/src/sqlite.rs:35`, `postgres.rs:35`).
 
 ## Amendment (2026-10-19): disabling retains authoring configuration
 

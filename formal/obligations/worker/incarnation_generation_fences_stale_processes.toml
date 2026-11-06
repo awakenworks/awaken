@@ -7,7 +7,7 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "crates/server/awaken-worker-registry/src/migrations/V0002__retain_incarnations.sql",
+  "crates/platform/dispatch/awaken-worker-registry/src/migrations/V0002__retain_incarnations.sql",
   "formal/tla/RemoteWorkerProtocol.tla",
   "formal/tla/RemoteWorkerProtocolRegistration.cfg",
   "formal/tla/WorkerReplacement.tla",

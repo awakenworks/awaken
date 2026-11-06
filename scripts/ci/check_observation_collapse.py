@@ -7,7 +7,7 @@ The recurring defect this guards is *fail-open recovery*: an interrupted or
 failed read of durable state is treated as "nothing is there", and the runtime
 then starts fresh execution over state that actually exists.
 
-`Observed<T>` (``crates/contract/awaken-agent-contract/src/observation.rs``)
+`Observed<T>` (``crates/sdk/contracts/awaken-agent-contract/src/observation.rs``)
 removes the mistake from the type system by having three outcomes and no
 combinator that fuses two of them. That only holds while two things stay true,
 and those are what this check enforces:
@@ -58,10 +58,10 @@ INPUT_GLOBS: tuple[str, ...] = (
 )
 
 # Where the tri-state itself is defined. R1 is enforced here.
-OBSERVATION = "crates/contract/awaken-agent-contract/src/observation.rs"
+OBSERVATION = "crates/sdk/contracts/awaken-agent-contract/src/observation.rs"
 
 # The port whose read must stay tri-state. R2 is enforced here.
-PORT = "crates/contract/awaken-agent-contract/src/stream/checkpoint.rs"
+PORT = "crates/sdk/contracts/awaken-agent-contract/src/stream/checkpoint.rs"
 
 # What puts a file on the recovery path: it names the observed value or the
 # tri-state that carries it. R2 and R3 are enforced across every such file.
@@ -114,18 +114,18 @@ OLD_SHAPE = re.compile(r"Result\s*<\s*Option\s*<\s*StreamCheckpoint\b")
 # names the file that performs the translation, and an entry whose translator
 # stopped translating, or whose file no longer carries the shape, fails here.
 TRANSLATED_TRANSPORT = {
-    "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs": (
+    "crates/platform/dispatch/awaken-dispatch-contract/src/dispatch/queue.rs": (
         "the DispatchQueue transport declares the remote checkpoint operations; its "
         "Err is 'the transport failed', which is ignorance, and the translation below "
         "is the only place that decides what that means"
     ),
-    "crates/server/awaken-coordinator-client/src/dispatch_client.rs": (
+    "crates/platform/dispatch/awaken-coordinator-client/src/dispatch_client.rs": (
         "the HTTP client implements that same transport declaration; its Err is an "
         "HTTP failure, which the single translation turns into Unknown(Storage)"
     ),
 }
 # The one place the transport's Result becomes an observation.
-TRANSLATOR = "crates/shared/awaken-dispatch-execution/src/fenced_checkpoint.rs"
+TRANSLATOR = "crates/platform/execution/awaken-dispatch-execution/src/fenced_checkpoint.rs"
 TRANSLATION = re.compile(
     r"load_stream_checkpoint[\s\S]{0,400}?Ok\(None\)\s*=>\s*Observed::Absent[\s\S]{0,200}?"
     r"Err\([^)]*\)\s*=>\s*Observed::Unknown"
@@ -359,17 +359,17 @@ class ObservationCollapseTests(unittest.TestCase):
         # R4: membership is "this file reads a checkpoint", so the files that
         # started doing so after the hand-written tuple was frozen are in scope.
         for path in (
-            "crates/runtime/awaken-runtime/src/engine/resume.rs",
-            "crates/runtime/awaken-runtime/src/engine/inference.rs",
-            "crates/contract/awaken-dispatch-contract/src/worker_transport.rs",
-            "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
+            "crates/sdk/runtime/awaken-runtime/src/engine/resume.rs",
+            "crates/sdk/runtime/awaken-runtime/src/engine/inference.rs",
+            "crates/platform/dispatch/awaken-dispatch-contract/src/worker_transport.rs",
+            "crates/platform/dispatch/awaken-coordinator-client/src/dispatch_client.rs",
         ):
             self.assertIn(path, self.sources, "R4")
 
     def test_the_derivation_excludes_what_does_not_read_a_checkpoint(self) -> None:
         # R5/R6: a file that names neither the value nor the tri-state is not on
         # the path, and neither is one that only names it from a test module.
-        self.assertNotIn("crates/contract/awaken-agent-contract/src/lib.rs", self.sources, "R5")
+        self.assertNotIn("crates/sdk/contracts/awaken-agent-contract/src/lib.rs", self.sources, "R5")
         for path in self.sources:
             self.assertNotIn("/tests/", path, "R6")
         self.assertTrue(

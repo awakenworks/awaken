@@ -33,7 +33,7 @@ state is a recording, and a panic in a test is already the test's failure.
 
 ## Where the types live (S4)
 
-The types live in a new depth-0 SDK leaf, `crates/runtime/awaken-sync`
+The types live in a new depth-0 SDK leaf, `crates/sdk/support/awaken-sync`
 (`authority = "lock-poisoning"`, `separation = "contract"`). S4 cuts *contracts*
 by bounded context and caller; the poisoning law is no context's vocabulary and
 no boundary between contexts. It is a language-level law every context obeys,

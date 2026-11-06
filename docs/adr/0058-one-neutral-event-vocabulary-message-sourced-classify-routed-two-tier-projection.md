@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-16
-- Implemented: `crates/contract/awaken-agent-contract/src/event/` (`AgentEvent` at `agent.rs:52`,
+- Implemented: `crates/sdk/contracts/awaken-agent-contract/src/event/` (`AgentEvent` at `agent.rs:52`,
   `classify` at `classify.rs:46`, two-tier `Transcoder` at `fold.rs:32`); names differ, see Amendment 2026-10-09
 - Builds on: the message transcript as content truth + the audit event log that is
   explicitly *not* truth (`awaken-store-schema`, `{prefix}_message` vs
@@ -93,7 +93,7 @@ consume the same committed sources and must publish identical history.
 - **Shape** (two nested tiers — see Axis 3):
 
 ```rust
-// crates/contract/awaken-agent-contract/src/journal/event.rs
+// crates/sdk/contracts/awaken-agent-contract/src/journal/event.rs
 pub enum AgentEvent {
     Lifecycle(Lifecycle),  // whole-units + run lifecycle — authoritative, from fold
     Detail(Detail),        // fine-grained increments — best-effort, from stream
@@ -164,7 +164,7 @@ and it is real model output.
   every hand-written mapping scattered across producers/encoders.
 
 ```rust
-// crates/contract/awaken-agent-contract/src/journal/classify.rs
+// crates/sdk/contracts/awaken-agent-contract/src/journal/classify.rs
 pub struct Routing { pub tier: Tier, pub live: bool, pub audit: bool, pub fidelity: Fidelity }
 pub fn classify(e: &AgentEvent) -> Routing { /* the single source of routing truth */ }
 ```
@@ -314,7 +314,7 @@ segmenter. Keep the thinking channel, re-expressed as `Detail::ThinkingDelta`.
 ## Amendment 2026-10-09: names and references
 
 The decision is implemented under different names
-(`crates/contract/awaken-agent-contract/src/event/`):
+(`crates/sdk/contracts/awaken-agent-contract/src/event/`):
 
 - module `journal::` → `event::`; `journal::AgentEvent` → `event::AgentEvent` (`agent.rs:52`);
 - tiers Lifecycle / `Detail` → `Fact` (`agent.rs:64`) / `Delta` (`agent.rs:108`);

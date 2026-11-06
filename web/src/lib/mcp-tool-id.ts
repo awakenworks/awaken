@@ -1,6 +1,6 @@
 /** The console's side of the `mcp__<server>__<tool>` tool-identity grammar.
  *
- * The authority is `crates/contract/awaken-agent-contract/src/mcp_tool_id.rs`;
+ * The authority is `crates/sdk/contracts/awaken-agent-contract/src/mcp_tool_id.rs`;
  * this is the same encoding, kept honest by the shared vectors in
  * `mcp-tool-id.test.ts`. The console needs it because it rewrites authored tool
  * references when an MCP server is renamed or removed, and those references are

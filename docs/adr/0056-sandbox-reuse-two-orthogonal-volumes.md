@@ -462,6 +462,6 @@ Decision:
   reconciles per path with CAS ([ADR-0053](0053-memory-store-fuse-mount.md)).
 - §4's bullet calling `reconcile_adoption` "the sole cross-restart disposal decision" is
   not current. Per the 2026-10-06 amendment it has no production caller (only
-  `crates/contract/awaken-provisioning-contract/src/lease.rs` and its re-export); each
+  `crates/platform/environment/awaken-provisioning-contract/src/lease.rs` and its re-export); each
   provider owns its referenced-set reconciliation today. [ADR-0074](0074-session-environment-suspension-and-checkpointed-continuation.md)'s gap table
   repeats the old claim.

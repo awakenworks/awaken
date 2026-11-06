@@ -3,18 +3,19 @@
     "name": "divergent_backend_fails_the_shared_behaviour_table",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
         "line": 343,
-        "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312"
+        "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312",
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_parity.rs:343"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
         "line": 344
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
         "line": 354
       }
     ],
@@ -48,22 +49,23 @@
     "name": "postgres_reopen_preserves_authority_through_an_independent_pool",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
         "line": 374,
-        "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312"
+        "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312",
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_parity.rs:374"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
+        "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs",
         "line": 1779
       },
       {
-        "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
+        "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs",
         "line": 1802
       },
       {
-        "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
+        "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs",
         "line": 1842
       }
     ],
@@ -97,22 +99,23 @@
     "name": "interrupted_snapshot_clone_rebuilds_one_complete_snapshot_and_keeps_protected_output",
     "source_locations": [
       {
-        "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
         "line": 240,
-        "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878"
+        "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878",
+        "relocated_from": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs:240"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
         "line": 254
       },
       {
-        "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
         "line": 263
       },
       {
-        "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
         "line": 279
       }
     ],
@@ -147,22 +150,23 @@
     "name": "crashed_snapshot_clone_rebuilds_from_durable_state_in_a_new_application",
     "source_locations": [
       {
-        "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
         "line": 370,
-        "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878"
+        "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878",
+        "relocated_from": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs:370"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
         "line": 385
       },
       {
-        "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
         "line": 409
       },
       {
-        "path": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
         "line": 410
       }
     ],
@@ -197,22 +201,23 @@
     "name": "terminal_run_work_ack_loss_retries_only_the_original_identity",
     "source_locations": [
       {
-        "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
         "line": 131,
-        "file_sha256": "86e2b633ab6ff2a62d622cf583b3ff8e592984f8bf46d8d414a77888b33c8bac"
+        "file_sha256": "86e2b633ab6ff2a62d622cf583b3ff8e592984f8bf46d8d414a77888b33c8bac",
+        "relocated_from": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs:131"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
         "line": 164
       },
       {
-        "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
         "line": 169
       },
       {
-        "path": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
         "line": 174
       }
     ],
@@ -248,22 +253,23 @@
     "name": "terminal_ack_retries_only_the_original_identity",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 609,
-        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2"
+        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2",
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs:609"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 547
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 548
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 579
       }
     ],
@@ -297,26 +303,27 @@
     "name": "session_and_healthcheck_leases_are_taken_over_independently",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 604,
-        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2"
+        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2",
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs:604"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 448
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 449
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 486
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 512
       }
     ],
@@ -351,14 +358,15 @@
     "name": "dispatch_takeover_admits_only_the_current_claim_on_volatile_and_file_sqlite",
     "source_locations": [
       {
-        "path": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
         "line": 375,
-        "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb"
+        "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb",
+        "relocated_from": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs:375"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
         "line": 381
       }
     ],
@@ -392,22 +400,23 @@
     "name": "concurrent_takeover_admits_only_the_current_owner_on_volatile_and_file_sqlite",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 598,
-        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2"
+        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2",
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs:598"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 281
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 285
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 418
       }
     ],
@@ -443,26 +452,27 @@
     "name": "postgres_work_lease_acceptance",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 614,
-        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2"
+        "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2",
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs:614"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 281
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 285
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 448
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
         "line": 548
       }
     ],
@@ -498,14 +508,15 @@
     "name": "dispatch_takeover_admits_only_the_current_claim_on_volatile_and_file_sqlite",
     "source_locations": [
       {
-        "path": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
         "line": 375,
-        "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb"
+        "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb",
+        "relocated_from": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs:375"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
         "line": 381
       }
     ],
@@ -540,18 +551,19 @@
     "name": "postgres_dispatch_takeover_admits_only_the_current_claim",
     "source_locations": [
       {
-        "path": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
         "line": 387,
-        "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb"
+        "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb",
+        "relocated_from": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs:387"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
         "line": 141
       },
       {
-        "path": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
         "line": 146
       }
     ],
@@ -586,22 +598,23 @@
     "name": "crash_after_commit_before_effect_recovers_without_replay",
     "source_locations": [
       {
-        "path": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
         "line": 326,
-        "file_sha256": "599be26b90c3e2d1f2bc58206460b78b1c06fe8624903664d9985088b2e506e7"
+        "file_sha256": "599be26b90c3e2d1f2bc58206460b78b1c06fe8624903664d9985088b2e506e7",
+        "relocated_from": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs:326"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
         "line": 310
       },
       {
-        "path": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
         "line": 314
       },
       {
-        "path": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
         "line": 318
       }
     ],
@@ -636,22 +649,23 @@
     "name": "crash_after_effect_before_receipt_keeps_uncertainty_without_replay",
     "source_locations": [
       {
-        "path": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
         "line": 335,
-        "file_sha256": "599be26b90c3e2d1f2bc58206460b78b1c06fe8624903664d9985088b2e506e7"
+        "file_sha256": "599be26b90c3e2d1f2bc58206460b78b1c06fe8624903664d9985088b2e506e7",
+        "relocated_from": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs:335"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
         "line": 310
       },
       {
-        "path": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
         "line": 314
       },
       {
-        "path": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
         "line": 318
       }
     ],
@@ -686,22 +700,23 @@
     "name": "rebuilt_executor_reattaches_the_original_operation_only_with_committed_evidence",
     "source_locations": [
       {
-        "path": "crates/server/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
+        "path": "crates/platform/execution/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
         "line": 71,
-        "file_sha256": "a43abbca8c432fd4ef685e1b329d80fd8c6dfe0295527517c18dd48e89010c8e"
+        "file_sha256": "a43abbca8c432fd4ef685e1b329d80fd8c6dfe0295527517c18dd48e89010c8e",
+        "relocated_from": "crates/server/awaken-run-executor-a2a/src/tests/reattach_identity.rs:71"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
+        "path": "crates/platform/execution/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
         "line": 80
       },
       {
-        "path": "crates/server/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
+        "path": "crates/platform/execution/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
         "line": 89
       },
       {
-        "path": "crates/server/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
+        "path": "crates/platform/execution/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
         "line": 90
       }
     ],

@@ -98,7 +98,7 @@ concept.
 
 - D2/D3: `awaken-store-sqlite` uses sqlx, not rusqlite, and has no
   `spawn_blocking` bridge ([ADR-0087](0087-sqlite-through-sqlx.md);
-  `crates/stores/awaken-store-sqlite/Cargo.toml:24`; no `Cargo.toml` in
+  `crates/platform/committed-truth/awaken-store-sqlite/Cargo.toml:24`; no `Cargo.toml` in
   `crates/` depends on rusqlite).
 - D3: reads come from committed facts, not an in-memory projection ([ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md) D4
   and its 2026-09-25 amendment).

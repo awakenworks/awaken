@@ -81,6 +81,6 @@ follow-ups cannot consume one another's input.
 - D2: `PendingInbox::list_thread` no longer exists. The worker reads
   `Inbox::list(thread_id)` and keeps entries with an empty `run_id`
   (`crates/contract/awaken-run-ingress-contract/src/dispatch/delivery.rs:75`;
-  `crates/shared/awaken-dispatch-execution/src/worker.rs:1370-1385`).
+  `crates/platform/execution/awaken-dispatch-execution/src/worker.rs:1370-1385`).
 - D4: the after-commit `ThreadReader` is now `CommittedThreadView`
   ([ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md)).

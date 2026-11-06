@@ -3,7 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/server/awaken-dispatch/src/migrations/V0004__retired_attempt_epoch.sql",
+  "crates/platform/dispatch/awaken-dispatch/src/migrations/V0004__retired_attempt_epoch.sql",
   "formal/tla/AcpBoundary.tla",
   "formal/tla/SessionRunProtocol.tla",
   "formal/tla/SessionRunProtocolCancellation.cfg",

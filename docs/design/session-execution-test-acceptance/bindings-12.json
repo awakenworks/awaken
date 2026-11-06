@@ -3,22 +3,23 @@
     "name": "saturated_pool_backpressures_without_dropping_and_drains_within_budget",
     "source_locations": [
       {
-        "path": "crates/server/awaken-dispatch/tests/pool_memory/slow_consumer.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/pool_memory/slow_consumer.rs",
         "line": 86,
-        "file_sha256": "aaa7111039deb54abf5d8439e4028f6f7342e1e15defeb504cc1c7738813f6dd"
+        "file_sha256": "aaa7111039deb54abf5d8439e4028f6f7342e1e15defeb504cc1c7738813f6dd",
+        "relocated_from": "crates/server/awaken-dispatch/tests/pool_memory/slow_consumer.rs:86"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-dispatch/tests/pool_memory/slow_consumer.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/pool_memory/slow_consumer.rs",
         "line": 106
       },
       {
-        "path": "crates/server/awaken-dispatch/tests/pool_memory/slow_consumer.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/pool_memory/slow_consumer.rs",
         "line": 111
       },
       {
-        "path": "crates/server/awaken-dispatch/tests/pool_memory/slow_consumer.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/pool_memory/slow_consumer.rs",
         "line": 112
       }
     ],
@@ -55,22 +56,23 @@
     "name": "t06_c02_settlement_during_physical_read_linearizes_after_the_read",
     "source_locations": [
       {
-        "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
+        "path": "crates/platform/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
         "line": 301,
-        "file_sha256": "a3a0d6782f6190a46d6a27fb243b5d59bd9d5664d8b01f291ac6ae03c23cf54f"
+        "file_sha256": "a3a0d6782f6190a46d6a27fb243b5d59bd9d5664d8b01f291ac6ae03c23cf54f",
+        "relocated_from": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs:298"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
+        "path": "crates/platform/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
         "line": 321
       },
       {
-        "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
+        "path": "crates/platform/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
         "line": 329
       },
       {
-        "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
+        "path": "crates/platform/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
         "line": 330
       }
     ],
@@ -105,22 +107,23 @@
     "name": "t06_c02_settlement_during_lock_wait_is_rechecked_and_premature_check_is_detected",
     "source_locations": [
       {
-        "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
+        "path": "crates/platform/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
         "line": 355,
-        "file_sha256": "a3a0d6782f6190a46d6a27fb243b5d59bd9d5664d8b01f291ac6ae03c23cf54f"
+        "file_sha256": "a3a0d6782f6190a46d6a27fb243b5d59bd9d5664d8b01f291ac6ae03c23cf54f",
+        "relocated_from": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs:352"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
+        "path": "crates/platform/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
         "line": 370
       },
       {
-        "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
+        "path": "crates/platform/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
         "line": 371
       },
       {
-        "path": "crates/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
+        "path": "crates/platform/resources/awaken-resource-worker-http/tests/file_content_revocation.rs",
         "line": 375
       }
     ],
@@ -154,42 +157,43 @@
     "name": "t15_c02_revocation_before_resolution_and_cached_replay_are_rejected",
     "source_locations": [
       {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 440,
-        "file_sha256": "edd786d08569047b77ad284bebb8bb7fc9c859612b40e843ea1a60ea328da991"
+        "file_sha256": "edd786d08569047b77ad284bebb8bb7fc9c859612b40e843ea1a60ea328da991",
+        "relocated_from": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs:440"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 453
       },
       {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 454
       },
       {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 455
       },
       {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 472
       },
       {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 473
       },
       {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 487
       },
       {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 500
       },
       {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 501
       }
     ],
@@ -234,14 +238,15 @@
     "name": "t15_c02_blocked_resolution_keeps_its_single_in_flight_read_observed",
     "source_locations": [
       {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 509,
-        "file_sha256": "edd786d08569047b77ad284bebb8bb7fc9c859612b40e843ea1a60ea328da991"
+        "file_sha256": "edd786d08569047b77ad284bebb8bb7fc9c859612b40e843ea1a60ea328da991",
+        "relocated_from": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs:509"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-credential-materializer/src/tests/revocation_wait.rs",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/revocation_wait.rs",
         "line": 517
       }
     ],
@@ -286,22 +291,23 @@
     "name": "t28_c03_sent_native_request_stays_unknown_and_is_never_resent",
     "source_locations": [
       {
-        "path": "crates/server/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs",
+        "path": "crates/platform/execution/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs",
         "line": 198,
-        "file_sha256": "ef89a08f33a2ef21919aabe54193e71ad550ced949d71bf15028dedd0aabbe0a"
+        "file_sha256": "ef89a08f33a2ef21919aabe54193e71ad550ced949d71bf15028dedd0aabbe0a",
+        "relocated_from": "crates/server/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs:198"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs",
+        "path": "crates/platform/execution/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs",
         "line": 222
       },
       {
-        "path": "crates/server/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs",
+        "path": "crates/platform/execution/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs",
         "line": 224
       },
       {
-        "path": "crates/server/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs",
+        "path": "crates/platform/execution/awaken-inference-endpoint/src/brokered_inference/tests/sent_effect_unknown.rs",
         "line": 228
       }
     ],
@@ -336,22 +342,23 @@
     "name": "t28_c02_change_at_pre_effect_barrier_is_denied_at_the_nearest_effect_gate",
     "source_locations": [
       {
-        "path": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-container/src/tests/effect_gate_window.rs",
         "line": 169,
-        "file_sha256": "b539a4249f8f40b5938c11015ce3b4c5a8103380de2e05aba386958880acc031"
+        "file_sha256": "b539a4249f8f40b5938c11015ce3b4c5a8103380de2e05aba386958880acc031",
+        "relocated_from": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs:169"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-container/src/tests/effect_gate_window.rs",
         "line": 174
       },
       {
-        "path": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-container/src/tests/effect_gate_window.rs",
         "line": 178
       },
       {
-        "path": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-container/src/tests/effect_gate_window.rs",
         "line": 179
       }
     ],
@@ -385,22 +392,23 @@
     "name": "t28_c02_post_effect_barrier_cannot_prove_pre_effect_denial",
     "source_locations": [
       {
-        "path": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-container/src/tests/effect_gate_window.rs",
         "line": 184,
-        "file_sha256": "b539a4249f8f40b5938c11015ce3b4c5a8103380de2e05aba386958880acc031"
+        "file_sha256": "b539a4249f8f40b5938c11015ce3b4c5a8103380de2e05aba386958880acc031",
+        "relocated_from": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs:184"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-container/src/tests/effect_gate_window.rs",
         "line": 192
       },
       {
-        "path": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-container/src/tests/effect_gate_window.rs",
         "line": 193
       },
       {
-        "path": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-container/src/tests/effect_gate_window.rs",
         "line": 199
       }
     ],
@@ -434,22 +442,23 @@
     "name": "t28_c02_cached_or_unbound_disposal_never_widens_authority",
     "source_locations": [
       {
-        "path": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-container/src/tests/effect_gate_window.rs",
         "line": 205,
-        "file_sha256": "b539a4249f8f40b5938c11015ce3b4c5a8103380de2e05aba386958880acc031"
+        "file_sha256": "b539a4249f8f40b5938c11015ce3b4c5a8103380de2e05aba386958880acc031",
+        "relocated_from": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs:205"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-container/src/tests/effect_gate_window.rs",
         "line": 229
       },
       {
-        "path": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-container/src/tests/effect_gate_window.rs",
         "line": 230
       },
       {
-        "path": "crates/worker/awaken-sandbox-container/src/tests/effect_gate_window.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-container/src/tests/effect_gate_window.rs",
         "line": 238
       }
     ],
@@ -483,22 +492,23 @@
     "name": "t16_c01_native_http_preparation_is_staged_before_io_and_fenced_after_the_wait",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
         "line": 201,
-        "file_sha256": "c95e07f67840ef4853c9305f0feae9266db3ae87fcb4367aa8b8fed0dd767dfb"
+        "file_sha256": "c95e07f67840ef4853c9305f0feae9266db3ae87fcb4367aa8b8fed0dd767dfb",
+        "relocated_from": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs:201"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
         "line": 207
       },
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
         "line": 219
       },
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
         "line": 220
       }
     ],
@@ -534,18 +544,19 @@
     "name": "t16_c01_io_before_staging_reservation_is_detected",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
         "line": 243,
-        "file_sha256": "c95e07f67840ef4853c9305f0feae9266db3ae87fcb4367aa8b8fed0dd767dfb"
+        "file_sha256": "c95e07f67840ef4853c9305f0feae9266db3ae87fcb4367aa8b8fed0dd767dfb",
+        "relocated_from": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs:243"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
         "line": 250
       },
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
         "line": 275
       }
     ],
@@ -579,14 +590,15 @@
     "name": "t16_c01_platform_relay_provision_is_staged_before_io_and_never_published_late",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
         "line": 457,
-        "file_sha256": "c95e07f67840ef4853c9305f0feae9266db3ae87fcb4367aa8b8fed0dd767dfb"
+        "file_sha256": "c95e07f67840ef4853c9305f0feae9266db3ae87fcb4367aa8b8fed0dd767dfb",
+        "relocated_from": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs:455"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence.rs",
         "line": 460
       }
     ],
@@ -634,18 +646,19 @@
     "name": "t16_c01_native_worker_held_resolution_is_fenced_before_connect",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
         "line": 154,
-        "file_sha256": "71da56096fe20b4c29e79be80464c8c62408cad133b655a3167acd89855a684d"
+        "file_sha256": "71da56096fe20b4c29e79be80464c8c62408cad133b655a3167acd89855a684d",
+        "relocated_from": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs:154"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
         "line": 164
       },
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
         "line": 166
       }
     ],
@@ -681,22 +694,23 @@
     "name": "t16_c01_acp_worker_relay_resolution_is_fenced_before_relay_start",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
         "line": 318,
-        "file_sha256": "71da56096fe20b4c29e79be80464c8c62408cad133b655a3167acd89855a684d"
+        "file_sha256": "71da56096fe20b4c29e79be80464c8c62408cad133b655a3167acd89855a684d",
+        "relocated_from": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs:318"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
         "line": 337
       },
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
         "line": 344
       },
       {
-        "path": "crates/server/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
+        "path": "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_preparation_fence/credential_branches.rs",
         "line": 354
       }
     ],
@@ -732,46 +746,47 @@
     "name": "t10_c02_leader_exit_keeps_identity_and_does_not_hide_a_live_descendant",
     "source_locations": [
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/windows_descendant.rs",
         "line": 228,
-        "file_sha256": "e9b93b3de1e7355d0d9da2f8fb32d93c3ada6fbaa9bfcd82d39d0567dac5cd3a"
+        "file_sha256": "e9b93b3de1e7355d0d9da2f8fb32d93c3ada6fbaa9bfcd82d39d0567dac5cd3a",
+        "relocated_from": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs:228"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/windows_descendant.rs",
         "line": 231
       },
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/windows_descendant.rs",
         "line": 235
       },
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/windows_descendant.rs",
         "line": 242
       },
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/windows_descendant.rs",
         "line": 244
       },
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/windows_descendant.rs",
         "line": 250
       },
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/windows_descendant.rs",
         "line": 251
       },
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/windows_descendant.rs",
         "line": 262
       },
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/windows_descendant.rs",
         "line": 265
       },
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/windows_descendant.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/windows_descendant.rs",
         "line": 266
       }
     ],

@@ -3,22 +3,23 @@
     "name": "postgres_mid_write_failure_rolls_back_the_whole_batch_transaction",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
         "line": 701,
-        "file_sha256": "0da9d07ed53363251ee5a121e1f174913093021276403fb15629a88e5bea7be5"
+        "file_sha256": "0da9d07ed53363251ee5a121e1f174913093021276403fb15629a88e5bea7be5",
+        "relocated_from": "crates/stores/awaken-session-store/tests/pause_transaction.rs:701"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
         "line": 710
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
         "line": 715
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
         "line": 734
       }
     ],
@@ -52,22 +53,23 @@
     "name": "sqlite_archive_races_admission_replacement_and_recovery_through_root_cas",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
         "line": 398,
-        "file_sha256": "1935fb15cfe50feba17447ee7dc300e66199c9e74bca7329f68594122814d492"
+        "file_sha256": "1935fb15cfe50feba17447ee7dc300e66199c9e74bca7329f68594122814d492",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs:398"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
         "line": 389
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
         "line": 392
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
         "line": 394
       }
     ],
@@ -103,22 +105,23 @@
     "name": "postgres_archive_races_admission_replacement_and_recovery_through_root_cas",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
         "line": 420,
-        "file_sha256": "1935fb15cfe50feba17447ee7dc300e66199c9e74bca7329f68594122814d492"
+        "file_sha256": "1935fb15cfe50feba17447ee7dc300e66199c9e74bca7329f68594122814d492",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs:420"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
         "line": 389
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
         "line": 392
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
         "line": 394
       }
     ],
@@ -154,22 +157,23 @@
     "name": "sequential_archive_then_admission_has_no_race_witness",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
         "line": 449,
-        "file_sha256": "1935fb15cfe50feba17447ee7dc300e66199c9e74bca7329f68594122814d492"
+        "file_sha256": "1935fb15cfe50feba17447ee7dc300e66199c9e74bca7329f68594122814d492",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs:449"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
         "line": 453
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
         "line": 467
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
         "line": 490
       }
     ],
@@ -201,14 +205,15 @@
     "name": "sqlite_prepared_participant_survives_root_failure_and_rebuild",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 438,
-        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:438"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 439
       }
     ],
@@ -243,14 +248,15 @@
     "name": "postgres_prepared_participant_survives_root_failure_and_rebuild",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 450,
-        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:450"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 460
       }
     ],
@@ -285,22 +291,23 @@
     "name": "crash_before_or_after_prepare_keeps_identity_for_the_original_intent",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 552,
-        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:552"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 558
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 569
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 571
       }
     ],
@@ -335,22 +342,23 @@
     "name": "compensation_failure_hang_or_lost_response_never_reports_completion",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 650,
-        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:650"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 652
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 671
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 676
       }
     ],
@@ -386,22 +394,23 @@
     "name": "failing_compensation_reports_incompleteness_to_its_caller",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 712,
-        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:712"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 716
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 726
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 730
       }
     ],
@@ -435,22 +444,23 @@
     "name": "concurrent_continuations_share_one_external_object",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 768,
-        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450"
+        "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:768"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 771
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 780
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
         "line": 788
       }
     ],
@@ -486,22 +496,23 @@
     "name": "retries_keep_the_original_admission_identity",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
         "line": 162,
-        "file_sha256": "538f18a144f267a9afea5ee6ff0537caf55bf851d0dc6c2c88ba4671b1fe3098"
+        "file_sha256": "538f18a144f267a9afea5ee6ff0537caf55bf851d0dc6c2c88ba4671b1fe3098",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs:162"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
         "line": 168
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
         "line": 169
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
         "line": 180
       }
     ],
@@ -537,22 +548,23 @@
     "name": "minting_a_new_operation_on_unavailable_is_detected",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
         "line": 240,
-        "file_sha256": "538f18a144f267a9afea5ee6ff0537caf55bf851d0dc6c2c88ba4671b1fe3098"
+        "file_sha256": "538f18a144f267a9afea5ee6ff0537caf55bf851d0dc6c2c88ba4671b1fe3098",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs:240"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
         "line": 245
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
         "line": 249
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
         "line": 252
       }
     ],
@@ -584,14 +596,15 @@
     "name": "volatile_purge_removes_exactly_one_store_and_heads_only_purge_is_detected",
     "source_locations": [
       {
-        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
         "line": 222,
-        "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc"
+        "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc",
+        "relocated_from": "crates/resources/awaken-memory-store/tests/purge_isolation.rs:222"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
         "line": 231
       }
     ],
@@ -626,22 +639,23 @@
     "name": "sqlite_file_purge_removes_exactly_one_store_across_handles_and_reopen",
     "source_locations": [
       {
-        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
         "line": 262,
-        "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc"
+        "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc",
+        "relocated_from": "crates/resources/awaken-memory-store/tests/purge_isolation.rs:262"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
         "line": 276
       },
       {
-        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
         "line": 277
       },
       {
-        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
         "line": 281
       }
     ],
@@ -676,22 +690,23 @@
     "name": "postgres_purge_removes_exactly_one_store_across_pools_and_reopen",
     "source_locations": [
       {
-        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
         "line": 355,
-        "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc"
+        "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc",
+        "relocated_from": "crates/resources/awaken-memory-store/tests/purge_isolation.rs:355"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
         "line": 366
       },
       {
-        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
         "line": 367
       },
       {
-        "path": "crates/resources/awaken-memory-store/tests/purge_isolation.rs",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
         "line": 378
       }
     ],

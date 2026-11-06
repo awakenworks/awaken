@@ -79,6 +79,6 @@ does not define a model-visible command.
 - `RunIngress` and `DurableRunIngress` no longer exist (2026-09-01 amendment of
   [ADR-0009](0009-durable-run-ingress-slice.md)). Staging and relay are `Outbox::stage` / `Outbox::relay`;
   `DispatchService::send` remains
-  (`crates/shared/awaken-dispatch-execution/src/service.rs:258`).
+  (`crates/platform/execution/awaken-dispatch-execution/src/service.rs:258`).
 - Agent-to-Agent messaging does not use this outbox ([ADR-0017](0017-send-message-over-outbox.md), revised
   2026-09-01).

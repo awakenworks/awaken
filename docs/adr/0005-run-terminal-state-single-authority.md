@@ -122,7 +122,7 @@ store, queue, or protocol-specific recovery path.
 ## Amendment 2026-10-09: names and references
 
 D1/D2 list the original variants. The single-authority rule is unchanged; the
-closed sets in code are now (`crates/contract/awaken-agent-contract/src/agent/run.rs:22-87`):
+closed sets in code are now (`crates/sdk/contracts/awaken-agent-contract/src/agent/run.rs:22-87`):
 
 - `RunState = Running | Awaiting | Ended(EndCause)`. `Running` is committed at
   step boundaries; [ADR-0054](0054-safe-loop-boundary-shared-seam-and-pause-as-durable-await.md) relies on this set.

@@ -8,19 +8,19 @@ publish = false
 [workspace]
 
 [dependencies]
-awaken-runtime = { path = "../../crates/runtime/awaken-runtime", default-features = false }
-awaken-store-inmem = { path = "../../crates/runtime/awaken-store-inmem" }
-awaken-time = { path = "../../crates/runtime/awaken-time" }
+awaken-runtime = { path = "../../crates/sdk/runtime/awaken-runtime", default-features = false }
+awaken-store-inmem = { path = "../../crates/sdk/runtime/awaken-store-inmem" }
+awaken-time = { path = "../../crates/sdk/support/awaken-time" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 
 [dev-dependencies]
-awaken-ext-builtin-tools = { path = "../../crates/runtime/awaken-ext-builtin-tools", version = "2.0.0" }
-awaken-provider-genai = { path = "../../crates/runtime/awaken-provider-genai", version = "2.0.0" }
-awaken-web-policy-contract = { path = "../../crates/contract/awaken-web-policy-contract" }
-awaken-tool-contract = { path = "../../crates/contract/awaken-tool-contract" }
-awaken-agent-contract = { path = "../../crates/contract/awaken-agent-contract" }
-awaken-store-fs = { path = "../../crates/stores/awaken-store-fs" }
+awaken-ext-builtin-tools = { path = "../../crates/sdk/extensions/awaken-ext-builtin-tools", version = "2.0.0" }
+awaken-provider-genai = { path = "../../crates/sdk/providers/awaken-provider-genai", version = "2.0.0" }
+awaken-web-policy-contract = { path = "../../crates/sdk/contracts/awaken-web-policy-contract" }
+awaken-tool-contract = { path = "../../crates/sdk/contracts/awaken-tool-contract" }
+awaken-agent-contract = { path = "../../crates/sdk/contracts/awaken-agent-contract" }
+awaken-store-fs = { path = "../../crates/platform/committed-truth/awaken-store-fs" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "1"

@@ -956,7 +956,7 @@
 
 ## 2026-10-11 — Observe complete dispatch prefixes and retain exact Create requests
 
-- [Operational feed contract](../../crates/contract/awaken-dispatch-contract/src/operational.rs)
+- [Operational feed contract](../../crates/platform/dispatch/awaken-dispatch-contract/src/operational.rs)
   keeps store identities sparse and forbids advancing past unresolved lower inserts.
 - [ADR-0069](../adr/0069-acp-capability-configuration-lifecycle.md)
   reuses the original Create ticket through transient control response loss.

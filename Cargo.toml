@@ -1,38 +1,12 @@
 [workspace]
 resolver = "2"
-# Physical buckets keep the workspace navigable. Semantic ownership and
-# dependency direction come only from each crate's [package.metadata.awaken]
-# context/layer/authority declaration:
-#   crates/contract/*   → foundation authorities commonly shared by several roles.
-#                         Contract semantics are declared in package metadata, not inferred
-#                         from this directory or from the number of consuming planes.
-#   crates/runtime/*    → the kernel: agent loop + ext plugins + telemetry + the in-memory default backend; contract only.
-#   crates/stores/*     → DURABLE backend for ANY port (fs/sqlite/postgres commit stores +
-#                         domain-specific work-queue/session/env registries); a replaceable
-#                         port impl under its conformance suite (ADR-0059 criterion 3).
-#   crates/resources/*  → mountable agent-resource backends (memory/skill/file).
-#   crates/shared/*     → provider-neutral infrastructure used across bounded contexts.
-#   crates/server/*     → Coordinator application/host plus protocol and ingress adapters; package names declare owners.
-#   crates/worker/*     → stateless execution components: container/k8s sandbox + channel/relay (links no stores).
-#   crates/control/*    → self-hosted config/vault/iam authoring plane (ADR-0043).
-#   crates/bin/*        → composed deployables: awaken-cli + the db-less worker daemon + the in-container sandbox bridge.
-#   crates/devtools/*   → dev tooling / harnesses / examples (publish=false), composed like bin/.
-#                         Boundaries + the neutral-core invariant (ADR-0059) are enforced by
-#                         scripts/ci/check_crate_boundaries.py; deny.toml does not duplicate them.
+# SDK crates are grouped by SDK role; Platform crates by bounded context.
+# Semantic ownership and dependency direction remain declared in each crate's
+# [package.metadata.awaken] and enforced by check_crate_boundaries.py.
 members = [
-    "crates/contract/*",
-    "crates/runtime/*",
-    "crates/stores/*",
-    "crates/resources/*",
-    "crates/shared/*",
-    "crates/server/*",
-    "crates/worker/*",
-    "crates/control/*",
-    "crates/bin/*",
-    # Dev tooling / harnesses / teaching examples (publish=false): scenario e2e host,
-    # runtime examples, eval. Composed like bin/ (may depend on any plane), kept out of
-    # bin/ so the deployables bucket holds the shared CLI/Control/Coordinator
-    # source composition plus the independent Worker daemon.
+    "crates/sdk/*/*",
+    "crates/platform/*/*",
+    "crates/apps/*",
     "crates/devtools/*",
 ]
 
@@ -49,89 +23,89 @@ license = "Apache-2.0"
 sdk_semver_baseline = "50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940"
 
 [workspace.dependencies]
-awaken-conversation = { path = "crates/runtime/awaken-conversation", version = "0.1.0" }
-awaken-process-win32 = { path = "crates/shared/awaken-process-win32", version = "1.0.0" }
-awaken-plugin-composition = { path = "crates/bin/awaken-plugin-composition" }
-awaken-web-policy-contract = { path = "crates/contract/awaken-web-policy-contract", version = "1.1.0" }
+awaken-conversation = { path = "crates/sdk/runtime/awaken-conversation", version = "0.1.0" }
+awaken-process-win32 = { path = "crates/sdk/support/awaken-process-win32", version = "1.0.0" }
+awaken-plugin-composition = { path = "crates/apps/awaken-plugin-composition" }
+awaken-web-policy-contract = { path = "crates/sdk/contracts/awaken-web-policy-contract", version = "1.1.0" }
 awaken-ui-artifact = { git = "https://github.com/awakenworks/awaken-ui.git", rev = "15ab31ef4943042ac4795c27f0e82c78586a214e" }
-awaken-agent-contract = { path = "crates/contract/awaken-agent-contract", version = "2.0.0" }
-awaken-lease-contract = { path = "crates/contract/awaken-lease-contract", version = "1.0.0" }
-awaken-time = { path = "crates/runtime/awaken-time", version = "1.0.0" }
-awaken-sync = { path = "crates/runtime/awaken-sync", version = "1.0.0" }
+awaken-agent-contract = { path = "crates/sdk/contracts/awaken-agent-contract", version = "2.0.0" }
+awaken-lease-contract = { path = "crates/sdk/contracts/awaken-lease-contract", version = "1.0.0" }
+awaken-time = { path = "crates/sdk/support/awaken-time", version = "1.0.0" }
+awaken-sync = { path = "crates/sdk/support/awaken-sync", version = "1.0.0" }
 awaken-lease-testkit = { path = "crates/devtools/awaken-lease-testkit" }
-awaken-credential-contract = { path = "crates/contract/awaken-credential-contract" }
-awaken-data-governance-contract = { path = "crates/contract/awaken-data-governance-contract" }
-awaken-runtime-contract = { path = "crates/contract/awaken-runtime-contract", version = "2.0.0" }
-awaken-tool-contract = { path = "crates/contract/awaken-tool-contract", version = "2.0.0" }
-awaken-tenancy = { path = "crates/contract/awaken-tenancy" }
-awaken-service-lifecycle = { path = "crates/server/awaken-service-lifecycle" }
-awaken-session-configuration-contract = { path = "crates/contract/awaken-session-configuration-contract" }
-awaken-session-application-contract = { path = "crates/contract/awaken-session-application-contract" }
-awaken-session-types = { path = "crates/contract/awaken-session-types" }
-awaken-session-execution-contract = { path = "crates/contract/awaken-session-execution-contract" }
-awaken-session-contract = { path = "crates/contract/awaken-session-contract" }
-awaken-session-dream-contract = { path = "crates/contract/awaken-session-dream-contract" }
-awaken-session-application = { path = "crates/server/awaken-session-application" }
-awaken-managed-session-events = { path = "crates/server/awaken-managed-session-events" }
-awaken-session-realization-driver = { path = "crates/server/awaken-session-realization-driver" }
-awaken-session-realization = { path = "crates/server/awaken-session-realization" }
-awaken-session-mcp = { path = "crates/server/awaken-session-mcp" }
-awaken-deployment-contract = { path = "crates/contract/awaken-deployment-contract" }
-awaken-deployment-application = { path = "crates/server/awaken-deployment-application" }
-awaken-environment-contract = { path = "crates/contract/awaken-environment-contract" }
-awaken-executable-agent-contract = { path = "crates/contract/awaken-executable-agent-contract" }
-awaken-executable-environment-contract = { path = "crates/contract/awaken-executable-environment-contract" }
-awaken-service-auth-contract = { path = "crates/contract/awaken-service-auth-contract" }
-awaken-resource-contract = { path = "crates/contract/awaken-resource-contract" }
-awaken-observability = { path = "crates/runtime/awaken-observability", version = "2.0.0" }
-awaken-memory-store = { path = "crates/resources/awaken-memory-store" }
-awaken-skill-store = { path = "crates/resources/awaken-skill-store" }
-awaken-runtime = { path = "crates/runtime/awaken-runtime", version = "2.0.0" }
-awaken-tool-pattern = { path = "crates/runtime/awaken-tool-pattern", version = "0.1.0" }
-awaken-provider-genai = { path = "crates/runtime/awaken-provider-genai", version = "2.0.0" }
-awaken-ext-permission = { path = "crates/runtime/awaken-ext-permission", version = "2.0.0" }
-awaken-outbound-http = { path = "crates/runtime/awaken-outbound-http", version = "1.1.0" }
-awaken-authority-clock = { path = "crates/runtime/awaken-authority-clock" }
-awaken-mcp-wire = { path = "crates/runtime/awaken-mcp-wire", version = "0.2.0" }
-awaken-mcp-server-core = { path = "crates/server/awaken-mcp-server-core", version = "1.0.0" }
-awaken-mcp-server-testkit = { path = "crates/server/awaken-mcp-server-testkit" }
-awaken-ext-mcp = { path = "crates/runtime/awaken-ext-mcp", version = "0.2.0" }
-awaken-ext-skills = { path = "crates/runtime/awaken-ext-skills", version = "0.2.0" }
-awaken-ext-goal = { path = "crates/runtime/awaken-ext-goal", version = "2.0.0" }
-awaken-ext-state-machine = { path = "crates/runtime/awaken-ext-state-machine", version = "0.2.0" }
-awaken-ext-compact = { path = "crates/runtime/awaken-ext-compact", version = "2.0.0" }
-awaken-ext-memory = { path = "crates/runtime/awaken-ext-memory", version = "2.0.0" }
-awaken-ext-builtin-tools = { path = "crates/runtime/awaken-ext-builtin-tools", version = "2.0.0" }
-awaken-protocol-a2a = { path = "crates/server/awaken-protocol-a2a", version = "0.0.0" }
-awaken-protocol-mcp = { path = "crates/server/awaken-protocol-mcp", version = "0.0.0" }
-awaken-protocol-ag-ui = { path = "crates/server/awaken-protocol-ag-ui", version = "1.0.0" }
-awaken-protocol-ai-sdk = { path = "crates/server/awaken-protocol-ai-sdk", version = "1.0.0" }
-awaken-protocol-managed = { path = "crates/server/awaken-protocol-managed" }
+awaken-credential-contract = { path = "crates/platform/credentials/awaken-credential-contract" }
+awaken-data-governance-contract = { path = "crates/platform/governance/awaken-data-governance-contract" }
+awaken-runtime-contract = { path = "crates/sdk/contracts/awaken-runtime-contract", version = "2.0.0" }
+awaken-tool-contract = { path = "crates/sdk/contracts/awaken-tool-contract", version = "2.0.0" }
+awaken-tenancy = { path = "crates/platform/access/awaken-tenancy" }
+awaken-service-lifecycle = { path = "crates/apps/awaken-service-lifecycle" }
+awaken-session-configuration-contract = { path = "crates/platform/session/awaken-session-configuration-contract" }
+awaken-session-application-contract = { path = "crates/platform/session/awaken-session-application-contract" }
+awaken-session-types = { path = "crates/platform/session/awaken-session-types" }
+awaken-session-execution-contract = { path = "crates/platform/session/awaken-session-execution-contract" }
+awaken-session-contract = { path = "crates/platform/session/awaken-session-contract" }
+awaken-session-dream-contract = { path = "crates/platform/session/awaken-session-dream-contract" }
+awaken-session-application = { path = "crates/platform/session/awaken-session-application" }
+awaken-managed-session-events = { path = "crates/platform/protocols/awaken-managed-session-events" }
+awaken-session-realization-driver = { path = "crates/platform/session/awaken-session-realization-driver" }
+awaken-session-realization = { path = "crates/platform/execution/awaken-session-realization" }
+awaken-session-mcp = { path = "crates/platform/execution/awaken-session-mcp" }
+awaken-deployment-contract = { path = "crates/platform/deployment/awaken-deployment-contract" }
+awaken-deployment-application = { path = "crates/platform/deployment/awaken-deployment-application" }
+awaken-environment-contract = { path = "crates/platform/environment/awaken-environment-contract" }
+awaken-executable-agent-contract = { path = "crates/platform/config/awaken-executable-agent-contract" }
+awaken-executable-environment-contract = { path = "crates/platform/environment/awaken-executable-environment-contract" }
+awaken-service-auth-contract = { path = "crates/platform/access/awaken-service-auth-contract" }
+awaken-resource-contract = { path = "crates/platform/resources/awaken-resource-contract" }
+awaken-observability = { path = "crates/sdk/support/awaken-observability", version = "2.0.0" }
+awaken-memory-store = { path = "crates/platform/resources/awaken-memory-store" }
+awaken-skill-store = { path = "crates/platform/resources/awaken-skill-store" }
+awaken-runtime = { path = "crates/sdk/runtime/awaken-runtime", version = "2.0.0" }
+awaken-tool-pattern = { path = "crates/sdk/support/awaken-tool-pattern", version = "0.1.0" }
+awaken-provider-genai = { path = "crates/sdk/providers/awaken-provider-genai", version = "2.0.0" }
+awaken-ext-permission = { path = "crates/sdk/extensions/awaken-ext-permission", version = "2.0.0" }
+awaken-outbound-http = { path = "crates/sdk/providers/awaken-outbound-http", version = "1.1.0" }
+awaken-authority-clock = { path = "crates/platform/fencing/awaken-authority-clock" }
+awaken-mcp-wire = { path = "crates/sdk/providers/awaken-mcp-wire", version = "0.2.0" }
+awaken-mcp-server-core = { path = "crates/sdk/protocols/awaken-mcp-server-core", version = "1.0.0" }
+awaken-mcp-server-testkit = { path = "crates/platform/protocols/awaken-mcp-server-testkit" }
+awaken-ext-mcp = { path = "crates/sdk/extensions/awaken-ext-mcp", version = "0.2.0" }
+awaken-ext-skills = { path = "crates/sdk/extensions/awaken-ext-skills", version = "0.2.0" }
+awaken-ext-goal = { path = "crates/sdk/extensions/awaken-ext-goal", version = "2.0.0" }
+awaken-ext-state-machine = { path = "crates/sdk/extensions/awaken-ext-state-machine", version = "0.2.0" }
+awaken-ext-compact = { path = "crates/sdk/extensions/awaken-ext-compact", version = "2.0.0" }
+awaken-ext-memory = { path = "crates/sdk/extensions/awaken-ext-memory", version = "2.0.0" }
+awaken-ext-builtin-tools = { path = "crates/sdk/extensions/awaken-ext-builtin-tools", version = "2.0.0" }
+awaken-protocol-a2a = { path = "crates/sdk/protocols/awaken-protocol-a2a", version = "0.0.0" }
+awaken-protocol-mcp = { path = "crates/sdk/protocols/awaken-protocol-mcp", version = "0.0.0" }
+awaken-protocol-ag-ui = { path = "crates/sdk/protocols/awaken-protocol-ag-ui", version = "1.0.0" }
+awaken-protocol-ai-sdk = { path = "crates/sdk/protocols/awaken-protocol-ai-sdk", version = "1.0.0" }
+awaken-protocol-managed = { path = "crates/platform/protocols/awaken-protocol-managed" }
 awaken-protocol-managed-testkit = { path = "crates/devtools/awaken-protocol-managed-testkit" }
 awaken-session-executor-testkit = { path = "crates/devtools/awaken-session-executor-testkit", default-features = false }
-awaken-protocol-awaken = { path = "crates/server/awaken-protocol-awaken" }
-awaken-resource-reclaimer = { path = "crates/server/awaken-resource-reclaimer" }
-awaken-protocol-acp = { path = "crates/server/awaken-protocol-acp" }
-awaken-acp-application = { path = "crates/server/awaken-acp-application" }
-awaken-dream-application = { path = "crates/server/awaken-dream-application" }
-awaken-run-executor-acp = { path = "crates/server/awaken-run-executor-acp", default-features = false }
-awaken-run-executor-a2a = { path = "crates/server/awaken-run-executor-a2a" }
+awaken-protocol-awaken = { path = "crates/platform/protocols/awaken-protocol-awaken" }
+awaken-resource-reclaimer = { path = "crates/platform/resources/awaken-resource-reclaimer" }
+awaken-protocol-acp = { path = "crates/platform/protocols/awaken-protocol-acp" }
+awaken-acp-application = { path = "crates/platform/config/awaken-acp-application" }
+awaken-dream-application = { path = "crates/platform/session/awaken-dream-application" }
+awaken-run-executor-acp = { path = "crates/platform/execution/awaken-run-executor-acp", default-features = false }
+awaken-run-executor-a2a = { path = "crates/platform/execution/awaken-run-executor-a2a" }
 # Management plane (ADR-0043 decomposition) — agents bucket, orthogonal to execution.
-awaken-agent-config = { path = "crates/control/awaken-agent-config" }
-awaken-model-catalog = { path = "crates/control/awaken-model-catalog" }
-awaken-model-catalog-store = { path = "crates/stores/awaken-model-catalog-store" }
-awaken-credential-vault = { path = "crates/control/awaken-credential-vault" }
-awaken-credential-store = { path = "crates/stores/awaken-credential-store" }
-awaken-data-subject-application = { path = "crates/control/awaken-data-subject-application" }
-awaken-data-subject-store = { path = "crates/stores/awaken-data-subject-store" }
-awaken-environment-application = { path = "crates/control/awaken-environment-application" }
-awaken-captured-content-store = { path = "crates/stores/awaken-captured-content-store" }
-awaken-config-resolver = { path = "crates/control/awaken-config-resolver" }
-awaken-admin-config-api = { path = "crates/control/awaken-admin-config-api" }
+awaken-agent-config = { path = "crates/platform/config/awaken-agent-config" }
+awaken-model-catalog = { path = "crates/platform/config/awaken-model-catalog" }
+awaken-model-catalog-store = { path = "crates/platform/config/awaken-model-catalog-store" }
+awaken-credential-vault = { path = "crates/platform/credentials/awaken-credential-vault" }
+awaken-credential-store = { path = "crates/platform/credentials/awaken-credential-store" }
+awaken-data-subject-application = { path = "crates/platform/governance/awaken-data-subject-application" }
+awaken-data-subject-store = { path = "crates/platform/governance/awaken-data-subject-store" }
+awaken-environment-application = { path = "crates/platform/environment/awaken-environment-application" }
+awaken-captured-content-store = { path = "crates/platform/governance/awaken-captured-content-store" }
+awaken-config-resolver = { path = "crates/platform/config/awaken-config-resolver" }
+awaken-admin-config-api = { path = "crates/platform/config/awaken-admin-config-api" }
 # Authoring / authz plane (Stage B2): the management CRUD surfaces + embedded IAM
 # guard, split out of awaken-coordinator. Sibling of the data plane; the two never depend
 # on each other — awaken-cli is the composition root that weaves them together.
-awaken-control = { path = "crates/control/awaken-control" }
+awaken-control = { path = "crates/apps/awaken-control" }
 # Foundation contract half (ADR-0043): RFC-9457 ApiError, pagination, and the
 # allowlisted ListQuery/QuerySchema the admin config API serves its CRUD on.
 awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "247ee33a1d8f56f362217176886c346c87d207d9" }
@@ -152,77 +126,77 @@ awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam.git", rev
 # three modes (Open/Local/Remote). Local mode is the single-machine embed over
 # migrated <data_dir>/iam.sqlite, seeded roles, and one-time browser setup.
 awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "a903f98252908763f0bfad652fbd3935c5e926ba", version = "=0.2.0-dev" }
-awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
-awaken-sql-storage = { path = "crates/stores/awaken-sql-storage" }
-awaken-sqlite-pool = { path = "crates/stores/awaken-sqlite-pool" }
-awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem", version = "2.0.0" }
-awaken-store-fs = { path = "crates/stores/awaken-store-fs" }
-awaken-store-schema = { path = "crates/stores/awaken-store-schema" }
-awaken-store-sqlite = { path = "crates/stores/awaken-store-sqlite" }
-awaken-store-postgres = { path = "crates/stores/awaken-store-postgres" }
-awaken-work-store = { path = "crates/stores/awaken-work-store" }
-awaken-ext-background-task = { path = "crates/runtime/awaken-ext-background-task", version = "2.0.0" }
-awaken-session-store = { path = "crates/stores/awaken-session-store" }
-awaken-resource-store = { path = "crates/stores/awaken-resource-store" }
-awaken-env-store = { path = "crates/stores/awaken-env-store" }
-awaken-config-store = { path = "crates/control/awaken-config-store" }
-awaken-config-service = { path = "crates/control/awaken-config-service" }
-awaken-credential-materializer = { path = "crates/server/awaken-credential-materializer", default-features = false }
-awaken-inference-endpoint = { path = "crates/server/awaken-inference-endpoint" }
-awaken-credential-envelope = { path = "crates/shared/awaken-credential-envelope" }
-awaken-provisioning-contract = { path = "crates/contract/awaken-provisioning-contract" }
-awaken-container-contract = { path = "crates/contract/awaken-container-contract" }
-awaken-session-environment-contract = { path = "crates/contract/awaken-session-environment-contract" }
-awaken-session-environment = { path = "crates/worker/awaken-session-environment" }
-awaken-local-process = { path = "crates/worker/awaken-local-process" }
-awaken-fs-durability = { path = "crates/shared/awaken-fs-durability", version = "1.0.0" }
-awaken-installation-workspace = { path = "crates/worker/awaken-installation-workspace" }
-awaken-sandbox-policy-store = { path = "crates/server/awaken-sandbox-policy-store" }
-awaken-worker-contract = { path = "crates/contract/awaken-worker-contract" }
-awaken-worker-registry = { path = "crates/server/awaken-worker-registry" }
-awaken-executable-agent-catalog = { path = "crates/server/awaken-executable-agent-catalog" }
-awaken-executable-environment-catalog = { path = "crates/server/awaken-executable-environment-catalog" }
-awaken-durable-projection = { path = "crates/server/awaken-durable-projection" }
-awaken-environment-image-build = { path = "crates/server/awaken-environment-image-build" }
-awaken-environment-package-image-builder = { path = "crates/server/awaken-environment-package-image-builder" }
-awaken-agent-channel = { path = "crates/contract/awaken-agent-channel" }
-awaken-sandbox-control = { path = "crates/contract/awaken-sandbox-control" }
-awaken-sandbox-control-transport = { path = "crates/worker/awaken-sandbox-control-transport" }
-awaken-acp-contract = { path = "crates/contract/awaken-acp-contract" }
-awaken-connection-plan = { path = "crates/worker/awaken-connection-plan" }
-awaken-tool-relay = { path = "crates/worker/awaken-tool-relay" }
-awaken-file-store = { path = "crates/resources/awaken-file-store" }
-awaken-resource-application = { path = "crates/resources/awaken-resource-application" }
-awaken-resource-persistence = { path = "crates/resources/awaken-resource-persistence" }
-awaken-sandbox-local = { path = "crates/worker/awaken-sandbox-local" }
-awaken-sandbox-memoryd = { path = "crates/worker/awaken-sandbox-memoryd" }
-awaken-sandbox-container = { path = "crates/worker/awaken-sandbox-container" }
-awaken-sandbox-kubernetes = { path = "crates/worker/awaken-sandbox-kubernetes" }
-awaken-worker-fleet-kubernetes = { path = "crates/shared/awaken-worker-fleet-kubernetes" }
-awaken-package-image = { path = "crates/worker/awaken-package-image" }
-awaken-execution-composition = { path = "crates/worker/awaken-execution-composition" }
-awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
-awaken-dispatch-contract = { path = "crates/contract/awaken-dispatch-contract" }
-awaken-dispatch-erasure = { path = "crates/shared/awaken-dispatch-erasure" }
-awaken-dispatch-execution = { path = "crates/shared/awaken-dispatch-execution" }
-awaken-deployment-config = { path = "crates/shared/awaken-deployment-config" }
-awaken-dispatch = { path = "crates/server/awaken-dispatch", default-features = false }
-awaken-dispatch-testkit = { path = "crates/server/awaken-dispatch-testkit" }
-awaken-worker-transport-security = { path = "crates/server/awaken-worker-transport-security" }
-awaken-session-executor = { path = "crates/server/awaken-session-executor", default-features = false }
-awaken-session-run-delivery = { path = "crates/server/awaken-session-run-delivery" }
-awaken-dispatch-http = { path = "crates/server/awaken-dispatch-http" }
-awaken-resource-worker-http = { path = "crates/resources/awaken-resource-worker-http" }
-awaken-coordinator-client = { path = "crates/server/awaken-coordinator-client" }
-awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
-awaken-coordinator = { path = "crates/server/awaken-coordinator" }
+awaken-store-conformance = { path = "crates/platform/committed-truth/awaken-store-conformance" }
+awaken-sql-storage = { path = "crates/platform/storage/awaken-sql-storage" }
+awaken-sqlite-pool = { path = "crates/platform/storage/awaken-sqlite-pool" }
+awaken-store-inmem = { path = "crates/sdk/runtime/awaken-store-inmem", version = "2.0.0" }
+awaken-store-fs = { path = "crates/platform/committed-truth/awaken-store-fs" }
+awaken-store-schema = { path = "crates/platform/committed-truth/awaken-store-schema" }
+awaken-store-sqlite = { path = "crates/platform/committed-truth/awaken-store-sqlite" }
+awaken-store-postgres = { path = "crates/platform/committed-truth/awaken-store-postgres" }
+awaken-work-store = { path = "crates/platform/environment/awaken-work-store" }
+awaken-ext-background-task = { path = "crates/sdk/extensions/awaken-ext-background-task", version = "2.0.0" }
+awaken-session-store = { path = "crates/platform/session/awaken-session-store" }
+awaken-resource-store = { path = "crates/platform/resources/awaken-resource-store" }
+awaken-env-store = { path = "crates/platform/environment/awaken-env-store" }
+awaken-config-store = { path = "crates/platform/config/awaken-config-store" }
+awaken-config-service = { path = "crates/platform/config/awaken-config-service" }
+awaken-credential-materializer = { path = "crates/platform/execution/awaken-credential-materializer", default-features = false }
+awaken-inference-endpoint = { path = "crates/platform/execution/awaken-inference-endpoint" }
+awaken-credential-envelope = { path = "crates/platform/credentials/awaken-credential-envelope" }
+awaken-provisioning-contract = { path = "crates/platform/environment/awaken-provisioning-contract" }
+awaken-container-contract = { path = "crates/platform/environment/awaken-container-contract" }
+awaken-session-environment-contract = { path = "crates/platform/environment/awaken-session-environment-contract" }
+awaken-session-environment = { path = "crates/platform/environment/awaken-session-environment" }
+awaken-local-process = { path = "crates/platform/sandbox/awaken-local-process" }
+awaken-fs-durability = { path = "crates/platform/storage/awaken-fs-durability", version = "1.0.0" }
+awaken-installation-workspace = { path = "crates/platform/access/awaken-installation-workspace" }
+awaken-sandbox-policy-store = { path = "crates/platform/config/awaken-sandbox-policy-store" }
+awaken-worker-contract = { path = "crates/platform/dispatch/awaken-worker-contract" }
+awaken-worker-registry = { path = "crates/platform/dispatch/awaken-worker-registry" }
+awaken-executable-agent-catalog = { path = "crates/platform/config/awaken-executable-agent-catalog" }
+awaken-executable-environment-catalog = { path = "crates/platform/environment/awaken-executable-environment-catalog" }
+awaken-durable-projection = { path = "crates/platform/session/awaken-durable-projection" }
+awaken-environment-image-build = { path = "crates/platform/environment/awaken-environment-image-build" }
+awaken-environment-package-image-builder = { path = "crates/platform/environment/awaken-environment-package-image-builder" }
+awaken-agent-channel = { path = "crates/platform/environment/awaken-agent-channel" }
+awaken-sandbox-control = { path = "crates/platform/environment/awaken-sandbox-control" }
+awaken-sandbox-control-transport = { path = "crates/platform/sandbox/awaken-sandbox-control-transport" }
+awaken-acp-contract = { path = "crates/platform/environment/awaken-acp-contract" }
+awaken-connection-plan = { path = "crates/platform/dispatch/awaken-connection-plan" }
+awaken-tool-relay = { path = "crates/platform/sandbox/awaken-tool-relay" }
+awaken-file-store = { path = "crates/platform/resources/awaken-file-store" }
+awaken-resource-application = { path = "crates/platform/resources/awaken-resource-application" }
+awaken-resource-persistence = { path = "crates/platform/resources/awaken-resource-persistence" }
+awaken-sandbox-local = { path = "crates/platform/sandbox/awaken-sandbox-local" }
+awaken-sandbox-memoryd = { path = "crates/platform/sandbox/awaken-sandbox-memoryd" }
+awaken-sandbox-container = { path = "crates/platform/sandbox/awaken-sandbox-container" }
+awaken-sandbox-kubernetes = { path = "crates/platform/sandbox/awaken-sandbox-kubernetes" }
+awaken-worker-fleet-kubernetes = { path = "crates/platform/sandbox/awaken-worker-fleet-kubernetes" }
+awaken-package-image = { path = "crates/platform/sandbox/awaken-package-image" }
+awaken-execution-composition = { path = "crates/platform/execution/awaken-execution-composition" }
+awaken-runtime-examples = { path = "crates/sdk/devtools/awaken-runtime-examples" }
+awaken-dispatch-contract = { path = "crates/platform/dispatch/awaken-dispatch-contract" }
+awaken-dispatch-erasure = { path = "crates/platform/execution/awaken-dispatch-erasure" }
+awaken-dispatch-execution = { path = "crates/platform/execution/awaken-dispatch-execution" }
+awaken-deployment-config = { path = "crates/platform/execution/awaken-deployment-config" }
+awaken-dispatch = { path = "crates/platform/dispatch/awaken-dispatch", default-features = false }
+awaken-dispatch-testkit = { path = "crates/platform/dispatch/awaken-dispatch-testkit" }
+awaken-worker-transport-security = { path = "crates/platform/dispatch/awaken-worker-transport-security" }
+awaken-session-executor = { path = "crates/platform/execution/awaken-session-executor", default-features = false }
+awaken-session-run-delivery = { path = "crates/platform/execution/awaken-session-run-delivery" }
+awaken-dispatch-http = { path = "crates/platform/dispatch/awaken-dispatch-http" }
+awaken-resource-worker-http = { path = "crates/platform/resources/awaken-resource-worker-http" }
+awaken-coordinator-client = { path = "crates/platform/dispatch/awaken-coordinator-client" }
+awaken-admin-assistant = { path = "crates/platform/config/awaken-admin-assistant" }
+awaken-coordinator = { path = "crates/apps/awaken-coordinator" }
 awaken-scenario-host = { path = "crates/devtools/awaken-scenario-host" }
 awaken-reliability-testkit = { path = "crates/devtools/awaken-reliability-testkit" }
-awaken-cli = { path = "crates/bin/awaken-cli" }
-awaken-process-startup = { path = "crates/bin/awaken-process-startup" }
-awaken-worker = { path = "crates/bin/awaken-worker" }
-awaken-authz-enforce = { path = "crates/control/awaken-authz-enforce" }
-awaken-webhook = { path = "crates/server/awaken-webhook" }
+awaken-cli = { path = "crates/apps/awaken-cli" }
+awaken-process-startup = { path = "crates/apps/awaken-process-startup" }
+awaken-worker = { path = "crates/apps/awaken-worker" }
+awaken-authz-enforce = { path = "crates/platform/access/awaken-authz-enforce" }
+awaken-webhook = { path = "crates/platform/config/awaken-webhook" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde-saphyr = { version = "0.0.29", default-features = false, features = ["deserialize"] }

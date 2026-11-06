@@ -4,26 +4,27 @@
     "name": "t32_c01_owner_scoped_stream_close_detaches_and_explicit_stop_is_separate",
     "source_locations": [
       {
-        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
         "line": 324,
-        "file_sha256": "9c4a44d78ce1567a3759856e33278c2c7a9d87a4640c3c752cd9b6a6e3e7f06b"
+        "file_sha256": "9c4a44d78ce1567a3759856e33278c2c7a9d87a4640c3c752cd9b6a6e3e7f06b",
+        "relocated_from": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs:326"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
         "line": 329
       },
       {
-        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
         "line": 334
       },
       {
-        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
         "line": 335
       },
       {
-        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
         "line": 340
       }
     ],
@@ -58,26 +59,27 @@
     "name": "t32_c01_negative_control_socket_close_as_terminal_is_detected",
     "source_locations": [
       {
-        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
         "line": 365,
-        "file_sha256": "9c4a44d78ce1567a3759856e33278c2c7a9d87a4640c3c752cd9b6a6e3e7f06b"
+        "file_sha256": "9c4a44d78ce1567a3759856e33278c2c7a9d87a4640c3c752cd9b6a6e3e7f06b",
+        "relocated_from": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs:367"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
         "line": 372
       },
       {
-        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
         "line": 377
       },
       {
-        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
         "line": 382
       },
       {
-        "path": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
         "line": 388
       }
     ],
@@ -111,18 +113,19 @@
     "name": "explicit_stop_reaches_the_runs_interrupt_port_exactly_once",
     "source_locations": [
       {
-        "path": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ag-ui/tests/stop_receipt.rs",
         "line": 119,
-        "file_sha256": "dc73013b422632866a32a7095ceffe0866678b01232eeedcf5507b6e486ced54"
+        "file_sha256": "dc73013b422632866a32a7095ceffe0866678b01232eeedcf5507b6e486ced54",
+        "relocated_from": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs:120"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ag-ui/tests/stop_receipt.rs",
         "line": 122
       },
       {
-        "path": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-ag-ui/tests/stop_receipt.rs",
         "line": 123
       }
     ],
@@ -327,26 +330,27 @@
     "name": "local_runtime_commits_each_injected_upstream_fault_with_its_original_classification",
     "source_locations": [
       {
-        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
         "line": 238,
-        "file_sha256": "cdac0aa7305b292d6dbae74a465ae13c52417176445b763b568ded942ec946f1"
+        "file_sha256": "cdac0aa7305b292d6dbae74a465ae13c52417176445b763b568ded942ec946f1",
+        "relocated_from": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs:238"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
         "line": 241
       },
       {
-        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
         "line": 246
       },
       {
-        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
         "line": 247
       },
       {
-        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
         "line": 249
       }
     ],
@@ -381,26 +385,27 @@
     "name": "local_fault_checker_rejects_adapter_mutants_of_the_real_committed_terminal",
     "source_locations": [
       {
-        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
         "line": 289,
-        "file_sha256": "cdac0aa7305b292d6dbae74a465ae13c52417176445b763b568ded942ec946f1"
+        "file_sha256": "cdac0aa7305b292d6dbae74a465ae13c52417176445b763b568ded942ec946f1",
+        "relocated_from": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs:289"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
         "line": 297
       },
       {
-        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
         "line": 303
       },
       {
-        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
         "line": 308
       },
       {
-        "path": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
         "line": 319
       }
     ],
@@ -432,26 +437,27 @@
     "name": "http_worker_commit_keeps_the_injected_upstream_fault_authority_on_the_control_side",
     "source_locations": [
       {
-        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
         "line": 480,
-        "file_sha256": "633a8f54279be950feeb65da15c647613be306434f2a727785d64a70bfec820b"
+        "file_sha256": "633a8f54279be950feeb65da15c647613be306434f2a727785d64a70bfec820b",
+        "relocated_from": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs:480"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
         "line": 483
       },
       {
-        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
         "line": 487
       },
       {
-        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
         "line": 496
       },
       {
-        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
         "line": 497
       }
     ],
@@ -486,22 +492,23 @@
     "name": "http_worker_fault_checker_detects_a_transport_that_silently_reports_success",
     "source_locations": [
       {
-        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
         "line": 512,
-        "file_sha256": "633a8f54279be950feeb65da15c647613be306434f2a727785d64a70bfec820b"
+        "file_sha256": "633a8f54279be950feeb65da15c647613be306434f2a727785d64a70bfec820b",
+        "relocated_from": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs:512"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
         "line": 517
       },
       {
-        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
         "line": 526
       },
       {
-        "path": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
         "line": 537
       }
     ],
@@ -535,26 +542,27 @@
     "name": "mcp_http_chain_never_reports_an_injected_tool_fault_as_success",
     "source_locations": [
       {
-        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
         "line": 247,
-        "file_sha256": "984234ce011e393028e751eb7988f0823a77ceec36f7a6d11ddb7025150a2171"
+        "file_sha256": "984234ce011e393028e751eb7988f0823a77ceec36f7a6d11ddb7025150a2171",
+        "relocated_from": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs:247"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
         "line": 253
       },
       {
-        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
         "line": 254
       },
       {
-        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
         "line": 258
       },
       {
-        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
         "line": 265
       }
     ],
@@ -588,26 +596,27 @@
     "name": "acp_executor_never_reports_the_injected_upstream_fault_as_success",
     "source_locations": [
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
         "line": 275,
-        "file_sha256": "1be2c6f75607a822026880cd6de226ccf4e43a68027e9bd14361da23d482db9a"
+        "file_sha256": "1be2c6f75607a822026880cd6de226ccf4e43a68027e9bd14361da23d482db9a",
+        "relocated_from": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs:275"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
         "line": 278
       },
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
         "line": 284
       },
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
         "line": 286
       },
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
         "line": 288
       }
     ],
@@ -641,26 +650,27 @@
     "name": "hand_relay_never_reports_an_injected_tool_fault_as_success",
     "source_locations": [
       {
-        "path": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
+        "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
         "line": 221,
-        "file_sha256": "1674dcee914a63db664c52447f3596d7f36386776ace88dd96db0c783f6e70d0"
+        "file_sha256": "1674dcee914a63db664c52447f3596d7f36386776ace88dd96db0c783f6e70d0",
+        "relocated_from": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs:221"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
+        "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
         "line": 225
       },
       {
-        "path": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
+        "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
         "line": 226
       },
       {
-        "path": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
+        "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
         "line": 234
       },
       {
-        "path": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
+        "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
         "line": 238
       }
     ],
@@ -694,26 +704,27 @@
     "name": "windows_ntfs_identity_and_lock_refuse_contention_and_aliases",
     "source_locations": [
       {
-        "path": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs",
+        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs",
         "line": 5,
-        "file_sha256": "02484203793e34c70f18604ddd3c3f27b963dfdf53a6e82afba3c173ec881b67"
+        "file_sha256": "02484203793e34c70f18604ddd3c3f27b963dfdf53a6e82afba3c173ec881b67",
+        "relocated_from": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs:5"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs",
+        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs",
         "line": 16
       },
       {
-        "path": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs",
+        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs",
         "line": 18
       },
       {
-        "path": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs",
+        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs",
         "line": 20
       },
       {
-        "path": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs",
+        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs",
         "line": 22
       }
     ],
@@ -747,26 +758,27 @@
     "name": "windows_long_sibling_publication_keeps_exact_identity_and_noreplace",
     "source_locations": [
       {
-        "path": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs",
+        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs",
         "line": 9,
-        "file_sha256": "36571e88ecbed1f25347022be1f1c750866f8d13588bbafbe16e21f5e52c5e0e"
+        "file_sha256": "36571e88ecbed1f25347022be1f1c750866f8d13588bbafbe16e21f5e52c5e0e",
+        "relocated_from": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs:9"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs",
+        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs",
         "line": 46
       },
       {
-        "path": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs",
+        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs",
         "line": 47
       },
       {
-        "path": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs",
+        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs",
         "line": 51
       },
       {
-        "path": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs",
+        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs",
         "line": 55
       }
     ],

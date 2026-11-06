@@ -357,7 +357,7 @@ def mutate_missing_boundary(case_root: Path) -> None:
 def mutate_false_refinement_grade(case_root: Path) -> None:
     ledger = formal_ledger.load(case_root)
     row = next(item for item in ledger["obligations"] if
-               "crates/runtime/awaken-runtime/tests/formal_refinement.rs" in item["evidence"])
+               "crates/sdk/runtime/awaken-runtime/tests/formal_refinement.rs" in item["evidence"])
     row["proof_grade"] = "implementation_refined"
     formal_ledger.write(case_root, ledger)
     must_fail(case_root, "check_formal_coverage.py", "trace relabeled as universal refinement",

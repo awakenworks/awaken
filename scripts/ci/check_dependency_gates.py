@@ -84,7 +84,7 @@ PG_GATE_EXEMPTIONS: dict[str, str] = {
 # the file, because a line number rots; the value says why green is sound.
 SILENT_SKIP_EXEMPTIONS: dict[str, str] = {
     # ---- substrates no lane stands up -----------------------------------
-    "crates/runtime/awaken-ext-mcp/tests/http_real_server.rs": (
+    "crates/sdk/extensions/awaken-ext-mcp/tests/http_real_server.rs": (
         "Points at an external MCP server through MCP_TEST_URL/MCP_TEST_BEARER. "
         "Nothing in this repository stands one up and no lane supplies those "
         "credentials, so this never runs. The HTTP transport it exercises is "
@@ -92,7 +92,7 @@ SILENT_SKIP_EXEMPTIONS: dict[str, str] = {
         "repository's own MCP server; what is uncovered is interoperability "
         "with a third-party implementation."
     ),
-    "crates/worker/awaken-execution-composition/src/container.rs": (
+    "crates/platform/execution/awaken-execution-composition/src/container.rs": (
         "L7 needs a rootless Podman that can start busybox, and no lane stands "
         "Podman up: the sandbox suite's container layer is Docker only. While "
         "this test lived in awaken-session-executor the check counted it covered "
@@ -553,7 +553,7 @@ def selftest() -> None:
         # canonical executor plus the current owner/switch covers this skip.
         # Its own execution tests separately refuse zero selection, a skipped
         # outcome and failed assertions; this reader does not reimplement them.
-        pvc = {"crates/server/awaken-session-realization/src/cache_volume.rs":
+        pvc = {"crates/platform/execution/awaken-session-realization/src/cache_volume.rs":
                'AWAKEN_K8S_E2E\neprintln!("skipping: no live PVC");\nreturn;'}
         pvc_gate = (
             'AWAKEN_K8S_E2E=1 run_required_rust_tests -p awaken-session-realization '

@@ -242,7 +242,7 @@ def selftest() -> None:
 
     counts, places = measure((
         crate("awaken-x", "/w/crates/server/awaken-x", product="platform"),
-        crate("awaken-cli", "/w/crates/bin/awaken-cli", product="apps", layer="bootstrap"),
+        crate("awaken-cli", "/w/crates/apps/awaken-cli", product="apps", layer="bootstrap"),
         crate("awaken-sdk", "/w/crates/runtime/awaken-sdk", product="sdk"),
         crate("awaken-protocol-y", "/w/crates/server/awaken-protocol-y", product="platform"),
     ), Path("/w"))
@@ -268,7 +268,7 @@ def selftest() -> None:
 
     counts, places = measure((
         manifest_crate("awaken-worker-runtime", "/w/crates/server/awaken-worker-runtime", product="platform"),
-        manifest_crate("awaken-runtime", "/w/crates/runtime/awaken-runtime", product="sdk"),
+        manifest_crate("awaken-runtime", "/w/crates/sdk/runtime/awaken-runtime", product="sdk"),
         manifest_crate("awaken-host", "/w/crates/bin/awaken-host", product="apps", layer="bootstrap"),
     ), Path("/w"))
     assert counts["crate-name"] == {"awaken-worker-runtime": 1}, f"N7/N8 {counts['crate-name']}"

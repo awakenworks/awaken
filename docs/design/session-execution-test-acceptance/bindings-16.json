@@ -4,26 +4,27 @@
     "name": "tightened_budget_governs_the_next_model_request_and_keeps_frozen_pins",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs",
         "line": 160,
-        "file_sha256": "f8f3b7377fd8eac02748193ca1ddae810082bffed6d23aa6c40bfa2341a5cd97"
+        "file_sha256": "f8f3b7377fd8eac02748193ca1ddae810082bffed6d23aa6c40bfa2341a5cd97",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs:160"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs",
         "line": 170
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs",
         "line": 171
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs",
         "line": 178
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs",
         "line": 179
       }
     ],
@@ -58,26 +59,27 @@
     "name": "frozen_pins_survive_a_moved_price_catalog_through_later_commands",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
         "line": 61,
-        "file_sha256": "a9c814702c77fc0be421a1367283cb16a063e078cd313f98881f4a14cfedbe00"
+        "file_sha256": "a9c814702c77fc0be421a1367283cb16a063e078cd313f98881f4a14cfedbe00",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs:61"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
         "line": 71
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
         "line": 76
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
         "line": 83
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
         "line": 91
       }
     ],
@@ -111,34 +113,35 @@
     "name": "t14_c03_sqlite_replacement_replay_after_projection_crash",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 355,
-        "file_sha256": "c3cbd93053d7e2d4d6c0363a29db68fcbe51b986b0bee50687c7fcf415f81f67"
+        "file_sha256": "c3cbd93053d7e2d4d6c0363a29db68fcbe51b986b0bee50687c7fcf415f81f67",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs:355"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 260
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 270
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 287
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 291
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 306
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 307
       }
     ],
@@ -174,34 +177,35 @@
     "name": "t14_c03_postgres_replacement_replay_after_projection_crash",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 372,
-        "file_sha256": "c3cbd93053d7e2d4d6c0363a29db68fcbe51b986b0bee50687c7fcf415f81f67"
+        "file_sha256": "c3cbd93053d7e2d4d6c0363a29db68fcbe51b986b0bee50687c7fcf415f81f67",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs:372"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 260
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 270
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 287
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 291
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 306
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
         "line": 307
       }
     ],
@@ -331,26 +335,27 @@
     "name": "foreign_version_ids_are_inert_and_indistinguishable_from_absent_ones",
     "source_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
         "line": 253,
-        "file_sha256": "5294b1582fd24e6220212530bb8c8abc2364ef18b497b7ce7a757be7ffe4dd96"
+        "file_sha256": "5294b1582fd24e6220212530bb8c8abc2364ef18b497b7ce7a757be7ffe4dd96",
+        "relocated_from": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs:253"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
         "line": 258
       },
       {
-        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
         "line": 274
       },
       {
-        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
         "line": 279
       },
       {
-        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
         "line": 280
       }
     ],
@@ -386,26 +391,27 @@
     "name": "store_unscoped_version_lookup_is_detected",
     "source_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
         "line": 380,
-        "file_sha256": "5294b1582fd24e6220212530bb8c8abc2364ef18b497b7ce7a757be7ffe4dd96"
+        "file_sha256": "5294b1582fd24e6220212530bb8c8abc2364ef18b497b7ce7a757be7ffe4dd96",
+        "relocated_from": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs:380"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
         "line": 410
       },
       {
-        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
         "line": 413
       },
       {
-        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
         "line": 416
       },
       {
-        "path": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
         "line": 423
       }
     ],
@@ -498,42 +504,43 @@
     "name": "t27_c03_create_response_loss_recovers_the_original_instance",
     "source_locations": [
       {
-        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
         "line": 198,
-        "file_sha256": "1a66dd8f16059f41e9640e46364553a9966c51f71c06aed31bd20aaeb2da9d38"
+        "file_sha256": "1a66dd8f16059f41e9640e46364553a9966c51f71c06aed31bd20aaeb2da9d38",
+        "relocated_from": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs:198"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
         "line": 203
       },
       {
-        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
         "line": 212
       },
       {
-        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
         "line": 214
       },
       {
-        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
         "line": 218
       },
       {
-        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
         "line": 234
       },
       {
-        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
         "line": 235
       },
       {
-        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
         "line": 240
       },
       {
-        "path": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
         "line": 242
       }
     ],

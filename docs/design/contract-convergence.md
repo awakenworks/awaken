@@ -170,9 +170,9 @@ says who drives the attempt, so it becomes `ForegroundRunDriver`. TLA+
 `RunIngress`/`RunIngressKernel` model the dispatch row protocol and keep their
 names. awaken-cloud does not name either type.
 
-Use sites (production): `crates/shared/awaken-deployment-config/src/execution_topology.rs`
-21, 30, 159 and `lib.rs` 42, 578–581; `crates/shared/awaken-dispatch-execution/src/process_dispatch.rs`
-278; `crates/server/awaken-session-executor/src/lib.rs` 139 (a cross-crate
+Use sites (production): `crates/platform/execution/awaken-deployment-config/src/execution_topology.rs`
+21, 30, 159 and `lib.rs` 42, 578–581; `crates/platform/execution/awaken-dispatch-execution/src/process_dispatch.rs`
+278; `crates/platform/execution/awaken-session-executor/src/lib.rs` 139 (a cross-crate
 re-export, removed), `host/dependencies.rs` 192, 532, `host/run.rs` 438,
 `host/run/committed_terminal_observation.rs` 70, `host/session/dispatch_worker.rs`
 20, 39, 102–109, `host/session_ctx.rs` 233–258. Tests: deployment-config

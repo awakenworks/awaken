@@ -749,7 +749,7 @@ def repository_publication_writer_violations(sources: dict[str, str]) -> list[st
 
 
 
-SANDBOX_PORTS = "crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs"
+SANDBOX_PORTS = "crates/platform/environment/awaken-provisioning-contract/src/sandbox/runtime.rs"
 
 
 def sandbox_port_obligation_violations(sources: dict[str, str]) -> list[str]:

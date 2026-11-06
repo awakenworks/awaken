@@ -27,12 +27,12 @@ GENERATED_WORK_DIRS = {".codex-work", ".pnpm-store", "outputs", "reports"}
 
 REQUIRED_SURFACES = (
     "crates/devtools/awaken-reliability-testkit/src/lib.rs",
-    "crates/server/awaken-dispatch-testkit/src/conformance/reliability.rs",
-    "crates/stores/awaken-store-fs/tests/recovery.rs",
-    "crates/stores/awaken-store-sqlite/tests/failure_atomicity.rs",
-    "crates/stores/awaken-session-store/tests/process_crash_outbox.rs",
-    "crates/stores/awaken-credential-store/tests/process_crash_creation.rs",
-    "crates/control/awaken-config-store/tests/process_crash_audit.rs",
+    "crates/platform/dispatch/awaken-dispatch-testkit/src/conformance/reliability.rs",
+    "crates/platform/committed-truth/awaken-store-fs/tests/recovery.rs",
+    "crates/platform/committed-truth/awaken-store-sqlite/tests/failure_atomicity.rs",
+    "crates/platform/session/awaken-session-store/tests/process_crash_outbox.rs",
+    "crates/platform/credentials/awaken-credential-store/tests/process_crash_creation.rs",
+    "crates/platform/config/awaken-config-store/tests/process_crash_audit.rs",
     "e2e/managed_session_config_restart_e2e.mjs",
     "e2e/durable_soak_fairness_e2e.mjs",
     "scripts/ci/postgres_recovery_drill.sh",

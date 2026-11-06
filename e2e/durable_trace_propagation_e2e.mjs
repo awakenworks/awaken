@@ -8,7 +8,7 @@
 // disconnected trace and the operator would lose the causal link from "who asked"
 // to "what ran".
 //
-// The relay (crates/server/awaken-dispatch/src/worker.rs `drive_claimed`):
+// The relay (crates/platform/dispatch/awaken-dispatch/src/worker.rs `drive_claimed`):
 // the admitting request captures its context as a W3C `traceparent`
 // (`current_traceparent()`), persists it on the durable instruction, and the
 // worker rebuilds a `wake.dispatch` span whose REMOTE PARENT is that persisted

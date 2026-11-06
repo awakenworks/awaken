@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Every Managed wire type names its official SDK counterpart.
 
-`crates/server/awaken-protocol-managed/src/types` holds the native Managed
+`crates/platform/protocols/awaken-protocol-managed/src/types` holds the native Managed
 Agents transfer objects. Its module doc states the naming convention: Rust
 names are idiomatic and namespaced by resource module, and the exact SDK type
 is cited in backticks in each type's doc so the correspondence is one `rg`
@@ -37,12 +37,12 @@ from pathlib import Path
 # The owned corpus and data let `generate_hooks.py` render this checker's
 # trigger instead of maintaining it by hand.
 INPUT_GLOBS: tuple[str, ...] = (
-    "crates/server/awaken-protocol-managed/src/types/**/*.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/types/**/*.rs",
     "contracts/anthropic-managed/upstream-oracle.generated.json",
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TYPES_ROOT = REPO_ROOT / "crates/server/awaken-protocol-managed/src/types"
+TYPES_ROOT = REPO_ROOT / "crates/platform/protocols/awaken-protocol-managed/src/types"
 ORACLE = REPO_ROOT / "contracts/anthropic-managed/upstream-oracle.generated.json"
 
 TYPE_RE = re.compile(

@@ -244,7 +244,7 @@ def is_production_source(path: pathlib.Path) -> bool:
 
 
 # A `mod`/`use`/`extern crate` item states where code lives, not what this file
-# decides.  `crates/contract/awaken-agent-contract/src/audit/mod.rs` is six
+# decides.  `crates/sdk/contracts/awaken-agent-contract/src/audit/mod.rs` is six
 # `pub mod` lines and nothing else, yet it matched the `authorization` signal
 # purely because one declared module is named `permission`.  The head of such an
 # item is therefore blanked before matching.  The optional attribute prefix is
@@ -572,7 +572,7 @@ def main() -> None:
                 for item in obligations
                 if item["status"] == "kernel_proved"
                 or item.get("proof_harnesses")
-                or "crates/runtime/awaken-runtime/tests/formal_refinement.rs"
+                or "crates/sdk/runtime/awaken-runtime/tests/formal_refinement.rs"
                 in item.get("evidence", [])
             ]
             inventory.append(

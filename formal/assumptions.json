@@ -13,7 +13,7 @@
         {
           "kind": "metric",
           "name": "awaken_control_registration_pending_domains",
-          "path": "crates/bin/awaken-process-startup/src/process_admin.rs"
+          "path": "crates/apps/awaken-process-startup/src/process_admin.rs"
         }
       ],
       "status": "evidenced",
@@ -43,14 +43,14 @@
       "obligation": "external.exactly_once_side_effects",
       "kind": "external_effect",
       "integration_evidence": [
-        "crates/control/awaken-control/tests/webhook_plane.rs",
+        "crates/apps/awaken-control/tests/webhook_plane.rs",
         "crates/devtools/awaken-scenario-host/tests/webhook_live_session_e2e.rs"
       ],
       "runtime_evidence": [
         {
           "kind": "durable_state",
           "name": "pending_lifecycle",
-          "path": "crates/control/awaken-control/tests/webhook_plane.rs"
+          "path": "crates/apps/awaken-control/tests/webhook_plane.rs"
         }
       ],
       "status": "evidenced",
@@ -63,7 +63,7 @@
         "recovery_point_seconds": 0,
         "scope": "release_qualification_not_customer_sla",
         "drill_evidence": [
-          "crates/control/awaken-control/tests/webhook_plane.rs"
+          "crates/apps/awaken-control/tests/webhook_plane.rs"
         ]
       },
       "version_and_configuration_contract": "Remote effect endpoint, protocol revision and idempotency contract fingerprint.",
@@ -79,8 +79,8 @@
       "obligation": "external.database_engine_correctness",
       "kind": "infrastructure",
       "integration_evidence": [
-        "crates/stores/awaken-store-conformance/src/lib.rs",
-        "crates/stores/awaken-credential-store/tests/repo_conformance.rs",
+        "crates/platform/committed-truth/awaken-store-conformance/src/lib.rs",
+        "crates/platform/credentials/awaken-credential-store/tests/repo_conformance.rs",
         "e2e/managed_session_config_restart_e2e.mjs",
         "scripts/ci/postgres_recovery_drill.sh"
       ],
@@ -95,7 +95,7 @@
         "recovery_point_seconds": 0,
         "scope": "release_qualification_not_customer_sla",
         "drill_evidence": [
-          "crates/stores/awaken-store-sqlite/tests/failure_atomicity.rs",
+          "crates/platform/committed-truth/awaken-store-sqlite/tests/failure_atomicity.rs",
           "e2e/managed_session_config_restart_e2e.mjs",
           "scripts/ci/postgres_recovery_drill.sh"
         ]
@@ -132,13 +132,13 @@
       "kind": "liveness",
       "integration_evidence": [
         "e2e/credential_materialization_worker_e2e.ts",
-        "crates/control/awaken-credential-vault/tests/material_set_lifecycle.rs"
+        "crates/platform/credentials/awaken-credential-vault/tests/material_set_lifecycle.rs"
       ],
       "runtime_evidence": [
         {
           "kind": "state",
           "name": "credential_observations",
-          "path": "crates/contract/awaken-worker-contract/src/lib.rs"
+          "path": "crates/platform/dispatch/awaken-worker-contract/src/lib.rs"
         }
       ],
       "status": "evidenced",
@@ -168,14 +168,14 @@
       "kind": "liveness",
       "integration_evidence": [
         "e2e/acp_managed_mcp_e2e.mjs",
-        "crates/server/awaken-session-executor/src/host/tests/mcp_generation.rs",
+        "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_generation.rs",
         "formal/README.md"
       ],
       "runtime_evidence": [
         {
           "kind": "state",
           "name": "McpProjectionState::Draining",
-          "path": "crates/server/awaken-session-mcp/src/mcp/sessions.rs"
+          "path": "crates/platform/execution/awaken-session-mcp/src/mcp/sessions.rs"
         }
       ],
       "status": "evidenced",
@@ -189,7 +189,7 @@
         "scope": "release_qualification_not_customer_sla",
         "drill_evidence": [
           "e2e/acp_managed_mcp_e2e.mjs",
-          "crates/server/awaken-session-executor/src/host/tests/mcp_generation.rs"
+          "crates/platform/execution/awaken-session-executor/src/host/tests/mcp_generation.rs"
         ]
       },
       "version_and_configuration_contract": "ACP/MCP protocol version, process image and termination-policy fingerprint.",
@@ -205,8 +205,8 @@
       "obligation": "external.container_and_kernel_isolation",
       "kind": "infrastructure",
       "integration_evidence": [
-        "crates/worker/awaken-sandbox-kubernetes/tests/k8s_e2e.rs",
-        "crates/worker/awaken-sandbox-container/tests/docker_e2e.rs"
+        "crates/platform/sandbox/awaken-sandbox-kubernetes/tests/k8s_e2e.rs",
+        "crates/platform/sandbox/awaken-sandbox-container/tests/docker_e2e.rs"
       ],
       "runtime_evidence": [],
       "status": "evidenced",
@@ -219,8 +219,8 @@
         "recovery_point_seconds": 0,
         "scope": "release_qualification_not_customer_sla",
         "drill_evidence": [
-          "crates/worker/awaken-sandbox-kubernetes/tests/k8s_e2e.rs",
-          "crates/worker/awaken-sandbox-container/tests/docker_e2e.rs"
+          "crates/platform/sandbox/awaken-sandbox-kubernetes/tests/k8s_e2e.rs",
+          "crates/platform/sandbox/awaken-sandbox-container/tests/docker_e2e.rs"
         ]
       },
       "version_and_configuration_contract": "Linux kernel, container runtime, sandbox image and security-policy fingerprint.",
@@ -236,7 +236,7 @@
       "obligation": "external.orchestrator_correctness",
       "kind": "infrastructure",
       "integration_evidence": [
-        "crates/worker/awaken-sandbox-kubernetes/tests/k8s_it.rs",
+        "crates/platform/sandbox/awaken-sandbox-kubernetes/tests/k8s_it.rs",
         "e2e/remote_worker_recovery_e2e.ts"
       ],
       "runtime_evidence": [],
@@ -266,9 +266,9 @@
       "obligation": "external.async_runtime_synchronization_and_scheduling",
       "kind": "infrastructure",
       "integration_evidence": [
-        "crates/server/awaken-session-executor/src/installed_session/realization_permit.rs",
-        "crates/server/awaken-session-realization-driver/src/control_deadline.rs",
-        "crates/server/awaken-session-executor/src/host/tests/realization_renewal.rs"
+        "crates/platform/execution/awaken-session-executor/src/installed_session/realization_permit.rs",
+        "crates/platform/session/awaken-session-realization-driver/src/control_deadline.rs",
+        "crates/platform/execution/awaken-session-executor/src/host/tests/realization_renewal.rs"
       ],
       "runtime_evidence": [],
       "status": "evidenced",
@@ -281,7 +281,7 @@
         "recovery_point_seconds": 0,
         "scope": "release_qualification_not_customer_sla",
         "drill_evidence": [
-          "crates/server/awaken-session-executor/src/host/tests/realization_renewal.rs"
+          "crates/platform/execution/awaken-session-executor/src/host/tests/realization_renewal.rs"
         ]
       },
       "version_and_configuration_contract": "Rust standard library, Tokio runtime and operating-system scheduler exact versions and configuration fingerprint.",
@@ -304,7 +304,7 @@
         {
           "kind": "metric",
           "name": "awaken_dispatch_queue_depth",
-          "path": "crates/runtime/awaken-observability/src/metrics.rs"
+          "path": "crates/sdk/support/awaken-observability/src/metrics.rs"
         }
       ],
       "status": "evidenced",
@@ -341,7 +341,7 @@
         {
           "kind": "log",
           "name": "OTLP tracer init failed; continuing without trace export",
-          "path": "crates/runtime/awaken-observability/src/otel.rs"
+          "path": "crates/sdk/support/awaken-observability/src/otel.rs"
         }
       ],
       "status": "evidenced",

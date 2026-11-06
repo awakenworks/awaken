@@ -3,22 +3,23 @@
     "name": "sqlite_file_update_child_killed_inside_its_transaction_rolls_back_and_retries_once",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 594,
-        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93"
+        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
+        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:594"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 524
       },
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 536
       },
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 541
       }
     ],
@@ -52,22 +53,23 @@
     "name": "sqlite_file_archive_child_killed_inside_its_transaction_rolls_back_and_retries_once",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 603,
-        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93"
+        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
+        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:603"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 524
       },
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 536
       },
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 541
       }
     ],
@@ -101,14 +103,15 @@
     "name": "postgres_update_aborted_inside_its_transaction_fixture_admission",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 446,
-        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93"
+        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
+        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:446"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 447
       }
     ],
@@ -142,14 +145,15 @@
     "name": "postgres_update_child_killed_inside_its_transaction_fixture_admission",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 453,
-        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93"
+        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
+        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:453"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 454
       }
     ],
@@ -183,14 +187,15 @@
     "name": "postgres_archive_child_killed_inside_its_transaction_fixture_admission",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 460,
-        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93"
+        "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
+        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:460"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/cancellation.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
         "line": 461
       }
     ],
@@ -224,22 +229,23 @@
     "name": "file_sqlite_backend_conforms_with_a_fresh_file_per_rule",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/env_registry_parity.rs",
         "line": 50,
-        "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557"
+        "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557",
+        "relocated_from": "crates/stores/awaken-env-store/tests/env_registry_parity.rs:50"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-store-conformance/src/env_registry.rs",
+        "path": "crates/platform/committed-truth/awaken-store-conformance/src/env_registry.rs",
         "line": 56
       },
       {
-        "path": "crates/stores/awaken-store-conformance/src/env_registry.rs",
+        "path": "crates/platform/committed-truth/awaken-store-conformance/src/env_registry.rs",
         "line": 58
       },
       {
-        "path": "crates/stores/awaken-store-conformance/src/env_registry.rs",
+        "path": "crates/platform/committed-truth/awaken-store-conformance/src/env_registry.rs",
         "line": 59
       }
     ],
@@ -273,14 +279,15 @@
     "name": "file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/env_registry_parity.rs",
         "line": 68,
-        "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557"
+        "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557",
+        "relocated_from": "crates/stores/awaken-env-store/tests/env_registry_parity.rs:68"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/env_registry_parity.rs",
         "line": 86
       }
     ],
@@ -314,14 +321,15 @@
     "name": "divergent_backends_fail_the_shared_behaviour_table",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/env_registry_parity.rs",
         "line": 206,
-        "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557"
+        "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557",
+        "relocated_from": "crates/stores/awaken-env-store/tests/env_registry_parity.rs:206"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/env_registry_parity.rs",
         "line": 211
       }
     ],
@@ -355,14 +363,15 @@
     "name": "postgres_reopen_preserves_authority_through_an_independent_pool",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/env_registry_parity.rs",
         "line": 233,
-        "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557"
+        "file_sha256": "3a0a02d92ff403de2eb1619b8f2792b46e72da5ef8e85450667de780eb53d557",
+        "relocated_from": "crates/stores/awaken-env-store/tests/env_registry_parity.rs:233"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-env-store/tests/env_registry_parity.rs",
+        "path": "crates/platform/environment/awaken-env-store/tests/env_registry_parity.rs",
         "line": 243
       }
     ],
@@ -396,18 +405,19 @@
     "name": "file_sqlite_backend_conforms_with_a_fresh_file_per_rule",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/session_store_parity.rs",
         "line": 69,
-        "file_sha256": "8364e13619891a1e023978ff6aa3cdd39d34c7d05ecb2708d96e6a1ca4d547ee"
+        "file_sha256": "8364e13619891a1e023978ff6aa3cdd39d34c7d05ecb2708d96e6a1ca4d547ee",
+        "relocated_from": "crates/stores/awaken-session-store/tests/session_store_parity.rs:69"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/session_store_parity.rs",
         "line": 81
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/session_store_parity.rs",
         "line": 85
       }
     ],
@@ -442,14 +452,15 @@
     "name": "file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/session_store_parity.rs",
         "line": 93,
-        "file_sha256": "8364e13619891a1e023978ff6aa3cdd39d34c7d05ecb2708d96e6a1ca4d547ee"
+        "file_sha256": "8364e13619891a1e023978ff6aa3cdd39d34c7d05ecb2708d96e6a1ca4d547ee",
+        "relocated_from": "crates/stores/awaken-session-store/tests/session_store_parity.rs:93"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/session_store_parity.rs",
         "line": 105
       }
     ],
@@ -483,14 +494,15 @@
     "name": "divergent_backends_fail_the_shared_behaviour_table",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/session_store_parity.rs",
         "line": 329,
-        "file_sha256": "8364e13619891a1e023978ff6aa3cdd39d34c7d05ecb2708d96e6a1ca4d547ee"
+        "file_sha256": "2ab04f28ae3ffc83af0f6f570a22b359b608b4dd95df0c194ce58fec40be11b3",
+        "relocated_from": "crates/stores/awaken-session-store/tests/session_store_parity.rs:319"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/session_store_parity.rs",
         "line": 334
       }
     ],
@@ -524,22 +536,23 @@
     "name": "postgres_reopen_preserves_authority_through_an_independent_pool",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/session_store_parity.rs",
         "line": 349,
-        "file_sha256": "8364e13619891a1e023978ff6aa3cdd39d34c7d05ecb2708d96e6a1ca4d547ee"
+        "file_sha256": "2ab04f28ae3ffc83af0f6f570a22b359b608b4dd95df0c194ce58fec40be11b3",
+        "relocated_from": "crates/stores/awaken-session-store/tests/session_store_parity.rs:339"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/session_store_parity.rs",
         "line": 359
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/session_store_parity.rs",
         "line": 364
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/session_store_parity.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/session_store_parity.rs",
         "line": 379
       }
     ],
@@ -573,18 +586,19 @@
     "name": "file_sqlite_backend_conforms_with_a_fresh_file_per_rule",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
         "line": 52,
-        "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312"
+        "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312",
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_parity.rs:52"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
         "line": 64
       },
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
         "line": 69
       }
     ],
@@ -619,18 +633,19 @@
     "name": "file_sqlite_reopen_preserves_authority_and_in_memory_reopen_is_detected",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
         "line": 76,
-        "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312"
+        "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312",
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_parity.rs:76"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-work-store/tests/work_queue_parity.rs",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
         "line": 93
       },
       {
-        "path": "crates/stores/awaken-store-conformance/src/work_queue.rs",
+        "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs",
         "line": 1779
       }
     ],

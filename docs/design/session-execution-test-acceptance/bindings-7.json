@@ -3,9 +3,10 @@
     "name": "restore_enabled_worker_with_unsupported_restoration_is_refused_at_construction",
     "source_locations": [
       {
-        "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
+        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs",
         "line": 313,
-        "file_sha256": "237ef0cca83e41c1a685489662e1a6fbb0b9ab1fa7aeba5474cd5c58cc9f8c12"
+        "file_sha256": "237ef0cca83e41c1a685489662e1a6fbb0b9ab1fa7aeba5474cd5c58cc9f8c12",
+        "relocated_from": "crates/bin/awaken-worker/src/tests/restore_capability.rs:313"
       }
     ],
     "execution_witnesses": [
@@ -35,15 +36,15 @@
     "id": "B146",
     "assertion_locations": [
       {
-        "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
+        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs",
         "line": 324
       },
       {
-        "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
+        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs",
         "line": 334
       },
       {
-        "path": "crates/bin/awaken-worker/src/tests/restore_capability.rs",
+        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs",
         "line": 335
       }
     ]
@@ -52,22 +53,23 @@
     "name": "foreign_instance_with_differing_identity_is_refused_and_logical_id_check_is_insufficient",
     "source_locations": [
       {
-        "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
         "line": 42,
-        "file_sha256": "bcba856be485cafff578214713ec64ac2fc781a2ec2aa11b933c4f0bbc298837"
+        "file_sha256": "bcba856be485cafff578214713ec64ac2fc781a2ec2aa11b933c4f0bbc298837",
+        "relocated_from": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs:42"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
         "line": 62
       },
       {
-        "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
         "line": 63
       },
       {
-        "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
         "line": 69
       }
     ],
@@ -101,9 +103,10 @@
     "name": "foreign_instance_with_equal_handle_cannot_rebind_another_providers_environment",
     "source_locations": [
       {
-        "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
         "line": 118,
-        "file_sha256": "f0f599c0302c0fa976dee6942eb1959b8a4be6c3ba4a6255ad405150da3eb462"
+        "file_sha256": "f0f599c0302c0fa976dee6942eb1959b8a4be6c3ba4a6255ad405150da3eb462",
+        "relocated_from": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs:118"
       }
     ],
     "execution_witnesses": [
@@ -133,15 +136,15 @@
     "id": "B148",
     "assertion_locations": [
       {
-        "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
         "line": 134
       },
       {
-        "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
         "line": 139
       },
       {
-        "path": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
         "line": 156
       }
     ]
@@ -150,22 +153,23 @@
     "name": "degraded_registration_health_is_observable_secret_free_and_leaks_are_detected",
     "source_locations": [
       {
-        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
         "line": 227,
-        "file_sha256": "9b59a782188a03b20ff91ec53a3dc6a9fda9c2dac4dbddc35d3d77fb76d2f809"
+        "file_sha256": "9b59a782188a03b20ff91ec53a3dc6a9fda9c2dac4dbddc35d3d77fb76d2f809",
+        "relocated_from": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs:227"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
         "line": 230
       },
       {
-        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
         "line": 231
       },
       {
-        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
         "line": 232
       }
     ],
@@ -199,9 +203,10 @@
     "name": "degraded_registration_diagnostics_never_contain_the_secret_canary",
     "source_locations": [
       {
-        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
         "line": 287,
-        "file_sha256": "39d6a6f6ec58704f4376d32a5010f1b33c511ade383a1e6695fc915cde4e9e55"
+        "file_sha256": "39d6a6f6ec58704f4376d32a5010f1b33c511ade383a1e6695fc915cde4e9e55",
+        "relocated_from": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs:287"
       }
     ],
     "execution_witnesses": [
@@ -231,11 +236,11 @@
     "id": "B150",
     "assertion_locations": [
       {
-        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
         "line": 289
       },
       {
-        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
         "line": 290
       }
     ]
@@ -244,9 +249,10 @@
     "name": "degraded_registration_diagnostics_carry_stable_code_identity_and_recovery",
     "source_locations": [
       {
-        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
         "line": 294,
-        "file_sha256": "39d6a6f6ec58704f4376d32a5010f1b33c511ade383a1e6695fc915cde4e9e55"
+        "file_sha256": "39d6a6f6ec58704f4376d32a5010f1b33c511ade383a1e6695fc915cde4e9e55",
+        "relocated_from": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs:294"
       }
     ],
     "execution_witnesses": [
@@ -276,15 +282,15 @@
     "id": "B151",
     "assertion_locations": [
       {
-        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
         "line": 296
       },
       {
-        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
         "line": 297
       },
       {
-        "path": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
         "line": 302
       }
     ]
@@ -293,22 +299,23 @@
     "name": "sqlite_independent_file_clients_have_one_cas_winner",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 80,
-        "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729"
+        "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729",
+        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:80"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 81
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 83
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 87
       }
     ],
@@ -344,22 +351,23 @@
     "name": "sqlite_shared_handle_serialises_before_the_database",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 136,
-        "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729"
+        "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729",
+        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:136"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 140
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 145
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 153
       }
     ],
@@ -395,22 +403,23 @@
     "name": "volatile_session_store_has_no_independent_clients",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 168,
-        "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729"
+        "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729",
+        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:168"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 175
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 178
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 181
       }
     ],
@@ -446,18 +455,19 @@
     "name": "postgres_independent_pools_have_one_cas_winner",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 367,
-        "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729"
+        "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729",
+        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:367"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 374
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 378
       }
     ],
@@ -493,18 +503,19 @@
     "name": "postgres_test_lock_serialisation_hides_database_contention",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 389,
-        "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729"
+        "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729",
+        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:389"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 400
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/independent_clients.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
         "line": 404
       }
     ],
@@ -540,14 +551,15 @@
     "name": "sqlite_independent_clients_consume_one_tool_ticket_at_most_once",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
         "line": 280,
-        "file_sha256": "a25008dfc7aa12faa5cc6d44f24e919cf5ff8dc07e867f07285a87ca849fd10b"
+        "file_sha256": "a25008dfc7aa12faa5cc6d44f24e919cf5ff8dc07e867f07285a87ca849fd10b",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs:280"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
         "line": 282
       }
     ],
@@ -582,22 +594,23 @@
     "name": "postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
         "line": 286,
-        "file_sha256": "a25008dfc7aa12faa5cc6d44f24e919cf5ff8dc07e867f07285a87ca849fd10b"
+        "file_sha256": "a25008dfc7aa12faa5cc6d44f24e919cf5ff8dc07e867f07285a87ca849fd10b",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs:286"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
         "line": 293
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
         "line": 298
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
         "line": 302
       }
     ],
@@ -633,22 +646,23 @@
     "name": "budget_paused_session_retains_ordinary_batches_without_execution",
     "source_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
         "line": 160,
-        "file_sha256": "59adaa1fb04d4f1299ee9ac7233b5ee850b7cb60cd118e5f0021350430f43fa6"
+        "file_sha256": "59adaa1fb04d4f1299ee9ac7233b5ee850b7cb60cd118e5f0021350430f43fa6",
+        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs:160"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
         "line": 168
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
         "line": 175
       },
       {
-        "path": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
         "line": 183
       }
     ],
@@ -682,22 +696,23 @@
     "name": "sqlite_mid_write_failure_rolls_back_the_whole_batch_transaction",
     "source_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
         "line": 596,
-        "file_sha256": "0da9d07ed53363251ee5a121e1f174913093021276403fb15629a88e5bea7be5"
+        "file_sha256": "0da9d07ed53363251ee5a121e1f174913093021276403fb15629a88e5bea7be5",
+        "relocated_from": "crates/stores/awaken-session-store/tests/pause_transaction.rs:596"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
         "line": 597
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
         "line": 602
       },
       {
-        "path": "crates/stores/awaken-session-store/tests/pause_transaction.rs",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
         "line": 611
       }
     ],

@@ -1,0 +1,1215 @@
+//! NamespaceProvider (ADR-0041 Slice 2, bubblewrap tier). The pure argv renderer
+//! is unit-tested in the crate; here we cover the provider's capabilities and
+//! fail-closed rules (no tool needed) plus a real bwrap exec proving path fidelity
+//! (gated on bwrap being usable, so CI without namespaces still passes).
+
+use std::sync::Arc;
+
+use awaken_provisioning_contract as pc;
+use awaken_provisioning_contract::{Sandbox, SandboxReadiness};
+mod common;
+use awaken_file_store::{FileStore, FsFileStore};
+use awaken_sandbox_local::NamespaceProvider;
+use common::sh_command as sh;
+use tokio::io::AsyncReadExt as _;
+
+fn spec(scope: &str) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        process_tree_supervision: false,
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Namespace,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        packages: Default::default(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
+        limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
+        lease_ttl_secs: None,
+        control_services: Default::default(),
+        environment: None,
+        command: Vec::new(),
+        deny_tool_egress: false,
+    }
+}
+
+/// Linux tests consume the provider's actual launch-profile observation.
+async fn bwrap_works() -> bool {
+    cfg!(target_os = "linux") && os_native_sandbox_works().await
+}
+
+/// Seatbelt-specific assertions run only on the platform that owns them.
+async fn seatbelt_works() -> bool {
+    cfg!(target_os = "macos") && os_native_sandbox_works().await
+}
+
+/// Reuse the one production readiness probe instead of a second, weaker argv
+/// profile. Production exercises runtime-directory descriptors and confinement;
+/// a raw user-namespace command observes a different host capability.
+async fn os_native_sandbox_works() -> bool {
+    let tmp = tempfile::tempdir().expect("readiness fixture");
+    NamespaceProvider::new(tmp.path())
+        .probe_ready()
+        .await
+        .is_ok()
+}
+
+#[tokio::test]
+async fn capabilities_are_tool_transparent_namespace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let caps = NamespaceProvider::new(tmp.path()).capabilities();
+    assert_eq!(caps.isolation, pc::IsolationClass::Namespace);
+    assert!(caps.tool_transparent, "bwrap tier may host opaque agents");
+    // Linux mount namespaces preserve virtual paths; macOS Seatbelt and the
+    // unavailable Windows native mechanism do not claim that path fidelity.
+    assert_eq!(caps.path_fidelity, cfg!(target_os = "linux"));
+    assert!(caps.enforced_readonly);
+    assert!(caps.network_isolation);
+    assert!(!caps.secret_egress_substitution);
+    assert!(!caps.resource_limits);
+    assert!(!caps.custom_rootfs);
+}
+
+#[tokio::test]
+async fn probe_ready_reflects_the_os_native_sandbox_availability() {
+    // Cause/effect table: C1 the actual production confinement profile runs;
+    // C2 the provider's probe reports ready. R1=C1+C2 -> an ordinary provider
+    // create/spawn/wait crosses that same profile and exits successfully;
+    // R2=!C1 -> typed Unsupported, no readiness claim. The existing probe unit
+    // tables cover missing/revoked/newly enabled launchers and bounded failure.
+    // Do not compare readiness with a separate raw user-namespace command or
+    // require memoization: every production observation is fresh.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    if let Err(error) = provider.probe_ready().await {
+        assert!(
+            matches!(error, pc::SandboxError::Unsupported(_)),
+            "R2 {error}"
+        );
+        return;
+    }
+    let sandbox = provider
+        .create_sandbox(&spec("native-readiness"))
+        .await
+        .expect("R1 create through the ready provider");
+    let (process, _channel) = sandbox
+        .spawn_agent(pc::Command::new(["/usr/bin/true"]))
+        .await
+        .expect("R1 ordinary confined launch");
+    assert_eq!(
+        process.wait().await.unwrap().code,
+        Some(0),
+        "R1 physical exit"
+    );
+    sandbox.dispose_unattached().await.unwrap();
+}
+
+#[tokio::test]
+async fn opaque_process_writes_to_the_artifact_scan_output_root() {
+    // Cause/effect graph: C1=Namespace sandbox is available; C2=the authoritative
+    // process launcher uses the reserved project/output paths; C3=artifact scan
+    // reads provider outputs.
+    // Effects: E1=PWD/project path is /workspace; E2=output write succeeds through
+    // the authoritative bind; E3=scan returns exactly those bytes.
+    //
+    // | Rule | C1 | C2 | C3 | Effects |
+    // | T1   | no  | -   | -   | gated skip (host lacks the OS primitive) |
+    // | T2   | yes | yes | yes | E1,E2,E3 |
+    if !os_native_sandbox_works().await {
+        eprintln!("skipping: OS-native sandbox unavailable");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let sandbox = NamespaceProvider::new(tmp.path())
+        .create_sandbox(&spec("t-native-tool-outputs"))
+        .await
+        .unwrap();
+    let (process, mut channel) = sandbox
+        .spawn_agent(pc::Command::new([
+            "/bin/sh",
+            "-c",
+            "test \"$PWD\" = \"$AWAKEN_PROJECT_DIR\" && printf staged > \"$AWAKEN_OUTPUTS_DIR/result.txt\"",
+        ]))
+        .await
+        .unwrap();
+    let mut stderr_free_output = String::new();
+    channel
+        .read_to_string(&mut stderr_free_output)
+        .await
+        .unwrap();
+    assert_eq!(process.wait().await.unwrap().code, Some(0), "T2/E1,E2");
+
+    let artifact = sandbox
+        .artifacts()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|artifact| artifact.path.ends_with("/result.txt"))
+        .expect("T2/E3 artifact");
+    assert_eq!(
+        sandbox.read_artifact(&artifact.id).await.unwrap(),
+        b"staged"
+    );
+    sandbox.dispose_unattached().await.unwrap();
+}
+
+/// Signal graph: C1=real Namespace; C2=opaque/ordinary spawn; C3=TERM/INT/KILL;
+/// C4=program handles or ignores soft signals. Rules for each C2:
+/// S1 TERM+handles and S2 INT+handles -> marker persisted, normal exit.
+/// S3 KILL -> no settlement marker, process ends. S4 TERM+ignores -> still
+/// running, then explicit KILL ends it. All rows also require the same confined
+/// output publication and post-exit signal acceptance. Ready is written only
+/// after traps are installed; no arbitrary SDK/file-flush delay can pass a row.
+/// C5 the child is still writing ready.txt between the independent artifact
+/// listing and content-addressed read; R0=C5 -> retry NotFound or incomplete
+/// bytes, never signal until an exact "ready" read succeeds.
+#[tokio::test]
+async fn namespace_signals_reach_the_program_and_preserve_forced_cleanup() {
+    if !os_native_sandbox_works().await {
+        eprintln!("skipping: OS-native sandbox unavailable");
+        return;
+    }
+    for opaque in [false, true] {
+        for (signal, ignores, settled) in [
+            (pc::Signal::Term, false, true),
+            (pc::Signal::Int, false, true),
+            (pc::Signal::Kill, false, false),
+            (pc::Signal::Term, true, false),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let sandbox = NamespaceProvider::new(tmp.path())
+                .create_sandbox(&spec("t-graceful-signal"))
+                .await
+                .unwrap();
+            let handler = if ignores {
+                "trap '' TERM INT"
+            } else {
+                "trap 'printf settled > \"$AWAKEN_OUTPUTS_DIR/settled.txt\"; exit 0' TERM INT"
+            };
+            let command = sh(format!(
+                "{handler}; printf ready > \"$AWAKEN_OUTPUTS_DIR/ready.txt\"; while :; do sleep 1; done"
+            ));
+            let (process, _channel) = if opaque {
+                let (process, channel) = sandbox.spawn_agent(command).await.unwrap();
+                (process, Some(channel))
+            } else {
+                (sandbox.spawn(command).await.unwrap(), None)
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let files = sandbox.artifacts().await.unwrap();
+                    if let Some(file) = files.iter().find(|file| file.path.ends_with("/ready.txt"))
+                    {
+                        match sandbox.read_artifact(&file.id).await {
+                            Ok(bytes) if bytes == b"ready" => break,
+                            Ok(_) | Err(pc::SandboxError::NotFound(_)) => {}
+                            Err(error) => panic!("ready artifact observation failed: {error}"),
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            // S5 every S1-S4 row first cancels an entered wait, then keeps a
+            // second wait pending across signal delivery. Neither observer may
+            // consume exit ownership or block poll; exact signal/artifact
+            // outcomes remain checked below for ordinary and opaque launches.
+            let mut cancelled_wait = Box::pin(process.wait());
+            std::future::poll_fn(|cx| {
+                assert!(cancelled_wait.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), process.poll())
+                    .await
+                    .expect("S5 poll stays available during wait")
+                    .unwrap()
+                    .is_none()
+            );
+            drop(cancelled_wait);
+            let mut concurrent_wait = Box::pin(process.wait());
+            std::future::poll_fn(|cx| {
+                assert!(concurrent_wait.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            process.signal(signal).await.unwrap();
+            let remained_live = if ignores {
+                tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                let live = process.poll().await.unwrap().is_none();
+                process.signal(pc::Signal::Kill).await.unwrap();
+                live
+            } else {
+                true
+            };
+            let status =
+                tokio::time::timeout(std::time::Duration::from_secs(5), concurrent_wait).await;
+            if status.is_err() {
+                process.signal(pc::Signal::Kill).await.unwrap();
+                process.wait().await.unwrap();
+            }
+            let artifacts = sandbox.artifacts().await.unwrap();
+            let marker = if let Some(file) = artifacts
+                .iter()
+                .find(|file| file.path.ends_with("/settled.txt"))
+            {
+                Some(sandbox.read_artifact(&file.id).await.unwrap())
+            } else {
+                None
+            };
+            process.signal(pc::Signal::Term).await.unwrap();
+            sandbox.dispose_unattached().await.unwrap();
+            assert!(
+                remained_live,
+                "S4 ignores TERM until explicit KILL; opaque={opaque}"
+            );
+            assert_eq!(
+                marker.as_deref(),
+                settled.then_some(b"settled".as_slice()),
+                "opaque={opaque}, signal={signal:?}, ignores={ignores}, process={}, wait={status:?}",
+                process.id()
+            );
+            let status = status.unwrap().unwrap();
+            if settled {
+                assert_eq!(status.code, Some(0));
+            } else {
+                assert_ne!(status.code, Some(0));
+            }
+        }
+    }
+}
+
+/// Real npm closure graph: N1 an executable inside a scoped package imports a
+/// hoisted sibling; N2 it tries writing that dependency; N3 it reads a sibling
+/// outside node_modules; N4 it writes a Session output. With Linux isolation
+/// and Node available: N1 succeeds, N2/N3 fail, N4 succeeds. No network/model
+/// fixture can substitute for these physical mount assertions. Other hosts
+/// retain the pure cross-platform renderer coverage in namespace/tests.rs.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn npm_agent_loads_hoisted_dependencies_with_read_only_runtime_boundary() {
+    use std::os::unix::fs::PermissionsExt as _;
+    if !bwrap_works().await {
+        eprintln!("skipping: bwrap/userns unavailable on this host");
+        return;
+    }
+    if !tokio::process::Command::new("node")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|status| status.success())
+    {
+        eprintln!("skipping: Node runtime unavailable on this host");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let install = tmp.path().join("installation");
+    let modules = install.join("node_modules");
+    let package = modules.join("@fixture/acp/dist");
+    let dependency = modules.join("@fixture/sdk");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::create_dir_all(&dependency).unwrap();
+    std::fs::write(
+        dependency.join("package.json"),
+        r#"{"type":"module","exports":"./index.js"}"#,
+    )
+    .unwrap();
+    std::fs::write(dependency.join("index.js"), "export default 'hoisted-sdk';").unwrap();
+    std::fs::write(install.join("private.txt"), "outside runtime").unwrap();
+    let entry = package.join("index.mjs");
+    std::fs::write(&entry, r#"#!/usr/bin/env node
+import sdk from '@fixture/sdk';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const modules = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+assert.equal(sdk, 'hoisted-sdk');
+assert.throws(() => fs.writeFileSync(path.join(modules, '@fixture/sdk/index.js'), 'changed'), {code:'EROFS'});
+assert.equal(fs.existsSync(path.join(modules, '../private.txt')), false);
+fs.writeFileSync(path.join(process.env.AWAKEN_OUTPUTS_DIR, 'result.txt'), sdk);
+console.log('dependency-loaded;runtime-readonly;parent-hidden');
+"#).unwrap();
+    std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let sandbox = NamespaceProvider::new(tmp.path().join("sandboxes"))
+        .create_sandbox(&spec("npm-runtime-boundary"))
+        .await
+        .unwrap();
+    let mut command = pc::Command::new([entry.to_string_lossy().as_ref()]);
+    command.env.push(pc::EnvVar {
+        name: "PATH".into(),
+        value: pc::EnvValue::Inline {
+            value: std::env::var("PATH").unwrap(),
+        },
+        visibility: pc::EnvVisibility::Process,
+    });
+    let (process, mut channel) = sandbox.spawn_agent(command).await.unwrap();
+    let mut output = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        channel.read_to_string(&mut output),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        process.wait().await.unwrap().code,
+        Some(0),
+        "N1-N4: {output}"
+    );
+    assert_eq!(
+        output.trim(),
+        "dependency-loaded;runtime-readonly;parent-hidden"
+    );
+    let artifacts = sandbox.artifacts().await.unwrap();
+    assert_eq!(artifacts.len(), 1, "N4");
+    assert_eq!(
+        sandbox.read_artifact(&artifacts[0].id).await.unwrap(),
+        b"hoisted-sdk"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dependency.join("index.js")).unwrap(),
+        "export default 'hoisted-sdk';",
+        "N2"
+    );
+    sandbox.dispose_unattached().await.unwrap();
+}
+
+#[tokio::test]
+async fn seatbelt_enforces_files_env_cwd_and_outputs_on_macos() {
+    if !seatbelt_works().await {
+        eprintln!("skipping: Seatbelt/sandbox-exec unavailable (non-macOS)");
+        return;
+    }
+    // A real existing user/repository file outside the sandbox roots. Avoid /var/folders:
+    // Apple's imported system profile deliberately grants some runtime reads there.
+    let outside_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../Cargo.toml")
+        .canonicalize()
+        .unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut sandbox_spec = spec("t-seatbelt");
+    sandbox_spec.env.push(pc::EnvVar {
+        name: "BASE_VALUE".into(),
+        value: pc::EnvValue::Inline {
+            value: "from-spec".into(),
+        },
+        visibility: pc::EnvVisibility::Process,
+    });
+    sandbox_spec.mounts.push(pc::MountRequirement {
+        mount_id: "readonly".into(),
+        source: pc::MountSource::Inline {
+            contents: "seed".into(),
+        },
+        mount_path: "/workspace/sub/input.txt".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    let sandbox = NamespaceProvider::new(tmp.path())
+        .create_sandbox(&sandbox_spec)
+        .await
+        .unwrap();
+
+    // Known sandbox paths in argv/cwd are translated to their host realization;
+    // literal env and the reserved project/output paths are inherited by the child.
+    let mut command = pc::Command::new([
+        "/bin/sh",
+        "-c",
+        "test \"$BASE_VALUE\" = from-spec && test \"$CMD_VALUE\" = from-command && \
+         test -f ./input.txt",
+    ]);
+    command.cwd = "/workspace/sub".into();
+    command.env.push(pc::EnvVar {
+        name: "CMD_VALUE".into(),
+        value: pc::EnvValue::Inline {
+            value: "from-command".into(),
+        },
+        visibility: pc::EnvVisibility::Process,
+    });
+    command.stdio = pc::Stdio::Null;
+    let proc = sandbox.spawn(command).await.unwrap();
+    assert_eq!(proc.wait().await.unwrap().code, Some(0));
+
+    let mut copy = pc::Command::new([
+        "/bin/sh",
+        "-c",
+        "/bin/cat \"$1\" > \"$AWAKEN_OUTPUTS_DIR/copy.txt\"",
+        "seatbelt-copy",
+        "/workspace/sub/input.txt",
+    ]);
+    copy.stdio = pc::Stdio::Null;
+    let copy = sandbox.spawn(copy).await.unwrap();
+    assert_eq!(copy.wait().await.unwrap().code, Some(0));
+    let artifact = sandbox
+        .artifacts()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|artifact| artifact.path.ends_with("/copy.txt"))
+        .unwrap();
+    assert_eq!(sandbox.read_artifact(&artifact.id).await.unwrap(), b"seed");
+
+    let mut outside_read = pc::Command::new(["/bin/cat", outside_file.to_str().unwrap()]);
+    outside_read.stdio = pc::Stdio::Null;
+    let outside_read = sandbox.spawn(outside_read).await.unwrap();
+    assert_ne!(outside_read.wait().await.unwrap().code, Some(0));
+
+    // The read-only mount lives below the otherwise-writable workspace; its
+    // specific Seatbelt deny must still win.
+    let mut write = pc::Command::new([
+        "/bin/sh",
+        "-c",
+        "printf changed > \"$1\"",
+        "seatbelt-ro",
+        "/workspace/sub/input.txt",
+    ]);
+    write.stdio = pc::Stdio::Null;
+    let write = sandbox.spawn(write).await.unwrap();
+    assert_ne!(write.wait().await.unwrap().code, Some(0));
+    sandbox.dispose_unattached().await.unwrap();
+}
+
+#[tokio::test]
+async fn seatbelt_enforces_none_and_unrestricted_network_on_macos() {
+    if !seatbelt_works().await {
+        eprintln!("skipping: Seatbelt/sandbox-exec unavailable (non-macOS)");
+        return;
+    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    let tmp = tempfile::tempdir().unwrap();
+
+    let mut denied_spec = spec("t-seatbelt-net-none");
+    denied_spec.network = pc::NetworkPolicy::None;
+    let denied = NamespaceProvider::new(tmp.path())
+        .create_sandbox(&denied_spec)
+        .await
+        .unwrap();
+    let denied_probe = denied
+        .spawn(pc::Command::new(["/usr/bin/nc", "-z", "127.0.0.1", &port]))
+        .await
+        .unwrap();
+    assert_ne!(denied_probe.wait().await.unwrap().code, Some(0));
+    denied.dispose_unattached().await.unwrap();
+
+    let allowed = NamespaceProvider::new(tmp.path())
+        .create_sandbox(&spec("t-seatbelt-net-open"))
+        .await
+        .unwrap();
+    let allowed_probe = allowed
+        .spawn(pc::Command::new(["/usr/bin/nc", "-z", "127.0.0.1", &port]))
+        .await
+        .unwrap();
+    assert_eq!(allowed_probe.wait().await.unwrap().code, Some(0));
+    allowed.dispose_unattached().await.unwrap();
+}
+
+#[tokio::test]
+async fn dispose_reaps_and_shreds_a_secret_mounted_sandbox() {
+    // Ungated: create/realize/dispose need no bwrap (only spawn does). Exercises the
+    // secret-path capture in realize_layout and the shred-then-reap in dispose.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = spec("t-sec");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "auth".into(),
+        source: pc::MountSource::Secret {
+            reference: "broker://k".into(),
+            content_hash: None,
+        },
+        mount_path: "/workspace/.auth".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    let provider =
+        NamespaceProvider::new(tmp.path()).with_blob("broker://k", b"sk-secret".to_vec());
+    let sandbox = provider.create_sandbox(&s).await.unwrap();
+    assert_eq!(sandbox.realized().len(), 1);
+    sandbox.dispose_unattached().await.unwrap();
+    assert!(matches!(
+        sandbox.status().await.unwrap(),
+        pc::SandboxStatus::Terminated
+    ));
+}
+
+/// The key namespace invariant: a host path OUTSIDE the declared binds is INVISIBLE
+/// inside the bwrap namespace. The existing gated tests only prove declared binds are
+/// PRESENT and ro-binds reject writes — nothing proves non-bound paths are hidden. Here
+/// an unbound host file (in a second tempdir under `/tmp`, which the namespace shadows
+/// with a fresh tmpfs) cannot be read from inside, while `/workspace` (a declared bind)
+/// can — so a leak would flip the assertion. Gated on bwrap (exec-side).
+#[tokio::test]
+async fn an_unbound_host_path_is_invisible_inside_the_namespace() {
+    if !bwrap_works().await {
+        eprintln!("skipping: bwrap/userns unavailable on this host");
+        return;
+    }
+    // A secret on the host, deliberately NOT under the sandbox base nor any bind.
+    let outside = tempfile::tempdir().unwrap();
+    let secret = outside.path().join("host-secret.txt");
+    std::fs::write(&secret, "HOST-ONLY-SECRET").unwrap();
+    let secret_abs = secret.to_string_lossy().into_owned();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    let sandbox = provider.create(&spec("t-invisible")).await.unwrap();
+
+    // Inside the namespace: try to read the unbound host path (must be HIDDEN) and
+    // confirm the declared `/workspace` bind IS visible (contrast — proves a real leak
+    // would be caught, not masked by a broken probe).
+    let script = format!(
+        "{{ cat '{secret_abs}' >/dev/null 2>&1 && echo LEAK || echo HIDDEN; \
+          test -d /workspace && echo WS-OK || echo WS-MISSING; }} \
+          > /mnt/session/outputs/vis.txt"
+    );
+    let proc = sandbox.spawn(sh(&script)).await.unwrap();
+    assert_eq!(proc.wait().await.unwrap().code, Some(0));
+
+    let arts = sandbox.artifacts().await.unwrap();
+    let vis = arts
+        .iter()
+        .find(|a| a.path.ends_with("/vis.txt"))
+        .expect("vis.txt artifact");
+    let body = String::from_utf8(sandbox.read_artifact(&vis.id).await.unwrap()).unwrap();
+    assert!(
+        body.contains("HIDDEN") && !body.contains("LEAK"),
+        "an unbound host path must be invisible inside the namespace: {body}"
+    );
+    assert!(
+        body.contains("WS-OK"),
+        "the declared /workspace bind must be visible (contrast): {body}"
+    );
+
+    // And the bytes never leaked out either: the outputs file holds no secret content.
+    assert!(
+        !body.contains("HOST-ONLY-SECRET"),
+        "the host secret's bytes must never appear inside: {body}"
+    );
+    sandbox.dispose_unattached().await.unwrap();
+}
+
+/// Ungated companion to `dispose_reaps_and_shreds_a_secret_mounted_sandbox`: prove the
+/// credential bytes are actually ZEROED (not merely unlinked) before the tree is reaped.
+#[tokio::test]
+async fn dispose_zeroes_the_credential_bytes_before_reaping() {
+    // Cause/effect decision table: C1 the exact secret is one unaliased regular
+    // file; C2 an already-open descriptor observes that inode without adding a
+    // directory alias. R1 C1+C2 => disposal overwrites the full credential,
+    // fsyncs it, and only then reaps the tree; the retained descriptor reads the
+    // zero bytes. A hard-linked target is the distinct fail-closed R2 rule in
+    // sandbox-fs and must never be introduced merely as a test observer.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = spec("t-shred-zero");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "auth".into(),
+        source: pc::MountSource::Secret {
+            reference: "broker://k".into(),
+            content_hash: None,
+        },
+        mount_path: "/workspace/.auth".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    let provider =
+        NamespaceProvider::new(tmp.path()).with_blob("broker://k", b"sk-secret".to_vec());
+    let sandbox = provider.create(&s).await.unwrap();
+
+    // The realized credential path (root layout: <base>/<scope>/workspace/.auth).
+    let secret = tmp.path().join("t-shred-zero/workspace/.auth");
+    assert_eq!(std::fs::read(&secret).unwrap(), b"sk-secret");
+    let mut observer = std::fs::File::open(&secret).unwrap();
+
+    sandbox.dispose_unattached().await.unwrap();
+
+    // The directory entry is gone, but the retained descriptor proves the bytes
+    // were overwritten with zeros in place — a shred, not just an unlink.
+    assert!(!secret.exists(), "the sandbox tree was reaped");
+    let mut observed = Vec::new();
+    std::io::Read::read_to_end(&mut observer, &mut observed).unwrap();
+    assert_eq!(
+        observed,
+        vec![0u8; 9],
+        "the credential bytes must be zeroed before reap, not merely unlinked"
+    );
+}
+
+#[tokio::test]
+async fn host_allowlist_egress_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut spec = spec("t-net");
+    spec.network = pc::NetworkPolicy::Allowlist {
+        hosts: vec!["api.anthropic.com".into()],
+    };
+    // bwrap can share/unshare net but not enforce a host allowlist → fail closed.
+    assert!(
+        NamespaceProvider::new(tmp.path())
+            .create(&spec)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn unsupported_cache_and_limits_fail_closed() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let mut cache = spec("t-cache-unsupported");
+    cache.mounts.push(pc::MountRequirement {
+        mount_id: "cache".into(),
+        source: pc::MountSource::CacheVolume {
+            location: pc::CacheVolumeLocation::HostPath {
+                path: tmp.path().join("cache").to_string_lossy().into_owned(),
+            },
+            key: "cache-key".into(),
+        },
+        mount_path: "/workspace/cache".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: false,
+    });
+    assert!(
+        NamespaceProvider::new(tmp.path())
+            .create(&cache)
+            .await
+            .is_err()
+    );
+
+    let mut limits = spec("t-limits-unsupported");
+    limits.limits.memory_bytes = Some(1024);
+    assert!(
+        NamespaceProvider::new(tmp.path())
+            .create(&limits)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn bwrap_exec_has_path_fidelity_and_collects_outputs() {
+    if !bwrap_works().await {
+        eprintln!("skipping: bwrap/userns unavailable on this host");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    let sandbox = provider.create(&spec("t-bwrap")).await.unwrap();
+
+    // /mnt/session/outputs is a REAL absolute path inside the sandbox (fidelity).
+    let proc = sandbox
+        .spawn(sh("printf hi > /mnt/session/outputs/o.txt"))
+        .await
+        .unwrap();
+    assert_eq!(proc.wait().await.unwrap().code, Some(0));
+
+    let arts = sandbox.artifacts().await.unwrap();
+    assert_eq!(arts.len(), 1);
+    assert!(arts[0].path.ends_with("/o.txt"));
+    assert_eq!(sandbox.read_artifact(&arts[0].id).await.unwrap(), b"hi");
+    sandbox.dispose_unattached().await.unwrap();
+}
+
+#[tokio::test]
+async fn bwrap_read_only_mount_is_enforced() {
+    if !bwrap_works().await {
+        eprintln!("skipping: bwrap/userns unavailable on this host");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path()).with_blob("f", b"seed".to_vec());
+    let mut spec = spec("t-ro");
+    spec.mounts.push(pc::MountRequirement {
+        mount_id: "in".into(),
+        source: pc::MountSource::File {
+            file_id: "f".into(),
+            content_hash: None,
+        },
+        mount_path: "/data/in.txt".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    let sandbox = provider.create(&spec).await.unwrap();
+
+    // Read succeeds; write to the read-only bind fails at the OS.
+    let read = sandbox
+        .spawn(sh("cat /data/in.txt > /mnt/session/outputs/copy.txt"))
+        .await
+        .unwrap();
+    assert_eq!(read.wait().await.unwrap().code, Some(0));
+    let arts = sandbox.artifacts().await.unwrap();
+    let copy = arts.iter().find(|a| a.path.ends_with("/copy.txt")).unwrap();
+    assert_eq!(sandbox.read_artifact(&copy.id).await.unwrap(), b"seed");
+
+    let write = sandbox
+        .spawn(sh("echo mutate > /data/in.txt"))
+        .await
+        .unwrap();
+    assert_ne!(
+        write.wait().await.unwrap().code,
+        Some(0),
+        "read-only bind must reject writes"
+    );
+    sandbox.dispose_unattached().await.unwrap();
+}
+
+// ── Non-gated: realization + lifecycle without executing a process (no bwrap) ──
+
+#[tokio::test]
+async fn create_realizes_env_and_lifecycle_without_executing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    let sandbox = provider.create(&spec("t-nx")).await.unwrap();
+
+    assert_eq!(sandbox.id(), "t-nx");
+    let handle = sandbox.handle();
+    assert_eq!(
+        handle.provider_kind(),
+        if cfg!(target_os = "macos") {
+            "seatbelt"
+        } else {
+            "bubblewrap"
+        }
+    );
+    assert!(matches!(
+        sandbox.status().await.unwrap(),
+        pc::SandboxStatus::Ready
+    ));
+    assert!(sandbox.artifacts().await.unwrap().is_empty());
+    assert!(sandbox.read_artifact("nope").await.is_err());
+    assert!(sandbox.realized().is_empty());
+    assert!(sandbox.renew_lease().await.is_ok());
+
+    // Runtime attach / process reattach are not offered by this local tier.
+    let req = pc::MountRequirement {
+        mount_id: "late".into(),
+        source: pc::MountSource::CacheVolume {
+            location: pc::CacheVolumeLocation::HostPath {
+                path: "/unsupported/late-cache".into(),
+            },
+            key: "late-cache".into(),
+        },
+        mount_path: "/data/late".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::PerRun,
+        required: false,
+    };
+    assert!(sandbox.attach(req).await.is_err());
+    assert!(sandbox.process("p").await.is_err());
+
+    sandbox.dispose_unattached().await.unwrap();
+    assert!(matches!(
+        sandbox.status().await.unwrap(),
+        pc::SandboxStatus::Terminated
+    ));
+}
+
+#[tokio::test]
+async fn adopt_reconnects_from_a_persisted_handle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    let handle = provider.create(&spec("t-adopt")).await.unwrap().handle();
+    let wire = serde_json::to_string(&handle).unwrap();
+    let recovered: pc::SandboxHandle = serde_json::from_str(&wire).unwrap();
+    let adopted = provider.adopt(&recovered).await.unwrap();
+    assert_eq!(adopted.id(), "t-adopt");
+    assert!(matches!(
+        adopted.status().await.unwrap(),
+        pc::SandboxStatus::Ready
+    ));
+}
+
+#[tokio::test]
+async fn adopted_namespace_reader_preserves_future_restoration_exactly() {
+    // Provider reader rule R12: C1 an existing namespace tree and C2 a future
+    // complete Some handle reach Phase A. C1+C2 => E1 no restore is activated
+    // and E2 the adopted wrapper returns the exact durable handle unchanged.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path());
+    let created = provider.create(&spec("t-reader-adopt")).await.unwrap();
+    let future = common::add_future_restoration(&created.handle());
+    drop(created);
+    drop(provider);
+    let replacement = NamespaceProvider::new(tmp.path());
+    let adopted = replacement.adopt(&future).await.unwrap();
+    assert_eq!(adopted.handle(), future, "R12/E2");
+}
+
+#[tokio::test]
+async fn namespace_provider_rejects_future_host_bind_before_filesystem_effects() {
+    // Unsupported-provider rule R15: C1 a HostBind container locator reaches the
+    // namespace reader. C1 => E1 reject before root discovery or process/status
+    // work and E2 leave the provider root absent.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("namespace-root");
+    let provider = NamespaceProvider::new(&root);
+    assert!(
+        provider
+            .adopt(&common::future_host_bind_handle())
+            .await
+            .is_err(),
+        "R15/E1"
+    );
+    assert!(!root.exists(), "R15/E2");
+}
+
+#[tokio::test]
+async fn file_store_mount_is_realized_as_a_bind() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Arc::new(FsFileStore::open(tmp.path().join("blobs")).await.unwrap());
+    let id = store.put(b"seed-bytes").await.unwrap();
+    let provider = NamespaceProvider::new(tmp.path().join("envs"))
+        .with_blob_source(common::blob_source(store));
+    let mut spec = spec("t-fs");
+    spec.mounts.push(pc::MountRequirement {
+        mount_id: "in".into(),
+        source: pc::MountSource::File {
+            file_id: id.clone(),
+            content_hash: Some(id.clone()),
+        },
+        mount_path: "/data/in.txt".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    let sandbox = provider.create(&spec).await.unwrap();
+    assert_eq!(sandbox.realized().len(), 1);
+    assert_eq!(sandbox.realized()[0].realization, pc::Realization::Bind);
+    assert_eq!(
+        sandbox.realized()[0].content_hash.as_deref(),
+        Some(id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn content_hash_mismatch_and_all_or_nothing() {
+    // Mount-realization cause/effect table: C1 source bytes match/mismatch the
+    // declared digest; C2 every required source resolves/one is absent; C3 a
+    // Memory mount guard was acquired before a later failure. R1 match+all
+    // required => publish one complete layout; R2 mismatch or missing required
+    // => publish none and reap the exact root; R3 acquired Memory guard+later
+    // failure => retain that guard with its materialization evidence until
+    // compensation finishes. This test exercises R2; Memory lifecycle tests
+    // exercise the coupled guard/evidence success and teardown paths in R1/R3.
+    let tmp = tempfile::tempdir().unwrap();
+    // mismatch
+    let mut spec = spec("t-hash");
+    spec.mounts.push(pc::MountRequirement {
+        mount_id: "in".into(),
+        source: pc::MountSource::File {
+            file_id: "f".into(),
+            content_hash: Some("0000000000000000".into()),
+        },
+        mount_path: "/data/in".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    let provider = NamespaceProvider::new(tmp.path()).with_blob("f", b"real".to_vec());
+    assert!(provider.create(&spec).await.is_err());
+
+    // all-or-nothing: a failed required mount reaps the env
+    let mut spec2 = spec2_missing_required();
+    spec2.scope = "t-aon".into();
+    assert!(
+        NamespaceProvider::new(tmp.path())
+            .create(&spec2)
+            .await
+            .is_err()
+    );
+    assert!(!tmp.path().join("t-aon").exists());
+}
+
+fn spec2_missing_required() -> pc::SandboxSpec {
+    let mut s = spec("x");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "missing".into(),
+        source: pc::MountSource::File {
+            file_id: "absent".into(),
+            content_hash: None,
+        },
+        mount_path: "/data/x".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::PerRun,
+        required: true,
+    });
+    s
+}
+
+#[tokio::test]
+async fn memory_store_realizes_as_copy_and_harvests_on_dispose() {
+    use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
+    use awaken_sandbox_memoryd::MemoryStoreMounter;
+
+    let fs = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
+    fs.create("s", "/note.md", "v1").await.unwrap();
+    // The bwrap tier cannot splice a host FUSE into its namespace yet (ADR-0053
+    // item 2), so it uses a copy-only mounter: materialize on create, harvest on
+    // dispose. This is deterministic regardless of /dev/fuse on the host.
+    let mounter = Arc::new(MemoryStoreMounter::copy_only(fs.clone()));
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path()).with_memory_mounter(mounter);
+
+    let mut s = spec("t-nsmem");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "mem".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "s".into(),
+            materialization_reference: None,
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/workspace/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Durable,
+        required: true,
+    });
+
+    let sandbox = provider.create(&s).await.unwrap();
+    assert_eq!(sandbox.realized()[0].realization, pc::Realization::Copy);
+
+    // The materialized file is present and binds into the namespace layout.
+    let note = tmp.path().join("t-nsmem/workspace/memory/note.md");
+    assert_eq!(std::fs::read_to_string(&note).unwrap(), "v1");
+
+    // Edit + dispose → harvested back to the durable store.
+    std::fs::write(&note, "v2").unwrap();
+    sandbox.dispose_unattached().await.unwrap();
+    assert_eq!(
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "s", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("v2"),
+    );
+}
+
+#[tokio::test]
+async fn bwrap_multiple_memory_store_access_and_parent_boundary_are_enforced() {
+    // Cause/effect graph: C1=bwrap is available; C2=two Stores are mounted at
+    // distinct children of `/mnt/memory`; C3=one is ReadOnly and one ReadWrite.
+    // Effects: E1=both seeds are readable; E2=writing inside the RO Store fails;
+    // E3=writing inside the RW Store succeeds and harvests; E4=writing to the
+    // parent `/mnt/memory` outside either Store fails; E5=Store identities and
+    // durable bytes remain isolated.
+    //
+    // | Rule | bwrap | access | target                    | outcome |
+    // | RO0  | no    | -      | -                         | gated skip |
+    // | RO1  | yes   | RO     | notes/note.md read         | E1 |
+    // | RO2  | yes   | RO     | notes/note.md write        | E2,E5 |
+    // | RW1  | yes   | RW     | work/work.md write         | E3,E5 |
+    // | PB1  | yes   | mixed  | parent outside Store write | E4,E5 |
+    // Constraint: the Store owns only its declared child mount; its parent is
+    // not an ambient persistence or scratch surface.
+    if !bwrap_works().await {
+        eprintln!("skipping: bwrap/userns unavailable on this host");
+        return;
+    }
+    use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
+    use awaken_sandbox_memoryd::MemoryStoreMounter;
+
+    let fs = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
+    fs.create("readonly", "/note.md", "v1").await.unwrap();
+    fs.create("writable", "/work.md", "w1").await.unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(tmp.path())
+        .with_memory_mounter(Arc::new(MemoryStoreMounter::copy_only(fs.clone())));
+    let mut s = spec("t-nsmem-ro");
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "notes".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "readonly".into(),
+            materialization_reference: None,
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/mnt/memory/notes".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::Durable,
+        required: true,
+    });
+    s.mounts.push(pc::MountRequirement {
+        mount_id: "work".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "writable".into(),
+            materialization_reference: None,
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/mnt/memory/work".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Durable,
+        required: true,
+    });
+
+    let sandbox = provider.create(&s).await.unwrap();
+    let read = sandbox
+        .spawn(sh(
+            "cat /mnt/memory/notes/note.md > /mnt/session/outputs/note.txt",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(read.wait().await.unwrap().code, Some(0), "RO1/E1");
+    let artifact = sandbox
+        .artifacts()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|artifact| artifact.path.ends_with("/note.txt"))
+        .expect("RO1 output");
+    assert_eq!(sandbox.read_artifact(&artifact.id).await.unwrap(), b"v1");
+
+    let inside = sandbox
+        .spawn(sh("printf changed > /mnt/memory/notes/note.md"))
+        .await
+        .unwrap();
+    assert_ne!(inside.wait().await.unwrap().code, Some(0), "RO2/E2");
+    let writable = sandbox
+        .spawn(sh("printf w2 > /mnt/memory/work/work.md"))
+        .await
+        .unwrap();
+    assert_eq!(writable.wait().await.unwrap().code, Some(0), "RW1/E3");
+    let parent = sandbox
+        .spawn(sh("printf escape > /mnt/memory/outside.md"))
+        .await
+        .unwrap();
+    assert_ne!(parent.wait().await.unwrap().code, Some(0), "PB1/E4");
+    sandbox.dispose_unattached().await.unwrap();
+
+    assert_eq!(
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "readonly", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("v1"),
+        "RO2/E5"
+    );
+    assert_eq!(
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "writable", "/work.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("w2"),
+        "RW1/E3,E5"
+    );
+    assert!(
+        !tmp.path().join("t-nsmem-ro/mnt/memory/outside.md").exists(),
+        "PB1/E5"
+    );
+}
+
+/// The bwrap FUSE-splice (ADR-0053 item 2): a memory store FUSE-mounted on the host is
+/// bound into the bwrap mount+user namespace, so the agent reads/writes it LIVE inside
+/// the sandbox (write-through), not a harvested copy. This proves the host FUSE mount
+/// survives the bind into bwrap's namespace under `--unshare-user` (the mount's owner
+/// uid is identity-mapped, so no `allow_other` is needed). Gated on bwrap + /dev/fuse;
+/// a host without either realizes the copy fallback (covered by `memory_mount.rs`), so
+/// this asserts the live path only when FUSE is actually realized.
+#[tokio::test]
+async fn bwrap_splices_a_live_fuse_memory_mount_into_the_namespace() {
+    if !bwrap_works().await {
+        eprintln!("skipping: bwrap/userns unavailable on this host");
+        return;
+    }
+    if !std::path::Path::new("/dev/fuse").exists() {
+        eprintln!("skipping: no /dev/fuse (copy fallback is covered by memory_mount.rs)");
+        return;
+    }
+    use awaken_memory_store::{MemoryWriter, VolatileMemoryRepository};
+    use awaken_sandbox_memoryd::MemoryStoreMounter;
+
+    let fs = Arc::new(VolatileMemoryRepository::new(awaken_time::system_clock()));
+    fs.create("s", "/note.md", "v1").await.unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    // The FUSE-preferring mounter (not `copy_only`): it FUSE-mounts the store at the
+    // host path the provider then binds into the namespace.
+    let provider = NamespaceProvider::new(tmp.path()).with_memory_mounter(Arc::new({
+        let backend = fs.clone();
+        let bus = Arc::new(awaken_resource_contract::LocalInvalidator::default());
+        let memory = Arc::new(
+            awaken_resource_application::memory::InvalidatingMemoryRepository::new(
+                backend,
+                bus.clone(),
+            ),
+        );
+        MemoryStoreMounter::fuse_preferred(
+            awaken_resource_contract::MemoryMountSource::new(memory),
+            bus,
+            awaken_time::system_clock(),
+        )
+        .expect("selected Memory source and root bus match")
+    }));
+
+    let mut spec = spec("t-mem-fuse");
+    spec.mounts.push(pc::MountRequirement {
+        mount_id: "mem".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "s".into(),
+            materialization_reference: None,
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/mnt/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Durable,
+        required: true,
+    });
+    let sandbox = provider.create(&spec).await.unwrap();
+
+    // Only assert the SPLICE when FUSE was actually realized; otherwise it fell back to
+    // copy (a legitimate outcome this host doesn't exercise), covered elsewhere.
+    let is_fuse = sandbox
+        .realized()
+        .iter()
+        .any(|m| m.mount_path == "/mnt/memory" && matches!(m.realization, pc::Realization::Fuse));
+    if !is_fuse {
+        eprintln!("skipping: memory realized as copy here, not FUSE (fallback covered elsewhere)");
+        sandbox.dispose_unattached().await.ok();
+        return;
+    }
+
+    // INSIDE the bwrap namespace: read the seeded memory (proves the live FUSE mount is
+    // visible through the bind) and write an edit back through it (write-through).
+    let proc = sandbox
+        .spawn(sh(
+            "cat /mnt/memory/note.md > /mnt/session/outputs/read.txt && printf v2 > /mnt/memory/note.md",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        proc.wait().await.unwrap().code,
+        Some(0),
+        "the agent read + wrote the FUSE memory mount inside the namespace"
+    );
+    let arts = sandbox.artifacts().await.unwrap();
+    let read = arts
+        .iter()
+        .find(|a| a.path.ends_with("/read.txt"))
+        .expect("read.txt artifact");
+    assert_eq!(
+        sandbox.read_artifact(&read.id).await.unwrap(),
+        b"v1",
+        "the seeded memory was visible LIVE inside the bwrap namespace (spliced FUSE mount)"
+    );
+
+    // dispose unmounts the FUSE mount (write-through already flushed the edit to the store).
+    sandbox.dispose_unattached().await.unwrap();
+    assert_eq!(
+        awaken_resource_contract::MemoryQueries::get_by_path(fs.as_ref(), "s", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("v2"),
+        "the in-namespace write propagated LIVE to the durable store through the FUSE mount"
+    );
+}

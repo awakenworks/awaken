@@ -4,9 +4,10 @@
     "name": "mcp_http_wire_distinguishes_certain_from_uncertain_tool_faults",
     "source_locations": [
       {
-        "path": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
+        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
         "line": 324,
-        "file_sha256": "76165ad6adb720ad958d06c401ec654d58995533510ef62d29e97600eb322c23"
+        "file_sha256": "76165ad6adb720ad958d06c401ec654d58995533510ef62d29e97600eb322c23",
+        "relocated_from": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs:324"
       }
     ],
     "execution_witnesses": [],
@@ -27,9 +28,10 @@
     "name": "acp_executor_keeps_the_retryable_class_of_the_injected_overloaded_upstream",
     "source_locations": [
       {
-        "path": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
         "line": 336,
-        "file_sha256": "211cdf298fe13ebdced1efc6f25365ec8e6a8f4d9a9272d70bb2c99692e82ad1"
+        "file_sha256": "211cdf298fe13ebdced1efc6f25365ec8e6a8f4d9a9272d70bb2c99692e82ad1",
+        "relocated_from": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs:336"
       }
     ],
     "execution_witnesses": [],
@@ -50,9 +52,10 @@
     "name": "acp_projection_keeps_the_native_authority_uncertainty_and_retry_hint",
     "source_locations": [
       {
-        "path": "crates/server/awaken-run-executor-acp/src/tests/failure_projection.rs",
+        "path": "crates/platform/execution/awaken-run-executor-acp/src/tests/failure_projection.rs",
         "line": 109,
-        "file_sha256": "95eb49cf1020b0d33a375455c96de5cb9c0948ff176fe08972ae980fb517e052"
+        "file_sha256": "95eb49cf1020b0d33a375455c96de5cb9c0948ff176fe08972ae980fb517e052",
+        "relocated_from": "crates/server/awaken-run-executor-acp/src/tests/failure_projection.rs:109"
       }
     ],
     "execution_witnesses": [],
@@ -73,9 +76,10 @@
     "name": "hand_relay_keeps_the_retry_safe_classification_of_an_undispatched_fault",
     "source_locations": [
       {
-        "path": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
+        "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
         "line": 262,
-        "file_sha256": "60a086c77df11c9de933b5c1a784a87b115c5923cd9dbbbec136523d159ac8b8"
+        "file_sha256": "60a086c77df11c9de933b5c1a784a87b115c5923cd9dbbbec136523d159ac8b8",
+        "relocated_from": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs:262"
       }
     ],
     "execution_witnesses": [],

@@ -28,39 +28,39 @@ RESOURCE_PLANE_CRATES = {
 # crate may have broader dependencies for sibling modules, so scan these files
 # directly in addition to the dedicated resource crates above.
 RESOURCE_APPLICATION_SOURCES = (
-    "crates/resources/awaken-resource-application/src/registry.rs",
-    "crates/stores/awaken-resource-store/src/postgres_registry.rs",
-    "crates/stores/awaken-resource-store/src/sqlite_registry.rs",
-    "crates/server/awaken-protocol-managed/src/resources/files.rs",
-    "crates/server/awaken-protocol-managed/src/state/resource.rs",
-    "crates/server/awaken-protocol-managed/src/state/resources.rs",
-    "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
-    "crates/server/awaken-protocol-managed/src/common/scope.rs",
-    "crates/server/awaken-protocol-managed/src/resources/skills.rs",
+    "crates/platform/resources/awaken-resource-application/src/registry.rs",
+    "crates/platform/resources/awaken-resource-store/src/postgres_registry.rs",
+    "crates/platform/resources/awaken-resource-store/src/sqlite_registry.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/resources/files.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/state/resource.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/state/resources.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/resources/memory_stores.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/common/scope.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/resources/skills.rs",
 )
 
 # HTTP adapters are PEP consumers, not Workspace selectors. Every handler must
 # extract the Workspace stamp installed by the outer composition edge; none may
 # fall back to a Host-local tenant.
 RESOURCE_HTTP_SOURCES = (
-    "crates/server/awaken-protocol-managed/src/resources/files.rs",
-    "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
-    "crates/server/awaken-protocol-managed/src/resources/skills.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/resources/files.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/resources/memory_stores.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/resources/skills.rs",
 )
 
 # Recovery already reads a durably persisted Workspace envelope. Re-selecting a
 # local/default scope here would turn missing routing state into cross-Workspace
 # access instead of failing closed.
 RESOURCE_RECOVERY_SOURCES = (
-    "crates/server/awaken-protocol-managed/src/state/resources.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/state/resources.rs",
 )
 
 # Driving adapters may read MemoryStore identity through the application port,
 # but cannot recreate Registry mutation coordination. The Resources application
 # is the single owner of these calls.
 MEMORY_STORE_DRIVING_ADAPTERS = (
-    "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
-    "crates/server/awaken-coordinator/src/dream.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/resources/memory_stores.rs",
+    "crates/apps/awaken-coordinator/src/dream.rs",
 )
 
 FORBIDDEN_DEPENDENCY_PREFIXES = ("awaken-authz", "awaken-iam")
@@ -120,7 +120,7 @@ def _dependency_package_names(manifest: dict) -> set[str]:
 
 
 PRIVATE_CONTENT_COORDINATES = Path(
-    "crates/contract/awaken-resource-contract/src/private_content.rs"
+    "crates/platform/resources/awaken-resource-contract/src/private_content.rs"
 )
 
 
@@ -267,7 +267,7 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
 
     selftest()
     errors: list[str] = []
-    runtime_manifest_path = repo_root / "crates/server/awaken-session-executor/Cargo.toml"
+    runtime_manifest_path = repo_root / "crates/platform/execution/awaken-session-executor/Cargo.toml"
     runtime_manifest = _load_manifest(runtime_manifest_path)
     resource_application = runtime_manifest.get("dependencies", {}).get(
         "awaken-resource-application"
@@ -276,12 +276,12 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
     # composition builds them in awaken-session-executor-testkit.
     if resource_application is not None:
         errors.append(
-            "crates/server/awaken-session-executor/Cargo.toml: Resources application must not be "
+            "crates/platform/execution/awaken-session-executor/Cargo.toml: Resources application must not be "
             "linked; product Runtime Host accepts exact execution capabilities and test "
             "compositions supply ports through awaken-session-executor-testkit"
         )
     # The Host's Resources-context ports are its `ResourcePorts` capability group.
-    host_resources = "crates/server/awaken-session-executor/src/host/capability/resources.rs"
+    host_resources = "crates/platform/execution/awaken-session-executor/src/host/capability/resources.rs"
     host_source = (repo_root / host_resources).read_text(encoding="utf-8")
     for field in ("file_store", "file_catalog", "file_application", "resource_reclamation"):
         pattern = rf'#\[cfg\(any\(test, feature = "test-support"\)\)\]\s+pub\(crate\) {field}:'
@@ -290,7 +290,7 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
                 f"{host_resources}: {field} must not exist in "
                 "the product Runtime Host"
             )
-    dream_source_path = repo_root / "crates/server/awaken-coordinator/src/dream.rs"
+    dream_source_path = repo_root / "crates/apps/awaken-coordinator/src/dream.rs"
     dream_source = _crate_boundary_workspace.production_rust(
         dream_source_path.read_text(encoding="utf-8")
     )
@@ -302,12 +302,12 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
     # capability; R2 rejects the hidden Host lookup.
     if "files: Arc<dyn FileApplicationService>" not in dream_source:
         errors.append(
-            "crates/server/awaken-coordinator/src/dream.rs: Dream legacy cleanup must "
+            "crates/apps/awaken-coordinator/src/dream.rs: Dream legacy cleanup must "
             "receive the exact Resources File application"
         )
     if re.search(r"\.host\s*\.file_application\s*\(", dream_source):
         errors.append(
-            "crates/server/awaken-coordinator/src/dream.rs: Dream must not recover the "
+            "crates/apps/awaken-coordinator/src/dream.rs: Dream must not recover the "
             "Resources File application through Runtime Host"
         )
     for crate_name in sorted(RESOURCE_PLANE_CRATES):

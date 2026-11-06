@@ -233,7 +233,7 @@ row is reached when every publishable SDK crate opts in; that is planned work (W
 Decision 4 places the credential reference vocabulary in `awaken-credential`. The
 2026-10-08 amendment of [ADR-0086](0086-runtime-sdk-public-surface.md) moved it into
 the `credential` module of `awaken-agent-contract` and removed `awaken-credential`.
-The code follows ADR-0086: `crates/contract/awaken-agent-contract/src/lib.rs:7`
+The code follows ADR-0086: `crates/sdk/contracts/awaken-agent-contract/src/lib.rs:7`
 (`pub mod credential;`); no `awaken-credential` crate exists. Read the row as
 "credential reference vocabulary in `awaken-agent-contract::credential`".
 

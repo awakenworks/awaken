@@ -2,7 +2,7 @@
 """Refuse a shell or YAML gate that names a crate file which no longer exists.
 
 `scripts/ci/check-reliability.sh` pointed `cargo mutants --file` at
-`crates/contract/awaken-agent-contract/src/clock/utc.rs` after a refactor had
+`crates/sdk/contracts/awaken-agent-contract/src/clock/utc.rs` after a refactor had
 moved that codec to `awaken-lease-contract`. Nothing looked: the script runs only
 in the reliability lane, its Python self-test only in the full static group, and
 the commit that moved the file touched no gate. The dangling path would have

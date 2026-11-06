@@ -347,12 +347,12 @@ the reference implementation:
 The decisions stand; these names and locations changed in code:
 
 - D3: `PluginManifest` lives in `awaken-runtime-contract`, not
-  `awaken-agent-contract` (`crates/contract/awaken-runtime-contract/src/plugin/capability.rs:92`).
+  `awaken-agent-contract` (`crates/sdk/contracts/awaken-runtime-contract/src/plugin/capability.rs:92`).
   Its config field is `config_sections`.
 - D3 / Supersedes / A1.6: `validate_section` and `PluginConfigValidator` no longer
   exist anywhere in `crates/`. The declared sections are `PluginManifest.config_sections`,
   and the schema is projected as `PluginCapability.config_schema`
-  (`crates/contract/awaken-executable-agent-contract/src/capability.rs`).
+  (`crates/platform/config/awaken-executable-agent-contract/src/capability.rs`).
 - D4 / A1.2: the bound axes in code are `tools`, `state_keys`, `phase_hooks`,
   `action_kinds` (scheduled-action kinds, [ADR-0027](0027-scheduled-action-kind-axis.md)), `run_end_guards`,
   `tool_gates` and `tool_constraints`, all but `phase_hooks` being `IdBound`s
@@ -360,4 +360,4 @@ The decisions stand; these names and locations changed in code:
   `transforms` flag; tool gates are bounded by id.
 - "Still open": done. `CapabilityBound` derives `Serialize`/`Deserialize`
   (`capability.rs:69`), and `PluginCapability.bound` carries it to the catalog
-  (`crates/contract/awaken-executable-agent-contract/src/capability.rs:43`).
+  (`crates/platform/config/awaken-executable-agent-contract/src/capability.rs:43`).

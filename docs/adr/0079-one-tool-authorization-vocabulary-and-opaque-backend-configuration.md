@@ -94,9 +94,9 @@ controlled-modification member of the Agent toolset or an MCP tool.
 
 The open item "`auto` needs an ordering decision first" is closed in code: `auto`
 sits strictly between ask and allow on the `GrantedAutonomy` axis
-(`crates/contract/awaken-agent-contract/src/toolset.rs:95-145`), and
+(`crates/sdk/contracts/awaken-agent-contract/src/toolset.rs:95-145`), and
 `AgentToolPermissionPolicy::Auto` exists
-(`crates/contract/awaken-session-configuration-contract/src/agent_config.rs:75`).
+(`crates/platform/session/awaken-session-configuration-contract/src/agent_config.rs:75`).
 
 ## Amendment 2026-10-09: names and references
 

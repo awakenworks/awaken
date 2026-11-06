@@ -96,12 +96,12 @@ with its own tenancy (callee-in-URL), auth (foreign principal), and routing
 ## Amendment 2026-10-09: reconciled with ADR-0042
 
 What is true today: the inbound A2A endpoints
-(`crates/server/awaken-protocol-a2a/src/router.rs:84-94`) are a **same-tenant
+(`crates/sdk/protocols/awaken-protocol-a2a/src/router.rs:84-94`) are a **same-tenant
 entry point inside the ADR-0042 D3 envelope**, not the federation surface of
 D1–D3. They are mounted on the service-authenticated product surface
-(`crates/server/awaken-coordinator/src/coordinator_component.rs:120`,
-`crates/server/awaken-coordinator/src/lib.rs:1688`) under the hosted-run route
-policy (`crates/control/awaken-control/src/authz/route_policy.rs:22-24`). The
+(`crates/apps/awaken-coordinator/src/coordinator_component.rs:120`,
+`crates/apps/awaken-coordinator/src/lib.rs:1688`) under the hosted-run route
+policy (`crates/apps/awaken-control/src/authz/route_policy.rs:22-24`). The
 Workspace comes from the caller's token; in local mode it falls back to the local
 Workspace. The A2A `{tenant}` path segment selects the Agent, not a Workspace.
 

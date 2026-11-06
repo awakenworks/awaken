@@ -158,7 +158,7 @@ D1–D3 are history; these names no longer match the code:
   The "fails closed with 400 unless `AWAKEN_INGRESS=durable`" sentence in D3 is
   obsolete.
 - The operational verbs live in `crates/server/awaken-run-ingress-http/src/durable_ops.rs`,
-  composed by `crates/server/awaken-coordinator/src/lib.rs:1557`
+  composed by `crates/apps/awaken-coordinator/src/lib.rs:1557`
   (`durable_ops_router_with_session_admission`).
 - `RunIngress` / `DurableRunIngress` were removed by the 2026-09-01 amendment to
   [ADR-0009](0009-durable-run-ingress-slice.md); the operations port is

@@ -437,7 +437,7 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
         # The canonical scanner/projection owns both rules; no path allowlist or
         # second classifier is introduced. This remains a literal-source inventory,
         # not compiler-level resolution of arbitrary aliases or proof coverage.
-        source = (MODULE.ROOT / "crates/resources/awaken-resource-worker-http/src/worker_authority.rs").read_text()
+        source = (MODULE.ROOT / "crates/platform/resources/awaken-resource-worker-http/src/worker_authority.rs").read_text()
         for variant in ("TerminalGeneration", "SessionRoot", "RootTruth"):
             self.assertIn("authorization", MODULE.detect_signals(source.replace("SessionRoot", variant)), variant)
         for source in (

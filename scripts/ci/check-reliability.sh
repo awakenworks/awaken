@@ -160,11 +160,11 @@ trap cleanup_mutation_artifacts EXIT
 mkdir -p "$mutation_evidence"
 cargo mutants --package awaken-mcp-wire \
   --output "$mutation_evidence/sse" \
-  --file crates/runtime/awaken-mcp-wire/src/sse.rs --timeout 30 --no-times -- sse::tests
+  --file crates/sdk/providers/awaken-mcp-wire/src/sse.rs --timeout 30 --no-times -- sse::tests
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/sse/mutants.out"
 cargo mutants --package awaken-tool-contract \
   --output "$mutation_evidence/tool-batch" \
-  --file crates/contract/awaken-tool-contract/src/tool_batch.rs \
+  --file crates/sdk/contracts/awaken-tool-contract/src/tool_batch.rs \
   --re 'permits_call_transition|next_execution_attempt' \
   --timeout 30 --no-times -- tool_batch::tests
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/tool-batch/mutants.out"
@@ -173,20 +173,20 @@ python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/tool-batch
 # qualify as kills. cargo-mutants owns isolation and the outcome artifact.
 cargo mutants --package awaken-session-contract \
   --output "$mutation_evidence/session-event-observations" \
-  --file crates/contract/awaken-session-contract/src/event/mod.rs \
+  --file crates/platform/session/awaken-session-contract/src/event/mod.rs \
   --re 'mark_processed_observation' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-event-observations/mutants.out"
 cargo mutants --package awaken-session-execution-contract \
   --output "$mutation_evidence/session-realization-observations" \
-  --file crates/contract/awaken-session-execution-contract/src/session_realization/generation_authority.rs \
+  --file crates/platform/session/awaken-session-execution-contract/src/session_realization/generation_authority.rs \
   --re 'realization_generation_authorizes' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-realization-observations/mutants.out"
 cargo mutants --package awaken-time \
   --test-package awaken-time --test-package awaken-worker-contract \
   --output "$mutation_evidence/session-work-observations" \
-  --file crates/runtime/awaken-time/src/utc.rs \
+  --file crates/sdk/support/awaken-time/src/utc.rs \
   --re 'bounded_rfc3339_nanos' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-work-observations/mutants.out"
@@ -196,7 +196,7 @@ python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-wo
 # owns the observation, while the mutation belongs to the shared type owner.
 cargo mutants --package awaken-session-types --test-package awaken-session-executor \
   --output "$mutation_evidence/environment-projection" \
-  --file crates/contract/awaken-session-types/src/monotone.rs \
+  --file crates/platform/session/awaken-session-types/src/monotone.rs \
   --re 'replace > with <|replace > with >=' \
   --timeout 60 --no-times -- --lib projection_convergence
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/environment-projection/mutants.out"

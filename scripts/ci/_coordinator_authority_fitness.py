@@ -15,7 +15,7 @@ import _crate_boundary_workspace
 
 # The original LocalCommitAdapter moved as one unit; this exact module delegates
 # to the selected store and is not a new persistence writer or authority.
-LOCAL_COMMIT_ADAPTER_SOURCE = "crates/shared/awaken-dispatch-erasure/src/local_commit.rs"
+LOCAL_COMMIT_ADAPTER_SOURCE = "crates/platform/execution/awaken-dispatch-erasure/src/local_commit.rs"
 
 AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
     # Durable implementations remain in run-ingress. The one Worker-side HTTP
@@ -25,16 +25,16 @@ AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
     # implement their selected roles over one Dispatch owner; they own no
     # SQL, claim transition, or second queue.
     "OperationCoordinator": (
-        "crates/runtime/awaken-store-inmem/src/",
-        "crates/stores/awaken-store-fs/src/",
-        "crates/stores/awaken-store-sqlite/src/",
-        "crates/stores/awaken-store-postgres/src/",
-        "crates/server/awaken-session-run-delivery/src/commit_boundary.rs",
+        "crates/sdk/runtime/awaken-store-inmem/src/",
+        "crates/platform/committed-truth/awaken-store-fs/src/",
+        "crates/platform/committed-truth/awaken-store-sqlite/src/",
+        "crates/platform/committed-truth/awaken-store-postgres/src/",
+        "crates/platform/execution/awaken-session-run-delivery/src/commit_boundary.rs",
         LOCAL_COMMIT_ADAPTER_SOURCE,
     ),
-    "SessionRepository": ("crates/stores/awaken-session-store/src/",),
-    "SessionRepositoryReads": ("crates/stores/awaken-session-store/src/",),
-    "LifecycleOutbox": ("crates/stores/awaken-session-store/src/",),
+    "SessionRepository": ("crates/platform/session/awaken-session-store/src/",),
+    "SessionRepositoryReads": ("crates/platform/session/awaken-session-store/src/",),
+    "LifecycleOutbox": ("crates/platform/session/awaken-session-store/src/",),
 }
 
 WORKER_DISPATCH_ROLES = (
@@ -48,11 +48,11 @@ COORDINATOR_DISPATCH_ROLES = (
     "Inbox", "Outbox", "SessionContinuationOutbox", "DispatchOperationalFeed",
 )
 DISPATCH_OWNERS = (
-    "crates/server/awaken-dispatch/src/",
-    "crates/shared/awaken-dispatch-erasure/src/lib.rs",
+    "crates/platform/dispatch/awaken-dispatch/src/",
+    "crates/platform/execution/awaken-dispatch-erasure/src/lib.rs",
 )
 for role in WORKER_DISPATCH_ROLES:
-    AUTHORITY_IMPLS[role] = (*DISPATCH_OWNERS, "crates/server/awaken-coordinator-client/src/dispatch_client.rs")
+    AUTHORITY_IMPLS[role] = (*DISPATCH_OWNERS, "crates/platform/dispatch/awaken-coordinator-client/src/dispatch_client.rs")
 for role in COORDINATOR_DISPATCH_ROLES:
     AUTHORITY_IMPLS[role] = DISPATCH_OWNERS
 
@@ -74,11 +74,11 @@ def dispatch_handoff_violations(relative: str, production: str) -> list[str]:
     """The canonical Session resolver is dispatch-owned; its Run factory points inward."""
     syntax = _crate_boundary_workspace.rust_syntax(production)
     errors = []
-    if relative.startswith("crates/server/awaken-session-executor/src/") and re.search(
+    if relative.startswith("crates/platform/execution/awaken-session-executor/src/") and re.search(
         r"\bimpl(?:\s*<[^>{}]*>)?\s+(?:[\w:]+::)?WorkerResolver\s*<", syntax
     ):
         errors.append(f"{relative}: Session dispatch routing belongs to awaken-dispatch-execution")
-    if relative.startswith("crates/shared/awaken-dispatch-execution/src/") and re.search(
+    if relative.startswith("crates/platform/execution/awaken-dispatch-execution/src/") and re.search(
         r"\bawaken_session_executor\s*::", syntax
     ):
         errors.append(f"{relative}: dispatch execution must consume its Run factory, never Runtime Host")
@@ -87,7 +87,7 @@ def dispatch_handoff_violations(relative: str, production: str) -> list[str]:
 # The new read projection has one production implementation and issues no
 # mutation authority; test implementations must remain behind cfg(test).
 AUTHORITY_IMPLS["DispatchExecutionReads"] = (
-    "crates/shared/awaken-dispatch-erasure/src/execution_observation.rs",
+    "crates/platform/execution/awaken-dispatch-erasure/src/execution_observation.rs",
 )
 
 TABLE_AUTHORITIES: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
@@ -99,7 +99,7 @@ TABLE_AUTHORITIES: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
             r"dispatch_completion|stream_checkpoint|dispatch_operation)\b",
             re.IGNORECASE,
         ),
-        ("crates/server/awaken-dispatch/",),
+        ("crates/platform/dispatch/awaken-dispatch/",),
     ),
     (
         "committed run/thread truth",
@@ -110,10 +110,10 @@ TABLE_AUTHORITIES: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
             re.IGNORECASE,
         ),
         (
-            "crates/stores/awaken-store-schema/",
-            "crates/stores/awaken-store-fs/",
-            "crates/stores/awaken-store-sqlite/",
-            "crates/stores/awaken-store-postgres/",
+            "crates/platform/committed-truth/awaken-store-schema/",
+            "crates/platform/committed-truth/awaken-store-fs/",
+            "crates/platform/committed-truth/awaken-store-sqlite/",
+            "crates/platform/committed-truth/awaken-store-postgres/",
         ),
     ),
     (
@@ -124,16 +124,16 @@ TABLE_AUTHORITIES: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
             r"session_tombstone|lifecycle_outbox)\b",
             re.IGNORECASE,
         ),
-        ("crates/stores/awaken-session-store/",),
+        ("crates/platform/session/awaken-session-store/",),
     ),
 )
 
-ATTEMPT_RESULT_OWNER = "crates/server/awaken-dispatch/src/dispatch.rs"
+ATTEMPT_RESULT_OWNER = "crates/platform/dispatch/awaken-dispatch/src/dispatch.rs"
 ATTEMPT_BACKENDS = {
-    "crates/server/awaken-dispatch/src/memory/physical_attempt.rs": ("admission", "finish", "close"),
-    "crates/server/awaken-dispatch/src/sqlite/physical_attempt.rs": ("admission", "finish", "close"),
-    "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs": ("admission", "close"),
-    "crates/server/awaken-dispatch/src/postgres/message_ports.rs": ("finish",),
+    "crates/platform/dispatch/awaken-dispatch/src/memory/physical_attempt.rs": ("admission", "finish", "close"),
+    "crates/platform/dispatch/awaken-dispatch/src/sqlite/physical_attempt.rs": ("admission", "finish", "close"),
+    "crates/platform/dispatch/awaken-dispatch/src/postgres/dispatch_queue.rs": ("admission", "close"),
+    "crates/platform/dispatch/awaken-dispatch/src/postgres/message_ports.rs": ("finish",),
 }
 ATTEMPT_DECISIONS = {
     "admission": "decide_physical_attempt_admission",
@@ -145,7 +145,7 @@ ATTEMPT_DECISIONS = {
 def attempt_rule_violations(relative: str, source: str) -> list[str]:
     """Adapters may apply storage effects, but cannot fork physical-slot policy."""
     errors: list[str] = []
-    if relative.startswith("crates/server/awaken-dispatch/src/"):
+    if relative.startswith("crates/platform/dispatch/awaken-dispatch/src/"):
         if relative != ATTEMPT_RESULT_OWNER and re.search(
             r"\b(?:begin|handoff|finish|can_close)_physical_attempt\s*\(", source
         ):
@@ -214,8 +214,8 @@ def selftest() -> None:
     # SR1 canonical SQL owner accepts the reader; SR2 another production owner
     # refuses it. SR3 direct import accepts, facade or renamed re-export
     # refuses: a read suffix must not create an ownership/export bypass.
-    assert not implementation_violation("crates/stores/awaken-session-store/src/sqlite.rs", "SessionRepositoryReads")
-    assert implementation_violation("crates/server/awaken-session-executor/src/reader.rs", "SessionRepositoryReads")
+    assert not implementation_violation("crates/platform/session/awaken-session-store/src/sqlite.rs", "SessionRepositoryReads")
+    assert implementation_violation("crates/platform/execution/awaken-session-executor/src/reader.rs", "SessionRepositoryReads")
     assert not session_facade_reexports("use awaken_session_contract::SessionRepositoryReads;")
     assert session_facade_reexports("pub use port::SessionRepositoryReads;")
     assert session_facade_reexports("pub use port::SessionRepositoryReads as Reads;")
@@ -225,8 +225,8 @@ def selftest() -> None:
     # Decision rules: H1=(0,0) accept, H2=(1,0) reject owner,
     # H3=(0,1) reject dependency, H4=comments/test-only code accept. Existing
     # production_rust owns cfg filtering; this guard reuses that one parser.
-    host = "crates/server/awaken-session-executor/src/session.rs"
-    dispatch = "crates/shared/awaken-dispatch-execution/src/session.rs"
+    host = "crates/platform/execution/awaken-session-executor/src/session.rs"
+    dispatch = "crates/platform/execution/awaken-dispatch-execution/src/session.rs"
     resolver = "impl<T> WorkerResolver<AnyDispatchStore> for SessionWorkerResolver<T> {}"
     assert dispatch_handoff_violations(dispatch, resolver) == [], "H1 canonical owner"
     assert dispatch_handoff_violations(host, resolver), "H2 misplaced resolver"
@@ -243,46 +243,46 @@ def selftest() -> None:
     database owners without treating test doubles as production authorities.
     """
     assert implementation_violation(
-        "crates/server/awaken-dispatch/src/sqlite.rs", "DispatchCommitAuthority"
+        "crates/platform/dispatch/awaken-dispatch/src/sqlite.rs", "DispatchCommitAuthority"
     ) == []  # R1
     assert implementation_violation(
-        "crates/server/awaken-coordinator-client/src/dispatch_client.rs", "DispatchClaims"
+        "crates/platform/dispatch/awaken-coordinator-client/src/dispatch_client.rs", "DispatchClaims"
     ) == []  # R2
     assert implementation_violation(
-        "crates/shared/awaken-dispatch-erasure/src/lib.rs", "DispatchCommitAuthority"
+        "crates/platform/execution/awaken-dispatch-erasure/src/lib.rs", "DispatchCommitAuthority"
     ) == []  # R2 role delegation, not a second durable authority
     assert implementation_violation(
-        "crates/server/awaken-session-executor/src/dispatch.rs", "DispatchCommitAuthority"
+        "crates/platform/execution/awaken-session-executor/src/dispatch.rs", "DispatchCommitAuthority"
     )  # R3
     # R2/C7: the one migrated adapter module accepts its existing role; other
     # files in that crate or in Executor still reject. The original HostCommit
     # Local/Remote wrapper remains permitted only at its existing store path.
     assert implementation_violation(LOCAL_COMMIT_ADAPTER_SOURCE, "OperationCoordinator") == []
     assert implementation_violation(
-        "crates/shared/awaken-dispatch-erasure/src/other_commit.rs", "OperationCoordinator"
+        "crates/platform/execution/awaken-dispatch-erasure/src/other_commit.rs", "OperationCoordinator"
     )
     assert implementation_violation(
-        "crates/server/awaken-session-run-delivery/src/other_commit.rs", "OperationCoordinator"
+        "crates/platform/execution/awaken-session-run-delivery/src/other_commit.rs", "OperationCoordinator"
     )
     # File/directory owner table: a file allows only equality (F1), never a
     # legal same-prefix sibling (F2); directory entries ending in '/' allow
     # descendants (D1), never a similarly spelled sibling directory (D2).
     for path, permitted in (
-        ("crates/server/awaken-session-run-delivery/src/commit_boundary.rs", True),
+        ("crates/platform/execution/awaken-session-run-delivery/src/commit_boundary.rs", True),
         (LOCAL_COMMIT_ADAPTER_SOURCE + "_shadow.rs", False),
-        ("crates/stores/awaken-store-sqlite/src/adapter.rs", True),
-        ("crates/stores/awaken-store-sqlite/src_shadow/adapter.rs", False),
+        ("crates/platform/committed-truth/awaken-store-sqlite/src/adapter.rs", True),
+        ("crates/platform/committed-truth/awaken-store-sqlite/src_shadow/adapter.rs", False),
     ):
         assert (implementation_violation(path, "OperationCoordinator") == []) is permitted, path
     allowed = TABLE_AUTHORITIES[2][2]
-    assert table_violation("crates/stores/awaken-session-store/src/lib.rs", "session", allowed) == []
+    assert table_violation("crates/platform/session/awaken-session-store/src/lib.rs", "session", allowed) == []
     assert table_violation("crates/server/example/src/lib.rs", "session", allowed)  # R3
     sample = "pub fn live() {}\n#[cfg(test)] mod tests { impl DispatchQueue for Fake {} }"
     stripped = _crate_boundary_workspace.production_rust(sample)
     assert "Fake" not in stripped  # R4
     assert "live" in stripped  # R5
     for role in COORDINATOR_DISPATCH_ROLES:
-        assert implementation_violation("crates/server/awaken-coordinator-client/src/dispatch_client.rs", role)
+        assert implementation_violation("crates/platform/dispatch/awaken-coordinator-client/src/dispatch_client.rs", role)
         assert dispatch_projection_violations(f"impl {role} for AnyDispatchStore {{}}")
         assert dispatch_projection_violations(f"impl awaken_dispatch_contract::{role} for AnyDispatchStore {{}}")
         assert not dispatch_projection_violations(f"impl {role} for AnyCoordinatorDispatch {{}}")
@@ -315,8 +315,8 @@ def selftest() -> None:
         for operation in operations:
             missing = shared.replace(f"{ATTEMPT_DECISIONS[operation]}(x);", "")
             assert attempt_rule_violations(backend, missing)  # A4
-    postgres_queue = "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs"
-    postgres_records = "crates/server/awaken-dispatch/src/postgres/message_ports.rs"
+    postgres_queue = "crates/platform/dispatch/awaken-dispatch/src/postgres/dispatch_queue.rs"
+    postgres_records = "crates/platform/dispatch/awaken-dispatch/src/postgres/message_ports.rs"
     assert attempt_rule_violations(
         postgres_queue, "decide_physical_attempt_admission(x); decide_physical_attempt_close(x);"
     ) == []  # A6 responsibilities retained at the actual queue owner
@@ -367,8 +367,8 @@ def check_all(repo_root: Path, crates_root: Path) -> list[str]:
                 errors.extend(table_violation(relative, authority, allowed))
 
     for facade in (
-        crates_root / "server/awaken-protocol-managed/src/lib.rs",
-        crates_root / "server/awaken-session-executor/src/lib.rs",
+        crates_root / "platform/protocols/awaken-protocol-managed/src/lib.rs",
+        crates_root / "platform/execution/awaken-session-executor/src/lib.rs",
     ):
         source = facade.read_text(encoding="utf-8")
         if session_facade_reexports(source):

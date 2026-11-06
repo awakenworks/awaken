@@ -156,34 +156,34 @@ SHADOW_CLOCK_HELPER = re.compile(r"\bfn\s+now\w*\s*[<(]")
 # the object graph. Named, not pattern-matched, so adding one is a decision.
 COMPOSITION_ROOTS: frozenset[str] = frozenset(
     {
-        "crates/bin/awaken-process-startup/src/process_stores.rs",
-        "crates/bin/awaken-process-startup/src/local_process_stores.rs",
+        "crates/apps/awaken-process-startup/src/process_stores.rs",
+        "crates/apps/awaken-process-startup/src/local_process_stores.rs",
         # The Coordinator/AllInOne and Control process compositions: each
         # chooses the process's one wall clock and hands it to every store and
         # component it builds.
-        "crates/bin/awaken-process-startup/src/deployment_process.rs",
-        "crates/bin/awaken-process-startup/src/control.rs",
+        "crates/apps/awaken-process-startup/src/deployment_process.rs",
+        "crates/apps/awaken-process-startup/src/control.rs",
         # The CLI binary's Config and Doctor commands are their own process
         # entry points and select the clock before lease admission.
-        "crates/bin/awaken-cli/src/main.rs",
+        "crates/apps/awaken-cli/src/main.rs",
         # Service startup composes its local ACP Worker before the later
         # Control/Coordinator graph; it selects their shared clock once.
-        "crates/bin/awaken-process-startup/src/service.rs",
+        "crates/apps/awaken-process-startup/src/service.rs",
         # The Worker daemon's bootstrap: it composes the Worker transport and
         # chooses the clock its signed request assertions are stamped with.
-        "crates/bin/awaken-worker/src/bootstrap.rs",
+        "crates/apps/awaken-worker/src/bootstrap.rs",
         # The Sandbox process's `main`: each role it dispatches to (the Hand,
         # the Git credential helper) is composed here and handed its clock.
-        "crates/bin/awaken-sandbox/src/main.rs",
+        "crates/apps/awaken-sandbox/src/main.rs",
         # Standalone example programs: each `main` composes one embedded
         # runtime and chooses the clock its commit store stamps with.
-        "crates/devtools/awaken-runtime-examples/examples/direct_runtime.rs",
-        "crates/devtools/awaken-runtime-examples/examples/hello_agent.rs",
+        "crates/sdk/devtools/awaken-runtime-examples/examples/direct_runtime.rs",
+        "crates/sdk/devtools/awaken-runtime-examples/examples/hello_agent.rs",
         "crates/devtools/awaken-sdk-server/src/main.rs",
         # Standalone Worker example programs: each `main` composes one Worker
         # process and chooses the clock its Host and request assertions share.
-        "crates/bin/awaken-cli/examples/credential_reference_worker.rs",
-        "crates/bin/awaken-cli/examples/hand_brain_lazy_worker.rs",
+        "crates/apps/awaken-cli/examples/credential_reference_worker.rs",
+        "crates/apps/awaken-cli/examples/hand_brain_lazy_worker.rs",
         # Harness processes. Each is the root of its own process graph: the
         # Scenario host's main and the modules that compose its platform, the
         # evaluation runners that compose one runtime per case, and the coding
@@ -199,7 +199,7 @@ COMPOSITION_ROOTS: frozenset[str] = frozenset(
         "crates/devtools/awaken-eval/src/replay.rs",
         # Clock selection moved from CodingSession's library constructor to
         # this declared coding_agent example's actual process entry point.
-        "crates/devtools/awaken-runtime-examples/examples/coding_agent/main.rs",
+        "crates/sdk/devtools/awaken-runtime-examples/examples/coding_agent/main.rs",
     }
 )
 
@@ -559,7 +559,7 @@ def selftest() -> None:
     assert not fabricated_literal_violations(l6), "L6/E1"
 
     # ── R2 ──
-    port = frozenset({"crates/runtime/awaken-time/src/clock.rs"})
+    port = frozenset({"crates/sdk/support/awaken-time/src/clock.rs"})
     port_file = sorted(port)[0]
     concrete = "SystemClock.now_ms()"
 
@@ -647,8 +647,8 @@ def selftest() -> None:
     # ambient library default (reject). Migrate the one named root rather than
     # retain both choices or grow a pattern/waiver. Injected library handles
     # remain ordinary use of the one WallClock port, without selecting time.
-    coding_main = "crates/devtools/awaken-runtime-examples/examples/coding_agent/main.rs"
-    coding_library = "crates/devtools/awaken-runtime-examples/src/coding_agent/mod.rs"
+    coding_main = "crates/sdk/devtools/awaken-runtime-examples/examples/coding_agent/main.rs"
+    coding_library = "crates/sdk/devtools/awaken-runtime-examples/src/coding_agent/mod.rs"
     assert not defaulted_clock_violations({coding_main: "fn main() { system_clock(); }"}), "D8 root"
     assert defaulted_clock_violations({coding_library: "fn new() { system_clock(); }"}), "D8 library"
     assert not defaulted_clock_violations({coding_library: "fn new(clock: Arc<dyn WallClock>) { store(clock); }"}), "D8 injected"

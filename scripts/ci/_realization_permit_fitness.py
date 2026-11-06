@@ -17,34 +17,34 @@ from _session_effect_fitness import _rust_function
 # registry, or a future edit that puts a bare Session id back beside the permit
 # and lets the driver run for a Session the permit does not name.
 REALIZATION_DRIVER_DEFINITION = (
-    "crates/server/awaken-session-realization-driver/src/session_realization_driver.rs"
+    "crates/platform/session/awaken-session-realization-driver/src/session_realization_driver.rs"
 )
 REALIZATION_PERMIT_DEFINITION = (
-    "crates/contract/awaken-session-execution-contract/src/session_realization/exclusion.rs"
+    "crates/platform/session/awaken-session-execution-contract/src/session_realization/exclusion.rs"
 )
 # The exclusion identity sources: the Worker-side installed Session
 # allocation, the co-located driver's per-Session registry, and the test-only
 # in-memory registry of the realization crate.
 REALIZATION_PERMIT_MINTERS = {
-    "crates/server/awaken-session-executor/src/installed_session/realization_permit.rs": (
+    "crates/platform/execution/awaken-session-executor/src/installed_session/realization_permit.rs": (
         "installed.realization"
     ),
-    "crates/server/awaken-session-application/src/realization/local_lock.rs": (
+    "crates/platform/session/awaken-session-application/src/realization/local_lock.rs": (
         "registry.entry(session_id.to_string())"
     ),
     # Test support only: the realization crate's in-memory installed-Session
     # registry, whose own allocation is the identity, exactly as the host's.
-    "crates/server/awaken-session-realization/src/test_support.rs": (
+    "crates/platform/execution/awaken-session-realization/src/test_support.rs": (
         "installed.realization.execution().phase"
     ),
 }
 # The only two entry points that may reach the application-owned phase driver,
 # and the canonical accessor each must obtain its permit from.
 REALIZATION_DRIVER_ENTRIES = {
-    "crates/server/awaken-session-executor/src/application/worker_projection.rs": (
+    "crates/platform/execution/awaken-session-executor/src/application/worker_projection.rs": (
         "sessions().acquire_realization("
     ),
-    "crates/server/awaken-session-application/src/realization.rs": (
+    "crates/platform/session/awaken-session-application/src/realization.rs": (
         "self.local_realization_locks.acquire(session_id.as_str())"
     ),
 }
@@ -59,8 +59,8 @@ REALIZATION_DRIVER_CALL = re.compile(
 # realization component; a second instance would be a second exclusion.
 LOCAL_REALIZATION_REGISTRY = "LocalRealizationLocks"
 LOCAL_REALIZATION_REGISTRY_HOLDERS = (
-    "crates/server/awaken-session-application/src/realization.rs",
-    "crates/server/awaken-session-application/src/realization/local_lock.rs",
+    "crates/platform/session/awaken-session-application/src/realization.rs",
+    "crates/platform/session/awaken-session-application/src/realization/local_lock.rs",
 )
 
 
@@ -191,21 +191,21 @@ pub async fn drive_session_realization(
 }
 """,
         REALIZATION_PERMIT_DEFINITION: "pub struct SessionRealizationPermit {}\n",
-        "crates/server/awaken-session-executor/src/installed_session/realization_permit.rs": """
+        "crates/platform/execution/awaken-session-executor/src/installed_session/realization_permit.rs": """
 SessionRealizationPermit::acquire(session, || installed.realization.clone(), admit)
 """,
-        "crates/server/awaken-session-application/src/realization/local_lock.rs": """
+        "crates/platform/session/awaken-session-application/src/realization/local_lock.rs": """
 pub(crate) struct LocalRealizationLocks();
 SessionRealizationPermit::acquire(session_id, || registry.entry(session_id.to_string()), admit)
 """,
-        "crates/server/awaken-session-realization/src/test_support.rs": """
+        "crates/platform/execution/awaken-session-realization/src/test_support.rs": """
 SessionRealizationPermit::acquire(session, || installed.realization.execution().phase.clone(), admit)
 """,
-        "crates/server/awaken-session-executor/src/application/worker_projection.rs": """
+        "crates/platform/execution/awaken-session-executor/src/application/worker_projection.rs": """
 let realization = host.sessions().acquire_realization(session_id).await;
 awaken_session_realization_driver::drive_session_realization(realization, None)
 """,
-        "crates/server/awaken-session-application/src/realization.rs": """
+        "crates/platform/session/awaken-session-application/src/realization.rs": """
 pub(crate) use local_lock::LocalRealizationLocks;
 local_realization_locks: Arc<LocalRealizationLocks>,
 let permit = self.local_realization_locks.acquire(session_id.as_str()).await;
@@ -245,7 +245,7 @@ crate::drive_session_realization(&permit, None)
     ), "R4 a driver that does not read its permit's Session is rejected"
 
     third_minter = dict(canonical)
-    third_minter["crates/server/awaken-session-executor/src/application.rs"] = (
+    third_minter["crates/platform/execution/awaken-session-executor/src/application.rs"] = (
         "SessionRealizationPermit::acquire(session, || Arc::new(Mutex::new(())), admit)\n"
     )
     assert any(
@@ -255,7 +255,7 @@ crate::drive_session_realization(&permit, None)
 
     lost_identity = dict(canonical)
     lost_identity[
-        "crates/server/awaken-session-executor/src/installed_session/realization_permit.rs"
+        "crates/platform/execution/awaken-session-executor/src/installed_session/realization_permit.rs"
     ] = "SessionRealizationPermit::acquire(session, || Arc::new(Mutex::new(())), admit)\n"
     assert any(
         "is gone; a permit" in error
@@ -263,7 +263,7 @@ crate::drive_session_realization(&permit, None)
     ), "R6 a minter that stops using its registered identity is rejected"
 
     new_entry = dict(canonical)
-    new_entry["crates/server/awaken-session-executor/src/application.rs"] = (
+    new_entry["crates/platform/execution/awaken-session-executor/src/application.rs"] = (
         "awaken_session_application::drive_session_realization(permit, None)\n"
     )
     assert any(
@@ -272,8 +272,8 @@ crate::drive_session_realization(&permit, None)
     ), "R7 a new phase-driver entry point is rejected"
 
     ad_hoc_permit = dict(canonical)
-    ad_hoc_permit["crates/server/awaken-session-application/src/realization.rs"] = (
-        canonical["crates/server/awaken-session-application/src/realization.rs"].replace(
+    ad_hoc_permit["crates/platform/session/awaken-session-application/src/realization.rs"] = (
+        canonical["crates/platform/session/awaken-session-application/src/realization.rs"].replace(
             "self.local_realization_locks.acquire(session_id.as_str())",
             "LocalRealizationLocks::default().acquire(session_id.as_str())",
         )
@@ -284,7 +284,7 @@ crate::drive_session_realization(&permit, None)
     ), "R8 an entry that mints from a call-site registry is rejected"
 
     second_registry = dict(canonical)
-    second_registry["crates/server/awaken-session-executor/src/application.rs"] = (
+    second_registry["crates/platform/execution/awaken-session-executor/src/application.rs"] = (
         "let locks = LocalRealizationLocks::default();\n"
     )
     assert any(

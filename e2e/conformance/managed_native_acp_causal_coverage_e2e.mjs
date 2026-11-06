@@ -41,30 +41,30 @@ const groups = [
   },
   {
     id: 'builtin-tools-and-spill',
-    native: evidence('crates/runtime/awaken-ext-builtin-tools/src/hand.rs', 'Bash state cannot cross Sessions'),
+    native: evidence('crates/sdk/extensions/awaken-ext-builtin-tools/src/hand.rs', 'Bash state cannot cross Sessions'),
     ...acpPartitions('e2e/managed_native_acp_runtime_matrix_e2e.mjs', 'ACP completed tool call/result pair'),
     a2a: evidence('e2e/a2a_hitl_decision_e2e.mjs', 'structured allow resumes the awaiting tool'),
     negative: evidence(
-      'crates/runtime/awaken-ext-builtin-tools/tests/hand.rs',
+      'crates/sdk/extensions/awaken-ext-builtin-tools/tests/hand.rs',
       'G3 untrusted absolute pattern',
     ),
   },
   {
     id: 'background-tool-execution',
     native: evidence(
-      'crates/runtime/awaken-runtime/tests/background_task_state.rs',
+      'crates/sdk/runtime/awaken-runtime/tests/background_task_state.rs',
       'ids.contains("run_in_background")',
     ),
     ...acpPartitions(
-      'crates/control/awaken-agent-config/src/compile/tests.rs',
+      'crates/platform/config/awaken-agent-config/src/compile/tests.rs',
       'R2 ACP + background_task',
     ),
     a2a: evidence(
-      'crates/control/awaken-agent-config/src/compile/tests.rs',
+      'crates/platform/config/awaken-agent-config/src/compile/tests.rs',
       'R3 A2A + background_task',
     ),
     negative: evidence(
-      'crates/runtime/awaken-ext-background-task/tests/plugin_state.rs',
+      'crates/sdk/extensions/awaken-ext-background-task/tests/plugin_state.rs',
       'model cannot select an',
     ),
   },
@@ -81,22 +81,22 @@ const groups = [
     ...acpPartitions('e2e/managed_namespace_session_environment_e2e.mjs', 'NAMESPACE-SKILL-OK'),
     // An outbound A2A agent owns its remote skills and cannot consume a local
     // Session mount. Compatibility here is the explicit fail-closed boundary.
-    a2a: evidence('crates/server/awaken-session-executor/src/host/tests/claimed_dispatch.rs', 'R2 local input was accepted'),
+    a2a: evidence('crates/platform/execution/awaken-session-executor/src/host/tests/claimed_dispatch.rs', 'R2 local input was accepted'),
     negative: evidence('e2e/managed_skill_store_durable_e2e.mjs', 'missing `files`'),
   },
   {
     id: 'mcp',
     native: evidence('e2e/management_mcp_e2e.mjs', 'always_ask'),
     ...acpPartitions('e2e/acp_managed_mcp_e2e.mjs', 'projects only replacement'),
-    a2a: evidence('crates/server/awaken-session-executor/src/host/tests/claimed_dispatch.rs', 'A2A-only IO context has no Environment and no Hand'),
-    negative: evidence('crates/server/awaken-session-executor/src/host/tests/mcp_credentials.rs', 'mcp_client_refresh_unsupported'),
+    a2a: evidence('crates/platform/execution/awaken-session-executor/src/host/tests/claimed_dispatch.rs', 'A2A-only IO context has no Environment and no Hand'),
+    negative: evidence('crates/platform/execution/awaken-session-executor/src/host/tests/mcp_credentials.rs', 'mcp_client_refresh_unsupported'),
   },
   {
     id: 'multiagent',
     native: evidence('e2e/managed_delegation_e2e.mjs', 'Native `researcher`'),
     ...acpPartitions('e2e/managed_native_acp_runtime_matrix_e2e.mjs', 'Test design G1'),
     a2a: evidence('e2e/managed_remote_delegation_e2e.mjs', 'remote A2A delegation round-tripped'),
-    negative: evidence('crates/server/awaken-session-executor/src/host/session/content_delivery.rs', '!published_backend_is_acp'),
+    negative: evidence('crates/platform/execution/awaken-session-executor/src/host/session/content_delivery.rs', '!published_backend_is_acp'),
   },
   {
     id: 'outcomes',
@@ -108,14 +108,14 @@ const groups = [
   {
     id: 'self-hosted-worker-and-recovery',
     native: evidence('e2e/management_self_hosted_worker_e2e.mjs', 'claims a session'),
-    ...acpPartitions('crates/bin/awaken-worker/tests/worker_node_lifecycle.rs', 'deployment.acp'),
+    ...acpPartitions('crates/apps/awaken-worker/tests/worker_node_lifecycle.rs', 'deployment.acp'),
     a2a: evidence('e2e/remote_attempt_lifecycle_e2e.ts', 'backend_ref round-trips'),
     negative: evidence('e2e/management_environments_e2e.mjs', 'reclaim_older_than_ms'),
   },
   {
     id: 'manual-and-scheduled-deployment',
     native: evidence('e2e/management_deployment_schedule_e2e.mjs', 'manual runs'),
-    ...acpPartitions('crates/server/awaken-protocol-managed/tests/session_resources.rs', 'acp:claude'),
+    ...acpPartitions('crates/platform/protocols/awaken-protocol-managed/tests/session_resources.rs', 'acp:claude'),
     a2a: evidence('e2e/remote_attempt_lifecycle_e2e.ts', 'Managed-cancel rule'),
     negative: evidence('e2e/management_deployment_schedule_e2e.mjs', 'auto-pauses'),
   },
@@ -129,14 +129,14 @@ const groups = [
     // A2A selects a complete remote agent, not a local model. Therefore the
     // model grammar accepts executor-only A2A and local Dream mounts are
     // deliberately rejected rather than projected across the trust boundary.
-    a2a: evidence('crates/control/awaken-config-service/src/managed_model_id.rs', 'A2A runtime'),
+    a2a: evidence('crates/platform/config/awaken-config-service/src/managed_model_id.rs', 'A2A runtime'),
     negative: evidence('e2e/managed_dream_e2e.ts', 'completed Dream cannot be canceled'),
   },
   {
     id: 'provider-and-runtime-certification',
     native: evidence('e2e/provider_connection_matrix_real_e2e.mjs', 'AWAKEN_PROVIDER_COMPAT'),
     ...acpPartitions('e2e/acp_runtime_profiles.mjs', 'ACP_RUNTIME_IDS'),
-    a2a: evidence('crates/control/awaken-config-service/src/managed_model_id.rs', 'A2A runtime'),
+    a2a: evidence('crates/platform/config/awaken-config-service/src/managed_model_id.rs', 'A2A runtime'),
     negative: evidence('e2e/provider_compat_cases.test.mjs', 'fails before provider I/O'),
   },
 ];

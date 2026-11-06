@@ -266,7 +266,7 @@ kernel_proved = [
 trace_refined = [
     item
     for item in formalizable
-    if "crates/runtime/awaken-runtime/tests/formal_refinement.rs"
+    if "crates/sdk/runtime/awaken-runtime/tests/formal_refinement.rs"
     in item.get("evidence", [])
 ]
 executable_only = [

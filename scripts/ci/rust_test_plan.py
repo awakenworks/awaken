@@ -539,7 +539,7 @@ class PlanTests(unittest.TestCase):
                 if packages is not None:
                     self.assertEqual(actual_packages, packages)
         declared = gate_inputs()
-        for path in ("crates/runtime/awaken-runtime/src/lib.rs", "Cargo.lock", "fuzz/Cargo.toml",
+        for path in ("crates/sdk/runtime/awaken-runtime/src/lib.rs", "Cargo.lock", "fuzz/Cargo.toml",
                      "examples/sdk-consumer/Cargo.toml", "scripts/ci/check-rust.sh", "lefthook.yml"):
             self.assertTrue(any(generate_hooks.glob_matches(glob, path) for glob in declared), path)
 

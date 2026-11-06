@@ -1,0 +1,655 @@
+// @formal surface exclude=test_only
+// @formal owner crates/platform/config/awaken-config-service/src/config_service.rs
+// @formal reason: Shared ConfigService fixtures, fake resolvers, registries, and failure injectors
+// @formal reason: included only by config_service.rs under cfg(test); they own no production
+// @formal reason: authorization, durability, concurrency, or credential boundary.
+// Shared fixtures for Config Service owner and adapter tests.
+//
+// Structural cause/effect coverage rationale: moving an item changes neither
+// runtime inputs nor domain decisions. ConfigService and Control suites are
+// the regression oracle for method ownership, helper visibility, and test
+// identity; a runtime decision table is not applicable to this extraction.
+
+use awaken_agent_config::{
+    AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
+    ConfigWrite, ModelSelection, PublicationWrite, ScopedConfig, StoredPublication,
+};
+use awaken_agent_contract::ScopeId;
+use awaken_config_resolver::{
+    AgentInputConfig, BindingId, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
+};
+use awaken_config_store::SqliteConfigStore;
+use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
+use awaken_executable_agent_contract::{
+    ExecutableAgentRegistration, ExecutableAgentRegistrationError,
+    ExecutableAgentRegistrationOutcome, ExecutableAgentWithdrawal,
+    ExecutableAgentWithdrawalOutcome,
+};
+use awaken_runtime_contract::resolved::ContextPolicy;
+use awaken_runtime_contract::resolved::ToolDescriptor;
+
+use crate::binding_resolver::{PublicationResolutionError, ResolvedPublicationModels};
+use crate::publication::{PublishError, prepare_agent_publication};
+use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
+
+fn scope(id: &str) -> ScopeId {
+    ScopeId::from(id)
+}
+
+pub(crate) fn agent_config(id: &str) -> AgentConfig {
+    AgentConfig {
+        id: id.to_string(),
+        instructions: "be helpful".to_string(),
+        max_steps: Some(8),
+        delegation_limits: Default::default(),
+        model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b")
+            .expect("literal coordinates"),
+        inference: Default::default(),
+        tool_ids: vec![],
+        model_fallbacks: Vec::new(),
+        plugin_ids: vec![],
+        plugin_config: Default::default(),
+        context_policy: ContextPolicy::KeepAll,
+        tool_patterns: Vec::new(),
+        ..Default::default()
+    }
+}
+
+fn auto_config(id: &str) -> AgentConfig {
+    let mut cfg = agent_config(id);
+    cfg.model_binding = ModelSelection::Auto;
+    cfg
+}
+
+async fn resolve_config(service: &ConfigService, config: AgentConfig) -> AgentConfig {
+    prepare_agent_publication(
+        service.model_publication_resolver.as_ref(),
+        &scope(DEFAULT_SCOPE),
+        AgentConfigRevision {
+            config,
+            revision: 1,
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
+        },
+    )
+    .await
+    .unwrap()
+    .config
+}
+
+struct FakeResolver;
+#[async_trait::async_trait]
+impl ModelPublicationResolver for FakeResolver {
+    async fn resolve_models(
+        &self,
+        _workspace: &ScopeId,
+        selection: &ModelSelection,
+        candidates: &[ModelBinding],
+    ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+        let (primary, candidates) = selection.resolved().map_or_else(
+            || {
+                (
+                    ModelBinding::new("openai", "m-first", "genai"),
+                    vec![ModelBinding::new("openai", "m-second", "genai")],
+                )
+            },
+            |primary| (primary.clone(), candidates.to_vec()),
+        );
+        Ok(ResolvedPublicationModels::host(
+            primary, candidates, None, None,
+        ))
+    }
+}
+
+struct ChangedPolicyResolver;
+
+#[async_trait::async_trait]
+impl ModelPublicationResolver for ChangedPolicyResolver {
+    async fn resolve_models(
+        &self,
+        _workspace: &ScopeId,
+        _selection: &ModelSelection,
+        _candidates: &[ModelBinding],
+    ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+        Ok(ResolvedPublicationModels::host(
+            ModelBinding::new("openai", "m-policy-changed", "genai"),
+            Vec::new(),
+            None,
+            None,
+        ))
+    }
+}
+
+/// A resolver whose catalog has no provider-backed model.
+struct ErrResolver;
+
+#[async_trait::async_trait]
+impl ModelPublicationResolver for ErrResolver {
+    async fn resolve_models(
+        &self,
+        _workspace: &ScopeId,
+        _selection: &ModelSelection,
+        _candidates: &[ModelBinding],
+    ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+        Err("no provider-backed model in the catalog".into())
+    }
+}
+
+fn test_registrar() -> Arc<dyn ExecutableAgentRegistrar> {
+    Arc::new(LocalExecutableAgentRegistrar::new(Arc::new(
+        ExecutableAgentCatalog::new(),
+    )))
+}
+
+pub(crate) fn test_service() -> ConfigService {
+    ConfigService::new(
+        Arc::new(FakeResolver),
+        test_registrar(),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Vec::new(),
+        |_| true,
+    )
+}
+
+struct FakeProviderResolver;
+
+#[async_trait::async_trait]
+impl ModelPublicationResolver for FakeProviderResolver {
+    async fn resolve_models(
+        &self,
+        workspace: &ScopeId,
+        selection: &ModelSelection,
+        candidates: &[ModelBinding],
+    ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+        let primary = selection
+            .resolved()
+            .cloned()
+            .ok_or_else(|| "test requires a pinned model".to_string())?;
+        let candidate = |binding: ModelBinding| {
+            ResolvedModelCandidate::try_provider(
+                binding.clone(),
+                "provider@2",
+                "endpoint@4",
+                workspace.clone(),
+                Some(
+                    awaken_agent_contract::credential::CredentialAccess::new(
+                        awaken_agent_contract::credential::CredentialRef {
+                            id: format!("credential-{workspace}"),
+                            revision: 3,
+                        },
+                        awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                        awaken_agent_contract::credential::CredentialUsage::ProviderAdapter,
+                        awaken_agent_contract::credential::CredentialExecutionPolicy::self_hosted_provider(),
+                    )
+                    .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                        awaken_agent_contract::credential::CredentialPurpose::ProviderAdapter,
+                        "provider",
+                    )),
+                ),
+                awaken_runtime_contract::InferenceEndpoint {
+                    adapter_kind: "openai".into(),
+                    api_dialect: "open_ai_chat".into(),
+                    base_url: "https://example.invalid/v1".into(),
+                    upstream_model: binding.identity().1.to_owned(),
+                    processing_placement: None,
+                },
+            )
+        };
+        Ok(ResolvedPublicationModels {
+            primary: candidate(primary).map_err(|error| error.to_string())?,
+            candidates: candidates
+                .iter()
+                .cloned()
+                .map(candidate)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?,
+            context_window: None,
+            max_output_tokens: None,
+        })
+    }
+}
+
+/// A config plane (the scope edge) over a fresh in-memory store, an optional
+/// resolver override, an optional resource store, and the given tool catalog.
+async fn plane_with(
+    tools: Arc<dyn ToolCatalogSource>,
+    resolver: Option<Arc<dyn ModelPublicationResolver>>,
+    resources: Option<Arc<dyn AgentInputBindingRepository>>,
+) -> ConfigPlane {
+    let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
+    let mut service = ConfigService::new(
+        resolver.unwrap_or_else(|| Arc::new(FakeResolver)),
+        test_registrar(),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Vec::new(),
+        |_| true,
+    );
+    if let Some(resources) = resources {
+        service = service.with_resources(resources);
+    }
+    ConfigPlane::new(Arc::new(service), store, tools)
+}
+
+async fn static_plane(resolver: Option<Arc<dyn ModelPublicationResolver>>) -> ConfigPlane {
+    plane_with(
+        Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        resolver,
+        None,
+    )
+    .await
+}
+
+fn legacy_permission_config(id: &str) -> AgentConfig {
+    let mut config = agent_config(id);
+    config.plugin_config.insert(
+        "permission".into(),
+        serde_json::json!({
+            "default_behavior": "ask",
+            "rules": [{ "pattern": "write", "behavior": "ask" }]
+        }),
+    );
+    config
+}
+
+struct ArchiveBetweenAdmissionAndCas {
+    current: std::sync::Mutex<AgentConfigRevision>,
+    interleaved: std::sync::atomic::AtomicBool,
+}
+
+impl ArchiveBetweenAdmissionAndCas {
+    fn new(config: AgentConfig) -> Self {
+        Self {
+            current: std::sync::Mutex::new(AgentConfigRevision {
+                config,
+                revision: 1,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+            }),
+            interleaved: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ConfigRegistry for ArchiveBetweenAdmissionAndCas {
+    async fn put_config(&self, _config: &AgentConfig) -> Result<(), ConfigStoreError> {
+        panic!("mutable application writes must use revision CAS")
+    }
+
+    async fn put_config_if_revision(
+        &self,
+        config: &AgentConfig,
+        expected_revision: u64,
+    ) -> Result<ConfigWrite, ConfigStoreError> {
+        let mut current = self.current.lock().unwrap();
+        if current.revision != expected_revision {
+            return Ok(ConfigWrite::Conflict {
+                current_revision: Some(current.revision),
+            });
+        }
+        current.config = config.clone();
+        current.revision += 1;
+        Ok(ConfigWrite::Applied {
+            revision: current.revision,
+        })
+    }
+
+    async fn get_config(&self, _id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
+        Ok(Some(self.current.lock().unwrap().config.clone()))
+    }
+
+    async fn get_config_revision(
+        &self,
+        _id: &str,
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+        let mut current = self.current.lock().unwrap();
+        let observed = current.clone();
+        if !self
+            .interleaved
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            current.config.archived_at = Some("2026-08-30T00:00:00Z".into());
+            current.revision += 1;
+        }
+        Ok(Some(observed))
+    }
+
+    async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+        Ok(vec![self.current.lock().unwrap().config.clone()])
+    }
+
+    async fn put_publication_if_source_current(
+        &self,
+        _publication: &StoredPublication,
+    ) -> Result<PublicationWrite, ConfigStoreError> {
+        panic!("test does not publish")
+    }
+
+    async fn get_publication(
+        &self,
+        _fingerprint: &str,
+    ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+        Ok(None)
+    }
+}
+
+// --- store-error paths (CEG P1 / P6 / reconcile-a / F19c / F21b) ----------
+// A real SqliteConfigStore never fails its ops deterministically, so the
+// fail-closed error arms need test doubles that return `ConfigStoreError`.
+
+/// Every operation fails — drives the read-failure arms.
+struct FailingRegistry;
+#[async_trait::async_trait]
+impl ConfigRegistry for FailingRegistry {
+    async fn put_config(&self, _c: &AgentConfig) -> Result<(), ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+    async fn get_config(&self, _id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+    async fn get_config_revision(
+        &self,
+        _id: &str,
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+    async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+    async fn put_publication_if_source_current(
+        &self,
+        _publication: &StoredPublication,
+    ) -> Result<PublicationWrite, ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+    async fn get_publication(
+        &self,
+        _fp: &str,
+    ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+}
+
+/// Reads a stored pinned config fine, but fails when persisting the publication
+/// — isolates the source-fenced publication write → `Store` branch (P6).
+struct PublishFailRegistry;
+#[async_trait::async_trait]
+impl ConfigRegistry for PublishFailRegistry {
+    async fn put_config(&self, _c: &AgentConfig) -> Result<(), ConfigStoreError> {
+        Ok(())
+    }
+    async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
+        Ok(Some(agent_config(id)))
+    }
+    async fn get_config_revision(
+        &self,
+        id: &str,
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+        Ok(Some(AgentConfigRevision {
+            config: agent_config(id),
+            revision: 1,
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
+        }))
+    }
+    async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+        Ok(vec![])
+    }
+    async fn put_publication_if_source_current(
+        &self,
+        _publication: &StoredPublication,
+    ) -> Result<PublicationWrite, ConfigStoreError> {
+        Err(ConfigStoreError("publication store down".into()))
+    }
+    async fn get_publication(
+        &self,
+        _fp: &str,
+    ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+        Ok(None)
+    }
+}
+
+/// Simulates an authoring write that wins after publish reads generation 7
+/// but before it tries to persist/install the compiled artifact.
+struct StalePublishRegistry {
+    write: PublicationWrite,
+}
+
+#[async_trait::async_trait]
+impl ConfigRegistry for StalePublishRegistry {
+    async fn put_config(&self, _c: &AgentConfig) -> Result<(), ConfigStoreError> {
+        Ok(())
+    }
+
+    async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
+        Ok(Some(agent_config(id)))
+    }
+
+    async fn get_config_revision(
+        &self,
+        id: &str,
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+        Ok(Some(AgentConfigRevision {
+            config: agent_config(id),
+            revision: 7,
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
+        }))
+    }
+
+    async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn put_publication_if_source_current(
+        &self,
+        publication: &StoredPublication,
+    ) -> Result<PublicationWrite, ConfigStoreError> {
+        assert_eq!(publication.source_revision, 7);
+        Ok(self.write)
+    }
+
+    async fn get_publication(
+        &self,
+        _fp: &str,
+    ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+        Ok(None)
+    }
+}
+
+/// Simulates the real active/active race where a reconciler advances the
+/// source exactly once between an unreviewed publish read and its CAS.
+#[derive(Default)]
+struct AdvancingPublishRegistry {
+    reads: std::sync::atomic::AtomicUsize,
+    committed: std::sync::Mutex<Option<StoredPublication>>,
+    read_behavior: std::sync::atomic::AtomicU8,
+}
+
+#[async_trait::async_trait]
+impl ConfigRegistry for AdvancingPublishRegistry {
+    async fn put_config(&self, _c: &AgentConfig) -> Result<(), ConfigStoreError> {
+        Ok(())
+    }
+
+    async fn get_config(&self, id: &str) -> Result<Option<AgentConfig>, ConfigStoreError> {
+        Ok(Some(agent_config(id)))
+    }
+
+    async fn get_config_revision(
+        &self,
+        id: &str,
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+        let revision = if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            7
+        } else {
+            8
+        };
+        Ok(Some(AgentConfigRevision {
+            config: agent_config(id),
+            revision,
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
+        }))
+    }
+
+    async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn put_publication_if_source_current(
+        &self,
+        publication: &StoredPublication,
+    ) -> Result<PublicationWrite, ConfigStoreError> {
+        if publication.source_revision == 7 {
+            Ok(PublicationWrite::Conflict {
+                current_revision: Some(8),
+            })
+        } else {
+            assert_eq!(publication.source_revision, 8);
+            *self.committed.lock().unwrap() = Some(publication.clone());
+            Ok(PublicationWrite::Committed { source_revision: 8 })
+        }
+    }
+
+    async fn get_publication(
+        &self,
+        fp: &str,
+    ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+        let mut publication = self
+            .committed
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|publication| publication.fingerprint == fp)
+            .cloned();
+        match self.read_behavior.load(std::sync::atomic::Ordering::SeqCst) {
+            1 => publication = None,
+            2 => {
+                if let Some(publication) = publication.as_mut() {
+                    publication.execution_workspace = ScopeId::from("foreign");
+                }
+            }
+            3 => return Err(ConfigStoreError("publication read unavailable".into())),
+            _ => {}
+        }
+        Ok(publication)
+    }
+}
+
+/// A config plane (the scope edge) over a shared real store handle, returned
+/// alongside the store so a test can read the durable rows directly.
+fn plane_over(store: Arc<SqliteConfigStore>) -> ConfigPlane {
+    ConfigPlane::new(
+        Arc::new(test_service()),
+        store,
+        Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+    )
+}
+
+struct FailingScopedRegistry;
+#[async_trait::async_trait]
+impl ScopedConfigRegistry for FailingScopedRegistry {
+    async fn list_config_scopes(&self) -> Result<Vec<ScopeId>, ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+    async fn put_config_scoped(
+        &self,
+        _s: &ScopeId,
+        _c: &AgentConfig,
+    ) -> Result<(), ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+    async fn get_config_scoped(
+        &self,
+        _s: &ScopeId,
+        _id: &str,
+    ) -> Result<Option<AgentConfig>, ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+    async fn get_config_revision_scoped(
+        &self,
+        _scope: &ScopeId,
+        _id: &str,
+    ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+    async fn list_configs_scoped(
+        &self,
+        _s: &ScopeId,
+    ) -> Result<Vec<AgentConfig>, ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+    async fn put_publication_if_source_current_scoped(
+        &self,
+        _scope: &ScopeId,
+        _publication: &StoredPublication,
+    ) -> Result<PublicationWrite, ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+    async fn get_publication_scoped(
+        &self,
+        _s: &ScopeId,
+        _fp: &str,
+    ) -> Result<Option<StoredPublication>, ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+    async fn list_published_scoped(
+        &self,
+        _s: &ScopeId,
+    ) -> Result<Vec<StoredPublication>, ConfigStoreError> {
+        Err(ConfigStoreError("boom".into()))
+    }
+}
+
+fn test_service_and_catalog() -> (ConfigService, Arc<ExecutableAgentCatalog>) {
+    let catalog = Arc::new(ExecutableAgentCatalog::new());
+    let registrar = Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone()));
+    (
+        ConfigService::new(
+            Arc::new(FakeResolver),
+            registrar,
+            Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            Vec::new(),
+            |_| true,
+        ),
+        catalog,
+    )
+}
+
+// One real MCP parser/metadata input shared by source-selection and the
+// existing ConfigPlane lifecycle tests; no transport, fake plugin or parser.
+pub(crate) fn mcp_configuration_source()
+-> awaken_executable_agent_contract::capability::PluginConfigurationSource {
+    use awaken_executable_agent_contract::capability::{
+        PluginCapability, PluginConfigurationSource,
+    };
+    PluginConfigurationSource::McpServers {
+        capability_for: |server| {
+            let manifest = awaken_ext_mcp::McpPlugin::manifest_for(server)
+                .map_err(|error| error.to_string())?;
+            Ok(PluginCapability {
+                id: manifest.id,
+                schema_keys: manifest.config_sections,
+                config_schema: None,
+                bound: manifest.bound,
+            })
+        },
+        validate: |value| {
+            awaken_ext_mcp::notification::McpNotificationConfig::parse(value).map(|_| ())
+        },
+    }
+}
+
+pub(crate) fn mcp_server_binding(
+    name: &str,
+) -> awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+    awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+        name: name.into(),
+        transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(
+            "https://mcp.invalid",
+        ),
+        credential: None,
+        prompts_as_skills: false,
+    }
+}

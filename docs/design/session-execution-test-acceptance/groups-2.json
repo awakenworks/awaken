@@ -3,7 +3,7 @@
     "id": "T07",
     "title": "Run 接纳与激活",
     "owner": "SessionRun application 与 dispatch",
-    "entrypoint": "crates/server/awaken-session-application/src/tests/run_admission.rs",
+    "entrypoint": "crates/platform/session/awaken-session-application/src/tests/run_admission.rs",
     "change": "refine",
     "why": "分别约束权威提交和外部效果，不承诺任意网络副作用恰好一次。",
     "kind": "behavior",
@@ -147,7 +147,7 @@
     "id": "T08",
     "title": "Work 与 Run 桥接",
     "owner": "Session work projection 与 Run dispatch",
-    "entrypoint": "crates/server/awaken-session-application/src/tests/authority/work_projection.rs",
+    "entrypoint": "crates/platform/session/awaken-session-application/src/tests/authority/work_projection.rs",
     "change": "refine",
     "why": "Work 是领取/租约协议事项；ack 不等于 Run 成功，healthcheck 不强制创建 Run。",
     "kind": "behavior",
@@ -300,7 +300,7 @@
     "id": "T09",
     "title": "租约边界与竞争",
     "owner": "Work、dispatch、realization 各自权威",
-    "entrypoint": "crates/stores/awaken-work-store/tests/lease_book_properties.rs",
+    "entrypoint": "crates/platform/environment/awaken-work-store/tests/lease_book_properties.rs",
     "change": "retain",
     "why": "不同租约各有状态机；共用时钟和边界规则，不合并 epoch。",
     "kind": "behavior",
@@ -449,7 +449,7 @@
     "id": "T10",
     "title": "物理停止与未知结果",
     "owner": "Native、ACP、Sandbox 的现有停止观察者",
-    "entrypoint": "crates/runtime/awaken-ext-builtin-tools/tests/hand/windows_process.rs",
+    "entrypoint": "crates/sdk/extensions/awaken-ext-builtin-tools/tests/hand/windows_process.rs",
     "change": "refine",
     "why": "停止证明必须按适配器能力声明，future 被 drop 不等于物理静止。",
     "kind": "behavior",
@@ -545,7 +545,7 @@
           ]
         },
         "windows_follow_up": {
-          "implementation": "crates/shared/awaken-process-win32",
+          "implementation": "crates/sdk/support/awaken-process-win32",
           "gate": "scripts/ci/check-trusted-host-portability.sh",
           "scope": "Local native Windows/MSVC only; original tree control, retained member exit, cancellation/cleanup-owner retry and ACP reaping. No full-group acceptance or new historical receipt claim."
         }
@@ -603,7 +603,7 @@
           ]
         },
         "a2a_windows_follow_up": {
-          "implementation": "crates/server/awaken-run-executor-a2a/src/executor.rs",
+          "implementation": "crates/platform/execution/awaken-run-executor-a2a/src/executor.rs",
           "scope": "Valid Running/Prepared execute and cancel use the existing uncertainty gate before resolver/peer/root effects; existing Accepted-task recovery remains a separate positive path.",
           "acceptance": "pending; keep all historical source and execution identities unchanged"
         }
@@ -620,7 +620,7 @@
     "id": "T11",
     "title": "工具回复接纳与重放",
     "owner": "Session event application",
-    "entrypoint": "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
+    "entrypoint": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests.rs",
     "change": "retain",
     "why": "保持 ticket/version/Run/Thread 坐标约束及消费语义。",
     "kind": "behavior",
@@ -767,7 +767,7 @@
     "id": "T12",
     "title": "事件批次",
     "owner": "Session aggregate 与事件适配",
-    "entrypoint": "crates/server/awaken-session-application/src/tests/event_batches.rs",
+    "entrypoint": "crates/platform/session/awaken-session-application/src/tests/event_batches.rs",
     "change": "retain",
     "why": "协议语法验证与 aggregate 业务判定保持分层。",
     "kind": "behavior",
@@ -925,7 +925,7 @@
     "id": "T13",
     "title": "预算与动态策略",
     "owner": "BudgetAccounting、Session policy 与 effect gate",
-    "entrypoint": "crates/server/awaken-session-application/src/tests/budget_settlement.rs",
+    "entrypoint": "crates/platform/session/awaken-session-application/src/tests/budget_settlement.rs",
     "change": "refine",
     "why": "明确冻结配置与动态限制；不把模型价格变化追溯应用到已接纳操作。",
     "kind": "behavior",

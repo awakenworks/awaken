@@ -538,8 +538,8 @@ def selftest() -> None:
     # delegation must both remain scanned by this exact predicate. Injecting a
     # backend selector into either source must still reject, not gain a waiver.
     assert RUNTIME_COMMIT_SOURCES == (
-        "crates/server/awaken-session-run-delivery/src/commit_boundary.rs",
-        "crates/shared/awaken-dispatch-erasure/src/local_commit.rs",
+        "crates/platform/execution/awaken-session-run-delivery/src/commit_boundary.rs",
+        "crates/platform/execution/awaken-dispatch-erasure/src/local_commit.rs",
     )
     for source in RUNTIME_COMMIT_SOURCES:
         assert runtime_commit_authority_violations("enum CommitPlan { Sqlite }"), source

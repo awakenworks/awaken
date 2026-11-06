@@ -3,10 +3,10 @@
 - Status: Accepted
 - Date: 2026-07-08
 - Implemented: D1–D3 — `RunCompactionMarker` (`compaction/<run_id>`,
-  `crates/contract/awaken-runtime-contract/src/compaction.rs:8`) staged by
-  `awaken-ext-compact` (`crates/runtime/awaken-ext-compact/src/plugin.rs:322`) and
+  `crates/sdk/contracts/awaken-runtime-contract/src/compaction.rs:8`) staged by
+  `awaken-ext-compact` (`crates/sdk/extensions/awaken-ext-compact/src/plugin.rs:322`) and
   projected as `OutboundKind::ThreadContextCompacted {}`
-  (`crates/server/awaken-protocol-managed/src/types/session.rs:974`), covered by
+  (`crates/platform/protocols/awaken-protocol-managed/src/types/session.rs:974`), covered by
   `e2e/managed_compaction_e2e.mjs`. D4 stays deferred by design; D5's remaining
   item is the recorded execution debt.
 - Amended: 2026-10-09 (status corrected; names and references)
@@ -254,7 +254,7 @@ D3 is what was built:
 - Change item 4's `OutboundKind::ThreadContextCompacted { pre_compaction_tokens: Option<u64> }`
   → the payload-free `ThreadContextCompacted {}` (D3; `types/session.rs:974`).
 - The keys `compaction/<step>` (change item 6, Risks) → `compaction/<run_id>`
-  (`RunCompactionMarker`, `crates/contract/awaken-runtime-contract/src/compaction.rs:5-16`).
+  (`RunCompactionMarker`, `crates/sdk/contracts/awaken-runtime-contract/src/compaction.rs:5-16`).
   One marker per folding Run, Thread scope, commutative merge.
 - `awaken-protocol-managed/src/dto.rs` and `state.rs` → the projection now lives
   in `src/types/session.rs` and `src/state/events/timeline_encoding.rs:146`.

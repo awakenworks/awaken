@@ -138,7 +138,8 @@ After the first Session is running, open **API & protocols** in the Console for
 copyable Managed Agents, Vercel AI SDK, AG-UI, A2A, and MCP examples. Every
 protocol uses the same published Agent and durable Session authority.
 
-Runtime-internal examples under `crates/devtools/` teach embedding and extension
+Runtime-internal examples under
+`crates/sdk/devtools/awaken-runtime-examples/` teach embedding and extension
 mechanics; they are not a second product quickstart.
 
 ## Operate Awaken

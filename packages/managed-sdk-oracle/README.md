@@ -36,7 +36,7 @@ evidence from drifting from the external expectation:
 - `contracts/anthropic-managed/operation-coverage.generated.json` maps every
   current SDK operation and reviewed SDK-absent route to one exact executable
   Rust behavior test and the exact SDK compile fixtures.
-- `crates/server/awaken-protocol-managed/contracts/request-witnesses.generated.json`
+- `crates/platform/protocols/awaken-protocol-managed/contracts/request-witnesses.generated.json`
   records, for every current SDK operation, the exact wire request (method,
   path, query pairs, JSON or multipart body) the official package emits for a
   required-only invocation, an every-optional invocation, and every union

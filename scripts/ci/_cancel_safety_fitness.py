@@ -104,24 +104,24 @@ CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
     # The port implementation is one delegating call; every caller that awaits
     # `create_rooted_sandbox` stays counted under its own name above, so the
     # ownership question is decided (and ratcheted) at those callers.
-    "crates/worker/awaken-sandbox-local/src/auxiliary.rs::create_rooted_sandbox": (
+    "crates/platform/sandbox/awaken-sandbox-local/src/auxiliary.rs::create_rooted_sandbox": (
         "delegates to LocalProvider::create_sandbox; its callers are the counted effect"
     ),
-    "crates/worker/awaken-sandbox-kubernetes/src/image_warmup.rs::reconcile_image_prewarm": (
+    "crates/platform/sandbox/awaken-sandbox-kubernetes/src/image_warmup.rs::reconcile_image_prewarm": (
         "Kubernetes owns the persisted DaemonSet and its Pods; the existing Worker "
         "Environment reconciliation re-observes its deterministic identity with "
         "the canonical realization fingerprint/projection, then retires obsolete "
         "holders through exact policy scope and UID/resourceVersion preconditions. "
         "No Session root or unattached provider environment is created."
     ),
-    "crates/worker/awaken-sandbox-container/src/pool.rs::prewarm_to": (
+    "crates/platform/sandbox/awaken-sandbox-container/src/pool.rs::prewarm_to": (
         "delegates to WarmContainerPool::prewarm, which claims the warm scope"
     ),
     # Matches on the name only. The callee is a control-plane domain command
     # (`CreateEnvironmentCommand` keyed by `command_id`), preceded by a durable
     # audit write and reconciled by `already_applied_output`; no mount, sandbox,
     # pod, process or clone is created, so there is no host resource to strand.
-    "crates/control/awaken-admin-assistant/src/lib.rs::invoke": (
+    "crates/platform/config/awaken-admin-assistant/src/lib.rs::invoke": (
         "control-plane command idempotent under command_id, not a host effect"
     ),
 }

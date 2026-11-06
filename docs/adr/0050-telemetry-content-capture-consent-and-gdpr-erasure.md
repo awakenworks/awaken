@@ -507,32 +507,32 @@ Build slices (**core** = both builds; **managed** = server-local only):
   which seed no Org ([ADR-0048](0048-iam-host-adoption-org-workspace-path-alignment-and-a2a-carve-out.md)
   D4), the deployment configuration, because the operator is the controller.
   Code: `deployment.runtime.content_capture.level`
-  (`crates/bin/awaken-process-startup/src/deployment_process.rs:225`,
-  `crates/bin/awaken-process-startup/src/control.rs:369`; parsed in
-  `crates/bin/awaken-process-startup/src/config/runtime_settings.rs:156`). Workspace, Agent
+  (`crates/apps/awaken-process-startup/src/deployment_process.rs:225`,
+  `crates/apps/awaken-process-startup/src/control.rs:369`; parsed in
+  `crates/apps/awaken-process-startup/src/config/runtime_settings.rs:156`). Workspace, Agent
   and Session may only tighten it. D3's "Org fields are required" applies where
   an Org exists.
 - **Lower-layer narrowing.** `TelemetryCeiling` and the lower-layer
   `TelemetryNarrowing` now live in
-  `crates/contract/awaken-data-governance-contract/src/telemetry.rs`, so the
+  `crates/platform/governance/awaken-data-governance-contract/src/telemetry.rs`, so the
   Run boundary composes them without depending on Control. The Workspace layer
   is wired (see the implementation status below); the Agent and Session layers
   are not yet.
 - **Consent location (D4).** D4 keeps consent off `trust_grants`, but its entry
   path line says enrollment "lands in `trust_grants[\"telemetry_content\"]`". The
   first rule holds: `DataSubject` keeps `trust_grants` and `consents` as separate
-  fields (`crates/control/awaken-data-subject-application/src/lib.rs:194-200`).
+  fields (`crates/platform/governance/awaken-data-subject-application/src/lib.rs:194-200`).
 
 ## Amendment 2026-10-09: implementation status
 
 Implemented:
 
 - `ContentCapture`, `CaptureDecision`, `ContentRedactor`, `NoopRedactor`
-  (`crates/contract/awaken-runtime-contract/src/capture.rs`) and the text redactor
-  `PiiRedactor` (`crates/runtime/awaken-observability/src/redaction.rs:17`);
+  (`crates/sdk/contracts/awaken-runtime-contract/src/capture.rs`) and the text redactor
+  `PiiRedactor` (`crates/sdk/support/awaken-observability/src/redaction.rs:17`);
 - the deployment-level ceiling above;
 - the Workspace layer of the narrowing chain: `GET`/`PUT /v1/config/telemetry`
-  (`crates/control/awaken-control/src/telemetry_policy.rs`) authors a
+  (`crates/apps/awaken-control/src/telemetry_policy.rs`) authors a
   revisioned `content_capture` narrowing per Workspace, rejects a value wider
   than the deployment ceiling, and persists it in the admin store (SQLite and
   PostgreSQL, converged migration V3). The Run boundary reads it through
@@ -542,11 +542,11 @@ Implemented:
   unreadable narrowing closes the ceiling to `off`;
 - the `DataSubject` aggregate with per-purpose consent grants
   (`awaken-data-subject-application`, `awaken-data-subject-store`),
-  `DataSubjectResolver`/`NullResolver` (`crates/contract/awaken-data-governance-contract/src/lib.rs:80`, `:127`),
+  `DataSubjectResolver`/`NullResolver` (`crates/platform/governance/awaken-data-governance-contract/src/lib.rs:80`, `:127`),
   `RepoDataSubjectResolver`, User Profile routes with enrollment, and
-  `POST /v1/user_profiles/{id}/erasure` (`crates/control/awaken-control/src/data_subject.rs:32`);
+  `POST /v1/user_profiles/{id}/erasure` (`crates/apps/awaken-control/src/data_subject.rs:32`);
 - one capture decision (amended 2026-10-10): `decide_capture` in
-  `crates/contract/awaken-data-governance-contract/src/decision.rs` computes
+  `crates/platform/governance/awaken-data-governance-contract/src/decision.rs` computes
   `{ requested, ceiling, consent, effective, reason }` from the top ceiling,
   the Workspace narrowing answer and the subject's consent, and is the only
   place the levels are composed. The Run boundary
@@ -581,7 +581,7 @@ Not implemented:
   `ScopedRepo` mechanism was dropped, and D7's point still stands. The current
   record of the `Org -> Workspace` hierarchy is
   [ADR-0061](0061-selectable-identity-and-platform-managed-resource-scopes.md).
-  No `awaken-scope` crate exists; tenancy types are in `crates/contract/awaken-tenancy`.
+  No `awaken-scope` crate exists; tenancy types are in `crates/platform/access/awaken-tenancy`.
 - `RegexPiiRedactor` → `PiiRedactor`; `DataSubjectErasure` → `ContentEraser`
-  (`crates/contract/awaken-data-governance-contract/src/lib.rs:114`);
-  `foundation/awaken-runtime-contract` → `crates/contract/awaken-runtime-contract`.
+  (`crates/platform/governance/awaken-data-governance-contract/src/lib.rs:114`);
+  `foundation/awaken-runtime-contract` → `crates/sdk/contracts/awaken-runtime-contract`.

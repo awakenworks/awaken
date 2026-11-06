@@ -275,7 +275,7 @@
     "required_scenarios": {
       "realization-capacity-cancellation": {
         "family": "realization-capacity",
-        "source": "crates/server/awaken-session-realization-driver/src/control_deadline/composition_tests.rs",
+        "source": "crates/platform/session/awaken-session-realization-driver/src/control_deadline/composition_tests.rs",
         "rules": [
           "ok",
           "error",
@@ -289,7 +289,7 @@
       },
       "realization-capacity-mutex": {
         "family": "realization-capacity",
-        "source": "crates/server/awaken-session-executor/src/host/tests/realization_renewal.rs",
+        "source": "crates/platform/execution/awaken-session-executor/src/host/tests/realization_renewal.rs",
         "rules": [
           "finish-wait",
           "cancel-wait",
@@ -298,42 +298,42 @@
       },
       "binding-apply": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/authority.rs",
+        "source": "crates/platform/session/awaken-session-application/src/tests/authority.rs",
         "rules": [
           "binding-apply"
         ]
       },
       "binding-replay": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/authority.rs",
+        "source": "crates/platform/session/awaken-session-application/src/tests/authority.rs",
         "rules": [
           "binding-replay"
         ]
       },
       "binding-reject": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/authority.rs",
+        "source": "crates/platform/session/awaken-session-application/src/tests/authority.rs",
         "rules": [
           "binding-reject"
         ]
       },
       "root-lost-ack": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs",
+        "source": "crates/platform/session/awaken-session-application/src/tests/creation/time_assurance.rs",
         "rules": [
           "root-lost-ack"
         ]
       },
       "root-reject": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs",
+        "source": "crates/platform/session/awaken-session-application/src/tests/creation/time_assurance.rs",
         "rules": [
           "root-reject"
         ]
       },
       "root-crash-recovery": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs",
+        "source": "crates/platform/session/awaken-session-application/src/tests/creation/time_assurance.rs",
         "rules": [
           "before",
           "after"
@@ -341,7 +341,7 @@
       },
       "processed-first-replay-terminal": {
         "family": "processed",
-        "source": "crates/contract/awaken-session-contract/src/event/mod.rs",
+        "source": "crates/platform/session/awaken-session-contract/src/event/mod.rs",
         "rules": [
           "first",
           "replay",
@@ -351,7 +351,7 @@
       },
       "publication-cardinality-renewal": {
         "family": "publication",
-        "source": "crates/server/awaken-session-application/src/tests/realization.rs",
+        "source": "crates/platform/session/awaken-session-application/src/tests/realization.rs",
         "rules": [
           "count-0-predecessor-false-renewed-false",
           "count-0-predecessor-false-renewed-true",
@@ -367,7 +367,7 @@
       },
       "store-torn-prefix": {
         "family": "store",
-        "source": "crates/stores/awaken-store-fs/tests/recovery.rs",
+        "source": "crates/platform/committed-truth/awaken-store-fs/tests/recovery.rs",
         "rules": [
           "partial",
           "complete"
@@ -375,7 +375,7 @@
       },
       "binding-clock-cases": {
         "family": "root",
-        "source": "crates/server/awaken-session-application/src/tests/authority.rs",
+        "source": "crates/platform/session/awaken-session-application/src/tests/authority.rs",
         "rules": [
           "legacy",
           "equal",
@@ -403,7 +403,7 @@
       },
       "environment-projection-convergence": {
         "family": "environment-projection",
-        "source": "crates/server/awaken-session-executor/src/host/tests/projection_convergence.rs",
+        "source": "crates/platform/execution/awaken-session-executor/src/host/tests/projection_convergence.rs",
         "rules": [
           "p0-A",
           "p1-A",
@@ -429,7 +429,7 @@
       },
       "maintenance-scheduler-composition": {
         "family": "maintenance",
-        "source": "crates/server/awaken-dispatch/tests/pool_memory/maintenance_observations.rs",
+        "source": "crates/platform/dispatch/awaken-dispatch/tests/pool_memory/maintenance_observations.rs",
         "rules": [
           "owner-false-service-timer-false-pause-none-error-false",
           "owner-false-service-timer-true-pause-none-error-false",
@@ -477,7 +477,7 @@
       },
       "delete-retry-lifecycle": {
         "family": "deletion",
-        "source": "crates/server/awaken-session-application/src/tests/authority.rs",
+        "source": "crates/platform/session/awaken-session-application/src/tests/authority.rs",
         "rules": [
           "active-false-fence",
           "active-false-first",
@@ -585,7 +585,7 @@
       },
       "event-batch-recovery-retry": {
         "family": "event-batch-retry",
-        "source": "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
+        "source": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests.rs",
         "rules": [
           "exact",
           "changed-body",
