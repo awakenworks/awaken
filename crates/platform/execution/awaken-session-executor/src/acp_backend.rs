@@ -155,7 +155,7 @@ mod tests {
         );
         let projection_only = crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
             .await
-            .with_acp_projection_policy(awaken_run_executor_acp::acp_adapter_policy());
+            .with_acp_projection_policy(awaken_acp_catalog::acp_adapter_policy());
         let host = (projection_only)
             .build()
             .expect("validated Host dependencies");
@@ -172,14 +172,14 @@ mod tests {
                     .capabilities
                     .acp_adapter_policy()
                     .expect("P2 policy"),
-                awaken_run_executor_acp::acp_adapter_policy()
+                awaken_acp_catalog::acp_adapter_policy()
             ),
             "P2/E2 one catalog instance"
         );
         let host = (with_fixture_acp(
             crate::SessionExecutorBuilder::ephemeral(Arc::new(NoLlm), "test")
                 .await
-                .with_acp_projection_policy(awaken_run_executor_acp::acp_adapter_policy()),
+                .with_acp_projection_policy(awaken_acp_catalog::acp_adapter_policy()),
         ))
         .build()
         .expect("validated Host dependencies");
@@ -196,7 +196,7 @@ mod tests {
             .acp_adapter_policy()
             .expect("P3 installed policy");
         assert!(
-            std::ptr::eq(policy, awaken_run_executor_acp::acp_adapter_policy()),
+            std::ptr::eq(policy, awaken_acp_catalog::acp_adapter_policy()),
             "P3/E2 one catalog instance"
         );
         assert!(policy.contains("codex"), "P3/E4 canonical");

@@ -27,7 +27,7 @@ impl BoundAcpSessionFactory {
         store_dir: Option<std::path::PathBuf>,
     ) -> Self {
         let session_home = portable_root.map(|root| {
-            let blobs = Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(root));
+            let blobs = Arc::new(awaken_acp_catalog::FsSessionBlobStore::new(root));
             Arc::new(awaken_run_executor_acp::DirSessionHome::new(
                 store_dir, blobs,
             )) as Arc<dyn SessionHomeProvider>
@@ -46,7 +46,7 @@ impl AcpSessionExecutorFactory for BoundAcpSessionFactory {
     ) -> &dyn awaken_acp_contract::AcpAdapterPolicy<
         awaken_runtime_contract::resolved::ProviderServerTool,
     > {
-        awaken_run_executor_acp::acp_adapter_policy()
+        awaken_acp_catalog::acp_adapter_policy()
     }
 
     fn create(&self, request: AcpSessionExecution) -> Result<Arc<dyn RunAttemptExecutor>, String> {
@@ -90,10 +90,9 @@ impl AcpSessionExecutorFactory for BoundAcpSessionFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_acp_catalog::{FsSessionBlobStore, SessionBlobStore, SessionHomeKey};
     use awaken_data_governance_contract::ContentEraser;
-    use awaken_run_executor_acp::{
-        ConfigHome, FsSessionBlobStore, SessionBlobStore, SessionHomeKey, SessionHomePlan,
-    };
+    use awaken_run_executor_acp::{ConfigHome, SessionHomePlan};
     use awaken_runtime_contract::DataSubjectId;
 
     #[tokio::test]

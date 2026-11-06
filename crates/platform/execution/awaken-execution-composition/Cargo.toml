@@ -30,7 +30,8 @@ awaken-acp-contract.workspace = true
 # The exact claim-fenced materializer consumed by the sole ACP launch resolver.
 awaken-credential-materializer.workspace = true
 # The one authoritative ACP adapter catalog queried by that policy.
-awaken-run-executor-acp = { workspace = true, features = ["execution", "host-preparation", "real-acp"] }
+awaken-acp-catalog.workspace = true
+awaken-run-executor-acp = { workspace = true, features = ["real-acp"] }
 # The backend-erased container ports the Session owner holds.
 awaken-provisioning-contract.workspace = true
 awaken-connection-plan.workspace = true

@@ -621,7 +621,7 @@ mod startup_tests {
                         host = crate::with_projected_acp(
                             host,
                             &deployment,
-                            *awaken_run_executor_acp::acp_cli("claude").unwrap(),
+                            *awaken_acp_catalog::acp_cli("claude").unwrap(),
                             Arc::new(FixedModel),
                             None,
                         );

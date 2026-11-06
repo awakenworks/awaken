@@ -40,7 +40,12 @@ REASONS: dict[str, str] = {
 # the Coordinator (the Session executor and the crates rule D4 of
 # _dispatch_boundary_fitness.py names; Sandbox adapters are checked by prefix).
 WORKER_SIDE: frozenset[str] = frozenset(
-    {"awaken-session-executor", "awaken-session-realization", "awaken-credential-materializer"}
+    {
+        "awaken-session-executor",
+        "awaken-session-realization",
+        "awaken-credential-materializer",
+        "awaken-run-executor-acp",
+    }
 )
 
 

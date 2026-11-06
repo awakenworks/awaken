@@ -1,46 +1,54 @@
 use super::*;
+use awaken_acp_catalog::{
+    AcpAcquisition, CredentialArtifactRequirement, SessionKey, SessionPersistence, acp_cli,
+    known_acp_clis, known_acp_publication_capabilities,
+};
+use awaken_credential_contract::CredentialObservationState;
 
-#[test]
-fn mcp_client_credential_admission_is_exact_and_has_no_gateway_fallback() {
-    use awaken_credential_contract::McpCredentialDelivery;
-    // Cause/effect graph: C1 delivery is exact ClientInjection; C2 the
-    // selected catalog row declares its private field; C3 transport is
-    // HTTP. Effect E1 admits credential material iff C1+C2+C3; otherwise
-    // E2 rejects before launch. Constraint: all production MCP delivery is
-    // the official ACP Session path, so no interface/fallback cause exists.
-    // Decision rules: R1=111=>E1; R2=!C1 (None or Gateway)=>E2;
-    // R3=1!1=>E2; R4=11!=>E2. These rules give MC/DC for each cause.
-    for (delivery, declared, http, admitted) in [
-        (
-            Some(McpCredentialDelivery::ClientInjection),
-            true,
-            true,
-            true,
-        ),
-        (
-            Some(McpCredentialDelivery::ClientInjection),
-            false,
-            true,
-            false,
-        ),
-        (
-            Some(McpCredentialDelivery::ClientInjection),
-            true,
-            false,
-            false,
-        ),
-        (None, true, true, false),
-        (
-            Some(McpCredentialDelivery::GatewayMediation),
-            true,
-            true,
-            false,
-        ),
-    ] {
-        assert_eq!(
-            mcp_client_credential_admitted(delivery, declared, http),
-            admitted
-        );
+/// Method-call spelling for the launch projection, so each case reads as it
+/// did when the projection was an `AcpCli` method.
+trait ProjectLaunch {
+    fn try_project(
+        &self,
+        model: &ResolvedModel,
+        context_window: Option<u64>,
+        extra_env: &[(String, String)],
+    ) -> Result<AcpLaunch, OpenError>;
+    fn try_project_with_argv(
+        &self,
+        model: &ResolvedModel,
+        context_window: Option<u64>,
+        extra_env: &[(String, String)],
+        resolved_argv: Option<&[String]>,
+    ) -> Result<AcpLaunch, OpenError>;
+    fn project(
+        &self,
+        model: &ResolvedModel,
+        context_window: Option<u64>,
+        extra_env: &[(String, String)],
+    ) -> AcpLaunch {
+        self.try_project(model, context_window, extra_env)
+            .expect("legacy environment projection")
+    }
+}
+
+impl ProjectLaunch for AcpCli {
+    fn try_project(
+        &self,
+        model: &ResolvedModel,
+        context_window: Option<u64>,
+        extra_env: &[(String, String)],
+    ) -> Result<AcpLaunch, OpenError> {
+        AcpLaunch::from_catalog(self, model, context_window, extra_env)
+    }
+    fn try_project_with_argv(
+        &self,
+        model: &ResolvedModel,
+        context_window: Option<u64>,
+        extra_env: &[(String, String)],
+        resolved_argv: Option<&[String]>,
+    ) -> Result<AcpLaunch, OpenError> {
+        AcpLaunch::from_catalog_with_argv(self, model, context_window, extra_env, resolved_argv)
     }
 }
 

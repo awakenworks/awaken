@@ -32,7 +32,7 @@ impl ResolvedDeployment {
         } else {
             Some(AcpWorkerProfile::new(
                 routable_cli_ids,
-                awaken_run_executor_acp::acp_adapter_policy(),
+                awaken_acp_catalog::acp_adapter_policy(),
             )?)
         };
         self.local_acp_observations = observations;

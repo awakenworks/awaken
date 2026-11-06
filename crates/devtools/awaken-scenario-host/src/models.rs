@@ -881,7 +881,7 @@ impl LlmExecutor for DelegatingModel {
                 stop_reason: None,
             });
         }
-        let matrix_acp = awaken_run_executor_acp::known_acp_clis()
+        let matrix_acp = awaken_acp_catalog::known_acp_clis()
             .iter()
             .find(|cli| user.contains(&format!("{} acp agent", cli.id)))
             .map(|cli| format!("acp-{}-worker", cli.id));

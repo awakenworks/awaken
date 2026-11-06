@@ -123,7 +123,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         &visible[0].request,
         Some(&relay),
         &visible[0].receipt,
-        awaken_run_executor_acp::acp_adapter_policy(),
+        awaken_acp_catalog::acp_adapter_policy(),
         "codex",
     )
     .unwrap();
@@ -168,7 +168,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         &visible[0].request,
         Some(&relay),
         &visible[0].receipt,
-        awaken_run_executor_acp::acp_adapter_policy(),
+        awaken_acp_catalog::acp_adapter_policy(),
         "codex",
     )
     .unwrap();

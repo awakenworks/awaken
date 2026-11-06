@@ -360,7 +360,7 @@ mod tests {
                         }
                         if acp_role == "projection" {
                             host = host.with_acp_projection_policy(
-                                awaken_run_executor_acp::acp_adapter_policy(),
+                                awaken_acp_catalog::acp_adapter_policy(),
                             );
                         }
                         let acp_installed = acp_role == "installed";

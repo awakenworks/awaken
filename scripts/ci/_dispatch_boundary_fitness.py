@@ -29,7 +29,9 @@ dependency edge come back, so three rules hold it:
   (``awaken-process-startup``), which links no Worker (see
   ``docs/design/runtime-interface-boundaries.md#coordinator-only-composition``).
   The reviewed-transition baseline this rule held while the startup still
-  linked the executor reached zero and was removed (plan v5 S2).
+  linked the executor reached zero and was removed (plan v5 S2). The Control
+  product binary (``awaken-control``, package ``awaken-control-process``) is
+  checked the same way.
 
 Why this is the correct check: the section 3.3 constraint -- no Worker-side
 implementation anywhere in the Coordinator's closure -- is a property of the
@@ -41,7 +43,9 @@ explicitly because it is the Worker's execution engine even where it reaches
 the realization only through role traits.
 
 A Worker-side implementation crate is ``awaken-session-realization``,
-``awaken-credential-materializer``, an ``awaken-sandbox*`` crate that is
+``awaken-credential-materializer``, the ACP Run executor
+``awaken-run-executor-acp`` (Coordinator and Control use ``awaken-acp-catalog``
+for the catalog and session-blob erasure), an ``awaken-sandbox*`` crate that is
 neither a contract nor a Control-plane store, or a Worker composition root (a
 ``bootstrap`` crate of the ``worker`` context). Optional dependencies count:
 an enabled feature must not reopen the edge.
@@ -50,9 +54,6 @@ an enabled feature must not reopen the edge.
 from __future__ import annotations
 
 import argparse
-import json
-import os
-import subprocess
 import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -74,13 +75,21 @@ SESSION_EXECUTOR = "awaken-session-executor"
 
 # The Coordinator product binary whose package closure D4 checks.
 COORDINATOR_BINARY = "awaken-coordinator"
+# The Control product binary: built over the same process startup, so the same
+# closure rule holds for it (D4).
+CONTROL_BINARY = "awaken-control"
+PROCESS_BINARIES: tuple[str, ...] = (COORDINATOR_BINARY, CONTROL_BINARY)
+
+# The Worker's ACP Run executor. Coordinator and Control read the ACP catalog
+# and erase session blobs through awaken-acp-catalog, never through it.
+ACP_EXECUTOR = "awaken-run-executor-acp"
 
 Specs = Mapping[str, _crate_dependency_fitness.CrateSpec]
 
 
 def is_worker_side(spec: _crate_dependency_fitness.CrateSpec) -> bool:
     """A Worker-side implementation crate (see the module docs)."""
-    if spec.name in ("awaken-session-realization", "awaken-credential-materializer"):
+    if spec.name in ("awaken-session-realization", "awaken-credential-materializer", ACP_EXECUTOR):
         return True
     if spec.context == "worker" and spec.layer == "bootstrap":
         return True
@@ -159,7 +168,9 @@ def coordinator_binary_reach(specs: Specs, package: str) -> list[str]:
     )
 
 
-def coordinator_binary_errors(package: str | None, reached: Iterable[str]) -> list[str]:
+def coordinator_binary_errors(
+    package: str | None, reached: Iterable[str], binary: str = COORDINATOR_BINARY
+) -> list[str]:
     """Violations of D4.
 
     Cause/effect graph: C1 no single package declares the binary; C2 the
@@ -167,11 +178,12 @@ def coordinator_binary_errors(package: str | None, reached: Iterable[str]) -> li
     neither holds; E2 reject naming the crate.
     """
     if package is None:
-        return [f"dispatch-boundary: no single package declares the {COORDINATOR_BINARY} binary, so its "
+        return [f"dispatch-boundary: no single package declares the {binary} binary, so its "
                 "closure cannot be checked (D4)"]
+    product = "Coordinator" if binary == COORDINATOR_BINARY else "Control"
     return [
-        f"dispatch-boundary: the {COORDINATOR_BINARY} binary's package {package} reaches {name}; "
-        "compose the Coordinator without it (D4)"
+        f"dispatch-boundary: the {binary} binary's package {package} reaches {name}; "
+        f"compose the {product} without it (D4)"
         for name in sorted(set(reached))
     ]
 
@@ -189,8 +201,13 @@ def workspace_binaries() -> dict[str, list[str]]:
 
 def check_coordinator_binary() -> list[str]:
     specs = {spec.name: spec for spec in _crate_boundary_workspace.dependency_fitness_specs()}
-    package = binary_package(workspace_binaries(), COORDINATOR_BINARY)
-    return coordinator_binary_errors(package, coordinator_binary_reach(specs, package) if package else [])
+    binaries = workspace_binaries()
+    errors: list[str] = []
+    for binary in PROCESS_BINARIES:
+        package = binary_package(binaries, binary)
+        reached = coordinator_binary_reach(specs, package) if package else []
+        errors += coordinator_binary_errors(package, reached, binary)
+    return errors
 
 
 def _specs(rows: Iterable[tuple[str, str, str, set[str]]]) -> dict[str, _crate_dependency_fitness.CrateSpec]:
@@ -223,8 +240,8 @@ def selftest() -> None:
     | B10 | that package reaches the executor through a Worker composition root | reject D4 naming each crate |
     | B13 | no package, or two packages, declare the binary | reject D4 |
     | B14 | the Coordinator crate depends on a Worker composition root | reject D3 |
+    | B15 | the Coordinator/Control startup reaches the ACP executor rather than only its catalog | reject D4 |
     """
-    selftest_acp_product_features()
     base = [
         ("awaken-dispatch-execution", "shared", "infrastructure", {"awaken-dispatch-contract"}),
         ("awaken-dispatch-contract", "shared", "contract", set()),
@@ -287,6 +304,22 @@ def selftest() -> None:
         "dispatch-boundary: the awaken-coordinator binary's package awaken-cli reaches awaken-worker; "
         "compose the Coordinator without it (D4)",
     ], "B10"
+    # B15: the shared startup reaches the ACP catalog -> accept; it reaches the
+    # ACP executor -> refuse for the Coordinator and the Control binary alike.
+    startup = base + [
+        ("awaken-acp-catalog", "shared", "infrastructure", set()),
+        ("awaken-run-executor-acp", "worker", "infrastructure", {"awaken-acp-catalog"}),
+        ("awaken-process-startup", "apps", "bootstrap", {"awaken-coordinator", "awaken-acp-catalog"}),
+    ]
+    assert coordinator_binary_reach(_specs(startup), "awaken-process-startup") == [], "B15 catalog only"
+    reopened = _specs([(n, c, l, d | {"awaken-run-executor-acp"} if n == "awaken-process-startup" else d)
+                       for n, c, l, d in startup])
+    reached = coordinator_binary_reach(reopened, "awaken-process-startup")
+    assert reached == ["awaken-run-executor-acp"], f"B15 reach {reached}"
+    assert coordinator_binary_errors("awaken-control-process", reached, CONTROL_BINARY) == [
+        "dispatch-boundary: the awaken-control binary's package awaken-control-process reaches "
+        "awaken-run-executor-acp; compose the Control without it (D4)"
+    ], "B15 Control"
     assert binary_package({"awaken-cli": ["awaken", "awaken-coordinator"], "awaken-worker": ["awaken-worker"]},
                           "awaken-coordinator") == "awaken-cli", "B13 single owner"
     for binaries in ({"awaken-cli": ["awaken"]},
@@ -294,110 +327,6 @@ def selftest() -> None:
         package = binary_package(binaries, "awaken-coordinator")
         assert package is None, "B13"
         assert "no single package" in coordinator_binary_errors(package, [])[0], "B13"
-
-
-ACP_EXECUTOR = "awaken-run-executor-acp"
-ACP_METADATA_PRODUCTS = frozenset({"awaken-coordinator-process", "awaken-control-process"})
-
-
-def acp_product_feature_errors(compiler_output: str, root: Path) -> list[str]:
-    """Check actual Cargo compiler-artifact features of the isolated product.
-
-    The existing benchmark parser validates test executables, not check-only
-    library artifacts. This boundary reads Cargo's standard JSON directly and
-    never reconstructs feature resolution from source or dependency names.
-    """
-    manifest = (root / "crates/platform/execution/awaken-run-executor-acp/Cargo.toml").resolve()
-    source = manifest.parent / "src/lib.rs"
-    records = []
-    finished = []
-    try:
-        for line in compiler_output.splitlines():
-            if not line.startswith("{"):
-                continue
-            record = json.loads(line)
-            if not isinstance(record, dict):
-                raise ValueError("compiler message is not an object")
-            if record.get("reason") == "build-finished":
-                finished.append(record.get("success") is True)
-            if record.get("reason") != "compiler-artifact":
-                continue
-            if Path(record.get("manifest_path", "")).resolve() != manifest:
-                continue
-            target = record.get("target", {})
-            if (target.get("name") != "awaken_run_executor_acp"
-                    or target.get("kind") != ["lib"]
-                    or Path(target.get("src_path", "")).resolve() != source):
-                continue
-            features = record.get("features")
-            if not isinstance(features, list) or not all(isinstance(value, str) for value in features):
-                raise ValueError("canonical artifact has malformed features")
-            if record.get("profile", {}).get("test") is not False:
-                raise ValueError("canonical artifact is not a production library")
-            records.append(set(features))
-    except (ValueError, TypeError, AttributeError) as error:
-        return ["dispatch-boundary: malformed ACP compiler evidence: " + str(error) + " (D4 ACP)"]
-    if finished != [True]:
-        return ["dispatch-boundary: one successful isolated product build is required (D4 ACP)"]
-    if not records:
-        return ["dispatch-boundary: missing canonical ACP catalog/blob compiler artifact (D4 ACP)"]
-    active = sorted(set().union(*records))
-    if active:
-        return ["dispatch-boundary: isolated metadata/blob product compiled ACP implementation features "
-                + ", ".join(active) + " (D4 ACP)"]
-    return []
-
-
-def selftest_acp_product_features() -> None:
-    # Cause/effect table: P1 actual canonical production artifact + empty features
-    # + successful build accepts; P2 execution/host/real-acp or unreviewed feature
-    # rejects; P3 missing/malformed/wrong-owner/failed/incomplete evidence rejects;
-    # P4 unrelated package features are irrelevant; P5 every compiled occurrence
-    # must remain metadata-only. These synthetic JSON tests execute no Cargo.
-    root = Path("/fixture")
-    artifact = {"reason": "compiler-artifact", "package_id": "fixture-acp",
-                "manifest_path": str(root / "crates/platform/execution/awaken-run-executor-acp/Cargo.toml"),
-                "target": {"name": "awaken_run_executor_acp", "kind": ["lib"],
-                           "src_path": str(root / "crates/platform/execution/awaken-run-executor-acp/src/lib.rs")},
-                "profile": {"test": False}, "features": []}
-    done = {"reason": "build-finished", "success": True}
-    def output(*records):
-        return "\n".join(json.dumps(record) for record in records)
-    assert acp_product_feature_errors(output(artifact, done), root) == [], "P1"
-    for feature in ["execution", "host-preparation", "real-acp", "future-role"]:
-        assert acp_product_feature_errors(output({**artifact, "features": [feature]}, done), root), "P2 " + feature
-    for rows in [[], [done], [artifact], [artifact, {**done, "success": False}],
-                 [{**artifact, "features": "execution"}, done],
-                 [{**artifact, "manifest_path": "/other/Cargo.toml"}, done],
-                 [{**artifact, "profile": {"test": True}}, done]]:
-        assert acp_product_feature_errors(output(*rows), root), "P3"
-    assert acp_product_feature_errors("{bad json", root), "P3 malformed"
-    other = {**artifact, "manifest_path": "/other/Cargo.toml", "features": ["execution"]}
-    assert acp_product_feature_errors(output(other, artifact, done), root) == [], "P4"
-    assert acp_product_feature_errors(output(artifact, artifact, done), root) == [], "P5 fresh/cached records"
-    assert acp_product_feature_errors(output(artifact, {**artifact, "features": ["execution"]}, done), root), "P5 no hidden union"
-
-
-def check_acp_product_features(package: str) -> int:
-    """Explicit qualification entry point; normal source guards launch no Cargo."""
-    selftest_acp_product_features()
-    if package not in ACP_METADATA_PRODUCTS:
-        print("dispatch-boundary: not an isolated ACP metadata product: " + package, file=sys.stderr)
-        return 1
-    root = Path(__file__).resolve().parents[2]
-    command = [os.environ.get("CARGO", "cargo"), "check", "--locked", "--package", package,
-               "--message-format=json"]
-    result = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False)
-    if result.returncode:
-        print(result.stdout, end="")
-        print(result.stderr, file=sys.stderr, end="")
-        return result.returncode
-    errors = acp_product_feature_errors(result.stdout, root)
-    if errors:
-        print("\n".join(errors), file=sys.stderr)
-        return 1
-    print("dispatch-boundary: " + package + " compiled canonical catalog/blob custody without ACP implementation features (D4 ACP)")
-    return 0
 
 
 def check_all() -> list[str]:
@@ -411,11 +340,7 @@ def main(argv: list[str]) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--self-test", action="store_true", help="run the decision table")
-    modes.add_argument("--check-acp-product-features", metavar="PACKAGE",
-                       help="build PACKAGE and refuse ACP implementation features in it")
     arguments = parser.parse_args(argv)
-    if arguments.check_acp_product_features:
-        return check_acp_product_features(arguments.check_acp_product_features)
     if arguments.self_test:
         selftest()
         print("_dispatch_boundary_fitness selftest: the decision table holds")

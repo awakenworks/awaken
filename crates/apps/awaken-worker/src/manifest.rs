@@ -225,7 +225,7 @@ impl From<&awaken_credential_materializer::PinnedCredentialMaterializer>
     fn from(materializer: &awaken_credential_materializer::PinnedCredentialMaterializer) -> Self {
         Self {
             provider_adapter: materializer.provider_adapter_capabilities(),
-            acp: awaken_run_executor_acp::known_acp_clis()
+            acp: awaken_acp_catalog::known_acp_clis()
                 .iter()
                 .map(|cli| {
                     (
@@ -316,7 +316,7 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         (inputs.brokered_acp_model_access, &inputs.deployment.acp)
     {
         credential_profiles.extend(acp.cli_ids().filter_map(|cli_id| {
-            awaken_run_executor_acp::acp_cli(cli_id)
+            awaken_acp_catalog::acp_cli(cli_id)
                 .map(|cli| materializer.credential_realization_capabilities(*cli))
         }));
     }

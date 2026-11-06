@@ -150,7 +150,7 @@ awaken-session-application = { workspace = true, features = ["test-support"] }
 awaken-worker-fleet-kubernetes.workspace = true
 kube = { workspace = true, features = ["client", "rustls-tls", "http-proxy"] }
 # The erasure regression retains the real portable ACP filesystem store.
-awaken-run-executor-acp = { workspace = true, features = ["execution", "host-preparation", "real-acp"] }
+awaken-acp-catalog.workspace = true
 awaken-coordinator-client.workspace = true
 # Cross-component closure cases select the actual existing transport and keep
 # all original Registry/Dispatch/ledger assertions at the broker decision owner.

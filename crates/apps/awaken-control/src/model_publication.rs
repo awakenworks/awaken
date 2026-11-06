@@ -398,7 +398,7 @@ mod tests {
 
     pub(super) fn test_acp_capabilities() -> Arc<Vec<awaken_acp_contract::AcpPublicationCapability>>
     {
-        Arc::new(awaken_run_executor_acp::known_acp_publication_capabilities())
+        Arc::new(awaken_acp_catalog::known_acp_publication_capabilities())
     }
 
     pub(super) async fn verified_acp_worker(

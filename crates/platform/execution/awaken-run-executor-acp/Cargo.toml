@@ -15,52 +15,35 @@ protocol = "acp"
 
 [dependencies]
 awaken-sync.workspace = true
-awaken-tool-contract = { workspace = true, optional = true }
-awaken-data-governance-contract.workspace = true
+awaken-acp-catalog.workspace = true
+awaken-tool-contract.workspace = true
 awaken-acp-contract.workspace = true
-awaken-session-environment-contract = { workspace = true, optional = true }
+awaken-session-environment-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-agent-contract.workspace = true
-awaken-time = { workspace = true, optional = true }
+awaken-time.workspace = true
 awaken-provisioning-contract.workspace = true
-awaken-local-process = { workspace = true, optional = true }
-awaken-agent-channel = { workspace = true, optional = true }
-awaken-protocol-acp = { workspace = true, optional = true }
+awaken-local-process.workspace = true
+awaken-agent-channel.workspace = true
+awaken-protocol-acp.workspace = true
 async-trait.workspace = true
 # `McpServerConfig` rides the config plane into `plugin_config` (derive Serde).
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-thiserror = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["sync", "macros", "time", "process", "io-util", "fs"], optional = true }
-tracing = { version = "0.1", optional = true }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "time", "process", "io-util", "fs"] }
+tracing = "0.1"
 
 [target.'cfg(unix)'.dependencies]
-libc = { version = "0.2", optional = true }
+libc = "0.2"
 
 [features]
 loom = []
-# Preserve the existing concrete adapter for ordinary package consumers. Product
-# compositions select roles explicitly through the workspace dependency below.
-default = ["execution", "host-preparation", "real-acp"]
-# New compilation boundaries over existing code, not new runtime authorities.
-# Coordinator/Control metadata and blob custody need neither role.
-execution = [
-    "dep:awaken-tool-contract",
-    "dep:awaken-session-environment-contract",
-    "dep:awaken-local-process",
-    "dep:awaken-agent-channel",
-    "dep:awaken-protocol-acp",
-    "dep:awaken-time",
-    "dep:thiserror",
-    "dep:tokio",
-    "dep:tracing",
-    "dep:libc",
-]
-host-preparation = ["execution"]
-# Off still selects the existing newline fixture wire; real production consumers
-# retain the official protocol feature exactly as before.
-real-acp = ["execution", "awaken-protocol-acp/real-acp"]
+default = ["real-acp"]
+# Off selects the newline fixture wire; production consumers enable the
+# official ACP protocol.
+real-acp = ["awaken-protocol-acp/real-acp"]
 
 [dev-dependencies]
 awaken-store-inmem.workspace = true

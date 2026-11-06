@@ -96,9 +96,9 @@ awaken-executable-agent-catalog = { workspace = true }
 awaken-executable-environment-contract = { workspace = true }
 awaken-executable-environment-catalog = { workspace = true }
 awaken-session-store = { workspace = true }
-# The ACP executor (AcpLaunch/AcpRunExecutor) for `acp:*` threads — wired by config
-# (AWAKEN_ACP_ARGV) into the worker's configured sandbox tier.
-awaken-run-executor-acp = { workspace = true }
+# The ACP adapter catalog and session-blob custody; the ACP executor itself is
+# linked only by Worker and CLI compositions.
+awaken-acp-catalog.workspace = true
 awaken-observability = { workspace = true }
 # The admin `/metrics` gauges are OTel observable instruments (rendered via the
 # Prometheus exporter in awaken-observability).
@@ -250,6 +250,7 @@ tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 awaken-session-types.workspace = true
+awaken-agent-channel.workspace = true
 
 [[test]]
 name = "deployment_sessions"
