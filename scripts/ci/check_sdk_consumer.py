@@ -28,7 +28,6 @@ import check_gate_freshness
 from public_api_selection import selected_crates
 import formal_sources
 import rust_test_plan
-import _sdk_semver_evidence as semver_evidence
 from generate_hooks import gate_mode_source, glob_matches
 
 # The independent manifest and its path dependencies are a different feature
@@ -95,10 +94,6 @@ def validate_task_evidence(output: str) -> None:
     summary = f"{len(EXPECTED)} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
     if set(executed) != EXPECTED or len(executed) != len(EXPECTED) or summary not in output:
         raise RuntimeError(f"SDK consumer task evidence is incomplete: expected={sorted(EXPECTED)}, executed={sorted(executed)}")
-
-
-def validate_semver_evidence(output: str, expected: list[str], major_audit=None) -> None:
-    semver_evidence.validate_standard(output, expected, major_audit)
 
 
 def self_test() -> None:
@@ -193,211 +188,6 @@ def retain_sdk_result(directory: Path, document: dict) -> None:
     (directory / "commands.json").write_text(json.dumps(document, indent=2) + "\n")
 
 
-def major_producer_packages(metadata: dict, sdk_root: Path, *, current: bool) -> dict:
-    """Validate the existing Cargo member observation before rendering inputs."""
-    if Path(metadata["workspace_root"]).resolve() != sdk_root.resolve():
-        raise ValueError("SDK major producer metadata has a foreign root")
-    packages = crate_test._members(metadata)
-    for name in semver_evidence.consumer_package_names():
-        package = packages[name]
-        expected = (semver_evidence.COHORT[name][int(current)]
-                    if name in semver_evidence.COHORT else package["version"])
-        path = Path(package["manifest_path"]).resolve()
-        if (package["version"] != expected or package.get("source") is not None
-                or not path.is_relative_to(sdk_root.resolve()) or not path.is_file()
-                or ((package.get("metadata") or {}).get("awaken") or {}).get("product") != "sdk"):
-            raise ValueError("SDK major producer identity is outside its declared source/cohort")
-        authored = tomllib.loads(path.read_text()).get("package", {})
-        version = authored.get("version")
-        if isinstance(version, dict):
-            if set(version) != {"workspace"} or version["workspace"] is not True:
-                raise ValueError("SDK major producer has invalid workspace version inheritance")
-            version = tomllib.loads((sdk_root / "Cargo.toml").read_text()).get("workspace", {}).get("package", {}).get("version")
-        if (authored.get("name") != name or version != expected
-                or ((authored.get("metadata") or {}).get("awaken") or {}).get("product") != "sdk"):
-            raise ValueError("SDK major producer metadata differs from its authored member identity")
-    return packages
-
-
-def validate_retained_major_receipt(receipt: dict, work: Path, source: dict, baseline: str,
-                                    feature: str, target: str) -> None:
-    """The existing SDK IO owner binds the pure receipt to retained evidence."""
-    try:
-        planned = semver_evidence.witness_steps(ROOT, work, baseline, feature, target)
-        outputs = {}
-        if len(receipt.get("steps", [])) != len(planned):
-            raise ValueError("SDK major retained step evidence is incomplete")
-        for row, step in zip(receipt["steps"], planned):
-            name = step["name"]
-            stdout = (work / (name + ".stdout.log")).read_bytes()
-            stderr = (work / (name + ".stderr.log")).read_bytes()
-            combined = (work / (name + ".log")).read_bytes()
-            if combined != stdout + stderr or hashlib.sha256(combined).hexdigest() != row.get("log_sha256"):
-                raise ValueError("SDK major retained output changed or is incomplete")
-            outputs[name] = (stdout.decode(), stderr.decode())
-        sides = {}
-        for current, sdk_root in ((False, work / "baseline-source"), (True, ROOT)):
-            side = "current" if current else "baseline"
-            consumer = work / (side + "-consumer")
-            packages = major_producer_packages(json.loads(outputs[side + "-sdk-metadata"][0]), sdk_root, current=current)
-            facts = semver_evidence.validate_consumer_metadata(
-                json.loads(outputs[side + "-consumer-metadata"][0]), consumer, packages, current=current, feature=feature)
-            manifest = consumer / "Cargo.toml"
-            if manifest.read_text() != semver_evidence.consumer_manifest(packages, current=current, feature=feature):
-                raise ValueError("SDK major consumer manifest differs from the original dependency inputs")
-            facts["manifest_sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
-            facts["lock_sha256"] = hashlib.sha256((consumer / "Cargo.lock").read_bytes()).hexdigest()
-            sides[side] = facts
-            for name, (code, marker) in semver_evidence.witness_cases(current).items():
-                text = semver_evidence.WITNESS_SOURCES[name]
-                if (consumer / "cases" / (name + ".rs")).read_text() != text:
-                    raise ValueError("SDK major downstream source changed")
-                output = "".join(outputs[side + "-" + name])
-                errors = semver_evidence.validate_compiler_case(output, 101 if code else 0, text,
-                    "cases/" + name + ".rs", code, marker)
-                recorded = [case for case in receipt["cases"] if case["side"] == side and case["case"] == name]
-                if len(recorded) != 1 or recorded[0]["compiler_errors"] != errors:
-                    raise ValueError("SDK major diagnostic differs from its retained original output")
-        if hashlib.sha256((work / "baseline.tar").read_bytes()).hexdigest() != receipt.get("baseline_archive_sha256"):
-            raise ValueError("SDK major baseline archive changed")
-        semver_evidence.validate_witness_receipt(receipt, source, baseline, feature,
-            target=target, root=ROOT, work=work, side_facts=sides)
-    except (KeyError, TypeError, AttributeError) as error:
-        raise ValueError(str(error)) from error
-
-
-def run_major_consumer_audit(spec_path: Path) -> int:
-    """One explicit SDK test action; compiler refusals are its asserted data."""
-    values = crate_test.environment(ROOT)
-    clean_environment = formal_sources.detached_git_environment()
-    values = {**clean_environment, **{key: values[key] for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR")}}
-    completed, journal = None, {"steps": [], "cases": [], "sides": {}}
-    work = None
-    try:
-        spec = json.loads(spec_path.read_text())
-        target = Path(values["CARGO_BUILD_BUILD_DIR"]).resolve() / "test-timings"
-        if not spec_path.resolve().is_relative_to(target):
-            raise ValueError("SDK major test specification is outside its owned qualification evidence")
-        feature = spec["feature"]
-        if (feature not in ("default", "all") or spec["target"] != SDK_TARGET
-                or not re.fullmatch(r"[0-9a-f]{40}", spec["baseline_rev"])):
-            raise ValueError("SDK major test specification has an unknown feature or baseline")
-        journal.update(source=spec["source"], baseline_rev=spec["baseline_rev"], feature=feature, target=spec["target"])
-        owned_subjects = {}
-
-        def verify():
-            _, facts, actual = sdk_source_observation()
-            if actual != spec["source"] or facts["status"]:
-                raise ValueError("SDK major consumer source changed or is not clean")
-            for directory, (expected, ignore_lock) in owned_subjects.items():
-                observed = _sdk_archives.file_hashes(directory)
-                if ignore_lock:
-                    observed.pop("Cargo.lock", None)
-                if observed != expected:
-                    raise ValueError("SDK major owned baseline/consumer source or lock changed")
-        verify()
-        work = spec_path.parent / (feature + "-major-consumers")
-        work.mkdir()  # Fresh evidence only: never reuse an earlier baseline tree.
-        planned = {step["name"]: step["command"] for step in semver_evidence.witness_steps(
-            ROOT, work, spec["baseline_rev"], feature, spec["target"])}
-
-        def capture(command, **arguments):
-            nonlocal completed
-            completed = None
-            completed = capture_sdk_command(command, merged=True, **arguments)
-            return completed
-
-        def execute(name, *, directory=ROOT, validate=None):
-            nonlocal completed
-            completed = None
-            def record(rows):
-                row = rows[-1]
-                row.update(log=str(work / (name + ".log")),
-                    log_sha256=hashlib.sha256(((completed.stdout or "") + (completed.stderr or "")).encode()).hexdigest() if completed is not None else None)
-                # Keep the sequence's one mutable observation, including source
-                # and record faults; no second post-sequence step update/write.
-                journal["steps"].append(row)
-                try:
-                    if completed is not None:
-                        retain_sdk_command_output(work, name, completed)
-                    if validate is not None and completed is not None:
-                        try:
-                            validate(completed.stdout, row)
-                        except (KeyError, TypeError, AttributeError) as error:
-                            raise ValueError(str(error)) from error
-                finally:
-                    retain_sdk_result(work, journal)
-            return crate_test.execute_commands([planned[name]], values, root=directory,
-                verify=verify, record=record, run=capture)
-
-        archive = work / "baseline.tar"
-        def archive_result(output, row):
-            if row["exit_code"] == 0:
-                journal["baseline_archive_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
-        status, _ = execute("baseline-archive", validate=archive_result)
-        if status:
-            return status
-        baseline = work / "baseline-source"
-        baseline.mkdir()
-        _sdk_archives.unpack_source_archive(archive, baseline)
-        owned_subjects[baseline] = (_sdk_archives.file_hashes(baseline), False)
-        for current, sdk_root in ((False, baseline), (True, ROOT)):
-            side = "current" if current else "baseline"
-            side_packages = {}
-            def sdk_metadata(output, row):
-                nonlocal side_packages
-                data = json.loads(output)
-                side_packages = major_producer_packages(data, sdk_root, current=current)
-            status, _ = execute(side + "-sdk-metadata", validate=sdk_metadata)
-            if status:
-                return status
-            consumer = work / (side + "-consumer")
-            (consumer / "cases").mkdir(parents=True)
-            manifest = consumer / "Cargo.toml"
-            manifest.write_text(semver_evidence.consumer_manifest(side_packages, current=current, feature=feature))
-            cases = semver_evidence.witness_cases(current)
-            for name in cases:
-                (consumer / "cases" / (name + ".rs")).write_text(semver_evidence.WITNESS_SOURCES[name])
-            owned_subjects[consumer] = (_sdk_archives.file_hashes(consumer), True)
-            def consumer_metadata(output, row):
-                journal["sides"][side] = semver_evidence.validate_consumer_metadata(
-                    json.loads(output), consumer, side_packages, current=current, feature=feature)
-                journal["sides"][side]["manifest_sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
-                journal["sides"][side]["lock_sha256"] = hashlib.sha256((consumer / "Cargo.lock").read_bytes()).hexdigest()
-                owned_subjects[consumer] = (_sdk_archives.file_hashes(consumer), False)
-            status, _ = execute(side + "-consumer-metadata", directory=consumer, validate=consumer_metadata)
-            if status:
-                return status
-            for name, (expected_code, marker) in cases.items():
-                source = semver_evidence.WITNESS_SOURCES[name]
-                accepted = False
-                def compiler_result(output, row):
-                    nonlocal accepted
-                    errors = semver_evidence.validate_compiler_case(output, row["exit_code"], source,
-                        "cases/" + name + ".rs", expected_code, marker)
-                    journal["cases"].append({"side": side, "case": name, "original_exit_code": row["exit_code"],
-                        "expected_code": expected_code, "compiler_errors": errors,
-                        "source_sha256": hashlib.sha256(source.encode()).hexdigest()})
-                    accepted = True
-                status, rows = execute(side + "-" + name, directory=consumer, validate=compiler_result)
-                # The generic owner still returns original101. Only this
-                # explicit negative test may assert its exact counterexample.
-                if status and not (status == 101 and expected_code and accepted
-                                   and rows and "subject_error" not in rows[-1]
-                                   and "record_error" not in rows[-1]):
-                    return status
-        verify()
-        journal["exit_code"] = 0
-        validate_retained_major_receipt(journal, work, spec["source"], spec["baseline_rev"], feature, spec["target"])
-        retain_sdk_result(work, journal)
-        return 0
-    except subprocess.CalledProcessError as error:
-        return error.returncode if error.returncode >= 0 else 128 - error.returncode
-    except (OSError, ValueError, KeyError, TypeError, AttributeError, tarfile.TarError) as error:
-        print(f"SDK major consumer audit refused: {error}", file=sys.stderr)
-        return 1
-
-
 def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
     """Keep SDK admission policy; the existing sequence owns source and status."""
     values = crate_test.environment(ROOT)
@@ -413,7 +203,6 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
     archive_subject = None
     consumer_subject = None
     consumer_lock = None
-    major_commands = {}
     document = {"qualification": qualification, "target": SDK_TARGET,
                 "baseline_kind": "first pre-release source contract" if baseline_rev else None,
                 "baseline_rev": baseline_rev or None}
@@ -452,22 +241,6 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
         if qualification and completed.stderr is None:
             completed.stderr = ""
         return completed
-
-    def assess_result(row):
-        action = major_commands.get(tuple(row["command"]))
-        if action is None or action[0] != "audit":
-            return None
-        feature = action[1]
-        witness = document.get("major_consumer_audits", {}).get(feature)
-        validate_retained_major_receipt(witness or {}, evidence / (feature + "-major-consumers"),
-                                       document["source"], baseline_rev, feature, document["target"])
-        observed = semver_evidence.validate_audit(completed.stdout + completed.stderr, row["exit_code"],
-                                                 approved=semver_evidence.APPROVED_FINDINGS)
-        document.setdefault("major_audits", {})[feature] = {
-            "source": document["source"], "baseline_rev": baseline_rev,
-            "feature": feature, "packages": observed, "consumer_audit": witness,
-        }
-        return "accepted_major" if row["exit_code"] == 1 else None
 
     def record(rows) -> None:
         nonlocal unpacked, archive_subject, consumer_subject, consumer_lock
@@ -513,22 +286,11 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
             retain_sdk_result(evidence, document)
             return
         if qualification:
-            command = rows[-1]["command"]
-            action = major_commands.get(tuple(command))
-            feature = action[1] if action else "all" if "--all-features" in command else "default"
-            label = feature + ("-major-" + action[0] if action else "")
-            retain_sdk_command_output(evidence, label, completed)
-            if rows[-1]["exit_code"] == 0 and action and action[0] == "consumers":
-                receipt = json.loads((evidence / (feature + "-major-consumers/commands.json")).read_text())
-                validate_retained_major_receipt(receipt, evidence / (feature + "-major-consumers"),
-                                               document["source"], baseline_rev, feature, document["target"])
-                document.setdefault("major_consumer_audits", {})[feature] = receipt
-            if rows[-1]["exit_code"] == 0 and qualification == "semver" and action is None:
-                audit = document.get("major_audits", {}).get(feature)
-                if major_commands and audit is None:
-                    raise ValueError("SDK major observation has no same-feature audited changes")
-                validate_semver_evidence(completed.stdout + completed.stderr, document["semver_crates"],
-                                         audit["packages"] if audit else None)
+            feature = "all" if "--all-features" in rows[-1]["command"] else "default"
+            retain_sdk_command_output(evidence, feature, completed)
+            # SemVer: cargo-semver-checks' own exit status is the verdict. It
+            # compares each selected crate's rustdoc with the baseline's and
+            # accepts exactly the changes its declared version bump allows.
             if rows[-1]["exit_code"] == 0 and qualification == "package":
                 archive_directory = Path(values["CARGO_BUILD_BUILD_DIR"])
                 if not archive_directory.is_absolute():
@@ -623,28 +385,6 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
                            "--target", document["target"]]
                 commands = [command + [features] + selectors
                             for features in ("--default-features", "--all-features")]
-                if any(name in sdk and members[name]["version"] not in versions
-                       for name, versions in semver_evidence.COHORT.items()):
-                    raise ValueError("SDK declared major cohort has an unknown source version")
-                majors = sorted(name for name, versions in semver_evidence.COHORT.items()
-                                if name in sdk and members[name]["version"] == versions[1])
-                if majors:
-                    if set(majors) != set(semver_evidence.COHORT):
-                        raise ValueError("SDK declared major cohort is incomplete")
-                    original = commands
-                    commands = []
-                    major_selectors = [word for name in majors for word in ("-p", name)]
-                    for standard in original:
-                        feature = "all" if "--all-features" in standard else "default"
-                        spec_path = evidence / (feature + "-major-spec.json")
-                        spec_path.write_text(json.dumps({key: document[key] for key in ("source", "baseline_rev", "target")}
-                            | {"feature": feature}, indent=2) + "\n")
-                        witness = [sys.executable, str(Path(__file__).resolve()), "--major-consumer-audit", str(spec_path)]
-                        audit = command + ["--all-features" if feature == "all" else "--default-features",
-                                           "--release-type", "patch"] + major_selectors
-                        major_commands[tuple(witness)] = ("consumers", feature)
-                        major_commands[tuple(audit)] = ("audit", feature)
-                        commands.extend((witness, audit, standard))
         except subprocess.CalledProcessError as error:
             failure = error.returncode if error.returncode >= 0 else 128 - error.returncode
             print(f"SDK qualification metadata/source failed: {error}", file=sys.stderr)
@@ -663,8 +403,7 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
         print(f"SDK qualification evidence: {evidence}")
 
     status, rows = crate_test.execute_commands(commands, values,
-                                           root=ROOT, verify=verify, record=record, run=capture,
-                                           assess_result=assess_result if major_commands else None)
+                                           root=ROOT, verify=verify, record=record, run=capture)
     if qualification:
         document["commands"] = rows
         document["exit_code"] = status
@@ -750,8 +489,7 @@ class SdkConsumerTests(unittest.TestCase):
     def execute(self, root: Path, *, metadata_status=0, test_status=0,
                 mutation="", fault="", metadata_cause="", output_cause="", phase="metadata",
                 qualification="", baseline_rev=None, tool_cause="",
-                artifact_metadata_status=None, compiler_cause="", compiler_observations=None,
-                active_major=False, major_action_run=None, major_failure=None) -> tuple[int, list]:
+                artifact_metadata_status=None, compiler_cause="", compiler_observations=None) -> tuple[int, list]:
         manifest = root / "examples/sdk-consumer/Cargo.toml"
         metadata = {"workspace_root": str(manifest.parent), "workspace_members": ["sdk"],
                     "packages": [{"dependencies": []}]}
@@ -770,24 +508,6 @@ class SdkConsumerTests(unittest.TestCase):
                  "publish": [], "dependencies": [],
                  "metadata": {"awaken": {"product": "sdk", "api_snapshot": True}}},
             ]
-            if active_major:
-                # The active-major tests use this same IO fixture and the real
-                # cohort names, rather than a second qualifier or command loop.
-                # The remaining SDK members are selected, never omitted from
-                # either original standard command.
-                packages = [{"id": name, "name": name,
-                    "version": semver_evidence.COHORT.get(name, ("1.0.0", "2.0.0"))[1]
-                        if name in semver_evidence.COHORT else "1.0.0",
-                    "publish": None, "dependencies": [], "features": {}, "source": None,
-                    "metadata": {"awaken": {"product": "sdk", "api_snapshot": True}}}
-                    for name in [*semver_evidence.consumer_package_names(),
-                                 *("fixture-sdk-" + str(number).zfill(2) for number in range(
-                                     22 - len(semver_evidence.consumer_package_names())))]]
-                if metadata_cause == "major-partial":
-                    packages[0]["version"] = "1.0.0"
-                elif metadata_cause == "major-unknown":
-                    for package in packages[:2]:
-                        package["version"] = "3.0.0"
             metadata = {"workspace_root": str(root), "workspace_members": [p["id"] for p in packages],
                         "packages": packages,
                         "resolve": {"nodes": [{"id": p["id"], "deps": []} for p in packages]}}
@@ -882,35 +602,8 @@ class SdkConsumerTests(unittest.TestCase):
         passing = "\n".join(f"test {name} ... ok" for name in sorted(EXPECTED))
         output = passing + f"\ntest result: ok. {len(EXPECTED)} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
         if qualification == "semver":
-            # Pinned tool output is fixture data for the record validator;
-            # it is not an implementation of Cargo or a real SemVer receipt.
-            executed = ["fixture-contract", "fixture-provider"]
-            if output_cause == "semver-empty":
-                executed = []
-            elif output_cause == "semver-missing":
-                executed = executed[:1]
-            elif output_cause == "semver-duplicate":
-                executed = [executed[0], executed[0]]
-            output = "\n".join(
-                f"    Checking {name} v1.0.0 -> v1.0.0 (no change; assume patch)\n"
-                "     Checked [ 0.003s] 222 checks: 222 pass, 30 skip\n"
-                "     Summary no semver update required\n"
-                f"    Finished [ 1.000s] {name}" for name in executed)
-            if output_cause == "semver-unchecked":
-                output = re.sub(r"^.*Checked.*\n", "", output, flags=re.MULTILINE)
-            elif output_cause == "semver-zero-checks":
-                output = output.replace("222 checks: 222 pass", "0 checks: 0 pass")
-            if active_major:
-                from sdk_semver_tests import SdkSemverEvidenceTests
-                output = "".join(SdkSemverEvidenceTests.report(p["name"],
-                    checks=0 if p["name"] in semver_evidence.COHORT else 222,
-                    major=p["name"] in semver_evidence.COHORT) for p in packages)
-                if output_cause == "semver-missing":
-                    output = output[:output.rfind("Checking ")]
-                elif output_cause == "semver-duplicate":
-                    output += SdkSemverEvidenceTests.report(packages[0]["name"], checks=0, major=True)
-                elif output_cause == "semver-zero-checks":
-                    output = output.replace("222 checks: 222 pass", "0 checks: 0 pass")
+            # Retained diagnostic text only: the tool's exit status is the verdict.
+            output = "     Summary no semver update required\n"
         if output_cause == "missing":
             output = output.split("\n", 1)[1]
         calls = []
@@ -923,11 +616,6 @@ class SdkConsumerTests(unittest.TestCase):
 
         def run(command, **arguments):
             program = Path(command[0]).name.casefold().removesuffix(".exe")
-            if active_major and "--major-consumer-audit" in command:
-                calls.append(list(command))
-                if major_action_run is None:
-                    raise AssertionError("active-major controlled action must use the original action fixture")
-                return major_action_run(command, **arguments)
             if program not in ("cargo", "cargo-semver-checks"):
                 return actual_run(command, **arguments)
             if program == "cargo":
@@ -960,21 +648,6 @@ class SdkConsumerTests(unittest.TestCase):
             if current_phase == "tool":
                 status = 23 if tool_cause == "query" else 0
                 stdout = "cargo-semver-checks 0.46.0\n" if tool_cause == "version" else "cargo-semver-checks 0.47.0\n"
-            if active_major and current_phase == "semver-checks":
-                from sdk_semver_tests import SdkSemverEvidenceTests
-                feature = "all" if "--all-features" in command else "default"
-                stage = "audit" if "--release-type" in command else "standard"
-                if stage == "audit":
-                    _, stdout = SdkSemverEvidenceTests().fixture()
-                    status = 1
-                    if output_cause == "audit-unknown":
-                        stdout = stdout.replace("fixture::removed", "fixture::unreviewed")
-                    elif output_cause == "audit-fatal":
-                        stdout += "error: internal/tool failure\n"
-                if major_failure and (feature, stage) == (major_failure["feature"], major_failure["stage"]):
-                    status = major_failure["raw"]
-                    if major_failure.get("source"):
-                        (root / "tracked.txt").write_text("changed active-major source\n")
             if qualification == "artifact" and "--manifest-path" in command:
                 consumer = Path(command[command.index("--manifest-path") + 1]).parent
                 if current_phase == "metadata":
@@ -1345,18 +1018,16 @@ class SdkConsumerTests(unittest.TestCase):
                     output_cause=cause if cause not in ("source", "output") else "")
                 self.assertEqual(status, 1)
                 self.assertEqual(len([c for c in calls if c[1] == "+1.96.0"]), 1)
-        # Q3c metadata plan must match checked+finished package identities
-        # exactly once. Whole-crate skip/zero/missing/duplicate/unchecked/zero
-        # checks ->1 even with tool0; ordinary nonapplicable lint skips remain
-        # valid. Failure101/75 outranks even these incomplete observations.
-        for cause in ("semver-empty", "semver-missing", "semver-duplicate", "semver-unchecked", "semver-zero-checks"):
-            for raw, expected in ((0, 1), (101, 101), (75, 75)):
-                with self.subTest(cause=cause, raw=raw), tempfile.TemporaryDirectory() as temporary:
-                    root = self.repository(Path(temporary), successor=True)
-                    status, calls = self.execute(root, qualification="semver", phase="semver-checks",
-                                                 test_status=raw, output_cause=cause)
-                    self.assertEqual(status, expected)
-                    self.assertEqual(len([c for c in calls if c[0] == "cargo" and c[1] == "semver-checks"]), 1)
+        # Q3c SemVer: cargo-semver-checks' exit status is the verdict. A
+        # breaking change its version does not announce (1), a tool failure
+        # (101) or an admission refusal (75) stops before the second feature.
+        for raw in (1, 101, 75):
+            with self.subTest(semver=raw), tempfile.TemporaryDirectory() as temporary:
+                root = self.repository(Path(temporary), successor=True)
+                status, calls = self.execute(root, qualification="semver", phase="semver-checks",
+                                             test_status=raw)
+                self.assertEqual(status, raw)
+                self.assertEqual(len([c for c in calls if c[0] == "cargo" and c[1] == "semver-checks"]), 1)
         for axis in ("index", "working", "untracked"):
             with self.subTest(axis=axis), tempfile.TemporaryDirectory() as temporary:
                 root = self.repository(Path(temporary))
@@ -1485,24 +1156,20 @@ def main() -> int:
     mode.add_argument("--qualify-package", action="store_true")
     mode.add_argument("--qualify-artifact", action="store_true")
     mode.add_argument("--qualify-semver", action="store_true")
-    mode.add_argument("--major-consumer-audit", type=Path)
     parser.add_argument("--baseline-rev")
     args = parser.parse_args()
     if args.qualify_semver != bool(args.baseline_rev):
         parser.error("--baseline-rev is required only with --qualify-semver")
     self_test()
     if args.self_test:
-        from sdk_semver_tests import SdkSemverEvidenceTests, shared_sdk_io_tests, compiler_input_tests
+        from sdk_consumer_tests import shared_sdk_io_tests, compiler_input_tests
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(SdkConsumerTests)
-        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(SdkSemverEvidenceTests))
         suite.addTests(shared_sdk_io_tests(sys.modules[__name__]))
         suite.addTests(compiler_input_tests(sys.modules[__name__]))
         if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
             return 1
         print("SDK consumer self-test: admission paths and exact task execution are enforced")
         return 0
-    if args.major_consumer_audit:
-        return run_major_consumer_audit(args.major_consumer_audit)
     qualification = ("package" if args.qualify_package else "artifact" if args.qualify_artifact
                      else "semver" if args.qualify_semver else "")
     status = run_consumer(qualification=qualification, baseline_rev=args.baseline_rev or "")
