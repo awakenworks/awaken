@@ -330,7 +330,7 @@ impl WorkerDaemonConfig {
             .then(|| {
                 awaken_acp_contract::AcpWorkerProfile::new(
                     acp_clis,
-                    awaken_run_executor_acp::acp_adapter_policy(),
+                    awaken_acp_catalog::acp_adapter_policy(),
                 )
             })
             .transpose()?;
@@ -468,7 +468,7 @@ impl WorkerDaemonConfig {
             }
             let mut profile = awaken_acp_contract::AcpWorkerProfile::new(
                 selected.clone(),
-                awaken_run_executor_acp::acp_adapter_policy(),
+                awaken_acp_catalog::acp_adapter_policy(),
             )?;
             profile.apply_launch_argv(&prepared.routable_launch_argv())?;
             runtime.acp = Some(profile);
@@ -949,7 +949,7 @@ mod tests {
     impl awaken_run_executor_acp::host::AcpDiscovery for MissingHostFixture {
         async fn discover(
             &self,
-            cli: &awaken_run_executor_acp::AcpCli,
+            cli: &awaken_acp_catalog::AcpCli,
         ) -> awaken_acp_contract::AcpHostObservation {
             let mut observation =
                 awaken_run_executor_acp::host::AcpDiscovery::discover(&HostFixture, cli).await;
@@ -962,7 +962,7 @@ mod tests {
     impl awaken_run_executor_acp::host::AcpDiscovery for HostFixture {
         async fn discover(
             &self,
-            cli: &awaken_run_executor_acp::AcpCli,
+            cli: &awaken_acp_catalog::AcpCli,
         ) -> awaken_acp_contract::AcpHostObservation {
             use awaken_acp_contract::{AcpDetectionState, AcpHostObservation};
             AcpHostObservation {
@@ -984,7 +984,7 @@ mod tests {
     impl awaken_run_executor_acp::host::AcpWrapperInstaller for HostFixture {
         async fn resolved_argv(
             &self,
-            cli: &awaken_run_executor_acp::AcpCli,
+            cli: &awaken_acp_catalog::AcpCli,
             root: &Path,
         ) -> Result<Option<Vec<String>>, String> {
             Ok(Some(vec![root.join(cli.id).to_string_lossy().into_owned()]))

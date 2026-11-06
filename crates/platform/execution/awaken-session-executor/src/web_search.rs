@@ -364,7 +364,7 @@ mod tests {
         let host = awaken_ext_builtin_tools::web_fetch_descriptor();
         assert_eq!(
             acp_web_tool_disposition(
-                awaken_run_executor_acp::acp_adapter_policy(),
+                awaken_acp_catalog::acp_adapter_policy(),
                 "codex",
                 &host,
                 "WebFetch"
@@ -387,7 +387,7 @@ mod tests {
                 .with_provider_server_tool(projection);
             assert_eq!(
                 acp_web_tool_disposition(
-                    awaken_run_executor_acp::acp_adapter_policy(),
+                    awaken_acp_catalog::acp_adapter_policy(),
                     cli,
                     &native,
                     "WebSearch"
@@ -403,7 +403,7 @@ mod tests {
             );
         assert!(
             acp_web_tool_disposition(
-                awaken_run_executor_acp::acp_adapter_policy(),
+                awaken_acp_catalog::acp_adapter_policy(),
                 "codex",
                 &wrong_cli,
                 "WebSearch"
@@ -431,7 +431,7 @@ mod tests {
                 .with_provider_server_tool(projection);
             assert!(
                 acp_web_tool_disposition(
-                    awaken_run_executor_acp::acp_adapter_policy(),
+                    awaken_acp_catalog::acp_adapter_policy(),
                     cli,
                     &unverified,
                     "WebSearch"
@@ -446,7 +446,7 @@ mod tests {
             ),
         );
         let error = match acp_web_tool_disposition(
-            awaken_run_executor_acp::acp_adapter_policy(),
+            awaken_acp_catalog::acp_adapter_policy(),
             "codex",
             &provider,
             "WebFetch",

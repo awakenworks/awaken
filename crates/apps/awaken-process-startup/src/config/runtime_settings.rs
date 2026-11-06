@@ -40,7 +40,7 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
         .unwrap_or_else(|| default_sandbox_tier(std::env::consts::OS));
     let acp_ids = file.acp_clis.clone().unwrap_or_default();
     let acp = (!acp_ids.is_empty())
-        .then(|| AcpWorkerProfile::new(acp_ids, awaken_run_executor_acp::acp_adapter_policy()))
+        .then(|| AcpWorkerProfile::new(acp_ids, awaken_acp_catalog::acp_adapter_policy()))
         .transpose()?;
     let wake = match file.dispatch_wake.as_deref() {
         Some("pg-notify") => Wake::PgNotify,

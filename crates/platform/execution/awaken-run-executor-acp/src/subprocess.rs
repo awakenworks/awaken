@@ -470,7 +470,7 @@ pub trait BrokeredAcpModelAccessMaterializer: Send + Sync {
 
 /// An [`AgentChannelSource`] that projects a run onto a launch via its [`AcpCli`]
 /// row (R4): it reads the run's inputs through a host [`LaunchResolver`] and hands
-/// the data to [`AcpCli::try_project`], so *which* CLI and *how* the model is delivered
+/// the data to [`AcpLaunch::from_catalog`], so *which* CLI and *how* the model is delivered
 /// are data, not a branch.
 pub struct ProjectingChannelSource {
     cli: AcpCli,
@@ -521,7 +521,8 @@ pub async fn project_launch(
         &activation.snapshot.resolved_spec.plugin_config,
     )
     .compact_window;
-    let mut launch = cli.try_project_with_argv(&model, window, &extra_env, launch_argv)?;
+    let mut launch =
+        AcpLaunch::from_catalog_with_argv(cli, &model, window, &extra_env, launch_argv)?;
     if let Some(timezone) = &context.request_timezone {
         launch.env.retain(|entry| entry.name != "TZ");
         launch.env.push(pc::EnvVar {

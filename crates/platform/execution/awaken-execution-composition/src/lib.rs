@@ -264,7 +264,7 @@ fn install_acp_source(
 pub fn with_projected_acp(
     host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
-    cli: awaken_run_executor_acp::AcpCli,
+    cli: awaken_acp_catalog::AcpCli,
     resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver>,
     store_dir: Option<std::path::PathBuf>,
 ) -> SessionExecutorBuilder {
@@ -275,7 +275,7 @@ pub fn with_projected_acp(
 pub fn with_projected_acp_argv(
     host: SessionExecutorBuilder,
     deployment: &DeploymentConfig,
-    cli: awaken_run_executor_acp::AcpCli,
+    cli: awaken_acp_catalog::AcpCli,
     resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver>,
     store_dir: Option<std::path::PathBuf>,
     launch_argv: Option<Vec<String>>,
@@ -316,8 +316,8 @@ pub fn with_acp_from_deployment(
     let routes = profile
         .cli_ids()
         .map(|id| {
-            let cli = *awaken_run_executor_acp::acp_cli(id)
-                .expect("AcpWorkerProfile validates every CLI");
+            let cli =
+                *awaken_acp_catalog::acp_cli(id).expect("AcpWorkerProfile validates every CLI");
             let resolver = Arc::new(match (&credentials, &brokered) {
                 (Some(_), Some(_)) => {
                     panic!("ACP credential materializers are mutually exclusive")

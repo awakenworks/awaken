@@ -122,7 +122,8 @@ awaken-coordinator-client.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 # The in-process MCP server fixture and the relay/state fixture hooks.
 awaken-session-mcp = { workspace = true, features = ["test-support"] }
-awaken-run-executor-acp = { workspace = true, features = ["execution", "host-preparation", "real-acp"] }
+awaken-acp-catalog.workspace = true
+awaken-run-executor-acp = { workspace = true, features = ["real-acp"] }
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-reliability-testkit.workspace = true
 # Test doubles decode real container handles through the container provider's

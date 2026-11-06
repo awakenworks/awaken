@@ -1196,7 +1196,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         &default_projection.request,
         default_relay_host.run_assembly.mcp.relay(),
         &default_projection.receipt,
-        awaken_run_executor_acp::acp_adapter_policy(),
+        awaken_acp_catalog::acp_adapter_policy(),
         "codex",
     )
     .unwrap();
@@ -1404,7 +1404,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         &projection.request,
         secure_acp_host.run_assembly.mcp.relay(),
         &projection.receipt,
-        awaken_run_executor_acp::acp_adapter_policy(),
+        awaken_acp_catalog::acp_adapter_policy(),
         "codex",
     )
     .expect("H20 project opaque route");
@@ -1514,7 +1514,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         &client_projection.request,
         secure_acp_host.run_assembly.mcp.relay(),
         &client_projection.receipt,
-        awaken_run_executor_acp::acp_adapter_policy(),
+        awaken_acp_catalog::acp_adapter_policy(),
         "claude",
     )
     .expect("H23 exact ACP Session projection");

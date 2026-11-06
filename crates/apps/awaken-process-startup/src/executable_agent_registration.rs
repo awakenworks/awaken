@@ -218,7 +218,7 @@ impl ExecutableAgentWiring {
                     .acp_session_blob_root
                     .clone()
                     .map(|root| {
-                        Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(root))
+                        Arc::new(awaken_acp_catalog::FsSessionBlobStore::new(root))
                             as Arc<dyn awaken_data_governance_contract::ContentEraser>
                     }),
             );

@@ -55,7 +55,8 @@ awaken-credential-materializer.workspace = true
 awaken-credential-vault.workspace = true
 awaken-deployment-config.workspace = true
 awaken-protocol-acp = { workspace = true, features = ["real-acp"] }
-awaken-run-executor-acp = { workspace = true, features = ["execution", "host-preparation", "real-acp"] }
+awaken-acp-catalog.workspace = true
+awaken-run-executor-acp = { workspace = true, features = ["real-acp"] }
 awaken-tool-contract.workspace = true
 awaken-tool-relay.workspace = true
 # The Session execution a local claim pool co-locates: the deployment's

@@ -5,11 +5,12 @@
 //! backend-owned candidates project only their model policy and leave account,
 //! endpoint, refresh, and login material to the local CLI.
 
+use awaken_acp_catalog::AcpCli;
 #[cfg(test)]
 use awaken_credential_contract::CredentialRealizationKind;
 use awaken_credential_materializer::PinnedCredentialMaterializer;
 use awaken_run_executor_acp::{
-    AcpCli, ConfigHome, LaunchResolver, OpenError, ProcessSecretRequirement, ResolvedModel,
+    ConfigHome, LaunchResolver, OpenError, ProcessSecretRequirement, ResolvedModel,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
@@ -500,7 +501,7 @@ mod tests {
     }
 
     fn claude() -> AcpCli {
-        *awaken_run_executor_acp::acp_cli("claude").unwrap()
+        *awaken_acp_catalog::acp_cli("claude").unwrap()
     }
 
     struct BrokeredLeaseMaterializer {
@@ -633,7 +634,7 @@ mod tests {
         use awaken_runtime_contract::resolved::ProviderServerTool;
 
         let codex = PublishedAcpLaunchResolver::backend_owned(
-            *awaken_run_executor_acp::acp_cli("codex").unwrap(),
+            *awaken_acp_catalog::acp_cli("codex").unwrap(),
             None,
         );
         let exact = managed_candidate("openai", "open_ai_responses", "codex");
@@ -699,7 +700,7 @@ mod tests {
                 CredentialRealizationKind::PrivateSecretFile,
             ),
             (
-                *awaken_run_executor_acp::acp_cli("codex").unwrap(),
+                *awaken_acp_catalog::acp_cli("codex").unwrap(),
                 CredentialRealizationKind::PrivateSecretFile,
                 CredentialRealizationKind::ProcessSecretEnvironment,
             ),
@@ -1147,7 +1148,7 @@ mod tests {
                 )
                 .expect("coherent backend-owned model policy");
             let resolver = PublishedAcpLaunchResolver::backend_owned(
-                *awaken_run_executor_acp::acp_cli("codex").unwrap(),
+                *awaken_acp_catalog::acp_cli("codex").unwrap(),
                 Some(std::path::PathBuf::from("/path/that/must/not/be/opened")),
             );
             let activation = activation(Some(candidate));

@@ -60,7 +60,7 @@ test-support = []
 tokio = { workspace = true, features = ["test-util"] }
 awaken-tool-contract.workspace = true
 # Projection tests admit adapters through the production ACP adapter policy.
-awaken-run-executor-acp = { workspace = true, features = ["execution", "host-preparation", "real-acp"] }
+awaken-acp-catalog.workspace = true
 
 [lints]
 workspace = true

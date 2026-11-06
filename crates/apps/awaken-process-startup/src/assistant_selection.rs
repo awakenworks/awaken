@@ -63,7 +63,7 @@ pub(crate) fn select(
         return Ok(Some(ModelSelection::Auto));
     }
 
-    let available = awaken_run_executor_acp::known_acp_clis()
+    let available = awaken_acp_catalog::known_acp_clis()
         .iter()
         .filter(|cli| {
             observations.iter().any(|observation| {

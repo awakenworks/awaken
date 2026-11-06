@@ -291,6 +291,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-acp-catalog"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-acp-contract",
+ "awaken-agent-contract",
+ "awaken-credential-contract",
+ "awaken-data-governance-contract",
+ "awaken-runtime-contract",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-acp-contract"
 version = "1.0.0"
 dependencies = [
@@ -463,6 +479,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-acp-application",
+ "awaken-acp-catalog",
  "awaken-acp-contract",
  "awaken-agent-contract",
  "awaken-control",
@@ -615,6 +632,7 @@ name = "awaken-control"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-acp-catalog",
  "awaken-acp-contract",
  "awaken-admin-assistant",
  "awaken-admin-config-api",
@@ -658,7 +676,6 @@ dependencies = [
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",
- "awaken-run-executor-acp",
  "awaken-runtime-contract",
  "awaken-sandbox-policy-store",
  "awaken-service-auth-contract",
@@ -728,6 +745,7 @@ name = "awaken-coordinator"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-acp-catalog",
  "awaken-agent-config",
  "awaken-agent-contract",
  "awaken-authz-enforce",
@@ -785,7 +803,6 @@ dependencies = [
  "awaken-resource-persistence",
  "awaken-resource-store",
  "awaken-resource-worker-http",
- "awaken-run-executor-acp",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-service-auth-contract",
@@ -1520,6 +1537,7 @@ name = "awaken-execution-composition"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-acp-catalog",
  "awaken-acp-contract",
  "awaken-agent-channel",
  "awaken-agent-contract",
@@ -2123,9 +2141,11 @@ name = "awaken-process-startup"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-acp-catalog",
  "awaken-acp-contract",
  "awaken-admin-assistant",
  "awaken-admin-config-api",
+ "awaken-agent-channel",
  "awaken-agent-config",
  "awaken-agent-contract",
  "awaken-api-contract",
@@ -2194,7 +2214,6 @@ dependencies = [
  "awaken-resource-persistence",
  "awaken-resource-reclaimer",
  "awaken-resource-worker-http",
- "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-sandbox-container",
@@ -2710,11 +2729,11 @@ name = "awaken-run-executor-acp"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-acp-catalog",
  "awaken-acp-contract",
  "awaken-agent-channel",
  "awaken-agent-contract",
  "awaken-credential-contract",
- "awaken-data-governance-contract",
  "awaken-lease-testkit",
  "awaken-local-process",
  "awaken-protocol-acp",
@@ -3050,6 +3069,7 @@ name = "awaken-scenario-host"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-acp-catalog",
  "awaken-admin-assistant",
  "awaken-admin-config-api",
  "awaken-agent-config",
@@ -3393,6 +3413,7 @@ name = "awaken-session-executor"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-acp-catalog",
  "awaken-acp-contract",
  "awaken-agent-channel",
  "awaken-agent-contract",
@@ -3502,6 +3523,7 @@ name = "awaken-session-mcp"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-acp-catalog",
  "awaken-acp-contract",
  "awaken-agent-channel",
  "awaken-agent-contract",
@@ -3514,7 +3536,6 @@ dependencies = [
  "awaken-mcp-wire",
  "awaken-outbound-http",
  "awaken-provisioning-contract",
- "awaken-run-executor-acp",
  "awaken-runtime-contract",
  "awaken-session-configuration-contract",
  "awaken-session-contract",
@@ -3973,6 +3994,7 @@ name = "awaken-worker"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-acp-catalog",
  "awaken-acp-contract",
  "awaken-agent-contract",
  "awaken-authority-clock",

@@ -233,8 +233,8 @@ impl ContentEraser for HttpCoordinatorContentEraser {
 
 #[cfg(test)]
 mod tests {
+    use awaken_acp_catalog::{FsSessionBlobStore, SessionBlobStore, SessionHomeKey};
     use awaken_captured_content_store::InMemoryCapturedContentStore;
-    use awaken_run_executor_acp::{FsSessionBlobStore, SessionBlobStore, SessionHomeKey};
     use axum::body::Body;
     use axum::body::to_bytes;
     use axum::http::Request;

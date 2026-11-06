@@ -12,10 +12,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use awaken_acp_application::{ensure_workspace_bindings, project_local_credential_sources};
+use awaken_acp_catalog::acp_cli;
 use awaken_acp_contract::AcpHostObservation;
 use awaken_credential_contract::CredentialObservationState;
 use awaken_credential_vault::{CredentialSource, repo::CredentialRepo};
-use awaken_run_executor_acp::acp_cli;
 use awaken_run_executor_acp::host::{
     AcpCapabilityNegotiator, AcpDiscovery, AcpHostDiscovery, AcpLocalCredentialResolver,
     AcpWrapperInstaller, HostAcpPreparation, PreparedHostAcpCapabilities,
@@ -61,7 +61,7 @@ async fn bind_workspace(
     credentials: &dyn CredentialRepo,
     workspace: &str,
 ) -> Result<(), String> {
-    let catalog = awaken_run_executor_acp::known_acp_publication_capabilities();
+    let catalog = awaken_acp_catalog::known_acp_publication_capabilities();
     ensure_workspace_bindings(
         credentials,
         workspace,
@@ -86,7 +86,7 @@ fn resolver_from_sources(
     AcpLocalCredentialResolver::from_bindings(
         discovery,
         project_local_credential_sources(
-            &awaken_run_executor_acp::known_acp_publication_capabilities(),
+            &awaken_acp_catalog::known_acp_publication_capabilities(),
             sources,
         )?,
         clock,
@@ -97,7 +97,7 @@ fn add_sources(
     sources: impl IntoIterator<Item = CredentialSource>,
 ) -> Result<(), String> {
     resolver.add_bindings(project_local_credential_sources(
-        &awaken_run_executor_acp::known_acp_publication_capabilities(),
+        &awaken_acp_catalog::known_acp_publication_capabilities(),
         sources,
     )?)
 }
@@ -503,6 +503,7 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
+    use awaken_acp_catalog::AcpCli;
     use awaken_acp_contract::AcpDetectionState;
     use awaken_acp_contract::NegotiatedAcpCapabilities;
     use awaken_agent_contract::credential::{CredentialMaterialSource, CredentialRef};
@@ -513,7 +514,6 @@ mod tests {
         CredentialRepo, InMemoryCredentialRepo, ensure_worker_local,
     };
     use awaken_credential_vault::{CredentialSource, CredentialStatus, WorkerLocalBinding};
-    use awaken_run_executor_acp::AcpCli;
 
     use super::*;
 
@@ -1120,11 +1120,11 @@ mod tests {
         deployment.runtime.acp = Some(
             awaken_acp_contract::AcpWorkerProfile::new(
                 ["codex".to_string()],
-                awaken_run_executor_acp::acp_adapter_policy(),
+                awaken_acp_catalog::acp_adapter_policy(),
             )
             .unwrap(),
         );
-        let observations = awaken_run_executor_acp::known_acp_clis()
+        let observations = awaken_acp_catalog::known_acp_clis()
             .iter()
             .map(|cli| {
                 if matches!(cli.id, "codex" | "claude") {
@@ -1363,7 +1363,7 @@ mod tests {
             directory.path().into(),
             awaken_time::system_clock(),
         );
-        let observations = awaken_run_executor_acp::known_acp_clis()
+        let observations = awaken_acp_catalog::known_acp_clis()
             .iter()
             .map(|cli| {
                 let observation = if cli.id == "codex" {

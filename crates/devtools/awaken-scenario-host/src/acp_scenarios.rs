@@ -92,7 +92,7 @@ pub async fn build_acp_relaunch_failure_router(
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
     let cli = scenario_host_acp_cli(canonical_claude_fixture(
-        awaken_run_executor_acp::AcpAcquisition::Direct {
+        awaken_acp_catalog::AcpAcquisition::Direct {
             executable: "/bin/sh",
             args: &["-c", SLOW_FAKE_ACP_JSONRPC_SCRIPT],
         },
@@ -142,14 +142,14 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
     // acquisition command is replaced by the canonical deterministic fixture;
     // model/MCP delivery, config-home isolation, and session-model projection
     // continue to come from each real catalog row.
-    let routes = awaken_run_executor_acp::known_acp_clis()
+    let routes = awaken_acp_catalog::known_acp_clis()
         .iter()
         .copied()
         .map(|mut cli| {
             let mut env = cli.env.to_vec();
             env.push(("AWAKEN_MATRIX_RUNTIME", cli.id));
             cli.env = Box::leak(env.into_boxed_slice());
-            cli.acquisition = awaken_run_executor_acp::AcpAcquisition::Direct {
+            cli.acquisition = awaken_acp_catalog::AcpAcquisition::Direct {
                 executable: "sh",
                 args: &["-c", FAKE_ACP_JSONRPC_SCRIPT],
             };
@@ -178,7 +178,7 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
             )))
             .build(),
     ];
-    snapshots.extend(awaken_run_executor_acp::known_acp_clis().iter().map(|cli| {
+    snapshots.extend(awaken_acp_catalog::known_acp_clis().iter().map(|cli| {
         ExecutableAgentSnapshot::builder(format!("matrix-acp-{}", cli.id))
             .instructions(format!("matrix-runtime={} matrix-suite=true", cli.id))
             // Literal-equivalent: `cli.id` is a `&'static str` row of the
@@ -326,7 +326,7 @@ pub async fn build_acp_tool_bridge_router(
     )]);
     launch
         .project_tool_aliases(
-            awaken_run_executor_acp::acp_cli("claude").unwrap(),
+            awaken_acp_catalog::acp_cli("claude").unwrap(),
             &presentation,
         )
         .unwrap();
@@ -389,20 +389,20 @@ const FAKE_ACP_GATEWAY_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
       esac; \
     done";
 
-const FAKE_ACP_DISCOVERY: awaken_run_executor_acp::AcpDiscoverySpec =
-    awaken_run_executor_acp::AcpDiscoverySpec {
-        version: awaken_run_executor_acp::AcpProbeCommand {
+const FAKE_ACP_DISCOVERY: awaken_acp_catalog::AcpDiscoverySpec =
+    awaken_acp_catalog::AcpDiscoverySpec {
+        version: awaken_acp_catalog::AcpProbeCommand {
             executable: "/bin/true",
             args: &[],
         },
-        minimum_version: awaken_run_executor_acp::AcpVersion::new(0, 0, 0),
-        login: awaken_run_executor_acp::AcpLoginProbe {
-            command: awaken_run_executor_acp::AcpProbeCommand {
+        minimum_version: awaken_acp_catalog::AcpVersion::new(0, 0, 0),
+        login: awaken_acp_catalog::AcpLoginProbe {
+            command: awaken_acp_catalog::AcpProbeCommand {
                 executable: "/bin/true",
                 args: &[],
             },
-            rules: &[awaken_run_executor_acp::AcpLoginRule {
-                predicate: awaken_run_executor_acp::AcpProbePredicate::ExitSuccess,
+            rules: &[awaken_acp_catalog::AcpLoginRule {
+                predicate: awaken_acp_catalog::AcpProbePredicate::ExitSuccess,
                 state: awaken_credential_contract::CredentialObservationState::Available,
                 reason_code: "scenario_fixture_available",
             }],
@@ -416,18 +416,18 @@ const FAKE_ACP_DISCOVERY: awaken_run_executor_acp::AcpDiscoverySpec =
 /// admission, config-home isolation, and every other adapter capability remain
 /// owned by `known_acp_clis()`.
 fn canonical_claude_fixture(
-    acquisition: awaken_run_executor_acp::AcpAcquisition,
+    acquisition: awaken_acp_catalog::AcpAcquisition,
     container_argv: &'static [&'static str],
-) -> awaken_run_executor_acp::AcpCli {
-    let mut cli = *awaken_run_executor_acp::acp_cli("claude")
-        .expect("the canonical Claude ACP row is installed");
+) -> awaken_acp_catalog::AcpCli {
+    let mut cli =
+        *awaken_acp_catalog::acp_cli("claude").expect("the canonical Claude ACP row is installed");
     cli.acquisition = acquisition;
     cli.discovery = FAKE_ACP_DISCOVERY;
     cli.image_requirements = &[];
     cli.container_argv = container_argv;
     cli.container_probe_argv = None;
     cli.capability_probe_auth_method_id = None;
-    cli.session_persistence = awaken_run_executor_acp::SessionPersistence::None;
+    cli.session_persistence = awaken_acp_catalog::SessionPersistence::None;
     cli
 }
 
@@ -437,9 +437,9 @@ fn canonical_claude_fixture(
 /// production CLI (its delivery keys are the `ANTHROPIC_*` ones the script echoes).
 /// Used only by [`build_acp_gateway_router`] to exercise host model resolution
 /// (self-credentialed vs cloud-managed gateway, D-R2) end to end.
-pub(super) fn fake_acp_cli() -> awaken_run_executor_acp::AcpCli {
+pub(super) fn fake_acp_cli() -> awaken_acp_catalog::AcpCli {
     canonical_claude_fixture(
-        awaken_run_executor_acp::AcpAcquisition::Direct {
+        awaken_acp_catalog::AcpAcquisition::Direct {
             executable: "/bin/sh",
             args: &["-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
         },
@@ -474,9 +474,9 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
 /// [`FAKE_ACP_MCP_ECHO_SCRIPT`] replaces only the canonical Claude row's
 /// executable, so staged MCP servers and credential admission still come from
 /// the production row before the official `session/new` request is built.
-fn fake_acp_mcp_cli() -> awaken_run_executor_acp::AcpCli {
+fn fake_acp_mcp_cli() -> awaken_acp_catalog::AcpCli {
     canonical_claude_fixture(
-        awaken_run_executor_acp::AcpAcquisition::Direct {
+        awaken_acp_catalog::AcpAcquisition::Direct {
             executable: "/bin/sh",
             args: &["-c", FAKE_ACP_MCP_ECHO_SCRIPT],
         },
@@ -487,9 +487,9 @@ fn fake_acp_mcp_cli() -> awaken_run_executor_acp::AcpCli {
 /// Container-only ACP fixture used by the Environment package E2E. The image
 /// supplies this executable; its prompt handler opens the publication-pinned
 /// Playwright stdio MCP server and proves a real browser tool round trip.
-fn playwright_mcp_fixture_cli() -> awaken_run_executor_acp::AcpCli {
+fn playwright_mcp_fixture_cli() -> awaken_acp_catalog::AcpCli {
     let mut cli = canonical_claude_fixture(
-        awaken_run_executor_acp::AcpAcquisition::Direct {
+        awaken_acp_catalog::AcpAcquisition::Direct {
             executable: "/usr/local/bin/awaken-playwright-acp-fixture",
             args: &[],
         },
@@ -581,7 +581,7 @@ pub async fn build_acp_real_mcp_service(
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "claude".to_string());
-    let cli = *awaken_run_executor_acp::acp_cli(&cli_id)
+    let cli = *awaken_acp_catalog::acp_cli(&cli_id)
         .unwrap_or_else(|| panic!("{cli_id} is not an ACP catalog row"));
     let wrapper_root = store_dir.clone().unwrap_or_else(|| {
         std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))

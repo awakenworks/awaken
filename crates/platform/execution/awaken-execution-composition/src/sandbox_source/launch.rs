@@ -10,7 +10,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use awaken_run_executor_acp::{AcpCli, AcpLaunch, LaunchResolver, OpenError, ResolvedLaunch};
+use awaken_acp_catalog::AcpCli;
+use awaken_run_executor_acp::{AcpLaunch, LaunchResolver, OpenError, ResolvedLaunch};
 use awaken_runtime_contract::activation::RunActivation;
 
 type ResolvedRoute = (AcpCli, Arc<dyn LaunchResolver>, Option<Vec<String>>);
@@ -238,7 +239,7 @@ mod tests {
             .into_iter()
             .map(|id| {
                 (
-                    *awaken_run_executor_acp::acp_cli(id).expect("known test ACP CLI"),
+                    *awaken_acp_catalog::acp_cli(id).expect("known test ACP CLI"),
                     Arc::new(FakeResolver) as Arc<dyn LaunchResolver>,
                 )
             })
@@ -267,7 +268,7 @@ mod tests {
 
     #[test]
     fn single_route_preserves_acquired_argv_and_rejects_empty_executables() {
-        let cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
+        let cli = *awaken_acp_catalog::acp_cli("claude").unwrap();
         let registry = AcpLaunchRegistry::single_with_resolved_argv(
             cli,
             Arc::new(FakeResolver),

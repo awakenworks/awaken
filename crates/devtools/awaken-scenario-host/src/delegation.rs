@@ -133,7 +133,7 @@ pub async fn build_delegation_router_with_deployment(
             version: Some(1),
         },
     ];
-    targets.extend(awaken_run_executor_acp::known_acp_clis().iter().map(|cli| {
+    targets.extend(awaken_acp_catalog::known_acp_clis().iter().map(|cli| {
         MultiagentTarget::Agent {
             id: format!("acp-{}-worker", cli.id),
             version: Some(1),
@@ -174,7 +174,7 @@ pub async fn build_delegation_router_with_deployment(
         snapshot("researcher", "default", Vec::new(), false),
         snapshot("acp-worker", "acp:claude", Vec::new(), false),
     ];
-    snapshots.extend(awaken_run_executor_acp::known_acp_clis().iter().map(|cli| {
+    snapshots.extend(awaken_acp_catalog::known_acp_clis().iter().map(|cli| {
         snapshot(
             &format!("acp-{}-worker", cli.id),
             &format!("acp:{}", cli.id),

@@ -508,12 +508,10 @@ mod tests {
                 base_url: "http://model.invalid".into(),
                 model: "model".into(),
                 process_secret: None,
-                credential_artifact: Some(
-                    awaken_run_executor_acp::CredentialArtifactRequirement::new(
-                        "credential-artifact://one-shot",
-                        ".codex/auth.json",
-                    ),
-                ),
+                credential_artifact: Some(awaken_acp_catalog::CredentialArtifactRequirement::new(
+                    "credential-artifact://one-shot",
+                    ".codex/auth.json",
+                )),
                 acp: None,
                 provider_server_tools: Vec::new(),
             })
@@ -685,7 +683,7 @@ mod tests {
         sandbox: Arc<dyn awaken_session_environment_contract::AgentProcessEnvironment>,
         cli_id: &str,
     ) -> BoundLocalChannelSource {
-        let cli = awaken_run_executor_acp::acp_cli(cli_id).expect("known ACP CLI");
+        let cli = awaken_acp_catalog::acp_cli(cli_id).expect("known ACP CLI");
         BoundLocalChannelSource {
             environment_variables: None,
             sandbox,
@@ -716,7 +714,7 @@ mod tests {
         model: &'static str,
         extra_env: Vec<(String, String)>,
     ) -> BoundLocalChannelSource {
-        let cli = awaken_run_executor_acp::acp_cli(cli_id).expect("known ACP CLI");
+        let cli = awaken_acp_catalog::acp_cli(cli_id).expect("known ACP CLI");
         BoundLocalChannelSource {
             environment_variables: None,
             sandbox,
@@ -754,7 +752,7 @@ mod tests {
         // preserved; E3 identical system append through plain/Host routes.
         // Rules P1 C1=default => catalog argv; P2 C1=resolved => exact override;
         // both C2+C3 => E2+E3. Host materialization is tested separately below.
-        let mut cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
+        let mut cli = *awaken_acp_catalog::acp_cli("claude").unwrap();
         cli.env = &[("TZ", "UTC")];
         let mut activation = acp_activation("acp:claude");
         activation.snapshot.resolved_spec.instructions = "任务规则：保留完整指令".into();
@@ -909,7 +907,7 @@ mod tests {
         );
         assert_eq!(default.command_cwd, "/workspace", "E1 process");
         assert_eq!(default.protocol_cwd, "/workspace", "E1 ACP");
-        let cli = *awaken_run_executor_acp::acp_cli("codex").unwrap();
+        let cli = *awaken_acp_catalog::acp_cli("codex").unwrap();
         let source = BoundLocalChannelSource {
             environment_variables: None,
             sandbox: sandbox.clone(),
@@ -1076,7 +1074,7 @@ mod tests {
         // credential bytes exist only at the claimed auth.json path, never
         // OPENAI_API_KEY, Codex host-path env, or serialized provider config.
         let sandbox = Arc::new(CapturingAgentSandbox::default());
-        let cli = *awaken_run_executor_acp::acp_cli("codex").expect("Codex ACP profile");
+        let cli = *awaken_acp_catalog::acp_cli("codex").expect("Codex ACP profile");
         let source = BoundLocalChannelSource {
             environment_variables: None,
             sandbox: sandbox.clone(),

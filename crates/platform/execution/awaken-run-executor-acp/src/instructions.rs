@@ -20,47 +20,12 @@
 //! `FirstPrompt` is the explicit, traced fallback to the historical first-Step
 //! envelope; it is never chosen silently.
 
-#[cfg(feature = "execution")]
 use crate::{AcpLaunch, AcpLaunchIdentity, OpenError};
-#[cfg(feature = "execution")]
+use awaken_acp_catalog::{InstructionsChannel, InstructionsDelivery};
 use awaken_provisioning_contract as pc;
-
-/// One adapter-owned route that places text into the system prompt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InstructionsChannel {
-    /// ACP `session/new|load|resume` `_meta.systemPrompt`: a string replaces
-    /// the adapter preset and `{"append": …}` extends it.
-    SessionMetaSystemPrompt,
-    /// One string key inserted into the adapter's JSON configuration
-    /// environment variable.
-    JsonConfigKey {
-        env: &'static str,
-        key: &'static str,
-    },
-    /// A plain process environment variable the adapter adds to its prompt.
-    ProcessEnv { env: &'static str },
-    /// A file at this path below the adapter's home directory. Usable only
-    /// when Awaken owns that home; a backend-owned login keeps the user's home.
-    HomeFile { relative_path: &'static str },
-    /// A Session-owned file whose absolute path is appended to a JSON array
-    /// key of the adapter's configuration environment variable.
-    JsonConfigFileList {
-        env: &'static str,
-        key: &'static str,
-    },
-}
-
-/// Supported replace/append routes selected by the catalog's delivery policy.
-/// `None` means this policy exposes no certified route for that mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InstructionsDelivery {
-    pub replace: Option<InstructionsChannel>,
-    pub append: Option<InstructionsChannel>,
-}
 
 /// Where the frozen Agent instructions reach the model for one launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(feature = "execution")]
 pub enum InstructionsPlacement {
     /// The publication has no instructions.
     Absent,
@@ -72,7 +37,6 @@ pub enum InstructionsPlacement {
     FirstPrompt { reason: &'static str },
 }
 
-#[cfg(feature = "execution")]
 impl InstructionsPlacement {
     /// Stable label for launch events and traces.
     #[must_use]
@@ -98,7 +62,6 @@ impl InstructionsPlacement {
 /// A Session-owned instructions file the launch site must write before the
 /// process starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(feature = "execution")]
 pub struct InstructionsFile {
     /// Path below the Session config home.
     pub relative_path: String,
@@ -106,11 +69,9 @@ pub struct InstructionsFile {
 }
 
 /// Session-owned file used when an adapter only reads instructions by path.
-#[cfg(feature = "execution")]
 const SESSION_INSTRUCTIONS_FILE: &str = ".awaken/agent-instructions.md";
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg(feature = "execution")]
 struct PendingFile {
     channel: InstructionsChannel,
     placement: InstructionsPlacement,
@@ -120,14 +81,12 @@ struct PendingFile {
 /// The resolved instruction delivery for one launch and the Session opened
 /// from it.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg(feature = "execution")]
 pub struct AcpInstructions {
     placement: InstructionsPlacement,
     session_meta: Option<serde_json::Value>,
     pending_file: Option<PendingFile>,
 }
 
-#[cfg(feature = "execution")]
 impl Default for AcpInstructions {
     /// Uncataloged launches (fixtures, trusted fixed ACP commands) keep the
     /// historical first-Step envelope.
@@ -136,7 +95,6 @@ impl Default for AcpInstructions {
     }
 }
 
-#[cfg(feature = "execution")]
 impl AcpInstructions {
     fn first_prompt(reason: &'static str) -> Self {
         Self {
@@ -177,13 +135,11 @@ impl AcpInstructions {
 }
 
 /// Enrich the existing Ready event without minting another lifecycle phase.
-#[cfg(feature = "execution")]
 pub(crate) struct InstructionsLaunchObserver<'a> {
     inner: crate::LaunchSink<'a>,
     detail: String,
 }
 
-#[cfg(feature = "execution")]
 impl<'a> InstructionsLaunchObserver<'a> {
     pub(crate) fn new(inner: crate::LaunchSink<'a>, instructions: &AcpInstructions) -> Self {
         Self {
@@ -197,7 +153,6 @@ impl<'a> InstructionsLaunchObserver<'a> {
     }
 }
 
-#[cfg(feature = "execution")]
 impl crate::LaunchObserver for InstructionsLaunchObserver<'_> {
     fn on_launch(&self, _scope: &str, event: &crate::AcpLaunchEvent) {
         let mut event = event.clone();
@@ -211,7 +166,6 @@ impl crate::LaunchObserver for InstructionsLaunchObserver<'_> {
     }
 }
 
-#[cfg(feature = "execution")]
 impl AcpLaunch {
     /// Resolve how this launch delivers `instructions`. Must run after
     /// [`AcpLaunch::project_tool_aliases`], whose result selects the mode.
@@ -363,7 +317,6 @@ impl AcpLaunch {
 
 /// Read the inline JSON object an adapter already receives in `env`, or start
 /// an empty one. A secret or malformed value is never rewritten.
-#[cfg(feature = "execution")]
 fn json_config(
     env: &[pc::EnvVar],
     name: &str,
@@ -384,7 +337,6 @@ fn json_config(
     }
 }
 
-#[cfg(feature = "execution")]
 fn set_inline(env: &mut Vec<pc::EnvVar>, name: &str, value: String) {
     env.retain(|var| var.name != name);
     env.push(pc::EnvVar {
@@ -394,5 +346,5 @@ fn set_inline(env: &mut Vec<pc::EnvVar>, name: &str, value: String) {
     });
 }
 
-#[cfg(all(test, feature = "execution"))]
+#[cfg(test)]
 mod tests;
