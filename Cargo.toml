@@ -49,6 +49,7 @@ license = "Apache-2.0"
 sdk_semver_baseline = "50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940"
 
 [workspace.dependencies]
+awaken-conversation = { path = "crates/runtime/awaken-conversation", version = "0.1.0" }
 awaken-process-win32 = { path = "crates/shared/awaken-process-win32", version = "1.0.0" }
 awaken-plugin-composition = { path = "crates/bin/awaken-plugin-composition" }
 awaken-web-policy-contract = { path = "crates/contract/awaken-web-policy-contract", version = "1.1.0" }
