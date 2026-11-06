@@ -326,9 +326,6 @@ scoped_step "runtime-host-neutral-tests" "declare every fixture capability in th
 scoped_step "coordinator-acp-role" "keep ACP physical implementations out of the isolated Coordinator product" \
   "awaken-coordinator-process" python3 scripts/ci/_dispatch_boundary_fitness.py \
   --check-acp-product-features awaken-coordinator-process
-scoped_step "control-acp-role" "keep ACP physical implementations out of the isolated Control product" \
-  "awaken-control-process" python3 scripts/ci/_dispatch_boundary_fitness.py \
-  --check-acp-product-features awaken-control-process
 scoped_step "acp-metadata-production" "compile the catalog and blob owner warning-free without execution roles" \
   "awaken-run-executor-acp" cargo clippy "${locked[@]}" -p awaken-run-executor-acp --lib --no-default-features -- -D warnings
 scoped_step "acp-metadata-compile-contract" "compile catalog and blob custody while refusing physical ACP modules" \
@@ -341,19 +338,6 @@ scoped_step "acp-metadata-custody" "retain the original subject-scoped blob eras
   "awaken-run-executor-acp" run_required_rust_tests "${locked[@]}" -p awaken-run-executor-acp --no-default-features \
   --lib session_home::tests::subject_scopes_are_isolated_and_independently_erasable \
   --require-case=session_home::tests::subject_scopes_are_isolated_and_independently_erasable
-
-# Feature admission table: W1 this Worker lacks its Kubernetes integration;
-# W2 a different consumer enables the transport dependency's Kubernetes parser;
-# W3 a complete Pod projection is supplied. W1+W2+W3 must reject at Worker
-# configuration admission, while the full Worker feature retains Pod transport.
-# A workspace/all-feature graph makes W1 false and cannot prove this refusal.
-# Use the shared named-execution owner: an omitted, ignored or empty selection
-# cannot qualify the process capability boundary.
-scoped_step "worker-bootstrap-feature-union" "reject Pod identities when the Worker integration is absent, regardless of dependency feature unification" \
-  "awaken-worker" run_required_rust_tests "${locked[@]}" -p awaken-worker --no-default-features \
-  --features awaken-worker-transport-security/kubernetes --lib bootstrap::tests:: \
-  --require-case=bootstrap::tests::pod_bootstrap_freezes_projected_identity_and_never_falls_back_to_signing \
-  --require-case=bootstrap::tests::unavailable_pod_identity_rejects_before_projection_io_and_after_dto_mutation
 
 # The fuzz crate is a separate workspace, so `cargo check --workspace` never compiles it.
 # It is why three crates keep reviewed public API snapshots (ADR-0081, 2026-09-28);

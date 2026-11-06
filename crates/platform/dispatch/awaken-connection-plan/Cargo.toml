@@ -7,10 +7,11 @@ license.workspace = true
 [package.metadata.awaken]
 # Transport plumbing (yamux multiplexing, dial policy) over the agent-channel
 # contract. It holds no worker authority: the control plane dials the same
-# channel, so it sits in the shared ring both planes may use.
+# channel, so it sits in the shared ring both planes may use. Its readers are
+# the container sandboxes and the MCP protocol, so it belongs to sandbox.
 context = "shared"
 product = "platform"
-bounded_context = "dispatch"
+bounded_context = "sandbox"
 layer = "infrastructure"
 authority = "connection-plan"
 separation = "isolation"

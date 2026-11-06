@@ -31,7 +31,11 @@ async fn run() -> Result<(), String> {
         }
     }
     let config = config.ok_or_else(|| "--config PATH is required".to_owned())?;
-    let deployment = awaken_worker::WorkerDaemonConfig::load(&config, server)?;
+    let deployment = awaken_worker::WorkerDaemonConfig::load(
+        &config,
+        server,
+        awaken_worker::PodIdentity::installed(),
+    )?;
     awaken_observability::init(&deployment.observability);
     let result = deployment
         .build()
