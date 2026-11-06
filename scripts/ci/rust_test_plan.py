@@ -1078,7 +1078,8 @@ def main() -> int:
     parser.add_argument("--gate-scope", action="store_true")
     parser.add_argument("--entry", default=GATE, help="gate script whose scope is planned (default check-rust.sh)")
     parser.add_argument("--explain", action="store_true", help="also print why each changed path counts (stderr)")
-    parser.add_argument("--mode", choices=HOOK_MODES, help="plan for one check-rust.sh hook mode (default both)")
+    parser.add_argument("--mode", choices=[mode.removeprefix("--") for mode in HOOK_MODES],
+                        help="plan for one check-rust.sh hook mode, quick or push (default both)")
     args = parser.parse_args()
     if args.production_selection:
         if len(sys.argv) != 2:
@@ -1091,7 +1092,7 @@ def main() -> int:
         try:
             base = git_output("rev-parse", "--verify", "--end-of-options", args.base + "^{commit}").decode().strip()
             changed = changed_sources(base)
-            modes = (args.mode,) if args.mode else HOOK_MODES
+            modes = ("--" + args.mode,) if args.mode else HOOK_MODES
             if args.explain:
                 for line in explain(changed, args.entry, modes):
                     print(line, file=sys.stderr)

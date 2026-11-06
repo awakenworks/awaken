@@ -245,7 +245,7 @@ else
     :
   else
     plan_mode="$mode"
-    scope_plan=$(python3 scripts/ci/rust_test_plan.py --gate-scope --base "$scope_base" --mode "$plan_mode" --explain) \
+    scope_plan=$(python3 scripts/ci/rust_test_plan.py --gate-scope --base "$scope_base" --mode "${plan_mode#--}" --explain) \
       || scope_plan=$'scope=whole\nreason=gate scope unavailable; every step runs'
   fi
   echo "Rust gate scope: $(printf '%s\n' "$scope_plan" | sed -n 's/^scope=//p') ($(printf '%s\n' "$scope_plan" | sed -n 's/^reason=//p'))"
@@ -323,6 +323,36 @@ gate_step "fmt" "cargo fmt -p <reported-package>" \
 
 fi
 
+# One host build admission for the whole Cargo half, not one queue per step:
+# 30 sequential steps once spent 6,224 s of a 7,056 s hook waiting in line. The
+# unadmitted static half above runs first, so a cheap failure stops before any
+# queue. This script re-enters itself once under the existing
+# `run_with_deadline --admit` owner; every Cargo call inside inherits that job
+# (AWAKEN_CARGO_ADMITTED) and does not queue again. Without the host policy
+# (another OS, a CI runner) each Cargo call runs as before, and so does a
+# gate-script-only change, whose few reached steps are not worth one queue.
+if [ "${AWAKEN_RUST_GATE_PHASE:-}" != cargo ] && [ "${AWAKEN_CARGO_ADMITTED:-}" != 1 ] \
+    && [ "$rust_changed" -eq 1 ] && [ "$(uname -s)" = Linux ] \
+    && host_cargo_directory=$(awaken_host_cargo_directory 2>/dev/null); then
+  if [ "$fail" -ne 0 ]; then
+    echo "static checks failed; the Cargo steps were not queued (fix the errors above and rerun)" >&2
+    exit 1
+  fi
+  admitted_marker="$rust_step_evidence/admitted"
+  awaken_report_admission_wait "$admitted_marker" &
+  wait_reporter=$!
+  gate_budget="${AWAKEN_RUST_GATE_TIMEOUT_SECONDS:-14400}"
+  echo "[admission] one host build admission for every Cargo step; now: $(awaken_admission_holder 2>/dev/null || echo 'holder unknown')"
+  PATH="$host_cargo_directory:$PATH" AWAKEN_RUST_GATE_PHASE=cargo AWAKEN_RUST_GATE_EVIDENCE="$rust_step_evidence" \
+    AWAKEN_RUST_GATE_PLAN="$scope_plan" AWAKEN_RUST_GATE_BASE="$scope_base" \
+    AWAKEN_RUST_GATE_ADMITTED_MARKER="$admitted_marker" \
+    run_with_deadline --admit "$gate_budget" scripts/ci/check-rust.sh "$mode"
+  status=$?
+  kill "$wait_reporter" 2>/dev/null
+  wait "$wait_reporter" 2>/dev/null
+  exit "$status"
+fi
+[ -z "${AWAKEN_RUST_GATE_ADMITTED_MARKER:-}" ] || : > "$AWAKEN_RUST_GATE_ADMITTED_MARKER"
 
 # affects <package>... : whether a step rooted at these packages can observe the change.
 affects() {
