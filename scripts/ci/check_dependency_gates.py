@@ -189,6 +189,13 @@ SILENT_SKIP_EXEMPTIONS: dict[str, str] = {
         "This checker's own rule text names every skip spelling it refuses. "
         "Scanning itself would make stating the rule a violation of it."
     ),
+    "scripts/ci/lefthook_serial.py": (
+        "The race checks need the real lefthook binary. The wrapper only ever "
+        "runs inside a lefthook-generated hook, so a host without lefthook has "
+        "no hook to wrap and no race; the pre-commit script-tests job, which "
+        "runs this self-test whenever the wrapper or its rc file changes, runs "
+        "under lefthook itself. The unit, rc and exit-status checks always run."
+    ),
 }
 
 # Every spelling of "I am not running" this repository has used, plus the shapes

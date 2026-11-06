@@ -477,6 +477,9 @@ path, once `git cherry main <branch>` lists no remaining commit and the tree is
 clean. Long-running host jobs start under `systemd-run --user`, not detached
 inside an ssh session. Host capacity (memory, pressure, logind sessions, user
 keys) is judged only by the host admission tool's `qualification` profile.
+Partially staged commits in different worktrees of one repository are serialized
+by `scripts/ci/lefthook_serial.py`, because lefthook backs their unstaged halves
+up in the git dir all worktrees share; whole-file commits never wait.
 
 ### Control executable closure (2026-10-29 amendment)
 

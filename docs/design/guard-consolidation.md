@@ -672,3 +672,9 @@ keeps its named crates: the Coordinator binary's closure still holds six non-con
 | one host admission per cargo step | `check-rust.sh` re-enters once under `run_with_deadline --admit`; inner Cargo inherits it; `_deadline.sh awaken_admission_holder` prints holder/wait every 30 s | fake host: 1 `awaken-ci-deadline` queued, 26 inner calls `inherited` |
 | pre-push bootstrap shape in `_lefthook_fitness` + `check_test_orchestration`; generated-glob errors also in orchestration | `generate_hooks.py --check` (`hook_entry_errors`) | `hook_entry_errors(lefthook with check-rust.sh --push → true)` → refused |
 | Rust-gate telemetry always on | opt-in `AWAKEN_BUILD_OBSERVE=1` | — |
+
+## Concurrent worktree commits (2026-11-07)
+
+| Removed or changed rule | New holder | Negative example (command → result) |
+|---|---|---|
+| none: lefthook's pre-commit backup (`git stash` "lefthook auto backup" + `info/lefthook-unstaged.patch`, both in the shared git dir) let two worktrees committing partially staged files at once swap or lose each other's unstaged hunks | `lefthook.yml` `rc:` → `scripts/ci/pre-commit/lefthook-rc.sh` points the hook's `LEFTHOOK_BIN` at `scripts/ci/lefthook_serial.py`, which holds a lock in the common git dir for a `run pre-commit` with a path both staged and unstaged; whole-file commits, other hooks and a nested run holding the lock do not wait | `python3 scripts/ci/lefthook_serial.py --self-test` with real lefthook 2.1.0: without the wrapper worktree `a` ends with `b unstaged` and `b` loses its hunk; with it both keep their own; mutants (no lock / lock whole-file commits / ignore the nested marker) each fail it |
