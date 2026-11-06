@@ -17,13 +17,13 @@ fn tool_service(
     server_name: &str,
     descriptors: Vec<ToolDescriptor>,
     tools: Vec<Arc<dyn RawTool>>,
-) -> Result<Arc<crate::McpToolService>, String> {
-    let exports = crate::McpExportedTool::try_plain_set(descriptors, tools)
+) -> Result<Arc<awaken_protocol_mcp::McpToolService>, String> {
+    let exports = awaken_protocol_mcp::McpExportedTool::try_plain_set(descriptors, tools)
         .map_err(|error| error.to_string())?;
-    Ok(Arc::new(crate::McpToolService::new(
+    Ok(Arc::new(awaken_protocol_mcp::McpToolService::new(
         server_name,
         env!("CARGO_PKG_VERSION"),
-        Arc::new(crate::StaticExports::new(exports)),
+        Arc::new(awaken_protocol_mcp::StaticExports::new(exports)),
     )))
 }
 
@@ -63,15 +63,15 @@ impl awaken_session_environment_contract::tool_export::AttachedChannelToolExport
         );
         let (shutdown, mut stopped) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let mut peers: Vec<crate::McpStdioServer> = Vec::new();
+            let mut peers: Vec<awaken_protocol_mcp::McpStdioServer> = Vec::new();
             loop {
                 tokio::select! {
                     _ = &mut stopped => break,
                     incoming = channel.accept() => {
                         let Some(Ok(stream)) = incoming else { break };
-                        peers.retain(crate::McpStdioServer::is_alive);
+                        peers.retain(awaken_protocol_mcp::McpStdioServer::is_alive);
                         let (reader, writer) = tokio::io::split(stream);
-                        peers.push(crate::McpStdioServer::serve(service.clone(), reader, writer));
+                        peers.push(awaken_protocol_mcp::McpStdioServer::serve(service.clone(), reader, writer));
                     }
                 }
             }
@@ -107,7 +107,8 @@ impl awaken_session_environment_contract::tool_export::AcpToolExporter for Sessi
         tools: Vec<Arc<dyn RawTool>>,
     ) -> Result<awaken_session_environment_contract::tool_export::AcpToolExport, String> {
         let service = tool_service(server_name, descriptors, tools)?;
-        let app = crate::router(service, crate::McpHttpConfig::default());
+        let app =
+            awaken_protocol_mcp::router(service, awaken_protocol_mcp::McpHttpConfig::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(|error| format!("bind ACP tool export: {error}"))?;

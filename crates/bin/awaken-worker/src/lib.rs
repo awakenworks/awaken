@@ -1591,7 +1591,7 @@ impl WorkerNode {
         .with_artifact_publisher(remote_artifacts)
         // Every execution topology installs the same Session MCP adapter.
         // Host permission grants and Environment-bound executors remain owners.
-        .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
+        .with_acp_tool_exporter(Arc::new(awaken_execution_composition::SessionToolExporter))
         .with_skill_bundle_source(remote_skills)
         .with_web_search_provider_registry(application.web_providers)
         .with_admin_tools(self.admin_tools)

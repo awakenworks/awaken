@@ -33,7 +33,6 @@ awaken-session-application.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-run-delivery.workspace = true
-awaken-protocol-mcp.workspace = true
 awaken-protocol-a2a.workspace = true
 awaken-run-executor-a2a.workspace = true
 awaken-ext-builtin-tools.workspace = true

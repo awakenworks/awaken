@@ -349,3 +349,6 @@ pub fn with_acp_from_deployment(
         None => host,
     }
 }
+
+mod tool_export;
+pub use tool_export::SessionToolExporter;

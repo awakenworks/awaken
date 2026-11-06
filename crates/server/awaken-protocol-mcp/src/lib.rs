@@ -38,8 +38,6 @@
 pub mod export;
 pub mod http;
 pub mod service;
-mod session_export;
-pub use session_export::SessionToolExporter;
 pub mod stdio;
 
 pub use export::{
