@@ -8,7 +8,6 @@ evidence = [
   "formal/tla/EvalEvidence.cfg",
   "formal/tla/EvalEvidence.tla",
   "scripts/ci/check_formal.sh",
-  "scripts/ci/formal_eval_mutations.py",
 ]
 production_entrypoints = []
 

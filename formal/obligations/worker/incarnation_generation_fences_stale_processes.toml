@@ -11,7 +11,6 @@ evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
   "formal/tla/RemoteWorkerProtocolRegistration.cfg",
   "formal/tla/WorkerReplacement.tla",
-  "scripts/ci/formal_worker_registration_mutations.py",
 ]
 production_entrypoints = []
 

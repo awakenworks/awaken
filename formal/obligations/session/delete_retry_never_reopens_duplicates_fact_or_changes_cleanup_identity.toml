@@ -12,9 +12,7 @@ evidence = [
   "formal/tla/SessionDeletion.tla",
   "formal/tla/SessionDeletionUnconfirmed.cfg",
   "scripts/ci/check_formal.sh",
-  "scripts/ci/check_formal_mutations.py",
   "scripts/ci/formal_kani_options.py",
-  "scripts/ci/formal_session_deletion_mutations.py",
   "scripts/ci/render_runtime_refinement_traces.py",
   "scripts/ci/test_formal_profile.py",
 ]

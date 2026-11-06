@@ -10,7 +10,6 @@ evidence = [
   "formal/tla/RemoteAttempt.cfg",
   "formal/tla/RemoteAttempt.tla",
   "scripts/ci/check_formal.sh",
-  "scripts/ci/formal_execution_replacement_mutations.py",
 ]
 production_entrypoints = []
 

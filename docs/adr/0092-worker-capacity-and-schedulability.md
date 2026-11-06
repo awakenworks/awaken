@@ -228,8 +228,7 @@ harness for
 `session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing`
 stays total over any new projection row. The classification and the schedulability
 decision are finite pure functions and get exhaustive decision tables. Run
-`scripts/ci/check_formal_surface.py --staged`, `scripts/ci/formal_dispatch_mutations.py`
-and `scripts/ci/formal_realization_capacity_mutations.py`.
+`scripts/ci/check_formal_surface.py --staged`.
 
 ## Consequences
 

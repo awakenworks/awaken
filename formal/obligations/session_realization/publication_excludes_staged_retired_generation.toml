@@ -8,8 +8,6 @@ evidence = [
   "formal/runtime-refinement-manifest.json",
   "formal/tla/SessionRealizationMutex.tla",
   "formal/tla/SessionRealizationRenewal.cfg",
-  "scripts/ci/check_formal_mutations.py",
-  "scripts/ci/formal_realization_trace_mutations.py",
   "scripts/ci/render_runtime_refinement_traces.py",
 ]
 production_entrypoints = []

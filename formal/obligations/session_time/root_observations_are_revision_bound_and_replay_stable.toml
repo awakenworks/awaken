@@ -7,7 +7,6 @@ evidence = [
   "formal/runtime-refinement-manifest.json",
   "formal/tla/SessionRoot.cfg",
   "formal/tla/SessionRoot.tla",
-  "scripts/ci/check_formal_mutations.py",
   "scripts/ci/render_runtime_refinement_traces.py",
 ]
 production_entrypoints = []

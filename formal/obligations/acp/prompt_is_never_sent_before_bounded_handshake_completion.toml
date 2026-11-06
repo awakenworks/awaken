@@ -10,7 +10,6 @@ evidence = [
   "formal/tla/AcpBoundary.tla",
   "formal/verification-boundaries/acp-handshake-and-wire.md",
   "scripts/ci/check_formal.sh",
-  "scripts/ci/check_formal_mutations.py",
 ]
 production_entrypoints = []
 

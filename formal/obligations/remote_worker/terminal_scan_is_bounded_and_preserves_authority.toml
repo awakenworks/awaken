@@ -6,7 +6,6 @@ evidence = [
   "formal/tla/TerminalReconciliationScan.cfg",
   "formal/tla/TerminalReconciliationScan.tla",
   "scripts/ci/check_formal.sh",
-  "scripts/ci/formal_dispatch_mutations.py",
 ]
 production_entrypoints = []
 

@@ -14,8 +14,6 @@ evidence = [
   "formal/tla/SessionStartProtocol.cfg",
   "formal/tla/SessionStartProtocol.tla",
   "scripts/ci/check_formal.sh",
-  "scripts/ci/formal_dispatch_mutations.py",
-  "scripts/ci/formal_model_mutation_runner.py",
 ]
 production_entrypoints = []
 

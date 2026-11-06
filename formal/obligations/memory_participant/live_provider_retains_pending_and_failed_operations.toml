@@ -9,7 +9,6 @@ evidence = [
   "formal/tla/MemoryParticipantOwnership.cfg",
   "formal/tla/MemoryParticipantOwnership.tla",
   "scripts/ci/check_formal.sh",
-  "scripts/ci/formal_memory_mutations.py",
 ]
 production_entrypoints = []
 

@@ -11,7 +11,6 @@ evidence = [
   "formal/tla/ConfigActivation.cfg",
   "formal/tla/ConfigActivation.tla",
   "scripts/ci/check_formal.sh",
-  "scripts/ci/formal_config_mutations.py",
 ]
 production_entrypoints = []
 

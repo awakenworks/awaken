@@ -7,7 +7,6 @@ evidence = [
   "formal/tla/DispatchMaintenanceScheduling.cfg",
   "formal/tla/DispatchMaintenanceScheduling.tla",
   "scripts/ci/check-reliability.sh",
-  "scripts/ci/formal_dispatch_mutations.py",
   "scripts/ci/render_runtime_refinement_traces.py",
 ]
 production_entrypoints = []

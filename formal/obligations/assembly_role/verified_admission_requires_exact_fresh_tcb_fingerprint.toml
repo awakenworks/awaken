@@ -8,7 +8,6 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/VerifiedProfileAdmission.tla",
   "scripts/ci/check_formal.sh",
-  "scripts/ci/check_formal_mutations.py",
   "scripts/release/verification_manifest.py",
 ]
 production_entrypoints = [

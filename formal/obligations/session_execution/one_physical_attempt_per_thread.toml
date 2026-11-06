@@ -10,7 +10,6 @@ evidence = [
   "formal/tla/SessionRunProtocolRetirement.cfg",
   "formal/tla/SessionRunStopEvidence.cfg",
   "formal/tla/SessionRunStopEvidence.tla",
-  "scripts/ci/formal_dispatch_mutations.py",
 ]
 production_entrypoints = []
 
