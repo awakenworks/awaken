@@ -1012,7 +1012,7 @@ print(json.dumps({{"context": build_context(Path.cwd(), {arguments!r}),
                     # a slow source probe cannot substitute for this condition.
                     cargo = fixture/"bin/cargo"
                     source = cargo.read_text(encoding="utf-8")
-                    delay = '  sleep "${PREPARATION_DELAY:-0}"\n'
+                    delay = '  [ "${PREPARATION_DELAY:-0}" = 0 ] || sleep "$PREPARATION_DELAY"\n'
                     self.assertEqual(source.count(delay), 1)
                     cargo.write_text(source.replace(delay, "  " + launch_tree, 1), encoding="utf-8")
                 values.update(PREPARATION_DELAY=str(preparation_seconds),
