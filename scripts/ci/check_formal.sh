@@ -212,23 +212,6 @@ elif [ "$require_tools" -eq 1 ]; then
 fi
 
 formal_phase_budget="${AWAKEN_FORMAL_TIMEOUT_SECONDS:-86400}"
-if [ "${AWAKEN_ADMISSION_PHASE_MODE:-}" = 1 ]; then
-  [[ "$formal_phase_budget" =~ ^[1-9][0-9]*$ ]] || { echo 'invalid formal phase budget' >&2; exit 2; }
-  # Python mutation drivers also launch Java. This scoped argv adapter enters
-  # the SAME host/deadline owners; it is removed with the existing temp root.
-  if [ "$tlc_available" -eq 1 ]; then
-    original_java="$(command -v java)"
-    phase_tools="$formal_tmp_root/admitted-tools"
-    mkdir -p "$phase_tools"
-    {
-      printf '#!/usr/bin/env bash\nset -euo pipefail\nsource %q\n' "$PWD/scripts/ci/_deadline.sh"
-      printf 'if [ "${AWAKEN_CARGO_ADMITTED:-}" = 1 ]; then exec %q "$@"; fi\n' "$original_java"
-      printf 'run_with_deadline --admit %q %q "$@"\n' "$formal_phase_budget" "$original_java"
-    } > "$phase_tools/java"
-    chmod 700 "$phase_tools/java"
-    export PATH="$phase_tools:$PATH"
-  fi
-fi
 
 rust_trace_dir="$formal_artifact_dir/rust-traces"
 rendered_trace_dir="$formal_artifact_dir/rendered-traces"
@@ -252,6 +235,27 @@ python3 scripts/ci/check_formal_surface.py --require-complete
 python3 scripts/ci/check_formal_web_surface.py
 python3 scripts/ci/check_proof_boundaries.py
 python3 scripts/ci/check_formal_mutations.py
+
+# Framework fixtures execute the original initialization and inherit PATH.
+# Install this one heavy-Java adapter only after those metadata/receipt checks;
+# actual trace/model Java below must still cross the original phase admission.
+if [ "${AWAKEN_ADMISSION_PHASE_MODE:-}" = 1 ]; then
+  [[ "$formal_phase_budget" =~ ^[1-9][0-9]*$ ]] || { echo 'invalid formal phase budget' >&2; exit 2; }
+  # Python mutation drivers also launch Java. This scoped argv adapter enters
+  # the SAME host/deadline owners; it is removed with the existing temp root.
+  if [ "$tlc_available" -eq 1 ]; then
+    original_java="$(command -v java)"
+    phase_tools="$formal_tmp_root/admitted-tools"
+    mkdir -p "$phase_tools"
+    {
+      printf '#!/usr/bin/env bash\nset -euo pipefail\nsource %q\n' "$PWD/scripts/ci/_deadline.sh"
+      printf 'if [ "${AWAKEN_CARGO_ADMITTED:-}" = 1 ]; then exec %q "$@"; fi\n' "$original_java"
+      printf 'run_with_deadline --admit %q %q "$@"\n' "$formal_phase_budget" "$original_java"
+    } > "$phase_tools/java"
+    chmod 700 "$phase_tools/java"
+    export PATH="$phase_tools:$PATH"
+  fi
+fi
 
 # Every Rust witness below uses the existing required executor: the SAME
 # authored Cargo argv is listed and run, an empty whole-call selection fails,
