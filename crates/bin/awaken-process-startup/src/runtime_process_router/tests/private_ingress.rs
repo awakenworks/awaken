@@ -117,6 +117,26 @@ async fn configured_private_reads_are_addressed_and_never_mounted_on_the_private
         .await,
         StatusCode::UNAUTHORIZED
     );
+    let stop = |router: Router| async move {
+        router
+            .oneshot(
+                Request::post("/v1/workspaces/assistant-a/private-assistant/sessions/a/stop")
+                    .header("idempotency-key", "original-interrupt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    };
+    assert_eq!(
+        stop(routers.public_router.clone()).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        stop(routers.private_router.clone()).await,
+        StatusCode::NOT_FOUND
+    );
     routers
         .service_lifecycle
         .shutdown(Duration::from_secs(1))

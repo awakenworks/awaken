@@ -32,6 +32,7 @@ struct Authorities {
     scope_calls: AtomicUsize,
     decision_calls: AtomicUsize,
     file_decisions: AtomicUsize,
+    cancel_decisions: AtomicUsize,
 }
 
 async fn current_account(State(state): State<Arc<Authorities>>, headers: HeaderMap) -> Response {
@@ -91,6 +92,10 @@ async fn decision(
     state.decision_calls.fetch_add(1, Ordering::SeqCst);
     if request.action == crate::authz::qualified_action(ActionNamespace::Workspace, "file.read") {
         state.file_decisions.fetch_add(1, Ordering::SeqCst);
+    } else if request.action
+        == crate::authz::qualified_action(ActionNamespace::HostedRuntime, "run.cancel")
+    {
+        state.cancel_decisions.fetch_add(1, Ordering::SeqCst);
     } else {
         assert_eq!(
             request.action,
@@ -172,6 +177,7 @@ fn addressed_private_read_requires_current_account_binding_and_decision_before_t
         scope_calls: AtomicUsize::new(0),
         decision_calls: AtomicUsize::new(0),
         file_decisions: AtomicUsize::new(0),
+        cancel_decisions: AtomicUsize::new(0),
     });
     let (base, server) = runtime.block_on(async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -260,7 +266,26 @@ fn addressed_private_read_requires_current_account_binding_and_decision_before_t
                 },
             ),
         );
-    let app = private_content_read_router(managed, iam, context);
+    let managed = managed.route(
+        "/v1/sessions/{id}/events",
+        axum::routing::post(
+            |Path(id): Path<String>,
+             Extension(_private): Extension<AdmittedPrivateSessionRequest>,
+             headers: HeaderMap,
+             axum::Json(body): axum::Json<serde_json::Value>| async move {
+                assert_eq!(id, "session-a");
+                assert_eq!(headers["idempotency-key"], "interrupt-original");
+                assert!(!headers.contains_key("authorization"));
+                assert!(!headers.contains_key("anthropic-user-profile-id"));
+                assert_eq!(
+                    body,
+                    serde_json::json!({"events":[{"type":"user.interrupt"}]})
+                );
+                StatusCode::CREATED
+            },
+        ),
+    );
+    let app = private_assistant_router(managed, iam, context);
     let path = "/v1/private-assistant/sessions/session-a/events";
     let request = |method: &str, path: &str, bearer: &str, addressed: bool| {
         let builder = Request::builder()
@@ -305,6 +330,28 @@ fn addressed_private_read_requires_current_account_binding_and_decision_before_t
             call(request("GET", &stream, &human, true)).await,
             StatusCode::OK
         );
+        let stop = "/v1/private-assistant/sessions/session-a/stop";
+        assert_eq!(
+            call(request("POST", stop, &human, true)).await,
+            StatusCode::BAD_REQUEST
+        );
+        let stop_request = |body| {
+            let mut req = request("POST", stop, &human, true);
+            req.headers_mut()
+                .insert("idempotency-key", "interrupt-original".parse().unwrap());
+            req.headers_mut()
+                .insert("anthropic-user-profile-id", "forged".parse().unwrap());
+            *req.body_mut() = body;
+            req
+        };
+        assert_eq!(
+            call(stop_request(Body::from(
+                r#"{"events":[{"type":"user.message"}]}"#
+            )))
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(call(stop_request(Body::empty())).await, StatusCode::CREATED);
         assert_eq!(
             call(request(
                 "GET",
@@ -342,10 +389,11 @@ fn addressed_private_read_requires_current_account_binding_and_decision_before_t
             StatusCode::UNAUTHORIZED
         );
     });
-    assert_eq!(state.userinfo_calls.load(Ordering::SeqCst), 7);
-    assert_eq!(state.scope_calls.load(Ordering::SeqCst), 6);
+    assert_eq!(state.userinfo_calls.load(Ordering::SeqCst), 9);
+    assert_eq!(state.scope_calls.load(Ordering::SeqCst), 8);
     assert!(state.decision_calls.load(Ordering::SeqCst) >= 2);
     assert_eq!(state.file_decisions.load(Ordering::SeqCst), 1);
+    assert_eq!(state.cancel_decisions.load(Ordering::SeqCst), 2);
     assert_eq!(handled.load(Ordering::SeqCst), 1);
     server.abort();
 }

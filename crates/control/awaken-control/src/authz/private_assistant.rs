@@ -1,7 +1,7 @@
 // @formal surface requirement=runtime.permission.authority_never_widens
 // @formal reason: Private HTTP admission combines current native Account,
 // @formal reason: Workspace-purpose and PDP authority before selecting the Session view.
-//! Explicit private content reads over the original Managed router.
+//! Explicit private reads and interrupts over the original Managed router.
 
 use std::sync::Arc;
 
@@ -14,17 +14,18 @@ use awaken_session_contract::SessionPrivateBinding;
 use awaken_tenancy::{WorkspaceScope, workspace_purpose::WorkspacePurposeUnavailable};
 use axum::{
     Router,
+    body::{Body, to_bytes},
     extract::{Request, State},
-    http::{Method, StatusCode, Uri},
+    http::{HeaderValue, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::get,
 };
 use tower::ServiceExt as _;
 
 use super::{
-    ActionNamespace, HttpOrdinaryWorkspaceAdmission, RemoteManagementAuthz, RouteAuthz, action_for,
-    authorization_bearer_token, forbidden, iam_unavailable, off_event_loop, target_scope,
-    unauthenticated,
+    ActionNamespace, HttpOrdinaryWorkspaceAdmission, RemoteManagementAuthz, RouteAuthz, ScopeClass,
+    action_for, authorization_bearer_token, forbidden, iam_unavailable, off_event_loop,
+    target_scope, unauthenticated,
 };
 
 /// Deployment-selected observer of the current private application coordinates.
@@ -68,16 +69,19 @@ struct Ingress {
     context: Arc<HttpPrivateWorkspaceContext>,
 }
 
-/// Mount the finite read surface. The caller supplies the same Managed
+/// Mount the finite private surface. The caller supplies the same Managed
 /// router and state used by ordinary routes. Addressed Workspace selection is
 /// required; the flat platform default cannot select a private application.
-pub fn private_content_read_router(
+pub fn private_assistant_router(
     managed: Router,
     iam: Arc<RemoteManagementAuthz>,
     context: Arc<HttpPrivateWorkspaceContext>,
 ) -> Router {
     Router::new()
-        .route("/v1/private-assistant/{*operation}", get(dispatch))
+        .route(
+            "/v1/private-assistant/{*operation}",
+            get(dispatch).post(dispatch),
+        )
         .layer(axum::middleware::map_response(
             |mut response: Response| async move {
                 response.headers_mut().insert(
@@ -117,9 +121,35 @@ fn canonical_read(method: &Method, path: &str) -> Option<(String, ActionNamespac
 }
 
 async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response {
-    let Some((canonical, namespace)) = canonical_read(request.method(), request.uri().path())
-    else {
-        return StatusCode::NOT_FOUND.into_response();
+    let (canonical, namespace, stop) = if request.method() == Method::POST {
+        let Some(session) = request
+            .uri()
+            .path()
+            .strip_prefix("/v1/private-assistant/sessions/")
+            .and_then(|path| path.strip_suffix("/stop"))
+            .filter(|id| !id.is_empty() && !id.contains('/'))
+        else {
+            return StatusCode::METHOD_NOT_ALLOWED.into_response();
+        };
+        if request.uri().query().is_some()
+            || !matches!(
+                awaken_protocol_managed::parse_idempotency_key_header(request.headers()),
+                Ok(Some(_))
+            )
+        {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+        (
+            format!("/v1/sessions/{session}/events"),
+            ActionNamespace::HostedRuntime,
+            true,
+        )
+    } else {
+        let Some((canonical, namespace)) = canonical_read(request.method(), request.uri().path())
+        else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        (canonical, namespace, false)
     };
     let Some(workspace) = request
         .extensions()
@@ -150,12 +180,19 @@ async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response 
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return iam_unavailable(),
     };
-    let (action, scope) = match (namespace, action_for(request.method(), &canonical)) {
-        (ActionNamespace::HostedRuntime, Some(RouteAuthz::HostedRuntime { action, scope, .. }))
-        | (ActionNamespace::Workspace, Some(RouteAuthz::Resource { action, scope })) => {
-            (action, scope)
+    let (action, scope) = if stop {
+        ("run.cancel", ScopeClass::Workspace)
+    } else {
+        match (namespace, action_for(request.method(), &canonical)) {
+            (
+                ActionNamespace::HostedRuntime,
+                Some(RouteAuthz::HostedRuntime { action, scope, .. }),
+            )
+            | (ActionNamespace::Workspace, Some(RouteAuthz::Resource { action, scope })) => {
+                (action, scope)
+            }
+            _ => return forbidden("no native action is mapped for this private operation"),
         }
-        _ => return forbidden("no native action is mapped for this private operation"),
     };
     let Some(scope) = target_scope(scope, &workspace, &canonical) else {
         return forbidden("no private authorization target");
@@ -185,6 +222,24 @@ async fn dispatch(State(ingress): State<Ingress>, request: Request) -> Response 
         return StatusCode::NOT_FOUND.into_response();
     };
     let (mut parts, body) = request.into_parts();
+    let body = if stop {
+        // Do not forward an event or attribution chosen by the caller. Only a
+        // native Session interrupt can be issued under the cancellation action.
+        if to_bytes(body, 0).await.is_err() {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+        parts.headers.remove(header::CONTENT_LENGTH);
+        parts.headers.remove(header::CONTENT_ENCODING);
+        parts.headers.remove(header::TRANSFER_ENCODING);
+        parts.headers.remove("anthropic-user-profile-id");
+        parts.headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        Body::from(r#"{"events":[{"type":"user.interrupt"}]}"#)
+    } else {
+        body
+    };
     parts.uri = uri;
     // The alias catch-all captured a different set of path parameters. Keep
     // only the freshly admitted authority and let the native router re-extract

@@ -74,6 +74,41 @@ async fn create(app: &Router, key: Option<&str>) -> String {
 }
 
 #[tokio::test]
+async fn private_session_interrupt_retains_the_native_original_event_command() {
+    let repository = support::session_repository("private original interrupt").await;
+    let base = support::shared_state_over(RehydrateFake::default(), repository).await;
+    let alice = admitted(&base, binding("alice"));
+    let bob = admitted(&base, binding("bob"));
+    let id = create(&alice, Some("original-session")).await;
+    let path = format!("/v1/sessions/{id}/events");
+    let stop = json!({"events":[{"type":"user.interrupt"}]});
+    let key = Some("original-interrupt-command");
+    assert_eq!(
+        call(&bob, "POST", &path, stop.clone(), key).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    let original = call(&alice, "POST", &path, stop.clone(), key)
+        .await
+        .expect_for(StatusCode::OK, "admitted interrupt");
+    let replay = call(&alice, "POST", &path, stop, key)
+        .await
+        .expect_for(StatusCode::OK, "exact original interrupt replay");
+    assert_eq!(replay, original);
+    let events = call(&alice, "GET", &path, Value::Null, None)
+        .await
+        .expect_for(StatusCode::OK, "current private history");
+    assert_eq!(
+        events["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["type"] == "user.interrupt")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn private_http_creation_and_original_key_replay_preserve_the_complete_native_binding() {
     let repository = support::session_repository("private request creation").await;
     let base = support::shared_state_over(RehydrateFake::default(), repository.clone()).await;

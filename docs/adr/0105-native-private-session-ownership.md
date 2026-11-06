@@ -280,4 +280,13 @@ window, including replay; an idle stream also closes at its deadline. A
 reconnect obtains fresh Account, application and PDP authority. Revocation
 denies new admission, and does not recall frames already delivered within an
 in-flight window. Ordinary streams retain their existing lifecycle. The alias
-still accepts no mutation or interrupt.
+accepts no create, ordinary event submission, or File mutation.
+
+The addressed `POST /v1/workspaces/{workspace}/private-assistant/sessions/{id}/stop`
+operation requires the current direct Account, the current private binding,
+the native `run.cancel` action, an empty body, and the original idempotency key.
+The ingress creates exactly one native `user.interrupt` Event and sends it
+through the original Managed Session handler and owner check. Request body and
+caller-supplied data-subject attribution cannot select an Event or another
+Thread. The original Session Event command owns the retained replay receipt;
+the alias adds no second interrupt or execution owner.
