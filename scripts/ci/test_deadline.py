@@ -359,12 +359,22 @@ finally:
         # members install their handlers. Cross all D1-D4 handler pairs: exact
         # 128+signal, closed inherited pipes, no live leader/child. Repeated TERM
         # during grace cannot restart cleanup or overwrite the first signal.
-        # Setup uses a bounded readiness barrier, not subsecond startup timing.
+        # Wait for the driver to enter cleanup before sending the repeat.
+        import selectors
+
         driver = """
 import importlib.util, sys
 spec=importlib.util.spec_from_file_location('deadline', sys.argv[1])
 m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.KILL_GRACE_SECONDS=0.15
+terminate_group=m.terminate_group
+
+def observed_cleanup(process):
+    print('cleaning', file=sys.stderr, flush=True)
+    assert sys.stdin.readline().strip() == 'continue', 'observer did not release cleanup'
+    terminate_group(process)
+
+m.terminate_group=observed_cleanup
 raise SystemExit(m.run(60,sys.argv[2:]))
 """
         with tempfile.TemporaryDirectory() as tmp:
@@ -379,7 +389,8 @@ raise SystemExit(m.run(60,sys.argv[2:]))
                             process = subprocess.Popen(
                                 [sys.executable, '-c', driver, str(DEADLINE),
                                  *self.group_command(coordinate, leader_ignores, child_ignores)],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
                             try:
                                 until = time.monotonic() + 10
                                 while not ready.exists() and time.monotonic() < until:
@@ -387,9 +398,13 @@ raise SystemExit(m.run(60,sys.argv[2:]))
                                 self.assertTrue(ready.exists(), 'S1 fixture startup')
                                 members = json.loads(ready.read_text())
                                 process.send_signal(number)
-                                time.sleep(0.03)
-                                if process.poll() is None:
-                                    process.send_signal(signal.SIGTERM)
+                                with selectors.DefaultSelector() as barrier:
+                                    barrier.register(process.stderr, selectors.EVENT_READ)
+                                    self.assertTrue(barrier.select(5), 'S1 driver entered cleanup')
+                                    self.assertEqual(process.stderr.readline(), 'cleaning\n')
+                                process.send_signal(signal.SIGTERM)
+                                process.stdin.write('continue\n')
+                                process.stdin.flush()
                                 out, err = process.communicate(timeout=5)
                                 self.assertEqual(process.returncode, 128 + number, err)
                                 self.assertEqual(out.strip(), 'ready')

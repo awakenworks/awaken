@@ -112,7 +112,6 @@ ROUTE_OWNER_FILES = (
 # Public ingress code is discovered as well as explicitly registered. This
 # prevents a new router source from silently escaping the ownership inventory.
 PUBLIC_ROUTE_ROOTS = (
-    "crates/control",
     "crates/server/awaken-protocol-a2a/src",
     "crates/server/awaken-protocol-ag-ui/src",
     "crates/server/awaken-protocol-ai-sdk/src",
@@ -121,6 +120,17 @@ PUBLIC_ROUTE_ROOTS = (
     "crates/server/awaken-protocol-mcp/src",
     "crates/server/awaken-coordinator/src",
 )
+
+
+def public_route_roots(repo_root: Path) -> tuple[str, ...]:
+    roots = set(PUBLIC_ROUTE_ROOTS)
+    # Control composition and ingress owners span several bounded contexts.
+    # Discover their existing role from metadata, independently of directory depth.
+    for manifest in _crate_boundary_workspace.crate_manifests(repo_root / "crates"):
+        package = _crate_boundary_workspace.load_manifest(manifest).get("package", {})
+        if package.get("metadata", {}).get("awaken", {}).get("context") == "control":
+            roots.add(_crate_boundary_workspace.repository_path(manifest.parent / "src", repo_root))
+    return tuple(sorted(roots))
 
 ROUTE_START = re.compile(r'\.route\(\s*"(?P<path>[^"]+)"\s*,', re.MULTILINE)
 METHOD = re.compile(r"\b(get|post|put|patch|delete|head|options)\s*\(")
@@ -323,7 +333,7 @@ def check_all(repo_root: Path) -> list[str]:
 
     registered = set(ROUTE_OWNER_FILES)
     discovered: set[str] = set()
-    for relative_root in PUBLIC_ROUTE_ROOTS:
+    for relative_root in public_route_roots(repo_root):
         root = repo_root / relative_root
         if not root.exists():
             errors.append(f"missing public-route source root {relative_root}")
@@ -351,6 +361,23 @@ def check_all(repo_root: Path) -> list[str]:
 
 
 def selftest() -> None:
+    # A relocated Control owner must still be discovered; its directory name
+    # cannot hide a newly added ingress route from the registration guard.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        source = root / "crates/platform/config/control-ingress/src"
+        source.mkdir(parents=True)
+        manifest = source.parent / "Cargo.toml"
+        manifest.write_text('[package]\nname = "control-ingress"\n'
+                            '[package.metadata.awaken]\ncontext = "control"\n')
+        relative = source.relative_to(root).as_posix()
+        assert relative in public_route_roots(root), "deep Control ingress stays guarded"
+        manifest.write_text('[package]\nname = "control-ingress"\n'
+                            '[package.metadata.awaken]\ncontext = "runtime"\n')
+        assert relative not in public_route_roots(root), "directory spelling grants no Control role"
+
     # Literal presence is necessary but insufficient: preserve raw-source
     # scope, Unicode/underscore word boundaries, one result per catalog entry,
     # native path spelling and catalog order. These witnesses also reject

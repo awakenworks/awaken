@@ -80,7 +80,7 @@ pass() { echo "  ok: $*"; }
 # PART 1 — STATIC: the server carries no live-reload wiring.
 # ---------------------------------------------------------------------------
 echo "==> PART 1: source carries no live config-reload wiring (config is startup-fixed)"
-SRC="crates/bin/awaken-scenario-host/src"
+SRC="crates/devtools/awaken-scenario-host/src"
 # SIGHUP is the conventional reload signal; a config watcher would use notify/inotify
 # or a file watch; a reload endpoint would route /reload. None must exist.
 if grep -rniE "sighup|hangup|config.?reload|reload.?config|notify::recommended|inotify|/reload" "$SRC" >/dev/null 2>&1; then
