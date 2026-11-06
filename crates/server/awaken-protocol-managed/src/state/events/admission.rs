@@ -182,12 +182,6 @@ impl ManagedState {
                 awaken_managed_session_events::RuntimeToolFollowupAdmission::Ready => {}
             }
         }
-        // A pending committed tool reply is the stronger aggregate state. With
-        // no pending reply, a reached shared cap makes interrupt an accepted
-        // no-op; it must not create an event/receipt or touch Runtime state.
-        let ignore_budget_pause_interrupts =
-            awaken_session_contract::session_is_budget_paused(&persisted_session)
-                && candidates.is_empty();
         let mut inputs = Vec::with_capacity(events.len());
         let mut drive = ValidatedEventBatchDrive::PreferredBatch;
         for event in events {
@@ -251,9 +245,8 @@ impl ManagedState {
             }
             match event {
                 InboundEvent::UserInterrupt { session_thread_id } => {
-                    if ignore_budget_pause_interrupts {
-                        continue;
-                    }
+                    // A budget pause that absorbs this Interrupt is decided by
+                    // the Event application on the root it commits against.
                     // Resolve and freeze every target before the first receipt is
                     // persisted. Recovery executes only this immutable set; it
                     // never reinterprets a later Session Thread topology.

@@ -171,6 +171,19 @@ impl RetainedEventBatchAdmission<'_> {
     }
 }
 
+/// The inputs a retained batch keeps once the budget pause has absorbed its
+/// Interrupts.
+fn retained_event_inputs(
+    inputs: &[SessionEventInput],
+    interrupts_absorbed: bool,
+) -> Vec<SessionEventInput> {
+    inputs
+        .iter()
+        .filter(|input| !(interrupts_absorbed && matches!(input, SessionEventInput::Interrupt(_))))
+        .cloned()
+        .collect()
+}
+
 fn snapshot_has_no_live_run(
     snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     known_absent: bool,
@@ -769,6 +782,27 @@ impl SessionEventBatchCommands {
         Ok((owner, session))
     }
 
+    /// The Interrupts of `inputs` that the budget pause absorbs on this root:
+    /// all of them or none. A batch of only absorbed Interrupts is an Event
+    /// no-op; any other batch is retained without them.
+    async fn budget_pause_absorbed_interrupts(
+        &self,
+        session: &PersistedSession,
+        inputs: &[SessionEventInput],
+    ) -> Result<Vec<awaken_session_contract::SessionEventInterrupt>, RunError> {
+        let interrupts = inputs
+            .iter()
+            .filter_map(|input| match input {
+                SessionEventInput::Interrupt(interrupt) => Some(interrupt.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if interrupts.is_empty() || !self.budget_pause_absorbs_interrupt(session).await? {
+            return Ok(Vec::new());
+        }
+        Ok(interrupts)
+    }
+
     /// The budget-pause interrupt law, decided by the aggregate over the Thread
     /// evidence gathered here. No snapshot is read while the root alone refuses.
     async fn budget_pause_absorbs_interrupt(
@@ -884,6 +918,7 @@ impl SessionEventBatchCommands {
                     "Session no longer accepts Event batches",
                 ));
             }
+            let mut interrupts_absorbed = false;
             if let EventBatchAdmission::Accept { inputs, .. } = &admission {
                 for input in inputs {
                     if let SessionEventInput::Interrupt(interrupt) = input {
@@ -893,17 +928,11 @@ impl SessionEventBatchCommands {
                 // The shared Thread law applies to every internal/protocol
                 // caller before either retaining a batch or acknowledging no-op.
                 admit_event_batch_topology(coordination, thread_reads, session_id, inputs).await?;
-                let interrupts = inputs
-                    .iter()
-                    .map(|input| match input {
-                        SessionEventInput::Interrupt(interrupt) => Some(interrupt.clone()),
-                        _ => None,
-                    })
-                    .collect::<Option<Vec<_>>>();
-                if let Some(interrupts) = interrupts
-                    && !interrupts.is_empty()
-                    && self.budget_pause_absorbs_interrupt(&session).await?
-                {
+                let interrupts = self
+                    .budget_pause_absorbed_interrupts(&session, inputs)
+                    .await?;
+                interrupts_absorbed = !interrupts.is_empty();
+                if interrupts_absorbed && interrupts.len() == inputs.len() {
                     let result = mutations
                         .commit_mutation(
                             &owner,
@@ -972,7 +1001,7 @@ impl SessionEventBatchCommands {
                 ) => SessionEventBatch::compile_attributed(
                     session_id,
                     batch_id,
-                    inputs.clone(),
+                    retained_event_inputs(inputs, interrupts_absorbed),
                     data_subject_id.clone(),
                     traceparent.clone(),
                 ),

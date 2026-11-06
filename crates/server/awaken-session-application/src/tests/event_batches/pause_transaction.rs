@@ -8,9 +8,9 @@
 //!   trigger rows live in `awaken-session-store/tests/pause_transaction.rs`,
 //!   which owns raw SQL access to both backends).
 //!
-//! Existing policy (protocol `send_event_batch`): while the Session is budget
-//! paused, an ordinary batch is retained and waits for the allowance; an
-//! interrupt-only batch has nothing to stop and is an accepted no-op.
+//! Existing policy (Event application admission): a budget-paused Session
+//! retains ordinary batches until the allowance; an absorbed Interrupt makes an
+//! interrupt-only batch a no-op and is dropped from a mixed batch.
 //!
 //! | Row | Root | Batch | Expected |
 //! |---|---|---|---|
@@ -571,4 +571,88 @@ async fn exact_activity_receipt_precedes_fresh_budget_policy() {
         projections_before,
         "P2/E1 no fresh projection policy"
     );
+}
+
+#[tokio::test]
+async fn mixed_batch_interrupt_is_absorbed_by_the_same_law_as_an_interrupt_only_batch() {
+    // Regression input: a budget-paused root (cap reached, execution Idle)
+    // whose committed primary Thread still has a crash-orphan `Running` Run,
+    // receiving the batch [user.interrupt, user.message]. The Managed parser
+    // dropped that Interrupt because no tool reply was pending, while the same
+    // root retains [user.interrupt]: only the absence of a live Run, proven by
+    // a current prefix, lets a budget pause absorb an Interrupt.
+    // | Row | Primary Thread | [interrupt] | [interrupt, message] retains |
+    // |---|---|---|---|
+    // | M1 | no Run | NoOp | message only |
+    // | M2 | orphan Running Run | batch | interrupt, message |
+    // | M3 | Awaiting Run | batch | interrupt, message |
+    // | M4 | ended prefix moves | batch | interrupt, message |
+    for (row, cause) in [
+        ("M1", "none"),
+        ("M2", "running"),
+        ("M3", "awaiting"),
+        ("M4", "moving"),
+    ] {
+        for mixed in [false, true] {
+            let id = format!("t12-mixed-{cause}-{mixed}");
+            let session = SessionId::from(id.as_str());
+            let fixture = fixture(&id).await;
+            if cause != "none" {
+                let run = awaken_agent_contract::RunId("observed-run".into());
+                *fixture.runtime.latest_run.lock().unwrap() = Some(run.clone());
+                fixture.runtime.states.lock().unwrap().insert(
+                    run.0,
+                    match cause {
+                        "running" => RunState::Running,
+                        "awaiting" => RunState::Awaiting,
+                        _ => {
+                            RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd)
+                        }
+                    },
+                );
+                if cause == "moving" {
+                    *fixture.runtime.recovery_versions.lock().unwrap() = VecDeque::from([1, 2, 2]);
+                }
+            }
+            let mut inputs = vec![interrupt_only()];
+            if mixed {
+                inputs.push(user("after the interrupt"));
+            }
+            let result = fixture
+                .app
+                .event_batches
+                .admit_session_event_batch_idempotent(
+                    &session,
+                    inputs,
+                    None,
+                    None,
+                    Some(("mixed".into(), "mixed-fp".into())),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("{row} mixed={mixed}: {error:?}"));
+            let retained = result.as_batch().map(|batch| {
+                batch
+                    .events
+                    .iter()
+                    .map(|entry| match entry.event {
+                        awaken_session_contract::SessionEventCommand::Interrupt { .. } => {
+                            "interrupt"
+                        }
+                        awaken_session_contract::SessionEventCommand::UserMessage { .. } => {
+                            "message"
+                        }
+                        _ => "other",
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let expected = match (cause, mixed) {
+                ("none", false) => None,
+                ("none", true) => Some(vec!["message"]),
+                (_, false) => Some(vec!["interrupt"]),
+                (_, true) => Some(vec!["interrupt", "message"]),
+            };
+            assert_eq!(retained, expected, "{row} mixed={mixed}");
+            assert_nothing_activated(&fixture, &fixture.store.get(&session).await.unwrap(), row);
+        }
+    }
 }

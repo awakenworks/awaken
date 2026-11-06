@@ -455,3 +455,86 @@ async fn admission_error_precedence_follows_the_entry_table() {
         "P1-P3 root unchanged"
     );
 }
+
+#[tokio::test]
+async fn budget_paused_mixed_batch_interrupt_follows_the_interrupt_only_target_law() {
+    // Regression input: a budget-paused, idle root with no pending tool reply
+    // receives [user.interrupt(session_thread_id = "sthr_ghost"),
+    // user.message]. The parser used to drop that Interrupt before lowering
+    // its target, so the batch was accepted while [user.interrupt("sthr_ghost")]
+    // on the same root is refused. The parser now lowers every Interrupt and
+    // the application decides the budget pause on the root it commits against.
+    // | Row | batch | effect |
+    // |---|---|---|
+    // | G1 | [interrupt(ghost)] | BadRequest, root unchanged |
+    // | G2 | [interrupt(ghost), message] | BadRequest, root unchanged |
+    // | A1 | [interrupt, message], no live Run | message retained, interrupt absorbed |
+    let session_id = "session-budget-paused-mixed";
+    let repository = Arc::new(ephemeral_session_repo().await);
+    crate::state::test_support::create_session_fixture(
+        repository.as_ref(),
+        awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        budget_paused_root(session_id),
+    )
+    .await;
+    let runtime = CoordinatedRuntimeFake::default();
+    let clock = awaken_time::system_clock();
+    let state = Arc::new(crate::state::test_support::managed_state_from_parts(
+        Arc::new(runtime.clone()),
+        None,
+        repository.clone(),
+        awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
+        clock,
+        Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+    ));
+    let ghost = serde_json::json!({"type": "user.interrupt", "session_thread_id": "sthr_ghost"});
+    let message = serde_json::json!({
+        "type": "user.message", "content": [{"type": "text", "text": "held"}]
+    });
+    for (row, events) in [
+        ("G1", serde_json::json!([ghost.clone()])),
+        ("G2", serde_json::json!([ghost, message.clone()])),
+    ] {
+        let before = root_json(&state, session_id).await;
+        let error = state
+            .send_events(
+                session_id,
+                grammar_valid(serde_json::json!({ "events": events })),
+            )
+            .await
+            .expect_err("a ghost Interrupt target is refused while budget paused");
+        assert_bad_request(
+            &error,
+            "session_thread_id does not name a thread in this session",
+            row,
+        );
+        assert_eq!(root_json(&state, session_id).await, before, "{row}");
+    }
+
+    let batches = root(&state, session_id).await.event_batches.len();
+    state
+        .send_events(
+            session_id,
+            grammar_valid(serde_json::json!({
+                "events": [{"type": "user.interrupt"}, message]
+            })),
+        )
+        .await
+        .expect("A1 the ordinary half of the batch is admitted");
+    let after = root(&state, session_id).await;
+    assert_eq!(after.event_batches.len(), batches + 1, "A1 one batch");
+    assert!(
+        after.event_batches[batches]
+            .events
+            .iter()
+            .all(|entry| !matches!(
+                entry.event,
+                awaken_session_contract::SessionEventCommand::Interrupt { .. }
+            )),
+        "A1 the budget pause absorbed the Interrupt"
+    );
+    assert!(
+        runtime.take_interrupts().is_empty(),
+        "A1 zero interrupt calls"
+    );
+}
