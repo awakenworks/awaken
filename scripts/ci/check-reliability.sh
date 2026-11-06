@@ -88,7 +88,9 @@ fi
 
 run_required_rust_tests -p awaken-store-sqlite --features test-support --test failure_atomicity
 run_required_rust_tests -p awaken-session-store --test process_crash_outbox
-run_required_rust_tests -p awaken-session-application --lib tests::creation::time_assurance
+# The Postgres variants need a live database and are required by pg_tests.sh;
+# here they could only print a fixture skip, which the runner refuses.
+run_required_rust_tests -p awaken-session-application --lib tests::creation::time_assurance -- --skip postgres_
 run_required_rust_tests -p awaken-credential-store --features sqlite,sealed-aead,test-support \
   --test process_crash_creation --test process_crash_managed_creation
 run_required_rust_tests -p awaken-config-store --test process_crash_audit
