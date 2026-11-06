@@ -136,9 +136,10 @@ inventory below remain history, not counterexamples or current passes.
 ## Current required Rust witnesses and property parsing
 
 All 74 Rust witness calls, including the late Eval witness, use the existing
-`_rust_test_execution.sh` / `check_rust_test_execution.py` authority. It builds,
-lists and executes the same authored graph, rejects an empty whole selection,
-and requires every listed named outcome without ignored or skipped cases.
+`_rust_test_execution.sh` / `nextest_execution.py` authority. It builds, lists
+and runs the same authored selection under nextest (`--no-tests=fail`), and
+qualifies nextest's own list JSON and JUnit report: every listed case ran and
+passed, none ignored or printing a fixture skip, and every required case present.
 The Host Loom, CLI source-conversion and Coordinator rollout callers own their
 2/1/9 required-case floors. The obsolete App selector and the former Managed
 rollout selector each selected zero tests on clean `015acb1c`; the original

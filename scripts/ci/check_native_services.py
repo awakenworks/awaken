@@ -42,7 +42,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def reconcile_receipts(log: str, source_digest: str, *, service: str, fixture_owner: str, postgres_scope: str = "core") -> list[dict]:
-    import check_rust_test_execution as q
+    import nextest_execution as q
     from collections import Counter
     references=re.findall(r"^execution evidence: (.+)$",log,re.M)
     if service not in ("nats", "postgres", "s3"): raise ValueError("unsupported native service receipt kind")
@@ -83,8 +83,8 @@ def reconcile_receipts(log: str, source_digest: str, *, service: str, fixture_ow
             raise ValueError("native service execution does not bind the current owned fixture")
         if postgres:
             phase=phases[ordinal]
-            expected=q.selection_commands(list(phase.arguments))
-            actual_signature=q.selection_commands(document["arguments"])
+            expected=q.required_command(list(phase.arguments))
+            actual_signature=q.required_command(document["arguments"])
             if actual_signature!=expected:
                 raise ValueError("PostgreSQL gate omitted or duplicated a canonical backend phase: "+phase.identity)
             if document.get("required_cases")!=expected[1]:
@@ -93,16 +93,15 @@ def reconcile_receipts(log: str, source_digest: str, *, service: str, fixture_ow
                 raise ValueError("PostgreSQL phase selected the wrong runtime backend: "+phase.identity)
         if postgres and not (document.get("postgres_fixture_required") is True and document.get("postgres_fixture_configured") is True):
             raise ValueError("PostgreSQL execution did not require the owned live fixture")
-        results=(directory/"results.log").read_text(encoding="utf-8",errors="replace")
-        actual=q.execution_evidence((directory/"list.log").read_text(encoding="utf-8"),results,0,document["required_cases"])
-        if (actual["errors"] or actual["selected_cases"]!=document["selected_cases"]
-                or [list(row) for row in actual["executed_cases"]]!=document.get("executed_cases")):
+        actual=q.qualify((directory/"list.json").read_text(encoding="utf-8"),
+                         (directory/"junit.xml").read_text(encoding="utf-8"),0,document["required_cases"])
+        if actual["errors"] or actual["selected_cases"]!=document["selected_cases"]:
             raise ValueError("native service execution identities differ from the inventory")
+        results=actual["output"]
         if s3 and not (document.get("s3_fixture_required") is True and document.get("s3_fixture_configured") is True):
             raise ValueError("S3 execution did not require the owned live fixture")
         if service == "nats" and "VERIFIED live NATS fixture" not in results:
             raise ValueError("NATS domain did not report an actual live protocol assertion")
-        q.verify_preparation(directory/"build.json",document["arguments"],source_digest)
         observed.update(document["selected_cases"])
         arguments=document["arguments"]
         if postgres or s3: packages.append(arguments[arguments.index("-p")+1])

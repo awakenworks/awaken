@@ -31,11 +31,11 @@
     "fully_accepted_scenarios": 0,
     "case_evidence_states": {
       "design_only": 0,
-      "current_subset": 51,
+      "current_subset": 52,
       "source_binding_only": 22,
       "historical_subset": 12,
       "aggregate_subset_only": 1,
-      "current_clause_complete": 38,
+      "current_clause_complete": 37,
       "product_gap": 0,
       "platform_pending": 2,
       "not_applicable": 1

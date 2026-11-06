@@ -29,7 +29,7 @@ import _contract_map_fitness  # noqa: E402
 import _crate_boundary_workspace  # noqa: E402
 import _crate_dependency_fitness  # noqa: E402
 import _session_state_ownership_fitness  # noqa: E402
-import check_rust_test_execution  # noqa: E402
+import nextest_execution  # noqa: E402
 import check_session_acceptance  # noqa: E402
 import formal_sources  # noqa: E402
 import rust_test_plan  # noqa: E402
@@ -199,26 +199,26 @@ class ImpactSelectionTests(unittest.TestCase):
 class ListedExecutedTests(unittest.TestCase):
     """Required execution is aligned by name and occurrence, not by total."""
 
-    INVENTORY = "tests::one: test\ntests::two: test\n2 tests, 0 benchmarks\n"
-    OUTPUT = "test tests::one ... ok\ntest tests::two ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored;\n"
+    INVENTORY = nextest_execution.listing("tests::one", "tests::two")
+    OUTPUT = nextest_execution.junit("tests::one", "tests::two")
 
     @staticmethod
     def count_only(inventory: str, results: str, exit_code: int) -> list[str]:
         """The negative control: a validator that compares totals only."""
-        listed = len(check_rust_test_execution.LISTED.findall(inventory))
-        executed = len(check_rust_test_execution.EXECUTED.findall(results))
+        listed = sum(row["filter-match"]["status"] == "matches" for row in json.loads(inventory)["rust-suites"]["pkg"]["testcases"].values())
+        executed = results.count("<testcase ")
         return [] if listed and listed == executed and not exit_code else ["count differs"]
 
     def test_each_misalignment_is_refused_for_its_own_reason(self) -> None:
-        evidence = check_rust_test_execution.execution_evidence
+        evidence, junit, listing = nextest_execution.qualify, nextest_execution.junit, nextest_execution.listing
         self.assertEqual(evidence(self.INVENTORY, self.OUTPUT, 0)["errors"], [])
         rows = (
-            ("zero cases", "", self.OUTPUT, 0, "required selection is empty"),
-            ("renamed", self.INVENTORY, self.OUTPUT.replace("tests::two ...", "tests::renamed ..."), 0, "selection differs"),
-            ("duplicate occurrence", self.INVENTORY, self.OUTPUT + "test tests::one ... ok\n", 0, "selection differs"),
-            ("ignored", self.INVENTORY, self.OUTPUT.replace("two ... ok", "two ... ignored"), 0, "failed or were ignored"),
-            ("fixture skip", self.INVENTORY, self.OUTPUT + "SKIPPED PostgreSQL fixture: absent\n", 0, "skipped its fixture"),
-            ("child exit", self.INVENTORY, self.OUTPUT, 101, "test command failed with status 101"),
+            ("zero cases", listing(), junit(), 0, "selection is empty"),
+            ("renamed", self.INVENTORY, junit("tests::one", "tests::renamed"), 0, "listed and ran different"),
+            ("duplicate occurrence", self.INVENTORY, junit("tests::one", "tests::two", "tests::one"), 0, "listed and ran different"),
+            ("ignored", listing("tests::one", "tests::two", ignored=("tests::two",)), junit("tests::one"), 0, "#[ignore]d"),
+            ("fixture skip", self.INVENTORY, junit("tests::one", "tests::two|<system-out>SKIPPED PostgreSQL fixture: absent</system-out>"), 0, "fixture-skip marker"),
+            ("child exit", self.INVENTORY, self.OUTPUT, 101, "nextest exited with status 101"),
         )
         for label, inventory, output, status, reason in rows:
             with self.subTest(label=label):
@@ -226,12 +226,12 @@ class ListedExecutedTests(unittest.TestCase):
                 self.assertTrue(any(reason in error for error in errors), errors)
 
     def test_count_only_validator_accepts_what_name_alignment_refuses(self) -> None:
-        renamed = self.OUTPUT.replace("tests::two ...", "tests::renamed ...")
+        renamed = nextest_execution.junit("tests::one", "tests::renamed")
         self.assertEqual(self.count_only(self.INVENTORY, renamed, 0), [])
-        errors = check_rust_test_execution.execution_evidence(self.INVENTORY, renamed, 0)["errors"]
-        self.assertTrue(any(error.startswith("selection differs") for error in errors), errors)
-        executed = Counter(name for name, _ in check_rust_test_execution.EXECUTED.findall(renamed))
-        self.assertNotEqual(executed, Counter(check_rust_test_execution.LISTED.findall(self.INVENTORY)))
+        errors = nextest_execution.qualify(self.INVENTORY, renamed, 0)["errors"]
+        self.assertTrue(any(error.startswith("nextest listed and ran") for error in errors), errors)
+        executed = Counter(case.split('"')[1] for case in renamed.split("<testcase ")[1:])
+        self.assertNotEqual(executed, Counter(["tests::one", "tests::two"]))
 
 
 class EvidenceValidityTests(unittest.TestCase):

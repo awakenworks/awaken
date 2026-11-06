@@ -122,8 +122,7 @@ class ResourceSelectionTests(unittest.TestCase):
         self.assertIn('--service postgres --postgres-scope resources --postgres-bin',source)
 
     def test_receipt_faults_cannot_hide_missing_or_wrong_resource_executions(self):
-        import check_rust_test_execution as execution
-        with tempfile.TemporaryDirectory() as directory,mock.patch.object(execution,'verify_preparation'):
+        with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);paths=postgres_receipts(base,'resources')
             def log(paths):return ''.join('execution evidence: '+str(path)+'\n' for path in paths)
             with mock.patch.dict(os.environ,{'CARGO_TARGET_DIR':str(base)}):
@@ -136,10 +135,12 @@ class ResourceSelectionTests(unittest.TestCase):
                     path.write_text(json.dumps(dict(original,**change)),encoding='utf-8')
                     with self.subTest(change=change),self.assertRaises(ValueError):gate.reconcile_postgres(log(paths),'source','resources',fixture_owner=FIXTURE_OWNER)
                 path.write_text(json.dumps(original),encoding='utf-8')
-                path=paths[0]/'results.log';original=path.read_text()
-                for output in (original.replace(' ... ok',' ... ignored'),original+'SKIPPED PostgreSQL fixture\n'):
-                    path.write_text(output,encoding='utf-8')
+                for name,old,new in (('list.json','"ignored": false','"ignored": true'),
+                                     ('junit.xml','</system-out>','\nSKIPPED PostgreSQL fixture\n</system-out>')):
+                    path=paths[0]/name;original=path.read_text()
+                    path.write_text(original.replace(old,new,1),encoding='utf-8')
                     with self.assertRaises(ValueError):gate.reconcile_postgres(log(paths),'source','resources',fixture_owner=FIXTURE_OWNER)
+                    path.write_text(original,encoding='utf-8')
 
 class ApplicationCaseFloorTests(unittest.TestCase):
 

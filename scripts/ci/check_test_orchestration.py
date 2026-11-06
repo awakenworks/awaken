@@ -673,19 +673,18 @@ def push_gate_commands(gate: str) -> tuple[str, ...]:
 def execution_framework_hook_errors(hooks: str) -> list[str]:
     """Keep impact planning and expensive runner fixtures independently triggered."""
     blocks=generate_hooks.command_blocks(hooks)
-    framework=blocks.get("rust-execution-framework", "")
+    framework=blocks.get("nextest-evidence", "")
     planner=blocks.get("affected-rust-plan", "")
     expected={"affected-rust-plan":"python3 scripts/ci/rust_test_plan.py --self-test",
-              "rust-execution-framework":"python3 scripts/ci/benchmark_rust_build.py --self-test "
-                  "&& python3 scripts/ci/check_rust_test_execution.py --self-test"}
+              "nextest-evidence":"python3 scripts/ci/benchmark_rust_build.py --self-test "
+                  "&& python3 scripts/ci/nextest_execution.py --self-test"}
     errors=[]
     for name,command in expected.items():
         actual=re.findall(r"(?m)^      run: (.*)$",blocks.get(name,""))
         if actual!=[command] or sum(block.count(command) for block in blocks.values())!=1:
             errors.append("test framework must keep one canonical fixture owner: "+name)
-    for block,paths in ((framework,("scripts/ci/check_rust_test_execution.py", "scripts/ci/crate_test.py",
-                            "rust-toolchain.toml", "Cargo.toml", "Cargo.lock", "lefthook.yml",
-                            ".cargo/config.toml", ".config/rust-tests.toml")),
+    for block,paths in ((framework,("scripts/ci/nextest_execution.py", "scripts/ci/crate_test.py",
+                            ".config/nextest.toml", ".config/rust-tests.toml")),
                        (planner,("crates/example/src/lib.rs", "crates/example/Cargo.toml"))):
         pattern=re.search(r'(?m)^      glob: "([^"\n]+)"$',block)
         if pattern is None or any(not generate_hooks.glob_matches(pattern.group(1),path) for path in paths):
@@ -1012,11 +1011,11 @@ def self_test() -> None:
                               "    duplicate:\n      run: " + orchestration + "\n\n    affected-rust-plan:\n")
     assert rust_hook_errors(duplicate, gate), "O2 duplicate orchestration owner"
     assert not execution_framework_hook_errors(hooks), "F1 independently triggered fixtures"
-    fixture_command="python3 scripts/ci/check_rust_test_execution.py --self-test"
+    fixture_command="python3 scripts/ci/nextest_execution.py --self-test"
     assert rust_hook_errors(hooks.replace(fixture_command,"true"),gate), "F2 missing runner fixtures"
-    assert rust_hook_errors(hooks.replace("    rust-execution-framework:","    removed-framework:"),gate), "F3 missing owner"
+    assert rust_hook_errors(hooks.replace("    nextest-evidence:","    removed-framework:"),gate), "F3 missing owner"
     lines,spans=generate_hooks._spans(hooks)
-    start,end=next((start,end) for name,start,end in spans if name=="rust-execution-framework")
+    start,end=next((start,end) for name,start,end in spans if name=="nextest-evidence")
     block="".join(lines[start:end])
     for pattern in ("docs/**", "**"):
         broken=re.sub(r'(?m)^      glob: .*$',f'      glob: "{pattern}"',block)
