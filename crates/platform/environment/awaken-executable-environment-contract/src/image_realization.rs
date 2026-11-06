@@ -4,10 +4,13 @@
 //! It describes durable build demand, lease transitions, and the builder and
 //! readiness ports without naming SQL, Kubernetes, or a container engine.
 
-use crate::{EnvironmentImageBuildDemand, ExecutableEnvironmentRegistration};
 use async_trait::async_trait;
 #[cfg(test)]
 use awaken_environment_contract::{EnvironmentConfig, EnvironmentRevision};
+use {
+    crate::{EnvironmentImageBuildDemand, ExecutableEnvironmentRegistration},
+    awaken_lease_contract::fence::Epoch,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -17,7 +20,7 @@ pub enum EnvironmentImageBuildState {
     },
     Building {
         owner: String,
-        lease_epoch: u64,
+        lease_epoch: Epoch,
         lease_expires_at_ms: u64,
         attempt: u64,
     },
@@ -37,7 +40,7 @@ pub enum EnvironmentImageBuildState {
 enum EnvironmentImageBuildClaimDecision {
     Blocked,
     Claim {
-        attempt: u64,
+        epoch: Epoch,
         lease_expires_at_ms: u64,
     },
     AttemptExhausted,
@@ -46,8 +49,10 @@ enum EnvironmentImageBuildClaimDecision {
 
 /// The scalar claim kernel used by every Environment image-build store. State
 /// shape decides eligibility; this function alone owns epoch and deadline
-/// advancement so adapters cannot disagree or wrap authority.
-const fn environment_image_build_claim_decision(
+/// advancement so adapters cannot disagree or wrap authority. The attempt
+/// counter is the last minted lease epoch (zero before the first claim), and
+/// its successor is minted only by [`Epoch::FIRST`] or [`Epoch::next`].
+fn environment_image_build_claim_decision(
     eligible: bool,
     attempt: u64,
     now_ms: u64,
@@ -56,14 +61,14 @@ const fn environment_image_build_claim_decision(
     if !eligible {
         return EnvironmentImageBuildClaimDecision::Blocked;
     }
-    let Some(attempt) = attempt.checked_add(1) else {
+    let Some(epoch) = Epoch::from_persisted(attempt).map_or(Some(Epoch::FIRST), Epoch::next) else {
         return EnvironmentImageBuildClaimDecision::AttemptExhausted;
     };
     let Some(lease_expires_at_ms) = now_ms.checked_add(lease_ms) else {
         return EnvironmentImageBuildClaimDecision::DeadlineExhausted;
     };
     EnvironmentImageBuildClaimDecision::Claim {
-        attempt,
+        epoch,
         lease_expires_at_ms,
     }
 }
@@ -116,13 +121,13 @@ impl EnvironmentImageBuildState {
             } => (*lease_expires_at_ms <= now_ms, *attempt),
             Self::Ready { attempt, .. } => (false, *attempt),
         };
-        let (next_attempt, lease_expires_at_ms) =
+        let (epoch, lease_expires_at_ms) =
             match environment_image_build_claim_decision(eligible, attempt, now_ms, lease_ms) {
                 EnvironmentImageBuildClaimDecision::Blocked => return Ok(None),
                 EnvironmentImageBuildClaimDecision::Claim {
-                    attempt,
+                    epoch,
                     lease_expires_at_ms,
-                } => (attempt, lease_expires_at_ms),
+                } => (epoch, lease_expires_at_ms),
                 EnvironmentImageBuildClaimDecision::AttemptExhausted => {
                     return Err(EnvironmentImageBuildError::AuthorityExhausted(
                         "image build attempt and lease epoch".to_string(),
@@ -136,9 +141,9 @@ impl EnvironmentImageBuildState {
             };
         Ok(Some(Self::Building {
             owner: owner.to_owned(),
-            lease_epoch: next_attempt,
+            lease_epoch: epoch,
             lease_expires_at_ms,
-            attempt: next_attempt,
+            attempt: epoch.get(),
         }))
     }
 
@@ -146,7 +151,7 @@ impl EnvironmentImageBuildState {
     pub fn complete(
         &self,
         owner: &str,
-        lease_epoch: u64,
+        lease_epoch: Epoch,
         image: &str,
         now_ms: u64,
     ) -> Option<Self> {
@@ -176,7 +181,7 @@ impl EnvironmentImageBuildState {
     pub fn fail(
         &self,
         owner: &str,
-        lease_epoch: u64,
+        lease_epoch: Epoch,
         message: &str,
         now_ms: u64,
         retry_ms: u64,
@@ -224,7 +229,7 @@ pub struct EnvironmentImageBuildRecord {
 pub struct EnvironmentImageBuildClaim {
     pub demand: EnvironmentImageBuildDemand,
     pub owner: String,
-    pub lease_epoch: u64,
+    pub lease_epoch: Epoch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -347,6 +352,10 @@ mod tests {
     use super::*;
     use awaken_environment_contract::{EnvItem, EnvironmentPackages, EnvironmentRevision};
 
+    fn epoch(value: u64) -> Epoch {
+        Epoch::from_persisted(value).expect("test epochs are nonzero")
+    }
+
     #[test]
     fn build_state_lease_decision_table() {
         // Cause/effect decision table: R1 Pending claims; R2 a live lease cannot
@@ -372,12 +381,12 @@ mod tests {
             .expect("R3");
         assert!(
             reclaimed
-                .complete("worker-a", 1, "image@sha256:a", 151)
+                .complete("worker-a", epoch(1), "image@sha256:a", 151)
                 .is_none(),
             "R4"
         );
         let failed = reclaimed
-            .fail("worker-b", 2, "offline", 151, 20)
+            .fail("worker-b", epoch(2), "offline", 151, 20)
             .expect("R5");
         assert!(
             failed
@@ -391,12 +400,12 @@ mod tests {
             .expect("R6 valid authority")
             .expect("R6 edge");
         assert!(
-            retried.complete("worker-c", 3, "", 172).is_none(),
+            retried.complete("worker-c", epoch(3), "", 172).is_none(),
             "R7 empty"
         );
         assert!(
             matches!(
-                retried.complete("worker-c", 3, "image@sha256:a", 172),
+                retried.complete("worker-c", epoch(3), "image@sha256:a", 172),
                 Some(EnvironmentImageBuildState::Ready { .. })
             ),
             "R7"
@@ -554,7 +563,7 @@ mod verification {
             (Some(expected_attempt), Some(expected_deadline)) => assert_eq!(
                 decision,
                 EnvironmentImageBuildClaimDecision::Claim {
-                    attempt: expected_attempt,
+                    epoch: Epoch::from_persisted(expected_attempt).expect("a successor is nonzero"),
                     lease_expires_at_ms: expected_deadline,
                 }
             ),

@@ -348,10 +348,10 @@ mod tests {
 
         let first = concurrent_claims(Arc::clone(&build_store), 100).await;
         assert_eq!(first.len(), 1, "P1/E1");
-        assert_eq!(first[0].lease_epoch, 1, "P1/E1");
+        assert_eq!(first[0].lease_epoch.get(), 1, "P1/E1");
         let reclaimed = concurrent_claims(Arc::clone(&build_store), 110).await;
         assert_eq!(reclaimed.len(), 1, "P2/E2");
-        assert_eq!(reclaimed[0].lease_epoch, 2, "P2/E2");
+        assert_eq!(reclaimed[0].lease_epoch.get(), 2, "P2/E2");
         assert!(
             !build_store
                 .complete(&first[0], "image@sha256:stale", 111)

@@ -4,12 +4,18 @@
 Raw integer casts in the SQL adapter modules are the compiler's: each module
 denies `clippy::cast_possible_wrap`, `cast_sign_loss` and
 `cast_possible_truncation` outside cfg(test) (docs/design/guard-consolidation.md
-R14; wider than this guard's ` as i64`/` as u64` text match, which saw only
-authority-named lines). What stays here is what no lint names: an epoch
-increment re-derived outside its proved transition, a clamp (`.max(0)`) that
-hides a negative persisted authority, and a codec `expect` on a durable
-revision. Retires when every epoch is an `Epoch` newtype with a private field
-and every persisted authority goes through `StoredU64`.
+R14). Lease epochs are the compiler's too: `awaken_lease_contract::fence::Epoch` has a
+private `NonZeroU64` and only `Epoch::next`; the work-store lease authority and
+the Environment image-build claim hold one, so neither can add to its epoch, and
+the dispatch kernel mints its successor through it. `SandboxExecutionPolicyVersion`
+likewise has a private field and only `checked_next`.
+
+What stays here is what no type or lint names: an epoch increment written in
+SQL text, the Worker registry generation (still a public `u64` on
+`WorkerIdentity`), a clamp (`.max(0)`) that hides a negative persisted
+authority, and a codec `expect` on a durable revision. Retires when
+`WorkerIdentity::generation` is a private-field newtype and every persisted
+authority decodes through `StoredU64`.
 """
 
 from __future__ import annotations
@@ -28,10 +34,6 @@ RULES = {
     "crates/platform/dispatch/awaken-dispatch/src/postgres.rs": (".max(0)",),
     "crates/platform/dispatch/awaken-dispatch/src/sqlite.rs": (".max(0)",),
     "crates/platform/dispatch/awaken-worker-registry/src/transition.rs": ("saturating_add(1)",),
-    "crates/platform/config/awaken-sandbox-policy-store/src/lib.rs": ("saturating_add(1)",),
-    "crates/platform/environment/awaken-executable-environment-contract/src/image_realization.rs": (
-        "saturating_add(1)",
-    ),
     "crates/platform/session/awaken-session-store/src/row_codec.rs": (
         'expect("managed Session revision',
         'expect("Session aggregate is an object',
