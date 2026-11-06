@@ -627,9 +627,7 @@ fn validate_current_mutation(
             Ok(Some(event_admissions::encode(&current)?))
         }
         SessionMutationPayload::EventNoOp { .. } => {
-            if !awaken_session_contract::session_is_budget_paused(&current)
-                || !current.active_activity_epochs.is_empty()
-            {
+            if !awaken_session_contract::session_budget_pause_may_absorb_interrupt(&current) {
                 return Err(SessionRepositoryError::InvalidMutation(
                     "Event no-op requires the current budget-paused, inactive root".into(),
                 ));

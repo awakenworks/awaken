@@ -139,6 +139,44 @@ pub fn session_is_budget_paused(session: &PersistedSession) -> bool {
     budget_paused(session.budget.can_admit_model_request(), session.execution)
 }
 
+/// The budget-pause interrupt law (ADR-0094 D4): an Interrupt has nothing to
+/// stop, and is absorbed without an Event, only when the root is budget paused,
+/// no driving activity is open, and the committed root and child Thread
+/// snapshots prove no live Run and stayed current through admission. Unknown
+/// or moving Thread sources are not that proof.
+#[must_use]
+const fn budget_pause_absorbs_interrupt(
+    budget_paused: bool,
+    activity_open: bool,
+    no_live_run_proven: bool,
+) -> bool {
+    budget_paused && !activity_open && no_live_run_proven
+}
+
+/// Whether an Interrupt to this root is absorbed by its budget pause.
+/// `no_live_run_proven` is the Event application's Thread evidence: the
+/// committed root and child snapshots show no live Run and did not move while
+/// they were read.
+#[must_use]
+pub fn session_budget_pause_absorbs_interrupt(
+    session: &PersistedSession,
+    no_live_run_proven: bool,
+) -> bool {
+    budget_pause_absorbs_interrupt(
+        session_is_budget_paused(session),
+        !session.active_activity_epochs.is_empty(),
+        no_live_run_proven,
+    )
+}
+
+/// Whether any Thread evidence could still make an Interrupt to this root
+/// absorbable. When false the application reads no Thread snapshots; the
+/// repository rechecks it before recording an Event no-op.
+#[must_use]
+pub fn session_budget_pause_may_absorb_interrupt(session: &PersistedSession) -> bool {
+    session_budget_pause_absorbs_interrupt(session, true)
+}
+
 impl PersistedSession {
     /// The frozen placement class; `None` while the baseline is still being
     /// prepared.
@@ -203,6 +241,55 @@ mod tests {
             );
             assert!(!budget_paused(true, execution), "B3 {execution:?}");
         }
+    }
+
+    #[test]
+    fn budget_pause_absorbs_an_interrupt_only_with_an_inactive_root_and_no_live_run() {
+        // Causes: C1 the shared budget admits no model request; C2 execution
+        // is Idle; C3 a driving activity epoch is open; C4 the committed Thread
+        // snapshots prove no live Run and stayed current. E1 the Interrupt is
+        // absorbed (no Event); otherwise it is retained and reaches Runtime.
+        // A pending tool reply implies an Awaiting Run, so it is a C4 = no row.
+        // | Rule | C1 | C2 | C3 | C4 | Absorbed |
+        // |---|---|---|---|---|---|
+        // | A1 | yes | yes | no | yes | yes |
+        // | A2 | yes | yes | no | no (live, Awaiting, unknown or moving) | no |
+        // | A3 | yes | yes | yes (invalid root, defence) | any | no |
+        // | A4 | yes | no (every other state) | any | any | no |
+        // | A5 | no | any | any | any | no |
+        let executions = [
+            SessionExecutionState::Preparing,
+            SessionExecutionState::Activating,
+            SessionExecutionState::ActivationFailed,
+            SessionExecutionState::Running,
+            SessionExecutionState::Rescheduling,
+            SessionExecutionState::Idle,
+            SessionExecutionState::Terminated,
+        ];
+        for budget_admits in [false, true] {
+            for execution in executions {
+                for activity_open in [false, true] {
+                    for proof in [false, true] {
+                        let expected = !budget_admits
+                            && execution == SessionExecutionState::Idle
+                            && !activity_open
+                            && proof;
+                        assert_eq!(
+                            budget_pause_absorbs_interrupt(
+                                budget_paused(budget_admits, execution),
+                                activity_open,
+                                proof,
+                            ),
+                            expected,
+                            "admits={budget_admits} {execution:?} open={activity_open} proof={proof}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(budget_pause_absorbs_interrupt(true, false, true), "A1");
+        assert!(!budget_pause_absorbs_interrupt(true, false, false), "A2");
+        assert!(!budget_pause_absorbs_interrupt(true, true, true), "A3");
     }
 
     #[test]

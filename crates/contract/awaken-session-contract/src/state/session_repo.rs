@@ -53,7 +53,10 @@ pub use persisted_session::{
     session_can_adopt_mcp_credential_lifecycle, session_is_terminal,
     session_is_unattempted_profiled_preparation,
 };
-pub use placement::{SessionPlacementClass, SessionPublicStatus, session_is_budget_paused};
+pub use placement::{
+    SessionPlacementClass, SessionPublicStatus, session_budget_pause_absorbs_interrupt,
+    session_budget_pause_may_absorb_interrupt, session_is_budget_paused,
+};
 pub use recovery::{
     SessionRepositoryRecoveryAction, SessionScan, SessionScanCursor, SessionScanQuery,
 };

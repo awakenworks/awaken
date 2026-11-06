@@ -769,12 +769,27 @@ impl SessionEventBatchCommands {
         Ok((owner, session))
     }
 
-    async fn budget_interrupt_is_noop(&self, session: &PersistedSession) -> Result<bool, RunError> {
-        if !awaken_session_contract::session_is_budget_paused(session)
-            || !session.active_activity_epochs.is_empty()
-        {
+    /// The budget-pause interrupt law, decided by the aggregate over the Thread
+    /// evidence gathered here. No snapshot is read while the root alone refuses.
+    async fn budget_pause_absorbs_interrupt(
+        &self,
+        session: &PersistedSession,
+    ) -> Result<bool, RunError> {
+        if !awaken_session_contract::session_budget_pause_may_absorb_interrupt(session) {
             return Ok(false);
         }
+        let no_live_run_proven = self.no_live_run_proven(session).await?;
+        Ok(
+            awaken_session_contract::session_budget_pause_absorbs_interrupt(
+                session,
+                no_live_run_proven,
+            ),
+        )
+    }
+
+    /// Committed root and child snapshots show no live Run, and the full prefix
+    /// validator proves they stayed current. Unknown sources prove nothing.
+    async fn no_live_run_proven(&self, session: &PersistedSession) -> Result<bool, RunError> {
         let root = self
             .queries
             .projection_thread_snapshot(&session.session_id, session.session_id.as_str(), None)
@@ -887,7 +902,7 @@ impl SessionEventBatchCommands {
                     .collect::<Option<Vec<_>>>();
                 if let Some(interrupts) = interrupts
                     && !interrupts.is_empty()
-                    && self.budget_interrupt_is_noop(&session).await?
+                    && self.budget_pause_absorbs_interrupt(&session).await?
                 {
                     let result = mutations
                         .commit_mutation(

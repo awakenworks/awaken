@@ -137,6 +137,7 @@ pub use state::{
     checkpoint_source_disposal_authorized, checkpoint_source_preparation_authorized,
     failed_profiled_activity_matches, failed_profiled_run_for_archive, session_activity_open_plan,
     session_activity_settlement_plan, session_archive_idempotency_record,
+    session_budget_pause_absorbs_interrupt, session_budget_pause_may_absorb_interrupt,
     session_can_adopt_mcp_credential_lifecycle, session_has_no_create_evidence,
     session_is_budget_paused, session_is_terminal, session_is_unattempted_profiled_preparation,
     session_realization_assignment, session_root_update_observation,
