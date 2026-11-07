@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use awaken_process_startup::build_all_in_one_router_with_model;
 use awaken_protocol_managed_testkit::DurableFact;
 use awaken_scenario_host::EchoModel;
 use axum::Router;
@@ -49,12 +48,19 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
     // C4 retries only the unchanged GET. D1: C1+C2+C3+C4+C5 -> E1+E2+E3+E4+E5.
     // The deterministic router owns an explicit
     // local sandbox, independent of optional host capabilities such as bwrap.
-    let app = build_all_in_one_router_with_model(
-        Arc::new(EchoModel),
-        "echo",
-        Box::new(awaken_cli::LocalExecution::default()),
+    // Sessions run on the co-located registered Worker over loopback, the
+    // topology the `awaken` launcher ships.
+    let process = awaken_process_startup::start_ephemeral_all_in_one_with_worker(
+        Some((
+            Arc::new(EchoModel),
+            awaken_runtime_contract::resolved::ModelBinding::parse("default", "echo", "genai")
+                .expect("the echo binding is a valid native binding"),
+        )),
+        awaken_cli::colocated_test_worker,
     )
-    .await;
+    .await
+    .expect("start the AllInOne test process with its co-located Worker");
+    let app = process.public_router.clone();
     let (status, agent) = call(
         &app,
         "POST",
@@ -121,4 +127,11 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
         observed["data"].is_array(),
         "C3 initial Event eventually completes"
     );
+    // The co-located Worker drains and deregisters before its private surface
+    // stops; the process lifecycle reports no failed task.
+    process
+        .service_lifecycle
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("the AllInOne test process drains cleanly");
 }

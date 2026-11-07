@@ -39,6 +39,20 @@ pub async fn build_all_in_one_service_with_host_customizer(
     .await
 }
 
+/// The co-located registered Worker of a volatile test process: it reads the
+/// process's own credential stores and, when the process publishes one
+/// deterministic host executor, materializes exactly that executor.
+#[cfg(feature = "test-support")]
+pub fn colocated_test_worker(
+    inputs: awaken_process_startup::ColocatedTestWorkerInputs,
+) -> Arc<dyn awaken_process_startup::ColocatedWorker> {
+    let mut worker = crate::PreparedLocalWorker::over_stores(inputs.stores);
+    if let Some(inference) = inputs.host_inference {
+        worker = worker.with_inference_materializer(inference);
+    }
+    Arc::new(worker)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

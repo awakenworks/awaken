@@ -17,12 +17,18 @@
 //! startup and supplies none.
 mod assistant_selection;
 mod brokered_catalog;
+#[cfg(any(test, feature = "test-support"))]
+mod colocated_test_process;
 mod colocated_worker;
 pub mod config;
 pub mod console;
 mod console_assets;
 mod control;
 mod control_component;
+#[cfg(any(test, feature = "test-support"))]
+pub use colocated_test_process::{
+    ColocatedTestProcess, ColocatedTestWorkerInputs, start_ephemeral_all_in_one_with_worker,
+};
 mod coordinator_execution;
 mod credential_probe;
 mod deployment_process;

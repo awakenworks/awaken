@@ -391,6 +391,18 @@ impl PreparedLocalWorker {
         self
     }
 
+    /// Test-support: the co-located Worker of a volatile test process reads
+    /// that process's own Control credential stores; no ACP discovery runs.
+    #[cfg(feature = "test-support")]
+    pub fn over_stores(stores: awaken_control::InferenceMaterializationStores) -> Self {
+        Self {
+            resolver: None,
+            stores,
+            admin_tools: Vec::new(),
+            inference_override: None,
+        }
+    }
+
     pub fn with_admin_tools(
         mut self,
         tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
