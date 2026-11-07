@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::{
     SessionApplication, SessionApplicationBuildError, SessionApplicationConfiguration,
-    SessionEnvironments, SessionExecutionAdmission, SessionExecutor, SessionPersistence,
+    SessionEnvironments, SessionExecutionAdmission, SessionExecutionRoles, SessionPersistence,
 };
 
 /// Material ingress always includes the matching credential read capability.
@@ -133,7 +133,7 @@ impl SessionApplicationBuilder {
         tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
     ) -> Self {
         Self::new(
-            SessionExecutor::colocated(runtime, mcp),
+            SessionExecutionRoles::colocated(runtime, mcp),
             persistence,
             environments,
             execution,
@@ -143,7 +143,7 @@ impl SessionApplicationBuilder {
 
     #[must_use]
     pub fn new(
-        runtime: impl Into<SessionExecutor>,
+        runtime: impl Into<SessionExecutionRoles>,
         persistence: SessionPersistence,
         environments: impl Into<SessionEnvironments>,
         execution: SessionExecutionAdmission,
@@ -275,7 +275,7 @@ pub(crate) struct SessionKernel {
 /// keeps a port another one no longer sees.
 #[derive(Clone)]
 pub(crate) struct SessionAssembly {
-    pub(crate) runtime: SessionExecutor,
+    pub(crate) runtime: SessionExecutionRoles,
     pub(crate) tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
     pub(crate) environments: SessionEnvironments,
     pub(crate) configuration: SessionApplicationConfiguration,

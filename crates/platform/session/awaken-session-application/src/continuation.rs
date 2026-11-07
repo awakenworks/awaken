@@ -109,7 +109,7 @@ pub struct SessionContinuations {
 impl SessionContinuations {
     pub(crate) fn new(
         mutations: Arc<crate::SessionMutations>,
-        runtime: &crate::SessionExecutor,
+        runtime: &crate::SessionExecutionRoles,
         realizations: Arc<crate::SessionRealizations>,
     ) -> Self {
         Self {

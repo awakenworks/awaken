@@ -45,8 +45,8 @@ mod process_environment;
 
 pub use coordinator_storage::{CoordinatorStorage, DispatchBackend, StoreKind, Wake};
 pub use execution_topology::{
-    DEFAULT_DISPATCH_POLL_INTERVAL, DispatchPoolSizing, ExecutionTopology, ForegroundRunDelivery,
-    LeaseOwnerId, LocalExecution, QueueDepthSource,
+    ClaimPool, DEFAULT_DISPATCH_POLL_INTERVAL, DispatchPoolSizing, ExecutionTopology,
+    ForegroundRunDelivery, LeaseOwnerId, QueueDepthSource,
 };
 pub use process_environment::{AmbientApiKeyEnvironmentError, reject_ambient_api_key_environment};
 
@@ -587,10 +587,10 @@ impl DeploymentConfig {
             } else {
                 crate::ForegroundRunDelivery::Direct
             },
-            local: if self.disable_local_pool {
-                crate::LocalExecution::RemoteWorkersOnly
+            claim_pool: if self.disable_local_pool {
+                crate::ClaimPool::RemoteWorkersOnly
             } else {
-                crate::LocalExecution::in_process_pool()
+                crate::ClaimPool::in_process()
             },
             lease_owner: crate::LeaseOwnerId::new(self.dispatch_owner.clone())?,
             lost_wake_recovery_bound: self.dispatch_poll_interval,
@@ -1086,7 +1086,7 @@ mod tests {
             crate::ForegroundRunDelivery::Direct,
             "E1"
         );
-        assert_eq!(direct.local, crate::LocalExecution::in_process_pool(), "E2");
+        assert_eq!(direct.claim_pool, crate::ClaimPool::in_process(), "E2");
         assert_eq!(direct.lease_owner.as_str(), "host-1", "E5");
         assert_eq!(
             direct.lost_wake_recovery_bound,
@@ -1109,8 +1109,8 @@ mod tests {
             "C1/E1"
         );
         assert_eq!(
-            coordinator.local,
-            crate::LocalExecution::RemoteWorkersOnly,
+            coordinator.claim_pool,
+            crate::ClaimPool::RemoteWorkersOnly,
             "C2/E2"
         );
         assert_eq!(

@@ -391,7 +391,7 @@ pub(crate) struct SessionUpdateCollaborators {
     pub(crate) executable_projections: crate::ExecutableProjections,
     pub(crate) tool_configuration_compiler:
         Arc<dyn awaken_tool_contract::ToolConfigurationCompiler>,
-    pub(crate) runtime: crate::SessionExecutor,
+    pub(crate) runtime: crate::SessionExecutionRoles,
 }
 
 impl SessionUpdateCommands {

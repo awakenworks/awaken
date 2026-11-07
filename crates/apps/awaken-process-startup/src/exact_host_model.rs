@@ -34,8 +34,24 @@ pub(super) fn local_test_process_options(
     stores: &super::ProcessStores,
     execution: Box<dyn crate::ColocatedExecution>,
 ) -> super::ProcessStartup {
+    test_process_options(stores, Some(execution))
+}
+
+/// The process inputs of a test composition whose Sessions run on its
+/// co-located registered Worker: the Coordinator owns no claim pool.
+pub(super) fn registered_test_process_options(
+    stores: &super::ProcessStores,
+) -> super::ProcessStartup {
+    test_process_options(stores, None)
+}
+
+fn test_process_options(
+    stores: &super::ProcessStores,
+    execution: Option<Box<dyn crate::ColocatedExecution>>,
+) -> super::ProcessStartup {
     let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
+    deployment.disable_local_pool = execution.is_none();
     let work = stores
         .coordinator
         .as_ref()
@@ -50,7 +66,7 @@ pub(super) fn local_test_process_options(
         trace_file_present: false,
         deployment: Some(deployment),
         namespace_hand_path: cargo_test_namespace_hand_path(),
-        colocated_execution: Some(execution),
+        colocated_execution: execution,
         worker_directory: Some(worker_directory.clone()),
         runtime_authority: None,
         worker_observations: Some(

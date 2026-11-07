@@ -690,7 +690,7 @@ pub(crate) struct SessionCreationCollaborators {
     pub(crate) managed_list_prices:
         Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
     pub(crate) execution_placement: crate::SessionExecutionPlacement,
-    pub(crate) runtime: crate::SessionExecutor,
+    pub(crate) runtime: crate::SessionExecutionRoles,
 }
 
 impl SessionCreationCommands {

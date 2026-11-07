@@ -349,7 +349,7 @@ impl SessionActivities {
     pub(crate) fn new(
         mutations: Arc<crate::SessionMutations>,
         clock: Arc<dyn awaken_time::WallClock>,
-        runtime: &crate::SessionExecutor,
+        runtime: &crate::SessionExecutionRoles,
         continuations: Arc<crate::SessionContinuations>,
         #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))]
         runtime_incarnation: &str,

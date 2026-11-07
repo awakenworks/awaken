@@ -25,7 +25,7 @@ use {
     awaken_session_types::SessionRecoveryQuarantine,
 };
 
-pub use awaken_session_execution_contract::SessionExecutor;
+pub use awaken_session_execution_contract::SessionExecutionRoles;
 
 mod execution_admission;
 #[cfg(any(test, feature = "test-support"))]

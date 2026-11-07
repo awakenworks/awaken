@@ -112,7 +112,7 @@ pub(crate) struct SessionCoordinationCollaborators {
     pub(crate) run_admissions: Arc<crate::SessionRunAdmissions>,
     pub(crate) realizations: Arc<crate::SessionRealizations>,
     pub(crate) observations: Arc<crate::SessionObservations>,
-    pub(crate) runtime: crate::SessionExecutor,
+    pub(crate) runtime: crate::SessionExecutionRoles,
 }
 
 impl SessionCoordination {

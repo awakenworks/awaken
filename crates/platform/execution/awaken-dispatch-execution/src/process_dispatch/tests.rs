@@ -213,12 +213,12 @@ struct CoordinatorFixture {
     dropped: Arc<AtomicBool>,
 }
 
-fn coordinator_fixture(local: awaken_deployment_config::LocalExecution) -> CoordinatorFixture {
+fn coordinator_fixture(local: awaken_deployment_config::ClaimPool) -> CoordinatorFixture {
     coordinator_fixture_with_wake(local, Arc::new(crate::LocalWakeSignal::new()))
 }
 
 fn coordinator_fixture_with_wake(
-    local: awaken_deployment_config::LocalExecution,
+    local: awaken_deployment_config::ClaimPool,
     wake: Arc<dyn awaken_dispatch_contract::WakeSignal>,
 ) -> CoordinatorFixture {
     let clock = awaken_time::system_clock();
@@ -227,7 +227,7 @@ fn coordinator_fixture_with_wake(
     let dispatch = ProcessDispatch::new(
         ExecutionTopology {
             foreground_delivery: awaken_deployment_config::ForegroundRunDelivery::Durable,
-            local,
+            claim_pool: local,
             lease_owner: awaken_deployment_config::LeaseOwnerId::new("coordinator").unwrap(),
             lost_wake_recovery_bound: std::time::Duration::from_millis(5),
             queue_depth: awaken_deployment_config::QueueDepthSource::External,
@@ -280,7 +280,7 @@ async fn terminal_reconciliation_ends_with_its_process_dispatch_or_its_stop() {
     // | T2   | yes | yes | -   | -   | E2     |
     // | T3   | yes | no  | yes | -   | E3     |
     // | T4   | yes | no  | yes | yes | E4     |
-    let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    let fixture = coordinator_fixture(awaken_deployment_config::ClaimPool::RemoteWorkersOnly);
     let scan_state = Arc::downgrade(fixture.dispatch.terminal_reconciliation());
     let resolver = fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>;
     assert!(
@@ -310,7 +310,7 @@ async fn terminal_reconciliation_ends_with_its_process_dispatch_or_its_stop() {
         "T2/E2 the scan state is freed"
     );
 
-    let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    let fixture = coordinator_fixture(awaken_deployment_config::ClaimPool::RemoteWorkersOnly);
     let resolver = fixture.resolver.clone() as Arc<dyn WorkerResolver<AnyDispatchStore>>;
     assert!(
         fixture.dispatch.ensure_terminal_reconciliation(
@@ -424,9 +424,9 @@ async fn concurrent_pool_start_constructs_one_pool_and_one_resolver() {
     // another resolver or replaces the registered pool. The real constructor
     // and empty authoritative queue run; no fake pool or second queue is used.
     let fixture = Arc::new(coordinator_fixture(
-        awaken_deployment_config::LocalExecution::InProcessPool(
-            DispatchPoolSizing::LocalParallelism(std::num::NonZeroUsize::new(1).unwrap()),
-        ),
+        awaken_deployment_config::ClaimPool::InProcess(DispatchPoolSizing::LocalParallelism(
+            std::num::NonZeroUsize::new(1).unwrap(),
+        )),
     ));
     let race = Arc::new(StartRace::new());
     let first = {
@@ -483,7 +483,7 @@ async fn concurrent_terminal_start_constructs_one_loop_and_one_resolver() {
     // resolver, exactly one caller reports a new start. I4 an existing loop
     // ignores later factories. Original T1-T4 below still own drop/drain.
     let fixture = Arc::new(coordinator_fixture(
-        awaken_deployment_config::LocalExecution::RemoteWorkersOnly,
+        awaken_deployment_config::ClaimPool::RemoteWorkersOnly,
     ));
     let race = Arc::new(StartRace::new());
     let first = {
@@ -535,7 +535,7 @@ async fn failed_pool_initialization_preserves_refusal_and_remains_retryable() {
     // propagates without caching a pool;
     // F4 a later valid factory => one pool. Neither a transient error nor an
     // unwound initializer may poison/cache failure as the permanent owner.
-    let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::InProcessPool(
+    let fixture = coordinator_fixture(awaken_deployment_config::ClaimPool::InProcess(
         DispatchPoolSizing::LocalParallelism(std::num::NonZeroUsize::new(1).unwrap()),
     ));
     fixture
@@ -557,7 +557,7 @@ async fn failed_pool_initialization_preserves_refusal_and_remains_retryable() {
         .unwrap_err();
     assert_eq!(refused.to_string(), expected, "F2 unchanged error");
     assert!(fixture.dispatch.pool().is_none(), "F2 empty");
-    let foreign = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    let foreign = coordinator_fixture(awaken_deployment_config::ClaimPool::RemoteWorkersOnly);
     let mismatch = fixture.dispatch.ensure_pool(
         Some(DispatchBinding::local(fixture.owner.clone())),
         Arc::new(NoCompletion),
@@ -595,7 +595,7 @@ async fn unavailable_terminal_initialization_leaves_the_slot_retryable() {
     // F7 factory panic propagates without registering a loop; F8 a later valid
     // factory starts exactly once. The existing lifetime tests still own
     // cancellation/drain, and I3/I4 above own concurrent construction.
-    let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    let fixture = coordinator_fixture(awaken_deployment_config::ClaimPool::RemoteWorkersOnly);
     assert!(!fixture.dispatch.ensure_terminal_reconciliation(
         true,
         None,
@@ -655,7 +655,7 @@ fn preparation_role_retains_one_pure_compiler_without_process_services() {
     // existing mount validator still refuses foreign instances; R3=C3 ->
     // process services released, original compiler retained without replacement.
     let process = Arc::new(
-        coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly).dispatch,
+        coordinator_fixture(awaken_deployment_config::ClaimPool::RemoteWorkersOnly).dispatch,
     );
     let weak = Arc::downgrade(&process);
     let application: Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement> =
@@ -666,7 +666,7 @@ fn preparation_role_retains_one_pure_compiler_without_process_services() {
         Arc::ptr_eq(&application, &transport),
         "R1 one original pure compiler"
     );
-    let other = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    let other = coordinator_fixture(awaken_deployment_config::ClaimPool::RemoteWorkersOnly);
     let foreign: Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement> =
         other.dispatch.preparation_placement();
     assert!(

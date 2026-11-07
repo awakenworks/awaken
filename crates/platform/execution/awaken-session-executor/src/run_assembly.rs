@@ -62,7 +62,7 @@ impl RunAssembly {
     /// Whether this process owns a co-located dispatch pool.
     #[must_use]
     pub fn runs_local_dispatch_pool(&self) -> bool {
-        self.execution.local.runs_local_pool()
+        self.execution.claim_pool.runs_local_pool()
     }
 
     /// Stable logical identity used by both local dispatch claims and local

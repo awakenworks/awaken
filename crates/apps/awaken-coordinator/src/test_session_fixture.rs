@@ -22,7 +22,10 @@ pub(crate) async fn session_read_fixture(
     );
     let sessions = Arc::new(
         awaken_session_application::SessionApplicationBuilder::new(
-            awaken_session_execution_contract::SessionExecutor::colocated(runtime.clone(), runtime),
+            awaken_session_execution_contract::SessionExecutionRoles::colocated(
+                runtime.clone(),
+                runtime,
+            ),
             awaken_session_application::SessionPersistence::new(
                 awaken_protocol_managed_testkit::ephemeral_session_repository().await,
                 clock,

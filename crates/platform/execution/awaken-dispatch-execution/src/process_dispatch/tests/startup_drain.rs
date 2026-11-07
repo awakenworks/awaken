@@ -4,8 +4,8 @@
 
 use super::*;
 
-fn local_pool() -> awaken_deployment_config::LocalExecution {
-    awaken_deployment_config::LocalExecution::InProcessPool(DispatchPoolSizing::LocalParallelism(
+fn local_pool() -> awaken_deployment_config::ClaimPool {
+    awaken_deployment_config::ClaimPool::InProcess(DispatchPoolSizing::LocalParallelism(
         std::num::NonZeroUsize::new(1).unwrap(),
     ))
 }
@@ -63,7 +63,7 @@ async fn cold_terminal_drain_is_absorbing_before_construction() {
     // construction -> E1 no pool fence, E2 no resolver, service or scan.
     // D4: repeating drain/start preserves all effects. A missing owner and
     // a declined/panicking resolver before drain retain their existing table.
-    let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    let fixture = coordinator_fixture(awaken_deployment_config::ClaimPool::RemoteWorkersOnly);
     for rule in ["D3", "D4"] {
         assert!(fixture.dispatch.begin_drain().await.is_none(), "{rule}/E1");
         let calls = AtomicUsize::new(0);
@@ -126,7 +126,7 @@ async fn drain_during_service_construction(local: bool, phase: PausedConstructio
     let fixture = Arc::new(coordinator_fixture(if local {
         local_pool()
     } else {
-        awaken_deployment_config::LocalExecution::RemoteWorkersOnly
+        awaken_deployment_config::ClaimPool::RemoteWorkersOnly
     }));
     let race = Arc::new(StartRace::new());
     let first = {

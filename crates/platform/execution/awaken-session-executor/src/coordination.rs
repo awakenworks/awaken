@@ -810,7 +810,7 @@ mod tests {
                     .with_ephemeral_dispatch(queue.clone());
             dependencies.execution.foreground_delivery =
                 awaken_deployment_config::ForegroundRunDelivery::Durable;
-            dependencies.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+            dependencies.execution.claim_pool = crate::ClaimPool::RemoteWorkersOnly;
             let host = dependencies.build().expect("Coordinator components");
             let assembly = Arc::downgrade(&host.run_assembly);
             let boundaries = crate::host::boundary_run::commit_boundary_workers(&host.run_assembly);
