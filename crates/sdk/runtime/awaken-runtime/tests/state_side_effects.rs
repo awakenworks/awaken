@@ -628,7 +628,7 @@ async fn plugin_resource_constraint_partitions_parallel_tools_by_argument_key() 
     );
     assert_eq!(
         prepared
-            .execution(&tasks[0].invocation.call)
+            .execution(&tasks[0].invocation().call)
             .unwrap()
             .concurrency,
         expected,

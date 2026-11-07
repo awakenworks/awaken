@@ -36,6 +36,36 @@ fn task() -> BackgroundTask {
     )
 }
 
+/// The parts of a fixture Task a test edits before rebuilding it.
+struct TaskParts {
+    id: BackgroundTaskId,
+    origin: BackgroundTaskOrigin,
+    invocation: BackgroundInvocation,
+    lifecycle: BackgroundTaskLifecycle,
+    revision: u64,
+}
+
+/// Edit a fixture's parts and rebuild it through the validated constructor,
+/// so a test can only reach a Task the aggregate itself could hold.
+fn edit(task: &mut BackgroundTask, change: impl FnOnce(&mut TaskParts)) {
+    let mut parts = TaskParts {
+        id: task.id().clone(),
+        origin: task.origin().clone(),
+        invocation: task.invocation().clone(),
+        lifecycle: task.lifecycle().clone(),
+        revision: task.revision(),
+    };
+    change(&mut parts);
+    *task = BackgroundTask::from_parts(
+        parts.id,
+        parts.origin,
+        parts.invocation,
+        parts.lifecycle,
+        parts.revision,
+    )
+    .expect("an edited fixture is a Task the aggregate can hold");
+}
+
 fn replay_policy() -> TaskExecutionPolicy {
     TaskExecutionPolicy {
         recovery: ToolRecoveryPolicy::replay_safe(),
@@ -92,15 +122,17 @@ fn heartbeat_task(phase: usize) -> BackgroundTask {
 
 fn expected_heartbeat(mut task: BackgroundTask, target_ms: u64) -> BackgroundTask {
     // Full-aggregate oracle: deadline and revision are the only changed fields.
-    match &mut task.lifecycle {
-        BackgroundTaskLifecycle::Running { attempt }
-        | BackgroundTaskLifecycle::Waiting { attempt, .. }
-        | BackgroundTaskLifecycle::Cancelling { attempt, .. } => {
-            attempt.lease_expires_at_ms = target_ms;
+    edit(&mut task, |p| {
+        match &mut p.lifecycle {
+            BackgroundTaskLifecycle::Running { attempt }
+            | BackgroundTaskLifecycle::Waiting { attempt, .. }
+            | BackgroundTaskLifecycle::Cancelling { attempt, .. } => {
+                attempt.lease_expires_at_ms = target_ms;
+            }
+            _ => panic!("only an attempt-bearing fixture can apply a heartbeat"),
         }
-        _ => panic!("only an attempt-bearing fixture can apply a heartbeat"),
-    }
-    task.revision += 1;
+        p.revision += 1;
+    });
     task
 }
 
@@ -195,14 +227,16 @@ fn fixed_target_heartbeat_checkpoint_follows_the_complete_decision_table() {
                 for now_ms in [9, 10, 11, u64::MAX] {
                     for target_ms in [0, 9, 10, 11, 20, u64::MAX] {
                         let mut current = heartbeat_task(phase);
-                        if revision_max {
-                            current.revision = u64::MAX;
+                        // A Requested Task is always at revision 0; its row is
+                        // C1 (no attempt) whatever the revision would be.
+                        if revision_max && phase != 0 {
+                            edit(&mut current, |p| p.revision = u64::MAX);
                         }
                         let fence = Tenure::granted(
                             if foreign == 1 {
                                 BackgroundTaskId::new("another-task").unwrap()
                             } else {
-                                current.id.clone()
+                                current.id().clone()
                             },
                             if foreign == 2 {
                                 "another-holder"
@@ -391,19 +425,19 @@ fn execution_admission_preserves_frozen_identity_and_remote_target() {
             } else {
                 &mut current
             };
-            match axis {
-                0 => target.id = BackgroundTaskId::new("other").unwrap(),
-                1 => target.origin.thread_id = ThreadId("other".into()),
-                2 => target.origin.run_id = RunId("other".into()),
-                3 => target.origin.operation_id = "other".into(),
-                4 => target.invocation.call.call_id = "other".into(),
-                5 => target.invocation.call.tool_id = "other".into(),
-                6 => target.invocation.call.arguments = serde_json::json!({"command":"other"}),
+            edit(target, |p| match axis {
+                0 => p.id = BackgroundTaskId::new("other").unwrap(),
+                1 => p.origin.thread_id = ThreadId("other".into()),
+                2 => p.origin.run_id = RunId("other".into()),
+                3 => p.origin.operation_id = "other".into(),
+                4 => p.invocation.call.call_id = "other".into(),
+                5 => p.invocation.call.tool_id = "other".into(),
+                6 => p.invocation.call.arguments = serde_json::json!({"command":"other"}),
                 _ => {
                     let BackgroundTaskLifecycle::Waiting {
                         attempt,
                         wait: BackgroundWait::Remote(handle),
-                    } = &mut target.lifecycle
+                    } = &mut p.lifecycle
                     else {
                         unreachable!()
                     };
@@ -419,7 +453,7 @@ fn execution_admission_preserves_frozen_identity_and_remote_target() {
                         _ => {}
                     }
                 }
-            }
+            });
             assert_eq!(
                 current.admits_execution_of(&expected, 9),
                 axis >= 14,
@@ -469,7 +503,7 @@ fn cancellation_preserves_unknown_outcomes_and_rejected_finishes_are_atomic() {
                         fence = fence.reassigned(fence.holder().clone()).unwrap();
                     }
                     if exhausted {
-                        task.revision = u64::MAX;
+                        edit(&mut task, |p| p.revision = u64::MAX);
                     }
                     let before = task.clone();
                     if mismatch != 0 {
@@ -499,11 +533,11 @@ fn cancellation_preserves_unknown_outcomes_and_rejected_finishes_are_atomic() {
                             end.clone()
                         };
                         assert_eq!(
-                            task.lifecycle,
-                            BackgroundTaskLifecycle::Ended { end: expected },
+                            task.lifecycle(),
+                            &BackgroundTaskLifecycle::Ended { end: expected },
                             "R3-R5"
                         );
-                        assert_eq!(task.revision, before.revision + 1);
+                        assert_eq!(task.revision(), before.revision() + 1);
                         assert!(task.same_request_as(&before));
                     }
                 }
@@ -567,15 +601,17 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                             if phase == 2 {
                                 task.request_cancel().unwrap();
                             }
-                            match &mut task.lifecycle {
-                                BackgroundTaskLifecycle::Running { attempt }
-                                | BackgroundTaskLifecycle::Waiting { attempt, .. }
-                                | BackgroundTaskLifecycle::Cancelling { attempt, .. } => {
-                                    attempt.epoch = Epoch::from_persisted(epoch).unwrap()
+                            edit(&mut task, |p| {
+                                match &mut p.lifecycle {
+                                    BackgroundTaskLifecycle::Running { attempt }
+                                    | BackgroundTaskLifecycle::Waiting { attempt, .. }
+                                    | BackgroundTaskLifecycle::Cancelling { attempt, .. } => {
+                                        attempt.epoch = Epoch::from_persisted(epoch).unwrap()
+                                    }
+                                    _ => unreachable!(),
                                 }
-                                _ => unreachable!(),
-                            }
-                            task.revision = revision;
+                                p.revision = revision;
+                            });
                             let before = task.clone();
                             let result = task.reclaim("b", now, lease);
                             let error = if lease == 0 {
@@ -593,7 +629,7 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                                 assert_eq!(result, Err(error), "R1/R2/R4/R5");
                                 assert_eq!(task, before, "rejected mutation is inert");
                             } else {
-                                assert_eq!(task.revision, revision + 1);
+                                assert_eq!(task.revision(), revision + 1);
                                 assert!(task.same_request_as(&before));
                                 if (!remote
                                     && (mode == ToolRecoveryMode::NeverReplay || phase == 2))
@@ -601,7 +637,7 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                                 {
                                     assert_eq!(result, Ok(TaskClaim::EndedIndeterminate), "R6");
                                     assert!(matches!(
-                                        task.lifecycle,
+                                        task.lifecycle(),
                                         BackgroundTaskLifecycle::Ended {
                                             end: BackgroundTaskEnd::Indeterminate { .. }
                                         }
@@ -609,7 +645,7 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                                 } else if epoch >= 2 {
                                     assert_eq!(result, Ok(TaskClaim::EndedAttemptsExhausted), "R7");
                                     assert!(matches!(
-                                        task.lifecycle,
+                                        task.lifecycle(),
                                         BackgroundTaskLifecycle::Ended {
                                             end: BackgroundTaskEnd::Failed { .. }
                                         }
@@ -618,24 +654,30 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                                     assert_eq!(
                                         result,
                                         Ok(TaskClaim::Acquired(Tenure::granted(
-                                            task.id.clone(),
+                                            task.id().clone(),
                                             "b".into(),
                                             Epoch::from_persisted(epoch + 1).unwrap(),
                                         ))),
                                         "R8"
                                     );
                                     let mut expected = before;
-                                    expected.revision += 1;
-                                    match &mut expected.lifecycle {
-                                        BackgroundTaskLifecycle::Running { attempt }
-                                        | BackgroundTaskLifecycle::Waiting { attempt, .. }
-                                        | BackgroundTaskLifecycle::Cancelling { attempt, .. } => {
-                                            attempt.worker_id = "b".into();
-                                            attempt.epoch = attempt.epoch.next().unwrap();
-                                            attempt.lease_expires_at_ms = now + lease;
+                                    edit(&mut expected, |p| {
+                                        p.revision += 1;
+                                        match &mut p.lifecycle {
+                                            BackgroundTaskLifecycle::Running { attempt }
+                                            | BackgroundTaskLifecycle::Waiting {
+                                                attempt, ..
+                                            }
+                                            | BackgroundTaskLifecycle::Cancelling {
+                                                attempt, ..
+                                            } => {
+                                                attempt.worker_id = "b".into();
+                                                attempt.epoch = attempt.epoch.next().unwrap();
+                                                attempt.lease_expires_at_ms = now + lease;
+                                            }
+                                            _ => unreachable!(),
                                         }
-                                        _ => unreachable!(),
-                                    }
+                                    });
                                     assert_eq!(task, expected, "exact recovery frame");
                                 }
                             }
@@ -718,7 +760,7 @@ fn claim_lease_recovery_and_fence_form_one_monotone_authority() {
         },
     )
     .expect("matching current fence can finish");
-    assert!(task.lifecycle.is_terminal(), "C6");
+    assert!(task.lifecycle().is_terminal(), "C6");
 }
 
 #[test]
@@ -732,16 +774,16 @@ fn cancellation_absorbs_a_racing_success_and_is_idempotent() {
         .request_cancel()
         .expect("requested task is cancellable");
     assert!(matches!(
-        queued.lifecycle,
+        queued.lifecycle(),
         BackgroundTaskLifecycle::Ended {
             end: BackgroundTaskEnd::Cancelled {}
         }
     ));
-    let revision = queued.revision;
+    let revision = queued.revision();
     queued
         .request_cancel()
         .expect("terminal cancellation is idempotent");
-    assert_eq!(queued.revision, revision);
+    assert_eq!(queued.revision(), revision);
 
     let mut running = task();
     let fence = running
@@ -760,7 +802,7 @@ fn cancellation_absorbs_a_racing_success_and_is_idempotent() {
         )
         .expect("matching worker acknowledges cancellation");
     assert!(matches!(
-        running.lifecycle,
+        running.lifecycle(),
         BackgroundTaskLifecycle::Ended {
             end: BackgroundTaskEnd::Cancelled {}
         }
@@ -791,7 +833,7 @@ fn never_replay_crash_window_changes_only_after_remote_identity_is_durable() {
         Ok(TaskClaim::EndedIndeterminate)
     );
     assert!(matches!(
-        uncertain.lifecycle,
+        uncertain.lifecycle(),
         BackgroundTaskLifecycle::Ended {
             end: BackgroundTaskEnd::Indeterminate { .. }
         }
@@ -833,7 +875,7 @@ fn never_replay_crash_window_changes_only_after_remote_identity_is_durable() {
         )
         .expect("complete remote identity may wait");
     assert!(matches!(
-        remote.lifecycle,
+        remote.lifecycle(),
         BackgroundTaskLifecycle::Waiting { .. }
     ));
     let TaskClaim::Acquired(recovered) = remote
@@ -844,7 +886,7 @@ fn never_replay_crash_window_changes_only_after_remote_identity_is_durable() {
     };
     assert_eq!(recovered.epoch().get(), 2, "C4");
     assert!(matches!(
-        remote.lifecycle,
+        remote.lifecycle(),
         BackgroundTaskLifecycle::Waiting { .. }
     ));
 }
@@ -864,7 +906,7 @@ fn persisted_recovery_policy_is_the_only_reclaim_authority() {
     assert_eq!(
         task.start("worker-1", 0, 10, policy)
             .expect("fresh task starts"),
-        Tenure::granted(task.id.clone(), "worker-1".into(), Epoch::FIRST)
+        Tenure::granted(task.id().clone(), "worker-1".into(), Epoch::FIRST)
     );
     assert!(matches!(
         task.reclaim("worker-2", 10, 10),
@@ -875,7 +917,7 @@ fn persisted_recovery_policy_is_the_only_reclaim_authority() {
         Ok(TaskClaim::EndedAttemptsExhausted)
     );
     assert!(matches!(
-        task.lifecycle,
+        task.lifecycle(),
         BackgroundTaskLifecycle::Ended {
             end: BackgroundTaskEnd::Failed { .. }
         }
@@ -920,7 +962,7 @@ fn exhausted_remote_observation_budget_never_claims_remote_failure() {
         "R2"
     );
     assert!(matches!(
-        remote.lifecycle,
+        remote.lifecycle(),
         BackgroundTaskLifecycle::Ended {
             end: BackgroundTaskEnd::Indeterminate { .. }
         }
@@ -959,8 +1001,10 @@ fn failed_transitions_are_atomic_and_persisted_invariants_fail_closed() {
     );
     assert_eq!(clock_overflow, before, "C1/E1");
 
-    let mut revision_overflow = task();
-    revision_overflow.revision = u64::MAX;
+    // A Requested Task is always at revision 0 (C8), so the overflow row
+    // cancels an executing Task whose revision is exhausted.
+    let mut revision_overflow = execution_task(1);
+    edit(&mut revision_overflow, |p| p.revision = u64::MAX);
     let before = revision_overflow.clone();
     assert_eq!(
         revision_overflow.request_cancel(),
@@ -1016,7 +1060,7 @@ fn failed_transitions_are_atomic_and_persisted_invariants_fail_closed() {
         assert_eq!(rejected, before, "C5/R3");
     }
 
-    active.revision = u64::MAX;
+    edit(&mut active, |p| p.revision = u64::MAX);
     let before = active.clone();
     assert_eq!(
         active.heartbeat(&fence, 10, 10),
@@ -1096,11 +1140,11 @@ fn remote_wait_reclaim_preserves_coordinates_and_fences_stale_observers() {
         poll_interval_ms: Some(250),
         ..initial.clone()
     };
-    let revision = remote.revision;
+    let revision = remote.revision();
     remote
         .wait(&first, BackgroundWait::Remote(refreshed.clone()))
         .expect("R2 the same remote request may refresh its poll delay");
-    assert_eq!(remote.revision, revision + 1, "R2");
+    assert_eq!(remote.revision(), revision + 1, "R2");
 
     for invalid in [
         ToolTaskHandle {
@@ -1139,7 +1183,7 @@ fn remote_wait_reclaim_preserves_coordinates_and_fences_stale_observers() {
     };
     assert_eq!(second.epoch().get(), 2, "R4");
     assert!(matches!(
-        &remote.lifecycle,
+        remote.lifecycle(),
         BackgroundTaskLifecycle::Waiting {
             attempt,
             wait: BackgroundWait::Remote(continuation),
@@ -1206,7 +1250,7 @@ fn remote_cancel_and_reclaim_retain_the_single_remote_request() {
         .expect("remote request is durably waiting");
     remote.request_cancel().expect("R1 cancel intent commits");
     assert!(matches!(
-        &remote.lifecycle,
+        remote.lifecycle(),
         BackgroundTaskLifecycle::Cancelling {
             attempt,
             wait: Some(BackgroundWait::Remote(actual)),
@@ -1228,7 +1272,7 @@ fn remote_cancel_and_reclaim_retain_the_single_remote_request() {
         panic!("R3 must acquire a replacement fence")
     };
     assert!(matches!(
-        &remote.lifecycle,
+        remote.lifecycle(),
         BackgroundTaskLifecycle::Cancelling {
             attempt,
             wait: Some(BackgroundWait::Remote(actual)),
@@ -1259,7 +1303,7 @@ fn remote_cancel_and_reclaim_retain_the_single_remote_request() {
         )
         .expect("R5 current worker settles cancellation");
     assert!(matches!(
-        remote.lifecycle,
+        remote.lifecycle(),
         BackgroundTaskLifecycle::Ended {
             end: BackgroundTaskEnd::Cancelled {}
         }
@@ -1291,7 +1335,7 @@ fn remote_start_candidate_attaches_after_cancel_without_losing_cancel_intent() {
         .request_cancel()
         .expect("R1 cancel commits before the start candidate");
     assert!(matches!(
-        remote.lifecycle,
+        remote.lifecycle(),
         BackgroundTaskLifecycle::Cancelling { wait: None, .. }
     ));
 
@@ -1305,7 +1349,7 @@ fn remote_start_candidate_attaches_after_cancel_without_losing_cancel_intent() {
         .wait(&fence, BackgroundWait::Remote(continuation.clone()))
         .expect("R2 matching start candidate attaches without reopening Waiting");
     assert!(matches!(
-        &remote.lifecycle,
+        remote.lifecycle(),
         BackgroundTaskLifecycle::Cancelling {
             wait: Some(BackgroundWait::Remote(actual)),
             ..
@@ -1358,7 +1402,7 @@ fn legacy_cancelling_wire_without_wait_remains_compatible() {
     let decoded = serde_json::from_value::<BackgroundTask>(legacy)
         .expect("historical cancelling state remains readable");
     assert!(matches!(
-        decoded.lifecycle,
+        decoded.lifecycle(),
         BackgroundTaskLifecycle::Cancelling { wait: None, .. }
     ));
 
@@ -1391,7 +1435,7 @@ fn legacy_cancelling_wire_without_wait_remains_compatible() {
     let decoded_wait = serde_json::from_value::<BackgroundTask>(legacy_wait)
         .expect("historical remote wait remains readable");
     assert!(matches!(
-        &decoded_wait.lifecycle,
+        &decoded_wait.lifecycle(),
         BackgroundTaskLifecycle::Waiting {
             wait: BackgroundWait::Remote(handle),
             ..
@@ -1468,9 +1512,9 @@ fn the_agent_contract_reads_the_same_holder_from_every_committed_slot() {
         let slot = serde_json::to_value(&task).expect("a committed task serializes");
         let expected = task.attempt().map(|attempt| attempt.worker_id.clone());
         let observed = committed_task_attempt(
-            task.id.as_str(),
-            &task.origin.thread_id.0,
-            &task.origin.run_id.0,
+            task.id().as_str(),
+            &task.origin().thread_id.0,
+            &task.origin().run_id.0,
             &slot,
         );
         assert_eq!(
