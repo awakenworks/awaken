@@ -21,7 +21,8 @@ commands and their flags by `check_gate_arguments.py`).
   select the affected work. Staged-file selection still applies to pre-commit.
   The script hook also starts qualification on the first push after another
   worktree regenerated the shared hook. Missing bootstrap or qualification
-  definitions fail the push.
+  definitions fail the push. `lefthook.yml` is generated: edit
+  `scripts/ci/hooks.yml` and run `python3 scripts/ci/generate_hooks.py`.
 - **Cold dependency verification**: `python3 scripts/ci/check_dependency_fetch.py`
   fetches every pinned public Git revision into new object stores, then runs
   `cargo fetch --locked` from a source snapshot with an empty `CARGO_HOME`.

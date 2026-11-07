@@ -1,0 +1,521 @@
+# Selected hook workers print concise live progress; full output stays in run logs.
+output:
+  - failure
+  - execution_out
+  - summary
+
+# Repository guardrails for the runtime design corpus and future Rust/frontend
+# engineering workspace.
+#
+# These hooks keep the runtime docs, wiki facts, ownership index, invariant
+# registry, repository shape, and future Rust/frontend checks executable. To
+# activate them:
+#
+#   git init            # if not already a git repo
+#   lefthook install    # wires the git hooks
+#
+# Before git is set up, run everything directly with:
+#
+#   scripts/ci/check-all.sh
+#
+# Each check is also safe to run standalone over a file list, e.g.
+#   python3 scripts/ci/check_doc_links.py $(find docs -name '*.md' | sort)
+#
+# Authored in scripts/ci/hooks.yml; lefthook.yml is rendered from it in full by
+# `python3 scripts/ci/generate_hooks.py`, and `--check` refuses any difference.
+# The renderer adds the `glob:` line of every command that runs a scripts/ci
+# checker declaring INPUT_GLOBS (between `>>> generated glob` markers) and the
+# observation wrapper around each run body, folding an authored `timeout:` into
+# it. Names, run bodies, tags, groups, serial barriers and the globs of commands
+# that run no declaring checker are authored; a glob naming a path that is gone
+# is refused at generation.
+
+glob_matcher: doublestar
+
+# Script jobs run independently of a guessed push-file list, including when an
+# older worktree just regenerated the shared Git hook. The custom hook below
+# owns qualification; its planners select the affected Rust/API work.
+source_dir: scripts/ci
+
+# Every generated hook sources this before calling lefthook. It routes the call
+# through scripts/ci/lefthook_serial.py, so partially staged pre-commits in two
+# worktrees take turns instead of swapping unstaged hunks through the stash and
+# info/ patch that lefthook's backup keeps in the shared git dir.
+rc: scripts/ci/pre-commit/lefthook-rc.sh
+
+pre-commit:
+  follow: true
+  scripts:
+    observe.sh:
+      runner: python3 scripts/ci/_native_shell.py
+      args: --observe
+
+# Definition only: observe.sh projects these same jobs to native pre-commit.
+# That preserves native glob filtering, stage_fixed and normal local settings.
+commit-checks:
+  parallel: false
+  piped: true
+  follow: true
+  jobs:
+    - name: read-only-phase-1
+      group:
+        parallel: true
+        jobs:
+          # 1. Repository-wide hygiene that should never depend on project language.
+          - name: repository-hygiene
+            tags: [read-only]
+            run: python3 scripts/ci/check_repository_hygiene.py --staged
+          # Every `glob:` below that sits between generated markers is rendered from
+          # the INPUT_GLOBS the invoked checker declares. Editing one by hand is
+          # refused by check_test_orchestration.py, because a trigger narrower than
+          # the checker's real input set is a gate that never runs when it matters.
+          - name: hook-globs
+            tags: [read-only]
+            run: python3 scripts/ci/generate_hooks.py --check && python3 scripts/ci/_input_closure.py --self-test
+          # 2. High-signal credential scanner. Generic secret assignments only fail
+          #    in source/config files, so design examples can stay readable.
+          - name: secrets
+            tags: [read-only]
+            run: python3 scripts/ci/check_secrets.py --staged
+          # 3. Report file-length diagnostics for source, tests, config and design.
+          #    Size findings warn; source selection and input failures remain checked.
+          - name: file-limits
+            tags: [read-only]
+            run: python3 scripts/ci/check_file_limits.py --staged
+
+    # The required-run reader judges nextest's own list JSON and JUnit report;
+    # its self-tests use small fixture reports and build nothing.
+    - name: nextest-evidence
+      tags: [read-only]
+      run: python3 scripts/ci/benchmark_rust_build.py --self-test && python3 scripts/ci/nextest_execution.py --self-test
+
+    # A changed CI script's own tests run on the commit that changes it: every
+    # self-test or test_*.py a gate runs whose entry runs, reads or names a
+    # staged scripts/ci file. Explain a selection with
+    # `python3 scripts/ci/generate_hooks.py --explain <path>...`.
+    - name: script-tests
+      tags: [read-only]
+      timeout: 1800
+      run: python3 scripts/ci/generate_hooks.py --script-tests {staged_files}
+
+    - name: hook-feedback
+      tags: [read-only]
+      run: python3 scripts/ci/test_hook_feedback.py && python3 scripts/ci/test_strict_unittest.py
+
+    - name: read-only-phase-2
+      group:
+        parallel: true
+        jobs:
+          - name: read-only-lane-2-2
+            group:
+              piped: true
+              jobs:
+                # 3b. Dependency direction and ownership rules. It also runs inside the
+                #     rust gate; as its own hook it still runs on commits that skip that gate.
+                #     It reads no documentation, so a docs-only commit skips it; every run
+                #     fails if it reads a path its declared inputs do not cover.
+                - name: crate-boundaries
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_crate_boundaries.py
+          - name: read-only-lane-2-3
+            group:
+              piped: true
+              jobs:
+                - name: hook-bootstrap
+                  tags: [read-only]
+                  run: python3 scripts/ci/_lefthook_fitness.py --self-test && python3 scripts/ci/_lefthook_fitness.py --integration-test
+                # The ledger above proves each obligation carries evidence; this one proves
+                # the product still consumes it. An obligation whose prefix no requirement
+                # owns reddens every later commit by everyone, so it must fail the commit
+                # that introduces it. It reads three JSON files and the paths they cite:
+                # 0.05s, no solver, no toolchain.
+                - name: formal-product-ledger
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_feature_coverage.py --require-complete
+                # Source-surface classification is incremental here: only staged production
+                # Rust is lexed, so the trigger can honestly include every crates/**/*.rs
+                # file the checker reads. The global coverage ratio still needs the whole
+                # walk, which stays on check-rust.sh --push and the formal release group.
+                # The existing formal-surface L4 test owns that decision table.
+                - name: formal-evidence
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_formal_surface.py --staged {staged_files}
+                # A Kani harness that takes a free symbol where production computes the
+                # fact, restates its callee's body, or hides a #[cfg(kani)] fork inside a
+                # production entrypoint, is green and proves nothing. The justified
+                # registry and the `/// @proof-input-debt` tags on harnesses ratchet the
+                # ones that already exist; a staged debt HEAD does not carry is refused.
+                - name: proof-input-derivation
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_proof_input_derivation.py --staged {staged_files}
+                # 3b. No Rust test disappears silently. Moving a test between crates or
+                #     rewriting its fixtures keeps it (identity is the function name); a
+                #     rename or deletion is recorded in the ledger in the same commit.
+                - name: test-inventory
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_test_inventory.py
+                # 3b'. A trait default that degrades silently, and a verification gate
+                #      that passes because its dependency was absent, are refused at commit
+                #      as well as in the full gate.
+                - name: degrading-defaults
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_degrading_defaults.py --self-test && python3 scripts/ci/check_degrading_defaults.py
+                # The existing release source validator inventories every tracked writer.
+                # Its declaration and pre-commit trigger cover that same repository corpus.
+                - name: sandbox-release-source
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_sandbox_image_release.py
+                # 3c. Build output is derived and grows without bound; a checkout is not and
+                #    must never be touched. This proves that distinction still holds before
+                #    anyone runs the reclaimer with --apply.
+                - name: reclaim-build-space
+                  tags: [read-only]
+                  run: python3 scripts/ci/reclaim_build_space.py --self-test
+                - name: ci-performance-policy
+                  tags: [read-only]
+                  run: python3 scripts/ci/ci_performance.py workflow
+                # 3a'. A shell or YAML gate that hands a crate file path to a tool must name
+                #    a file that exists. A refactor moved a UTC codec and the reliability
+                #    lane kept mutating the old path; nothing ran until hours later.
+                - name: gate-path-references
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_gate_path_references.py --self-test && python3 scripts/ci/check_gate_path_references.py
+          - name: read-only-lane-2-4
+            group:
+              piped: true
+              jobs:
+                # An evidence link replaces its former standalone source classification.
+                # Metadata/checker changes must pass the same strict validators as CI:
+                # duplicate ownership or missing coverage rejects the commit; no solver is
+                # started here. The ledger also asserts that every path an obligation cites
+                # still exists, and an obligation may cite any repository path, so this
+                # command has no trigger set to narrow and runs on every commit.
+                - name: formal-ledger
+                  tags: [read-only]
+                  run: python3 scripts/ci/formal_ledger.py --self-test && python3 scripts/ci/formal_plan.py --self-test && python3 scripts/ci/check_formal_coverage.py --require-evidence-complete
+                # 3b. A test must settle on a value the product committed, never on a
+                #     lifecycle signal, a fixture counter, or elapsed time. Two regressions
+                #     in main came from that one shape; the ratchet freezes today's debt.
+                - name: test-waits
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_test_waits.py
+                # 3b. An SDK public-API change ships only with the crate version bump it
+                #     needs against the last SDK release, and a changelog entry for it
+                #     (docs/design/sdk-versioning.md). Pure Python over the committed
+                #     snapshots; check_public_api.sh proves the snapshots are current.
+                - name: sdk-semver
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_sdk_semver.py
+                - name: dependency-gates
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_dependency_gates.py --self-test && python3 scripts/ci/check_dependency_gates.py
+                # The Session acceptance ledger's gate tests drive the real workspace
+                # guards, impact planner and ledger validator with injected
+                # counter-examples; a change to what they read re-proves the refusals.
+                - name: session-acceptance-gates
+                  tags: [read-only]
+                  run: python3 scripts/ci/test_session_acceptance.py
+                # Run the live graph as well as the checker fixtures; fixtures alone
+                # cannot reject a newly introduced wait in a production test suite.
+                - name: test-orchestration
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_test_orchestration.py --self-test && python3 scripts/ci/check_test_orchestration.py
+                # 3b. A failed read of durable state may never become an absence. The
+                #     recovery path is derived -- every production module that names a
+                #     checkpoint or the tri-state -- so a file joins the rule by doing the
+                #     thing the rule is about, and the trigger follows the same declaration.
+                - name: observation-collapse
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_observation_collapse.py
+                # 3b. The principle table (plan v5 S3) is printed by
+                #     `python3 scripts/ci/principle_status.py`; it is informational and
+                #     never fails on a count. Only its own decision table runs here.
+                - name: principle-status
+                  tags: [read-only]
+                  run: python3 scripts/ci/principle_status.py --self-test
+                # 3c. A guard's scope must be derived from its subject, never written out a
+                #     second time by hand. The checkers are themselves the corpus here: a new
+                #     literal list of paths among them is refused, and today's are registered
+                #     with the reason each cannot be derived.
+                - name: scan-scope
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_scan_scope.py
+                # 3b. The one declaration of every external tool a gate needs. Its self-test
+                #    proves each row can still be located by the method it states, so a row
+                #    that stopped describing reality fails here rather than inside a proof.
+                - name: gate-tools
+                  tags: [read-only]
+                  run: python3 scripts/ci/gate_tools.py --self-test
+                # 3c-bis. A gate entry point that accepts an argument it does not implement
+                #    runs something other than what the caller asked for and still exits
+                #    zero. check-all.sh invoked `--selftest` for years against a script whose
+                #    flag was `--self-test`, so that self-test never once ran. The rule is
+                #    over the whole set of entry points, so a new checker inherits it.
+                - name: gate-arguments
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_gate_arguments.py && python3 scripts/ci/guards.py --self-test
+                # 3c-ter. An executable no lane runs still reads as coverage, still gets
+                #    cited as evidence, and rots in place. Three k3d runners sat unrun for
+                #    months and one of them is named in the formal/obligations ledger as the proof of
+                #    a requirement. Every executable is selected or registered with a reason.
+                - name: lane-reachability
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_lane_reachability.py
+                # 3d. The record of the last green full gate is evidence, so a commit may not
+                #    leave it naming a commit that is gone, off main, or blessed by a partial
+                #    run. Staleness is a schedule and is reported by check-all, not here.
+                - name: gate-freshness
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_gate_freshness.py --self-test
+
+    # 4. Rust checks are active as soon as a Cargo workspace exists.
+    - name: rustfmt
+      glob: "**/*.rs"
+      run: rustfmt {staged_files}
+      stage_fixed: true
+
+    # One Rust gate owns source and boundary checks. Trigger it for checker
+    # edits too; separate hook invocations would execute the same scan twice.
+    - name: rust-quick
+      run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --quick
+
+    - name: read-only-phase-3
+      group:
+        parallel: true
+        jobs:
+          # An observation time is a fact its owner observed, not a value the code
+          # chose. No date literal may reach a `*_at`-shaped field outside tests, and
+          # the wall clock may be read only where a clock port is declared or the
+          # program is composed. Both are ratcheted per file, and each allowance
+          # carries the owner and expiry that stop it becoming permanent.
+          - name: fabricated-facts
+            tags: [read-only]
+            run: python3 scripts/ci/check_fabricated_facts.py --self-test && python3 scripts/ci/check_fabricated_facts.py
+
+    # Contract structure stays constrained: no cycle, deeper dependency chain,
+    # new backend-noun types, catch-all String errors or capability-style Err
+    # defaults (ADR-0081). Module line measurements are diagnostic (ADR-0091 D8).
+    - name: contract-shape
+      # A fall is recorded here, by the tool, and staged with the commit that
+      # achieved it; only growth needs a person (--write-baseline --reason).
+      run: python3 scripts/ci/check_contract_shape.py --self-test && python3 scripts/ci/check_contract_shape.py --tighten --stage
+
+    # Protocol/credential codec changes must exercise the existing cross-language
+    # drift test even when no E2E file changed. Its decision table owns the
+    # version-match/mismatch oracle; the full runner remains in check-all static.
+    - name: worker-fixture-contract
+      glob: "{lefthook.yml,crates/platform/dispatch/awaken-worker-contract/src/manifest.rs,crates/platform/credentials/awaken-credential-contract/src/realization_capabilities.rs,e2e/fixtures/worker_manifest_fixture.mjs,e2e/worker_manifest_fixture.test.mjs}"
+      run: node --test e2e/worker_manifest_fixture.test.mjs
+
+    # 5. Frontend checks are active as soon as package.json exists. The frontend
+    #    project must expose lint/typecheck/build scripts.
+    - name: frontend-quick
+      glob: "{package.json,pnpm-lock.yaml,package-lock.json,yarn.lock,bun.lockb,apps/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},packages/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},web/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py}"
+      run: python3 scripts/ci/_native_shell.py scripts/ci/check-frontend.sh --quick
+
+    # The oracle's check reads the E2E manifest and the workspace lockfile as
+    # well as its own package: the trigger names every input so a version bump
+    # in one place cannot pass by never running the check.
+    - name: managed-sdk-oracle
+      glob: "{packages/managed-sdk-oracle/**/*,contracts/anthropic-managed/*,crates/platform/protocols/awaken-protocol-managed/contracts/*,e2e/package.json,pnpm-lock.yaml}"
+      run: pnpm --filter @awaken/managed-sdk-oracle test && pnpm --filter @awaken/managed-sdk-oracle check
+
+    - name: read-only-phase-4
+      group:
+        parallel: true
+        jobs:
+          - name: read-only-lane-4-1
+            group:
+              piped: true
+              jobs:
+                - name: full-gate-admission
+                  tags: [read-only]
+                  # Existing host capability regressions remain separate from the source matrix.
+                  run: python3 scripts/ci/test_full_gate_admission.py
+          - name: read-only-lane-4-2
+            group:
+              piped: true
+              jobs:
+                # The declared deadline subjects select their existing process tests here;
+                # full CI uses the same owner through check-all.sh's static lane.
+                - name: command-deadline
+                  tags: [read-only]
+                  run: python3 scripts/ci/test_deadline.py
+          - name: read-only-lane-4-3
+            group:
+              piped: true
+              jobs:
+                - name: native-service-runner
+                  tags: [read-only]
+                  run: python3 scripts/ci/test_native_services.py
+                - name: native-recovery-laws
+                  tags: [read-only]
+                  run: python3 scripts/ci/test_native_recovery.py
+                - name: postgres-storage-selection
+                  tags: [read-only]
+                  run: python3 scripts/ci/_postgres_phase_plan.py --self-test && python3 scripts/ci/test_postgres_storage.py
+                - name: native-postgres-e2e-laws
+                  tags: [read-only]
+                  run: python3 scripts/ci/test_native_postgres_e2e.py
+                - name: test-layer-matrix
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_test_layers.py --self-test
+          - name: read-only-lane-4-4
+            group:
+              piped: true
+              jobs:
+                # Every Managed wire type names its SDK counterpart (or says why it has
+                # none). Reads the generated oracle's declared-type vocabulary, so it runs
+                # when the types, the baseline, or the oracle change.
+                - name: managed-wire-naming
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_managed_wire_naming.py --self-test && python3 scripts/ci/check_managed_wire_naming.py
+                # A declared budget checker must use its existing decision-table self-test;
+                # leaving it unwired makes the generated hook ownership check fail.
+                - name: formal-budget
+                  tags: [read-only]
+                  run: python3 scripts/ci/formal_budget.py --self-test
+                - name: native-recording-laws
+                  tags: [read-only]
+                  run: python3 scripts/ci/test_native_recording.py
+                - name: postgres-resource-selection
+                  tags: [read-only]
+                  run: python3 scripts/ci/test_postgres_resources.py
+
+    - name: native-postgres-bundle-laws
+      glob: "e2e/**"
+      run: node --test e2e/native_postgres_build.test.mjs e2e/harness_home.test.mjs
+
+    # Generated wire artifacts are derived from the admin-config and Managed
+    # DTOs; a DTO edit without regeneration is refused here, not at release.
+    - name: generated-contracts
+      glob: "{.gitattributes,contracts/**/*,scripts/contract/**/*,crates/platform/config/awaken-admin-config-api/**/*.rs,crates/platform/protocols/awaken-protocol-managed/src/**/*.rs,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py}"
+      run: python3 scripts/ci/_native_shell.py scripts/contract/generate-contracts.sh --check
+
+    - name: read-only-phase-5
+      group:
+        parallel: true
+        jobs:
+          - name: read-only-lane-5-1
+            group:
+              piped: true
+              jobs:
+                # 8. Wiki facts stay thin: a FACT must summarize and cite an invariant id,
+                #    not paste the invariant statement verbatim (drift guard).
+                - name: check-wiki-no-invariant-copy
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_wiki_no_invariant_copy.py {staged_files}
+          - name: read-only-lane-5-2
+            group:
+              piped: true
+              jobs:
+                # 12. ADRs have a stable structure (title/number, Status, required sections,
+                #    unique numbers) so the decision-first model (ADR-0001) stays executable.
+                - name: check-adr
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_adr.py
+          - name: read-only-lane-5-3
+            group:
+              piped: true
+              jobs:
+                # 7. The OKF wiki keeps its shape: frontmatter `type`, FACT-* records with
+                #    Status/Owner/Fact/Links/Verification, owner links that resolve.
+                - name: check-wiki-okf
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_wiki_okf.py {staged_files}
+                # 10. The wiki ownership index lists every design document. Whole-tree scan,
+                #    so any added/renamed/removed design doc trips it regardless of glob.
+                - name: check-ownership-index
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_ownership_index.py
+                # 13. Active architecture docs use the ADR-0071 service vocabulary and keep
+                #     the retired whole-catalog path historical. Canonical owners are English.
+                - name: check-architecture-vocabulary
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_architecture_vocabulary.py
+          - name: read-only-lane-5-4
+            group:
+              piped: true
+              jobs:
+                # 6. Every relative Markdown link resolves to a real file and anchor.
+                - name: check-doc-links
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_doc_links.py {staged_files}
+                # 9. Invariant registry is complete (Statement/Source/Enforcer, unique ids)
+                #    and every invariant id a wiki fact cites is actually defined.
+                - name: check-invariants
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_invariants.py
+                # 11. Source documents declare whether they own, delegate, or do not need a
+                #    role/component catalog; the declared policy must match the document.
+                - name: check-role-catalogs
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_role_catalogs.py
+                # Harness containers never leak anonymous Docker volumes (explicit mounts,
+                # `docker rm -v`).
+                - name: check-docker-volumes
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_docker_volumes.py
+
+    # 14. Only the crates deny.toml lists as wrappers depend on a transport
+    #    crate (`reqwest`, `rustls`). Production graph only (`--exclude-dev`);
+    #    an unused wrapper is an error, so a stale exemption cannot stay.
+    #    `sources` refuses a registry or Git repository outside deny.toml.
+    #    cargo-deny reads Cargo metadata and builds nothing, so it is started
+    #    directly rather than through the host's build admission. Skips with a
+    #    hint if cargo-deny is not installed.
+    - name: check-dep-direction
+      glob: "{Cargo.toml,Cargo.lock,deny.toml,crates/**/Cargo.toml}"
+      # Fold to one shell command: Windows' hook launcher cannot carry the
+      # nested double-quoted, multiline `sh -c` body intact.
+      run: if command -v cargo-deny >/dev/null 2>&1; then cargo-deny --exclude-dev --log-level error check --disable-fetch -D unused-wrapper bans sources; else echo 'cargo-deny not installed; skipping dependency-direction check (cargo install cargo-deny)'; fi
+
+
+commit-msg:
+  commands:
+    # Commit messages stay thin and provenance-clean: '<emoji> <type>(<scope>):
+    # <subject>', subject <=100 chars, <=4 lines with a blank-line body, body
+    # wrapped at 72 columns, and no Co-Authored-By / AI-generation / external
+    # tool / project-management markers. Ported from ../awaken-next.
+    validate-message:
+      run: python3 scripts/ci/check_commit_message.py {1}
+
+pre-push:
+  scripts:
+    qualify.sh:
+      runner: python3 scripts/ci/_native_shell.py
+      args: --qualify
+
+push-qualification:
+  commands:
+    # Keep push latency bounded. Full workspace tests, formal verification,
+    # Postgres suites, and frontend tests/build remain explicit checks:
+    #   scripts/ci/check-all.sh
+    # Both Cargo commands below scope their work to the commits since the
+    # origin/main merge-base (rust_test_plan.py gate_scope): unaffected graphs
+    # and snapshots are skipped with a "↷"/"0 of N" line, and any manifest,
+    # lockfile, gate script or unowned change keeps the whole run. They stay
+    # sequential, like pre-commit: two concurrent workspace builds exhaust a
+    # low-memory Windows host before either reports a useful diagnosis.
+    documentation:
+      run: python3 scripts/ci/_native_shell.py scripts/ci/check-docs.sh
+
+    # --push is --quick plus workspace clippy (-D warnings) and the formal
+    # coverage ledger check: the two ways main has gone red after a green
+    # pre-commit, refused here before the push instead of at the full gate.
+    rust-quick:
+      run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --push
+
+    # Public snapshots are the review authority for contract/facade changes.
+    # Run the existing fail-closed gate; do not duplicate its crate inventory,
+    # tool pinning, or comparison policy in the hook.
+    public-api:
+      run: python3 scripts/ci/_native_shell.py scripts/ci/check_public_api.sh --require-tools --affected-upstream
+
+    frontend-quick:
+      run: python3 scripts/ci/_native_shell.py scripts/ci/check-frontend.sh --quick
+
+# main stays linear and moves only from the integration worktree. That guard is
+# the standalone `reference-transaction` hook installed by
+# `scripts/ci/install_receive_hooks.py --install` (one owner: it must run for
+# pushes and for worktrees on any commit, so it is not a Lefthook command).
