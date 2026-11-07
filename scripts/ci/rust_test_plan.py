@@ -376,6 +376,14 @@ class PlanTests(unittest.TestCase):
             self.assertEqual(production_selection(manifests),
                              ["--exclude=kit", "--features", "product/implicit,product/postgres"])
 
+    def test_production_selection_cli_emits_lf_delimited_arguments(self) -> None:
+        # Bash mapfile removes LF, not the CR from Windows text-mode stdout.
+        raw = subprocess.check_output(
+            [sys.executable, str(Path(__file__).resolve()), "--production-selection"], cwd=ROOT,
+        )
+        self.assertIn(b"\n--features\n", raw)
+        self.assertNotIn(b"\r", raw)
+
     def test_gate_scope_follows_the_decision_table(self) -> None:
         # P1 no R and no G input -> none; P4 member sources -> owners plus
         # transitive consumers; P3 a manifest, lockfile or unowned R input
@@ -912,7 +920,8 @@ def main() -> int:
     if args.production_selection:
         if len(sys.argv) != 2:
             parser.error("--production-selection is a standalone mode")
-        print("\n".join(production_selection()))
+        # Preserve LF framing when a native Windows Python feeds Git Bash.
+        sys.stdout.buffer.write(("\n".join(production_selection()) + "\n").encode("utf-8"))
         return 0
     if args.gate_scope:
         if not args.base or args.run or args.features or args.self_test or args.source_digest:

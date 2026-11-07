@@ -48,7 +48,7 @@ def nested_shell_function(source: str, name: str) -> str:
     return f"{name}() {{\n{body}\n}}"
 
 
-def formal_gate_initialization(root: Path) -> str:
+def formal_gate_initialization(root: Path, *, with_tlc_fixture: bool = True) -> str:
     source = (root / "scripts/ci/check_formal.sh").read_text()
     # This slice owns receipt/trap behavior, while gate_tools owns real tool
     # and disk admission. Keep both exact calls but supply that independent
@@ -61,6 +61,19 @@ def formal_gate_initialization(root: Path) -> str:
   command python3 "$@"
 }
 '''
+    if with_tlc_fixture:
+        # Receipt/EXIT tests run the real gate prefix without a host Java or TLC
+        # installation. Admit only the version query; no proof tool is run.
+        jar = root.parent / "receipt-fixture.jar"
+        jar.touch()
+        admission += (
+            f"export TLA2TOOLS_JAR={shlex.quote(jar.as_posix())}\n"
+            "java() {\n"
+            '  [ "$#" -eq 4 ] && [ "$1" = -cp ] && [ "$2" = "$TLA2TOOLS_JAR" ] '
+            '&& [ "$3" = tlc2.TLC ] && [ "$4" = -version ] || return 97\n'
+            f"  printf '%s\\n' {shlex.quote(proof_toolchain(root)['tlc'])}\n"
+            "}\n"
+        )
     return admission + source.split("\npython3 scripts/ci/check_feature_coverage.py", 1)[0]
 
 
@@ -800,7 +813,7 @@ class EvidenceTests(unittest.TestCase):
         block = source[start:source.index("\nfi\n", start) + len("\nfi\n")]
         self.assertGreater(start, source.index("python3 scripts/ci/check_formal_mutations.py\n"))
         self.assertLess(start, source.index("run_required_rust_tests -p awaken-service-lifecycle"))
-        initialization = formal_gate_initialization(self.root)
+        initialization = formal_gate_initialization(self.root, with_tlc_fixture=False)
         self.assertNotIn(marker, initialization)
         for inherited, status in ((False, 0), (False, 75), (True, 75)):
             with self.subTest(inherited=inherited, admission=status), tempfile.TemporaryDirectory() as tmp:

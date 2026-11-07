@@ -33,6 +33,7 @@ import argparse
 import ast
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -473,14 +474,17 @@ def _helper_test(root: Path) -> list[str]:
         "touch line4\n"
         "affected_suite touch ran\naffected_suite touch skipped\n"
         'affected_selected_after 6 && touch later || touch none-later\n'
-        "affected_suite touch unmapped\n", encoding="utf-8")
+        "affected_suite touch unmapped\n", encoding="utf-8", newline="\n")
     failures = []
-    result = subprocess.run(["bash", "scripts/ci/probe.sh"], cwd=root, capture_output=True, text=True)
+    command = [sys.executable, str(SCRIPTS / "_native_shell.py"), "scripts/ci/probe.sh"]
+    environment = dict(os.environ)
+    environment.pop("AWAKEN_BUILD_WORKLOAD_KIND", None)
+    result = subprocess.run(command, cwd=root, capture_output=True, text=True, env=environment)
     made = {path.name for path in root.iterdir() if path.is_file()}
     if result.returncode != 2 or made != {"line4", "ran", "none-later"} or "no affected decision" not in result.stderr:
         failures.append(f"R1 helper: exit {result.returncode}, files {sorted(made)}, {result.stderr.strip()}")
-    result = subprocess.run(["bash", "scripts/ci/probe.sh"], cwd=root, capture_output=True, text=True,
-                            env={"PATH": "/usr/bin:/bin", "AWAKEN_BUILD_WORKLOAD_KIND": "qualification"})
+    result = subprocess.run(command, cwd=root, capture_output=True, text=True,
+                            env={**environment, "AWAKEN_BUILD_WORKLOAD_KIND": "qualification"})
     if result.returncode != 2 or "never narrowed" not in result.stderr:
         failures.append(f"R2 a qualification run is never narrowed: exit {result.returncode}")
     return failures
