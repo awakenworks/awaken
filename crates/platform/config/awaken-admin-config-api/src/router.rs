@@ -27,8 +27,7 @@ use awaken_config_resolver::{
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
     CredentialMaterialPatch, CredentialRepo, enter_credential, enter_credential_described,
-    enter_credential_idempotent_described, enter_credential_idempotent_verified,
-    enter_credential_replacement_idempotent_described, rotate_credential_materials_exact,
+    enter_credential_idempotent_verified, rotate_credential_materials_exact,
 };
 use awaken_credential_vault::{
     AvailabilityLedger, AvailabilityState, CredentialBinding, CredentialCreateParams,
@@ -63,7 +62,8 @@ pub use credential_requests::{CooldownRequest, ResolveProfileRequest, ValidateCr
 
 mod credential_wire;
 pub use credential_wire::{
-    ArchiveCredentialRequest, CredentialSourceView, EnterCredentialRequest, RotateCredentialRequest,
+    ArchiveCredentialRequest, CredentialRenewalObservation, CredentialSourceView,
+    EnterCredentialRequest, RenewCredentialRequest, RotateCredentialRequest,
 };
 use credential_wire::{
     CredentialMaterialInput, credential_material, hosted_credential_matches,
@@ -73,7 +73,9 @@ use credential_wire::{
 mod cloud_login;
 pub use cloud_login::{CloudLoginApplication, CloudLoginState, CloudLoginStatusView};
 use cloud_login::{CloudLoginHandle, cloud_login_router};
+mod credential_grants;
 mod hosted_credential_request;
+pub use credential_grants::CredentialGrantRenewal;
 
 /// The admin config plane's injected stores. The router depends on the domain
 /// ports, not a concrete backend, so the same routes serve the in-memory dev
@@ -94,6 +96,8 @@ pub struct AdminState {
     /// otherwise it reports `unknown` (the model SDK never enters this CRUD crate —
     /// it arrives behind this port).
     pub probe: Option<Arc<dyn CredentialProbe>>,
+    /// Original credential application; optional only for CRUD-only assemblies.
+    pub grant_renewal: Option<Arc<dyn CredentialGrantRenewal>>,
     /// Optional provisioning-side provider model discovery. The HTTP/application
     /// layer passes only an authored endpoint plus a secret-free credential row;
     /// the adapter owns exact credential materialization and provider I/O.
@@ -224,7 +228,7 @@ impl FromRef<AdminRouterState> for CloudLoginHandle {
 
 /// The result of a live credential probe (secret-free), aligned with the Managed
 /// wire's `valid` / `invalid` / `unknown` statuses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ProbeStatus {
@@ -308,6 +312,14 @@ pub fn admin_router_with_runtime_capabilities(
             post(post_credential).get(list_credentials),
         )
         .route("/v1/config/credentials/{id}", get(get_credential))
+        .route(
+            "/v1/config/credentials/{id}/renew",
+            post(credential_grants::renew),
+        )
+        .route(
+            "/v1/config/credentials/{id}/renewal",
+            get(credential_grants::inspect),
+        )
         .route(
             "/v1/config/credentials/{id}/rotate",
             post(rotate_credential),
@@ -1420,8 +1432,9 @@ async fn archive_credential(
 }
 
 /// The secret-free result of a live credential probe.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct CredentialValidation {
     pub status: ProbeStatus,
     pub adapter_kind: String,
@@ -1596,14 +1609,32 @@ async fn post_credential(
         secret,
         oauth_command,
     };
+    if (!body.auxiliary_materials.is_empty() || body.grant_lifetime.is_some())
+        && (idempotent_id.is_none() || body.descriptor.is_none())
+    {
+        return Err(cred_problem(
+            &CredentialError::InvalidSource(
+                "private grant input requires a described idempotent Vault request".into(),
+            ),
+            &rid,
+        ));
+    }
     let source = match (idempotent_id, body.descriptor, body.replacement_of) {
-        (Some(id), Some(descriptor), Some(replacement_of)) => {
-            enter_credential_replacement_idempotent_described(
-                &replacement_of,
-                id,
-                params,
-                None,
-                descriptor,
+        (Some(id), Some(descriptor), replacement_of) => {
+            awaken_credential_vault::repo::enter_described_credential(
+                awaken_credential_vault::repo::DescribedCredentialEntryCommand {
+                    id,
+                    params,
+                    protocol_endpoint_id: None,
+                    descriptor,
+                    replacement_of,
+                    auxiliary_materials: body
+                        .auxiliary_materials
+                        .into_iter()
+                        .map(|(slot, value)| (slot, RedactedString::new(value)))
+                        .collect(),
+                    lifetime: body.grant_lifetime,
+                },
                 state.secrets.as_ref(),
                 state.credentials.as_ref(),
                 state.clock.as_ref(),
@@ -1611,17 +1642,6 @@ async fn post_credential(
             .await
             .map(|entry| entry.source)
         }
-        (Some(id), Some(descriptor), None) => enter_credential_idempotent_described(
-            id,
-            params,
-            None,
-            descriptor,
-            state.secrets.as_ref(),
-            state.credentials.as_ref(),
-            state.clock.as_ref(),
-        )
-        .await
-        .map(|entry| entry.source),
         (Some(id), None, None) => enter_credential_idempotent_verified(
             id,
             params,

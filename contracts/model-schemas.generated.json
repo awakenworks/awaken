@@ -779,6 +779,76 @@
       "title": "CredentialPoolMember",
       "type": "object"
     },
+    "CredentialRenewalObservation": {
+      "$defs": {
+        "CredentialRef": {
+          "description": "A stable reference to one credential source revision.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "revision"
+          ],
+          "type": "object"
+        },
+        "CredentialRenewalStatus": {
+          "description": "Secret-free observation; the Vault source and its existing material WAL\nremain authoritative. Consumers never infer that Unknown is retryable.",
+          "oneOf": [
+            {
+              "enum": [
+                "ready",
+                "due",
+                "in_progress",
+                "needs_authorization",
+                "outcome_unknown",
+                "expiry_unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "insufficient_lifetime",
+              "description": "A fresh issuer generation cannot cover the consumer's requested window.\nAutomatic reissuance must wait for a configuration change.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "Exact metadata-only observation; it never grants materialization authority.",
+      "properties": {
+        "reference": {
+          "$ref": "#/$defs/CredentialRef"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CredentialRenewalStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "reference"
+      ],
+      "title": "CredentialRenewalObservation",
+      "type": "object"
+    },
     "CredentialSource": {
       "$defs": {
         "CredentialAudienceRef": {
@@ -1707,6 +1777,7 @@
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
       "description": "The secret-free result of a live credential probe.",
       "properties": {
         "adapter_kind": {
@@ -1795,6 +1866,37 @@
             "provider",
             "material",
             "targets"
+          ],
+          "type": "object"
+        },
+        "CredentialGrantLifetime": {
+          "additionalProperties": false,
+          "description": "Caller-supplied initial grant evidence; access and refresh expiry are distinct.",
+          "properties": {
+            "access_expires_at_unix_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "issued_at_unix_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "refresh_expires_at_unix_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "issued_at_unix_ms"
           ],
           "type": "object"
         },
@@ -2569,6 +2671,13 @@
       "additionalProperties": false,
       "description": "The credential-entry wire body. `secret` is write-only: it is sealed into the\nSecretStore and never appears on any response. `RedactedString` is\nintentionally not `Deserialize`, so the raw secret crosses the wire once.",
       "properties": {
+        "auxiliary_materials": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Write-only auxiliary inputs declared by the acquisition profile. The\ncanonical Vault entry validates their exact slots and seals them with\nthe primary material; no response contains these values.",
+          "type": "object"
+        },
         "descriptor": {
           "anyOf": [
             {
@@ -2585,6 +2694,17 @@
             "string",
             "null"
           ]
+        },
+        "grant_lifetime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CredentialGrantLifetime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional initial grant evidence, stored with the same sealed generation."
         },
         "idempotency_key": {
           "description": "Stable hosted-governance operation identity. When present, the canonical\nprovider comes from `descriptor` or the legacy `provider_id`; described\nwrites reject `provider_id` so that tuple has one provider truth.",
@@ -6009,6 +6129,794 @@
         }
       },
       "title": "PutModelAttributesRequest",
+      "type": "object"
+    },
+    "RenewCredentialRequest": {
+      "$defs": {
+        "CredentialAudienceRef": {
+          "description": "Exact upstream audience authorized for a credential purpose.",
+          "type": "string"
+        },
+        "CredentialDescriptor": {
+          "additionalProperties": false,
+          "description": "One normalized, secret-free description stored on the canonical source row.",
+          "properties": {
+            "acquisition": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CredentialTokenExchangeProfile"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Immutable acquisition configuration. Issued lifetimes/material stay in\nthe same Vault generation; this field never carries token values."
+            },
+            "expires_at_unix_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "material": {
+              "$ref": "#/$defs/CredentialMaterialDescriptor"
+            },
+            "permissions": {
+              "items": {
+                "$ref": "#/$defs/CredentialPermissionRef"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "provider": {
+              "$ref": "#/$defs/CredentialProviderRef"
+            },
+            "subject": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CredentialSubjectRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "targets": {
+              "description": "Exact authorized target/usage contracts. Separate sets are deliberately\nforbidden because their Cartesian product would invent undeclared uses.",
+              "items": {
+                "$ref": "#/$defs/CredentialTargetContract"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "provider",
+            "material",
+            "targets"
+          ],
+          "type": "object"
+        },
+        "CredentialMaterialDescriptor": {
+          "description": "Secret-free description of the material document sealed by the Vault.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "secret",
+                  "type": "string"
+                },
+                "type_id": {
+                  "$ref": "#/$defs/CredentialMaterialTypeId"
+                }
+              },
+              "required": [
+                "kind",
+                "type_id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "fields": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "uniqueItems": true
+                },
+                "kind": {
+                  "const": "structured",
+                  "type": "string"
+                },
+                "type_id": {
+                  "$ref": "#/$defs/CredentialMaterialTypeId"
+                }
+              },
+              "required": [
+                "kind",
+                "type_id",
+                "fields"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "CredentialMaterialTypeId": {
+          "description": "Namespaced, versioned material shape identifier.",
+          "type": "string"
+        },
+        "CredentialPermissionRef": {
+          "description": "Provider-owned permission/scope label exposed only as secret-free metadata.",
+          "type": "string"
+        },
+        "CredentialProviderRef": {
+          "description": "Provider namespace recorded as secret-free credential metadata. This names\nthe upstream provider (`github`), never a product resource kind such as\n`github_repository`.",
+          "type": "string"
+        },
+        "CredentialPurpose": {
+          "description": "Why a target is allowed to consume the credential. Purpose is orthogonal to\nprovider identity and material shape.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "provider_adapter",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "repository_transport",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "mcp_authorization",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "remote_agent_authorization",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "One registered Host Web provider identified by its immutable provider id.",
+              "properties": {
+                "type": {
+                  "const": "web_provider_authorization",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "http_effect",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "signature_verification",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "extension",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "CredentialSubjectRef": {
+          "description": "Opaque provider subject such as one account or installation. This is\nmetadata for binding/probing, not an IAM principal.",
+          "type": "string"
+        },
+        "CredentialTarget": {
+          "additionalProperties": false,
+          "description": "Exact purpose/audience identity frozen into executable access. Usage remains\nthe existing independent field on `CredentialAccess`, so executable payloads\ncannot serialize two copies of the same usage truth.",
+          "properties": {
+            "audience": {
+              "$ref": "#/$defs/CredentialAudienceRef"
+            },
+            "purpose": {
+              "$ref": "#/$defs/CredentialPurpose"
+            }
+          },
+          "required": [
+            "purpose",
+            "audience"
+          ],
+          "type": "object"
+        },
+        "CredentialTargetContract": {
+          "additionalProperties": false,
+          "description": "One source-declared authorization contract. The target identity and its\nallowed material usage are indivisible here, while executable access carries\nthat target identity plus its existing single `usage` field.",
+          "properties": {
+            "target": {
+              "$ref": "#/$defs/CredentialTarget"
+            },
+            "usage": {
+              "$ref": "#/$defs/CredentialUsage"
+            }
+          },
+          "required": [
+            "target",
+            "usage"
+          ],
+          "type": "object"
+        },
+        "CredentialTokenExchangeProfile": {
+          "additionalProperties": false,
+          "properties": {
+            "access_field": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "basic_auth": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TokenClientBasicAuth"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "bindings": {
+              "additionalProperties": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/TokenSourceField"
+                },
+                "type": "object"
+              },
+              "default": {},
+              "type": "object"
+            },
+            "encoding": {
+              "$ref": "#/$defs/TokenRequestEncoding"
+            },
+            "headers": {
+              "additionalProperties": true,
+              "default": {},
+              "type": "object"
+            },
+            "method": {
+              "$ref": "#/$defs/TokenRequestMethod",
+              "default": "POST"
+            },
+            "parameters": true,
+            "response": {
+              "$ref": "#/$defs/TokenResponseSpec"
+            },
+            "token_endpoint": {
+              "type": "string"
+            },
+            "version": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "version",
+            "token_endpoint",
+            "encoding",
+            "parameters",
+            "response"
+          ],
+          "type": "object"
+        },
+        "CredentialUsage": {
+          "description": "How the resolved endpoint consumes injected material.",
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "provider_adapter",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "scheme": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "http_header",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "name"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "RFC 7617 HTTP Basic authentication. This consumes the built-in typed\nHTTP Basic material (`awaken.http-basic/v1`).",
+              "properties": {
+                "type": {
+                  "const": "http_basic_auth",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An externally owned consumer. Core transports never interpret\n`public_config`; the exact target adapter named by `consumer_id`\nvalidates it and consumes only material whose type matches\n`material_type`.\n\nThis is also the one mechanism for core ENV and private-file delivery:\nsee [`PROCESS_ENV_CONSUMER`] and [`PRIVATE_FILE_CONSUMER`]. Physical\nlocations stay inside `public_config` so no deployment detail — an ENV\nname, a host path — enters the credential domain model.",
+              "properties": {
+                "consumer_id": {
+                  "type": "string"
+                },
+                "material_type": {
+                  "type": "string"
+                },
+                "public_config": {
+                  "default": null
+                },
+                "type": {
+                  "const": "extension",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "consumer_id",
+                "material_type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "query_parameter",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "name"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A platform-held HTTP effect whose complete material-field destinations\nare frozen before materialization. The Gateway must compare the actual\neffect references with this exact field/placement map before I/O.",
+              "properties": {
+                "fields": {
+                  "additionalProperties": {
+                    "items": {
+                      "$ref": "#/$defs/HttpEffectPlacement"
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "type": "object"
+                },
+                "type": {
+                  "const": "http_effect",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "fields"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Host-side verification of signed evidence. The exact target identifies\nthe consumer; this map freezes each material field and every admitted\nprovider-neutral verification algorithm without exposing the key.",
+              "properties": {
+                "fields": {
+                  "additionalProperties": {
+                    "items": {
+                      "$ref": "#/$defs/SignatureVerificationAlgorithm"
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "type": "object"
+                },
+                "type": {
+                  "const": "signature_verification",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "fields"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "client_certificate",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "HttpEffectPlacement": {
+          "description": "One exact destination at which a hosted HTTP effect may render a material\nfield. JSON pointers are rooted at the effect's `json` or `body` value.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "header",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "name"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "query",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "name"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "pointer": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "json_pointer",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pointer"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "RefreshTokenPolicy": {
+          "enum": [
+            "not_expected",
+            "preserve_if_absent",
+            "replace_required"
+          ],
+          "type": "string"
+        },
+        "SignatureVerificationAlgorithm": {
+          "description": "Closed provider-neutral algorithms implemented by the host verification\nboundary. Provider-specific message construction remains in the caller.",
+          "enum": [
+            "hmac_sha256",
+            "sha256_parts",
+            "constant_time"
+          ],
+          "type": "string"
+        },
+        "TokenClientBasicAuth": {
+          "additionalProperties": false,
+          "properties": {
+            "client_id": {
+              "type": "string"
+            },
+            "secret_slot": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "client_id",
+            "secret_slot"
+          ],
+          "type": "object"
+        },
+        "TokenExpiryUnit": {
+          "enum": [
+            "seconds",
+            "milliseconds"
+          ],
+          "type": "string"
+        },
+        "TokenRequestEncoding": {
+          "enum": [
+            "json",
+            "form",
+            "query"
+          ],
+          "type": "string"
+        },
+        "TokenRequestMethod": {
+          "enum": [
+            "POST",
+            "GET"
+          ],
+          "type": "string"
+        },
+        "TokenResponseCondition": {
+          "additionalProperties": false,
+          "properties": {
+            "equals": true,
+            "pointer": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pointer",
+            "equals"
+          ],
+          "type": "object"
+        },
+        "TokenResponseSpec": {
+          "additionalProperties": false,
+          "description": "One immutable response contract shared by client-credential issuance and\nrefresh-token exchange. A missing optional expiry disables token caching.",
+          "properties": {
+            "access_token_pointer": {
+              "type": "string"
+            },
+            "access_ttl_pointer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "access_ttl_unit": {
+              "$ref": "#/$defs/TokenExpiryUnit",
+              "default": "seconds"
+            },
+            "additional_fields": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "authorization_required": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/TokenResponseCondition"
+              },
+              "type": "array"
+            },
+            "max_access_ttl_seconds": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "max_refresh_ttl_seconds": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "refresh_margin_ms": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "refresh_policy": {
+              "$ref": "#/$defs/RefreshTokenPolicy",
+              "default": "not_expected"
+            },
+            "refresh_token_pointer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "refresh_ttl_pointer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "require_access_ttl": {
+              "default": false,
+              "type": "boolean"
+            },
+            "require_refresh_ttl": {
+              "default": false,
+              "type": "boolean"
+            },
+            "success": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/TokenResponseCondition"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "access_token_pointer",
+            "max_access_ttl_seconds",
+            "max_refresh_ttl_seconds"
+          ],
+          "type": "object"
+        },
+        "TokenSourceField": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "access_token",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "refresh_token",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "client_secret",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "slot": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "auxiliary",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "slot"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "Renew an exact described source under the original hosted operation identity.\nThis command carries no token, password or auxiliary secret value.",
+      "properties": {
+        "descriptor": {
+          "$ref": "#/$defs/CredentialDescriptor"
+        },
+        "expected_version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "expected_version",
+        "idempotency_key",
+        "descriptor"
+      ],
+      "title": "RenewCredentialRequest",
       "type": "object"
     },
     "ResolveProfileRequest": {

@@ -94,6 +94,11 @@ pub fn contract_schemas() -> Map<String, Value> {
 
     // Route request bodies (secret-in is write-only by construction).
     add!("EnterCredentialRequest", crate::EnterCredentialRequest);
+    add!("RenewCredentialRequest", crate::RenewCredentialRequest);
+    add!(
+        "CredentialRenewalObservation",
+        crate::CredentialRenewalObservation
+    );
     add!("ArchiveCredentialRequest", crate::ArchiveCredentialRequest);
     add!("RotateCredentialRequest", crate::RotateCredentialRequest);
     add!(
@@ -336,6 +341,17 @@ fn paths() -> Value {
         "/v1/config/credentials/{id}/rotate": {
             "post": op("rotate_credential", "credentials", "Rotate one exact active Vault credential revision with write-only material",
                 &id("Credential source id"), Some(schema_ref("RotateCredentialRequest")), 200, schema_ref("CredentialSource"))
+        },
+        "/v1/config/credentials/{id}/renew": {
+            "post": op("renew_credential", "credentials", "Renew one exact described grant under a stable hosted operation identity; returns only the replacement receipt",
+                &id("Credential source id"), Some(schema_ref("RenewCredentialRequest")), 201, schema_ref("CredentialSource"))
+        },
+        "/v1/config/credentials/{id}/renewal": {
+            "get": op("inspect_credential_renewal", "credentials", "Observe exact grant freshness without acquiring or returning private material",
+                &[path_param("id", "Credential source id"),
+                  json!({"name":"expected_version","in":"query","required":true,"schema":{"type":"integer","minimum":1}}),
+                  json!({"name":"min_validity_ms","in":"query","required":true,"schema":{"type":"integer","minimum":0}})],
+                None, 200, schema_ref("CredentialRenewalObservation"))
         },
         "/v1/config/credentials/{id}/validate": {
             "post": op("validate_credential", "credentials", "Live-probe a model credential or validate an exact hosted Credential Resource reference (secret-free result)",

@@ -258,6 +258,9 @@ pub enum CredentialRenewalStatus {
     NeedsAuthorization,
     OutcomeUnknown,
     ExpiryUnknown,
+    /// A fresh issuer generation cannot cover the consumer's requested window.
+    /// Automatic reissuance must wait for a configuration change.
+    InsufficientLifetime,
 }
 
 #[cfg(test)]
