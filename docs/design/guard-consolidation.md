@@ -695,3 +695,9 @@ Base `dx/base-20261106`. Exhaustive-test list: [formal-exhaustive-tests.md](form
 | `check_authority_arithmetic` RULES for `awaken-sandbox-policy-store` and `image_realization.rs` (`saturating_add(1)`) | `SandboxExecutionPolicyVersion` private field + `checked_next`; image-build lease epoch is `awaken_lease_contract::fence::Epoch` (only `FIRST`/`next`) | rustc `v.0.saturating_add(1)` → E0616, `Epoch::FIRST + 1` → E0369, exit 1; `compile_fail` doctests pass |
 
 Not converted (kept as Kani): every harness with a wide or unconstrained input (u32/u64/usize revisions, epochs, deadlines, counters, budgets, strings, byte buffers), including the 24 `deleted_admission_one_retained_*_NN` literal harnesses, whose revision is a symbolic `u64` (the review's "fold into a loop over N" would have sampled it). `check_authority_arithmetic` keeps the SQL-text increment, the worker `generation` (`WorkerIdentity` is a public `u64`), the `.max(0)` clamps and the row-codec revision `expect`s.
+
+## Single hook source (2026-11-07)
+
+| Removed or changed rule | New holder | Negative example (command → result) |
+|---|---|---|
+| `lefthook.yml` mixed authored jobs with generated globs and wrappers, so a rebase conflict resolved by taking one side and regenerating dropped another lane's jobs; hand-written globs were never checked against the tree | `scripts/ci/hooks.yml` holds every authored part; `generate_hooks.py` renders all of `lefthook.yml` (header names the source) and `--check` refuses any difference; `authored_glob_errors` refuses a source glob whose directory is gone; `check_gate_path_references.py` scans the source instead of the generated file | hand edit of `lefthook.yml` → `generate_hooks.py --check` exit 1, "lefthook.yml is generated from scripts/ci/hooks.yml; edit that and run python3 scripts/ci/generate_hooks.py"; `--self-test` H1–H5, P1–P3; the pre-change source → 3 dead globs refused (`managed-sdk-oracle`, `generated-contracts` ×2) |
