@@ -88,9 +88,9 @@ mod mutation;
 use mutation::{
     LeaseAuthorityCommand, LeaseAuthorityDecision, LeaseAuthorityTuple, LeaseFence,
     StoredLeaseAuthorityInput, apply_metadata_patch, claim_stored_lease_authority,
-    granted_session_epoch, lease_authority_transition, reclaimed_lease_authority,
-    release_stored_lease_authority, renew_stored_lease_authority, stored_epoch,
-    stored_lease_authority, stored_lease_epoch, stored_stop_receipt,
+    exhausted_lease_epoch, granted_session_epoch, lease_authority_transition,
+    reclaimed_lease_authority, release_stored_lease_authority, renew_stored_lease_authority,
+    stored_epoch, stored_lease_authority, stored_lease_epoch, stored_stop_receipt,
 };
 #[cfg(any(test, feature = "test-support"))]
 mod inmem;

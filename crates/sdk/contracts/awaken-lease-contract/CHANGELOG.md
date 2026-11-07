@@ -6,4 +6,5 @@ Notable changes to `awaken-lease-contract`. Versions follow the [SDK versioning 
 
 ### Added
 
+- `Epoch::successor` and `EpochExhausted`: the one first-grant-or-next law over a lease generation, and the one classification of its exhaustion.
 - Authority renewal decisions that let a request run up to the remaining proof and retry the initial heartbeat within its proof window: `RenewalDecision::Apply`, and `AuthorityEnd::{AuthorityLost, ProofExpired}` naming why authority ended.

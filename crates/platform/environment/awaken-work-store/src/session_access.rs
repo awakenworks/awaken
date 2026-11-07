@@ -12,6 +12,7 @@
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_executable_environment_contract::SessionAccessDigest;
+use awaken_lease_contract::fence::EpochExhausted;
 use awaken_time::WallClockExt;
 use sqlx::sqlite::SqliteConnection;
 
@@ -93,7 +94,7 @@ impl SqliteWorkQueue {
                 expires_at: lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
             },
         ) else {
-            return Err(WorkQueueError::Storage("work lease epoch exhausted".into()));
+            return Err(exhausted_lease_epoch(EpochExhausted));
         };
         let next_epoch = stored_lease_epoch(next_authority.granted_epoch()?)?;
         let session_access = session_access.filter(|_| data_type == "session");
@@ -565,7 +566,7 @@ impl PostgresWorkQueue {
                 expires_at: lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
             },
         ) else {
-            return Err(WorkQueueError::Storage("work lease epoch exhausted".into()));
+            return Err(exhausted_lease_epoch(EpochExhausted));
         };
         let next_epoch = stored_lease_epoch(next_authority.granted_epoch()?)?;
         let session_access = session_access.filter(|_| data_type == "session");

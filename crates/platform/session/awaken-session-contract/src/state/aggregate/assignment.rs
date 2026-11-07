@@ -16,7 +16,7 @@ use super::{
     SessionEnvironmentRejection, SessionExecutionState, SessionRealizationLease,
     SessionResourceManifest, stable_fingerprint, transition_environment,
 };
-use awaken_lease_contract::fence::Epoch;
+use awaken_lease_contract::fence::{Epoch, EpochExhausted};
 use awaken_session_configuration_contract::mcp::McpAttachmentState;
 use awaken_session_configuration_contract::resource::realization_lease_is_live_at;
 
@@ -48,12 +48,15 @@ pub const fn session_realization_assignment(
     if !needs_assignment {
         return SessionRealizationAssignment::Reuse;
     }
-    match current_epoch {
-        None => SessionRealizationAssignment::Assign { epoch: 1 },
-        Some(epoch) => match epoch.checked_add(1) {
-            Some(epoch) => SessionRealizationAssignment::Assign { epoch },
-            None => SessionRealizationAssignment::EpochExhausted,
-        },
+    // A persisted zero reads as never granted here; `claim` then refuses to
+    // install a successor over it.
+    let predecessor = match current_epoch {
+        None => None,
+        Some(epoch) => Epoch::from_persisted(epoch),
+    };
+    match Epoch::successor(predecessor) {
+        Ok(epoch) => SessionRealizationAssignment::Assign { epoch: epoch.get() },
+        Err(EpochExhausted) => SessionRealizationAssignment::EpochExhausted,
     }
 }
 
@@ -306,7 +309,7 @@ impl SessionAssignmentOperations<'_> {
         count_initial_attempt: bool,
     ) -> Result<(), SessionAggregateCommandError> {
         let state = &mut self.aggregate.state;
-        let expected_epoch = successor_epoch(state.realization.as_ref());
+        let expected_epoch = successor_epoch(state.realization.as_ref()).ok();
         let same = state
             .realization
             .as_ref()
@@ -375,8 +378,7 @@ impl SessionAssignmentOperations<'_> {
         runtime_incarnation: &str,
         lease_expires_at_unix_ms: u64,
     ) -> Result<SessionRealizationLease, SessionRealizationBeginRejection> {
-        let epoch = successor_epoch(self.aggregate.state.realization.as_ref())
-            .ok_or(SessionRealizationBeginRejection::EpochExhausted)?;
+        let epoch = successor_epoch(self.aggregate.state.realization.as_ref())?;
         let lease = SessionRealizationLease {
             owner: owner.to_owned(),
             runtime_incarnation: runtime_incarnation.to_owned(),
@@ -505,7 +507,7 @@ impl SessionAssignmentOperations<'_> {
         if state.realization.as_ref() != Some(attempted) {
             return Err(SessionAggregateCommandError::StaleCompensation);
         }
-        if successor_epoch(predecessor.as_ref()).map(Epoch::get) != Some(attempted.epoch) {
+        if successor_epoch(predecessor.as_ref()).map(Epoch::get) != Ok(attempted.epoch) {
             return Err(SessionAggregateCommandError::InvalidPredecessor);
         }
         state.realization = predecessor;
@@ -513,11 +515,20 @@ impl SessionAssignmentOperations<'_> {
     }
 }
 
-/// The generation the next grant mints over `current`: the first for a Session
-/// never leased, otherwise the successor of the persisted epoch. `None` when
-/// the persisted epoch has no successor -- exhausted, or a zero no grant mints.
-fn successor_epoch(current: Option<&SessionRealizationLease>) -> Option<Epoch> {
-    current.map_or(Some(Epoch::FIRST), |lease| {
-        Epoch::from_persisted(lease.epoch).and_then(Epoch::next)
-    })
+/// The generation the next grant mints over `current`, through the lease
+/// contract's one successor law. A persisted zero was never minted, so it has
+/// no successor either.
+fn successor_epoch(current: Option<&SessionRealizationLease>) -> Result<Epoch, EpochExhausted> {
+    let predecessor = match current {
+        None => None,
+        Some(lease) => Some(Epoch::from_persisted(lease.epoch).ok_or(EpochExhausted)?),
+    };
+    Epoch::successor(predecessor)
+}
+
+/// The aggregate's one projection of lease-generation exhaustion.
+impl From<EpochExhausted> for SessionRealizationBeginRejection {
+    fn from(_: EpochExhausted) -> Self {
+        Self::EpochExhausted
+    }
 }
