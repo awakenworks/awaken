@@ -28,7 +28,10 @@ impl Server {
             .timeout(Duration::from_secs(20))
             .build()
             .unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_awaken-sdk-server"))
+        let executable = std::env::var("CARGO_BIN_EXE_awaken-sdk-server")
+            .or_else(|_| std::env::var("NEXTEST_BIN_EXE_awaken-sdk-server"))
+            .expect("Cargo must provide the SDK server path when this integration test runs");
+        let child = Command::new(executable)
             .arg("127.0.0.1:0")
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
