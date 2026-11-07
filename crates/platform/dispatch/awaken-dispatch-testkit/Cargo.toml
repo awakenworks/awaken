@@ -21,7 +21,14 @@ awaken-runtime-contract.workspace = true
 awaken-dispatch-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-types.workspace = true
+# The shared composition of the Worker dispatch HTTP service for tests.
+awaken-dispatch-http.workspace = true
+awaken-session-application-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-contract.workspace = true
+awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
+awaken-sync.workspace = true
 awaken-time.workspace = true
 awaken-lease-testkit.workspace = true
 axum.workspace = true

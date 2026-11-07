@@ -19,7 +19,7 @@ pub(super) async fn session_preparation_claim_next(
         let authority = claim_authority(&service, &worker, Some(&request.identity), false)
             .await
             .map_err(RealizationHttpError::from)?;
-        let snapshot = terminal_cleanup_snapshot(&authority)?;
+        let snapshot = &authority.snapshot;
         if snapshot.state != awaken_dispatch::WorkerState::Ready
             || request.target.reassign_existing_lease
             || request.target.owner != request.identity.worker_id
@@ -44,14 +44,7 @@ pub(super) async fn session_preparation_claim_next(
                 "Session preparation claim outlives Worker authority",
             ))
         })?;
-        let control = service
-            .session_preparation_control
-            .as_ref()
-            .ok_or_else(|| {
-                RealizationHttpError::from(ApplicationError::internal(
-                    "Session preparation control is not configured",
-                ))
-            })?;
+        let control = &service.session_preparation_control;
         let assignment = control
             .claim_next_session_preparation(target)
             .await
@@ -81,7 +74,7 @@ pub(super) async fn session_cleanup_claim_next(
         let authority = claim_authority(&service, &worker, Some(&request.identity), false)
             .await
             .map_err(RealizationHttpError::from)?;
-        let registry_expiry = terminal_cleanup_snapshot(&authority)?.expires_at_ms;
+        let registry_expiry = authority.snapshot.expires_at_ms;
         if request.target.reassign_existing_lease
             || request.target.owner != request.identity.worker_id
             || request.target.runtime_incarnation != request.identity.lease_owner()
@@ -111,8 +104,8 @@ pub(super) async fn session_cleanup_claim_next(
                 "Session cleanup recovery claim outlives the authenticated Worker authority",
             ))
         })?;
-        let assignment = terminal_cleanup_control(&service)
-            .map_err(RealizationHttpError::from)?
+        let assignment = service
+            .terminal_cleanup_control
             .claim_next_terminal_cleanup(target, request.after_session_id.as_ref())
             .await
             .map_err(RealizationHttpError::from)?;
@@ -134,7 +127,6 @@ pub(super) async fn verify_terminal_cleanup_authority(
     let authority = claim_authority(service, worker, Some(identity), false)
         .await
         .map_err(RealizationHttpError::from)?;
-    terminal_cleanup_snapshot(&authority)?;
     // Terminal cleanup is allowed to outlive the ordinary realization expiry:
     // the Session fence prevents reassignment, while this exact generation and
     // the current authenticated Worker incarnation prevent a stale owner from
@@ -147,18 +139,6 @@ pub(super) async fn verify_terminal_cleanup_authority(
     Ok(authority)
 }
 
-fn terminal_cleanup_snapshot(
-    authority: &ClaimAuthority,
-) -> Result<&WorkerSnapshot, RealizationHttpError> {
-    // claim_authority already enforces the canonical current protocol floor.
-    // Terminal effects additionally forbid the no-directory local/test path.
-    authority.snapshot.as_ref().ok_or_else(|| {
-        RealizationHttpError::from(ApplicationError::internal(
-            "Worker directory is required for terminal-cleanup transport",
-        ))
-    })
-}
-
 pub(super) async fn session_cleanup_poll(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -167,8 +147,8 @@ pub(super) async fn session_cleanup_poll(
     let result: Result<Value, RealizationHttpError> = async {
         verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
             .await?;
-        let work = terminal_cleanup_control(&service)
-            .map_err(RealizationHttpError::from)?
+        let work = service
+            .terminal_cleanup_control
             .terminal_cleanup_work(
                 &awaken_session_types::SessionId::from(request.session_id),
                 &request.lease,
@@ -194,8 +174,8 @@ pub(super) async fn authorize_session_terminal_cleanup_preparation(
             &request.effect.lease,
         )
         .await?;
-        let authorization = terminal_cleanup_control(&service)
-            .map_err(RealizationHttpError::from)?
+        let authorization = service
+            .terminal_cleanup_control
             .authorize_terminal_cleanup_effect(&request.effect)
             .await
             .map_err(RealizationHttpError::from)?;
@@ -213,8 +193,8 @@ pub(super) async fn record_session_terminal_cleanup_preparation(
     let result: Result<Value, RealizationHttpError> = async {
         verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
             .await?;
-        terminal_cleanup_control(&service)
-            .map_err(RealizationHttpError::from)?
+        service
+            .terminal_cleanup_control
             .record_terminal_cleanup_preparation(&request.lease, request.preparation)
             .await
             .map_err(RealizationHttpError::from)?;
@@ -237,8 +217,8 @@ pub(super) async fn authorize_session_terminal_cleanup_disposal(
             &request.effect.lease,
         )
         .await?;
-        let workspace_id = terminal_cleanup_control(&service)
-            .map_err(RealizationHttpError::from)?
+        let workspace_id = service
+            .terminal_cleanup_control
             .authorize_terminal_cleanup_disposal(&request.effect)
             .await
             .map_err(RealizationHttpError::from)?;
@@ -256,8 +236,8 @@ pub(super) async fn record_session_terminal_cleanup_disposal(
     let result: Result<Value, RealizationHttpError> = async {
         verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
             .await?;
-        terminal_cleanup_control(&service)
-            .map_err(RealizationHttpError::from)?
+        service
+            .terminal_cleanup_control
             .record_terminal_cleanup_disposal(&request.lease, request.receipt)
             .await
             .map_err(RealizationHttpError::from)?;
@@ -339,14 +319,8 @@ pub(super) async fn session_resume(
                 "Session resume Work authority is stale",
             )));
         }
-        let control = service.session_control.as_ref().ok_or_else(|| {
-            RealizationHttpError::from(ApplicationError::internal("Session control is not configured"))
-        })?;
-        let registry_expiry = authority
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.expires_at_ms)
-            .unwrap_or(u64::MAX);
+        let control = &service.session_control;
+        let registry_expiry = authority.snapshot.expires_at_ms;
         let realization_expiry = authority
             .now_ms
             .saturating_add(authority.lease_ms)
@@ -472,12 +446,6 @@ pub(super) async fn authorize_session_environment_effect(
         .await?;
         let authorization = service
             .session_environment_bindings
-            .as_ref()
-            .ok_or_else(|| {
-                RealizationHttpError::from(ApplicationError::internal(
-                    "Session Environment binding authority is not configured",
-                ))
-            })?
             .authorize(&request.intent)
             .await
             .map_err(RealizationHttpError::from)?;
@@ -520,12 +488,6 @@ pub(super) async fn persist_session_environment_receipt(
         .await?;
         let environment = service
             .session_environment_bindings
-            .as_ref()
-            .ok_or_else(|| {
-                RealizationHttpError::from(ApplicationError::internal(
-                    "Session Environment binding authority is not configured",
-                ))
-            })?
             .persist(request.receipt)
             .await
             .map_err(RealizationHttpError::from)?;
@@ -564,35 +526,18 @@ async fn session_work_ownership(
     worker_owner: &str,
     acquisition: awaken_session_application_contract::SessionWorkAcquisition,
 ) -> Result<awaken_session_application_contract::SessionWorkOwnership, ApplicationError> {
-    let authority = service
+    service
         .session_work
-        .as_ref()
-        .ok_or_else(|| ApplicationError::internal("Session Work authority is not configured"))?;
-    authority
         .acquire_session_work(session_id, worker_owner, acquisition)
         .await
         .map_err(|error| ApplicationError::internal(error.to_string()))
 }
 
-pub(super) fn session_control(
-    service: &WorkerDispatchService,
-) -> Result<&Arc<dyn awaken_session_execution_contract::SessionRealizationControl>, ApplicationError>
-{
-    service
-        .session_control
-        .as_ref()
-        .ok_or_else(|| ApplicationError::internal("Session control is not configured"))
-}
-
+/// The terminal-cleanup role every cleanup route acts through.
 pub(super) fn terminal_cleanup_control(
     service: &WorkerDispatchService,
-) -> Result<
-    &Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>,
-    ApplicationError,
-> {
-    service.terminal_cleanup_control.as_ref().ok_or_else(|| {
-        ApplicationError::internal("Session terminal cleanup control is not configured")
-    })
+) -> &Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl> {
+    &service.terminal_cleanup_control
 }
 
 #[tracing::instrument(name = "worker.session.realization.renew", skip_all, fields(session_id = %request.command.session_id, worker_id = %request.identity.worker_id, epoch = request.command.asserted_lease.epoch))]
@@ -609,11 +554,7 @@ pub(super) async fn renew_session_realization(
         let authority = claim_authority(&service, &worker, Some(&request.identity), false)
             .instrument(tracing::info_span!("session.realization.registry_authority"))
             .await?;
-        let registry_expiry = authority
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.expires_at_ms)
-            .unwrap_or(u64::MAX);
+        let registry_expiry = authority.snapshot.expires_at_ms;
         let mut command = request.command;
         let asserted = &command.asserted_lease;
         if asserted.owner != request.identity.worker_id
@@ -677,7 +618,7 @@ pub(super) async fn renew_session_realization(
             };
             return Err(RealizationHttpError::Control(failure));
         }
-        let lease = session_control(&service)?
+        let lease = service.session_control
             .renew_session_realization(command)
             .instrument(tracing::info_span!("session.realization.control_dispatch"))
             .await?;
@@ -704,8 +645,8 @@ pub(super) async fn activate_session_realization(
             RealizationAuthorityPurpose::ActiveControl,
         )
         .await?;
-        let realization = session_control(&service)
-            .map_err(RealizationHttpError::from)?
+        let realization = service
+            .session_control
             .activate_session_realization(request.command)
             .await
             .map_err(RealizationHttpError::from)?;
@@ -732,8 +673,8 @@ pub(super) async fn acknowledge_session_realization(
             RealizationAuthorityPurpose::ActiveControl,
         )
         .await?;
-        let realization = session_control(&service)
-            .map_err(RealizationHttpError::from)?
+        let realization = service
+            .session_control
             .acknowledge_session_realization(request.command)
             .await
             .map_err(RealizationHttpError::from)?;
@@ -760,8 +701,8 @@ pub(super) async fn fail_session_realization(
             RealizationAuthorityPurpose::ActiveControl,
         )
         .await?;
-        session_control(&service)
-            .map_err(RealizationHttpError::from)?
+        service
+            .session_control
             .fail_session_realization(request.command)
             .await
             .map_err(RealizationHttpError::from)?;

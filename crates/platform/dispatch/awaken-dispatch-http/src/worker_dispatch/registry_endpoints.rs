@@ -5,8 +5,8 @@
 
 use super::{
     ApplicationError, Arc, Extension, HeartbeatWorkerReq, Json, RegisterWorkerReq, State,
-    StatusCode, Value, VerifiedWorkerContext, WorkerDispatchService, WorkerIdentityReq, directory,
-    json, registry_commands, release_closed_idle_worker_evidence, respond, verify_worker_id,
+    StatusCode, Value, VerifiedWorkerContext, WorkerDispatchService, WorkerIdentityReq, json,
+    registry_commands, release_closed_idle_worker_evidence, respond, verify_worker_id,
     verify_worker_identity,
 };
 use awaken_time::WallClockExt;
@@ -27,7 +27,7 @@ pub(super) async fn register_worker(
         } else {
             RegistrationCredential::Bootstrap
         };
-        let record = registry_commands(&service)?
+        let record = registry_commands(&service)
             .register(awaken_dispatch::RegisterWorker {
                 registration: request.registration,
                 credential,
@@ -51,11 +51,11 @@ pub(super) async fn heartbeat_worker(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_worker_identity(&worker, &request.identity).map_err(ApplicationError::invalid)?;
-        let mutation = registry_commands(&service)?
+        let mutation = registry_commands(&service)
             .heartbeat(
                 &request.identity,
                 request.heartbeat,
-                service.session_work.as_deref(),
+                service.session_work.as_ref(),
             )
             .await?;
         let lease_ttl_ms =
@@ -82,7 +82,8 @@ pub(super) async fn drain_worker(
                 .now_ms()
                 .saturating_add(service.registry_ttl_ms)
         });
-        let mutation = directory(&service)?
+        let mutation = service
+            .directory
             .begin_drain(&request.identity, deadline)
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?;
@@ -99,7 +100,8 @@ pub(super) async fn quiesce_worker(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_worker_identity(&worker, &request.identity).map_err(ApplicationError::invalid)?;
-        let mutation = directory(&service)?
+        let mutation = service
+            .directory
             .mark_quiesced(&request.identity)
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?;
@@ -119,14 +121,14 @@ pub(super) async fn deregister_worker(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_worker_identity(&worker, &request.identity).map_err(ApplicationError::invalid)?;
-        if let Some(session_work) = service.session_work.as_ref() {
-            session_work
-                .release_worker_session_work(&request.identity.lease_owner())
-                .instrument(tracing::info_span!("worker.session_work.release"))
-                .await
-                .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        }
-        let mutation = directory(&service)?
+        service
+            .session_work
+            .release_worker_session_work(&request.identity.lease_owner())
+            .instrument(tracing::info_span!("worker.session_work.release"))
+            .await
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        let mutation = service
+            .directory
             .deregister(&request.identity)
             .instrument(tracing::info_span!("worker.registry.deregister"))
             .await

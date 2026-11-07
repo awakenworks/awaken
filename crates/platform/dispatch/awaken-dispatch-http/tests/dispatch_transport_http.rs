@@ -24,7 +24,13 @@ use awaken_dispatch::{
     DispatchSettlementError, DispatchSettlementObserver, MemoryDispatchStore, RunClaim,
     RunDispatch, StreamEventRequest, StreamObservationRequest, WorkerIdentity,
 };
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_dispatch_http::{
+    RegisteredDispatchDependencies, WorkerDispatchService, dispatch_transport_router_with_service,
+};
+use awaken_dispatch_testkit::worker_dispatch::{
+    CommittedRunRecovery, worker_dispatch_dependencies,
+};
+use awaken_dispatch_testkit::worker_http::{fixed_identity, ready_workers};
 use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -32,7 +38,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryStreamSink;
-use awaken_worker_transport_security::{FixedWorkerLeasePolicy, HeaderWorkerAuthenticator};
+use awaken_worker_transport_security::FixedWorkerLeasePolicy;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -71,7 +77,22 @@ fn activation(run: &str, thread: &str) -> RunActivation {
     )
 }
 
-async fn post(router: &Router, worker: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+/// A request a registered Worker may claim: it names the current runtime
+/// protocol and wire codecs, which every fixture incarnation's manifest offers.
+fn registered_dispatch(activation: RunActivation) -> RunDispatch {
+    let mut dispatch = RunDispatch::new(activation);
+    dispatch.placement.runtime_protocol_version = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    dispatch.with_worker_codec_requirements()
+}
+
+/// Every request authenticates as `worker` and, unless the body already names
+/// one, presents that Worker's registered incarnation from the fixed directory.
+async fn post(router: &Router, worker: &str, uri: &str, mut body: Value) -> (StatusCode, Value) {
+    if let Some(object) = body.as_object_mut() {
+        object
+            .entry("identity")
+            .or_insert_with(|| json!(fixed_identity(worker)));
+    }
     let request = Request::builder()
         .method("POST")
         .uri(uri)
@@ -401,7 +422,7 @@ async fn foreign_session_work_defers_only_its_dispatch_and_leaves_other_sessions
     for (run, session) in [("busy-run", "busy-session"), ("ready-run", "ready-session")] {
         store
             .enqueue(
-                RunDispatch::new(activation(run, session))
+                registered_dispatch(activation(run, session))
                     .for_session(ThreadId(session.into()))
                     .with_session_activity_epoch(1),
             )
@@ -410,15 +431,17 @@ async fn foreign_session_work_defers_only_its_dispatch_and_leaves_other_sessions
     }
     let work = Arc::new(RecordingSessionWork::default());
     *work.foreign_session.lock().unwrap() = Some("busy-session".into());
-    let router = dispatch_transport_router_with_service(Arc::new(
-        WorkerDispatchService::new(
-            store.clone(),
-            Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualClock::new(0)),
-            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-        )
-        .with_session_work_authority(work.clone()),
-    ));
+    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
+        RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+            session_work: work.clone(),
+            ..worker_dispatch_dependencies(
+                store.clone(),
+                ready_workers(&["worker-1"]),
+                Arc::new(ManualClock::new(0)),
+            )
+        },
+    )));
 
     let (status, first) = post(&router, "worker-1", "/v1/worker/dispatch/claim", json!({})).await;
     assert_eq!(status, StatusCode::OK, "R1/E1: {first}");
@@ -467,7 +490,7 @@ async fn foreign_session_work_defers_only_its_dispatch_and_leaves_other_sessions
 
     store
         .enqueue(
-            RunDispatch::new(activation("outage-run", "outage-session"))
+            registered_dispatch(activation("outage-run", "outage-session"))
                 .for_session(ThreadId("outage-session".into()))
                 .with_session_activity_epoch(1),
         )
@@ -545,7 +568,11 @@ async fn claimed_terminal_dispatch(
     }
     store.enqueue(request).await.unwrap();
     let claimed = store
-        .claim("terminal-worker", 30_000, &Default::default())
+        .claim(
+            &fixed_identity("terminal-worker").lease_owner(),
+            30_000,
+            &Default::default(),
+        )
         .await
         .unwrap()
         .expect("terminal fixture claim");
@@ -612,16 +639,18 @@ async fn applied_remote_dispatch_invokes_one_exact_post_settlement_callback() {
             )),
         );
         let coordination = Arc::new(RecordingSessionCoordination::default());
-        let router = dispatch_transport_router_with_service(Arc::new(
-            WorkerDispatchService::new(
-                store,
-                Arc::new(HeaderWorkerAuthenticator),
-                Arc::new(ManualClock::new(0)),
-                Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-            )
-            .with_recovery_source(recovery)
-            .with_session_coordination(coordination.clone()),
-        ));
+        let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
+            RegisteredDispatchDependencies {
+                lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+                recovery,
+                coordination: coordination.clone(),
+                ..worker_dispatch_dependencies(
+                    store,
+                    ready_workers(&["terminal-worker"]),
+                    Arc::new(ManualClock::new(0)),
+                )
+            },
+        )));
 
         let (status, applied) = settle_terminal(&router, &claim).await;
         assert_eq!(status, StatusCode::OK, "R1: {applied}");
@@ -667,7 +696,7 @@ async fn session_recovery_reads_committed_truth_only_under_the_exact_work_epoch(
     let store = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
     let run_id = RunId("work-epoch-recovery-run".into());
     let session_id = ThreadId("work-epoch-session".into());
-    let request = RunDispatch::new(activation(&run_id.0, &session_id.0))
+    let request = registered_dispatch(activation(&run_id.0, &session_id.0))
         .for_session(session_id.clone())
         .with_session_activity_epoch(1);
     store.enqueue(request).await.expect("enqueue Session Run");
@@ -682,16 +711,18 @@ async fn session_recovery_reads_committed_truth_only_under_the_exact_work_epoch(
         )),
     );
     let work = Arc::new(RecordingSessionWork::default());
-    let router = dispatch_transport_router_with_service(Arc::new(
-        WorkerDispatchService::new(
-            store,
-            Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualClock::new(0)),
-            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-        )
-        .with_recovery_source(recovery.clone())
-        .with_session_work_authority(work.clone()),
-    ));
+    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
+        RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+            recovery: recovery.clone(),
+            session_work: work.clone(),
+            ..worker_dispatch_dependencies(
+                store,
+                ready_workers(&["work-epoch-worker"]),
+                Arc::new(ManualClock::new(0)),
+            )
+        },
+    )));
 
     let (status, body) = post(
         &router,
@@ -824,10 +855,15 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     let mem = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
     let clock = Arc::new(ManualClock::new(0));
     let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
-        mem as Arc<dyn WorkerDispatchAuthority>,
-        Arc::new(HeaderWorkerAuthenticator),
-        clock.clone(),
-        Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+        RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+            recovery: Arc::new(CommittedRunRecovery(RunState::Ended(EndCause::NaturalEnd))),
+            ..worker_dispatch_dependencies(
+                mem.clone() as Arc<dyn WorkerDispatchAuthority>,
+                ready_workers(&["worker-1", "worker-2"]),
+                clock.clone(),
+            )
+        },
     )));
 
     let unauthorized = Request::builder()
@@ -839,8 +875,60 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     let unauthorized = router.clone().oneshot(unauthorized).await.unwrap();
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
+    // Claim authority comes only from the registered incarnation. The service
+    // has no directory-less mode, so an authenticated Worker id alone never
+    // becomes a lease owner:
+    // | Rule | identity presented | registered | Effect |
+    // | A1 | none | - | 400, no claim (formerly owner = Worker id) |
+    // | A2 | another incarnation | no | 400, no claim |
+    // | A3 | the registered one | yes | the claim below |
+    mem.enqueue(registered_dispatch(activation("run-unregistered", "t0")))
+        .await
+        .unwrap();
+    let (s, v) = post(
+        &router,
+        "worker-1",
+        "/v1/worker/dispatch/claim",
+        json!({ "identity": null }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "A1: {v}");
+    assert_eq!(
+        v["error"], "registered worker identity is required for dispatch authority",
+        "A1"
+    );
+    let (s, v) = post(
+        &router,
+        "worker-1",
+        "/v1/worker/dispatch/claim",
+        json!({ "identity": WorkerIdentity::new("worker-1", "unregistered-boot", 7) }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "A2: {v}");
+    let rows = mem.list_dispatches().await.unwrap();
+    assert!(
+        rows.iter()
+            .all(|row| row.state == awaken_dispatch::DispatchState::Pending),
+        "A1/A2 grant no claim"
+    );
+    let (s, v) = post(&router, "worker-1", "/v1/worker/dispatch/claim", json!({})).await;
+    assert_eq!(s, StatusCode::OK, "A3: {v}");
+    let unregistered_epoch = v["claimed"]["lease"]["epoch"].as_u64().expect("A3 claim");
+    let (s, v) = post(
+        &router,
+        "worker-1",
+        "/v1/worker/dispatch/settle",
+        json!({ "run_id": "run-unregistered", "epoch": unregistered_epoch, "outcome": "Done", "consumed": [] }),
+    )
+    .await;
+    assert_eq!(
+        (s, &v["settled"]),
+        (StatusCode::OK, &json!(true)),
+        "A3: {v}"
+    );
+
     // enqueue a run over the transport.
-    let request = serde_json::to_value(RunDispatch::new(activation("run-A", "t1"))).unwrap();
+    let request = serde_json::to_value(registered_dispatch(activation("run-A", "t1"))).unwrap();
     let (s, _) = post(
         &router,
         "worker-1",
@@ -858,8 +946,9 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
         "claim returns the enqueued run over the wire: {v}"
     );
     assert_eq!(
-        v["claimed"]["lease"]["owner"], "worker-1",
-        "the lease is owned: {v}"
+        v["claimed"]["lease"]["owner"],
+        fixed_identity("worker-1").lease_owner(),
+        "the lease is owned by the registered incarnation: {v}"
     );
     // Capture the fence epoch the claim assigned — the settle must carry it.
     let epoch = v["claimed"]["lease"]["epoch"]
@@ -996,17 +1085,20 @@ async fn occupied_physical_attempt_blocks_terminal_observers_and_work_release() 
                 RunState::Ended(EndCause::Indeterminate),
             )),
         );
-        let router = dispatch_transport_router_with_service(Arc::new(
-            WorkerDispatchService::new(
-                store.clone(),
-                Arc::new(HeaderWorkerAuthenticator),
-                Arc::new(ManualClock::new(0)),
-                Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-            )
-            .with_recovery_source(recovery.clone())
-            .with_terminal_observer(observer.clone())
-            .with_session_work_authority(work.clone()),
-        ));
+        let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
+            RegisteredDispatchDependencies {
+                lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+                recovery: recovery.clone(),
+                terminal_observer: observer.clone(),
+                session_work: work.clone(),
+                coordination: Arc::new(RecordingSessionCoordination::default()),
+                ..worker_dispatch_dependencies(
+                    store.clone(),
+                    ready_workers(&["terminal-worker"]),
+                    Arc::new(ManualClock::new(0)),
+                )
+            },
+        )));
         for _ in 0..2 {
             let (status, value) = settle_terminal(&router, &claim).await;
             assert_eq!(status, StatusCode::OK);
@@ -1074,17 +1166,19 @@ async fn terminal_observer_failure_withholds_remote_child_done_and_parent_work_r
             RunState::Ended(EndCause::NaturalEnd),
         )),
     );
-    let router = dispatch_transport_router_with_service(Arc::new(
-        WorkerDispatchService::new(
-            store.clone(),
-            Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualClock::new(0)),
-            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-        )
-        .with_recovery_source(recovery.clone())
-        .with_terminal_observer(observer.clone())
-        .with_session_work_authority(work.clone()),
-    ));
+    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
+        RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+            recovery: recovery.clone(),
+            terminal_observer: observer.clone(),
+            session_work: work.clone(),
+            ..worker_dispatch_dependencies(
+                store.clone(),
+                ready_workers(&["terminal-worker"]),
+                Arc::new(ManualClock::new(0)),
+            )
+        },
+    )));
     let settle = || {
         settle_terminal(&router, &claim).instrument(tracing::info_span!("settle.request.ambient"))
     };
@@ -1133,12 +1227,13 @@ async fn terminal_observer_failure_withholds_remote_child_done_and_parent_work_r
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_done_requires_one_exact_committed_terminal_recovery_prefix() {
     // Test design.
-    // C: C1 the exact guarded claim has no recovery source; C2 recovery returns
+    // C: (C1, the exact guarded claim has no recovery source, is unrepresentable:
+    // recovery is a required collaborator of the service.) C2 recovery returns
     // an outage; C3 recovery returns a snapshot whose logical coordinate differs
     // from the guarded child; C4 recovery returns the exact coordinates but no
     // matching committed Run; C5 the exact Run is committed Awaiting; C6 the
     // exact Run is committed Running.
-    // E: E1 C1 fails 500; E2 C2 fails 503; E3 C3-C6 fail 400; E4 every rule
+    // E: E2 C2 fails 503; E3 C3-C6 fail 400; E4 every rule
     // retains the Leased dispatch and invokes neither the terminal observer nor
     // parent Session Work release; E5 configured sources receive the exact
     // parent-physical/child-logical/Run tuple once.
@@ -1147,14 +1242,12 @@ async fn remote_done_requires_one_exact_committed_terminal_recovery_prefix() {
     // degrade to a best-effort Done settlement or a Work side effect.
     // D:
     // | Rule | Recovery source/result | Committed state | Status | Effects |
-    // | R1 | missing | - | 500 | E1,E4 |
     // | R2 | unavailable | - | 503 | E2,E4,E5 |
     // | R3 | mismatched logical Thread | Ended | 400 | E3-E5 |
     // | R4 | exact coordinates, no matching Run | - | 400 | E3-E5 |
     // | R5 | exact | Awaiting | 400 | E3-E5 |
     // | R6 | exact | Running | 400 | E3-E5 |
     enum RecoveryRule {
-        Missing,
         Unavailable,
         Mismatched,
         NoMatchingRun,
@@ -1162,11 +1255,6 @@ async fn remote_done_requires_one_exact_committed_terminal_recovery_prefix() {
     }
 
     let rules = [
-        (
-            "missing",
-            RecoveryRule::Missing,
-            StatusCode::INTERNAL_SERVER_ERROR,
-        ),
         (
             "unavailable",
             RecoveryRule::Unavailable,
@@ -1201,14 +1289,13 @@ async fn remote_done_requires_one_exact_committed_terminal_recovery_prefix() {
         let observer = Arc::new(FailFirstTerminalSettlement::default());
         let work = Arc::new(RecordingSessionWork::default());
         let recovery = match rule {
-            RecoveryRule::Missing => None,
-            RecoveryRule::Unavailable => Some(terminal_recovery(
+            RecoveryRule::Unavailable => terminal_recovery(
                 &session_thread_id,
                 &thread_id,
                 &run_id,
                 Err("injected recovery outage".into()),
-            )),
-            RecoveryRule::Mismatched => Some(terminal_recovery(
+            ),
+            RecoveryRule::Mismatched => terminal_recovery(
                 &session_thread_id,
                 &thread_id,
                 &run_id,
@@ -1217,36 +1304,31 @@ async fn remote_done_requires_one_exact_committed_terminal_recovery_prefix() {
                     &run_id,
                     RunState::Ended(EndCause::NaturalEnd),
                 )),
-            )),
+            ),
             RecoveryRule::NoMatchingRun => {
                 let mut snapshot =
                     terminal_snapshot(&thread_id, &run_id, RunState::Ended(EndCause::NaturalEnd));
                 snapshot.runs.clear();
-                Some(terminal_recovery(
-                    &session_thread_id,
-                    &thread_id,
-                    &run_id,
-                    Ok(snapshot),
-                ))
+                terminal_recovery(&session_thread_id, &thread_id, &run_id, Ok(snapshot))
             }
-            RecoveryRule::Nonterminal(state) => Some(terminal_recovery(
+            RecoveryRule::Nonterminal(state) => terminal_recovery(
                 &session_thread_id,
                 &thread_id,
                 &run_id,
                 Ok(terminal_snapshot(&thread_id, &run_id, state)),
-            )),
+            ),
         };
-        let mut service = WorkerDispatchService::new(
-            store.clone(),
-            Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualClock::new(0)),
-            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-        )
-        .with_terminal_observer(observer.clone())
-        .with_session_work_authority(work.clone());
-        if let Some(recovery) = recovery.as_ref() {
-            service = service.with_recovery_source(recovery.clone());
-        }
+        let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+            recovery: recovery.clone(),
+            terminal_observer: observer.clone(),
+            session_work: work.clone(),
+            ..worker_dispatch_dependencies(
+                store.clone(),
+                ready_workers(&["terminal-worker"]),
+                Arc::new(ManualClock::new(0)),
+            )
+        });
         let router = dispatch_transport_router_with_service(Arc::new(service));
 
         let (status, value) = settle_terminal(&router, &claim).await;
@@ -1260,13 +1342,11 @@ async fn remote_done_requires_one_exact_committed_terminal_recovery_prefix() {
         );
         assert_eq!(observer.attempts.load(Ordering::SeqCst), 0, "{tag}/E4");
         assert_eq!(work.releases.load(Ordering::SeqCst), 0, "{tag}/E4");
-        if let Some(recovery) = recovery {
-            assert_eq!(
-                recovery.observed.lock().unwrap().as_slice(),
-                [(session_thread_id, thread_id, run_id)],
-                "{tag}/E5"
-            );
-        }
+        assert_eq!(
+            recovery.observed.lock().unwrap().as_slice(),
+            [(session_thread_id, thread_id, run_id)],
+            "{tag}/E5"
+        );
     }
 }
 
@@ -1288,7 +1368,8 @@ async fn committed_root_done_settles_after_work_retirement_without_reopening_exe
     // | S5 | Running | Done | retired | yes | 400 | 0 | E3 |
     // | S6 | Awaiting | Done | retired | yes | 400 | 0 | E3 |
     // | S7 | Awaiting | Awaiting | retired | yes | 400 | 0 | E3 |
-    // | S8 | Ended | Done | retired | absent | 400 | 0 | E3 |
+    // (S8, a Done settlement with no terminal observer, is unrepresentable:
+    // the observer is a required collaborator of the service.)
     // | S9 | Ended | Done | owned | yes, stale claim/caller | 200 | 0 | E4 |
     // Existing child R1-R6 cover mismatched/missing/unavailable recovery and
     // observer failure; child settlement never releases borrowed parent Work.
@@ -1299,7 +1380,6 @@ async fn committed_root_done_settles_after_work_retirement_without_reopening_exe
             "Done",
             WorkMode::Retired,
             true,
-            true,
             0,
         ),
         (
@@ -1307,7 +1387,6 @@ async fn committed_root_done_settles_after_work_retirement_without_reopening_exe
             RunState::Ended(EndCause::NaturalEnd),
             "Done",
             WorkMode::Foreign,
-            true,
             true,
             0,
         ),
@@ -1317,7 +1396,6 @@ async fn committed_root_done_settles_after_work_retirement_without_reopening_exe
             "Done",
             WorkMode::ReleaseRace,
             true,
-            true,
             1,
         ),
         (
@@ -1326,24 +1404,14 @@ async fn committed_root_done_settles_after_work_retirement_without_reopening_exe
             "Done",
             WorkMode::Owned,
             true,
-            true,
             1,
         ),
-        (
-            "S5",
-            RunState::Running,
-            "Done",
-            WorkMode::Retired,
-            true,
-            false,
-            0,
-        ),
+        ("S5", RunState::Running, "Done", WorkMode::Retired, false, 0),
         (
             "S6",
             RunState::Awaiting,
             "Done",
             WorkMode::Retired,
-            true,
             false,
             0,
         ),
@@ -1352,21 +1420,11 @@ async fn committed_root_done_settles_after_work_retirement_without_reopening_exe
             RunState::Awaiting,
             "Awaiting",
             WorkMode::Retired,
-            true,
-            false,
-            0,
-        ),
-        (
-            "S8",
-            RunState::Ended(EndCause::NaturalEnd),
-            "Done",
-            WorkMode::Retired,
-            false,
             false,
             0,
         ),
     ];
-    for (tag, state, outcome, mode, observe, accepted, releases) in rows {
+    for (tag, state, outcome, mode, accepted, releases) in rows {
         let (store, claim, session_id, thread_id) =
             claimed_terminal_dispatch(tag, TerminalThread::Primary).await;
         let recovery = terminal_recovery(
@@ -1383,17 +1441,18 @@ async fn committed_root_done_settles_after_work_retirement_without_reopening_exe
             mode: Mutex::new(mode),
             ..Default::default()
         });
-        let mut service = WorkerDispatchService::new(
-            store.clone(),
-            Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualClock::new(0)),
-            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-        )
-        .with_recovery_source(recovery.clone())
-        .with_session_work_authority(work.clone());
-        if observe {
-            service = service.with_terminal_observer(observer.clone());
-        }
+        let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+            recovery: recovery.clone(),
+            terminal_observer: observer.clone(),
+            session_work: work.clone(),
+            coordination: Arc::new(RecordingSessionCoordination::default()),
+            ..worker_dispatch_dependencies(
+                store.clone(),
+                ready_workers(&["terminal-worker", "other-worker"]),
+                Arc::new(ManualClock::new(0)),
+            )
+        });
         let router = dispatch_transport_router_with_service(Arc::new(service));
         for (worker, epoch) in [
             ("other-worker", claim.epoch),
@@ -1477,17 +1536,20 @@ async fn work_release_response_loss_retries_done_from_the_same_committed_run() {
         attempts: AtomicUsize::new(1),
         ..Default::default()
     });
-    let router = dispatch_transport_router_with_service(Arc::new(
-        WorkerDispatchService::new(
-            store.clone(),
-            Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualClock::new(0)),
-            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-        )
-        .with_recovery_source(recovery.clone())
-        .with_terminal_observer(observer)
-        .with_session_work_authority(work.clone()),
-    ));
+    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
+        RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+            recovery: recovery.clone(),
+            terminal_observer: observer,
+            session_work: work.clone(),
+            coordination: Arc::new(RecordingSessionCoordination::default()),
+            ..worker_dispatch_dependencies(
+                store.clone(),
+                ready_workers(&["terminal-worker"]),
+                Arc::new(ManualClock::new(0)),
+            )
+        },
+    )));
     assert_eq!(
         settle_terminal(&router, &claim).await.0,
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1542,25 +1604,31 @@ async fn worker_stream_transport_forwards_only_live_events_from_the_current_clai
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let stream = Arc::new(MemoryStreamSink::new());
-    let router = dispatch_transport_router_with_service(Arc::new(
-        WorkerDispatchService::new(
-            mem.clone() as Arc<dyn WorkerDispatchAuthority>,
-            Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualClock::new(0)),
-            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-        )
-        .with_stream_sink(stream.clone()),
-    ));
-    mem.enqueue(RunDispatch::new(activation("run-live", "thread-live")))
+    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
+        RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+            stream_sink: stream.clone(),
+            ..worker_dispatch_dependencies(
+                mem.clone() as Arc<dyn WorkerDispatchAuthority>,
+                ready_workers(&["worker-live"]),
+                Arc::new(ManualClock::new(0)),
+            )
+        },
+    )));
+    mem.enqueue(registered_dispatch(activation("run-live", "thread-live")))
         .await
         .unwrap();
     let claimed = mem
-        .claim("worker-live", 30_000, &Default::default())
+        .claim(
+            &fixed_identity("worker-live").lease_owner(),
+            30_000,
+            &Default::default(),
+        )
         .await
         .unwrap()
         .expect("claim");
     let claim = RunClaim::from(&claimed.lease);
-    let identity = WorkerIdentity::new("worker-live", "boot-live", 1);
+    let identity = fixed_identity("worker-live");
     let event = StreamObservation::assistant_delta(
         claim.run_id.clone(),
         awaken_agent_contract::agent::thread::Id("thread-live".into()),

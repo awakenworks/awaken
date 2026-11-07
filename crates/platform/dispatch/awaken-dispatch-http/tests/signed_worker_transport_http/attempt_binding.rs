@@ -319,18 +319,13 @@ impl Fixture {
         .unwrap();
         let auth = SignedWorkerAuthenticator::new(credential.clone(), clock.clone())
             .with_time_policy(60_000, 0);
-        let service = WorkerDispatchService::new(
-            store.clone(),
-            Arc::new(auth),
-            clock.clone(),
-            Arc::new(FixedWorkerLeasePolicy::new(request_budget_ms)),
-        )
-        .with_worker_directory(directory.clone(), 30_000);
-        let service = if configured {
-            service.with_execution_binding_source(source.clone())
-        } else {
-            service
-        };
+        let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+            authenticator: Arc::new(auth),
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(request_budget_ms)),
+            execution_bindings: configured
+                .then(|| source.clone() as Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>),
+            ..worker_dispatch_dependencies(store.clone(), directory.clone(), clock.clone())
+        });
         let router = dispatch_transport_router_with_service(Arc::new(service));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

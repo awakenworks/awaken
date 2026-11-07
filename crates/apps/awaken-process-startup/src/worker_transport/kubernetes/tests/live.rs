@@ -12,7 +12,10 @@ use awaken_coordinator_client::{WorkerControlClient, dispatch_transport_with_ups
 use awaken_dispatch::{
     AttemptAdmission, RunClaim, RunDispatch, SqliteDispatchStore, WorkerHeartbeat,
 };
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_dispatch_http::{
+    RegisteredDispatchDependencies, WorkerDispatchService, dispatch_transport_router_with_service,
+};
+use awaken_dispatch_testkit::worker_dispatch::worker_dispatch_dependencies;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_time::WallClockExt;
 use awaken_worker::WorkerK8sCreateClient;
@@ -162,16 +165,15 @@ async fn coordinator(
             .await
             .unwrap(),
     );
-    let service = WorkerDispatchService::new(
-        store.clone(),
-        transport.authenticator(),
-        clock,
-        Arc::new(FixedWorkerLeasePolicy::new(TTL)),
-    )
-    .with_worker_directory(directory, TTL)
-    .with_recovery_source(recovery)
-    .with_execution_binding_source(transport.binding_source().unwrap())
-    .with_execution_stop_source(transport.stop_source().unwrap());
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        authenticator: transport.authenticator(),
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(TTL)),
+        registry_ttl_ms: TTL,
+        recovery,
+        execution_bindings: Some(transport.binding_source().unwrap()),
+        execution_stops: Some(transport.stop_source().unwrap()),
+        ..worker_dispatch_dependencies(store.clone(), directory, clock)
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = format!("http://{}", listener.local_addr().unwrap());
     let router = dispatch_transport_router_with_service(Arc::new(service));
