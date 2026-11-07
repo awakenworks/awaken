@@ -88,7 +88,7 @@ awaken-resource-reclaimer = { path = "crates/platform/resources/awaken-resource-
 awaken-protocol-acp = { path = "crates/platform/protocols/awaken-protocol-acp" }
 awaken-acp-application = { path = "crates/platform/config/awaken-acp-application" }
 awaken-dream-application = { path = "crates/platform/session/awaken-dream-application" }
-awaken-acp-catalog = { path = "crates/shared/awaken-acp-catalog" }
+awaken-acp-catalog = { path = "crates/platform/execution/awaken-acp-catalog" }
 awaken-run-executor-acp = { path = "crates/platform/execution/awaken-run-executor-acp", default-features = false }
 awaken-run-executor-a2a = { path = "crates/platform/execution/awaken-run-executor-a2a" }
 # Management plane (ADR-0043 decomposition) — agents bucket, orthogonal to execution.
@@ -164,7 +164,7 @@ awaken-agent-channel = { path = "crates/platform/environment/awaken-agent-channe
 awaken-sandbox-control = { path = "crates/platform/environment/awaken-sandbox-control" }
 awaken-sandbox-control-transport = { path = "crates/platform/sandbox/awaken-sandbox-control-transport" }
 awaken-acp-contract = { path = "crates/platform/environment/awaken-acp-contract" }
-awaken-connection-plan = { path = "crates/platform/dispatch/awaken-connection-plan" }
+awaken-connection-plan = { path = "crates/platform/sandbox/awaken-connection-plan" }
 awaken-tool-relay = { path = "crates/platform/sandbox/awaken-tool-relay" }
 awaken-file-store = { path = "crates/platform/resources/awaken-file-store" }
 awaken-resource-application = { path = "crates/platform/resources/awaken-resource-application" }
