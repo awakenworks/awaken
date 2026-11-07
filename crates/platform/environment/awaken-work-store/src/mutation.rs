@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use awaken_executable_environment_contract::{WorkQueueError, WorkQueueError::Storage};
-use awaken_lease_contract::fence::Epoch;
+use awaken_lease_contract::fence::{Epoch, EpochExhausted};
 use awaken_sql_storage::StoredU64;
 
 pub(super) fn apply_metadata_patch(
@@ -41,11 +41,20 @@ pub(super) fn granted_session_epoch(stored: i64) -> Result<Epoch, WorkQueueError
     stored_epoch(stored)?.ok_or_else(|| Storage("active Session Work has no lease epoch".into()))
 }
 
-/// The generation a claim grants over `current`: the first grant for an
-/// item never leased, otherwise [`Epoch::next`]. `None` once exhausted.
-pub(super) fn claimed_epoch(current: Option<Epoch>) -> Option<Epoch> {
-    current.map_or(Some(Epoch::FIRST), Epoch::next)
+/// The generation a claim grants over `current`, by the lease contract's one
+/// successor law: the first grant for an item never leased, otherwise the
+/// successor, or [`EpochExhausted`].
+pub(super) fn claimed_epoch(current: Option<Epoch>) -> Result<Epoch, EpochExhausted> {
+    Epoch::successor(current)
 }
+
+/// The store's one projection of an exhausted Work lease generation, whether
+/// the counter or the signed `lease_epoch` column ran out.
+pub(super) fn exhausted_lease_epoch(_: EpochExhausted) -> WorkQueueError {
+    Storage(EXHAUSTED_LEASE_EPOCH.into())
+}
+
+pub(super) const EXHAUSTED_LEASE_EPOCH: &str = "work lease epoch exhausted";
 
 /// Which lease generation an owner mutation is fenced to.
 ///
@@ -159,13 +168,13 @@ pub(super) fn lease_authority_transition<O: Eq, T>(
             refreshed_at,
             expires_at,
         } => match claimed_epoch(current.epoch) {
-            Some(epoch) => LeaseAuthorityDecision::Apply(LeaseAuthorityTuple {
+            Ok(epoch) => LeaseAuthorityDecision::Apply(LeaseAuthorityTuple {
                 owner: Some(owner),
                 epoch: Some(epoch),
                 refreshed_at: Some(refreshed_at),
                 expires_at: Some(expires_at),
             }),
-            None => LeaseAuthorityDecision::Exhausted,
+            Err(EpochExhausted) => LeaseAuthorityDecision::Exhausted,
         },
         LeaseAuthorityCommand::Renew {
             owner,
@@ -227,7 +236,7 @@ pub(super) fn stored_lease_authority(
 /// Encode a granted generation into the signed `lease_epoch` column, refusing
 /// one the column cannot hold rather than wrapping it negative.
 pub(super) fn stored_lease_epoch(epoch: Epoch) -> Result<i64, WorkQueueError> {
-    i64::try_from(epoch.get()).map_err(|_| Storage("work lease epoch exhausted".into()))
+    i64::try_from(epoch.get()).map_err(|_| exhausted_lease_epoch(EpochExhausted))
 }
 
 pub(super) fn claim_stored_lease_authority(
@@ -248,7 +257,7 @@ pub(super) fn claim_stored_lease_authority(
         },
     ) {
         LeaseAuthorityDecision::Apply(next) => Ok(next),
-        _ => Err(Storage("work lease epoch exhausted".into())),
+        _ => Err(exhausted_lease_epoch(EpochExhausted)),
     }
 }
 
@@ -511,14 +520,14 @@ mod tests {
         assert!(
             matches!(
                 claimed_epoch(Some(top)).map(stored_lease_epoch),
-                Some(Err(WorkQueueError::Storage(_)))
+                Ok(Err(WorkQueueError::Storage(_)))
             ),
             "X2"
         );
         assert_eq!(top.get(), i64::MAX as u64, "X3");
         assert_eq!(stored_lease_epoch(top).expect("X3"), i64::MAX, "X3");
         assert_eq!(stored_epoch(0).expect("X4"), None, "X4");
-        assert_eq!(claimed_epoch(None), Some(Epoch::FIRST), "X4");
+        assert_eq!(claimed_epoch(None), Ok(Epoch::FIRST), "X4");
     }
 
     #[test]
@@ -594,10 +603,10 @@ fn work_lease_epoch_is_exact_nonnegative_and_nonwrapping() {
             assert!(current >= 0);
             assert!(decoded.map_or(0, Epoch::get) as i128 == i128::from(current));
             match claimed_epoch(decoded).map(stored_lease_epoch) {
-                Some(Ok(database)) => {
+                Ok(Ok(database)) => {
                     assert!(i128::from(database) == i128::from(current) + 1);
                 }
-                Some(Err(WorkQueueError::Storage(_))) | None => {
+                Ok(Err(WorkQueueError::Storage(_))) | Err(EpochExhausted) => {
                     assert!(current == i64::MAX);
                 }
             }
@@ -659,7 +668,7 @@ fn work_lease_authority_transition_is_complete_and_fenced() {
                 next.owner.is_none() && next.refreshed_at.is_none() && next.expires_at.is_none();
             assert!(complete || clear);
             if tag == 0 {
-                assert_eq!(next.epoch, claimed_epoch(original.epoch));
+                assert_eq!(next.epoch, claimed_epoch(original.epoch).ok());
             } else {
                 assert_eq!(next.epoch, original.epoch);
             }

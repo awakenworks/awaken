@@ -78,9 +78,9 @@ use awaken_credential_contract::{
     verify_credential_realization_receipt,
 };
 use awaken_dispatch_contract::{
-    CancelTransition, CommitEpochAdmission, DispatchTransition, DispatchTransitionError,
-    GuardedTransition, PhysicalAttemptSlot, PhysicalAttemptTransition, ReleasedAttempt,
-    RelinquishTransition, RunDispatch, classify_commit_epoch_admission,
+    CancelTransition, CommitEpochAdmission, DispatchTransition, GuardedTransition,
+    PhysicalAttemptSlot, PhysicalAttemptTransition, ReleasedAttempt, RelinquishTransition,
+    RunDispatch, classify_commit_epoch_admission,
 };
 use awaken_worker_contract::RunClaim;
 
@@ -210,14 +210,6 @@ impl Row {
             DispatchState::Reserved => self.reservation_deadline_ms,
             DispatchState::ReservationLeased => self.lease.as_ref().map(|lease| lease.expires_ms()),
             _ => None,
-        }
-    }
-}
-
-fn transition_error(error: DispatchTransitionError) -> DispatchError {
-    match error {
-        DispatchTransitionError::LeaseEpochExhausted => {
-            DispatchError::Rejected("dispatch claim epoch exhausted".to_string())
         }
     }
 }
@@ -524,8 +516,8 @@ fn claim_exact_with_mode(
     {
         return Ok(None);
     }
-    let claimed =
-        claim_with_frozen(row.transition(), row.request.clone(), mode).map_err(transition_error)?;
+    let claimed = claim_with_frozen(row.transition(), row.request.clone(), mode)
+        .map_err(crate::transition_error)?;
     let Some((claim_transition, request)) = claimed else {
         return Ok(None);
     };
@@ -1393,7 +1385,7 @@ impl awaken_dispatch_contract::DispatchAdministration for MemoryDispatchStore {
             return Ok(None);
         };
         let was_reservation_claim = row.state == DispatchState::ReservationLeased;
-        let transition = row.transition().cancel().map_err(transition_error)?;
+        let transition = row.transition().cancel().map_err(crate::transition_error)?;
         let CancelTransition::Applied {
             state: next,
             revoked_lease,

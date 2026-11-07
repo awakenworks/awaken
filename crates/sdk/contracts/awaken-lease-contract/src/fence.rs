@@ -26,7 +26,7 @@ mod slot;
 mod tenure;
 
 pub use effect::EffectFence;
-pub use epoch::{Epoch, ZeroEpoch};
+pub use epoch::{Epoch, EpochExhausted, ZeroEpoch};
 pub use slot::SlotToken;
 pub use tenure::{Lease, Tenure, TenureScope};
 

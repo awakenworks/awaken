@@ -118,7 +118,7 @@ impl LeaseBook {
                 expires_at: now_ms.saturating_add(ttl_ms),
             },
         ) else {
-            return Err("work lease epoch exhausted");
+            return Err(crate::mutation::EXHAUSTED_LEASE_EPOCH);
         };
         let epoch = next.epoch.ok_or("work lease claim installed no epoch")?;
         authority.epochs.insert(work_id.to_string(), epoch);

@@ -58,6 +58,13 @@ pub enum DispatchTransitionError {
     LeaseEpochExhausted,
 }
 
+/// The kernel's one projection of the lease contract's exhaustion class.
+impl From<awaken_lease_contract::fence::EpochExhausted> for DispatchTransitionError {
+    fn from(_: awaken_lease_contract::fence::EpochExhausted) -> Self {
+        Self::LeaseEpochExhausted
+    }
+}
+
 /// Complete, storage-neutral shape of the persisted physical-attempt slot.
 ///
 /// Adapters derive this value while holding their existing row/aggregate lock.
@@ -421,12 +428,7 @@ impl DispatchTransition {
     /// Persisted zero is the legacy never-claimed sentinel, not a grant.
     /// Every minted successor uses the lease kernel's non-wrapping epoch law.
     fn next_lease_epoch(self) -> Result<u64, DispatchTransitionError> {
-        let next = match Epoch::from_persisted(self.lease_epoch) {
-            Some(epoch) => epoch.next(),
-            None => Some(Epoch::FIRST),
-        };
-        next.map(Epoch::get)
-            .ok_or(DispatchTransitionError::LeaseEpochExhausted)
+        Ok(Epoch::successor(Epoch::from_persisted(self.lease_epoch))?.get())
     }
 
     /// Acquire admission-only tenure over an exact unbound legacy Pending row.

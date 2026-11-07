@@ -5,7 +5,7 @@
 // @formal entrypoint credential.material_is_always_published_or_intent_tracked
 // @formal entrypoint credential.restart_recovery_compensates_unpublished_material
 // @formal entrypoint credential.visible_row_always_has_material
-use awaken_lease_contract::fence::Epoch;
+use awaken_lease_contract::fence::{Epoch, EpochExhausted};
 use awaken_time::{Expiry, UtcTime, WallClock, WallClockExt as _};
 use std::collections::BTreeSet;
 
@@ -187,16 +187,15 @@ impl CredentialMaterialMutationFence {
         claimed.writer_token = Some(new_writer_token()).filter(|token| !token.is_empty());
         // Epoch one is reserved for the original writer. A legacy fence with
         // no epoch must skip it; recovery safety cannot depend on UUID
-        // non-collision. The kernel's `Epoch::next` refuses to wrap.
+        // non-collision. The kernel's successor law refuses to wrap.
         claimed.writer_epoch = Some(
-            self.writer_epoch
-                .unwrap_or(Epoch::FIRST)
-                .next()
-                .ok_or_else(|| {
+            Epoch::successor(Some(self.writer_epoch.unwrap_or(Epoch::FIRST))).map_err(
+                |EpochExhausted| {
                     CredentialError::MutationConflict(
                         "credential material writer epoch is exhausted".into(),
                     )
-                })?,
+                },
+            )?,
         );
         claimed.writer_lease_expires_at_unix_ms = lease_expires_at_unix_ms;
         Ok(Some(claimed))

@@ -51,7 +51,7 @@ enum EnvironmentImageBuildClaimDecision {
 /// shape decides eligibility; this function alone owns epoch and deadline
 /// advancement so adapters cannot disagree or wrap authority. The attempt
 /// counter is the last minted lease epoch (zero before the first claim), and
-/// its successor is minted only by [`Epoch::FIRST`] or [`Epoch::next`].
+/// its successor is minted only by the lease contract's [`Epoch::successor`].
 fn environment_image_build_claim_decision(
     eligible: bool,
     attempt: u64,
@@ -61,7 +61,7 @@ fn environment_image_build_claim_decision(
     if !eligible {
         return EnvironmentImageBuildClaimDecision::Blocked;
     }
-    let Some(epoch) = Epoch::from_persisted(attempt).map_or(Some(Epoch::FIRST), Epoch::next) else {
+    let Ok(epoch) = Epoch::successor(Epoch::from_persisted(attempt)) else {
         return EnvironmentImageBuildClaimDecision::AttemptExhausted;
     };
     let Some(lease_expires_at_ms) = now_ms.checked_add(lease_ms) else {

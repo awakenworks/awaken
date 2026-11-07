@@ -43,6 +43,24 @@ impl Epoch {
         }
     }
 
+    /// The generation a grant mints over `predecessor`: [`Epoch::FIRST`] when
+    /// nothing was ever granted, otherwise the successor of `predecessor`.
+    ///
+    /// This is the one classification of lease-generation exhaustion: every
+    /// lease that mints a successor (the Session realization lease, Dispatch
+    /// claims, Work leases, Environment image-build claims and credential
+    /// material writers) asks it, and maps [`EpochExhausted`] to its own
+    /// refusal in exactly one place.
+    pub const fn successor(predecessor: Option<Self>) -> Result<Self, EpochExhausted> {
+        match predecessor {
+            None => Ok(Self::FIRST),
+            Some(epoch) => match epoch.next() {
+                Some(next) => Ok(next),
+                None => Err(EpochExhausted),
+            },
+        }
+    }
+
     /// Decode a persisted generation. `None` for zero, which no grant mints.
     #[must_use]
     pub const fn from_persisted(value: u64) -> Option<Self> {
@@ -73,6 +91,20 @@ impl fmt::Display for Epoch {
         self.0.fmt(formatter)
     }
 }
+
+/// A lease generation with no successor. Every further grant over the subject
+/// is refused rather than wrapped: a wrapped epoch would compare lower than
+/// the generation it succeeds and revive every fence that generation retired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EpochExhausted;
+
+impl fmt::Display for EpochExhausted {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("lease epoch is exhausted")
+    }
+}
+
+impl std::error::Error for EpochExhausted {}
 
 /// A persisted epoch of zero: no grant ever minted it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +152,9 @@ mod tests {
         // | E5   | JSON `0`              | decode error               |
         // | E6   | JSON field missing    | decode error               |
         // | E7   | JSON `7`              | round-trips as `7`         |
+        // | E8   | successor(None)       | FIRST (first grant)        |
+        // | E9   | successor(Some(7))    | Epoch 8                    |
+        // | E10  | successor(Some(MAX))  | EpochExhausted             |
         assert_eq!(Epoch::from_persisted(0), None, "E1");
         assert_eq!(Epoch::try_from(0), Err(ZeroEpoch), "E1");
         assert_eq!(Epoch::from_persisted(7).map(Epoch::get), Some(7), "E2");
@@ -130,5 +165,14 @@ mod tests {
         let seven = serde_json::from_str::<Epoch>("7").expect("E7");
         assert_eq!(serde_json::to_string(&seven).unwrap(), "7", "E7");
         assert!(Epoch::FIRST < seven, "epochs order by generation");
+        assert_eq!(Epoch::successor(None), Ok(Epoch::FIRST), "E8");
+        assert_eq!(Epoch::successor(Some(seven)).map(Epoch::get), Ok(8), "E9");
+        let top = Epoch::from_persisted(u64::MAX).unwrap();
+        assert_eq!(Epoch::successor(Some(top)), Err(EpochExhausted), "E10");
+        assert_eq!(
+            EpochExhausted.to_string(),
+            "lease epoch is exhausted",
+            "E10"
+        );
     }
 }
