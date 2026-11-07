@@ -53,6 +53,10 @@ def required_command(arguments: list[str]) -> tuple[list[list[str]], list[str]]:
             threads = ["--test-threads", word.partition("=")[2] or next(words, "")]
         else:
             (tail if in_tail else front).append(word)
+    if "--exact" in tail and "--skip" in tail:
+        # libtest applies both; nextest 0.9 drops every --skip once --exact is present,
+        # so the skipped cases would silently rejoin the selection.
+        raise ValueError("nextest ignores --skip together with --exact; drop --exact or name the cases to run")
     selection = [*([] if "--locked" in front else ["--locked"]), "--profile", PROFILE, *front]
     tail = ["--", *tail] if tail else []
     # Listing every ignored case too is what lets the reader see an ignored case inside the filter.
@@ -273,7 +277,8 @@ class QualifyTests(unittest.TestCase):
         self.assertEqual(command, ["cargo", "nextest", "run", "--no-tests=fail", "--test-threads", "1",
                                    *selection, "--", "--exact"])
         self.assertNotIn("--run-ignored", required_command(["-p", "pkg", "--", "--ignored"])[0][1])
-        for refused in (["--", "--nocapture"], ["--no-capture"], ["--retries=2"], ["-P", "ci"], ["--require-case="]):
+        for refused in (["--", "--nocapture"], ["--no-capture"], ["--retries=2"], ["-P", "ci"], ["--require-case="],
+                        ["--", "--exact", "--skip", "child"]):
             with self.subTest(refused=refused), self.assertRaises(ValueError):
                 required_command(["-p", "pkg", *refused])
 
