@@ -333,7 +333,11 @@ pub(super) async fn assemble(
     // Memory observation, after Coordinator commit and before settlement, so
     // the durable intent lands beside authoritative Session truth. Local
     // execution observes here because its commit authority is in this Host.
-    let mut terminal_observers: Vec<_> = if !host.authority.observes_terminal_memory_locally() {
+    let mut terminal_observers: Vec<_> = if !host
+        .authority
+        .committed_truth()
+        .observes_terminal_memory_locally()
+    {
         Vec::new()
     } else {
         host.resources

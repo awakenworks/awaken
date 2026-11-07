@@ -577,7 +577,11 @@ impl crate::RunAssembly {
             // owner of remote terminal observation and its durable extraction outbox;
             // probing the Worker's fail-closed repository here would duplicate that
             // authority and prevent an otherwise valid claimed Runtime from starting.
-            if !self.authority.observes_terminal_memory_locally() {
+            if !self
+                .authority
+                .committed_truth()
+                .observes_terminal_memory_locally()
+            {
                 return Ok(0);
             }
             let bindings = realizations

@@ -326,7 +326,7 @@ impl SessionExecutorBuilder {
         mut self,
         authority: Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
     ) -> Result<Self, SessionExecutionError> {
-        if !self.authority.hosts_session_application() {
+        if !self.authority.committed_truth().hosts_session_application() {
             return Err(SessionExecutionError::bad_request(
                 "a Worker cannot replace its upstream authority with a local Runtime authority",
             ));
@@ -522,7 +522,7 @@ impl SessionExecutorBuilder {
         store: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     ) -> Self {
         assert!(
-            self.authority.hosts_session_application(),
+            self.authority.committed_truth().hosts_session_application(),
             "volatile dispatch selection requires a local fixture"
         );
         self.authority = Arc::new(crate::LocalAuthority::new(Arc::new(

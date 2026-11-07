@@ -171,33 +171,75 @@ pub(crate) trait SessionAuthority: SessionCommitSource {
     /// The cross-node dispatch wake this process owns, if any.
     fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>>;
 
+    /// Where committed truth lives for this Host. Every role-dependent bool
+    /// the Host asks is a projection of this one closed fact, so no impl can
+    /// answer them inconsistently.
+    fn committed_truth(&self) -> CommittedTruth;
+
+    /// The encoder that turns a fenced Memory operation into the upstream
+    /// transport's opaque reference.
+    fn memory_reference_encoder(&self) -> Option<Arc<dyn SessionMemoryReferenceEncoder>>;
+}
+
+/// Where a Host's committed truth lives. The five role-dependent choices the
+/// Host makes all follow from this one fact, and only these two combinations
+/// of them occur:
+///
+/// | choice                              | `Local` | `Upstream` |
+/// |-------------------------------------|---------|------------|
+/// | `cancels_through_durable_intent`    | yes     | no         |
+/// | `observes_terminal_memory_locally`  | yes     | no         |
+/// | `scans_committed_terminals`         | yes     | no         |
+/// | `hosts_session_application`         | yes     | no         |
+/// | `fetches_resources_upstream`        | no      | yes        |
+///
+/// Any other combination (for example a Worker that scans committed
+/// terminals it cannot read, or a Coordinator that fetches its own resources
+/// upstream) is not representable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CommittedTruth {
+    /// A Coordinator or single process: committed truth is this process's
+    /// own [`RuntimeAuthority`].
+    Local,
+    /// A database-less Worker: committed truth is the Coordinator's, reached
+    /// only through claim-fenced transports.
+    Upstream,
+}
+
+impl CommittedTruth {
     /// Cancelling a Run records the durable cancellation intent (`true`), or
     /// only signals the attempt resident in this process (`false`): a Worker's
     /// transport cannot list, requeue, or cancel the global queue.
-    fn cancels_through_durable_intent(&self) -> bool;
+    pub(crate) const fn cancels_through_durable_intent(self) -> bool {
+        matches!(self, Self::Local)
+    }
 
     /// Terminal Memory extraction is observed in this process after its own
     /// commit (`true`), or by the guarded settlement observer beside the
     /// upstream commit (`false`). Recovery of extraction intents follows the
     /// same owner.
-    fn observes_terminal_memory_locally(&self) -> bool;
+    pub(crate) const fn observes_terminal_memory_locally(self) -> bool {
+        matches!(self, Self::Local)
+    }
 
     /// This process can scan every Thread's committed truth to reconcile
     /// dispatch rows whose Run already ended.
-    fn scans_committed_terminals(&self) -> bool;
+    pub(crate) const fn scans_committed_terminals(self) -> bool {
+        matches!(self, Self::Local)
+    }
 
     /// The Session application that admits BackgroundTask completion attention
     /// and MCP application input runs in this process.
-    fn hosts_session_application(&self) -> bool;
+    pub(crate) const fn hosts_session_application(self) -> bool {
+        matches!(self, Self::Local)
+    }
 
     /// Resources (Skill bundles, File content, Memory, Repository transport)
     /// are fetched upstream under a claim or Session realization fence
     /// (`true`), or directly from this process's stores (`false`).
-    fn fetches_resources_upstream(&self) -> bool;
-
-    /// The encoder that turns a fenced Memory operation into the upstream
-    /// transport's opaque reference.
-    fn memory_reference_encoder(&self) -> Option<Arc<dyn SessionMemoryReferenceEncoder>>;
+    pub(crate) const fn fetches_resources_upstream(self) -> bool {
+        matches!(self, Self::Upstream)
+    }
 }
 
 /// The authority of a Host that owns committed truth: a Coordinator or a single
@@ -277,24 +319,8 @@ impl SessionAuthority for LocalAuthority {
         self.runtime.dispatch_wake()
     }
 
-    fn cancels_through_durable_intent(&self) -> bool {
-        true
-    }
-
-    fn observes_terminal_memory_locally(&self) -> bool {
-        true
-    }
-
-    fn scans_committed_terminals(&self) -> bool {
-        true
-    }
-
-    fn hosts_session_application(&self) -> bool {
-        true
-    }
-
-    fn fetches_resources_upstream(&self) -> bool {
-        false
+    fn committed_truth(&self) -> CommittedTruth {
+        CommittedTruth::Local
     }
 
     fn memory_reference_encoder(&self) -> Option<Arc<dyn SessionMemoryReferenceEncoder>> {
@@ -467,24 +493,8 @@ impl SessionAuthority for UpstreamAuthority {
         None
     }
 
-    fn cancels_through_durable_intent(&self) -> bool {
-        false
-    }
-
-    fn observes_terminal_memory_locally(&self) -> bool {
-        false
-    }
-
-    fn scans_committed_terminals(&self) -> bool {
-        false
-    }
-
-    fn hosts_session_application(&self) -> bool {
-        false
-    }
-
-    fn fetches_resources_upstream(&self) -> bool {
-        true
+    fn committed_truth(&self) -> CommittedTruth {
+        CommittedTruth::Upstream
     }
 
     fn memory_reference_encoder(&self) -> Option<Arc<dyn SessionMemoryReferenceEncoder>> {
@@ -537,6 +547,38 @@ mod worker_connection_tests {
                 missing + 2
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod committed_truth_tests {
+    use super::{CommittedTruth, SessionAuthority as _};
+
+    #[test]
+    fn every_role_choice_is_one_projection_of_committed_truth() {
+        // | truth    | durable cancel | local Memory | scan terminals | application | upstream resources |
+        // |----------|----------------|--------------|----------------|-------------|--------------------|
+        // | Local    | yes            | yes          | yes            | yes         | no                 |
+        // | Upstream | no             | no           | no             | no          | yes                |
+        let row = |truth: CommittedTruth| {
+            [
+                truth.cancels_through_durable_intent(),
+                truth.observes_terminal_memory_locally(),
+                truth.scans_committed_terminals(),
+                truth.hosts_session_application(),
+                truth.fetches_resources_upstream(),
+            ]
+        };
+        assert_eq!(row(CommittedTruth::Local), [true, true, true, true, false]);
+        assert_eq!(
+            row(CommittedTruth::Upstream),
+            [false, false, false, false, true]
+        );
+        assert_eq!(
+            crate::host::test_upstream_authority().committed_truth(),
+            CommittedTruth::Upstream,
+            "a database-less Worker reaches committed truth upstream"
+        );
     }
 }
 

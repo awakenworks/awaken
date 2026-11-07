@@ -180,7 +180,7 @@ pub(super) async fn prepare(
     }
     let background_attention = crate::background_task::TaskAttentionRoute::plan(
         background_tasks_enabled,
-        host.authority.hosts_session_application(),
+        host.authority.committed_truth().hosts_session_application(),
         &host.capabilities.session_application,
         host.capabilities.worker.task_control.as_ref(),
     )

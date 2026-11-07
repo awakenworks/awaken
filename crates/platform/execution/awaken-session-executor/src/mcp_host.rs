@@ -317,7 +317,7 @@ impl crate::RunAssembly {
         Ok(self.mcp.validate_input_placement(
             configuration,
             opaque_backend,
-            !self.authority.hosts_session_application(),
+            !self.authority.committed_truth().hosts_session_application(),
         )?)
     }
 
