@@ -61,6 +61,39 @@ pub(crate) fn unavailable(error: impl std::fmt::Display) -> SessionRealizationCo
     SessionRealizationControlFailure::Unavailable(error.to_string())
 }
 
+/// The application's one observation of a Session realization
+/// lease-generation integrity failure: an error-level event on the stable
+/// target, then the contract's one permanent Control projection. The Session
+/// is refused until a new one replaces it; nothing resets its epoch.
+pub(crate) fn lease_integrity_refusal(
+    session_id: &str,
+    violation: awaken_lease_contract::fence::EpochIntegrityViolation,
+) -> SessionRealizationControlFailure {
+    tracing::error!(
+        target: "awaken::lease_generation_integrity",
+        code = awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
+        lease = "session_realization",
+        session_id,
+        %violation,
+        "lease generation integrity violated; refusing this Session realization permanently"
+    );
+    violation.into()
+}
+
+/// A begin or reassignment refusal as its Control failure; a lease-integrity
+/// failure is observed on the way.
+pub(crate) fn begin_refusal(
+    session_id: &str,
+    rejection: awaken_session_contract::SessionRealizationBeginRejection,
+) -> SessionRealizationControlFailure {
+    match rejection {
+        awaken_session_contract::SessionRealizationBeginRejection::LeaseIntegrity(violation) => {
+            lease_integrity_refusal(session_id, violation)
+        }
+        rejection => rejection.into(),
+    }
+}
+
 pub(crate) fn repository_control(
     error: SessionRepositoryError,
 ) -> SessionRealizationControlFailure {

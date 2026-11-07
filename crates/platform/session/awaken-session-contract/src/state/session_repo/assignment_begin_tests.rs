@@ -6,7 +6,7 @@ use crate::state::{
     SessionRealizationBegin, SessionRealizationBeginRejection, SessionRealizationBeginRequest,
     SessionRealizationLease, SessionResourceManifest, session_realization_assignment,
 };
-use awaken_lease_contract::fence::Epoch;
+use awaken_lease_contract::fence::{Epoch, EpochIntegrityViolation};
 use awaken_session_configuration_contract::mcp::{
     McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpRealizationClaim,
     SessionMcpAttachmentSet,
@@ -57,6 +57,12 @@ fn lease(owner: &str, incarnation: &str, epoch: Epoch, expires: u64) -> SessionR
 
 fn nth(value: u64) -> Epoch {
     Epoch::from_persisted(value).unwrap()
+}
+
+/// The same lease as persisted with an untrustworthy zero generation.
+fn zero_epoch(mut lease: SessionRealizationLease) -> SessionRealizationLease {
+    lease.epoch = 0;
+    lease
 }
 
 fn request<'a>(
@@ -174,7 +180,7 @@ fn begin_refusals_change_nothing() {
     };
     let hibernated = SessionAggregate::try_from(hibernated).unwrap();
     let idle = |lease| with(SessionExecutionState::Idle, lease, requested_only());
-    let rows: [(&str, SessionAggregate, _, SessionRealizationBeginRejection); 7] = [
+    let rows: [(&str, SessionAggregate, _, SessionRealizationBeginRejection); 10] = [
         (
             "B1 terminal",
             archived,
@@ -211,13 +217,31 @@ fn begin_refusals_change_nothing() {
             "B6 exhausted after expiry",
             idle(Some(lease("owner", "owner:1", nth(u64::MAX), NOW))),
             request("owner", "owner:1", false, None),
-            SessionRealizationBeginRejection::EpochExhausted,
+            SessionRealizationBeginRejection::LeaseIntegrity(EpochIntegrityViolation::Exhausted),
         ),
         (
             "B6 exhausted on reassignment",
             idle(Some(lease("other", "other:1", nth(u64::MAX), 1_000))),
             request("owner", "owner:1", true, None),
-            SessionRealizationBeginRejection::EpochExhausted,
+            SessionRealizationBeginRejection::LeaseIntegrity(EpochIntegrityViolation::Exhausted),
+        ),
+        (
+            "B6 persisted zero, expired",
+            idle(Some(zero_epoch(lease("owner", "owner:1", nth(1), NOW)))),
+            request("owner", "owner:1", false, None),
+            SessionRealizationBeginRejection::LeaseIntegrity(EpochIntegrityViolation::ZeroGranted),
+        ),
+        (
+            "B6 persisted zero, live exact owner (no reuse)",
+            idle(Some(zero_epoch(lease("owner", "owner:1", nth(1), 1_000)))),
+            request("owner", "owner:1", false, None),
+            SessionRealizationBeginRejection::LeaseIntegrity(EpochIntegrityViolation::ZeroGranted),
+        ),
+        (
+            "B6 persisted zero, live foreign owner (not stale ownership)",
+            idle(Some(zero_epoch(live_foreign.clone()))),
+            request("owner", "owner:1", false, None),
+            SessionRealizationBeginRejection::LeaseIntegrity(EpochIntegrityViolation::ZeroGranted),
         ),
     ];
     for (row, mut aggregate, request, rejection) in rows {
@@ -423,7 +447,9 @@ fn assignment_follows_the_owner_incarnation_epoch_decision_table() {
     // explicitly requests reassignment; C5 epoch can advance.
     // Effects: E1 reuse only the exact live owner/incarnation; E2 reject a
     // live foreign owner; E3 every new assignment mints exactly successor
-    // epoch (or 1 from absence); E4 exhaustion fails closed.
+    // epoch (or 1 from absence); E4 an untrustworthy persisted generation
+    // (exhausted where a successor is minted, or zero on any existing lease)
+    // fails closed as a permanent lease-integrity refusal.
     //
     // | Rule | Live | Owner | Incarnation | Reassign | Effect |
     // |---|---|---|---|---|---|
@@ -432,12 +458,15 @@ fn assignment_follows_the_owner_incarnation_epoch_decision_table() {
     // | R3 | no | any | any | any | E3 successor |
     // | R4 | yes | same | other | no | E3 successor |
     // | R5 | yes | other | any | yes | E3 successor |
-    // | R6 | assignment | any | any | any | E4 exhausted |
+    // | R6 | assignment at u64::MAX | any | any | any | E4 Exhausted |
     // | R7 | yes | same | same | yes | E3 successor |
+    // | R8 | persisted epoch 0 | any | any | any | E4 ZeroGranted |
     // R7 models an approval continuation after normal Work retirement in
     // the SAME Worker process. Its local predecessor epoch may already be
     // closed, so authenticated reassignment cannot reuse that epoch. This
     // differs from R1 ordinary application replay without a claim grant.
+    // R7 no longer reads a persisted 0 as "never granted" (previously it
+    // assigned epoch 1 over it): a lease that exists at epoch 0 is R8.
     assert_eq!(
         session_realization_assignment(Some(7), true, true, true, false),
         SessionRealizationAssignment::Reuse,
@@ -465,20 +494,47 @@ fn assignment_follows_the_owner_incarnation_epoch_decision_table() {
     );
     assert_eq!(
         session_realization_assignment(Some(u64::MAX), false, true, true, false),
-        SessionRealizationAssignment::EpochExhausted,
+        SessionRealizationAssignment::LeaseIntegrity(EpochIntegrityViolation::Exhausted),
         "R6/E4"
     );
-    for epoch in [0, 7, u64::MAX - 1, u64::MAX] {
+    for epoch in [7, u64::MAX - 1, u64::MAX] {
         assert_eq!(
             session_realization_assignment(Some(epoch), true, true, true, true),
-            epoch
-                .checked_add(1)
-                .map_or(SessionRealizationAssignment::EpochExhausted, |epoch| {
-                    SessionRealizationAssignment::Assign { epoch }
-                },),
+            epoch.checked_add(1).map_or(
+                SessionRealizationAssignment::LeaseIntegrity(EpochIntegrityViolation::Exhausted),
+                |epoch| SessionRealizationAssignment::Assign { epoch },
+            ),
             "R7/E3; R6/E4 at exhaustion"
         );
     }
+    for live in [false, true] {
+        for same_owner in [false, true] {
+            for same_incarnation in [false, true] {
+                for reassign in [false, true] {
+                    assert_eq!(
+                        session_realization_assignment(
+                            Some(0),
+                            live,
+                            same_owner,
+                            same_incarnation,
+                            reassign
+                        ),
+                        SessionRealizationAssignment::LeaseIntegrity(
+                            EpochIntegrityViolation::ZeroGranted
+                        ),
+                        "R8/E4 live={live} owner={same_owner} \
+                         incarnation={same_incarnation} reassign={reassign}"
+                    );
+                }
+            }
+        }
+    }
+    // A Reuse of an exhausted live lease mints nothing, so it stays Reuse.
+    assert_eq!(
+        session_realization_assignment(Some(u64::MAX), true, true, true, false),
+        SessionRealizationAssignment::Reuse,
+        "R1 at u64::MAX"
+    );
 }
 
 #[test]
@@ -488,7 +544,7 @@ fn reassign_installs_the_successor_generation_or_refuses_unchanged() {
     // | R1   | none                              | owner:1       | epoch 1                                 |
     // | R2   | live foreign, epoch 3             | owner:1       | epoch 4, foreign lease superseded       |
     // | R2   | expired same owner, epoch 3       | owner:1       | epoch 4 (never reuses the generation)   |
-    // | R3   | epoch u64::MAX / persisted 0      | owner:1       | EpochExhausted, root unchanged          |
+    // | R3   | epoch u64::MAX / persisted 0      | owner:1       | LeaseIntegrity, root unchanged          |
     // | R4   | none                              | blank owner   | Assignment(InvalidLeaseGeneration)      |
     // Every installed lease is compensable exactly once by restore_predecessor.
     let idle = |lease| with(SessionExecutionState::Idle, lease, requested_only());
@@ -539,13 +595,13 @@ fn reassign_installs_the_successor_generation_or_refuses_unchanged() {
             "R3 exhausted",
             Some(lease("other", "other:1", nth(u64::MAX), NOW)),
             "owner",
-            SessionRealizationBeginRejection::EpochExhausted,
+            SessionRealizationBeginRejection::LeaseIntegrity(EpochIntegrityViolation::Exhausted),
         ),
         (
             "R3 persisted zero",
             Some(zero),
             "owner",
-            SessionRealizationBeginRejection::EpochExhausted,
+            SessionRealizationBeginRejection::LeaseIntegrity(EpochIntegrityViolation::ZeroGranted),
         ),
         (
             "R4 blank owner",
@@ -566,4 +622,103 @@ fn reassign_installs_the_successor_generation_or_refuses_unchanged() {
         );
         assert_eq!(aggregate, before, "{row}");
     }
+}
+
+#[test]
+fn an_untrustworthy_persisted_lease_generation_is_one_permanent_integrity_refusal() {
+    // The aggregate classifies its persisted realization lease generation in
+    // one place (`successor_epoch` and the assignment kernel), and every
+    // operation that reads it refuses with the same permanent class.
+    // Previously a persisted zero had four readings: `begin` assigned epoch 1
+    // over it, `claim` returned InvalidLeaseGeneration (surfaced as
+    // Unavailable), `restore_predecessor` returned InvalidPredecessor and
+    // `reassign` returned EpochExhausted.
+    //
+    // | Rule | operation           | persisted lease        | effect                                   |
+    // |------|---------------------|------------------------|------------------------------------------|
+    // | I1   | begin               | epoch 0                | LeaseIntegrity(ZeroGranted), unchanged   |
+    // | I2   | begin (assignment)  | epoch u64::MAX         | LeaseIntegrity(Exhausted), unchanged     |
+    // | I3   | claim (successor)   | epoch 0                | LeaseIntegrity(ZeroGranted), unchanged   |
+    // | I4   | claim (successor)   | epoch u64::MAX         | LeaseIntegrity(Exhausted), unchanged     |
+    // | I5   | reassign            | epoch 0 / u64::MAX     | LeaseIntegrity(ZeroGranted / Exhausted)  |
+    // | I6   | restore_predecessor | predecessor 0 / MAX    | LeaseIntegrity(ZeroGranted / Exhausted)  |
+    // | I7   | begin               | no lease               | Assign epoch 1 (never granted)           |
+    // | I8   | I1..I6 repeated     | same root              | the same refusal; nothing advances       |
+    use crate::state::SessionAggregateCommandError as Command;
+    let idle = |lease| with(SessionExecutionState::Idle, lease, requested_only());
+    let zero = zero_epoch(lease("owner", "owner:1", nth(1), NOW));
+    let top = lease("owner", "owner:1", nth(u64::MAX), NOW);
+    for attempt in 0..3 {
+        for (rule, current, violation) in [
+            ("I1", zero.clone(), EpochIntegrityViolation::ZeroGranted),
+            ("I2", top.clone(), EpochIntegrityViolation::Exhausted),
+        ] {
+            let mut aggregate = idle(Some(current));
+            let before = aggregate.clone();
+            assert_eq!(
+                aggregate
+                    .assignment()
+                    .begin(request("owner", "owner:2", false, None), NOW),
+                Err(SessionRealizationBeginRejection::LeaseIntegrity(violation)),
+                "{rule} attempt {attempt}"
+            );
+            assert_eq!(aggregate, before, "{rule} attempt {attempt}");
+        }
+        for (rule, current, violation) in [
+            ("I3", zero.clone(), EpochIntegrityViolation::ZeroGranted),
+            ("I4", top.clone(), EpochIntegrityViolation::Exhausted),
+        ] {
+            let mut aggregate = idle(Some(current));
+            let before = aggregate.clone();
+            assert_eq!(
+                aggregate
+                    .assignment()
+                    .claim(lease("other", "other:1", nth(1), 1_000), false),
+                Err(Command::LeaseIntegrity(violation)),
+                "{rule} attempt {attempt}"
+            );
+            assert_eq!(aggregate, before, "{rule} attempt {attempt}");
+        }
+        for (current, violation) in [
+            (zero.clone(), EpochIntegrityViolation::ZeroGranted),
+            (top.clone(), EpochIntegrityViolation::Exhausted),
+        ] {
+            let mut aggregate = idle(Some(current));
+            let before = aggregate.clone();
+            assert_eq!(
+                aggregate.assignment().reassign("owner", "owner:1", 900),
+                Err(SessionRealizationBeginRejection::LeaseIntegrity(violation)),
+                "I5 attempt {attempt}"
+            );
+            assert_eq!(aggregate, before, "I5 attempt {attempt}");
+        }
+        let attempted = lease("owner", "owner:1", nth(1), 900);
+        for (predecessor, violation) in [
+            (zero.clone(), EpochIntegrityViolation::ZeroGranted),
+            (top.clone(), EpochIntegrityViolation::Exhausted),
+        ] {
+            let mut aggregate = idle(Some(attempted.clone()));
+            let before = aggregate.clone();
+            assert_eq!(
+                aggregate
+                    .assignment()
+                    .restore_predecessor(&attempted, Some(predecessor)),
+                Err(Command::LeaseIntegrity(violation)),
+                "I6 attempt {attempt}"
+            );
+            assert_eq!(aggregate, before, "I6 attempt {attempt}");
+        }
+    }
+    let mut fresh = idle(None);
+    assert!(matches!(
+        fresh
+            .assignment()
+            .begin(request("owner", "owner:1", false, None), NOW),
+        Ok(SessionRealizationBegin::Claimed { assigned: true, .. })
+    ));
+    assert_eq!(
+        fresh.realization.as_ref().map(|lease| lease.epoch),
+        Some(1),
+        "I7"
+    );
 }

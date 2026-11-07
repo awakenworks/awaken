@@ -298,6 +298,10 @@ pub enum SessionAggregateCommandError {
     ProjectionLease(String),
     #[error("Session realization lease epoch is not its exact successor")]
     InvalidLeaseGeneration,
+    /// The persisted realization lease generation is untrustworthy: a lease
+    /// at epoch 0, or one with no successor where a successor is minted.
+    #[error("Session realization lease: {0}")]
+    LeaseIntegrity(awaken_lease_contract::fence::EpochIntegrityViolation),
     #[error("Session realization attempt counter is exhausted")]
     AttemptCounterExhausted,
     #[error("Session realization has no incumbent lease")]

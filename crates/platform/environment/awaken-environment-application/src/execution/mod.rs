@@ -294,9 +294,33 @@ impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
     }
 }
 
-fn session_work_unavailable(error: WorkQueueError) -> awaken_runtime_contract::runs::RunError {
-    let WorkQueueError::Storage(detail) = error;
-    awaken_runtime_contract::runs::RunError::unavailable(detail.to_string())
+/// The one projection of a WorkQueue failure onto the Session Run boundary. A
+/// storage failure stays a retryable `unavailable`. A Work lease-generation
+/// integrity failure is permanent for that Work item: a classified internal
+/// fault (code `lease_generation_integrity_violated`) that every Run retry
+/// classification treats as terminal, observed once at error level.
+fn session_work_error(
+    subject: &str,
+) -> impl FnOnce(WorkQueueError) -> awaken_runtime_contract::runs::RunError + '_ {
+    move |error| match error {
+        WorkQueueError::Storage(detail) => {
+            awaken_runtime_contract::runs::RunError::unavailable(detail.to_string())
+        }
+        WorkQueueError::LeaseGenerationIntegrity(violation) => {
+            tracing::error!(
+                target: "awaken::lease_generation_integrity",
+                code = awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
+                lease = "work",
+                subject,
+                %violation,
+                "lease generation integrity violated; refusing this Session Work permanently"
+            );
+            awaken_runtime_contract::runs::RunError::classified(
+                awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
+                format!("Work lease: {violation}"),
+            )
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -312,7 +336,7 @@ impl awaken_session_application_contract::SessionWorkerAssignment
             .assignment
             .enqueue_session(environment_id, session_id)
             .await
-            .map_err(session_work_unavailable)
+            .map_err(session_work_error(session_id.as_str()))
     }
 
     async fn wake_session(
@@ -324,7 +348,7 @@ impl awaken_session_application_contract::SessionWorkerAssignment
             .assignment
             .wake_session(environment_id, session_id)
             .await
-            .map_err(session_work_unavailable)
+            .map_err(session_work_error(session_id.as_str()))
     }
 
     async fn retire_session(
@@ -337,7 +361,7 @@ impl awaken_session_application_contract::SessionWorkerAssignment
             .retire_session(environment_id, session_id)
             .await
             .map(|_| ())
-            .map_err(session_work_unavailable)
+            .map_err(session_work_error(session_id.as_str()))
     }
 }
 
@@ -351,7 +375,7 @@ impl awaken_session_application_contract::SessionWorkerLeases for EnvironmentExe
             .worker_leases
             .release_session(lease)
             .await
-            .map_err(session_work_unavailable)
+            .map_err(session_work_error(lease.session_id().as_str()))
     }
 
     async fn acquire_session(
@@ -367,7 +391,7 @@ impl awaken_session_application_contract::SessionWorkerLeases for EnvironmentExe
             .worker_leases
             .acquire_session(environment_id, session_id, worker_owner)
             .await
-            .map_err(session_work_unavailable)
+            .map_err(session_work_error(session_id.as_str()))
     }
 
     async fn release_owner(
@@ -378,7 +402,7 @@ impl awaken_session_application_contract::SessionWorkerLeases for EnvironmentExe
             .worker_leases
             .release_owner(worker_owner)
             .await
-            .map_err(session_work_unavailable)
+            .map_err(session_work_error(worker_owner))
     }
 }
 
@@ -1572,6 +1596,35 @@ mod tests {
             } else {
                 self.inner.remove_env(env).await
             }
+        }
+    }
+
+    #[test]
+    fn session_work_errors_keep_storage_retryable_and_lease_integrity_permanent() {
+        // The one projection of a WorkQueue failure onto the Session Run
+        // boundary. Previously both rows below were `unavailable` (retried).
+        // | Rule | WorkQueueError                          | RunError                                  |
+        // |------|-----------------------------------------|-------------------------------------------|
+        // | S1   | Storage                                 | Unavailable (retryable)                   |
+        // | S2   | LeaseGenerationIntegrity(Exhausted)     | Internal, integrity code, classified      |
+        // | S3   | LeaseGenerationIntegrity(ZeroGranted)   | Internal, integrity code, classified      |
+        use awaken_lease_contract::fence::EpochIntegrityViolation;
+        use awaken_runtime_contract::runs::RunErrorKind;
+        let storage = session_work_error("session")(WorkQueueError::Storage("outage".into()));
+        assert_eq!(storage.kind, RunErrorKind::Unavailable, "S1");
+        assert_eq!(storage.message, "outage", "S1");
+        for (rule, violation) in [
+            ("S2", EpochIntegrityViolation::Exhausted),
+            ("S3", EpochIntegrityViolation::ZeroGranted),
+        ] {
+            let error =
+                session_work_error("session")(WorkQueueError::LeaseGenerationIntegrity(violation));
+            assert_eq!(error.kind, RunErrorKind::Internal, "{rule}");
+            assert_eq!(error.code, EpochIntegrityViolation::CODE, "{rule}");
+            // A classified internal fault is terminal for every Run retry
+            // classification; only the unclassified internal code is retried.
+            assert!(!error.is_unclassified_internal(), "{rule}");
+            assert_eq!(error.message, format!("Work lease: {violation}"), "{rule}");
         }
     }
 

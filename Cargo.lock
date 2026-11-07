@@ -1125,6 +1125,7 @@ dependencies = [
  "awaken-time",
  "awaken-tool-contract",
  "awaken-worker-contract",
+ "awaken-worker-registry",
  "futures-lite",
  "futures-util",
  "serde",
@@ -1361,6 +1362,7 @@ dependencies = [
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
  "awaken-iam-core",
+ "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-provisioning-contract",
  "awaken-reliability-testkit",
@@ -1380,6 +1382,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1402,6 +1405,7 @@ dependencies = [
  "awaken-environment-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
+ "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-reliability-testkit",
  "awaken-runtime-contract",
@@ -1416,6 +1420,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3759,6 +3764,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-deployment-contract",
+ "awaken-dispatch-contract",
  "awaken-environment-contract",
  "awaken-executable-environment-contract",
  "awaken-lease-testkit",

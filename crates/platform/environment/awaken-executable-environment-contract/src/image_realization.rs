@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use awaken_environment_contract::{EnvironmentConfig, EnvironmentRevision};
 use {
     crate::{EnvironmentImageBuildDemand, ExecutableEnvironmentRegistration},
-    awaken_lease_contract::fence::Epoch,
+    awaken_lease_contract::fence::{Epoch, EpochIntegrityViolation},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -43,17 +43,20 @@ enum EnvironmentImageBuildClaimDecision {
         epoch: Epoch,
         lease_expires_at_ms: u64,
     },
-    AttemptExhausted,
+    Integrity(EpochIntegrityViolation),
     DeadlineExhausted,
 }
 
 /// The scalar claim kernel used by every Environment image-build store. State
 /// shape decides eligibility; this function alone owns epoch and deadline
 /// advancement so adapters cannot disagree or wrap authority. The attempt
-/// counter is the last minted lease epoch (zero before the first claim), and
-/// its successor is minted only by the lease contract's [`Epoch::successor`].
+/// counter is the last minted lease epoch. `granted` says a claim wrote it
+/// (`Building` and `Failed` only follow a claim); otherwise it is the
+/// `Pending` default, where zero means never claimed. A granted zero, or an
+/// attempt with no successor, is a lease-generation integrity failure.
 fn environment_image_build_claim_decision(
     eligible: bool,
+    granted: bool,
     attempt: u64,
     now_ms: u64,
     lease_ms: u64,
@@ -61,8 +64,17 @@ fn environment_image_build_claim_decision(
     if !eligible {
         return EnvironmentImageBuildClaimDecision::Blocked;
     }
-    let Ok(epoch) = Epoch::successor(Epoch::from_persisted(attempt)) else {
-        return EnvironmentImageBuildClaimDecision::AttemptExhausted;
+    let successor = if granted {
+        Epoch::successor_of_granted(Some(attempt))
+    } else {
+        match Epoch::successor(Epoch::from_persisted(attempt)) {
+            Ok(epoch) => Ok(epoch),
+            Err(exhausted) => Err(EpochIntegrityViolation::from(exhausted)),
+        }
+    };
+    let epoch = match successor {
+        Ok(epoch) => epoch,
+        Err(violation) => return EnvironmentImageBuildClaimDecision::Integrity(violation),
     };
     let Some(lease_expires_at_ms) = now_ms.checked_add(lease_ms) else {
         return EnvironmentImageBuildClaimDecision::DeadlineExhausted;
@@ -107,38 +119,39 @@ impl EnvironmentImageBuildState {
         now_ms: u64,
         lease_ms: u64,
     ) -> Result<Option<Self>, EnvironmentImageBuildError> {
-        let (eligible, attempt) = match self {
-            Self::Pending { attempt } => (true, *attempt),
+        let (eligible, granted, attempt) = match self {
+            Self::Pending { attempt } => (true, false, *attempt),
             Self::Failed {
                 retry_at_ms,
                 attempt,
                 ..
-            } => (*retry_at_ms <= now_ms, *attempt),
+            } => (*retry_at_ms <= now_ms, true, *attempt),
             Self::Building {
                 lease_expires_at_ms,
                 attempt,
                 ..
-            } => (*lease_expires_at_ms <= now_ms, *attempt),
-            Self::Ready { attempt, .. } => (false, *attempt),
+            } => (*lease_expires_at_ms <= now_ms, true, *attempt),
+            Self::Ready { attempt, .. } => (false, true, *attempt),
         };
-        let (epoch, lease_expires_at_ms) =
-            match environment_image_build_claim_decision(eligible, attempt, now_ms, lease_ms) {
-                EnvironmentImageBuildClaimDecision::Blocked => return Ok(None),
-                EnvironmentImageBuildClaimDecision::Claim {
-                    epoch,
-                    lease_expires_at_ms,
-                } => (epoch, lease_expires_at_ms),
-                EnvironmentImageBuildClaimDecision::AttemptExhausted => {
-                    return Err(EnvironmentImageBuildError::AuthorityExhausted(
-                        "image build attempt and lease epoch".to_string(),
-                    ));
-                }
-                EnvironmentImageBuildClaimDecision::DeadlineExhausted => {
-                    return Err(EnvironmentImageBuildError::AuthorityExhausted(
-                        "image build lease deadline".to_string(),
-                    ));
-                }
-            };
+        let (epoch, lease_expires_at_ms) = match environment_image_build_claim_decision(
+            eligible, granted, attempt, now_ms, lease_ms,
+        ) {
+            EnvironmentImageBuildClaimDecision::Blocked => return Ok(None),
+            EnvironmentImageBuildClaimDecision::Claim {
+                epoch,
+                lease_expires_at_ms,
+            } => (epoch, lease_expires_at_ms),
+            EnvironmentImageBuildClaimDecision::Integrity(violation) => {
+                return Err(EnvironmentImageBuildError::LeaseGenerationIntegrity(
+                    violation,
+                ));
+            }
+            EnvironmentImageBuildClaimDecision::DeadlineExhausted => {
+                return Err(EnvironmentImageBuildError::AuthorityExhausted(
+                    "image build lease deadline".to_string(),
+                ));
+            }
+        };
         Ok(Some(Self::Building {
             owner: owner.to_owned(),
             lease_epoch: epoch,
@@ -244,6 +257,11 @@ pub enum EnvironmentImageBuildError {
     Timeout(String),
     #[error("Environment image build authority exhausted: {0}")]
     AuthorityExhausted(String),
+    /// This build's persisted attempt/lease generation is untrustworthy. A
+    /// data-integrity failure of this build only: permanent, never retried or
+    /// reset; recovery is a new build demand.
+    #[error("Environment image build lease: {0}")]
+    LeaseGenerationIntegrity(EpochIntegrityViolation),
 }
 
 #[async_trait]
@@ -414,11 +432,70 @@ mod tests {
 
     #[test]
     fn build_claim_rejects_attempt_and_deadline_exhaustion() {
-        let exhausted_attempt = EnvironmentImageBuildState::Pending { attempt: u64::MAX };
-        assert!(matches!(
-            exhausted_attempt.claim("worker", 1, 1),
-            Err(EnvironmentImageBuildError::AuthorityExhausted(_))
-        ));
+        // The kernel classifies the persisted attempt generation once.
+        // | Rule | state                         | effect                                  |
+        // |------|-------------------------------|-----------------------------------------|
+        // | A1   | Pending { 0 } (field default) | never claimed: Building epoch 1         |
+        // | A2   | any claimable at u64::MAX     | LeaseGenerationIntegrity(Exhausted)     |
+        // | A3   | expired Building / due Failed | LeaseGenerationIntegrity(ZeroGranted)   |
+        // |      | at attempt 0 (a claim wrote)  |                                         |
+        // | A4   | A2/A3 repeated                | the same refusal; nothing advances      |
+        // | A5   | now + lease overflows         | AuthorityExhausted (deadline)           |
+        let claimed = EnvironmentImageBuildState::default()
+            .claim("worker", 1, 1)
+            .expect("A1")
+            .expect("A1 claimable");
+        assert!(
+            matches!(
+                claimed,
+                EnvironmentImageBuildState::Building { attempt: 1, .. }
+            ),
+            "A1"
+        );
+        let building = |attempt| EnvironmentImageBuildState::Building {
+            owner: "old".into(),
+            lease_epoch: Epoch::FIRST,
+            lease_expires_at_ms: 0,
+            attempt,
+        };
+        let failed = |attempt| EnvironmentImageBuildState::Failed {
+            message: "m".into(),
+            retry_at_ms: 0,
+            attempt,
+        };
+        for attempt in 0..3 {
+            for (rule, state, violation) in [
+                (
+                    "A2 pending",
+                    EnvironmentImageBuildState::Pending { attempt: u64::MAX },
+                    EpochIntegrityViolation::Exhausted,
+                ),
+                (
+                    "A2 building",
+                    building(u64::MAX),
+                    EpochIntegrityViolation::Exhausted,
+                ),
+                (
+                    "A2 failed",
+                    failed(u64::MAX),
+                    EpochIntegrityViolation::Exhausted,
+                ),
+                (
+                    "A3 building",
+                    building(0),
+                    EpochIntegrityViolation::ZeroGranted,
+                ),
+                ("A3 failed", failed(0), EpochIntegrityViolation::ZeroGranted),
+            ] {
+                assert_eq!(
+                    state.claim("worker", 1, 1),
+                    Err(EnvironmentImageBuildError::LeaseGenerationIntegrity(
+                        violation
+                    )),
+                    "{rule} attempt {attempt}"
+                );
+            }
+        }
         let pending = EnvironmentImageBuildState::default();
         assert!(matches!(
             pending.claim("worker", u64::MAX, 1),
@@ -545,16 +622,25 @@ mod verification {
         let attempt = kani::any::<u64>();
         let now_ms = kani::any::<u64>();
         let lease_ms = kani::any::<u64>();
-        let decision = environment_image_build_claim_decision(eligible, attempt, now_ms, lease_ms);
+        let granted = kani::any::<bool>();
+        let decision =
+            environment_image_build_claim_decision(eligible, granted, attempt, now_ms, lease_ms);
 
         if !eligible {
             assert_eq!(decision, EnvironmentImageBuildClaimDecision::Blocked);
             return;
         }
+        if granted && attempt == 0 {
+            assert_eq!(
+                decision,
+                EnvironmentImageBuildClaimDecision::Integrity(EpochIntegrityViolation::ZeroGranted)
+            );
+            return;
+        }
         match (attempt.checked_add(1), now_ms.checked_add(lease_ms)) {
             (None, _) => assert_eq!(
                 decision,
-                EnvironmentImageBuildClaimDecision::AttemptExhausted
+                EnvironmentImageBuildClaimDecision::Integrity(EpochIntegrityViolation::Exhausted)
             ),
             (Some(_), None) => assert_eq!(
                 decision,

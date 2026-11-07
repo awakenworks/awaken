@@ -364,17 +364,22 @@ impl SessionRealizations {
                 let (owner_scope, mut session) =
                     self.session_for_realization(&command.session_id).await?;
                 let target = &command.target;
-                let decision = session.assignment().begin(
-                    awaken_session_contract::SessionRealizationBeginRequest::new(
-                        &owner_scope,
-                        &target.owner,
-                        &target.runtime_incarnation,
-                        target.lease_expires_at_unix_ms,
-                        target.reassign_existing_lease,
-                        command.expected_resources.as_ref(),
-                    ),
-                    self.clock.now_ms(),
-                )?;
+                let decision = session
+                    .assignment()
+                    .begin(
+                        awaken_session_contract::SessionRealizationBeginRequest::new(
+                            &owner_scope,
+                            &target.owner,
+                            &target.runtime_incarnation,
+                            target.lease_expires_at_unix_ms,
+                            target.reassign_existing_lease,
+                            command.expected_resources.as_ref(),
+                        ),
+                        self.clock.now_ms(),
+                    )
+                    .map_err(|rejection| {
+                        super::begin_refusal(command.session_id.as_str(), rejection)
+                    })?;
                 let (assigned, activate_pending_resources) = match decision {
                     awaken_session_contract::SessionRealizationBegin::Unchanged {
                         activate_pending_resources,

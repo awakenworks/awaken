@@ -835,3 +835,16 @@ They create no execution, exit, source-retention or cleanup receipt. Readiness
 continues to report draining. Deployment composition must retain authenticated
 internal reachability to these queries while excluding drained Pods from public
 serving. No second Session authority, credential issuer or recovery state is added.
+
+## Amendment: every transport admits physically under Registry exclusion (2026-11-07)
+
+The late-admission fence of 2026-09-29 is not a property of the bound transport. The
+unbound transport (every non-Kubernetes deployment) freezes no execution binding but
+installs its physical slot through the same `admit_attempt_guarded`, under the same
+incarnation exclusion; the binding comparison applies only when a binding exists.
+Without it a quiesce, deregistration, lease expiry or replacement landing between the
+authority read and the slot write left an attempt owned by a closed incarnation that,
+with no stop source, blocked its Run and Thread indefinitely. Every Dispatch adapter
+fences the guarded incarnation by `standing(now).holds_authority()` on its own clock,
+so a Ready incarnation whose lease ended (`expires_at_ms == now`) is fenced at the store,
+not only at the HTTP boundary.

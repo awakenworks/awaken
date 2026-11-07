@@ -16,7 +16,7 @@ use super::{
     SessionEnvironmentRejection, SessionExecutionState, SessionRealizationLease,
     SessionResourceManifest, stable_fingerprint, transition_environment,
 };
-use awaken_lease_contract::fence::{Epoch, EpochExhausted};
+use awaken_lease_contract::fence::{Epoch, EpochIntegrityViolation};
 use awaken_session_configuration_contract::mcp::McpAttachmentState;
 use awaken_session_configuration_contract::resource::realization_lease_is_live_at;
 
@@ -26,13 +26,20 @@ use awaken_session_configuration_contract::resource::realization_lease_is_live_a
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionRealizationAssignment {
     Reuse,
-    Assign { epoch: u64 },
+    Assign {
+        epoch: u64,
+    },
     StaleOwnership,
-    EpochExhausted,
+    /// The persisted lease generation is untrustworthy: a lease at epoch 0,
+    /// or one whose epoch has no successor when a successor is required.
+    LeaseIntegrity(EpochIntegrityViolation),
 }
 
 /// Closed owner/incarnation/epoch arbitration used by the real Session root
-/// mutation. `current_epoch` is `None` only when no fence has ever existed.
+/// mutation. `current_epoch` is `None` only when no fence has ever existed; a
+/// lease that exists never carries epoch 0, so a persisted zero refuses before
+/// any ownership decision, and exhaustion refuses only where a successor is
+/// minted.
 #[must_use]
 pub const fn session_realization_assignment(
     current_epoch: Option<u64>,
@@ -41,6 +48,9 @@ pub const fn session_realization_assignment(
     same_runtime_incarnation: bool,
     reassign_existing_lease: bool,
 ) -> SessionRealizationAssignment {
+    if let Some(0) = current_epoch {
+        return SessionRealizationAssignment::LeaseIntegrity(EpochIntegrityViolation::ZeroGranted);
+    }
     if current_is_live && !same_owner && !reassign_existing_lease {
         return SessionRealizationAssignment::StaleOwnership;
     }
@@ -48,15 +58,9 @@ pub const fn session_realization_assignment(
     if !needs_assignment {
         return SessionRealizationAssignment::Reuse;
     }
-    // A persisted zero reads as never granted here; `claim` then refuses to
-    // install a successor over it.
-    let predecessor = match current_epoch {
-        None => None,
-        Some(epoch) => Epoch::from_persisted(epoch),
-    };
-    match Epoch::successor(predecessor) {
+    match Epoch::successor_of_granted(current_epoch) {
         Ok(epoch) => SessionRealizationAssignment::Assign { epoch: epoch.get() },
-        Err(EpochExhausted) => SessionRealizationAssignment::EpochExhausted,
+        Err(violation) => SessionRealizationAssignment::LeaseIntegrity(violation),
     }
 }
 
@@ -115,7 +119,7 @@ pub enum SessionRealizationBegin {
 
 /// Why `begin` refused. A refusal leaves the candidate unchanged except for
 /// the three command failures, which the caller discards with the candidate.
-/// `reassign` refuses with the `EpochExhausted` and `Assignment` subset.
+/// `reassign` refuses with the `LeaseIntegrity` and `Assignment` subset.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SessionRealizationBeginRejection {
     #[error(transparent)]
@@ -126,8 +130,10 @@ pub enum SessionRealizationBeginRejection {
     ResourceGenerationNotRetained,
     #[error("Session realization ownership is stale")]
     StaleOwnership,
-    #[error("Session realization lease epoch is exhausted")]
-    EpochExhausted,
+    /// The persisted lease generation is untrustworthy. A data-integrity
+    /// failure of this Session only: permanent, never retried or reset.
+    #[error("Session realization lease: {0}")]
+    LeaseIntegrity(EpochIntegrityViolation),
     #[error(transparent)]
     Resources(ResourceActivationError),
     #[error(transparent)]
@@ -146,7 +152,7 @@ impl SessionAssignmentOperations<'_> {
     /// | B3   | expected generation is not retained           | `ResourceGenerationNotRetained`            |
     /// | B4   | expected generation absent / not active       | activate pending Resources                 |
     /// | B5   | expected generation is the active one         | keep the active Resources                  |
-    /// | B6   | assignment `StaleOwnership` / `EpochExhausted`| the same refusal                           |
+    /// | B6   | assignment `StaleOwnership` / `LeaseIntegrity`| the same refusal                           |
     /// | B7   | `Reuse` and no Requested MCP generation       | `Unchanged`                                |
     /// | B8   | `Reuse` with Requested MCP generations        | claim them (realization law), same lease   |
     /// | B9   | `Assign { epoch }`                            | new lease; claim Requested, Realizing and Active (recovery law) |
@@ -201,8 +207,8 @@ impl SessionAssignmentOperations<'_> {
             (SessionRealizationAssignment::StaleOwnership, _) => {
                 return Err(SessionRealizationBeginRejection::StaleOwnership);
             }
-            (SessionRealizationAssignment::EpochExhausted, _) => {
-                return Err(SessionRealizationBeginRejection::EpochExhausted);
+            (SessionRealizationAssignment::LeaseIntegrity(violation), _) => {
+                return Err(SessionRealizationBeginRejection::LeaseIntegrity(violation));
             }
             (SessionRealizationAssignment::Assign { epoch }, _) => (
                 SessionRealizationLease {
@@ -274,8 +280,7 @@ impl SessionAssignmentOperations<'_> {
             }
             .map_err(SessionRealizationBeginRejection::Mcp)?;
         }
-        self.claim(lease, counted)
-            .map_err(SessionRealizationBeginRejection::Assignment)?;
+        self.claim(lease, counted)?;
         Ok(SessionRealizationBegin::Claimed {
             assigned,
             activate_pending_resources,
@@ -303,13 +308,20 @@ impl SessionAssignmentOperations<'_> {
 
     /// Install a new exact successor owner generation. A counted initial
     /// attempt clears its predecessor's failure fields in the same operation.
+    /// A persisted lease at epoch 0 refuses as `LeaseIntegrity`, and so does
+    /// an exhausted one a new generation would succeed.
     pub fn claim(
         &mut self,
         lease: SessionRealizationLease,
         count_initial_attempt: bool,
     ) -> Result<(), SessionAggregateCommandError> {
         let state = &mut self.aggregate.state;
-        let expected_epoch = successor_epoch(state.realization.as_ref()).ok();
+        if let Some(SessionRealizationLease { epoch: 0, .. }) = state.realization {
+            return Err(SessionAggregateCommandError::LeaseIntegrity(
+                EpochIntegrityViolation::ZeroGranted,
+            ));
+        }
+        let expected_epoch = successor_epoch(state.realization.as_ref());
         let same = state
             .realization
             .as_ref()
@@ -326,7 +338,7 @@ impl SessionAssignmentOperations<'_> {
         {
             return Err(SessionAggregateCommandError::InvalidLeaseGeneration);
         }
-        if !same && expected_epoch.map(Epoch::get) != Some(lease.epoch) {
+        if !same && expected_epoch?.get() != lease.epoch {
             return Err(SessionAggregateCommandError::InvalidLeaseGeneration);
         }
         if count_initial_attempt
@@ -367,7 +379,7 @@ impl SessionAssignmentOperations<'_> {
     /// |------|----------------------------------------------|-----------------------------------------------|
     /// | R1   | no lease was ever granted                    | install epoch 1                               |
     /// | R2   | current epoch `n` (live or expired, any owner)| install epoch `n + 1`                         |
-    /// | R3   | current epoch has no successor (`u64::MAX`, 0)| `EpochExhausted`, root unchanged              |
+    /// | R3   | current epoch `u64::MAX` or persisted 0      | `LeaseIntegrity`, root unchanged              |
     /// | R4   | owner or incarnation is blank                | `Assignment(InvalidLeaseGeneration)`, unchanged |
     ///
     /// The installed lease counts no initial attempt: reassignment never
@@ -385,8 +397,7 @@ impl SessionAssignmentOperations<'_> {
             epoch: epoch.get(),
             expires_at_unix_ms: lease_expires_at_unix_ms,
         };
-        self.claim(lease.clone(), false)
-            .map_err(SessionRealizationBeginRejection::Assignment)?;
+        self.claim(lease.clone(), false)?;
         Ok(lease)
     }
 
@@ -497,7 +508,9 @@ impl SessionAssignmentOperations<'_> {
         }
     }
 
-    /// Compensate only the claimant's exact generation after authority withdrawal.
+    /// Compensate only the claimant's exact generation after authority
+    /// withdrawal. A predecessor whose persisted generation is untrustworthy
+    /// (epoch 0, or no successor) refuses as `LeaseIntegrity`.
     pub fn restore_predecessor(
         &mut self,
         attempted: &SessionRealizationLease,
@@ -507,7 +520,7 @@ impl SessionAssignmentOperations<'_> {
         if state.realization.as_ref() != Some(attempted) {
             return Err(SessionAggregateCommandError::StaleCompensation);
         }
-        if successor_epoch(predecessor.as_ref()).map(Epoch::get) != Ok(attempted.epoch) {
+        if successor_epoch(predecessor.as_ref())?.get() != attempted.epoch {
             return Err(SessionAggregateCommandError::InvalidPredecessor);
         }
         state.realization = predecessor;
@@ -515,20 +528,27 @@ impl SessionAssignmentOperations<'_> {
     }
 }
 
-/// The generation the next grant mints over `current`, through the lease
-/// contract's one successor law. A persisted zero was never minted, so it has
-/// no successor either.
-fn successor_epoch(current: Option<&SessionRealizationLease>) -> Result<Epoch, EpochExhausted> {
-    let predecessor = match current {
-        None => None,
-        Some(lease) => Some(Epoch::from_persisted(lease.epoch).ok_or(EpochExhausted)?),
-    };
-    Epoch::successor(predecessor)
+/// The generation the next grant mints over `current`: the aggregate's one
+/// classification of its persisted lease generation, through the lease
+/// contract's granted-successor law. No lease mints the first generation; a
+/// lease at epoch 0 or with no successor is a data-integrity failure.
+fn successor_epoch(
+    current: Option<&SessionRealizationLease>,
+) -> Result<Epoch, SessionAggregateCommandError> {
+    Epoch::successor_of_granted(current.map(|lease| lease.epoch))
+        .map_err(SessionAggregateCommandError::LeaseIntegrity)
 }
 
-/// The aggregate's one projection of lease-generation exhaustion.
-impl From<EpochExhausted> for SessionRealizationBeginRejection {
-    fn from(_: EpochExhausted) -> Self {
-        Self::EpochExhausted
+/// The aggregate's one projection of its command failures onto a begin or
+/// reassignment refusal: a lease-generation integrity failure keeps its own
+/// permanent class, every other command failure is an `Assignment` refusal.
+impl From<SessionAggregateCommandError> for SessionRealizationBeginRejection {
+    fn from(error: SessionAggregateCommandError) -> Self {
+        match error {
+            SessionAggregateCommandError::LeaseIntegrity(violation) => {
+                Self::LeaseIntegrity(violation)
+            }
+            error => Self::Assignment(error),
+        }
     }
 }
