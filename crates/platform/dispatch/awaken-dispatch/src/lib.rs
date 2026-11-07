@@ -168,12 +168,12 @@ fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {
     })
 }
 
+/// A claim epoch past the signed column's range is exhausted storage, and is
+/// refused through the same lease-generation class as the kernel's.
 #[cfg(any(feature = "durable", test))]
 fn next_claim_epoch(previous_epoch: i64) -> Result<u64, DispatchError> {
     let next = previous_epoch.checked_add(1).ok_or_else(|| {
-        DispatchError::Rejected(
-            "dispatch claim epoch exhausted; refusing to wrap fencing authority".to_string(),
-        )
+        transition_error(awaken_dispatch_contract::DispatchTransitionError::LeaseEpochExhausted)
     })?;
     u64::try_from(next).map_err(|_| {
         DispatchError::Rejected(
@@ -215,6 +215,8 @@ fn dispatch_state_db(state: DispatchState) -> &'static str {
     }
 }
 
+/// The one projection of a transition-kernel refusal onto the store error,
+/// shared by the in-memory and SQL adapters.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 fn transition_error(error: awaken_dispatch_contract::DispatchTransitionError) -> DispatchError {
     match error {

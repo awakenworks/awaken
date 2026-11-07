@@ -54,6 +54,7 @@ pub fn awaken_lease_contract::fence::Epoch::deserialize_u64<'de, D: serde_core::
 pub const fn awaken_lease_contract::fence::Epoch::from_persisted(u64) -> core::option::Option<Self>
 pub const fn awaken_lease_contract::fence::Epoch::get(self) -> u64
 pub const fn awaken_lease_contract::fence::Epoch::next(self) -> core::option::Option<Self>
+pub const fn awaken_lease_contract::fence::Epoch::successor(core::option::Option<Self>) -> core::result::Result<Self, awaken_lease_contract::fence::EpochExhausted>
 impl core::convert::From<awaken_lease_contract::fence::Epoch> for u64
 pub fn u64::from(awaken_lease_contract::fence::Epoch) -> Self
 impl core::convert::TryFrom<u64> for awaken_lease_contract::fence::Epoch
@@ -61,6 +62,10 @@ pub type awaken_lease_contract::fence::Epoch::Error = awaken_lease_contract::fen
 pub fn awaken_lease_contract::fence::Epoch::try_from(u64) -> core::result::Result<Self, Self::Error>
 impl core::fmt::Display for awaken_lease_contract::fence::Epoch
 pub fn awaken_lease_contract::fence::Epoch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_lease_contract::fence::EpochExhausted
+impl core::error::Error for awaken_lease_contract::fence::EpochExhausted
+impl core::fmt::Display for awaken_lease_contract::fence::EpochExhausted
+pub fn awaken_lease_contract::fence::EpochExhausted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_lease_contract::fence::Lease<S: awaken_lease_contract::fence::TenureScope>
 impl<S: awaken_lease_contract::fence::TenureScope> awaken_lease_contract::fence::Lease<S>
 pub fn awaken_lease_contract::fence::Lease<S>::authorizes_successor(&self, &Self) -> bool
