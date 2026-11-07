@@ -1,12 +1,13 @@
 """Strict-CI wiring mutants of the formal gate.
 
 check_formal_coverage reads scripts/ci/check_formal.sh to decide that the
-derived Kani plan runs exactly once, that every cited TLA+ model is checked and
+derived Kani plan is computed exactly once, that every cited TLA+ model is checked and
 that each release entrypoint's self-test runs. No fixture self-test reaches
 those rules, so each mutant edits a private copy of the gate and requires the
 checker to reject it with the exact reason. The ledger, anchor, plan, profile,
 feature and boundary rejections are held by their own self-tests
-(formal_ledger, formal_plan, test_formal_profile). Consumer:
+(formal_ledger, formal_plan, test_formal_profile); that every planned batch
+reaches the runner is test_formal_profile row P4, which executes the gate's loop. Consumer:
 ``check_formal_mutations.py --gate-mutants`` in the full tier.
 """
 
@@ -68,19 +69,6 @@ def require_green_baseline(case_root: Path) -> None:
         raise SystemExit(f"formal mutation baseline failed: check_formal_coverage.py: {result.stderr}")
 
 
-def mutate_commented_harness(case_root: Path) -> None:
-    # H1: the plan is still computed but the loop that runs its batches becomes
-    # a shell comment. Text presence is not execution selection; reject it.
-    gate = case_root / GATE
-    source = gate.read_text()
-    needle = '    run_kani "${kani_argv[@]}"'
-    if source.count(needle) != 1:
-        raise SystemExit("mutation fixture lost the derived Kani plan loop")
-    gate.write_text(source.replace(needle, "    # " + needle.lstrip(), 1))
-    must_fail(case_root, "check_formal_coverage.py", "comment-only Kani selection",
-              expected="strict CI does not run the derived Kani plan exactly once")
-
-
 def mutate_duplicate_harness_selection(case_root: Path) -> None:
     # H4: running the plan twice cannot satisfy a second proof identity or
     # obscure an ambiguous runner binding. One plan, one loop, one run.
@@ -132,7 +120,6 @@ def run_gate_mutations() -> None:
     # no mutant may introduce a second ledger or a test-only acceptance path.
     mutations = (
         mutate_commented_release_self_test,
-        mutate_commented_harness,
         mutate_duplicate_harness_selection,
         mutate_unchecked_model,
     )
