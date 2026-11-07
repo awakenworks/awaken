@@ -11,6 +11,36 @@ use awaken_tool_contract::tool::background_task::{BackgroundTaskEnd, BackgroundT
 use awaken_tool_contract::tool::{ToolCall, ToolConcurrency, ToolRecoveryPolicy};
 use serde_json::{Value, json};
 
+/// The parts of a fixture Task a test edits before rebuilding it.
+struct TaskParts {
+    id: BackgroundTaskId,
+    origin: BackgroundTaskOrigin,
+    invocation: BackgroundInvocation,
+    lifecycle: BackgroundTaskLifecycle,
+    revision: u64,
+}
+
+/// Edit a fixture's parts and rebuild it through the validated constructor,
+/// so a test can only reach a Task the aggregate itself could hold.
+fn edit(task: &mut BackgroundTask, change: impl FnOnce(&mut TaskParts)) {
+    let mut parts = TaskParts {
+        id: task.id().clone(),
+        origin: task.origin().clone(),
+        invocation: task.invocation().clone(),
+        lifecycle: task.lifecycle().clone(),
+        revision: task.revision(),
+    };
+    change(&mut parts);
+    *task = BackgroundTask::from_parts(
+        parts.id,
+        parts.origin,
+        parts.invocation,
+        parts.lifecycle,
+        parts.revision,
+    )
+    .expect("an edited fixture is a Task the aggregate can hold");
+}
+
 fn requested() -> BackgroundTask {
     BackgroundTask::requested(
         BackgroundTaskId::new("phone-task").unwrap(),
@@ -91,7 +121,7 @@ async fn terminal_result_is_direct_bounded_source_data_and_commit_receipt_dedupl
     // public get view is the only source: no arguments, worker or remote handle.
     let task = ended();
     let mut state = Store::new();
-    state.apply(&task_state_cell(&task.id).write(&task).unwrap());
+    state.apply(&task_state_cell(task.id()).write(&task).unwrap());
     let config =
         json!({"tools":["mcp__phone__StartCall"],"notifications":{"default":{"format":"tagged"}}});
     let first = project(config.clone(), &state).await;
@@ -129,7 +159,7 @@ async fn rules_resolve_exact_tool_before_event_before_default() {
     // arbitrary access to the invocation or silent field removal.
     let task = ended();
     let mut state = Store::new();
-    state.apply(&task_state_cell(&task.id).write(&task).unwrap());
+    state.apply(&task_state_cell(task.id()).write(&task).unwrap());
     assert!(
         project(
             json!({"tools":["x"],"notifications":{"default":{"enabled":false}}}),
@@ -163,17 +193,19 @@ async fn configured_budget_keeps_unicode_and_reports_truncation() {
     // N9 oversized public result -> valid bounded preview + explicit truncated;
     // no UTF-8 byte slicing and no second result store.
     let mut task = ended();
-    let BackgroundTaskLifecycle::Ended {
-        end: BackgroundTaskEnd::Completed { content, .. },
-    } = &mut task.lifecycle
-    else {
-        panic!()
-    };
-    *content = vec![awaken_agent_contract::agent::content::ContentBlock::text(
-        "客户".repeat(1000),
-    )];
+    edit(&mut task, |p| {
+        let BackgroundTaskLifecycle::Ended {
+            end: BackgroundTaskEnd::Completed { content, .. },
+        } = &mut p.lifecycle
+        else {
+            panic!()
+        };
+        *content = vec![awaken_agent_contract::agent::content::ContentBlock::text(
+            "客户".repeat(1000),
+        )];
+    });
     let mut state = Store::new();
-    state.apply(&task_state_cell(&task.id).write(&task).unwrap());
+    state.apply(&task_state_cell(task.id()).write(&task).unwrap());
     let result = project(
         json!({"tools":["x"],"notifications":{"default":{"max_body_chars":256}}}),
         &state,
@@ -236,7 +268,7 @@ async fn predicates_filter_results_and_custom_tags_do_not_change_trust() {
     // N13 tag spelling system-reminder never promotes external result authority.
     let task = ended();
     let mut state = Store::new();
-    state.apply(&task_state_cell(&task.id).write(&task).unwrap());
+    state.apply(&task_state_cell(task.id()).write(&task).unwrap());
     for (pointer, expected, delivered) in [
         ("/lifecycle/is_error", json!(false), true),
         ("/lifecycle/is_error", json!(true), false),
@@ -303,9 +335,11 @@ async fn terminal_rules_preserve_execution_outcome_and_tool_error_semantics() {
         ),
     ] {
         let mut task = ended();
-        task.lifecycle = BackgroundTaskLifecycle::Ended { end };
+        edit(&mut task, |p| {
+            p.lifecycle = BackgroundTaskLifecycle::Ended { end }
+        });
         let mut state = Store::new();
-        state.apply(&task_state_cell(&task.id).write(&task).unwrap());
+        state.apply(&task_state_cell(task.id()).write(&task).unwrap());
         let config = json!({"tools":["x"],"notifications":{
             "default":{"enabled":false},
             "events":{(expected):{"format":"text","heading":"Outcome {event}"}}
@@ -318,14 +352,14 @@ async fn terminal_rules_preserve_execution_outcome_and_tool_error_semantics() {
         assert_eq!(body["lifecycle"]["state"], expected);
         if let BackgroundTaskLifecycle::Ended {
             end: BackgroundTaskEnd::Completed { is_error, .. },
-        } = &task.lifecycle
+        } = task.lifecycle()
         {
             assert_eq!(body["lifecycle"]["is_error"], *is_error);
         }
         let pending_task = requested();
         let mut pending_state = Store::new();
         pending_state.apply(
-            &task_state_cell(&pending_task.id)
+            &task_state_cell(pending_task.id())
                 .write(&pending_task)
                 .unwrap(),
         );

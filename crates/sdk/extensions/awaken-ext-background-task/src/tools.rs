@@ -176,9 +176,9 @@ enum TaskLifecycleView<'a> {
 impl<'a> From<&'a BackgroundTask> for TaskView<'a> {
     fn from(task: &'a BackgroundTask) -> Self {
         Self {
-            id: &task.id,
-            tool_id: &task.invocation.call.tool_id,
-            lifecycle: match &task.lifecycle {
+            id: task.id(),
+            tool_id: &task.invocation().call.tool_id,
+            lifecycle: match task.lifecycle() {
                 BackgroundTaskLifecycle::Requested => TaskLifecycleView::Requested,
                 BackgroundTaskLifecycle::Running { .. } => TaskLifecycleView::Running,
                 BackgroundTaskLifecycle::Waiting { .. } => TaskLifecycleView::Waiting,
@@ -199,7 +199,7 @@ impl<'a> From<&'a BackgroundTask> for TaskView<'a> {
                     }
                 },
             },
-            revision: task.revision,
+            revision: task.revision(),
         }
     }
 }
@@ -290,10 +290,10 @@ impl RawTool for RunInBackground {
             },
         );
         let store = state()?;
-        let cell = task_state_cell(&task.id);
+        let cell = task_state_cell(task.id());
         let mut output = render(
-            &task.invocation.call.call_id,
-            &SubmittedTask { task_id: &task.id },
+            &task.invocation().call.call_id,
+            &SubmittedTask { task_id: task.id() },
         )?;
         match cell
             .load(&store)
@@ -306,7 +306,7 @@ impl RawTool for RunInBackground {
                 "deterministic background task id collided with different state".into(),
             )),
             None => {
-                let execution = current_tool_execution_facts(&task.invocation.call)?;
+                let execution = current_tool_execution_facts(&task.invocation().call)?;
                 task.start(
                     self.supervisor.worker_id(),
                     self.supervisor.clock().now_ms(),
@@ -391,11 +391,11 @@ impl RawTool for CancelBackgroundTask {
                     task_id.as_str()
                 ))
             })?;
-        let revision = task.revision;
+        let revision = task.revision();
         task.request_cancel()
             .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;
         let mut output = render(&call.call_id, &TaskView::from(&task))?;
-        if task.revision != revision {
+        if task.revision() != revision {
             output.state.push(
                 cell.write(&task)
                     .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?,

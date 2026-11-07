@@ -98,10 +98,10 @@ impl TaskCommittedReads {
             Self::Local(authority) => {
                 let state = Store::rebuild(
                     &authority
-                        .committed_state(&expected.origin.thread_id)
+                        .committed_state(&expected.origin().thread_id)
                         .await?,
                 );
-                task_state_cell(&expected.id)
+                task_state_cell(expected.id())
                     .load(&state)
                     .map_err(|error| error.to_string())
             }
@@ -138,10 +138,10 @@ impl TaskCommittedReads {
 pub(super) fn task_tenure_read(expected: &BackgroundTask, session_thread: &str) -> TaskTenureRead {
     let tenure = expected.tenure().expect("a launched Task has an attempt");
     TaskTenureRead {
-        thread: expected.origin.thread_id.0.clone(),
-        partition: TaskReadPartition::of(&expected.origin.thread_id.0, session_thread),
-        run: expected.origin.run_id.0.clone(),
-        task: expected.id.as_str().to_owned(),
+        thread: expected.origin().thread_id.0.clone(),
+        partition: TaskReadPartition::of(&expected.origin().thread_id.0, session_thread),
+        run: expected.origin().run_id.0.clone(),
+        task: expected.id().as_str().to_owned(),
         holder: tenure.holder().clone(),
         epoch: tenure.epoch(),
     }

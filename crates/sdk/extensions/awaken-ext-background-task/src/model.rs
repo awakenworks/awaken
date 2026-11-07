@@ -405,14 +405,19 @@ const fn reclaim_mutation_plan(
     }
 }
 
+/// One background Task aggregate. Its fields are private, so every value is
+/// either freshly [`requested`](Self::requested), rehydrated through the
+/// validated [`from_parts`](Self::from_parts) (the path decoding takes), or
+/// advanced by one of the transition laws below; nothing writes a lifecycle or
+/// revision past those laws.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "BackgroundTaskWire")]
 pub struct BackgroundTask {
-    pub id: BackgroundTaskId,
-    pub origin: BackgroundTaskOrigin,
-    pub invocation: BackgroundInvocation,
-    pub lifecycle: BackgroundTaskLifecycle,
-    pub revision: u64,
+    id: BackgroundTaskId,
+    origin: BackgroundTaskOrigin,
+    invocation: BackgroundInvocation,
+    lifecycle: BackgroundTaskLifecycle,
+    revision: u64,
 }
 
 #[derive(Deserialize)]
@@ -429,15 +434,13 @@ impl TryFrom<BackgroundTaskWire> for BackgroundTask {
     type Error = BackgroundTaskError;
 
     fn try_from(wire: BackgroundTaskWire) -> Result<Self, Self::Error> {
-        let task = Self {
-            id: wire.id,
-            origin: wire.origin,
-            invocation: wire.invocation,
-            lifecycle: wire.lifecycle,
-            revision: wire.revision,
-        };
-        task.validate()?;
-        Ok(task)
+        Self::from_parts(
+            wire.id,
+            wire.origin,
+            wire.invocation,
+            wire.lifecycle,
+            wire.revision,
+        )
     }
 }
 
@@ -455,6 +458,54 @@ impl BackgroundTask {
             lifecycle: BackgroundTaskLifecycle::Requested,
             revision: 0,
         }
+    }
+
+    /// Rehydrate a persisted Task, refusing a combination no transition law
+    /// produces: a Requested Task at a nonzero revision, an executing or ended
+    /// Task at revision zero, an empty origin or call identity, or a malformed
+    /// attempt or wait. Decoding takes this same path.
+    pub fn from_parts(
+        id: BackgroundTaskId,
+        origin: BackgroundTaskOrigin,
+        invocation: BackgroundInvocation,
+        lifecycle: BackgroundTaskLifecycle,
+        revision: u64,
+    ) -> Result<Self, BackgroundTaskError> {
+        let task = Self {
+            id,
+            origin,
+            invocation,
+            lifecycle,
+            revision,
+        };
+        task.validate()?;
+        Ok(task)
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &BackgroundTaskId {
+        &self.id
+    }
+
+    #[must_use]
+    pub fn origin(&self) -> &BackgroundTaskOrigin {
+        &self.origin
+    }
+
+    #[must_use]
+    pub fn invocation(&self) -> &BackgroundInvocation {
+        &self.invocation
+    }
+
+    #[must_use]
+    pub fn lifecycle(&self) -> &BackgroundTaskLifecycle {
+        &self.lifecycle
+    }
+
+    /// The optimistic-concurrency revision; every transition advances it by one.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Current fenced attempt, when the task has entered execution.
@@ -1482,5 +1533,87 @@ mod exhaustive {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod from_parts_tests {
+    use super::*;
+
+    fn requested(operation_id: &str) -> BackgroundTask {
+        BackgroundTask::requested(
+            BackgroundTaskId::new("task-1").unwrap(),
+            BackgroundTaskOrigin {
+                thread_id: ThreadId("thread-1".into()),
+                run_id: RunId("run-1".into()),
+                operation_id: operation_id.into(),
+            },
+            BackgroundInvocation {
+                call: ToolCall {
+                    call_id: "call-1".into(),
+                    tool_id: "bash".into(),
+                    arguments: serde_json::json!({}),
+                },
+            },
+        )
+    }
+
+    fn rebuilt(
+        task: &BackgroundTask,
+        revision: u64,
+    ) -> Result<BackgroundTask, BackgroundTaskError> {
+        BackgroundTask::from_parts(
+            task.id().clone(),
+            task.origin().clone(),
+            task.invocation().clone(),
+            task.lifecycle().clone(),
+            revision,
+        )
+    }
+
+    #[test]
+    fn from_parts_admits_only_tasks_the_transition_laws_produce() {
+        // | Rule | lifecycle | revision | origin    | effect                    |
+        // |------|-----------|----------|-----------|---------------------------|
+        // | P1   | Requested | 0        | complete  | the same Task             |
+        // | P2   | Requested | 1        | complete  | InvalidPersistedState     |
+        // | P3   | Running   | 1        | complete  | the same Task             |
+        // | P4   | Running   | 0        | complete  | InvalidPersistedState     |
+        // | P5   | Requested | 0        | empty op  | InvalidPersistedState     |
+        let requested_task = requested("operation-1");
+        assert_eq!(
+            rebuilt(&requested_task, 0),
+            Ok(requested_task.clone()),
+            "P1"
+        );
+        assert_eq!(
+            rebuilt(&requested_task, 1),
+            Err(BackgroundTaskError::InvalidPersistedState),
+            "P2"
+        );
+        let mut running = requested_task;
+        running
+            .start(
+                "worker",
+                0,
+                10,
+                TaskExecutionPolicy {
+                    recovery: ToolRecoveryPolicy::replay_safe(),
+                    concurrency: ToolConcurrency::Parallel,
+                },
+            )
+            .unwrap();
+        assert_eq!(running.revision(), 1);
+        assert_eq!(rebuilt(&running, 1), Ok(running.clone()), "P3");
+        assert_eq!(
+            rebuilt(&running, 0),
+            Err(BackgroundTaskError::InvalidPersistedState),
+            "P4"
+        );
+        assert_eq!(
+            rebuilt(&requested(" "), 0),
+            Err(BackgroundTaskError::InvalidPersistedState),
+            "P5"
+        );
     }
 }

@@ -165,8 +165,8 @@ impl PhaseHook for ReconcileBackgroundTasks {
         let mut commands = Vec::new();
         let mut messages = Vec::new();
         for mut task in tasks {
-            if task.lifecycle.is_terminal() {
-                self.supervisor.retire_terminal(&task.id);
+            if task.lifecycle().is_terminal() {
+                self.supervisor.retire_terminal(task.id());
                 if let Some((message, receipt)) = self.notifications.message(&task, state) {
                     messages.push(message);
                     commands.push(receipt);
@@ -176,10 +176,10 @@ impl PhaseHook for ReconcileBackgroundTasks {
             let committed_fence = task.tenure();
             if let Some(completion) = self
                 .supervisor
-                .completion_for_fold(&task.id, committed_fence.as_ref())
+                .completion_for_fold(task.id(), committed_fence.as_ref())
                 && task.finish(&completion.fence, completion.end).is_ok()
             {
-                if let Ok(command) = task_state_cell(&task.id).write(&task) {
+                if let Ok(command) = task_state_cell(task.id()).write(&task) {
                     commands.push(command);
                     if let Some((message, receipt)) = self.notifications.message(&task, state) {
                         messages.push(message);
@@ -188,7 +188,7 @@ impl PhaseHook for ReconcileBackgroundTasks {
                 }
                 continue;
             }
-            if let Some(candidate) = self.supervisor.wait_candidate(&task.id) {
+            if let Some(candidate) = self.supervisor.wait_candidate(task.id()) {
                 let folded = (|| {
                     if candidate.renew_lease {
                         task.heartbeat(
@@ -201,7 +201,7 @@ impl PhaseHook for ReconcileBackgroundTasks {
                 })();
                 match folded {
                     Ok(()) => {
-                        if let Ok(command) = task_state_cell(&task.id).write(&task) {
+                        if let Ok(command) = task_state_cell(task.id()).write(&task) {
                             commands.push(command);
                         }
                         continue;
@@ -209,9 +209,9 @@ impl PhaseHook for ReconcileBackgroundTasks {
                     Err(BackgroundTaskError::StaleFence) => {
                         if let Some(attempt) = task.attempt() {
                             self.supervisor.retire(
-                                &task.id,
+                                task.id(),
                                 &candidate.fence,
-                                &attempt.tenure(&task.id),
+                                &attempt.tenure(task.id()),
                             );
                         }
                     }
@@ -221,13 +221,14 @@ impl PhaseHook for ReconcileBackgroundTasks {
             let Some(attempt) = task.attempt() else {
                 continue;
             };
-            if matches!(task.lifecycle, BackgroundTaskLifecycle::Cancelling { .. }) {
-                self.supervisor.cancel(&task.id, &attempt.tenure(&task.id));
+            if matches!(task.lifecycle(), BackgroundTaskLifecycle::Cancelling { .. }) {
+                self.supervisor
+                    .cancel(task.id(), &attempt.tenure(task.id()));
             }
             if attempt.worker_id == self.supervisor.worker_id()
                 && self
                     .supervisor
-                    .is_active(&task.id, &attempt.tenure(&task.id))
+                    .is_active(task.id(), &attempt.tenure(task.id()))
             {
                 continue;
             }
@@ -245,7 +246,7 @@ impl PhaseHook for ReconcileBackgroundTasks {
             // The aggregate owns recovery and cancellation outcomes. In
             // particular, remote Cancelling retains its exact handle for the
             // post-commit Host observer; no local shortcut certifies termination.
-            if let Ok(command) = task_state_cell(&task.id).write(&task) {
+            if let Ok(command) = task_state_cell(task.id()).write(&task) {
                 commands.push(command);
                 if let Some((message, receipt)) = self.notifications.message(&task, state) {
                     messages.push(message);

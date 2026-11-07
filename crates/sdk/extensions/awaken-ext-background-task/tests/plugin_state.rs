@@ -60,6 +60,36 @@ fn environment() -> ResolvedExecutionEnv {
         .expect("fixture plugin resolves within its manifest")
 }
 
+/// The parts of a fixture Task a test edits before rebuilding it.
+struct TaskParts {
+    id: BackgroundTaskId,
+    origin: BackgroundTaskOrigin,
+    invocation: BackgroundInvocation,
+    lifecycle: BackgroundTaskLifecycle,
+    revision: u64,
+}
+
+/// Edit a fixture's parts and rebuild it through the validated constructor,
+/// so a test can only reach a Task the aggregate itself could hold.
+fn edit(task: &mut BackgroundTask, change: impl FnOnce(&mut TaskParts)) {
+    let mut parts = TaskParts {
+        id: task.id().clone(),
+        origin: task.origin().clone(),
+        invocation: task.invocation().clone(),
+        lifecycle: task.lifecycle().clone(),
+        revision: task.revision(),
+    };
+    change(&mut parts);
+    *task = BackgroundTask::from_parts(
+        parts.id,
+        parts.origin,
+        parts.invocation,
+        parts.lifecycle,
+        parts.revision,
+    )
+    .expect("an edited fixture is a Task the aggregate can hold");
+}
+
 fn background_task(id: &str) -> BackgroundTask {
     BackgroundTask::requested(
         BackgroundTaskId::new(id).expect("task id"),
@@ -170,18 +200,22 @@ async fn expired_cancellation_reconciliation_never_fabricates_remote_termination
             }
             task.request_cancel().unwrap();
             let mut state = Store::new();
-            state.apply(&task_state_cell(&task.id).write(&task).unwrap());
+            state.apply(&task_state_cell(task.id()).write(&task).unwrap());
             let reaction = hook
                 .on_phase(&ctx, &[], &state)
                 .await
                 .expect("phase hook succeeds");
             assert_eq!(reaction.state.len(), if remote { 1 } else { 2 });
             state.apply(&reaction.state[0]);
-            let next = task_state_cell(&task.id).load(&state).unwrap().unwrap();
-            assert_eq!(next.revision, task.revision + 1, "one canonical transition");
+            let next = task_state_cell(task.id()).load(&state).unwrap().unwrap();
+            assert_eq!(
+                next.revision(),
+                task.revision() + 1,
+                "one canonical transition"
+            );
             if remote {
                 assert!(
-                    matches!(&next.lifecycle, BackgroundTaskLifecycle::Cancelling {
+                    matches!(next.lifecycle(), BackgroundTaskLifecycle::Cancelling {
                     attempt, wait: Some(awaken_tool_contract::tool::background_task::BackgroundWait::Remote(actual))
                 } if attempt.worker_id == "replacement" && attempt.epoch.get() == 2 && actual == &handle),
                     "R1"
@@ -189,7 +223,7 @@ async fn expired_cancellation_reconciliation_never_fabricates_remote_termination
             } else {
                 assert!(
                     matches!(
-                        next.lifecycle,
+                        next.lifecycle(),
                         BackgroundTaskLifecycle::Ended {
                             end: BackgroundTaskEnd::Indeterminate { .. }
                         }
@@ -396,7 +430,7 @@ async fn submission_uses_the_supervisors_injected_clock_and_replay_keeps_the_lea
                     )
                     .unwrap();
                 assert!(matches!(
-                    &existing.lifecycle,
+                    existing.lifecycle(),
                     BackgroundTaskLifecycle::Ended {
                         end: BackgroundTaskEnd::Cancelled {}
                     }
@@ -413,17 +447,17 @@ async fn submission_uses_the_supervisors_injected_clock_and_replay_keeps_the_lea
                 .unwrap(),
             5 => {
                 existing = BackgroundTask::requested(
-                    task.id.clone(),
-                    task.origin.clone(),
-                    task.invocation.clone(),
+                    task.id().clone(),
+                    task.origin().clone(),
+                    task.invocation().clone(),
                 );
-                assert_eq!(existing.revision, 0, "C5 Requested");
+                assert_eq!(existing.revision(), 0, "C5 Requested");
                 assert!(existing.attempt().is_none(), "C5 Requested");
             }
             _ => unreachable!(),
         }
         let mut durable = state.clone();
-        durable.apply(&task_state_cell(&existing.id).write(&existing).unwrap());
+        durable.apply(&task_state_cell(existing.id()).write(&existing).unwrap());
         for now in [2_500, u64::MAX] {
             clock.set(now);
             assert_eq!(clock.now_ms(), now.min(i64::MAX as u64), "C4");
@@ -458,18 +492,18 @@ async fn submission_uses_the_supervisors_injected_clock_and_replay_keeps_the_lea
     // the unavailable catalog and saturated clock cannot mask that decision.
     for coordinate in 0..7 {
         let mut collision = task.clone();
-        match coordinate {
-            0 => collision.id = BackgroundTaskId::new("different-task").unwrap(),
-            1 => collision.origin.thread_id = ThreadId("different-thread".into()),
-            2 => collision.origin.run_id = RunId("different-run".into()),
-            3 => collision.origin.operation_id = "different-operation".into(),
-            4 => collision.invocation.call.call_id = "different-call".into(),
-            5 => collision.invocation.call.tool_id = "different-tool".into(),
-            6 => collision.invocation.call.arguments = serde_json::json!({"command":"different"}),
+        edit(&mut collision, |p| match coordinate {
+            0 => p.id = BackgroundTaskId::new("different-task").unwrap(),
+            1 => p.origin.thread_id = ThreadId("different-thread".into()),
+            2 => p.origin.run_id = RunId("different-run".into()),
+            3 => p.origin.operation_id = "different-operation".into(),
+            4 => p.invocation.call.call_id = "different-call".into(),
+            5 => p.invocation.call.tool_id = "different-tool".into(),
+            6 => p.invocation.call.arguments = serde_json::json!({"command":"different"}),
             _ => unreachable!(),
-        }
+        });
         let mut durable = state.clone();
-        durable.apply(&task_state_cell(&task.id).write(&collision).unwrap());
+        durable.apply(&task_state_cell(task.id()).write(&collision).unwrap());
         let before = durable.clone();
         let error = invoke(
             run.as_ref(),
@@ -725,12 +759,12 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
         .expect("completed claim");
     assert!(
         supervisor
-            .register(&completed.id, &completed_fence)
+            .register(completed.id(), &completed_fence)
             .is_some(),
         "C1 completion must follow local launch registration"
     );
     supervisor.complete(
-        completed.id.clone(),
+        completed.id().clone(),
         BackgroundTaskCompletion {
             fence: completed_fence,
             end: BackgroundTaskEnd::Completed {
@@ -741,7 +775,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     );
     let mut completed_state = Store::new();
     completed_state.apply(
-        &task_state_cell(&completed.id)
+        &task_state_cell(completed.id())
             .write(&completed)
             .expect("completed state"),
     );
@@ -755,12 +789,12 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
         "C1/E1 task and notification receipt"
     );
     completed_state.apply(&reaction.state[0]);
-    let folded = task_state_cell(&completed.id)
+    let folded = task_state_cell(completed.id())
         .load(&completed_state)
         .expect("typed completion")
         .expect("completion remains present");
     assert!(matches!(
-        folded.lifecycle,
+        folded.lifecycle(),
         BackgroundTaskLifecycle::Ended { .. }
     ));
 
@@ -779,7 +813,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
         .expect("old claim");
     let mut leased_state = Store::new();
     leased_state.apply(
-        &task_state_cell(&leased.id)
+        &task_state_cell(leased.id())
             .write(&leased)
             .expect("leased state"),
     );
@@ -806,7 +840,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
         .expect("expired claim");
     let mut replacement_state = Store::new();
     replacement_state.apply(
-        &task_state_cell(&replacement.id)
+        &task_state_cell(replacement.id())
             .write(&replacement)
             .expect("replacement state"),
     );
@@ -816,7 +850,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
         .expect("phase hook succeeds");
     assert_eq!(reaction.state.len(), 1, "C3/E3");
     replacement_state.apply(&reaction.state[0]);
-    let reclaimed = task_state_cell(&replacement.id)
+    let reclaimed = task_state_cell(replacement.id())
         .load(&replacement_state)
         .expect("typed reclaim")
         .expect("reclaimed task");
@@ -826,15 +860,15 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
 
     assert!(
         supervisor
-            .register(&replacement.id, &replacement.tenure().unwrap())
+            .register(replacement.id(), &replacement.tenure().unwrap())
             .is_some(),
         "C4 setup"
     );
     supervisor.complete(
-        replacement.id.clone(),
+        replacement.id().clone(),
         BackgroundTaskCompletion {
             fence: awaken_lease_contract::fence::Tenure::granted(
-                replacement.id.clone(),
+                replacement.id().clone(),
                 "worker-old".into(),
                 awaken_lease_contract::fence::Epoch::FIRST,
             ),
@@ -844,7 +878,10 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
             },
         },
     );
-    assert!(supervisor.completion(&replacement.id).is_some(), "C4 setup");
+    assert!(
+        supervisor.completion(replacement.id()).is_some(),
+        "C4 setup"
+    );
     assert!(
         hook.on_phase(&ctx, &[], &replacement_state)
             .await
@@ -853,17 +890,17 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
             .is_empty(),
         "C4/E4 stale completion cannot mutate the current attempt"
     );
-    assert!(supervisor.completion(&replacement.id).is_none(), "C4/E4");
+    assert!(supervisor.completion(replacement.id()).is_none(), "C4/E4");
     assert!(
         supervisor
-            .register(&replacement.id, &attempt.tenure(&replacement.id))
+            .register(replacement.id(), &attempt.tenure(replacement.id()))
             .is_some(),
         "C4/E4 the stale guard no longer suppresses post-commit launch"
     );
     supervisor.complete(
-        replacement.id.clone(),
+        replacement.id().clone(),
         BackgroundTaskCompletion {
-            fence: attempt.tenure(&replacement.id),
+            fence: attempt.tenure(replacement.id()),
             end: BackgroundTaskEnd::Indeterminate {
                 message: "retained-new-epoch".into(),
             },
@@ -871,7 +908,7 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     );
     let mut stale_snapshot = Store::new();
     stale_snapshot.apply(
-        &task_state_cell(&replacement.id)
+        &task_state_cell(replacement.id())
             .write(&replacement)
             .unwrap(),
     );
@@ -880,11 +917,11 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
         .await
         .expect("phase hook succeeds");
     let retained = supervisor
-        .completion(&replacement.id)
+        .completion(replacement.id())
         .expect("C5/E5 newer evidence retained");
     assert_eq!(
         retained.fence,
-        attempt.tenure(&replacement.id),
+        attempt.tenure(replacement.id()),
         "C5/E5 exact identity"
     );
     assert_eq!(
@@ -904,11 +941,11 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     );
     replacement_state.apply(&current.state[0]);
     assert!(
-        task_state_cell(&replacement.id)
+        task_state_cell(replacement.id())
             .load(&replacement_state)
             .unwrap()
             .unwrap()
-            .lifecycle
+            .lifecycle()
             .is_terminal()
     );
 }
@@ -988,9 +1025,9 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
     if cancelling {
         task.request_cancel().expect("durable cancellation intent");
     }
-    assert!(supervisor.register(&task.id, &fence).is_some());
+    assert!(supervisor.register(task.id(), &fence).is_some());
     supervisor.complete(
-        task.id.clone(),
+        task.id().clone(),
         BackgroundTaskCompletion {
             fence: fence.clone(),
             end: end.clone(),
@@ -998,7 +1035,7 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
     );
     let mut durable = Store::new();
     durable.apply(
-        &task_state_cell(&task.id)
+        &task_state_cell(task.id())
             .write(&task)
             .expect("running state"),
     );
@@ -1008,9 +1045,9 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
         .await
         .expect("phase hook succeeds");
     assert_eq!(rejected.state.len(), 2, "R1 task and notification receipt");
-    assert!(supervisor.completion(&task.id).is_some(), "R2");
+    assert!(supervisor.completion(task.id()).is_some(), "R2");
     assert!(
-        supervisor.register(&task.id, &fence).is_none(),
+        supervisor.register(task.id(), &fence).is_none(),
         "R2 dedup guard"
     );
 
@@ -1027,13 +1064,13 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
     for command in &retried.state {
         durable.apply(command);
     }
-    let ended = task_state_cell(&task.id)
+    let ended = task_state_cell(task.id())
         .load(&durable)
         .expect("typed durable task")
         .expect("task retained");
     assert_eq!(
-        ended.lifecycle,
-        BackgroundTaskLifecycle::Ended { end },
+        ended.lifecycle(),
+        &BackgroundTaskLifecycle::Ended { end },
         "R3/R5 exact result retention"
     );
 
@@ -1042,17 +1079,17 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
         .await
         .expect("phase hook succeeds");
     assert!(retired.state.is_empty(), "R4 has no second durable write");
-    assert!(supervisor.completion(&task.id).is_none(), "R4");
+    assert!(supervisor.completion(task.id()).is_none(), "R4");
     assert!(
-        supervisor.register(&task.id, &fence).is_some(),
+        supervisor.register(task.id(), &fence).is_some(),
         "R4 guard retired"
     );
     assert!(matches!(
-        task_state_cell(&task.id)
+        task_state_cell(task.id())
             .load(&durable)
             .expect("typed retained task")
             .expect("ended task remains durable")
-            .lifecycle,
+            .lifecycle(),
         BackgroundTaskLifecycle::Ended { .. }
     ));
 }
@@ -1086,9 +1123,9 @@ async fn step_start_rejects_corrupt_task_namespace_before_touching_supervisor_pr
             },
         )
         .unwrap();
-    assert!(supervisor.register(&task.id, &fence).is_some());
+    assert!(supervisor.register(task.id(), &fence).is_some());
     supervisor.complete(
-        task.id.clone(),
+        task.id().clone(),
         BackgroundTaskCompletion {
             fence: fence.clone(),
             end: BackgroundTaskEnd::Completed {
@@ -1098,7 +1135,7 @@ async fn step_start_rejects_corrupt_task_namespace_before_touching_supervisor_pr
         },
     );
     let mut state = Store::new();
-    state.apply(&task_state_cell(&task.id).write(&task).unwrap());
+    state.apply(&task_state_cell(task.id()).write(&task).unwrap());
     state.apply(&awaken_agent_contract::agent::state::Command::set(
         awaken_agent_contract::agent::state::Scope::Thread,
         awaken_agent_contract::agent::state::MergePolicy::Exclusive,
@@ -1121,11 +1158,11 @@ async fn step_start_rejects_corrupt_task_namespace_before_touching_supervisor_pr
     assert_eq!(error.code(), "background_task_state_invalid");
     assert_eq!(state, before);
     assert!(
-        supervisor.completion(&task.id).is_some(),
+        supervisor.completion(task.id()).is_some(),
         "completion was not retired"
     );
     assert!(
-        supervisor.register(&task.id, &fence).is_none(),
+        supervisor.register(task.id(), &fence).is_none(),
         "dedup projection was not cleared"
     );
 }

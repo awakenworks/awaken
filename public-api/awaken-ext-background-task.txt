@@ -35,20 +35,21 @@ pub awaken_ext_background_task::TaskNotificationFormat::Text
 pub struct awaken_ext_background_task::BackgroundInvocation
 pub awaken_ext_background_task::BackgroundInvocation::call: awaken_tool_contract::tool::ToolCall
 pub struct awaken_ext_background_task::BackgroundTask
-pub awaken_ext_background_task::BackgroundTask::id: awaken_tool_contract::tool::background_task::BackgroundTaskId
-pub awaken_ext_background_task::BackgroundTask::invocation: awaken_ext_background_task::BackgroundInvocation
-pub awaken_ext_background_task::BackgroundTask::lifecycle: awaken_ext_background_task::BackgroundTaskLifecycle
-pub awaken_ext_background_task::BackgroundTask::origin: awaken_ext_background_task::BackgroundTaskOrigin
-pub awaken_ext_background_task::BackgroundTask::revision: u64
 impl awaken_ext_background_task::BackgroundTask
 pub fn awaken_ext_background_task::BackgroundTask::admits_execution_of(&self, &Self, u64) -> bool
 pub fn awaken_ext_background_task::BackgroundTask::attempt(&self) -> core::option::Option<&awaken_ext_background_task::TaskAttempt>
 pub fn awaken_ext_background_task::BackgroundTask::finish(&mut self, &awaken_tool_contract::tool::background_task::TaskTenure, awaken_tool_contract::tool::background_task::BackgroundTaskEnd) -> core::result::Result<(), awaken_tool_contract::tool::background_task::BackgroundTaskError>
+pub fn awaken_ext_background_task::BackgroundTask::from_parts(awaken_tool_contract::tool::background_task::BackgroundTaskId, awaken_ext_background_task::BackgroundTaskOrigin, awaken_ext_background_task::BackgroundInvocation, awaken_ext_background_task::BackgroundTaskLifecycle, u64) -> core::result::Result<Self, awaken_tool_contract::tool::background_task::BackgroundTaskError>
 pub fn awaken_ext_background_task::BackgroundTask::heartbeat(&mut self, &awaken_tool_contract::tool::background_task::TaskTenure, u64, u64) -> core::result::Result<(), awaken_tool_contract::tool::background_task::BackgroundTaskError>
 pub fn awaken_ext_background_task::BackgroundTask::heartbeat_checkpoint(&mut self, &awaken_tool_contract::tool::background_task::TaskTenure, u64, u64) -> core::result::Result<awaken_ext_background_task::TaskHeartbeatCheckpointOutcome, awaken_ext_background_task::TaskHeartbeatCheckpointError>
+pub fn awaken_ext_background_task::BackgroundTask::id(&self) -> &awaken_tool_contract::tool::background_task::BackgroundTaskId
+pub fn awaken_ext_background_task::BackgroundTask::invocation(&self) -> &awaken_ext_background_task::BackgroundInvocation
+pub fn awaken_ext_background_task::BackgroundTask::lifecycle(&self) -> &awaken_ext_background_task::BackgroundTaskLifecycle
+pub fn awaken_ext_background_task::BackgroundTask::origin(&self) -> &awaken_ext_background_task::BackgroundTaskOrigin
 pub fn awaken_ext_background_task::BackgroundTask::reclaim(&mut self, impl core::convert::Into<alloc::string::String>, u64, u64) -> core::result::Result<awaken_ext_background_task::TaskClaim, awaken_tool_contract::tool::background_task::BackgroundTaskError>
 pub fn awaken_ext_background_task::BackgroundTask::request_cancel(&mut self) -> core::result::Result<(), awaken_tool_contract::tool::background_task::BackgroundTaskError>
 pub fn awaken_ext_background_task::BackgroundTask::requested(awaken_tool_contract::tool::background_task::BackgroundTaskId, awaken_ext_background_task::BackgroundTaskOrigin, awaken_ext_background_task::BackgroundInvocation) -> Self
+pub fn awaken_ext_background_task::BackgroundTask::revision(&self) -> u64
 pub fn awaken_ext_background_task::BackgroundTask::same_request_as(&self, &Self) -> bool
 pub fn awaken_ext_background_task::BackgroundTask::start(&mut self, impl core::convert::Into<alloc::string::String>, u64, u64, awaken_ext_background_task::TaskExecutionPolicy) -> core::result::Result<awaken_tool_contract::tool::background_task::TaskTenure, awaken_tool_contract::tool::background_task::BackgroundTaskError>
 pub fn awaken_ext_background_task::BackgroundTask::tenure(&self) -> core::option::Option<awaken_tool_contract::tool::background_task::TaskTenure>

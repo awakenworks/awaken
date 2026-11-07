@@ -33,7 +33,7 @@ impl AttemptOwnershipVerifier for BackgroundTaskOwnership {
         if current.admits_execution_of(&self.expected, self.supervisor.clock().now_ms())
             && self
                 .supervisor
-                .is_active(&self.expected.id, &expected.tenure(&self.expected.id))
+                .is_active(self.expected.id(), &expected.tenure(self.expected.id()))
         {
             Ok(())
         } else {
@@ -183,14 +183,16 @@ pub(super) mod tests {
                 observer.launch_remote(task.clone(), &observed).await;
             }
             assert!(background.drain(Duration::from_secs(2)).await);
-            let completion = supervisor.completion(&task.id).expect("terminal candidate");
+            let completion = supervisor
+                .completion(task.id())
+                .expect("terminal candidate");
             assert_eq!(completion.fence, task.tenure().unwrap());
             assert!(matches!(
                 completion.end,
                 BackgroundTaskEnd::Indeterminate { .. }
             ));
             assert!(
-                supervisor.wait_candidate(&task.id).is_none(),
+                supervisor.wait_candidate(task.id()).is_none(),
                 "U1..U4 no wait"
             );
             if boundary == 0 {
@@ -252,16 +254,28 @@ pub(super) mod tests {
     }
 
     pub(crate) async fn persist(commit: &SessionCommit, task: &BackgroundTask, run: &str) {
+        let command = task_state_cell(task.id()).write(task).unwrap();
+        persist_command(commit, task, command, run).await;
+    }
+
+    /// Commit `command` as `task`'s state cell; a test that needs a malformed
+    /// persisted Task edits the encoded value, which no Task value can hold.
+    async fn persist_command(
+        commit: &SessionCommit,
+        task: &BackgroundTask,
+        command: awaken_agent_contract::agent::state::Command,
+        run: &str,
+    ) {
         commit
             .commit(ThreadCommit::assemble(
-                task.origin.thread_id.clone(),
+                task.origin().thread_id.clone(),
                 RunDisposition::ended(
                     RunId(run.into()),
                     awaken_agent_contract::agent::run::EndCause::NaturalEnd,
                 ),
                 true,
                 Vec::new(),
-                vec![task_state_cell(&task.id).write(task).unwrap()],
+                vec![command],
                 Vec::new(),
             ))
             .await
@@ -394,7 +408,7 @@ pub(super) mod tests {
                 let mut task = task(if boundary == 3 { 0 } else { boundary }, &supervisor);
                 persist(&commit, &task, "initial").await;
                 let fence = task.tenure().unwrap();
-                let token = supervisor.register(&task.id, &fence).unwrap();
+                let token = supervisor.register(task.id(), &fence).unwrap();
                 let prepared = PreparedToolExecutor::new(
                     runtime,
                     &snapshot,
@@ -405,8 +419,8 @@ pub(super) mod tests {
                 let execution = tokio::spawn(async move {
                     let state = awaken_agent_contract::agent::state::Store::new();
                     let run = RunId("detached".into());
-                    let thread = &expected.origin.thread_id;
-                    let call = &expected.invocation.call;
+                    let thread = &expected.origin().thread_id;
+                    let call = &expected.invocation().call;
                     match boundary {
                         0 => prepared
                             .start_task(&run, thread, "start".into(), call, &state)
@@ -466,17 +480,28 @@ pub(super) mod tests {
                     2 => task
                         .finish(&fence, BackgroundTaskEnd::Cancelled {})
                         .unwrap(),
-                    3 => match &mut task.lifecycle {
-                        BackgroundTaskLifecycle::Running { attempt }
-                        | BackgroundTaskLifecycle::Waiting { attempt, .. }
-                        | BackgroundTaskLifecycle::Cancelling { attempt, .. } => {
-                            attempt.lease_expires_at_ms = 1
+                    3 => {
+                        let mut lifecycle = task.lifecycle().clone();
+                        match &mut lifecycle {
+                            BackgroundTaskLifecycle::Running { attempt }
+                            | BackgroundTaskLifecycle::Waiting { attempt, .. }
+                            | BackgroundTaskLifecycle::Cancelling { attempt, .. } => {
+                                attempt.lease_expires_at_ms = 1
+                            }
+                            _ => unreachable!(),
                         }
-                        _ => unreachable!(),
-                    },
+                        task = BackgroundTask::from_parts(
+                            task.id().clone(),
+                            task.origin().clone(),
+                            task.invocation().clone(),
+                            lifecycle,
+                            task.revision(),
+                        )
+                        .expect("an earlier lease keeps the Task valid");
+                    }
                     4 => {
                         let replacement = fence.reassigned(fence.holder().clone()).unwrap();
-                        supervisor.register(&task.id, &replacement).unwrap();
+                        supervisor.register(task.id(), &replacement).unwrap();
                     }
                     _ => {}
                 }
@@ -561,7 +586,7 @@ pub(super) mod tests {
                 persist(&commit, &current, "before-effect").await;
                 let old = current.clone();
                 let fence = old.tenure().unwrap();
-                let token = supervisor.register(&old.id, &fence).unwrap();
+                let token = supervisor.register(old.id(), &fence).unwrap();
                 let prepared = Arc::new(
                     PreparedToolExecutor::new(
                         runtime,
@@ -573,8 +598,8 @@ pub(super) mod tests {
                 let invoke = |prepared: Arc<PreparedToolExecutor>, expected: BackgroundTask| async move {
                     let state = awaken_agent_contract::agent::state::Store::new();
                     let run = RunId("effect".into());
-                    let call = &expected.invocation.call;
-                    let thread = &expected.origin.thread_id;
+                    let call = &expected.invocation().call;
+                    let thread = &expected.origin().thread_id;
                     match boundary {
                         0 => prepared
                             .start_task(&run, thread, "start".into(), call, &state)
@@ -662,7 +687,7 @@ pub(super) mod tests {
         let expected = task(0, &supervisor);
         let expiry = expected.attempt().unwrap().lease_expires_at_ms;
         supervisor
-            .register(&expected.id, &expected.tenure().unwrap())
+            .register(expected.id(), &expected.tenure().unwrap())
             .unwrap();
         let commit = local_commit();
         persist(&commit, &expected, "injected-clock-lease").await;
@@ -688,7 +713,7 @@ pub(super) mod tests {
             Err(AttemptOwnershipError::Lost),
             "R2 after expiry"
         );
-        assert!(supervisor.is_active(&expected.id, &expected.tenure().unwrap()));
+        assert!(supervisor.is_active(expected.id(), &expected.tenure().unwrap()));
     }
 
     #[tokio::test]
@@ -707,7 +732,7 @@ pub(super) mod tests {
         ));
         let expected = task(0, &supervisor);
         supervisor
-            .register(&expected.id, &expected.tenure().unwrap())
+            .register(expected.id(), &expected.tenure().unwrap())
             .unwrap();
         let commit = local_commit();
         let authority = BackgroundTaskOwnership {
@@ -722,9 +747,13 @@ pub(super) mod tests {
             authority.verify_current().await,
             Err(AttemptOwnershipError::Lost)
         ));
-        let mut malformed = expected.clone();
-        malformed.revision = 0;
-        persist(&commit, &malformed, "malformed").await;
+        // An executing Task at revision 0 is not a Task value; encode it.
+        let mut malformed = task_state_cell(expected.id()).write(&expected).unwrap();
+        let awaken_agent_contract::agent::state::Action::Set(value) = &mut malformed.action else {
+            unreachable!("a state cell write sets its value")
+        };
+        value["revision"] = serde_json::json!(0);
+        persist_command(&commit, &expected, malformed, "malformed").await;
         assert!(matches!(
             authority.verify_current().await,
             Err(AttemptOwnershipError::Unavailable(_))
