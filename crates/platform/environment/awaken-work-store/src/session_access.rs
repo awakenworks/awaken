@@ -94,7 +94,7 @@ impl SqliteWorkQueue {
                 expires_at: lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
             },
         ) else {
-            return Err(exhausted_lease_epoch(EpochExhausted));
+            return Err(lease_generation_integrity(EpochExhausted));
         };
         let next_epoch = stored_lease_epoch(next_authority.granted_epoch()?)?;
         let session_access = session_access.filter(|_| data_type == "session");
@@ -382,9 +382,7 @@ impl SqliteWorkQueue {
             let owner = current.1.clone().ok_or_else(|| {
                 WorkQueueError::Storage("active Session Work has no lease owner".into())
             })?;
-            let epoch = stored_epoch(current.2)?.ok_or_else(|| {
-                WorkQueueError::Storage("active Session Work has no lease epoch".into())
-            })?;
+            let epoch = granted_epoch(current.2)?;
             let expires_at_unix_ms = u64::try_from(current.3.unwrap_or_default())
                 .map_err(|_| WorkQueueError::Storage("negative Session Work expiry".into()))?;
             return Ok(Some(
@@ -566,7 +564,7 @@ impl PostgresWorkQueue {
                 expires_at: lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
             },
         ) else {
-            return Err(exhausted_lease_epoch(EpochExhausted));
+            return Err(lease_generation_integrity(EpochExhausted));
         };
         let next_epoch = stored_lease_epoch(next_authority.granted_epoch()?)?;
         let session_access = session_access.filter(|_| data_type == "session");
@@ -630,9 +628,11 @@ impl PostgresWorkQueue {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
         let current = pg_row_to_item(&row)?;
-        let epoch = stored_lease_epoch(
-            epoch.ok_or_else(|| storage("owned ACK has no granted lease epoch"))?,
-        )?;
+        let epoch = stored_lease_epoch(epoch.ok_or_else(|| {
+            lease_generation_integrity(
+                awaken_lease_contract::fence::EpochIntegrityViolation::ZeroGranted,
+            )
+        })?)?;
         let acknowledged_epoch: Option<i64> = row.try_get("ack_lease_epoch").map_err(storage)?;
         if current.acknowledged_at.is_some() && acknowledged_epoch == Some(epoch) {
             tx.commit().await.map_err(storage)?;
@@ -839,7 +839,7 @@ impl PostgresWorkQueue {
 mod epoch_tests {
     use super::*;
 
-    // E2 queued/MAX -> Storage, no REAL promotion/wrap;
+    // E2 queued/MAX -> LeaseGenerationIntegrity(Exhausted), no REAL promotion/wrap;
     // E3 MAX-1 -> exact MAX and one token. Negative epochs are forbidden by the
     // real schema and covered as corrupt numeric inputs by mutation's proof.
     // Exercise public claim_with_session_access, not just the numeric helper.
@@ -873,7 +873,13 @@ mod epoch_tests {
             if epoch == i64::MAX - 1 {
                 assert!(outcome.unwrap().unwrap().session_access.is_some(), "E3");
             } else {
-                assert!(matches!(outcome, Err(WorkQueueError::Storage(_))), "E1/E2");
+                assert_eq!(
+                    outcome.map(|_| ()),
+                    Err(WorkQueueError::LeaseGenerationIntegrity(
+                        awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted
+                    )),
+                    "E1/E2 permanent integrity refusal, not a retryable Storage error"
+                );
             }
             let row: (String, i64, Option<String>) = sqlx::query_as(
                 "SELECT state, lease_epoch, session_token_sha256 FROM work_queue_item WHERE work_id = ?1",
@@ -943,7 +949,13 @@ mod epoch_tests {
             if epoch == i64::MAX - 1 {
                 assert!(outcome.unwrap().unwrap().session_access.is_some(), "E3");
             } else {
-                assert!(matches!(outcome, Err(WorkQueueError::Storage(_))), "E1/E2");
+                assert_eq!(
+                    outcome.map(|_| ()),
+                    Err(WorkQueueError::LeaseGenerationIntegrity(
+                        awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted
+                    )),
+                    "E1/E2 permanent integrity refusal, not a retryable Storage error"
+                );
             }
             let row: (String, i64, Option<String>) = sqlx::query_as("SELECT state, lease_epoch, session_token_sha256 FROM work_queue_item WHERE work_id = $1").bind(&work).fetch_one(&pool).await.unwrap();
             if epoch == i64::MAX - 1 {

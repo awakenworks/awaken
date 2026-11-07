@@ -17,8 +17,8 @@ use crate::SessionMutationError;
 use crate::archive_intent::unattempted_profiled_archive_witness;
 use crate::mutation::ROOT_CAS_ATTEMPTS;
 use crate::realization::{
-    LOCAL_SESSION_REALIZATION_LEASE_MS, mutation_control, repository_control, unavailable,
-    validate_realization_target,
+    LOCAL_SESSION_REALIZATION_LEASE_MS, begin_refusal, lease_integrity_refusal, mutation_control,
+    repository_control, unavailable, validate_realization_target,
 };
 
 /// Selector for the one terminal-assignment claim algorithm. External Workers
@@ -133,11 +133,15 @@ fn claim_terminal_cleanup_candidate(
     target: &awaken_session_execution_contract::SessionRealizationTarget,
 ) -> Result<TerminalCleanupClaimConflict, SessionRealizationControlFailure> {
     let previous_realization = session.realization.clone();
-    let attempted_lease = session.assignment().reassign(
-        &target.owner,
-        &target.runtime_incarnation,
-        target.lease_expires_at_unix_ms,
-    )?;
+    let session_id = session.session_id.to_string();
+    let attempted_lease = session
+        .assignment()
+        .reassign(
+            &target.owner,
+            &target.runtime_incarnation,
+            target.lease_expires_at_unix_ms,
+        )
+        .map_err(|rejection| begin_refusal(&session_id, rejection))?;
     Ok(TerminalCleanupClaimConflict {
         owner_scope: owner_scope.to_string(),
         session_id: session.session_id.to_string(),
@@ -238,7 +242,12 @@ impl SessionTerminalCleanups {
                     &conflict.attempted_lease,
                     conflict.previous_realization.clone(),
                 )
-                .map_err(unavailable)?;
+                .map_err(|error| match error {
+                    awaken_session_contract::SessionAggregateCommandError::LeaseIntegrity(
+                        violation,
+                    ) => lease_integrity_refusal(&conflict.session_id, violation),
+                    error => unavailable(error),
+                })?;
             match mutations
                 .commit_session_snapshot_with_outcome(
                     &conflict.owner_scope,

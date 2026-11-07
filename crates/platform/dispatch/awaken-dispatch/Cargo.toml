@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["async-nats", "sqlx"]
 
 [dependencies]
+awaken-lease-contract.workspace = true
 awaken-sync.workspace = true
 awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
@@ -67,8 +68,8 @@ nats = ["durable", "dep:async-nats", "dep:futures-lite"]
 [dev-dependencies]
 awaken-tool-contract.workspace = true
 awaken-lease-testkit.workspace = true
-awaken-lease-contract.workspace = true
 awaken-store-conformance.workspace = true
+awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 awaken-dispatch-testkit = { workspace = true }
 awaken-store-inmem.workspace = true
@@ -91,6 +92,10 @@ required-features = ["test-support"]
 
 [[test]]
 name = "dispatch_conformance"
+required-features = ["test-support"]
+
+[[test]]
+name = "guarded_admission_conformance"
 required-features = ["test-support"]
 
 # Compile-surface cause/effect table for the bounded-query and reconciliation

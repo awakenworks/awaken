@@ -30,6 +30,18 @@ pub const fn awaken_lease_contract::authority::AuthorityProofStarted::elapsed_cl
 pub const fn awaken_lease_contract::authority::AuthorityProofStarted::from_clock_sample(tokio::time::instant::Instant, core::time::Duration) -> Self
 pub const fn awaken_lease_contract::authority::AuthorityProofStarted::scheduled(self) -> tokio::time::instant::Instant
 pub mod awaken_lease_contract::fence
+pub enum awaken_lease_contract::fence::EpochIntegrityViolation
+pub awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted
+pub awaken_lease_contract::fence::EpochIntegrityViolation::ZeroGranted
+impl awaken_lease_contract::fence::EpochIntegrityViolation
+pub const awaken_lease_contract::fence::EpochIntegrityViolation::CODE: &'static str
+impl core::convert::From<awaken_lease_contract::fence::EpochExhausted> for awaken_lease_contract::fence::EpochIntegrityViolation
+pub fn awaken_lease_contract::fence::EpochIntegrityViolation::from(awaken_lease_contract::fence::EpochExhausted) -> Self
+impl core::convert::From<awaken_lease_contract::fence::ZeroEpoch> for awaken_lease_contract::fence::EpochIntegrityViolation
+pub fn awaken_lease_contract::fence::EpochIntegrityViolation::from(awaken_lease_contract::fence::ZeroEpoch) -> Self
+impl core::error::Error for awaken_lease_contract::fence::EpochIntegrityViolation
+impl core::fmt::Display for awaken_lease_contract::fence::EpochIntegrityViolation
+pub fn awaken_lease_contract::fence::EpochIntegrityViolation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum awaken_lease_contract::fence::FenceSuccession
 pub awaken_lease_contract::fence::FenceSuccession::Reassignment
 pub awaken_lease_contract::fence::FenceSuccession::Renewal
@@ -55,6 +67,7 @@ pub const fn awaken_lease_contract::fence::Epoch::from_persisted(u64) -> core::o
 pub const fn awaken_lease_contract::fence::Epoch::get(self) -> u64
 pub const fn awaken_lease_contract::fence::Epoch::next(self) -> core::option::Option<Self>
 pub const fn awaken_lease_contract::fence::Epoch::successor(core::option::Option<Self>) -> core::result::Result<Self, awaken_lease_contract::fence::EpochExhausted>
+pub const fn awaken_lease_contract::fence::Epoch::successor_of_granted(core::option::Option<u64>) -> core::result::Result<Self, awaken_lease_contract::fence::EpochIntegrityViolation>
 impl core::convert::From<awaken_lease_contract::fence::Epoch> for u64
 pub fn u64::from(awaken_lease_contract::fence::Epoch) -> Self
 impl core::convert::TryFrom<u64> for awaken_lease_contract::fence::Epoch
@@ -63,6 +76,8 @@ pub fn awaken_lease_contract::fence::Epoch::try_from(u64) -> core::result::Resul
 impl core::fmt::Display for awaken_lease_contract::fence::Epoch
 pub fn awaken_lease_contract::fence::Epoch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_lease_contract::fence::EpochExhausted
+impl core::convert::From<awaken_lease_contract::fence::EpochExhausted> for awaken_lease_contract::fence::EpochIntegrityViolation
+pub fn awaken_lease_contract::fence::EpochIntegrityViolation::from(awaken_lease_contract::fence::EpochExhausted) -> Self
 impl core::error::Error for awaken_lease_contract::fence::EpochExhausted
 impl core::fmt::Display for awaken_lease_contract::fence::EpochExhausted
 pub fn awaken_lease_contract::fence::EpochExhausted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -107,6 +122,8 @@ pub fn awaken_lease_contract::fence::Tenure<S>::fmt(&self, &mut core::fmt::Forma
 impl<S: awaken_lease_contract::fence::TenureScope> core::hash::Hash for awaken_lease_contract::fence::Tenure<S> where <S as awaken_lease_contract::fence::TenureScope>::Subject: core::hash::Hash, <S as awaken_lease_contract::fence::TenureScope>::Holder: core::hash::Hash
 pub fn awaken_lease_contract::fence::Tenure<S>::hash<H: core::hash::Hasher>(&self, &mut H)
 pub struct awaken_lease_contract::fence::ZeroEpoch
+impl core::convert::From<awaken_lease_contract::fence::ZeroEpoch> for awaken_lease_contract::fence::EpochIntegrityViolation
+pub fn awaken_lease_contract::fence::EpochIntegrityViolation::from(awaken_lease_contract::fence::ZeroEpoch) -> Self
 impl core::error::Error for awaken_lease_contract::fence::ZeroEpoch
 impl core::fmt::Display for awaken_lease_contract::fence::ZeroEpoch
 pub fn awaken_lease_contract::fence::ZeroEpoch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result

@@ -14,6 +14,7 @@ mod capacity_budget;
 mod cleanup_timing;
 mod concurrent_reconciliation;
 mod initial_preparation;
+mod lease_integrity;
 mod partial_preparation;
 mod replacement_crash;
 mod resource_effect_authorization;

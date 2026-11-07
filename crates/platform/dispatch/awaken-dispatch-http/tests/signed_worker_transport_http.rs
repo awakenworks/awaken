@@ -751,11 +751,18 @@ impl awaken_session_configuration_contract::EnvironmentWarmupSource for StaticEn
 impl WorkerDirectory for TestWorkerDirectory {
     async fn lock_incarnation(
         &self,
-        _identity: &WorkerIdentity,
+        identity: &WorkerIdentity,
     ) -> Result<Option<awaken_worker_contract::WorkerIncarnationGuard>, RegistryError> {
-        Err(RegistryError::Persistence(
-            "fixture forbids physical admission".into(),
-        ))
+        let held = self.3.clone().lock_owned().await;
+        let current = self
+            .0
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|record| &record.snapshot.identity == identity);
+        Ok(current.map(|record| {
+            awaken_worker_contract::WorkerIncarnationGuard::new(held, record.snapshot)
+        }))
     }
 
     async fn register(
@@ -764,6 +771,7 @@ impl WorkerDirectory for TestWorkerDirectory {
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<RegisteredWorker, RegistryError> {
+        let _exclusion = self.3.lock().await;
         let record = RegisteredWorker {
             snapshot: WorkerSnapshot {
                 identity: WorkerIdentity::new(
@@ -800,6 +808,7 @@ impl WorkerDirectory for TestWorkerDirectory {
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<RegistryMutation, RegistryError> {
+        let _exclusion = self.3.lock().await;
         let mut current = self.0.lock().unwrap();
         let Some(record) = current.as_mut() else {
             return Ok(RegistryMutation::NotFound);

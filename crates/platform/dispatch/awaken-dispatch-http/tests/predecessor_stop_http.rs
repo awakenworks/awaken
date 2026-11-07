@@ -298,6 +298,10 @@ async fn register(
     identity
 }
 
+/// Fits the durable Registries' signed 64-bit columns and outlasts any wall or
+/// database clock a test can observe.
+const SUCCESSOR_LIVE_ON_EITHER_CLOCK_TTL_MS: u64 = 1 << 62;
+
 struct Fixture {
     store: Arc<dyn WorkerDispatchAuthority>,
     directory: Arc<dyn WorkerDirectory>,
@@ -349,7 +353,16 @@ impl Fixture {
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         let old_worker = register(directory.as_ref(), &format!("{tag}-old"), 100, old_ttl).await;
-        let worker = register(directory.as_ref(), &format!("{tag}-next"), 200, 10_000).await;
+        // The successor's Registry lease must hold on both clocks: this fixture
+        // stamps the Registry at 200 while every Dispatch store judges the
+        // guarded incarnation's standing on its own (wall or database) clock.
+        let worker = register(
+            directory.as_ref(),
+            &format!("{tag}-next"),
+            200,
+            SUCCESSOR_LIVE_ON_EITHER_CLOCK_TTL_MS,
+        )
+        .await;
         let request = RunDispatch::new(activation(&tag))
             .with_placement(awaken_dispatch::PlacementRequirements::remote_required())
             .with_worker_codec_requirements();
@@ -583,16 +596,9 @@ async fn resolution_backoff_observes_predecessor_without_reaching_physical_begin
     // The existing Memory/SQLite/PostgreSQL adapter selection owns persistence
     // coverage. These deterministic trusted-provider fixtures prove HTTP
     // ordering and receipt consumption, not actual Kubernetes termination.
-    for store in dispatch_stores().await {
+    for (store, directory) in dispatch_stores().await {
         for (local_exit, scope_closed) in [(false, false), (true, false), (true, true)] {
-            let f = Fixture::with_store(
-                store.clone(),
-                Arc::new(MemoryWorkerDirectory::new()),
-                true,
-                50,
-                5_000,
-            )
-            .await;
+            let f = Fixture::with_store(store.clone(), directory.clone(), true, 50, 5_000).await;
             let probe = AttemptStopProbe::install(&f);
             if local_exit {
                 *f.stop.result.lock().unwrap() = Ok(Some("original-process-exit".into()));
@@ -1970,18 +1976,36 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
     second.assert_occupied().await;
 }
 
-async fn dispatch_stores() -> Vec<Arc<dyn WorkerDispatchAuthority>> {
-    let mut stores: Vec<Arc<dyn WorkerDispatchAuthority>> = vec![
-        Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
-        Arc::new(
-            SqliteDispatchStore::open_in_memory(awaken_time::system_clock())
-                .await
-                .unwrap(),
+/// Each Dispatch store with the Registry it is paired with in production:
+/// physical admission carries that Registry's incarnation exclusion, and
+/// PostgreSQL admits only inside the Registry transaction of its own pool.
+async fn dispatch_stores() -> Vec<(Arc<dyn WorkerDispatchAuthority>, Arc<dyn WorkerDirectory>)> {
+    let mut stores: Vec<(Arc<dyn WorkerDispatchAuthority>, Arc<dyn WorkerDirectory>)> = vec![
+        (
+            Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
+            Arc::new(MemoryWorkerDirectory::new()),
+        ),
+        (
+            Arc::new(
+                SqliteDispatchStore::open_in_memory(awaken_time::system_clock())
+                    .await
+                    .unwrap(),
+            ),
+            Arc::new(MemoryWorkerDirectory::new()),
         ),
     ];
     if let Some(url) = postgres_support::database_url() {
-        stores.push(Arc::new(
-            postgres_support::connect(PostgresDispatchStore::connect(&url, 5)).await,
+        let pool = postgres_support::connect(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(5)
+                .connect(&url),
+        )
+        .await;
+        stores.push((
+            Arc::new(
+                postgres_support::connect(PostgresDispatchStore::with_pool(pool.clone())).await,
+            ),
+            Arc::new(postgres_support::connect(PostgresWorkerDirectory::with_pool(pool)).await),
         ));
         eprintln!("complete stop matrix: real PostgreSQL Dispatch enabled");
     }
@@ -1997,15 +2021,8 @@ async fn complete_stop_uses_exact_retirement_and_requires_fresh_successor_admiss
     // => retryable 503 + occupied; R21 !C3 => 400 + occupied; R22 all => empty but
     // original HTTP reply still Blocked. R23 next ordinary begin => Applied;
     // old claim remains fenced. Cross real Memory/SQLite/configured PostgreSQL.
-    for store in dispatch_stores().await {
-        let f = Fixture::with_store(
-            store,
-            Arc::new(MemoryWorkerDirectory::new()),
-            true,
-            50,
-            5_000,
-        )
-        .await;
+    for (store, directory) in dispatch_stores().await {
+        let f = Fixture::with_store(store, directory, true, 50, 5_000).await;
         let probe = AttemptStopProbe::install(&f);
         f.stop.release.add_permits(1);
         let (status, body) = f.begin().await;
@@ -2174,15 +2191,8 @@ async fn concurrent_complete_receipts_cannot_clear_a_successor_slot() {
     // Deterministic barriers (not sleeps) put the successor between receipt
     // applications. Successful DB access while IO waits also proves no database
     // transaction is held across provider IO. Cross actual store adapters.
-    for store in dispatch_stores().await {
-        let f = Fixture::with_store(
-            store,
-            Arc::new(MemoryWorkerDirectory::new()),
-            true,
-            50,
-            5_000,
-        )
-        .await;
+    for (store, directory) in dispatch_stores().await {
+        let f = Fixture::with_store(store, directory, true, 50, 5_000).await;
         let probe = AttemptStopProbe::install(&f);
         *f.stop.result.lock().unwrap() = Ok(Some("local-exit".into()));
         *probe.result.lock().unwrap() = Ok(Some("all-terminal".into()));
@@ -2561,15 +2571,8 @@ async fn committed_terminal_closure_needs_no_current_successor_and_retains_unkno
     // T8 stale occupied summary+now-empty live slot => explicit retryable error,
     // never a fabricated vacancy. Fresh empty summary => terminal claim readiness
     // only; no new stop/receipt. This is the opposite mismatch to T2.
-    for store in dispatch_stores().await {
-        let f = Fixture::with_store(
-            store,
-            Arc::new(MemoryWorkerDirectory::new()),
-            true,
-            50,
-            5_000,
-        )
-        .await;
+    for (store, directory) in dispatch_stores().await {
+        let f = Fixture::with_store(store, directory, true, 50, 5_000).await;
         f.store.relinquish_claim(&f.next).await.unwrap();
         assert!(
             !f.store.claim_is_current(&f.next).await.unwrap(),

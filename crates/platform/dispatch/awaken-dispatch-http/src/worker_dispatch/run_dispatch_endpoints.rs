@@ -339,51 +339,45 @@ async fn admit_attempt(
     } else {
         None
     };
-    let incarnation_guard = if service.execution_bindings.is_some() {
-        let identity = request.identity.as_ref().ok_or_else(|| {
-            ApplicationError::invalid(
-                "registered Worker identity is required for physical admission",
-            )
+    // Every physical admission, bound or not, installs its slot under the
+    // original Registry exclusion: a quiesce, deregistration or replacement
+    // either precedes this lock (and is refused below) or waits for the
+    // installation. `claim_authority` above read the Registry without it.
+    let identity = request.identity.as_ref().ok_or_else(|| {
+        ApplicationError::invalid("registered Worker identity is required for physical admission")
+    })?;
+    let guard = service
+        .directory
+        .lock_incarnation(identity)
+        .await
+        .map_err(|e| ApplicationError::unavailable(e.to_string()))?
+        .ok_or_else(|| {
+            ApplicationError::invalid("Worker incarnation changed before physical admission")
         })?;
-        let guard = service
-            .directory
-            .lock_incarnation(identity)
+    // Early refusal with this boundary's message only. Dispatch applies the
+    // same standing law on its own clock while the guard is still held.
+    if !guard
+        .snapshot()
+        .standing(service.clock.now_ms())
+        .holds_authority()
+    {
+        guard
+            .release()
             .await
-            .map_err(|e| ApplicationError::unavailable(e.to_string()))?
-            .ok_or_else(|| {
-                ApplicationError::invalid("Worker incarnation changed before physical admission")
-            })?;
-        let snapshot = guard.snapshot();
-        // Physical admission starts work only for an incarnation that still
-        // holds authority: drained, expired and dead incarnations are fenced.
-        if !snapshot.standing(service.clock.now_ms()).holds_authority() {
-            guard
-                .release()
-                .await
-                .map_err(ApplicationError::unavailable)?;
-            return Err(ApplicationError::invalid(
-                "Worker incarnation closed before physical admission",
-            ));
-        }
-        Some(guard)
-    } else {
-        None
-    };
+            .map_err(ApplicationError::unavailable)?;
+        return Err(ApplicationError::invalid(
+            "Worker incarnation closed before physical admission",
+        ));
+    }
     // SQLite's blocking transaction survives HTTP cancellation. Move the
     // original Registry exclusion into the same completion task; dropping the
     // request must not release it ahead of a still-running slot installation.
     let dispatch = service.dispatch.clone();
     let claim = request.claim.clone();
     let admission = complete_admission(async move {
-        let admission = if let Some(guard) = incarnation_guard {
-            dispatch
-                .admit_attempt_guarded(&claim, binding.as_ref(), guard, handoff)
-                .await
-        } else if handoff {
-            dispatch.handoff_attempt(&claim, binding.as_ref()).await
-        } else {
-            dispatch.begin_attempt(&claim, binding.as_ref()).await
-        };
+        let admission = dispatch
+            .admit_attempt_guarded(&claim, binding.as_ref(), guard, handoff)
+            .await;
         Ok::<_, ApplicationError>(admission)
     })
     .await

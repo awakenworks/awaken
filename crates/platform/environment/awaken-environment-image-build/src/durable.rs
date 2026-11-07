@@ -74,6 +74,11 @@ impl<B> DurableEnvironmentImageBuildStore<B> {
     pub(crate) fn new(backend: B) -> Self {
         Self { backend }
     }
+
+    #[cfg(test)]
+    pub(crate) fn backend(&self) -> &B {
+        &self.backend
+    }
 }
 
 #[async_trait]
@@ -135,8 +140,24 @@ impl<B: RecordBackend> EnvironmentImageBuildStore for DurableEnvironmentImageBui
         lease_ms: u64,
     ) -> Result<Option<EnvironmentImageBuildClaim>, EnvironmentImageBuildError> {
         for current in self.backend.candidates().await? {
-            let Some(state) = current.record.state.claim(owner, now_ms, lease_ms)? else {
-                continue;
+            let state = match current.record.state.claim(owner, now_ms, lease_ms) {
+                Ok(Some(state)) => state,
+                Ok(None) => continue,
+                // A lease-generation integrity failure refuses only this build,
+                // permanently: it is never claimed again and never blocks the
+                // builds behind it. Nothing resets its attempt counter.
+                Err(EnvironmentImageBuildError::LeaseGenerationIntegrity(violation)) => {
+                    tracing::error!(
+                        target: "awaken::lease_generation_integrity",
+                        code = awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
+                        lease = "environment_image_build",
+                        build_key = %current.record.demand.build_key,
+                        %violation,
+                        "lease generation integrity violated; refusing this image build permanently"
+                    );
+                    continue;
+                }
+                Err(error) => return Err(error),
             };
             let EnvironmentImageBuildState::Building { lease_epoch, .. } = state else {
                 unreachable!("claim transition returns Building")

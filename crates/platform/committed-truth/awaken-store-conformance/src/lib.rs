@@ -18,6 +18,7 @@
 
 pub mod dream_store;
 pub mod env_registry;
+pub mod physical_admission;
 pub mod resource_lifecycle;
 pub mod resource_registry;
 pub mod session_store;

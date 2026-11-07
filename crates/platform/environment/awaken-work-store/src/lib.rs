@@ -87,10 +87,10 @@ use backends::pg_row_to_item;
 mod mutation;
 use mutation::{
     LeaseAuthorityCommand, LeaseAuthorityDecision, LeaseAuthorityTuple, LeaseFence,
-    StoredLeaseAuthorityInput, apply_metadata_patch, claim_stored_lease_authority,
-    exhausted_lease_epoch, granted_session_epoch, lease_authority_transition,
-    reclaimed_lease_authority, release_stored_lease_authority, renew_stored_lease_authority,
-    stored_epoch, stored_lease_authority, stored_lease_epoch, stored_stop_receipt,
+    StoredLeaseAuthorityInput, apply_metadata_patch, claim_stored_lease_authority, granted_epoch,
+    lease_authority_transition, lease_generation_integrity, reclaimed_lease_authority,
+    release_stored_lease_authority, renew_stored_lease_authority, stored_epoch,
+    stored_lease_authority, stored_lease_epoch, stored_stop_receipt,
 };
 #[cfg(any(test, feature = "test-support"))]
 mod inmem;
@@ -325,7 +325,7 @@ impl SessionAccessAuthenticator for SqliteWorkQueue {
                     environment_id,
                     session_id: awaken_session_types::SessionId::from(session),
                     lease_owner,
-                    lease_epoch: granted_session_epoch(epoch)?,
+                    lease_epoch: granted_epoch(epoch)?,
                     expires_at_unix_ms,
                 })
             },
@@ -790,7 +790,7 @@ impl SessionAccessAuthenticator for PostgresWorkQueue {
                 row.try_get::<String, _>(2).map_err(storage)?,
             ),
             lease_owner: row.try_get(3).map_err(storage)?,
-            lease_epoch: granted_session_epoch(row.try_get::<i64, _>(4).map_err(storage)?)?,
+            lease_epoch: granted_epoch(row.try_get::<i64, _>(4).map_err(storage)?)?,
             expires_at_unix_ms,
         }))
     }
@@ -1046,9 +1046,7 @@ impl SessionWorkerLeaseStore for PostgresWorkQueue {
             let owner = current.1.clone().ok_or_else(|| {
                 WorkQueueError::Storage("active Session Work has no lease owner".into())
             })?;
-            let epoch = stored_epoch(current.2)?.ok_or_else(|| {
-                WorkQueueError::Storage("active Session Work has no lease epoch".into())
-            })?;
+            let epoch = granted_epoch(current.2)?;
             let expires_at_unix_ms = u64::try_from(current.3.unwrap_or_default())
                 .map_err(|_| WorkQueueError::Storage("negative Session Work expiry".into()))?;
             return Ok(Some(

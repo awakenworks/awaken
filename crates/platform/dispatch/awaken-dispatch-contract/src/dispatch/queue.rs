@@ -613,6 +613,9 @@ pub trait DispatchAttemptControl: Send + Sync {
     /// Use the original Registry exclusion through physical admission. SQL
     /// adapters sharing one pool transfer its transaction instead of requiring
     /// a second connection; other adapters retain the guard until completion.
+    /// Every adapter fences an incarnation whose standing on the store's own
+    /// clock holds no authority. `binding` is absent for an unbound transport;
+    /// when present it must name the guarded incarnation.
     async fn admit_attempt_guarded(
         &self,
         claim: &RunClaim,

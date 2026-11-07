@@ -97,8 +97,9 @@ attempt slot preserved (`run-ingress-contract/src/dispatch/queue.rs:230`), and t
 treats it as request-local pressure that does not trip its Worker-wide error gate
 (`pool.rs:850`). A remote Worker reaches the same operation through the relinquish
 endpoint with `retry_after_ms`
-(`awaken-run-ingress-http/src/worker_dispatch/run_dispatch_endpoints.rs:480`). The
-Session Work busy case uses it the same way (`worker_dispatch.rs:840`).
+(`relinquish` in `awaken-dispatch-http/src/worker_dispatch/run_dispatch_endpoints.rs`). The
+Session Work busy case uses it the same way (`bind_claimed_session_work_authority` in
+`awaken-dispatch-http/src/worker_dispatch.rs`).
 
 ## Decision
 

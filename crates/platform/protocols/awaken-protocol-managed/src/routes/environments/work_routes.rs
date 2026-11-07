@@ -27,6 +27,14 @@ use awaken_executable_environment_contract::{HeartbeatCondition, HeartbeatResult
 fn map_execution_error(error: EnvironmentExecutionError) -> WireError {
     match error {
         EnvironmentExecutionError::EnvironmentNotFound => not_found("environment"),
+        // A Work lease-generation integrity failure is permanent for that Work
+        // item: an internal fault, never the retryable 503 of an outage.
+        error @ EnvironmentExecutionError::WorkQueue(
+            awaken_executable_environment_contract::WorkQueueError::LeaseGenerationIntegrity(_),
+        ) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new("api_error", error.to_string())),
+        ),
         error => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse::new("api_error", error.to_string())),
@@ -427,9 +435,11 @@ mod tests {
     #[test]
     fn application_failures_preserve_work_http_taxonomy() {
         // Cause/effect graph: C1 current Environment absent; C2 registration
-        // authority unavailable; C3 WorkQueue unavailable. Effects: E1 404 only
-        // for definitive absence, E2/E3 503 and never empty/404/precondition.
-        // Decision rows M1=C1->404, M2=C2->503, M3=C3->503.
+        // authority unavailable; C3 WorkQueue unavailable; C4 a Work lease
+        // generation fails integrity. Effects: E1 404 only for definitive
+        // absence, E2/E3 503 and never empty/404/precondition, E4 500 (a
+        // permanent fault of that Work item, never the retryable 503).
+        // Decision rows M1=C1->404, M2=C2->503, M3=C3->503, M4=C4->500.
         for (rule, error, expected) in [
             (
                 "M1",
@@ -453,6 +463,15 @@ mod tests {
                     ),
                 ),
                 StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                "M4",
+                EnvironmentExecutionError::WorkQueue(
+                    awaken_executable_environment_contract::WorkQueueError::LeaseGenerationIntegrity(
+                        awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted,
+                    ),
+                ),
+                StatusCode::INTERNAL_SERVER_ERROR,
             ),
         ] {
             assert_eq!(map_execution_error(error).0, expected, "{rule}");
