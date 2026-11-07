@@ -44,9 +44,8 @@ use awaken_dispatch::{
 
 use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_transport_security::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, VerifiedWorkerContext, WorkerLeasePolicy,
-    WorkerRequestAuthenticator, authenticate_worker_request, verify_current_worker_identity,
-    verify_worker_identity,
+    VerifiedWorkerContext, WorkerLeasePolicy, WorkerRequestAuthenticator,
+    authenticate_worker_request, verify_current_worker_identity, verify_worker_identity,
 };
 
 mod registry_endpoints;
@@ -230,30 +229,33 @@ pub fn worker_source_retention_router(
 }
 
 /// Explicit application service mounted by the worker HTTP adapter.
+///
+/// Every collaborator the Coordinator composition always supplies is a required
+/// field; [`WorkerDispatchService::new`] is the only constructor. The three
+/// `Option`s are provider-dependent and their absence fails closed (see
+/// [`RegisteredDispatchDependencies`]).
 pub struct WorkerDispatchService {
     dispatch: Arc<dyn WorkerDispatchAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     clock: Arc<dyn WallClock>,
     lease_policy: Arc<dyn WorkerLeasePolicy>,
-    directory: Option<Arc<dyn WorkerDirectory>>,
-    placement_policy: Option<Arc<dyn PlacementPolicy>>,
+    directory: Arc<dyn WorkerDirectory>,
+    placement_policy: Arc<dyn PlacementPolicy>,
     registry_ttl_ms: u64,
-    checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
-    recovery: Option<Arc<dyn RunRecoverySource>>,
-    completion: Option<Arc<dyn CompletionSink>>,
-    terminal_observer: Option<Arc<dyn DispatchSettlementObserver>>,
-    stream_sink: Option<Arc<dyn StreamSink>>,
-    session_control: Option<Arc<dyn awaken_session_execution_contract::SessionRealizationControl>>,
+    checkpoint: Arc<dyn StreamCheckpointStore>,
+    recovery: Arc<dyn RunRecoverySource>,
+    completion: Arc<dyn CompletionSink>,
+    terminal_observer: Arc<dyn DispatchSettlementObserver>,
+    stream_sink: Arc<dyn StreamSink>,
+    session_control: Arc<dyn awaken_session_execution_contract::SessionRealizationControl>,
     session_preparation_control:
-        Option<Arc<dyn awaken_session_execution_contract::SessionPreparationControl>>,
+        Arc<dyn awaken_session_execution_contract::SessionPreparationControl>,
     terminal_cleanup_control:
-        Option<Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>>,
+        Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>,
     session_environment_bindings:
-        Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
-    session_coordination:
-        Option<Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>>,
-    session_work: Option<Arc<dyn awaken_session_application_contract::SessionWorkerLeaseAuthority>>,
-    local_credential_capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
+        Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
+    session_coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
+    session_work: Arc<dyn awaken_session_application_contract::SessionWorkerLeaseAuthority>,
     credential_deliveries:
         Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
     max_attempts: u64,
@@ -262,216 +264,58 @@ pub struct WorkerDispatchService {
 }
 
 impl WorkerDispatchService {
+    /// The one construction path, shared by the Coordinator composition root
+    /// ([`registered_dispatch_router`]) and the test fixture.
     #[must_use]
-    pub fn new(
-        dispatch: Arc<dyn WorkerDispatchAuthority>,
-        authenticator: Arc<dyn WorkerRequestAuthenticator>,
-        clock: Arc<dyn WallClock>,
-        lease_policy: Arc<dyn WorkerLeasePolicy>,
-    ) -> Self {
+    pub fn new(dependencies: RegisteredDispatchDependencies) -> Self {
+        let RegisteredDispatchDependencies {
+            execution_bindings,
+            execution_stops,
+            dispatch,
+            checkpoint,
+            directory,
+            policy,
+            realizations,
+            terminal_cleanup,
+            session_preparation,
+            session_environment_bindings,
+            coordination,
+            session_work,
+            authenticator,
+            recovery,
+            completion,
+            terminal_observer,
+            stream_sink,
+            credential_deliveries,
+            clock,
+            lease_policy,
+            registry_ttl_ms,
+            max_attempts,
+        } = dependencies;
         Self {
             dispatch,
             authenticator,
             clock,
             lease_policy,
-            directory: None,
-            placement_policy: None,
-            registry_ttl_ms: 30_000,
-            checkpoint: None,
-            recovery: None,
-            completion: None,
-            terminal_observer: None,
-            stream_sink: None,
-            session_control: None,
-            session_preparation_control: None,
-            terminal_cleanup_control: None,
-            session_environment_bindings: None,
-            session_coordination: None,
-            session_work: None,
-            local_credential_capabilities: Default::default(),
-            credential_deliveries: None,
-            max_attempts: 5,
-            execution_bindings: None,
-            execution_stops: None,
+            directory,
+            placement_policy: policy,
+            registry_ttl_ms: registry_ttl_ms.max(1),
+            checkpoint,
+            recovery,
+            completion,
+            terminal_observer,
+            stream_sink,
+            session_control: realizations,
+            session_preparation_control: session_preparation,
+            terminal_cleanup_control: terminal_cleanup,
+            session_environment_bindings,
+            session_coordination: coordination,
+            session_work,
+            credential_deliveries,
+            max_attempts: max_attempts.max(1),
+            execution_bindings,
+            execution_stops,
         }
-    }
-
-    #[must_use]
-    pub fn with_execution_binding_source(
-        mut self,
-        source: Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>,
-    ) -> Self {
-        self.execution_bindings = Some(source);
-        self
-    }
-
-    #[must_use]
-    pub fn with_execution_stop_source(
-        mut self,
-        source: Arc<dyn awaken_dispatch::WorkerExecutionStopSource>,
-    ) -> Self {
-        self.execution_stops = Some(source);
-        self
-    }
-
-    #[must_use]
-    pub fn with_checkpoint_store(mut self, checkpoint: Arc<dyn StreamCheckpointStore>) -> Self {
-        self.checkpoint = Some(checkpoint);
-        self
-    }
-
-    #[must_use]
-    pub fn with_recovery_source(mut self, recovery: Arc<dyn RunRecoverySource>) -> Self {
-        self.recovery = Some(recovery);
-        self
-    }
-
-    /// Project an applied remote settlement into the foreground wakeup channel.
-    /// The exact Run state is re-read from committed recovery truth; this sink is
-    /// never a dispatch or lifecycle authority.
-    #[must_use]
-    pub fn with_completion_sink(mut self, completion: Arc<dyn CompletionSink>) -> Self {
-        self.completion = Some(completion);
-        self
-    }
-
-    /// Install the Coordinator-owned post-commit terminal publisher. It runs
-    /// under the exact dispatch guard before a remote Done settlement can remove
-    /// replay evidence or release Session Work.
-    #[must_use]
-    pub fn with_terminal_observer(mut self, observer: Arc<dyn DispatchSettlementObserver>) -> Self {
-        self.terminal_observer = Some(observer);
-        self
-    }
-
-    /// Install the Coordinator's one foreground live observation registry.
-    #[must_use]
-    pub fn with_stream_sink(mut self, stream_sink: Arc<dyn StreamSink>) -> Self {
-        self.stream_sink = Some(stream_sink);
-        self
-    }
-
-    /// Install the Coordinator-owned Session application service behind the same
-    /// authenticated Worker and exact-claim boundary as dispatch/recovery.
-    #[must_use]
-    pub fn with_session_control(
-        mut self,
-        control: Arc<dyn awaken_session_execution_contract::SessionRealizationControl>,
-    ) -> Self {
-        self.session_control = Some(control);
-        self
-    }
-
-    #[must_use]
-    pub fn with_session_preparation_control(
-        mut self,
-        control: Arc<dyn awaken_session_execution_contract::SessionPreparationControl>,
-    ) -> Self {
-        self.session_preparation_control = Some(control);
-        self
-    }
-
-    /// Install the independent terminal-cleanup projection and receipt role.
-    #[must_use]
-    pub fn with_terminal_cleanup_control(
-        mut self,
-        control: Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>,
-    ) -> Self {
-        self.terminal_cleanup_control = Some(control);
-        self
-    }
-
-    /// Install the same Session root authority used by local Runtime Hosts.
-    /// The Worker transport authenticates the realization lease; this port then
-    /// performs the aggregate's one pre-effect authorization and receipt CAS.
-    #[must_use]
-    pub fn with_session_environment_bindings(
-        mut self,
-        bindings: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-    ) -> Self {
-        self.session_environment_bindings = Some(bindings);
-        self
-    }
-
-    /// Install another port view of the same Coordinator Session application
-    /// for claim-fenced Agent coordination and settlement commands.
-    #[must_use]
-    pub fn with_session_coordination(
-        mut self,
-        coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
-    ) -> Self {
-        self.session_coordination = Some(coordination);
-        self
-    }
-
-    #[must_use]
-    pub fn with_session_work_authority(
-        mut self,
-        authority: Arc<dyn awaken_session_application_contract::SessionWorkerLeaseAuthority>,
-    ) -> Self {
-        self.session_work = Some(authority);
-        self
-    }
-
-    #[must_use]
-    pub fn with_worker_directory(
-        mut self,
-        directory: Arc<dyn WorkerDirectory>,
-        ttl_ms: u64,
-    ) -> Self {
-        self.directory = Some(directory);
-        self.registry_ttl_ms = ttl_ms.max(1);
-        self
-    }
-
-    /// Install the preference policy used for ordinary pull claims. Exact
-    /// parent-mediated claims remain explicit bindings and still pass the same
-    /// immutable compatibility/recovery kernel.
-    #[must_use]
-    pub fn with_placement_policy(mut self, policy: Arc<dyn PlacementPolicy>) -> Self {
-        self.placement_policy = Some(policy);
-        self
-    }
-
-    #[must_use]
-    pub fn with_local_credential_capabilities(
-        mut self,
-        capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
-    ) -> Self {
-        self.local_credential_capabilities = capabilities;
-        self
-    }
-
-    /// Install the one Control-owned, claim-scoped credential transport source.
-    /// It issues no authority: the durable binding, holder and epoch are already
-    /// fixed before this port is called.
-    #[must_use]
-    pub fn with_credential_delivery_source(
-        mut self,
-        source: Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>,
-    ) -> Self {
-        self.credential_deliveries = Some(source);
-        self
-    }
-
-    /// Set the control-side crash-retry budget used by the dedicated terminal
-    /// claim. The control plane, not the remote worker, owns this policy.
-    #[must_use]
-    pub fn with_max_attempts(mut self, max_attempts: u64) -> Self {
-        self.max_attempts = max_attempts.max(1);
-        self
-    }
-
-    /// Local/test composition. Managed deployments should use [`Self::new`] with
-    /// their WorkerLease/mTLS authenticator.
-    #[must_use]
-    pub fn local(dispatch: Arc<dyn WorkerDispatchAuthority>, clock: Arc<dyn WallClock>) -> Self {
-        Self::new(
-            dispatch,
-            Arc::new(HeaderWorkerAuthenticator),
-            clock,
-            Arc::new(FixedWorkerLeasePolicy::default()),
-        )
     }
 }
 
@@ -488,11 +332,13 @@ pub(crate) fn worker_identity_failure(
     }
 }
 
+/// Claim authority is always derived from the current registered incarnation:
+/// there is no directory-less mode that grants `owner = worker_id`.
 struct ClaimAuthority {
     owner: String,
     lease_ms: u64,
     now_ms: u64,
-    snapshot: Option<WorkerSnapshot>,
+    snapshot: WorkerSnapshot,
 }
 
 async fn claim_authority(
@@ -503,21 +349,18 @@ async fn claim_authority(
 ) -> Result<ClaimAuthority, ApplicationError> {
     let now_ms = service.clock.now_ms();
     let lease_ms = service.lease_policy.lease_ms(worker);
-    let Some(directory) = &service.directory else {
-        return Ok(ClaimAuthority {
-            owner: worker.worker_id().to_string(),
-            lease_ms,
-            now_ms,
-            snapshot: None,
-        });
-    };
     let identity = identity.ok_or_else(|| {
         ApplicationError::invalid("registered worker identity is required for dispatch authority")
     })?;
-    let snapshot =
-        verify_current_worker_identity(directory.as_ref(), worker, identity, now_ms, require_ready)
-            .await
-            .map_err(worker_identity_failure)?;
+    let snapshot = verify_current_worker_identity(
+        service.directory.as_ref(),
+        worker,
+        identity,
+        now_ms,
+        require_ready,
+    )
+    .await
+    .map_err(worker_identity_failure)?;
     if !snapshot.manifest.supports_current_runtime_protocol() {
         return Err(ApplicationError::invalid(
             "Worker manifest does not explicitly support the current runtime protocol",
@@ -527,7 +370,7 @@ async fn claim_authority(
         owner: identity.lease_owner(),
         lease_ms,
         now_ms,
-        snapshot: Some(snapshot),
+        snapshot,
     })
 }
 
@@ -585,20 +428,19 @@ async fn observe_expired_predecessor(
     successor: &RunClaim,
     request_budget_ms: u64,
 ) -> Result<Option<awaken_dispatch::WorkerProcessStopStatus>, ApplicationError> {
+    // Absent only where no provider observes Worker processes; a blocked
+    // successor then stays blocked (no stop is ever inferred).
     let Some(source) = &service.execution_stops else {
         return Ok(None);
     };
-    let recovery = service
-        .recovery
-        .as_deref()
-        .map(awaken_dispatch::PhysicalAttemptRecoveryRead::new);
+    let recovery = awaken_dispatch::PhysicalAttemptRecoveryRead::new(service.recovery.as_ref());
     tokio::time::timeout(
         std::time::Duration::from_millis(request_budget_ms.max(1)),
         awaken_dispatch::stop_expired_predecessor(
             service.dispatch.as_ref(),
-            directory(service)?.as_ref(),
+            service.directory.as_ref(),
             source.as_ref(),
-            recovery.as_ref(),
+            Some(&recovery),
             successor,
             service.clock.now_ms(),
         ),
@@ -607,8 +449,17 @@ async fn observe_expired_predecessor(
     .map_err(|_| ApplicationError::unavailable("predecessor stop observation timed out"))?
 }
 
+/// Everything [`WorkerDispatchService::new`] consumes. Every collaborator is
+/// required except the three whose provider exists only in some deployments.
 pub struct RegisteredDispatchDependencies {
+    /// Present only where a provider (systemd user units, Kubernetes Pods)
+    /// observes Worker processes. Without it the unbound transport (the
+    /// header-authenticated co-located Worker) freezes no physical binding;
+    /// attempts are still admitted only to the current registered incarnation.
     pub execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    /// Present with the same providers. Without it no predecessor stop is ever
+    /// observed, so a blocked successor stays blocked and closed-idle evidence
+    /// is retained rather than released.
     pub execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     pub dispatch: Arc<dyn WorkerDispatchAuthority>,
     pub checkpoint: Arc<dyn StreamCheckpointStore>,
@@ -626,67 +477,30 @@ pub struct RegisteredDispatchDependencies {
     pub completion: Arc<dyn CompletionSink>,
     pub terminal_observer: Arc<dyn DispatchSettlementObserver>,
     pub stream_sink: Arc<dyn StreamSink>,
+    /// Present only in the cloud plane, which signs claim-scoped carriers.
+    /// Without it a claim carries only its frozen envelope: an expired envelope
+    /// and every refresh request are refused as unavailable.
     pub credential_deliveries:
         Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
     /// The Coordinator's one wall clock: claim leases, registry freshness and
     /// Worker assertions are judged on the timeline every other owner uses.
     pub clock: Arc<dyn WallClock>,
+    /// Claim lease duration granted to an authenticated Worker.
+    pub lease_policy: Arc<dyn WorkerLeasePolicy>,
+    /// Registry lease granted by registration and heartbeat.
+    pub registry_ttl_ms: u64,
+    /// The control-side crash-retry budget used by the dedicated terminal
+    /// claim. The control plane, not the remote worker, owns this policy.
+    pub max_attempts: u64,
 }
 
+/// Registry lease the Coordinator grants a Worker per registration/heartbeat.
+pub const WORKER_REGISTRY_TTL_MS: u64 = 30_000;
+/// Crash-retry budget the Coordinator applies before the terminal claim.
+pub const WORKER_DISPATCH_MAX_ATTEMPTS: u64 = 5;
+
 pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) -> Router {
-    let RegisteredDispatchDependencies {
-        execution_bindings,
-        execution_stops,
-        dispatch,
-        checkpoint,
-        directory,
-        policy,
-        realizations,
-        terminal_cleanup,
-        session_preparation,
-        session_environment_bindings,
-        coordination,
-        session_work,
-        authenticator,
-        recovery,
-        completion,
-        terminal_observer,
-        stream_sink,
-        credential_deliveries,
-        clock,
-    } = dependencies;
-    let service = WorkerDispatchService::new(
-        dispatch,
-        authenticator,
-        clock,
-        Arc::new(FixedWorkerLeasePolicy::default()),
-    )
-    .with_worker_directory(directory, 30_000)
-    .with_placement_policy(policy)
-    .with_checkpoint_store(checkpoint)
-    .with_recovery_source(recovery)
-    .with_completion_sink(completion)
-    .with_terminal_observer(terminal_observer)
-    .with_stream_sink(stream_sink)
-    .with_session_control(realizations)
-    .with_session_preparation_control(session_preparation)
-    .with_terminal_cleanup_control(terminal_cleanup)
-    .with_session_environment_bindings(session_environment_bindings)
-    .with_session_coordination(coordination)
-    .with_session_work_authority(session_work);
-    let service = match credential_deliveries {
-        Some(source) => service.with_credential_delivery_source(source),
-        None => service,
-    };
-    let service = match execution_bindings {
-        Some(source) => service.with_execution_binding_source(source),
-        None => service,
-    };
-    let service = match execution_stops {
-        Some(source) => service.with_execution_stop_source(source),
-        None => service,
-    };
-    dispatch_transport_router_with_service(Arc::new(service))
+    dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(dependencies)))
 }
 
 /// Compose the complete registered-Worker transport from already-configured
@@ -925,15 +739,6 @@ fn respond_realization(result: Result<Value, RealizationHttpError>) -> (StatusCo
     }
 }
 
-fn checkpoint_store(
-    service: &WorkerDispatchService,
-) -> Result<&Arc<dyn StreamCheckpointStore>, ApplicationError> {
-    service
-        .checkpoint
-        .as_ref()
-        .ok_or_else(|| ApplicationError::internal("worker checkpoint store is not configured"))
-}
-
 // Work ownership can outlive a Run claim. Delay only the blocked Dispatch long
 // enough for the pool to see independent Sessions; the store owns the deadline.
 const SESSION_WORK_BUSY_RETRY_MS: u64 = 5_000;
@@ -953,12 +758,8 @@ async fn bind_claimed_session_work_authority(
         return Ok(claimed);
     }
     let session_id = claimed_run.request.session_thread_id().0.as_str();
-    let work = service
-        .session_work
-        .as_ref()
-        .ok_or_else(|| ApplicationError::internal("Session Work authority is not configured"))?;
     let receipt = awaken_session_application_contract::acquire_session_work_receipt(
-        work.as_ref(),
+        service.session_work.as_ref(),
         &awaken_session_types::SessionId::from(session_id),
         &authority.owner,
         awaken_session_application_contract::SessionWorkAcquisition::ClaimedRun,
@@ -1081,10 +882,8 @@ async fn recovery_snapshot(
                         "Session recovery Work authority identity does not match the claim",
                     ));
                 }
-                let work = service.session_work.as_ref().ok_or_else(|| {
-                    ApplicationError::internal("Session Work authority is not configured")
-                })?;
-                let observed = work
+                let observed = service
+                    .session_work
                     .acquire_session_work(
                         &awaken_session_types::SessionId::from(&session.0),
                         &authority.owner,
@@ -1099,11 +898,8 @@ async fn recovery_snapshot(
                 }
             }
         }
-        let source = service
+        let snapshot = service
             .recovery
-            .as_ref()
-            .ok_or_else(|| ApplicationError::internal("worker recovery source is not configured"))?;
-        let snapshot = source
             .recovery_snapshot_in_session(
                 dispatch.session_thread_id(),
                 dispatch.thread_id(),
@@ -1172,10 +968,7 @@ async fn get_checkpoint(
         // The wire carries only present-or-absent. An observation that
         // established nothing must therefore leave as a transport failure, so a
         // remote worker never decodes ignorance as a `null` checkpoint.
-        match checkpoint_store(&service)?
-            .get(&request.claim.run_id.0)
-            .await
-        {
+        match service.checkpoint.get(&request.claim.run_id.0).await {
             Observed::Present(checkpoint) => Ok(json!({ "checkpoint": checkpoint })),
             Observed::Absent => Ok(json!({ "checkpoint": null })),
             Observed::Unknown(cause) => Err(ApplicationError::internal(cause.to_string())),
@@ -1208,7 +1001,8 @@ async fn put_checkpoint(
         else {
             return Ok(json!({ "applied": false }));
         };
-        checkpoint_store(&service)?
+        service
+            .checkpoint
             .put(checkpoint)
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?;
@@ -1233,7 +1027,8 @@ async fn delete_checkpoint(
         else {
             return Ok(json!({ "applied": false }));
         };
-        checkpoint_store(&service)?
+        service
+            .checkpoint
             .delete(&request.claim.run_id.0)
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?;
@@ -1241,15 +1036,6 @@ async fn delete_checkpoint(
     }
     .await;
     respond(result)
-}
-
-fn directory(
-    service: &WorkerDispatchService,
-) -> Result<&Arc<dyn WorkerDirectory>, ApplicationError> {
-    service
-        .directory
-        .as_ref()
-        .ok_or_else(|| ApplicationError::internal("worker directory is not configured"))
 }
 
 fn verify_worker_id(
@@ -1267,15 +1053,15 @@ fn verify_worker_id(
 /// The Coordinator's Worker Registry commands over this service's ports.
 fn registry_commands(
     service: &WorkerDispatchService,
-) -> Result<awaken_dispatch::WorkerRegistryCommands<'_>, ApplicationError> {
-    Ok(awaken_dispatch::WorkerRegistryCommands {
-        directory: directory(service)?.as_ref(),
+) -> awaken_dispatch::WorkerRegistryCommands<'_> {
+    awaken_dispatch::WorkerRegistryCommands {
+        directory: service.directory.as_ref(),
         dispatch: service.dispatch.as_ref(),
         bindings: service.execution_bindings.as_deref(),
         stops: service.execution_stops.as_deref(),
         clock: service.clock.as_ref(),
         ttl_ms: service.registry_ttl_ms,
-    })
+    }
 }
 
 /// Closure and final physical admission share the Registry exclusion. A closed
@@ -1284,10 +1070,11 @@ async fn release_closed_idle_worker_evidence(
     service: &WorkerDispatchService,
     identity: &WorkerIdentity,
 ) -> Result<(), ApplicationError> {
+    // Without a stop source the evidence is retained, never released.
     if service.execution_stops.is_none() {
         return Ok(());
     }
-    registry_commands(service)?
+    registry_commands(service)
         .release_closed_idle_evidence(identity)
         .await
 }
@@ -1340,60 +1127,38 @@ async fn settle(
         let thread_id = guard.request().thread_id().clone();
         let session_thread_id = guard.request().session_thread_id().clone();
         let owns_session_work = thread_id == session_thread_id;
-        let terminal_observer = if request.outcome == awaken_dispatch::DispatchOutcome::Done {
-            service.terminal_observer.as_ref()
-        } else {
-            None
-        };
-        let coordinated_dispatch = guard.request().session_activity_epoch.is_some()
-            && service.session_coordination.is_some()
-            && service.recovery.is_some();
+        let terminal_observer = (request.outcome == awaken_dispatch::DispatchOutcome::Done)
+            .then_some(&service.terminal_observer);
+        let coordinated_dispatch = guard.request().session_activity_epoch.is_some();
         // Save the exact guarded prefix once. Terminal publication and foreground
         // completion must not perform a second, post-settle recovery read that can
         // cross a lease epoch or lose the child Thread's physical Session owner.
-        let committed_state = if terminal_observer.is_some()
-            || service.completion.is_some()
-            || coordinated_dispatch
+        let committed_state = match service
+            .recovery
+            .recovery_snapshot_in_session(&session_thread_id, &thread_id, &claim.run_id)
+            .await
         {
-            if let Some(recovery) = service.recovery.as_ref() {
-                match recovery
-                    .recovery_snapshot_in_session(&session_thread_id, &thread_id, &claim.run_id)
-                    .await
-                {
-                    Ok(snapshot)
-                        if snapshot.thread_id == thread_id
-                            && snapshot.claimed_run_id == claim.run_id =>
-                    {
-                        snapshot
-                            .runs
-                            .iter()
-                            .find(|record| {
-                                record.id == claim.run_id && record.thread_id == thread_id
-                            })
-                            .map(|record| record.state.clone())
-                    }
-                    Ok(_) if terminal_observer.is_some() => {
-                        return Err(RealizationHttpError::from(ApplicationError::invalid(
-                            "terminal settlement recovery does not match the guarded dispatch",
-                        )));
-                    }
-                    Ok(_) => None,
-                    Err(error) if terminal_observer.is_some() => {
-                        return Err(RealizationHttpError::from(ApplicationError::unavailable(
-                            format!("read committed terminal settlement state: {error}"),
-                        )));
-                    }
-                    Err(_) => None,
-                }
-            } else if terminal_observer.is_some() {
-                return Err(RealizationHttpError::from(ApplicationError::internal(
-                    "terminal settlement recovery source is not configured",
-                )));
-            } else {
-                None
+            Ok(snapshot)
+                if snapshot.thread_id == thread_id && snapshot.claimed_run_id == claim.run_id =>
+            {
+                snapshot
+                    .runs
+                    .iter()
+                    .find(|record| record.id == claim.run_id && record.thread_id == thread_id)
+                    .map(|record| record.state.clone())
             }
-        } else {
-            None
+            Ok(_) if terminal_observer.is_some() => {
+                return Err(RealizationHttpError::from(ApplicationError::invalid(
+                    "terminal settlement recovery does not match the guarded dispatch",
+                )));
+            }
+            Ok(_) => None,
+            Err(error) if terminal_observer.is_some() => {
+                return Err(RealizationHttpError::from(ApplicationError::unavailable(
+                    format!("read committed terminal settlement state: {error}"),
+                )));
+            }
+            Err(_) => None,
         };
         if let Some(observer) = terminal_observer {
             let committed_state = committed_state.as_ref().ok_or_else(|| {
@@ -1485,7 +1250,8 @@ async fn settle(
         // Session in that Environment. Release only the root after all fenced
         // commits have landed; a later activity revives and reacquires its stable
         // Work item. Child Runs borrow the parent's fence and must retain it.
-        if owns_session_work && let Some(session_work) = service.session_work.as_ref() {
+        if owns_session_work {
+            let session_work = &service.session_work;
             let lease = match session_work
                 .acquire_session_work(
                     &awaken_session_types::SessionId::from(session_thread_id.0),
@@ -1545,16 +1311,15 @@ async fn settle(
                 RealizationHttpError::from(ApplicationError::internal(error.to_string()))
             })?;
         if outcome.applied()
-            && let Some(completion) = &service.completion
             && let Some(state) = committed_state.as_ref()
         {
-            completion.settled(&claim.run_id, state);
+            service.completion.settled(&claim.run_id, state);
         }
         if outcome.applied()
-            && let (Some(command), Some(coordination)) =
-                (session_boundary, service.session_coordination.as_ref())
+            && let Some(command) = session_boundary
         {
-            coordination
+            service
+                .session_coordination
                 .finalize_session_agent_boundary(command)
                 .await
                 .map_err(|error| {
@@ -1608,14 +1373,13 @@ async fn stream_event(
                 "live Worker event does not match its claim's logical Thread",
             ));
         }
-        if let Some(sink) = &service.stream_sink {
-            let _ = sink
-                .send_observation(awaken_agent_contract::stream::event::Observation {
-                    event: request.request.event,
-                    assistant_response: request.assistant_response,
-                })
-                .await;
-        }
+        let _ = service
+            .stream_sink
+            .send_observation(awaken_agent_contract::stream::event::Observation {
+                event: request.request.event,
+                assistant_response: request.assistant_response,
+            })
+            .await;
         Ok(json!({ "accepted": true }))
     }
     .await;

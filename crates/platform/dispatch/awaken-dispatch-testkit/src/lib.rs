@@ -11,6 +11,7 @@
 
 mod observed_clock;
 pub use observed_clock::ObservedStoreClock;
+pub mod worker_dispatch;
 
 use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -151,11 +152,47 @@ pub mod worker_http {
         worker_id: &str,
         state: WorkerState,
     ) -> (Arc<CurrentWorkerDirectory>, WorkerIdentity) {
-        let manifest = current_dispatch_codec_manifest();
-        let identity = WorkerIdentity::new(worker_id, format!("{worker_id}-boot"), 1);
-        let registered = RegisteredWorker {
+        let record = fixed_record(worker_id, state, current_dispatch_codec_manifest());
+        let identity = record.snapshot.identity.clone();
+        (CurrentWorkerDirectory::holding(vec![record]), identity)
+    }
+
+    /// Several fixed Ready incarnations in one directory, in `worker_ids`
+    /// order; each identity is [`fixed_identity`] of its Worker id.
+    #[must_use]
+    pub fn ready_workers(worker_ids: &[&str]) -> Arc<CurrentWorkerDirectory> {
+        ready_workers_with_manifest(worker_ids, &current_dispatch_codec_manifest())
+    }
+
+    /// [`ready_workers`] offering `manifest` (for example with credential
+    /// realization capabilities) instead of the codec manifest.
+    #[must_use]
+    pub fn ready_workers_with_manifest(
+        worker_ids: &[&str],
+        manifest: &WorkerManifest,
+    ) -> Arc<CurrentWorkerDirectory> {
+        CurrentWorkerDirectory::holding(
+            worker_ids
+                .iter()
+                .map(|worker_id| fixed_record(worker_id, WorkerState::Ready, manifest.clone()))
+                .collect(),
+        )
+    }
+
+    /// The one incarnation the fixed directories register for `worker_id`.
+    #[must_use]
+    pub fn fixed_identity(worker_id: &str) -> WorkerIdentity {
+        WorkerIdentity::new(worker_id, format!("{worker_id}-boot"), 1)
+    }
+
+    fn fixed_record(
+        worker_id: &str,
+        state: WorkerState,
+        manifest: WorkerManifest,
+    ) -> RegisteredWorker {
+        RegisteredWorker {
             snapshot: WorkerSnapshot {
-                identity: identity.clone(),
+                identity: fixed_identity(worker_id),
                 state,
                 capability_fingerprint: manifest
                     .fingerprint()
@@ -175,26 +212,26 @@ pub mod worker_http {
             process_exit: None,
             create_ledger: None,
             source_retention: Default::default(),
-        };
-        (
-            Arc::new(CurrentWorkerDirectory {
-                record: registered,
-                current_unavailable: std::sync::atomic::AtomicBool::new(false),
-                current_reads: std::sync::atomic::AtomicUsize::new(0),
-            }),
-            identity,
-        )
+        }
     }
 
     /// The original fixed ready-incarnation fixture. Only its existing read
     /// leaf is faultable; no alternate directory or registration authority.
     pub struct CurrentWorkerDirectory {
-        record: RegisteredWorker,
+        records: awaken_sync::LeafLock<Vec<RegisteredWorker>>,
         current_unavailable: std::sync::atomic::AtomicBool,
         current_reads: std::sync::atomic::AtomicUsize,
     }
 
     impl CurrentWorkerDirectory {
+        fn holding(records: Vec<RegisteredWorker>) -> Arc<Self> {
+            Arc::new(Self {
+                records: awaken_sync::LeafLock::new(records),
+                current_unavailable: std::sync::atomic::AtomicBool::new(false),
+                current_reads: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+
         pub fn set_current_unavailable(&self, unavailable: bool) {
             self.current_unavailable
                 .store(unavailable, std::sync::atomic::Ordering::SeqCst);
@@ -204,12 +241,34 @@ pub mod worker_http {
         pub fn current_reads(&self) -> usize {
             self.current_reads.load(std::sync::atomic::Ordering::SeqCst)
         }
+
+        /// The Worker's heartbeat now reports `in_flight` admitted work (a
+        /// stale owner that still counts work it lost), which placement reads.
+        pub fn set_in_flight(&self, worker_id: &str, in_flight: u32) {
+            let mut records = self.records.lock();
+            for record in records
+                .iter_mut()
+                .filter(|record| record.snapshot.identity.worker_id == worker_id)
+            {
+                record.snapshot.in_flight = in_flight;
+            }
+        }
+
+        fn records(&self) -> Vec<RegisteredWorker> {
+            self.records.lock().clone()
+        }
+
+        fn record(&self, worker_id: &str) -> Option<RegisteredWorker> {
+            self.records()
+                .into_iter()
+                .find(|record| record.snapshot.identity.worker_id == worker_id)
+        }
     }
 
     #[async_trait::async_trait]
     impl WorkerObservationSource for CurrentWorkerDirectory {
         async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-            Ok(vec![self.record.clone()])
+            Ok(self.records())
         }
     }
 
@@ -229,7 +288,7 @@ pub mod worker_http {
                     "Registry current read is unavailable".into(),
                 ));
             }
-            Ok((worker_id == self.record.snapshot.identity.worker_id).then(|| self.record.clone()))
+            Ok(self.record(worker_id))
         }
     }
 
@@ -259,11 +318,15 @@ pub mod worker_http {
 
         async fn register(
             &self,
-            _registration: WorkerRegistration,
+            registration: WorkerRegistration,
             _now_ms: u64,
             _ttl_ms: u64,
         ) -> Result<RegisteredWorker, RegistryError> {
-            Ok(self.record.clone())
+            // A fixed fixture: it returns its own record, never a new one.
+            Ok(self
+                .record(&registration.worker_id)
+                .or_else(|| self.records().into_iter().next())
+                .expect("fixture directory holds at least one Worker"))
         }
 
         async fn heartbeat(

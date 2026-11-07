@@ -151,7 +151,7 @@ impl WorkerRegistryCommands<'_> {
         &self,
         identity: &WorkerIdentity,
         heartbeat: WorkerHeartbeat,
-        session_work: Option<&dyn SessionWorkerLeaseAuthority>,
+        session_work: &dyn SessionWorkerLeaseAuthority,
     ) -> Result<RegistryMutation, ApplicationError> {
         let previous = self
             .directory
@@ -174,10 +174,7 @@ impl WorkerRegistryCommands<'_> {
                 RegistryError::UnsupportedRuntimeProtocol => refused(error),
                 error => ApplicationError::internal(error.to_string()),
             })?;
-        if mutation == RegistryMutation::Applied
-            && placement_changed
-            && let Some(session_work) = session_work
-        {
+        if mutation == RegistryMutation::Applied && placement_changed {
             tracing::debug!(
                 worker_id = %identity.worker_id,
                 "Worker placement evidence changed; waking Session lifecycle reconciliation"

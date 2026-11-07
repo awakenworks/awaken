@@ -5,11 +5,13 @@
 //! (installs a one-shot injected dispatch store).
 
 use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
-use awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest;
+use awaken_dispatch_testkit::worker_http::{
+    current_dispatch_codec_manifest, fixed_identity, ready_workers, ready_workers_with_manifest,
+};
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::credential::{
     CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialSource,
@@ -30,9 +32,14 @@ use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRe
 use awaken_dispatch::{
     CredentialRealizationReceipt, DispatchBinding, DispatchOutcome, DispatchState,
     DispatchTopology, FencedStreamCheckpointStore, MemoryDispatchStore, PendingInput, RunClaim,
-    RunDispatch, WorkerIdentity,
+    RunDispatch, WorkerManifest,
 };
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_dispatch_http::{
+    RegisteredDispatchDependencies, WorkerDispatchService, dispatch_transport_router_with_service,
+};
+use awaken_dispatch_testkit::worker_dispatch::{
+    CommittedRunRecovery, worker_dispatch_dependencies,
+};
 use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::InferenceEndpoint;
 use awaken_runtime_contract::activation::RunActivation;
@@ -44,7 +51,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
-use awaken_worker_transport_security::{FixedWorkerLeasePolicy, HeaderWorkerAuthenticator};
+use awaken_worker_transport_security::FixedWorkerLeasePolicy;
 
 fn activation(run: &str, thread: &str) -> RunActivation {
     RunActivation::new(
@@ -73,6 +80,14 @@ fn activation(run: &str, thread: &str) -> RunActivation {
         },
         vec![Message::text(MessageId("u1".into()), Role::User, "go")],
     )
+}
+
+/// A request a registered Worker may claim: it names the current runtime
+/// protocol, which every fixture incarnation's manifest offers.
+fn registered_dispatch(activation: RunActivation) -> RunDispatch {
+    let mut dispatch = RunDispatch::new(activation);
+    dispatch.placement.runtime_protocol_version = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    dispatch
 }
 
 fn credential_dispatch(
@@ -131,7 +146,7 @@ fn credential_dispatch_with_expiry(
             },
         )
         .expect("coherent credential dispatch candidate");
-    let mut dispatch = RunDispatch::new(activation).with_worker_codec_requirements();
+    let mut dispatch = registered_dispatch(activation).with_worker_codec_requirements();
     dispatch.inference_plaintext_holder = Some(holder.clone());
     (
         dispatch,
@@ -149,6 +164,18 @@ fn credential_dispatch_with_expiry(
             alternatives: Vec::new(),
         },
     )
+}
+
+/// The codec manifest that also advertises `capabilities`; the registered
+/// incarnation and the Worker client offer the same immutable manifest.
+fn credential_manifest(capabilities: &CredentialRealizationCapabilities) -> WorkerManifest {
+    let mut manifest = current_dispatch_codec_manifest();
+    manifest.capabilities.extend(
+        capabilities
+            .manifest_capability()
+            .expect("credential capabilities encode"),
+    );
+    manifest
 }
 
 fn expired_credential_dispatch(
@@ -270,16 +297,15 @@ async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
     });
     let (dispatch, capabilities) =
         expired_credential_dispatch("delivery-race", "delivery-race-thread");
-    let service = Arc::new(
-        WorkerDispatchService::new(
+    let service = Arc::new(WorkerDispatchService::new(RegisteredDispatchDependencies {
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        credential_deliveries: Some(source.clone()),
+        ..worker_dispatch_dependencies(
             mem,
-            Arc::new(HeaderWorkerAuthenticator),
+            ready_workers_with_manifest(&["worker-1"], &credential_manifest(&capabilities)),
             Arc::new(ManualClock::new(10)),
-            Arc::new(FixedWorkerLeasePolicy::new(1_000)),
         )
-        .with_local_credential_capabilities(capabilities)
-        .with_credential_delivery_source(source.clone()),
-    );
+    }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -288,11 +314,8 @@ async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
             .unwrap();
     });
     let queue = Arc::new(
-        HttpDispatchQueue::new(
-            format!("http://{addr}"),
-            WorkerIdentity::new("worker-1", "boot-1", 1),
-        )
-        .with_worker_manifest(current_dispatch_codec_manifest()),
+        HttpDispatchQueue::new(format!("http://{addr}"), fixed_identity("worker-1"))
+            .with_worker_manifest(credential_manifest(&capabilities)),
     );
     queue.enqueue(dispatch).await.unwrap();
     let claimed = queue
@@ -353,16 +376,15 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
             "delivery-run"
         };
         let (dispatch, capabilities) = expired_credential_dispatch(run_id, "delivery-thread");
-        let service = Arc::new(
-            WorkerDispatchService::new(
+        let service = Arc::new(WorkerDispatchService::new(RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+            credential_deliveries: Some(Arc::new(FreshClaimDelivery { fail })),
+            ..worker_dispatch_dependencies(
                 mem.clone(),
-                Arc::new(HeaderWorkerAuthenticator),
+                ready_workers_with_manifest(&["worker-1"], &credential_manifest(&capabilities)),
                 clock,
-                Arc::new(FixedWorkerLeasePolicy::new(1_000)),
             )
-            .with_local_credential_capabilities(capabilities)
-            .with_credential_delivery_source(Arc::new(FreshClaimDelivery { fail })),
-        );
+        }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -371,11 +393,8 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
                 .unwrap();
         });
         let queue = Arc::new(
-            HttpDispatchQueue::new(
-                format!("http://{addr}"),
-                WorkerIdentity::new("worker-1", "boot-1", 1),
-            )
-            .with_worker_manifest(current_dispatch_codec_manifest()),
+            HttpDispatchQueue::new(format!("http://{addr}"), fixed_identity("worker-1"))
+                .with_worker_manifest(credential_manifest(&capabilities)),
         );
         queue.enqueue(dispatch).await.unwrap();
         let result = queue.claim("ignored", 30_000, &Default::default()).await;
@@ -431,7 +450,7 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
             queue.clone(),
             Arc::new(awaken_coordinator_client::RemoteClaimedRunCommit::new(
                 format!("http://{addr}"),
-                WorkerIdentity::new("worker-1", "boot-1", 1),
+                fixed_identity("worker-1"),
             )),
         );
         let DispatchTopology::Remote { credentials, .. } = worker_dispatch.placement() else {
@@ -479,15 +498,16 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
     let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let clock = Arc::new(ManualClock::new(0));
-    let service = Arc::new(
-        WorkerDispatchService::new(
+    let service = Arc::new(WorkerDispatchService::new(RegisteredDispatchDependencies {
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        max_attempts: 2,
+        recovery: Arc::new(CommittedRunRecovery(RunState::Ended(EndCause::NaturalEnd))),
+        ..worker_dispatch_dependencies(
             mem.clone() as Arc<dyn WorkerDispatchAuthority>,
-            Arc::new(HeaderWorkerAuthenticator),
+            ready_workers(&["worker-1"]),
             clock.clone(),
-            Arc::new(FixedWorkerLeasePolicy::new(1_000)),
         )
-        .with_max_attempts(2),
-    );
+    }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -495,13 +515,12 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
             .await
             .unwrap();
     });
-    let queue = HttpDispatchQueue::new(
-        format!("http://{addr}"),
-        WorkerIdentity::new("worker-1", "boot-1", 1),
-    )
-    .with_worker_manifest(current_dispatch_codec_manifest());
+    let queue = HttpDispatchQueue::new(format!("http://{addr}"), fixed_identity("worker-1"))
+        .with_worker_manifest(current_dispatch_codec_manifest());
     queue
-        .enqueue(RunDispatch::new(activation("poison", "thread")).with_worker_codec_requirements())
+        .enqueue(
+            registered_dispatch(activation("poison", "thread")).with_worker_codec_requirements(),
+        )
         .await
         .unwrap();
 
@@ -592,15 +611,14 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // offered manifest. Missing-row/manifest/each-capability remain refusals;
     // vary only the original claim/credential/recovery causes below.
     // Optional outer-fence cause/effect graph: C1 the generic transport has a
-    // current Run claim; C2 no Session Work authority is configured; C3 settle
-    // carries the current epoch. R1 C1+C2+C3 => settle the Run through the one
-    // dispatch authority without inventing Work. The configured case
-    // (C2=false) must release exact Session Work first and is covered by
-    // signed_worker_transport_http T20/T21. FMECA: making Work mandatory here
-    // rejects non-Session transports with 500; skipping configured Work would
-    // allow split ownership, so only the absence case bypasses that outer fence.
+    // current Run claim; C2 the Session Work authority reports the Thread as
+    // NotRequired (no Session Environment owns it); C3 settle carries the
+    // current epoch. R1 C1+C2+C3 => settle the Run through the one dispatch
+    // authority without inventing Work. The leased case (C2=false) must release
+    // exact Session Work first and is covered by signed_worker_transport_http
+    // T20/T21. A service without a Work authority is unrepresentable.
     // Constraint/Invariant: the Dispatch claim and committed Run remain the only
-    // authorities when Session Work is absent. Decision rule: exercise the
+    // authorities when no Work is required. Decision rule: exercise the
     // C1+C2+C3 branch over real HTTP and require one successful settlement.
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
@@ -621,16 +639,17 @@ async fn db_less_worker_drives_runs_over_real_http() {
         .await
         .expect("seed committed recovery truth");
     let clock = Arc::new(ManualClock::new(0));
-    let service = Arc::new(
-        WorkerDispatchService::new(
+    let workers = ready_workers(&["worker-1", "worker-2"]);
+    let service = Arc::new(WorkerDispatchService::new(RegisteredDispatchDependencies {
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        recovery: recovery.clone(),
+        checkpoint: Arc::new(MemoryStreamCheckpointStore::new()),
+        ..worker_dispatch_dependencies(
             mem.clone() as Arc<dyn WorkerDispatchAuthority>,
-            Arc::new(HeaderWorkerAuthenticator),
+            workers.clone(),
             clock.clone(),
-            Arc::new(FixedWorkerLeasePolicy::new(1_000)),
         )
-        .with_recovery_source(recovery)
-        .with_checkpoint_store(Arc::new(MemoryStreamCheckpointStore::new())),
-    );
+    }));
     let router = dispatch_transport_router_with_service(service);
 
     // Serve the transport on an ephemeral localhost port.
@@ -642,21 +661,15 @@ async fn db_less_worker_drives_runs_over_real_http() {
 
     // The worker holds only this HTTP client — no store handle.
     let queue = Arc::new(
-        HttpDispatchQueue::new(
-            format!("http://{addr}"),
-            WorkerIdentity::new("worker-1", "boot-1", 1),
-        )
-        .with_worker_manifest(current_dispatch_codec_manifest()),
+        HttpDispatchQueue::new(format!("http://{addr}"), fixed_identity("worker-1"))
+            .with_worker_manifest(current_dispatch_codec_manifest()),
     );
     let recovery_queue = Arc::new(
-        HttpDispatchQueue::new(
-            format!("http://{addr}"),
-            WorkerIdentity::new("worker-2", "boot-2", 1),
-        )
-        .with_worker_manifest(current_dispatch_codec_manifest()),
+        HttpDispatchQueue::new(format!("http://{addr}"), fixed_identity("worker-2"))
+            .with_worker_manifest(current_dispatch_codec_manifest()),
     );
     queue
-        .enqueue(RunDispatch::new(activation("run-A", "t1")).with_worker_codec_requirements())
+        .enqueue(registered_dispatch(activation("run-A", "t1")).with_worker_codec_requirements())
         .await
         .expect("enqueue over http");
 
@@ -668,7 +681,10 @@ async fn db_less_worker_drives_runs_over_real_http() {
         .expect("claim over http")
         .expect("a run is claimable");
     assert_eq!(claimed.request.activation.run_id.0, "run-A");
-    assert_eq!(claimed.lease.owner(), "worker-1");
+    assert_eq!(
+        claimed.lease.owner(),
+        fixed_identity("worker-1").lease_owner()
+    );
     let original_claim = RunClaim::from(&claimed.lease);
     let snapshot = queue
         .load_recovery_snapshot(&original_claim, None)
@@ -753,6 +769,8 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // epoch is fenced server-side and changes nothing.
     clock.set(40_000);
     dispatch_clock.set(40_000);
+    // The lapsed owner still counts its lost Run; placement prefers the idle peer.
+    workers.set_in_flight("worker-1", 1);
     let reclaimed = recovery_queue
         .claim("worker-2", 30_000, &Default::default())
         .await
@@ -873,11 +891,14 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // Parent-mediated child scheduling uses two compound commands. Each crosses
     // HTTP as one server-side transaction, so the co-located pool never observes
     // the row between enqueue/input delivery and the exact claim.
+    // The first Worker's next heartbeat no longer counts the Run it lost.
+    workers.set_in_flight("worker-1", 0);
     clock.set(70_000);
     dispatch_clock.set(70_000);
     let child = queue
         .claim_new_run(
-            RunDispatch::new(activation("run-B", "child-thread")).with_worker_codec_requirements(),
+            registered_dispatch(activation("run-B", "child-thread"))
+                .with_worker_codec_requirements(),
             "worker-1",
             30_000,
             &Default::default(),
@@ -917,6 +938,17 @@ async fn db_less_worker_drives_runs_over_real_http() {
         .expect("awaiting child is claimed");
     assert_eq!(resumed.pending.len(), 1);
 
+    // The Worker commits the child's terminal Run before it settles Done.
+    recovery
+        .commit(ThreadCommit {
+            thread_id: ThreadId("child-thread".into()),
+            run: RunDisposition::ended(RunId("run-B".into()), EndCause::NaturalEnd),
+            messages: Vec::new(),
+            state: Vec::new(),
+            events: Vec::new(),
+        })
+        .await
+        .expect("commit the child's terminal Run");
     queue
         .settle(
             &RunId("run-B".into()),
@@ -954,15 +986,15 @@ async fn credential_receipt_is_verified_and_fenced_over_real_http() {
     let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let clock = Arc::new(ManualClock::new(0));
     let (dispatch, capabilities) = credential_dispatch("credential-run", "credential-thread");
-    let service = Arc::new(
-        WorkerDispatchService::new(
-            mem,
-            Arc::new(HeaderWorkerAuthenticator),
-            clock.clone(),
-            Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-        )
-        .with_local_credential_capabilities(capabilities),
+    let workers = ready_workers_with_manifest(
+        &["worker-1", "worker-2"],
+        &credential_manifest(&capabilities),
     );
+    let service = Arc::new(WorkerDispatchService::new(RegisteredDispatchDependencies {
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        recovery: Arc::new(CommittedRunRecovery(RunState::Ended(EndCause::NaturalEnd))),
+        ..worker_dispatch_dependencies(mem, workers.clone(), clock.clone())
+    }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -970,16 +1002,11 @@ async fn credential_receipt_is_verified_and_fenced_over_real_http() {
             .await
             .unwrap();
     });
-    let first_worker = HttpDispatchQueue::new(
-        format!("http://{addr}"),
-        WorkerIdentity::new("worker-1", "boot-1", 1),
-    )
-    .with_worker_manifest(current_dispatch_codec_manifest());
-    let recovery_worker = HttpDispatchQueue::new(
-        format!("http://{addr}"),
-        WorkerIdentity::new("worker-2", "boot-2", 1),
-    )
-    .with_worker_manifest(current_dispatch_codec_manifest());
+    let first_worker = HttpDispatchQueue::new(format!("http://{addr}"), fixed_identity("worker-1"))
+        .with_worker_manifest(credential_manifest(&capabilities));
+    let recovery_worker =
+        HttpDispatchQueue::new(format!("http://{addr}"), fixed_identity("worker-2"))
+            .with_worker_manifest(credential_manifest(&capabilities));
     first_worker.enqueue(dispatch).await.unwrap();
     let first = first_worker
         .claim("ignored", 30_000, &Default::default())
@@ -1022,6 +1049,8 @@ async fn credential_receipt_is_verified_and_fenced_over_real_http() {
 
     clock.set(first.lease.expires_ms() + 1);
     dispatch_clock.set(first.lease.expires_ms() + 1);
+    // The lapsed owner still counts its lost Run; placement prefers the idle peer.
+    workers.set_in_flight("worker-1", 1);
     let recovered = recovery_worker
         .claim("ignored", 30_000, &Default::default())
         .await

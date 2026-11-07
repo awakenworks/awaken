@@ -33,9 +33,10 @@ use awaken_dispatch::{
 };
 use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_dispatch_http::{
-    WorkerDispatchService, dispatch_transport_router_with_service,
+    RegisteredDispatchDependencies, WorkerDispatchService, dispatch_transport_router_with_service,
     registered_worker_transport_router_with_services,
 };
+use awaken_dispatch_testkit::worker_dispatch::worker_dispatch_dependencies;
 use awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -257,16 +258,17 @@ async fn active_active_control_child() {
     );
     let (_, directory) = configured_worker();
     let authenticator = Arc::new(HeaderWorkerAuthenticator);
-    let dispatch_service = Arc::new(
-        WorkerDispatchService::new(
+    let dispatch_service = Arc::new(WorkerDispatchService::new(RegisteredDispatchDependencies {
+        authenticator: authenticator.clone(),
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(120_000)),
+        registry_ttl_ms: 120_000,
+        recovery: coordinator.clone(),
+        ..worker_dispatch_dependencies(
             dispatch.clone(),
-            authenticator.clone(),
+            directory.clone(),
             awaken_time::system_clock(),
-            Arc::new(FixedWorkerLeasePolicy::new(120_000)),
         )
-        .with_worker_directory(directory.clone(), 120_000)
-        .with_recovery_source(coordinator.clone()),
-    );
+    }));
     let commit_service = Arc::new(awaken_dispatch_http::ClaimedCommitHttpService::new(
         Arc::new(ClaimedCommitService::new(dispatch, coordinator)),
         directory,

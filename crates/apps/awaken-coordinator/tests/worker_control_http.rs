@@ -16,7 +16,10 @@ use awaken_coordinator_client::{WorkerControlClient, WorkerRegistrationError};
 use awaken_dispatch::{
     MemoryDispatchStore, PlacementRequirements, RunDispatch, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
 };
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_dispatch_http::{
+    RegisteredDispatchDependencies, WorkerDispatchService, dispatch_transport_router_with_service,
+};
+use awaken_dispatch_testkit::worker_dispatch::worker_dispatch_dependencies;
 use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -28,9 +31,7 @@ use awaken_worker_registry::{
     MemoryWorkerDirectory, RegistryMutation, WorkerCredentialObservation, WorkerHeartbeat,
     WorkerManifest, WorkerState,
 };
-use awaken_worker_transport_security::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, WorkerUpstream,
-};
+use awaken_worker_transport_security::{FixedWorkerLeasePolicy, WorkerUpstream};
 
 // Registration requires explicit current protocol evidence. Default/ANY remains
 // a negative transport case; positive registry/credential rules use this owner.
@@ -80,15 +81,17 @@ async fn initial_session_preparation_requires_exact_ready_worker_authority() {
     let clock = Arc::new(ManualClock::new(100));
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let preparation = Arc::new(RecordingSessionPreparation::default());
-    let service = WorkerDispatchService::new(
-        Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
-            as Arc<dyn WorkerDispatchAuthority>,
-        Arc::new(HeaderWorkerAuthenticator),
-        clock.clone(),
-        Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-    )
-    .with_worker_directory(directory, 30)
-    .with_session_preparation_control(preparation.clone());
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        registry_ttl_ms: 30,
+        session_preparation: preparation.clone(),
+        ..worker_dispatch_dependencies(
+            Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
+                as Arc<dyn WorkerDispatchAuthority>,
+            directory,
+            clock.clone(),
+        )
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -172,14 +175,16 @@ async fn initial_session_preparation_requires_exact_ready_worker_authority() {
 async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
     let clock = Arc::new(ManualClock::new(100));
     let directory = Arc::new(MemoryWorkerDirectory::new());
-    let service = WorkerDispatchService::new(
-        Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
-            as Arc<dyn WorkerDispatchAuthority>,
-        Arc::new(HeaderWorkerAuthenticator),
-        clock.clone(),
-        Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-    )
-    .with_worker_directory(directory.clone(), 30);
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        registry_ttl_ms: 30,
+        ..worker_dispatch_dependencies(
+            Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
+                as Arc<dyn WorkerDispatchAuthority>,
+            directory.clone(),
+            clock.clone(),
+        )
+    });
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -305,14 +310,16 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
 #[tokio::test]
 async fn authenticated_header_cannot_register_a_different_worker_id() {
     let directory = Arc::new(MemoryWorkerDirectory::new());
-    let service = WorkerDispatchService::new(
-        Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
-            as Arc<dyn WorkerDispatchAuthority>,
-        Arc::new(HeaderWorkerAuthenticator),
-        Arc::new(ManualClock::new(0)),
-        Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-    )
-    .with_worker_directory(directory, 30);
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        registry_ttl_ms: 30,
+        ..worker_dispatch_dependencies(
+            Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
+                as Arc<dyn WorkerDispatchAuthority>,
+            directory,
+            Arc::new(ManualClock::new(0)),
+        )
+    });
     let router = dispatch_transport_router_with_service(Arc::new(service));
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -404,14 +411,16 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         .enqueue(dispatch_with_capability("cpu", "cpu"))
         .await
         .unwrap();
-    let service = WorkerDispatchService::new(
-        dispatch as Arc<dyn WorkerDispatchAuthority>,
-        Arc::new(HeaderWorkerAuthenticator),
-        clock,
-        Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-    )
-    .with_worker_directory(directory, 1_000)
-    .with_checkpoint_store(checkpoints.clone());
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        registry_ttl_ms: 1_000,
+        checkpoint: checkpoints.clone(),
+        ..worker_dispatch_dependencies(
+            dispatch as Arc<dyn WorkerDispatchAuthority>,
+            directory,
+            clock,
+        )
+    });
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -544,13 +553,15 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         .await
         .unwrap();
 
-    let service = WorkerDispatchService::new(
-        dispatch.clone() as Arc<dyn WorkerDispatchAuthority>,
-        Arc::new(HeaderWorkerAuthenticator),
-        clock.clone(),
-        Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-    )
-    .with_worker_directory(directory, 1_000);
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        registry_ttl_ms: 1_000,
+        ..worker_dispatch_dependencies(
+            dispatch.clone() as Arc<dyn WorkerDispatchAuthority>,
+            directory,
+            clock.clone(),
+        )
+    });
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -993,16 +1004,18 @@ mod environment_renewal {
             )
             .map(SessionWorkGrant::from_transfer)
             .expect("canonical grant has a nonzero epoch");
-            let service = WorkerDispatchService::new(
-                Arc::new(MemoryDispatchStore::new(clock.clone()))
-                    as Arc<dyn WorkerDispatchAuthority>,
-                Arc::new(HeaderWorkerAuthenticator),
-                clock.clone(),
-                Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-            )
-            .with_worker_directory(directory, 1_000)
-            .with_session_work_authority(Arc::new(ObservedWork(SessionWorkOwnership::Leased(work))))
-            .with_session_environment_bindings(sink);
+            let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+                lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+                registry_ttl_ms: 1_000,
+                session_work: Arc::new(ObservedWork(SessionWorkOwnership::Leased(work))),
+                session_environment_bindings: sink,
+                ..worker_dispatch_dependencies(
+                    Arc::new(MemoryDispatchStore::new(clock.clone()))
+                        as Arc<dyn WorkerDispatchAuthority>,
+                    directory,
+                    clock.clone(),
+                )
+            });
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let server = tokio::spawn(async move {
@@ -1139,14 +1152,17 @@ mod environment_renewal {
         .await
         .unwrap();
         let identity = registered.snapshot.identity;
-        let service = WorkerDispatchService::new(
-            Arc::new(MemoryDispatchStore::new(clock.clone())) as Arc<dyn WorkerDispatchAuthority>,
-            Arc::new(HeaderWorkerAuthenticator),
-            clock.clone(),
-            Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-        )
-        .with_worker_directory(directory, 1_000)
-        .with_session_work_authority(Arc::new(ObservedWork(SessionWorkOwnership::NotRequired)));
+        let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+            registry_ttl_ms: 1_000,
+            session_work: Arc::new(ObservedWork(SessionWorkOwnership::NotRequired)),
+            ..worker_dispatch_dependencies(
+                Arc::new(MemoryDispatchStore::new(clock.clone()))
+                    as Arc<dyn WorkerDispatchAuthority>,
+                directory,
+                clock.clone(),
+            )
+        });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {

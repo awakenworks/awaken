@@ -21,14 +21,17 @@ use awaken_dispatch::{
     has_active_physical_attempt_for_owner, stop_committed_terminal_attempt,
     stop_expired_predecessor,
 };
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_dispatch_http::{
+    RegisteredDispatchDependencies, WorkerDispatchService, dispatch_transport_router_with_service,
+};
+use awaken_dispatch_testkit::worker_dispatch::worker_dispatch_dependencies;
 use awaken_dispatch_testkit::worker_http::{activation, current_dispatch_codec_manifest};
 use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock};
 use awaken_lease_testkit::ManualClock;
 use awaken_worker_registry::{
     MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
 };
-use awaken_worker_transport_security::{FixedWorkerLeasePolicy, HeaderWorkerAuthenticator};
+use awaken_worker_transport_security::FixedWorkerLeasePolicy;
 use serde_json::{Value, json};
 use tokio::sync::{Notify, Semaphore};
 
@@ -430,7 +433,9 @@ impl Fixture {
                 runs: vec![RunRecord {
                     id: old.run_id.clone(),
                     thread_id: thread_id.clone(),
-                    state: RunState::Running,
+                    // Settlement of a recovered terminal claim requires the
+                    // committed Ended truth the stop fixtures recover from.
+                    state: RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
                 }],
                 latest_run_id: None,
                 messages: Vec::new(),
@@ -445,15 +450,17 @@ impl Fixture {
                 next_commit_ordinal: 1,
             },
         });
-        let service = WorkerDispatchService::new(
-            store.clone(),
-            Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualClock::new(200)),
-            Arc::new(FixedWorkerLeasePolicy::new(budget)),
-        )
-        .with_worker_directory(directory.clone(), 10_000)
-        .with_execution_stop_source(stop.clone())
-        .with_recovery_source(recovery.clone());
+        let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(budget)),
+            registry_ttl_ms: 10_000,
+            execution_stops: Some(stop.clone()),
+            recovery: recovery.clone(),
+            ..worker_dispatch_dependencies(
+                store.clone(),
+                directory.clone(),
+                Arc::new(ManualClock::new(200)),
+            )
+        });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         let router = dispatch_transport_router_with_service(Arc::new(service));

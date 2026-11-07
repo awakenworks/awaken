@@ -55,7 +55,6 @@ pub(super) async fn session_repository_publication_poll(
         verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
             .await?;
         let projection = terminal_cleanup_control(&service)
-            .map_err(RealizationHttpError::from)?
             .terminal_repository_publication_command(
                 &awaken_session_types::SessionId::from(request.session_id),
                 &request.lease,
@@ -77,7 +76,6 @@ pub(super) async fn session_repository_publication_complete(
         verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
             .await?;
         terminal_cleanup_control(&service)
-            .map_err(RealizationHttpError::from)?
             .record_terminal_repository_publication_receipt(
                 &awaken_session_types::SessionId::from(request.session_id),
                 &request.lease,
@@ -100,7 +98,6 @@ pub(super) async fn session_repository_publication_reject(
         verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
             .await?;
         terminal_cleanup_control(&service)
-            .map_err(RealizationHttpError::from)?
             .record_terminal_repository_publication_rejection(
                 &awaken_session_types::SessionId::from(request.session_id),
                 &request.lease,

@@ -13,7 +13,10 @@ use awaken_dispatch::{
     AttemptExecutionBinding, MemoryDispatchStore, WorkerDirectory, WorkerExecutionBindingSource,
     WorkerIdentity, WorkerManifest, WorkerRegistration, WorkerState,
 };
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_dispatch_http::{
+    RegisteredDispatchDependencies, WorkerDispatchService, dispatch_transport_router_with_service,
+};
+use awaken_dispatch_testkit::worker_dispatch::worker_dispatch_dependencies;
 use awaken_lease_testkit::ManualClock;
 use awaken_session_execution_contract::ApplicationError;
 use awaken_worker_registry::{
@@ -112,16 +115,19 @@ impl Fixture {
         )
         .unwrap();
         let clock = Arc::new(ManualClock::new(100));
-        let mut service = WorkerDispatchService::new(
-            Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
-            Arc::new(auth),
-            clock.clone(),
-            Arc::new(FixedWorkerLeasePolicy::new(50)),
-        )
-        .with_worker_directory(directory.clone(), 50);
-        if let Some(containers) = containers {
-            service = service.with_execution_binding_source(containers);
-        }
+        let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+            authenticator: Arc::new(auth),
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(50)),
+            registry_ttl_ms: 50,
+            execution_bindings: containers.map(|containers| {
+                containers as Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>
+            }),
+            ..worker_dispatch_dependencies(
+                Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
+                directory.clone(),
+                clock.clone(),
+            )
+        });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         let router = dispatch_transport_router_with_service(Arc::new(service));

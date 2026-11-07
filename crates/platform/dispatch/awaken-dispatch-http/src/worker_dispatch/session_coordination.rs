@@ -135,19 +135,6 @@ fn require_primary_session_claim(
     Ok(())
 }
 
-fn session_coordination(
-    service: &WorkerDispatchService,
-) -> Result<
-    &Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
-    RealizationHttpError,
-> {
-    service.session_coordination.as_ref().ok_or_else(|| {
-        RealizationHttpError::from(ApplicationError::internal(
-            "Session coordination control is not configured",
-        ))
-    })
-}
-
 fn coordination_failure(
     error: awaken_runtime_contract::runs::RunError,
 ) -> awaken_session_execution_contract::SessionRealizationControlFailure {
@@ -185,7 +172,8 @@ pub(super) async fn session_agents_list(
         .await?;
         require_primary_session_claim(&guard)?;
         drop(guard);
-        let agents = session_coordination(&service)?
+        let agents = service
+            .session_coordination
             .list_session_agents(&awaken_session_types::SessionId::from(request.session_id))
             .await
             .map_err(coordination_failure)?;
@@ -220,7 +208,8 @@ pub(super) async fn session_model_request_admit(
         // Unlike message/report commands this application call does not enqueue
         // work. Keep the exact claim guard alive across root usage
         // reconciliation so a superseded Worker cannot spend another request.
-        let admitted = session_coordination(&service)?
+        let admitted = service
+            .session_coordination
             .admit_session_model_request(
                 &awaken_session_types::SessionId::from(request.session_id),
                 &request.thread_id,
@@ -300,7 +289,8 @@ pub(super) async fn session_run_activity_admit(
             // No Dispatch row lock or retained pool connection spans physical
             // projection/continuation preparation. Re-lock the exact tenure
             // afterwards; this observation is not execution authority.
-            let revision = session_coordination(&service)?
+            let revision = service
+                .session_coordination
                 .prepare_prepared_session_run_activity(
                     &awaken_session_types::SessionId::from(&request.session_id),
                     &request.agent_id,
@@ -327,19 +317,13 @@ pub(super) async fn session_run_activity_admit(
         });
         let session = awaken_session_types::SessionId::from(&request.session_id);
         let admission = if prepared {
-            let recovery = exact.and_then(|()| {
+            let recovery = exact.map(|()| {
                 if projected_revision.is_some() {
-                    service
-                        .recovery
-                        .as_deref()
-                        .map(awaken_dispatch_contract::PreparedRunRecovery::OriginalAuthority)
-                        .ok_or_else(|| {
-                            RealizationHttpError::from(ApplicationError::internal(
-                                "prepared reservation recovery source is unavailable",
-                            ))
-                        })
+                    awaken_dispatch_contract::PreparedRunRecovery::OriginalAuthority(
+                        service.recovery.as_ref(),
+                    )
                 } else {
-                    Ok(awaken_dispatch_contract::PreparedRunRecovery::ReceiptOnly)
+                    awaken_dispatch_contract::PreparedRunRecovery::ReceiptOnly
                 }
             });
             let service_ref = service.as_ref();
@@ -350,7 +334,8 @@ pub(super) async fn session_run_activity_admit(
                     service.clock.as_ref(),
                     recovery,
                     |cursor, _cancelled| async move {
-                        session_coordination(service_ref)?
+                        service_ref
+                            .session_coordination
                             .admit_prepared_session_run_activity(
                                 session_ref,
                                 &request_ref.run_id,
@@ -370,7 +355,8 @@ pub(super) async fn session_run_activity_admit(
         } else {
             let admission = async {
                 exact?;
-                session_coordination(&service)?
+                service
+                    .session_coordination
                     .admit_session_run_activity(
                         &session,
                         &request.agent_id,
@@ -414,7 +400,8 @@ pub(super) async fn session_agent_send(
             )));
         }
         drop(guard);
-        let receipt = session_coordination(&service)?
+        let receipt = service
+            .session_coordination
             .send_session_agent_message(request.command)
             .await
             .map_err(coordination_failure)?;
@@ -471,7 +458,8 @@ pub(super) async fn session_agent_settle(
             )));
         }
         drop(guard);
-        session_coordination(&service)?
+        service
+            .session_coordination
             .settle_session_agent_boundary(request.command)
             .await
             .map_err(coordination_failure)?;

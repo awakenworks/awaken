@@ -6,7 +6,10 @@ mod postgres_support;
 
 use awaken_coordinator_client::WorkerControlClient;
 use awaken_dispatch::{MemoryDispatchStore, WorkerDirectory, WorkerManifest};
-use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_dispatch_http::{
+    RegisteredDispatchDependencies, WorkerDispatchService, dispatch_transport_router_with_service,
+};
+use awaken_dispatch_testkit::worker_dispatch::worker_dispatch_dependencies;
 use awaken_lease_testkit::ManualClock;
 use awaken_worker_registry::{
     MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
@@ -30,13 +33,16 @@ async fn assert_registration_history(directory: Arc<dyn WorkerDirectory>, worker
             .unwrap();
     let auth = SignedWorkerAuthenticator::new(credential.clone(), clock.clone())
         .with_time_policy(60_000, 0);
-    let service = WorkerDispatchService::new(
-        Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
-        Arc::new(auth),
-        clock.clone(),
-        Arc::new(FixedWorkerLeasePolicy::new(50)),
-    )
-    .with_worker_directory(directory.clone(), 50);
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        authenticator: Arc::new(auth),
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(50)),
+        registry_ttl_ms: 50,
+        ..worker_dispatch_dependencies(
+            Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
+            directory.clone(),
+            clock.clone(),
+        )
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {

@@ -140,23 +140,11 @@ pub(super) async fn claim_new_run(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
-        let claimed = if let Some(snapshot) = &authority.snapshot {
-            service
-                .dispatch
-                .claim_new_run_compatible(request.request, snapshot, authority.lease_ms)
-                .await
-        } else {
-            service
-                .dispatch
-                .claim_new_run(
-                    request.request,
-                    &authority.owner,
-                    authority.lease_ms,
-                    &service.local_credential_capabilities,
-                )
-                .await
-        }
-        .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        let claimed = service
+            .dispatch
+            .claim_new_run_compatible(request.request, &authority.snapshot, authority.lease_ms)
+            .await
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
@@ -171,23 +159,11 @@ pub(super) async fn deliver_and_claim(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
-        let claimed = if let Some(snapshot) = &authority.snapshot {
-            service
-                .dispatch
-                .deliver_and_claim_compatible(request.input, snapshot, authority.lease_ms)
-                .await
-        } else {
-            service
-                .dispatch
-                .deliver_and_claim(
-                    request.input,
-                    &authority.owner,
-                    authority.lease_ms,
-                    &service.local_credential_capabilities,
-                )
-                .await
-        }
-        .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        let claimed = service
+            .dispatch
+            .deliver_and_claim_compatible(request.input, &authority.snapshot, authority.lease_ms)
+            .await
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
@@ -202,36 +178,24 @@ pub(super) async fn claim(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
-        let claimed = if let Some(snapshot) = &authority.snapshot {
-            if let Some(policy) = &service.placement_policy {
-                let workers = directory(&service)?
-                    .list()
-                    .await
-                    .map_err(|error| ApplicationError::internal(error.to_string()))?
-                    .into_iter()
-                    .map(|record| record.snapshot)
-                    .collect();
-                service
-                    .dispatch
-                    .claim_placed(snapshot, workers, policy.clone(), authority.lease_ms)
-                    .await
-            } else {
-                service
-                    .dispatch
-                    .claim_compatible(snapshot, authority.lease_ms)
-                    .await
-            }
-        } else {
-            service
-                .dispatch
-                .claim(
-                    &authority.owner,
-                    authority.lease_ms,
-                    &service.local_credential_capabilities,
-                )
-                .await
-        }
-        .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        let workers = service
+            .directory
+            .list()
+            .await
+            .map_err(|error| ApplicationError::internal(error.to_string()))?
+            .into_iter()
+            .map(|record| record.snapshot)
+            .collect();
+        let claimed = service
+            .dispatch
+            .claim_placed(
+                &authority.snapshot,
+                workers,
+                service.placement_policy.clone(),
+                authority.lease_ms,
+            )
+            .await
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
@@ -266,23 +230,11 @@ pub(super) async fn claim_run(
     let result = async {
         let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
         let run_id = RunId(request.run_id);
-        let claimed = if let Some(snapshot) = &authority.snapshot {
-            service
-                .dispatch
-                .claim_run_compatible(&run_id, snapshot, authority.lease_ms)
-                .await
-        } else {
-            service
-                .dispatch
-                .claim_run(
-                    &run_id,
-                    &authority.owner,
-                    authority.lease_ms,
-                    &service.local_credential_capabilities,
-                )
-                .await
-        }
-        .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        let claimed = service
+            .dispatch
+            .claim_run_compatible(&run_id, &authority.snapshot, authority.lease_ms)
+            .await
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let claimed = finalize_claim(&service, &authority, claimed).await?;
         Ok(json!({ "claimed": claimed }))
     }
@@ -362,9 +314,7 @@ async fn admit_attempt(
         {
             return Ok(json!({ "admission": awaken_dispatch::AttemptAdmission::Fenced }));
         }
-        let snapshot = authority.snapshot.as_ref().ok_or_else(|| {
-            ApplicationError::invalid("execution binding requires a registered Worker")
-        })?;
+        let snapshot = &authority.snapshot;
         // No database transaction/Thread lock is held across provider I/O. The
         // request budget limits waiting, never manufactures an unbound fallback.
         let binding = tokio::time::timeout(
@@ -395,7 +345,8 @@ async fn admit_attempt(
                 "registered Worker identity is required for physical admission",
             )
         })?;
-        let guard = super::directory(service)?
+        let guard = service
+            .directory
             .lock_incarnation(identity)
             .await
             .map_err(|e| ApplicationError::unavailable(e.to_string()))?
@@ -579,11 +530,8 @@ async fn require_attempt_observation_protocol(
     service: &WorkerDispatchService,
     identity: &WorkerIdentity,
 ) -> Result<(), ApplicationError> {
-    let directory = service
+    let record = service
         .directory
-        .as_ref()
-        .ok_or_else(|| ApplicationError::invalid("entry closure requires a registered Worker"))?;
-    let record = directory
         .incarnation(identity)
         .await
         .map_err(|error| ApplicationError::unavailable(error.to_string()))?

@@ -33,7 +33,11 @@ use awaken_dispatch::{
     WorkerState,
 };
 use awaken_dispatch_http::{
-    WorkerDispatchService, dispatch_transport_router_with_service, worker_environment_warmup_router,
+    RegisteredDispatchDependencies, WorkerDispatchService, dispatch_transport_router_with_service,
+    worker_environment_warmup_router,
+};
+use awaken_dispatch_testkit::worker_dispatch::{
+    CommittedRunRecovery, worker_dispatch_dependencies,
 };
 use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::RunActivation;
@@ -944,19 +948,22 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let session_work = Arc::new(RecordingSessionWorkAuthority::default());
     let environment_bindings = Arc::new(RecordingEnvironmentBindings::default());
     let live_stream = Arc::new(MemoryStreamSink::new());
-    let service = WorkerDispatchService::new(
-        dispatch.clone(),
-        authenticator.clone(),
-        clock.clone(),
-        Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-    )
-    .with_worker_directory(directory.clone(), 30_000)
-    .with_session_control(session_control.clone())
-    .with_session_coordination(session_control.clone())
-    .with_terminal_cleanup_control(session_control.clone())
-    .with_session_environment_bindings(environment_bindings.clone())
-    .with_session_work_authority(session_work.clone())
-    .with_stream_sink(live_stream.clone());
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        authenticator: authenticator.clone(),
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+        realizations: session_control.clone(),
+        coordination: session_control.clone(),
+        terminal_cleanup: session_control.clone(),
+        session_environment_bindings: environment_bindings.clone(),
+        session_work: session_work.clone(),
+        stream_sink: live_stream.clone(),
+        recovery: Arc::new(CommittedRunRecovery(
+            awaken_agent_contract::agent::run::RunState::Ended(
+                awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            ),
+        )),
+        ..worker_dispatch_dependencies(dispatch.clone(), directory.clone(), clock.clone())
+    });
     let warmup = awaken_session_configuration_contract::EnvironmentSnapshot {
         environment_id: "signed-env".into(),
         revision: awaken_environment_contract::EnvironmentRevision(3),
@@ -2873,11 +2880,13 @@ async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
     let directory = Arc::new(TestWorkerDirectory::default());
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
-    let service = WorkerDispatchService::local(
-        Arc::new(MemoryDispatchStore::new(dispatch_clock.clone())),
-        awaken_time::system_clock(),
-    )
-    .with_worker_directory(directory.clone(), 30_000);
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        ..worker_dispatch_dependencies(
+            Arc::new(MemoryDispatchStore::new(dispatch_clock.clone())),
+            directory.clone(),
+            awaken_time::system_clock(),
+        )
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let router = dispatch_transport_router_with_service(Arc::new(service));
@@ -3026,9 +3035,14 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
         .await
         .unwrap();
     let queued_before = dispatch.list_dispatches().await.unwrap();
-    let service = WorkerDispatchService::local(dispatch.clone(), awaken_time::system_clock())
-        .with_worker_directory(directory.clone(), 30_000)
-        .with_session_control(session_control.clone());
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        realizations: session_control.clone(),
+        ..worker_dispatch_dependencies(
+            dispatch.clone(),
+            directory.clone(),
+            awaken_time::system_clock(),
+        )
+    });
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

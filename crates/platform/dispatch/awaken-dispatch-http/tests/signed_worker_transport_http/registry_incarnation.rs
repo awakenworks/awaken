@@ -39,16 +39,14 @@ async fn signed_draining_cleanup_keeps_its_original_renewal_authority() {
     });
     let work = Arc::new(RecordingSessionWorkAuthority::default());
     let dispatch = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let service = WorkerDispatchService::new(
-        dispatch,
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
         authenticator,
-        clock.clone(),
-        Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-    )
-    .with_worker_directory(directory.clone(), 30_000)
-    .with_session_control(control.clone())
-    .with_terminal_cleanup_control(control.clone())
-    .with_session_work_authority(work.clone());
+        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+        realizations: control.clone(),
+        terminal_cleanup: control.clone(),
+        session_work: work.clone(),
+        ..worker_dispatch_dependencies(dispatch, directory.clone(), clock.clone())
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let router = dispatch_transport_router_with_service(Arc::new(service));
@@ -193,10 +191,11 @@ impl awaken_worker_contract::WorkerIncarnationSource for TestWorkerDirectory {
 }
 
 /// Cause/effect design: C1 the cleanup claim route has authenticated Worker-id
-/// evidence but no Coordinator Worker Directory; C2 the request supplies a
+/// evidence but the Coordinator Worker Directory holds no such incarnation (a
+/// service without a directory is unrepresentable); C2 the request supplies a
 /// syntactically complete identity, target, and cursor protocol. Effect E1: fail closed before
 /// Session Control, because C1 cannot prove the current registry incarnation.
-/// Decision rule D1: C1+C2 => HTTP 500 and zero claim calls. A local header is
+/// Decision rule D1: C1+C2 => HTTP 400 and zero claim calls. A local header is
 /// deliberately insufficient incarnation authority; no compatibility bypass is
 /// permitted for this recovery-only claim. Constraint/Invariant: cleanup claims
 /// require the Coordinator's current registry incarnation, never header identity.
@@ -207,8 +206,15 @@ async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
     let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let session_control = Arc::new(RecordingSessionControl::default());
     *session_control.projection.lock().unwrap() = Some(frozen_projection());
-    let service = WorkerDispatchService::local(dispatch, awaken_time::system_clock())
-        .with_session_control(session_control.clone());
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        realizations: session_control.clone(),
+        terminal_cleanup: session_control.clone(),
+        ..worker_dispatch_dependencies(
+            dispatch,
+            Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new()),
+            awaken_time::system_clock(),
+        )
+    });
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -235,11 +241,7 @@ async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
         .await
         .expect("D1 request reaches the authenticated route");
 
-    assert_eq!(
-        response.status(),
-        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-        "D1/E1"
-    );
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST, "D1/E1");
     assert!(
         session_control.cleanup_claims.lock().unwrap().is_empty(),
         "D1/E1"
@@ -305,9 +307,10 @@ async fn registry_outage_does_not_consume_a_dispatch_claim_or_reclassify_identit
     dispatch.enqueue(request).await.unwrap();
     let before = dispatch.list_dispatches().await.unwrap();
     let work = Arc::new(RecordingSessionWorkAuthority::default());
-    let service = WorkerDispatchService::local(dispatch.clone(), clock)
-        .with_worker_directory(directory.clone(), 30_000)
-        .with_session_work_authority(work.clone());
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        session_work: work.clone(),
+        ..worker_dispatch_dependencies(dispatch.clone(), directory.clone(), clock)
+    });
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

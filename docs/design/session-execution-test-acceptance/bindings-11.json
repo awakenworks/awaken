@@ -202,7 +202,7 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 131,
+        "line": 134,
         "file_sha256": "86e2b633ab6ff2a62d622cf583b3ff8e592984f8bf46d8d414a77888b33c8bac",
         "relocated_from": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs:131"
       }
@@ -210,15 +210,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 164
+        "line": 167
       },
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 169
+        "line": 172
       },
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 174
+        "line": 177
       }
     ],
     "execution_witnesses": [

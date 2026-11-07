@@ -113,18 +113,21 @@ fn router_over(
     published: Arc<PublishedSettlements>,
     work: Arc<LostReleaseWork>,
 ) -> Router {
-    dispatch_transport_router_with_service(Arc::new(
-        WorkerDispatchService::new(
-            store,
-            Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualClock::new(0)),
-            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-        )
-        .with_recovery_source(recovery)
-        .with_terminal_observer(observer)
-        .with_completion_sink(published)
-        .with_session_work_authority(work),
-    ))
+    dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
+        RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+            recovery,
+            terminal_observer: observer,
+            completion: published,
+            session_work: work,
+            coordination: Arc::new(RecordingSessionCoordination::default()),
+            ..worker_dispatch_dependencies(
+                store,
+                ready_workers(&["terminal-worker"]),
+                Arc::new(ManualClock::new(0)),
+            )
+        },
+    )))
 }
 
 #[tokio::test]
