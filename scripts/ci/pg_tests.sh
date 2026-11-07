@@ -43,8 +43,16 @@ PG_RECOVERY_TIMEOUT_SECONDS="${AWAKEN_PG_RECOVERY_TIMEOUT_SECONDS:-900}"
 # it is checked before every execution stage rather than by a second timer, so the failure
 # names the stage that ran out instead of killing an unrelated child.
 # Owned diagnostics and cleanup retain their operation deadlines after execution expires.
+# Time an admitted Cargo stage spends queued for the host build admission is not
+# spent from it (awaken_budget_* in _deadline.sh; nothing with the older host tool).
 PG_GATE_BUDGET_SECONDS="${AWAKEN_PG_GATE_BUDGET_SECONDS:-5400}"
 PG_GATE_STARTED=$SECONDS
+
+pg_gate_elapsed() {
+  local elapsed=$((SECONDS - PG_GATE_STARTED - $(awaken_budget_queued_seconds)))
+  [ "$elapsed" -ge 0 ] || elapsed=0
+  printf '%s\n' "$elapsed"
+}
 
 positive_seconds() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
@@ -58,10 +66,11 @@ pg_run_with_deadline() {
     echo "invalid PostgreSQL deadline for $stage: $seconds" >&2
     return 2
   }
-  local elapsed=$((SECONDS - PG_GATE_STARTED))
+  local elapsed
+  elapsed=$(pg_gate_elapsed)
   if [[ "$stage" != cleanup-* && "$stage" != diagnostic-* ]] && [ "$elapsed" -ge "$PG_GATE_BUDGET_SECONDS" ]; then
     echo "PostgreSQL gate exhausted its ${PG_GATE_BUDGET_SECONDS}s budget before $stage" >&2
-    echo "    (${elapsed}s elapsed; raise AWAKEN_PG_GATE_BUDGET_SECONDS only with a reason)" >&2
+    echo "    (${elapsed}s executing, $((SECONDS - PG_GATE_STARTED))s wall; raise AWAKEN_PG_GATE_BUDGET_SECONDS only with a reason)" >&2
     return 124
   fi
   # A stage admitted just before the gate deadline may consume only the
@@ -90,7 +99,7 @@ pg_test() {
 
 pg_required_test() {
   if affected_skip_suite "${BASH_SOURCE[1]##*/}:${BASH_LINENO[0]}"; then return 0; fi
-  local remaining=$((PG_GATE_BUDGET_SECONDS - SECONDS + PG_GATE_STARTED))
+  local remaining=$((PG_GATE_BUDGET_SECONDS - $(pg_gate_elapsed)))
   [ "$remaining" -gt 0 ] || { echo "PostgreSQL gate budget exhausted before required tests" >&2; return 124; }
   [ "$remaining" -le "$PG_TEST_TIMEOUT_SECONDS" ] || remaining=$PG_TEST_TIMEOUT_SECONDS
   AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="$remaining" run_required_rust_tests "$@"
@@ -513,6 +522,7 @@ finish() {
     [ "$OBJECT_CREATE_ATTEMPTED" -eq 0 ] || startup_diagnostics "$OBJECT_NAME"
   fi
   cleanup || cleanup_status=$?
+  awaken_budget_close
   [ "$result" -ne 0 ] || result=$cleanup_status
   exit "$result"
 }
@@ -706,6 +716,24 @@ self_test() {
     [ "$result" -eq 31 ] && [ "$observed" -eq 30 ]
   ) || {
     echo "PostgreSQL stage deadline must fit the remaining gate budget and preserve cleanup" >&2
+    return 1
+  }
+  # P19 time admitted stages spent queued for host build admission is not
+  # spent from the gate budget: 61s of wall with 30s queued leaves 29s.
+  (
+    PG_GATE_BUDGET_SECONDS=60
+    PG_GATE_STARTED=$((SECONDS - 61))
+    local observed=0 result=0
+    awaken_budget_open || exit 1
+    trap awaken_budget_close EXIT
+    python3 -c 'import json, sys, time; now = time.time()
+json.dump({"requested_at_unix": now - 40, "granted_at_unix": now - 10, "queue_bound_seconds": 600},
+          open(sys.argv[1] + "/fixture.json", "w"))' "$awaken_budget_ledger" || exit 1
+    run_with_deadline() { observed="$1"; shift; "$@"; }
+    pg_run_with_deadline queued-budget 300 bash -c 'exit 23' || result=$?
+    [ "$result" -eq 23 ] && [ "$observed" -ge 25 ] && [ "$observed" -le 29 ]
+  ) || {
+    echo "PostgreSQL gate budget must leave out time spent queued for host build admission" >&2
     return 1
   }
   # P18 exhaustion refuses new tests, but cannot suppress bounded failure
@@ -1047,6 +1075,7 @@ cleanup() {
   fi
 }
 trap finish EXIT
+awaken_budget_open || { echo "cannot open the PostgreSQL gate's admission-queue ledger" >&2; exit 1; }
 
 RECOVERY_ROOT=$(mktemp -d "$(postgres_recovery_prefix "$RECOVERY_PARENT")XXXXXX")
 valid_recovery_root "$RECOVERY_ROOT" \
