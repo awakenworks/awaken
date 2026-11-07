@@ -180,6 +180,12 @@ commit-checks:
                 - name: gate-path-references
                   tags: [read-only]
                   run: python3 scripts/ci/check_gate_path_references.py --self-test && python3 scripts/ci/check_gate_path_references.py
+                # 3a''. An affected postgres/reliability run skips what it cannot reach, so
+                #    every suite of those groups must map to an existing package. A new
+                #    suite without one fails here, in seconds, not an hour into the group.
+                - name: service-suite-map
+                  tags: [read-only]
+                  run: python3 scripts/ci/service_test_plan.py --self-test
           - name: read-only-lane-2-4
             group:
               piped: true

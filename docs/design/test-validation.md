@@ -167,7 +167,32 @@ Why did something run (nothing is built):
 ```sh
 python3 scripts/ci/generate_hooks.py --explain <path>...                 # hook jobs and script tests, with the matching glob
 python3 scripts/ci/rust_test_plan.py --gate-scope --base HEAD --explain  # Rust gate scope and why per path
+python3 scripts/ci/service_test_plan.py --group postgres --base <base> --explain  # each service suite, run or skip, and why
 ```
+
+### Affected service groups (postgres, reliability)
+
+`scripts/ci/pg_tests.sh --require-docker --affected <base>` and
+`scripts/ci/check-reliability.sh --require-tools --affected <base>` run only the
+suites the change since `<base>` can reach; `check-all.sh --group postgres|reliability`
+passes the same base from `AWAKEN_SERVICE_AFFECTED_BASE` (as `AWAKEN_FORMAL_AFFECTED_BASE`
+does for the formal tier). `service_test_plan.py` reuses `rust_test_plan.py`'s change
+set, input globs and Cargo owner/consumer walk; the shells look its verdict up by
+the line that starts each suite (`_affected_suites.sh`).
+
+| Change since `<base>` | Selection |
+|---|---|
+| docs, web, e2e, a CI script the group neither runs nor names | none: the group prints why and exits 0 before Docker, MinIO or any tool check |
+| member-crate sources | every suite whose `-p`/`--package`/`--test-package` (or fuzz path dependency, or helper script's packages) is a changed owner or a transitive consumer |
+| `Cargo.toml` anywhere, `Cargo.lock`, `.config/**`, toolchain, `fuzz/**`, an unowned Rust input | whole group |
+| the entry, anything it sources/runs/imports (both planners included), `check-all.sh`, a `scripts/` data file one of them names | whole group |
+| a suite with no package, an unknown package or stage, a test command outside the wrapper | hard error (exit 2), at commit time in the `service-suite-map` hook and again at run time |
+
+A selected suite runs unchanged, so its `--require-case` list applies in full.
+The recovery drill exercises only the substrates and runs with the whole group;
+the object-store credential rotation and `check_reliability.py` evidence checks
+share the decision of the suite before them. Without `--affected`, and always
+under `--full-gate` or a qualification run, every suite runs.
 
 Run one tier by hand: `lefthook run pre-commit`, `scripts/ci/check-rust.sh --quick|--push|--full`,
 `lefthook run push-qualification`, `python3 scripts/ci/generate_hooks.py --script-tests <path>...`.
