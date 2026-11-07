@@ -175,6 +175,13 @@ come from equivalent complete builds before reporting a build-time reduction.
   A target shared between worktrees reuses stale artifacts from another tree and
   produces failures that belong to neither. Builds wait silently in the host
   admission queue: an empty log is not a dead build.
+- **Deadlines count execution, not the queue.** With a host admission tool that
+  exports its grant (`fair-slots-v2`), every gate budget (`run_with_deadline`,
+  hook `--timeout`, `AWAKEN_PG_GATE_BUDGET_SECONDS`) starts counting when the
+  build is admitted. A call still queued after `max(budget,
+  AWAKEN_ADMISSION_WAIT_SECONDS) + 600` seconds stops with 75 and says so; retry
+  later. `python3 scripts/ci/ci_performance.py dx` prints the last week's
+  median/p90 wall, queued and run time for commits, pushes and each `check-all` group.
 - **Temporary files follow the target.** When `TMPDIR` is unset, gate and hook
   entry points ([`_cargo_target.sh`](scripts/ci/_cargo_target.sh)
   `awaken_configure_gate_temp`) set it to a per-run directory on the target's
