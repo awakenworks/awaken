@@ -1186,6 +1186,11 @@ async fn mount_with_managed_over_and_models(
             stream_sink: execution.worker_stream.clone(),
             credential_deliveries,
             clock: worker_clock.clone(),
+            lease_policy: Arc::new(
+                awaken_worker_transport_security::FixedWorkerLeasePolicy::default(),
+            ),
+            registry_ttl_ms: awaken_dispatch_http::WORKER_REGISTRY_TTL_MS,
+            max_attempts: awaken_dispatch_http::WORKER_DISPATCH_MAX_ATTEMPTS,
         },
     );
     let file_content = awaken_resource_worker_http::worker_file_content_router(Arc::new(
