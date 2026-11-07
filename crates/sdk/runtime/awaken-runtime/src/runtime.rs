@@ -2,11 +2,12 @@
 // @formal entrypoint plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
 // @formal entrypoint tool.session_thread_composition
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, Weak};
 
 use crate::ConfigurationError;
 use awaken_agent_contract::agent::delegation::{ChildRunCancellation, DelegationId};
-use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::cancellation::{AttemptCancellation, CancellationCause};
@@ -808,7 +809,24 @@ impl Runtime {
         awaken_agent_contract::agent::run::RunState,
         awaken_runtime_contract::execution::Error,
     > {
-        crate::engine::run_commands::resume_run(self, command, reader, context).await
+        // Refuse invalid identities before opening a live registration. The
+        // executor rereads the ticket after acquiring the Thread's slot.
+        crate::configuration::validate_configuration(self)?;
+        let ticket = reader
+            .resume_ticket(&command.run_id)
+            .ok_or(awaken_runtime_contract::resume::ResumeError::NotWaiting)?;
+        awaken_runtime_contract::resume::validate_resume(&ticket, &command)?;
+        let run_id = command.run_id.clone();
+        let thread_id = command.thread_id.clone();
+        drive_direct_attempt(
+            self,
+            &run_id,
+            &thread_id,
+            context,
+            awaken_runtime_contract::execution::RunExecutor::capabilities(self).live_input,
+            |context| crate::engine::run_commands::resume_run(self, command, reader, context),
+        )
+        .await
     }
 
     /// Apply a validated tool-permission decision or client-executed result through
@@ -952,6 +970,30 @@ impl Runtime {
     pub(crate) fn snapshot_ids(&self) -> Vec<ExecutableAgentSnapshotId> {
         self.snapshots.lock().keys().cloned().collect()
     }
+}
+
+pub(crate) async fn drive_direct_attempt<F>(
+    runtime: &Runtime,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+    context: RuntimeRunContext,
+    live_input: LiveInput,
+    execute: impl FnOnce(RuntimeRunContext) -> F,
+) -> awaken_runtime_contract::execution::Result<RunState>
+where
+    F: Future<Output = awaken_runtime_contract::execution::Result<RunState>>,
+{
+    // Keep the same evidence for the slot, executor and caller.
+    let quiescence = context.physical_quiescence.clone();
+    let _thread_execution = runtime
+        .acquire_thread_execution(thread_id, Some(quiescence.clone()))
+        .await?;
+    let attempt = runtime.begin_active_attempt(run_id, thread_id, context, live_input);
+    let result = quiescence
+        .observe_return(execute(attempt.context().clone()))
+        .await;
+    let _ = quiescence.close_and_wait().await;
+    result
 }
 
 impl LiveRunControl for Runtime {

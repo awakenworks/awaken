@@ -463,6 +463,9 @@ def parse_cases(log: str, nextest: bool) -> tuple[dict[str, str], int | None, in
     The total counts exactly the cases in the mapping; nextest's skipped count
     is its filtered-out cases, which never ran and are not in the mapping.
     """
+    # Native Windows runners emit CRLF. Normalize only the text we parse;
+    # the recorder writes and hashes the original bytes.
+    log = log.replace("\r\n", "\n")
     verdicts: dict[str, str] = {}
 
     def note(case: str, verdict: str) -> None:

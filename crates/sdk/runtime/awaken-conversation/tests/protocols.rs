@@ -213,6 +213,16 @@ fn approval_fixture() -> (
     Arc<MemoryCommitCoordinator>,
     Arc<AtomicUsize>,
 ) {
+    approval_fixture_with_model(Arc::new(ToolModel))
+}
+
+fn approval_fixture_with_model(
+    model: Arc<dyn LlmExecutor>,
+) -> (
+    ConversationRuns,
+    Arc<MemoryCommitCoordinator>,
+    Arc<AtomicUsize>,
+) {
     let hits = Arc::new(AtomicUsize::new(0));
     let registration =
         awaken_runtime::tools::ToolRegistration::new("sdk", Echo(hits.clone())).unwrap();
@@ -223,11 +233,7 @@ fn approval_fixture() -> (
         .build();
     let clock = awaken_time::system_clock();
     let runtime = registration
-        .install(
-            Runtime::new()
-                .with_clock(clock.clone())
-                .with_llm(Arc::new(ToolModel)),
-        )
+        .install(Runtime::new().with_clock(clock.clone()).with_llm(model))
         .unwrap()
         .with_gate(Arc::new(Confirm));
     let store = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
@@ -337,4 +343,138 @@ async fn sdk_stop_commits_cancellation_and_removes_the_open_wait_without_a_tool_
     assert!(runs.pending("stop").await.unwrap().is_none());
     assert!(store.resume_ticket(first.run_id().unwrap()).is_none());
     assert_eq!(hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn rejected_resume_never_becomes_successful_replay_or_reserves_the_operation() {
+    use awaken_agent_contract::agent::awaiting::PermissionDecision;
+    use awaken_runtime_contract::runs::RunResume;
+
+    let (runs, store, hits) = approval_fixture();
+    let first = runs
+        .run(
+            "start",
+            "rejected-answer",
+            None,
+            vec![Message::text(Id("question".into()), Role::User, "echo")],
+        )
+        .await
+        .unwrap();
+    let ticket = store.resume_ticket(first.run_id().unwrap()).unwrap();
+    let pending = runs.pending("rejected-answer").await.unwrap().unwrap();
+    // A client result cannot answer a permission wait. Repeating the rejected
+    // command must not turn its unchanged Awaiting Run into an accepted reply.
+    for _ in 0..2 {
+        let error = runs
+            .resume(
+                "answer",
+                "rejected-answer",
+                &pending.tool_use_id,
+                RunResume::ClientResult {
+                    content: Vec::new(),
+                    is_error: false,
+                },
+            )
+            .await
+            .expect_err("invalid resume must be refused on every delivery");
+        assert_eq!(error.kind, RunErrorKind::BadRequest);
+        assert_eq!(error.code, "resume_result_kind_mismatch");
+        assert_eq!(
+            store.resume_ticket(first.run_id().unwrap()),
+            Some(ticket.clone())
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+    // Rejection precedes admission: the corrected command may use that key,
+    // consumes the original ticket and executes the approved effect once.
+    let resumed = runs
+        .resume(
+            "answer",
+            "rejected-answer",
+            &pending.tool_use_id,
+            RunResume::Permission(PermissionDecision::Allow { note: None }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resumed.run_id(), first.run_id());
+    assert_eq!(resumed.state(), &RunState::Ended(EndCause::NaturalEnd));
+    assert!(store.resume_ticket(first.run_id().unwrap()).is_none());
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+struct GatedAfterApproval(tokio::sync::Notify);
+
+#[async_trait::async_trait]
+impl LlmExecutor for GatedAfterApproval {
+    async fn infer(&self, request: ChatRequest) -> awaken_runtime::model::Result<ChatResponse> {
+        if request
+            .messages
+            .iter()
+            .any(|message| message.text_content() == "echoed")
+        {
+            self.0.notify_one();
+            std::future::pending().await
+        } else {
+            ToolModel.infer(request).await
+        }
+    }
+}
+
+#[tokio::test]
+async fn stop_reaches_an_approved_run_after_its_ticket_has_been_consumed() {
+    use awaken_agent_contract::agent::awaiting::PermissionDecision;
+    use awaken_runtime_contract::runs::RunResume;
+    use std::time::Duration;
+
+    let deadline = Duration::from_secs(10);
+    let model = Arc::new(GatedAfterApproval(tokio::sync::Notify::new()));
+    let (runs, store, hits) = approval_fixture_with_model(model.clone());
+    let runs = Arc::new(runs);
+    let awaiting = runs
+        .run(
+            "start",
+            "resumed",
+            None,
+            vec![Message::text(Id("question".into()), Role::User, "echo")],
+        )
+        .await
+        .unwrap();
+    let pending = runs.pending("resumed").await.unwrap().unwrap();
+    let resumed = tokio::spawn({
+        let runs = runs.clone();
+        async move {
+            runs.resume(
+                "answer",
+                "resumed",
+                &pending.tool_use_id,
+                RunResume::Permission(PermissionDecision::Allow { note: None }),
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(deadline, model.0.notified())
+        .await
+        .expect("the resumed model must enter after the approved effect");
+    let run_id = awaiting.run_id().unwrap();
+    assert!(store.resume_ticket(run_id).is_none());
+    assert_eq!(store.run(run_id).unwrap().state, RunState::Running);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    // There is no waiting ticket for Stop to clear. Only the active resume
+    // registration can deliver cancellation to the still-running model.
+    tokio::time::timeout(deadline, runs.stop("resumed"))
+        .await
+        .unwrap()
+        .unwrap();
+    let stopped = tokio::time::timeout(deadline, resumed)
+        .await
+        .expect("Stop must reach the resumed physical attempt")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stopped.run_id(), Some(run_id));
+    assert_eq!(
+        store.run(run_id).unwrap().state,
+        RunState::Ended(EndCause::Cancelled)
+    );
+    assert_eq!(stopped.state(), &RunState::Ended(EndCause::Cancelled));
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
 }

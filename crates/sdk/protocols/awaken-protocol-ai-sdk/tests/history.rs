@@ -109,7 +109,7 @@ async fn returns_the_persisted_transcript_as_ui_messages() {
     let (status, _, body) = get(rt, "/v1/ai-sdk/threads/t-hist/messages").await;
     assert_eq!(status, StatusCode::OK);
     // House cursor-page envelope: { items, cursor }. `cursor` null = last page.
-    assert_eq!(body["cursor"], Value::Null);
+    assert_eq!(body.get("cursor"), Some(&Value::Null));
     let msgs = body["items"].as_array().unwrap();
     assert_eq!(msgs.len(), 2);
     // AI SDK UIMessage shape: { id, role, parts:[{type:"text",text}] }.

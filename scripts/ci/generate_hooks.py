@@ -58,6 +58,7 @@ import functools
 import json
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -1271,6 +1272,15 @@ def selftest() -> None:
             pass
         else:
             raise AssertionError("H5 two authored timeouts were accepted")
+    # A selected shell test is a script, not a native executable. Exercise
+    # the launch with a path containing spaces and an argument that needs quoting.
+    with tempfile.TemporaryDirectory() as directory:
+        script = Path(directory) / "script test.sh"
+        script.write_text("printf '%s\\n' \"$1\"\n", encoding="utf-8", newline="\n")
+        value = 'two words and "quotes"'
+        result = subprocess.run(script_test_argv(shlex.join([str(script), value])),
+                                cwd=ROOT, check=True, capture_output=True, text=True)
+        assert result.stdout == value + "\n"
     print("generate_hooks self-test: generated globs follow their declarations")
 
 
@@ -1340,9 +1350,15 @@ def selected_script_tests(paths: list[str], scripts: Path = SCRIPTS,
     return selected
 
 
+def script_test_argv(command: str) -> list[str]:
+    args = shlex.split(command)
+    if args[0].endswith(".sh"):
+        return [sys.executable, str(SCRIPTS / "_native_shell.py"), *args]
+    return args
+
+
 def run_script_tests(paths: list[str]) -> int:
     """Run every selected test not already run by another pre-commit job."""
-    import subprocess
     import time
     failed = []
     for command, reason, covered in selected_script_tests(paths):
@@ -1350,7 +1366,7 @@ def run_script_tests(paths: list[str]) -> int:
             print(f"↷ {command} (runs in pre-commit job {covered})", flush=True)
             continue
         started = time.monotonic()
-        result = subprocess.run(shlex.split(command), cwd=ROOT, capture_output=True, text=True,
+        result = subprocess.run(script_test_argv(command), cwd=ROOT, capture_output=True, text=True,
                                 stdin=subprocess.DEVNULL)
         took = time.monotonic() - started
         if result.returncode == 0:
