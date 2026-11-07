@@ -173,7 +173,7 @@ backend_parity() {
     --require-case=postgres_process_death_inside_the_production_write_path_exposes_only_the_old_state \
     --require-case=postgres_process_death_after_acknowledgement_exposes_the_complete_new_state \
     --require-case=postgres_sql_error_inside_the_production_write_path_rolls_the_command_back \
-    -- --exact --skip sqlite::transaction_crash_tests::transaction_interruption_child --skip postgres_write_path_crash_child --test-threads=1 || record_failure "$?"
+    -- --skip sqlite::transaction_crash_tests::transaction_interruption_child --skip postgres_write_path_crash_child --test-threads=1 || record_failure "$?"
   pg_required_test -p awaken-skill-store --features postgres,sqlite,test-support --test conformance \
     --require-case=in_memory_conforms --require-case=sqlite_conforms --require-case=postgres::postgres_conforms \
     --require-case=postgres::fixture_absence_and_configured_failure_are_distinct \
