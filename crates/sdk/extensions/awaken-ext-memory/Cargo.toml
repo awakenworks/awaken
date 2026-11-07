@@ -30,6 +30,7 @@ schemars = "1"
 [dev-dependencies]
 awaken-lease-testkit.workspace = true
 tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

@@ -2187,6 +2187,161 @@ mod tests {
         );
     }
 
+    /// One shared connection, as the embedded SQLite store has: every
+    /// repository call holds it, and an acquire waits at most the store's
+    /// admission budget before failing.
+    struct OneConnectionRepository {
+        inner: TestRepository,
+        connection: Arc<tokio::sync::Mutex<()>>,
+    }
+
+    impl OneConnectionRepository {
+        async fn connect(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, MemoryExtractionError> {
+            tokio::time::timeout(std::time::Duration::from_secs(10), self.connection.lock())
+                .await
+                .map_err(|_| {
+                    MemoryExtractionError::Storage("connection admission timed out".into())
+                })
+        }
+    }
+
+    #[async_trait]
+    impl MemoryExtractionRepository for OneConnectionRepository {
+        async fn put_extraction_if_absent(
+            &self,
+            intent: MemoryExtractionIntent,
+        ) -> Result<PutMemoryExtractionOutcome, MemoryExtractionError> {
+            let _connection = self.connect().await?;
+            self.inner.put_extraction_if_absent(intent).await
+        }
+
+        async fn get_extraction(
+            &self,
+            intent_id: &str,
+        ) -> Result<Option<MemoryExtractionIntent>, MemoryExtractionError> {
+            let _connection = self.connect().await?;
+            self.inner.get_extraction(intent_id).await
+        }
+
+        async fn extraction_cursor(&self, thread_id: &str) -> Result<usize, MemoryExtractionError> {
+            let _connection = self.connect().await?;
+            self.inner.extraction_cursor(thread_id).await
+        }
+
+        async fn recoverable_extractions(
+            &self,
+            limit: usize,
+        ) -> Result<Vec<MemoryExtractionIntent>, MemoryExtractionError> {
+            let _connection = self.connect().await?;
+            self.inner.recoverable_extractions(limit).await
+        }
+
+        async fn compare_and_swap_extraction(
+            &self,
+            expected_revision: u64,
+            intent: MemoryExtractionIntent,
+        ) -> Result<(), MemoryExtractionError> {
+            let _connection = self.connect().await?;
+            self.inner
+                .compare_and_swap_extraction(expected_revision, intent)
+                .await
+        }
+    }
+
+    /// An extractor that is mid-read of the same store, holding its one
+    /// connection, when the claim heartbeat comes due.
+    struct ConnectionHoldingDriver {
+        inner: TestDriver,
+        connection: Arc<tokio::sync::Mutex<()>>,
+        hold: std::time::Duration,
+    }
+
+    #[async_trait]
+    impl MemoryExtractionDriver for ConnectionHoldingDriver {
+        fn accepts(&self, intent: &MemoryExtractionIntent) -> bool {
+            self.inner.accepts(intent)
+        }
+
+        async fn validate_binding(
+            &self,
+            intent: &MemoryExtractionIntent,
+        ) -> Result<(), MemoryExtractionError> {
+            self.inner.validate_binding(intent).await
+        }
+
+        async fn extract(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {
+            let connection = self.connection.lock().await;
+            tokio::time::sleep(self.hold).await;
+            drop(connection);
+            self.inner.extract(intent).await
+        }
+
+        async fn apply(
+            &self,
+            intent: &MemoryExtractionIntent,
+            mutation: &MemoryExtractionMutation,
+        ) -> Result<MemoryMutationReceipt, String> {
+            self.inner.apply(intent, mutation).await
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_renews_beside_an_extractor_that_holds_the_store_connection() {
+        // Decision table on a one-connection store, heartbeat H = 100ms:
+        // C1 the extractor holds the connection from 0 to 3H (a read in flight);
+        // C2 the heartbeat comes due at H, while C1 still holds it.
+        // E1 the renewal waits for the connection while the extractor keeps
+        //    running, so the first attempt completes with its receipt.
+        // E2 no renewal fails on connection admission: no retry is spent and
+        //    the extractor runs once.
+        // A heartbeat renewed in place of the extractor parks it at H; the
+        // renewal then waits out the 10s admission budget for the connection
+        // only the parked extractor can release, fails, and spends a retry.
+        // Paused time makes that interleaving exact rather than load-dependent.
+        let connection = Arc::new(tokio::sync::Mutex::new(()));
+        let repository = Arc::new(OneConnectionRepository {
+            inner: TestRepository::default(),
+            connection: connection.clone(),
+        });
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_000));
+        let controller = MemoryExtractionController::new(repository.clone(), "worker-a", clock)
+            .with_policy(MemoryExtractionPolicy {
+                lease_ms: 60_000,
+                heartbeat_ms: 100,
+                max_attempts: 3,
+                retry_base_ms: 0,
+            });
+        controller.enqueue(intent()).await.unwrap();
+        let driver = ConnectionHoldingDriver {
+            inner: TestDriver {
+                extraction_calls: AtomicUsize::new(0),
+                first_outcome: None,
+                binding_valid: true,
+                validation_errors: Default::default(),
+                application_calls: AtomicUsize::new(0),
+            },
+            connection,
+            hold: std::time::Duration::from_millis(300),
+        };
+
+        controller.drive_recoverable(&driver).await;
+
+        let completed = repository
+            .inner
+            .get_extraction("extract-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.status, MemoryExtractionStatus::Completed, "E1");
+        assert!(completed.receipt.is_some(), "E1");
+        assert_eq!(completed.attempts, 1, "E2 no retry spent");
+        assert_eq!(
+            driver.inner.extraction_calls.load(Ordering::SeqCst),
+            1,
+            "E2 extractor ran once"
+        );
+    }
+
     #[tokio::test]
     async fn revoked_binding_fails_terminally_without_running_extractor() {
         let repository = Arc::new(TestRepository::default());

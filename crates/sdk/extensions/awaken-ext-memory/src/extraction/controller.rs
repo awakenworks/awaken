@@ -355,6 +355,22 @@ impl MemoryExtractionController {
         ))
     }
 
+    /// Renew the claim every heartbeat for as long as it is polled, and return
+    /// the first renewal failure. Dropping it mid-renewal is safe: the caller
+    /// reloads the committed claim before every later transition.
+    async fn keep_claim_live(
+        &self,
+        intent: &mut MemoryExtractionIntent,
+        generation: u64,
+    ) -> MemoryExtractionError {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(self.policy.heartbeat_ms)).await;
+            if let Err(error) = self.renew_current_claim(intent, generation).await {
+                return error;
+            }
+        }
+    }
+
     async fn advance_claimed(
         &self,
         driver: &dyn MemoryExtractionDriver,
@@ -367,35 +383,35 @@ impl MemoryExtractionController {
             .map_err(AdvanceFailure::binding)?;
         if intent.status == MemoryExtractionStatus::Claimed {
             let extraction_input = intent.clone();
-            let extraction = driver.extract(&extraction_input);
-            tokio::pin!(extraction);
-            let mutations = loop {
-                tokio::select! {
-                    result = &mut extraction => break match result {
-                        MemoryExtractionOutcome::Mutations(mutations) => mutations,
-                        MemoryExtractionOutcome::Retryable { reason } => {
-                            return Err(AdvanceFailure::Retryable(reason));
-                        }
-                        MemoryExtractionOutcome::ExecutionIndeterminate {
-                            auxiliary_run_id,
-                            reason,
-                        } => {
-                            if auxiliary_run_id != intent.auxiliary_run_id() {
-                                return Err(AdvanceFailure::Permanent(format!(
-                                    "Memory extractor returned unknown execution for foreign auxiliary Run `{auxiliary_run_id}`"
-                                )));
-                            }
-                            return Err(AdvanceFailure::ExecutionIndeterminate(reason));
-                        }
-                        MemoryExtractionOutcome::PermanentFailure { reason } => {
-                            return Err(AdvanceFailure::Permanent(reason));
-                        }
-                    },
-                    () = tokio::time::sleep(std::time::Duration::from_millis(self.policy.heartbeat_ms)) => {
-                        self.renew_current_claim(intent, generation)
-                            .await
-                            .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?;
+            // The heartbeat is polled beside the extractor, never instead of
+            // it. Renewing inside a select arm parked the extractor for the
+            // whole renewal; an extractor parked mid-read of this same
+            // repository keeps its connection, and on a one-connection store
+            // the renewal then waits for a connection only the parked
+            // extractor can release.
+            let extracted = tokio::select! {
+                result = driver.extract(&extraction_input) => Ok(result),
+                error = self.keep_claim_live(intent, generation) => Err(error),
+            };
+            let mutations = match extracted {
+                Err(error) => return Err(AdvanceFailure::Retryable(error.to_string())),
+                Ok(MemoryExtractionOutcome::Mutations(mutations)) => mutations,
+                Ok(MemoryExtractionOutcome::Retryable { reason }) => {
+                    return Err(AdvanceFailure::Retryable(reason));
+                }
+                Ok(MemoryExtractionOutcome::ExecutionIndeterminate {
+                    auxiliary_run_id,
+                    reason,
+                }) => {
+                    if auxiliary_run_id != intent.auxiliary_run_id() {
+                        return Err(AdvanceFailure::Permanent(format!(
+                            "Memory extractor returned unknown execution for foreign auxiliary Run `{auxiliary_run_id}`"
+                        )));
                     }
+                    return Err(AdvanceFailure::ExecutionIndeterminate(reason));
+                }
+                Ok(MemoryExtractionOutcome::PermanentFailure { reason }) => {
+                    return Err(AdvanceFailure::Permanent(reason));
                 }
             };
             // A driver may persist claim-fenced auxiliary facts (currently the
