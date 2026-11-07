@@ -176,6 +176,11 @@ SILENT_SKIP_EXEMPTIONS: dict[str, str] = {
         "passes --require-docker in the postgres group, so the release lane "
         "fails on the same condition."
     ),
+    "scripts/ci/_affected_suites.sh": (
+        "Only an explicit --affected run skips a suite, and only one the change "
+        "cannot reach by the Cargo graph (service_test_plan.py). A suite with "
+        "no mapping exits 2; --full-gate and qualification never narrow."
+    ),
     "scripts/ci/check-rust.sh": (
         "The 'no Cargo.toml' branch cannot fire in this repository, which has "
         "one; it exists so the script is honest when vendored into a checkout "
