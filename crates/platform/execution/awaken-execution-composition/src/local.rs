@@ -80,15 +80,16 @@ fn namespace_degrades_to_local(fallback_optin: bool) -> bool {
 /// Why the Hand companion at `path` cannot be read. An absent file is the usual
 /// case in a Cargo checkout -- the companion is a separate binary no crate
 /// depends on, so `cargo test -p` never builds it -- so it names the binary and
-/// the command that builds it rather than the bare OS error.
+/// the repository command that builds it where tests look, rather than the bare
+/// OS error. A plain `cargo build` of it is not enough when Cargo's build
+/// directory is not the target directory: the tests then look elsewhere.
 fn companion_metadata_error(path: &Path, error: &std::io::Error) -> String {
     if error.kind() == std::io::ErrorKind::NotFound {
         return format!(
             "namespace Session environments require the release companion awaken-sandbox, \
              which is missing at {}: a release install ships it beside the awaken binary; in a \
-             Cargo checkout build it into the same target directory with `cargo build -p \
-             awaken-sandbox --bin awaken-sandbox --features hand` (scripts/ci/test.sh -p <crate> \
-             builds it before the tests)",
+             checkout run the tests with `scripts/ci/test.sh -p <crate> [nextest arguments]`, \
+             which builds it beside the test executables first",
             path.display()
         );
     }
@@ -352,16 +353,15 @@ mod tests {
         assert!(
             missing.contains("awaken-sandbox, which is missing at /target/debug/awaken-sandbox")
         );
-        assert!(
-            missing.contains("cargo build -p awaken-sandbox --bin awaken-sandbox --features hand")
-        );
+        assert!(missing.contains("`scripts/ci/test.sh -p <crate> [nextest arguments]`"));
+        assert!(!missing.contains('\n'), "{missing}");
         let denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied by test");
         let other = companion_metadata_error(path, &denied);
         assert!(
             other.ends_with("/target/debug/awaken-sandbox: denied by test"),
             "{other}"
         );
-        assert!(!other.contains("cargo build"));
+        assert!(!other.contains("scripts/ci/test.sh"));
     }
 
     #[tokio::test]
@@ -702,7 +702,7 @@ mod startup_tests {
         for (artifact, reason) in [
             (
                 root.path().join("missing"),
-                "cargo build -p awaken-sandbox --bin awaken-sandbox --features hand",
+                "`scripts/ci/test.sh -p <crate> [nextest arguments]`",
             ),
             (root.path().to_path_buf(), "companion is not a file"),
             (std::env::current_exe().unwrap(), "companion check failed"),
