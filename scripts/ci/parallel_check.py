@@ -84,11 +84,14 @@ def observe_hook(args, arguments):
                 environment.pop('LEFTHOOK_CONFIG', None)
                 environment.pop('AWAKEN_HOOK_PARENT_CONFIG', None)
         with log.open('w', encoding='utf-8') as output:
-            executing = time.monotonic()
+            executing, admission = time.monotonic(), {}
+            # The timeout excludes time descendants spent queued for host build
+            # admission (deadline.py); the record keeps both numbers.
             status = deadline.run(args.timeout,
                 [sys.executable, str(Path(__file__).with_name('_native_shell.py')), str(script), *arguments],
-                stdout=output, stderr=subprocess.STDOUT, environment=environment)
+                stdout=output, stderr=subprocess.STDOUT, environment=environment, report=admission)
             record['execution_seconds'] = time.monotonic() - executing
+            record['queued_seconds'] = admission.get('queued_seconds')
         if before is not None:
             verifying = time.monotonic()
             after = source_snapshot(root)

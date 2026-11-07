@@ -578,6 +578,129 @@ def github_jobs(environment):
             'cache_scope': 'listed archives; no claim that all listed entries were restored by this run'}
 
 
+# Developer-experience timing: how long a commit, a push and each check-all group
+# take, and how much of that waited for the host build admission. It reads the
+# existing task bundles (evidence.json, hooks/, invocations/) in the
+# observation root; it records nothing new.
+DX_DOC_HOOKS = frozenset({'check-doc-links', 'check-wiki-okf', 'check-invariants', 'check-ownership-index',
+                          'check-role-catalogs', 'check-architecture-vocabulary', 'check-adr'})
+DX_CRATE = re.compile(r'^(.+?)/(?:(?:src|tests|benches|examples)/.*|Cargo\.toml|build\.rs)$')
+
+
+def dx_class(paths, hooks):
+    """Commit class from the Rust gate's per-path explain lines, else from which hooks ran."""
+    if paths:
+        if all(path.startswith('docs/') or path.endswith('.md') for path in paths):
+            return 'docs-only'
+        if all(path.startswith(('scripts/', '.github/')) or path == 'lefthook.yml' for path in paths):
+            return 'script-only'
+        rust = [path for path in paths if path.endswith('.rs') or path.endswith('Cargo.toml')]
+        crates = {match.group(1) for path in rust if (match := DX_CRATE.match(path))}
+        if rust and len(crates) == 1 and all(DX_CRATE.match(path) for path in rust):
+            return 'single-crate Rust'
+        return 'multi-crate Rust' if rust else 'other'
+    if 'rustfmt' in hooks:
+        return 'Rust (crates not recorded)'
+    if hooks & DX_DOC_HOOKS and 'script-tests' not in hooks:
+        return 'docs-only'
+    if 'script-tests' in hooks and not hooks & DX_DOC_HOOKS:
+        return 'script-only'
+    return 'other'
+
+
+def dx_hooks(directory):
+    """Hook labels that ran, and the paths the rust-quick hook explained (None when it did not run)."""
+    labels, paths = set(), None
+    for path in (directory / 'hooks').glob('*/observation.json'):
+        try:
+            label = json.loads(path.read_text()).get('label')
+        except (OSError, ValueError):
+            continue
+        labels.add(label)
+        if label == 'rust-quick':
+            try:
+                text = (path.parent / 'output.log').read_text(encoding='utf-8', errors='replace')
+            except OSError:
+                continue
+            paths = sorted(set(re.findall(r'^explain: (.+?): ', text, re.MULTILINE))) or paths
+    return labels, paths
+
+
+def dx_queued(directory):
+    """Seconds this run's own (not nested) Cargo calls waited for admission."""
+    total = 0.0
+    for path in (directory / 'invocations').glob('*/observation.json'):
+        try:
+            call = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if call.get('nested_admission') or call.get('finished_at_unix') is None:
+            continue
+        value = (call.get('admission_grant') or {}).get('queued_seconds', call.get('queue_seconds'))
+        if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0:
+            total += value
+    return total
+
+
+def dx_cohort(run, directory):
+    label = run.get('label', '')
+    if label == 'pre-commit':
+        hooks, paths = dx_hooks(directory)
+        return 'pre-commit: ' + dx_class(paths, hooks)
+    if label == 'rust:--push':
+        return 'pre-push: check-rust.sh --push'
+    match = re.fullmatch(r'check-all:([a-z0-9-]+):full=([01])', label)
+    if match:
+        return 'check-all --full-gate' if match.group(2) == '1' else 'check-all --group ' + match.group(1)
+    return None
+
+
+def dx_summary(root, days, now=None):
+    now = time.time() if now is None else now
+    cutoff = now - days * 86400
+    cohorts = {}
+    for directory in root.glob('build-observations-*'):
+        try:
+            if directory.stat().st_mtime < cutoff:
+                continue
+            run = json.loads((directory / 'evidence.json').read_text())
+        except (OSError, ValueError):
+            continue
+        if (run.get('kind') != 'build-observations' or (run.get('started_at_unix') or 0) < cutoff
+                or run.get('observation_kind') == 'synthetic' or run.get('source', {}).get('available') is False):
+            continue
+        cohort = dx_cohort(run, directory)
+        if cohort is None or run.get('status') not in ('passed', 'failed'):
+            continue
+        row = cohorts.setdefault(cohort, {'wall': [], 'queued': [], 'run': [], 'failed': 0})
+        wall = run.get('duration_seconds')
+        if run['status'] != 'passed' or not isinstance(wall, (int, float)) or not math.isfinite(wall):
+            row['failed'] += 1
+            continue
+        queued = min(dx_queued(directory), wall)
+        row['wall'].append(wall)
+        row['queued'].append(queued)
+        row['run'].append(wall - queued)
+    return [{'cohort': name, 'passed': len(row['wall']), 'failed': row['failed'],
+             **{f'{field}_{name_}': percentile(row[field], fraction) for field in ('wall', 'queued', 'run')
+                for name_, fraction in (('p50', .5), ('p90', .9))}}
+            for name, row in sorted(cohorts.items())]
+
+
+def dx_table(rows, days):
+    def cell(value):
+        return '-' if value is None else f'{value:.0f}'
+    lines = [f'Developer-experience timings, last {days:g} days (seconds; passed runs; '
+             'queued = own Cargo calls waiting for host admission; run = wall - queued)', '',
+             '| cohort | passed | failed | wall p50 | wall p90 | queued p50 | queued p90 | run p50 | run p90 |',
+             '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
+    for row in rows:
+        lines.append(f"| {row['cohort']} | {row['passed']} | {row['failed']} | "
+                     + ' | '.join(cell(row[f'{field}_{name}']) for field in ('wall', 'queued', 'run')
+                                  for name in ('p50', 'p90')) + ' |')
+    return '\n'.join(lines)
+
+
 def write_report(data, output):
     output.parent.mkdir(parents=True, exist_ok=True)
     data.update(kind='ci-performance-telemetry', full_gate=False, status='observed')
@@ -633,7 +756,7 @@ def write_report(data, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument('mode', choices=('report', 'cache', 'github', 'workflow', 'begin', 'finish',
-                                       'validate', 'register', 'stage', 'timings-before', 'timings-after', 'compare', 'invocations', 'hooks', 'hook-config'), nargs='?', default='report')
+                                       'validate', 'register', 'stage', 'timings-before', 'timings-after', 'compare', 'invocations', 'hooks', 'hook-config', 'dx'), nargs='?', default='report')
     parser.add_argument('--root', type=Path, default=Path('target/test-timings'))
     parser.add_argument('--revision', default=os.environ.get('GITHUB_SHA'))
     parser.add_argument('--output', type=Path, default=Path('target/test-timings/performance.json'))
@@ -648,10 +771,16 @@ def main():
     parser.add_argument('--path', type=Path)
     parser.add_argument('--snapshot', type=Path)
     parser.add_argument('--conclusion', choices=('success', 'failure', 'cancelled'))
+    parser.add_argument('--days', type=float, default=7)
     parser.add_argument('--self-test', action='store_true')
     args = parser.parse_args()
     if args.self_test:
         return int(not unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(PerformanceTests)).wasSuccessful())
+    if args.mode == 'dx':
+        # --path names the observation root; default: the same root TaskRun writes.
+        root = args.path or Path(os.environ.get('AWAKEN_BUILD_OBSERVATIONS') or Path.home() / '.local/state/awaken-builds')
+        print(dx_table(dx_summary(root, args.days), args.days))
+        return 0
     if args.mode == 'invocations':
         snapshot = json.loads(args.snapshot.read_text()) if args.snapshot else host_observation_query('--observations', args.root)
         write_report({'invocations': snapshot, 'invocation_summary': invocation_summary(snapshot)}, args.output)
@@ -1153,6 +1282,50 @@ class PerformanceTests(unittest.TestCase):
         self.assertEqual(seconds('2026-01-01T00:00:00Z', '2026-01-01T00:00:05Z'), 5)
         with self.assertRaises(ValueError): seconds('2026-01-01T00:00:05Z', '2026-01-01T00:00:00Z')
         self.assertIsNone(seconds(None, None))
+
+    def test_dx_summary_splits_commits_and_separates_queue_from_run(self):
+        # X1 classes come from the Rust gate's explain lines when it ran, else
+        # from the hooks that ran; X2 queued = own (not nested) Cargo waits,
+        # run = wall - queued; X3 failed and fixture (no source) runs are not timed.
+        def task(root, name, label, wall, *, status='passed', hooks=(), explain=(), calls=(), source=None):
+            directory = root / ('build-observations-' + name)
+            (directory / 'hooks').mkdir(parents=True)
+            (directory / 'evidence.json').write_text(json.dumps({
+                'kind': 'build-observations', 'label': label, 'status': status, 'duration_seconds': wall,
+                'started_at_unix': time.time() - 60, 'source': source or {'commit': 'c'}}))
+            for index, hook in enumerate(hooks):
+                (directory / 'hooks' / str(index)).mkdir()
+                (directory / 'hooks' / str(index) / 'observation.json').write_text(json.dumps({'label': hook}))
+                if hook == 'rust-quick':
+                    (directory / 'hooks' / str(index) / 'output.log').write_text(''.join(
+                        f'explain: {path}: Rust build input -> owners\n' for path in explain))
+            for index, (queued, nested) in enumerate(calls):
+                (directory / 'invocations' / str(index)).mkdir(parents=True)
+                (directory / 'invocations' / str(index) / 'observation.json').write_text(json.dumps({
+                    'queue_seconds': queued, 'nested_admission': nested, 'finished_at_unix': 1}))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task(root, 'a', 'pre-commit', 100, hooks=('secrets', 'rustfmt', 'rust-quick'),
+                 explain=('crates/a/x/src/lib.rs', 'crates/a/x/tests/t.rs'), calls=((40, False), (999, True)))
+            task(root, 'b', 'pre-commit', 300, hooks=('rustfmt', 'rust-quick'),
+                 explain=('crates/a/x/src/lib.rs', 'crates/b/src/lib.rs'))
+            task(root, 'c', 'pre-commit', 20, hooks=('secrets', 'check-doc-links'))
+            task(root, 'd', 'pre-commit', 30, hooks=('script-tests', 'rust-quick'),
+                 explain=('scripts/ci/deadline.py', 'lefthook.yml'))
+            task(root, 'e', 'pre-commit', 50, status='failed', hooks=('check-doc-links',))
+            task(root, 'f', 'check-all:postgres:full=0', 7000, calls=((4000, False), (300, False)))
+            task(root, 'g', 'check-all:rust:full=0', 1, source={'available': False})
+            task(root, 'h', 'rust:--push', 600, calls=((100, False),))
+            rows = {row['cohort']: row for row in dx_summary(root, 7)}
+            self.assertEqual(sorted(rows), ['check-all --group postgres', 'pre-commit: docs-only',
+                                            'pre-commit: multi-crate Rust', 'pre-commit: script-only',
+                                            'pre-commit: single-crate Rust', 'pre-push: check-rust.sh --push'])
+            self.assertEqual((rows['pre-commit: single-crate Rust']['queued_p50'],
+                              rows['pre-commit: single-crate Rust']['run_p50']), (40, 60))
+            self.assertEqual((rows['pre-commit: docs-only']['passed'], rows['pre-commit: docs-only']['failed']), (1, 1))
+            self.assertEqual(rows['check-all --group postgres']['run_p90'], 2700)
+            self.assertIn('| pre-push: check-rust.sh --push | 1 | 0 | 600 | 600 | 100 | 100 | 500 | 500 |',
+                          dx_table(list(rows.values()), 7))
 
     def test_quantiles_include_non_progress_singular_output_and_missing_data(self):
         self.assertIsNone(test_costs('')['p95_seconds'])

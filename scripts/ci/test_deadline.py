@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real process tests for the shared CI deadline owner."""
 
+import io
 import json
 import os
 from pathlib import Path
@@ -320,8 +321,8 @@ esac
                         # Shorten only cleanup grace in this isolated Python
                         # invocation; production's five-second grace is unchanged.
                         driver = """
-import importlib.util, selectors, subprocess, sys
-from unittest.mock import patch
+import importlib.util, os, selectors, subprocess, sys
+from unittest.mock import ANY, patch
 spec = importlib.util.spec_from_file_location('deadline', sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
@@ -337,7 +338,9 @@ try:
     # ready before the tested execution clock. No cold-start SLO is claimed.
     with patch.object(m.subprocess, 'Popen', return_value=process) as spawn:
         result = m.run(0.5, sys.argv[2:])
-    spawn.assert_called_once_with(sys.argv[2:], start_new_session=True)
+    spawn.assert_called_once_with(sys.argv[2:], start_new_session=True, env=ANY)
+    # The child's environment is the caller's plus this deadline's queue ledger.
+    assert spawn.call_args.kwargs['env'][m.LEDGERS_VARIABLE].split(os.pathsep)[0].rsplit('/', 1)[-1].startswith(m.LEDGER_PREFIX)
     process.communicate(timeout=2)
     raise SystemExit(result)
 finally:
@@ -737,6 +740,209 @@ raise SystemExit(status)
                         os.kill(int(coordinate.read_text()), 0)
                 finally:
                     cleanup_fixture_group(coordinate, process)
+
+
+OLD_CAPABILITIES = {"schema_version": 1, "kind": "host-admission-capabilities",
+                    "scheduler": "fair-single-lane-v1", "execution_slots": 1, "feedback_burst": 4,
+                    "cooperative_formal": True, "full_gate_exclusive": True}
+# Shape of the staged host tool f3e76a8909 (`cargo_admission.py --capabilities`).
+NEW_CAPABILITIES = {"schema_version": 1, "kind": "host-admission-capabilities",
+                    "scheduler": "fair-slots-v2", "scheduler_version": 2, "execution_slots": 2,
+                    "exclusive_kinds": ["formal", "qualification", "profile=qualification"],
+                    "feedback_burst": 4, "cooperative_formal": True,
+                    "grant_environment": {"granted_at_unix": "AWAKEN_ADMISSION_GRANTED_AT",
+                                          "queued_seconds": "AWAKEN_ADMISSION_QUEUED_SECONDS"},
+                    "full_gate_exclusive": True,
+                    "transient_pressure_wait": {"environment": "AWAKEN_ADMISSION_WAIT_SECONDS",
+                                                "default_seconds": 1800}}
+
+
+class CooperativeCapabilityTests(unittest.TestCase):
+    def test_both_host_schedulers_are_accepted_and_others_refused(self):
+        # K1 the old single-lane tool is accepted exactly as before; K2 the
+        # multi-slot tool is accepted while formal stays exclusive; K3 a
+        # multi-slot tool that would share a slot with formal is refused; K4 a
+        # single-lane name with two slots or no cooperative root is refused.
+        rows = (
+            ("old single lane", OLD_CAPABILITIES, True),
+            ("new slots, formal exclusive", NEW_CAPABILITIES, True),
+            ("new slots, formal shared", {**NEW_CAPABILITIES, "exclusive_kinds": ["qualification"]}, False),
+            ("new slots, no exclusive kinds", {k: v for k, v in NEW_CAPABILITIES.items()
+                                               if k != "exclusive_kinds"}, False),
+            ("single lane name, two slots", {**OLD_CAPABILITIES, "execution_slots": 2}, False),
+            ("no cooperative root", {**NEW_CAPABILITIES, "cooperative_formal": False}, False),
+            ("unknown scheduler", {**NEW_CAPABILITIES, "scheduler": "fair-slots-v3"}, False),
+        )
+        for label, value, accepted in rows:
+            with self.subTest(label):
+                self.assertEqual(deadline.cooperative_admission_problem(value) is None, accepted)
+
+    def test_refusal_keeps_its_message_and_75(self):
+        # The process entry _deadline.sh calls: accepted => 0 and silent;
+        # refused => 75 with the existing "install the committed host policy" text.
+        with tempfile.TemporaryDirectory() as tmp:
+            observer = Path(tmp) / "awaken-build-admission"
+            for value, status in ((NEW_CAPABILITIES, 0), ({**NEW_CAPABILITIES, "exclusive_kinds": []}, 75)):
+                with self.subTest(status=status):
+                    observer.write_text("#!/bin/sh\nprintf '%s\\n' '" + json.dumps(value) + "'\n")
+                    observer.chmod(0o755)
+                    result = subprocess.run([sys.executable, str(DEADLINE), "--require-cooperative", str(observer)],
+                                            capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    self.assertEqual("install the committed host policy" in result.stderr, status == 75)
+
+
+@unittest.skipIf(os.name == "nt", "POSIX host admission")
+class AdmissionQueueTests(unittest.TestCase):
+    """A deadline wrapping an admitted Cargo call spends execution, not queue time.
+
+    Fixture host: `cargo` waits FIXTURE_QUEUE seconds (the queue), then exports
+    the grant when FIXTURE_GRANT=1, like cargo_admission.py f3e76a8909, and
+    enters Cargo's external command. `awaken-build-admission --capabilities`
+    reports the new or the old tool. An outer deadline shorter than the queue
+    then measures the rule: Q1 a queued-then-run build is not killed for its
+    queue; Q2 one that runs too long is still killed, saying the queue was not
+    counted; Q3 with the old tool the outer clock counts the queue as before;
+    Q4 a call queued past its bound stops with 75 and says why.
+    """
+
+    QUEUE = 5
+    OUTER = 3
+
+    def host(self, root, capabilities, grant):
+        host = root / "host"
+        host.mkdir()
+        (host / "cargo").write_text("""#!/usr/bin/env bash
+if [ "${AWAKEN_CARGO_ADMITTED:-}" != 1 ]; then
+  sleep "$FIXTURE_QUEUE"
+  export AWAKEN_CARGO_ADMITTED=1
+  if [ "$FIXTURE_GRANT" = 1 ]; then
+    export AWAKEN_ADMISSION_GRANTED_AT="$(date +%s.%N)" AWAKEN_ADMISSION_QUEUED_SECONDS="$FIXTURE_QUEUE"
+  fi
+fi
+entry=$(command -v "cargo-$1") || exit 97
+exec "$entry" "$@"
+""")
+        (host / "awaken-build-admission").write_text(
+            "#!/bin/sh\n[ \"$1\" = --capabilities ] || exit 2\nprintf '%s\\n' '" + json.dumps(capabilities) + "'\n")
+        for name in ("cargo", "awaken-build-admission"):
+            (host / name).chmod(0o755)
+        return dict({key: value for key, value in os.environ.items()
+                     if not key.startswith(("AWAKEN_CARGO", "AWAKEN_ADMISSION", "AWAKEN_DEADLINE"))},
+                    PATH=f"{host}:{os.environ['PATH']}", TMPDIR=str(root),
+                    FIXTURE_QUEUE=str(self.QUEUE), FIXTURE_GRANT=str(int(grant)))
+
+    def outer(self, environment, inner_budget, command):
+        # outer deadline -> bash run_with_deadline --admit -> fixture Cargo queue -> inner deadline
+        started = time.monotonic()
+        result = subprocess.run(
+            [sys.executable, str(DEADLINE), str(self.OUTER), "--", "bash", "--noprofile", "--norc", "-c",
+             'source "$1"; shift; run_with_deadline --admit "$@"', "queue-fixture", str(HELPER),
+             str(inner_budget), *command],
+            env=environment, capture_output=True, text=True, timeout=60)
+        return result, time.monotonic() - started
+
+    def test_queued_then_run_build_is_not_killed_for_its_queue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            environment = self.host(root, NEW_CAPABILITIES, grant=True)
+            result, wall = self.outer(environment, 30, ["bash", "-c", "sleep 0.5; exit 23"])
+            self.assertEqual(result.returncode, 23, result.stderr)
+            self.assertGreater(wall, self.QUEUE, "the fixture queue must outlast the outer budget")
+            self.assertEqual(sorted(path.name.split(".")[0] for path in root.iterdir()), ["host"],
+                             "deadline entries and ledgers are retired")
+
+    def test_build_that_runs_too_long_is_still_killed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            environment = self.host(Path(tmp), NEW_CAPABILITIES, grant=True)
+            result, wall = self.outer(environment, 30, ["sleep", "100"])
+            self.assertEqual(result.returncode, 124, result.stderr)
+            self.assertGreater(wall, self.QUEUE + self.OUTER - 1)
+            self.assertLess(wall, self.QUEUE + self.OUTER + 15)
+            self.assertIn("queued for host build admission was not counted", result.stderr)
+
+    def test_inner_budget_still_kills_after_admission(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            environment = self.host(Path(tmp), NEW_CAPABILITIES, grant=True)
+            started = time.monotonic()
+            result = subprocess.run(
+                ["bash", "--noprofile", "--norc", "-c", 'source "$1"; shift; run_with_deadline --admit "$@"',
+                 "queue-fixture", str(HELPER), "1", "sleep", "100"],
+                env=environment, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 124, result.stderr)
+            self.assertLess(time.monotonic() - started, self.QUEUE + 10)
+
+    def test_old_host_tool_keeps_counting_the_queue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            environment = self.host(Path(tmp), OLD_CAPABILITIES, grant=False)
+            result, wall = self.outer(environment, 30, ["bash", "-c", "exit 23"])
+            self.assertEqual(result.returncode, 124, result.stderr)
+            self.assertLess(wall, self.QUEUE, "the old clock stops the call while it is still queued")
+            self.assertNotIn("not counted", result.stderr)
+
+    def test_queue_past_its_bound_stops_with_75_and_names_the_queue(self):
+        # In-process: the command never reaches a grant, so its own request stays
+        # queued; past a 1s bound the deadline stops it instead of hanging.
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp, patch.object(deadline, "LEDGER_POLL_SECONDS", 0.2), \
+                patch.object(tempfile, "tempdir", tmp):
+            marker = Path(tmp) / "finished"
+            started = time.monotonic()
+            with patch("sys.stderr", new_callable=io.StringIO) as errors:
+                status = deadline.run(0.5, ["bash", "-c", f'sleep 30; touch "{marker}"'], admission_bound=1.0)
+            self.assertEqual(status, 75)
+            self.assertLess(time.monotonic() - started, 10)
+            self.assertFalse(marker.exists())
+            self.assertIn("for a host build slot, past the 1s queue bound", errors.getvalue())
+            self.assertEqual(list(Path(tmp).glob(deadline.LEDGER_PREFIX + "*")), [])
+
+    def test_shell_budget_reads_its_ledger(self):
+        # pg_tests.sh-style budget: open a ledger, run one queued admitted call,
+        # read back at least the queue; close removes the ledger.
+        with tempfile.TemporaryDirectory() as tmp:
+            environment = self.host(Path(tmp), NEW_CAPABILITIES, grant=True)
+            result = subprocess.run(
+                ["bash", "--noprofile", "--norc", "-c",
+                 'source "$1"; awaken_budget_open || exit 9; run_with_deadline --admit 30 true || exit 8; '
+                 'awaken_budget_queued_seconds; ledger=$awaken_budget_ledger; awaken_budget_close; '
+                 '[ ! -e "$ledger" ] || exit 7', "budget-fixture", str(HELPER)],
+                env=environment, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertGreaterEqual(int(result.stdout.strip()), self.QUEUE - 1)
+
+
+
+@unittest.skipIf(os.name == "nt", "POSIX host admission")
+class AdmissionHolderTests(unittest.TestCase):
+    def holder(self, root, status):
+        observer = root / "awaken-build-admission"
+        observer.write_text("#!/bin/sh\n[ \"$1\" = --status ] || exit 2\nprintf '%s\\n' '" + json.dumps(status) + "'\n")
+        observer.chmod(0o755)
+        state = root / "state"
+        (state / "admission-queue").mkdir(parents=True, exist_ok=True)
+        record = root / "queued.json"
+        record.write_text(json.dumps({"status": "queued"}))
+        (state / "admission-queue" / "ticket.json").write_text(json.dumps({"observation": str(record)}))
+        result = subprocess.run(["bash", "--noprofile", "--norc", "-c", 'source "$1"; awaken_admission_holder',
+                                 "holder-fixture", str(HELPER)],
+                                env=dict(os.environ, AWAKEN_HOST_ADMISSION=str(observer), AWAKEN_ADMISSION_STATE=str(state)),
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def test_slot_table_is_preferred_and_tickets_remain_the_fallback(self):
+        # H1 a host that reports scheduler.slots is described from that table;
+        # H2 an older host (no slots in --status) falls back to queue tickets.
+        with tempfile.TemporaryDirectory() as tmp:
+            slots = {"scheduler": {"slots": [
+                {"slot": 0, "state": "busy", "workload_kind": "feedback", "exclusive": False, "pid": 41,
+                 "arguments": ["check", "-p", "demo"], "cwd": "/w/a", "held_seconds": 12.4},
+                {"slot": 1, "state": "free"}], "queue": {"by_kind": {"feedback": 2, "formal": 1}}}}
+            self.assertEqual(self.holder(Path(tmp), slots),
+                             "1 of 2 slots busy; slot 0 feedback held 12s by pid 41 in /w/a: cargo check -p demo; "
+                             "queued: feedback 2, formal 1")
+            self.assertEqual(self.holder(Path(tmp), {"schema_version": 1, "eligible": True}),
+                             "no current holder recorded; 1 queued")
 
 
 if __name__ == "__main__":
