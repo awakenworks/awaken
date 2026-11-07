@@ -49,13 +49,12 @@ impl PostgresDispatchStore {
             return Ok(AttemptAdmission::Fenced);
         };
         let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
-        if worker.as_ref().is_some_and(|snapshot| {
-            snapshot.expires_at_ms <= now_ms
-                || matches!(
-                    snapshot.state,
-                    crate::WorkerState::Quiesced | crate::WorkerState::Dead
-                )
-        }) {
+        // The guarded incarnation must still hold authority on the store clock:
+        // one standing decision, not a second spelling of the closed states.
+        if worker
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot.standing(now_ms).holds_authority())
+        {
             tx.rollback().await.map_err(store_error)?;
             return Ok(AttemptAdmission::Fenced);
         }
