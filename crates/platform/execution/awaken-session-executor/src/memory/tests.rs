@@ -1332,6 +1332,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         !host
             .run_assembly
             .authority
+            .committed_truth()
             .observes_terminal_memory_locally(),
         "the Worker constructor alone gives the Host its upstream authority"
     );

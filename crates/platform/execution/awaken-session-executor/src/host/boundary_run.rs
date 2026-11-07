@@ -15,7 +15,10 @@ pub(crate) fn commit_boundary_workers(
         assembly.clock.clone(),
         assembly.thread_reads.clone(),
         Arc::new(EmbeddedBoundaryObservation {
-            observes_terminal_memory_locally: assembly.authority.observes_terminal_memory_locally(),
+            observes_terminal_memory_locally: assembly
+                .authority
+                .committed_truth()
+                .observes_terminal_memory_locally(),
             capabilities: assembly.capabilities.clone(),
             memory_terminal_observers: assembly.resources.memory_terminal_observers.clone(),
         }),

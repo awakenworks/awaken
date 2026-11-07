@@ -102,7 +102,10 @@ impl SessionExecutorBuilder {
             .pool_sizing()
             .and_then(crate::DispatchPoolSizing::registered)
             .is_some()
-            && dependencies.authority.hosts_session_application()
+            && dependencies
+                .authority
+                .committed_truth()
+                .hosts_session_application()
         {
             return Err(SessionExecutionError::bad_request(
                 "registered Worker capacity requires upstream authority and a local execution pool",
@@ -110,7 +113,10 @@ impl SessionExecutorBuilder {
         }
         // W5: a co-located Host holds its Tasks itself; one process has one holder.
         if dependencies.worker.task_control.is_some()
-            && dependencies.authority.hosts_session_application()
+            && dependencies
+                .authority
+                .committed_truth()
+                .hosts_session_application()
         {
             return Err(SessionExecutionError::bad_request(
                 "a registered Worker's Task attention delivery requires upstream authority",
@@ -347,7 +353,7 @@ fn resource_sources(
         memory: resources.memory_stores.clone(),
         resource_validator: session_execution.resource_validator.clone(),
         repository_binding_verifier: session_execution.repository_binding_verifier.clone(),
-        fetches_resources_upstream: authority.fetches_resources_upstream(),
+        fetches_resources_upstream: authority.committed_truth().fetches_resources_upstream(),
         credential_materializer,
         memory_reference_encoder: authority.memory_reference_encoder(),
     }

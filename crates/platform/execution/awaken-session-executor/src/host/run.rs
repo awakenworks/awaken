@@ -101,7 +101,11 @@ impl crate::SessionRuns {
             )?
             .transpose()?
             .unwrap_or_default();
-        if !self.authority.cancels_through_durable_intent() {
+        if !self
+            .authority
+            .committed_truth()
+            .cancels_through_durable_intent()
+        {
             // A Worker revokes its resident attempt, not the Coordinator's
             // durable cancellation intent: its transport cannot list, requeue
             // or cancel the global queue. It signals the Runtime registration

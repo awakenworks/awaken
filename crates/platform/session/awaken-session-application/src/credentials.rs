@@ -202,56 +202,63 @@ impl SessionCredentials {
 
     /// Root-CAS migration for retained Session rows written before exact
     /// Repository credential pins existed.
-    pub async fn ensure_repository_credentials_pinned(
-        &self,
-        owner_scope: &str,
+    // Request-path state machines in this file return their future already
+    // boxed. An unoptimized poll frame reserves a slot for every inline callee
+    // it awaits and never reuses it; nested inline, one Managed request needed
+    // more than a 2 MiB thread stack (see `tests/stack_boundaries.rs`).
+    pub fn ensure_repository_credentials_pinned<'a>(
+        &'a self,
+        owner_scope: &'a str,
         session: PersistedSession,
-    ) -> Result<PersistedSession, SessionPreparationError> {
-        let mutations = &self.mutations;
-        let mut session = crate::mutation::aggregate_from_snapshot(session)
-            .map_err(repository_failure)
-            .map_err(mutation_failure)?;
-        for attempt in 0..ROOT_CAS_ATTEMPTS {
-            let holder = self.resource_plaintext_holder(&session)?;
-            let mut active = session.resources.active.clone();
-            let mut pending = session.resources.pending.clone();
-            self.pin_repository_credentials(owner_scope, &holder, &mut active)
-                .await?;
-            if let Some(pending) = &mut pending {
-                self.pin_repository_credentials(owner_scope, &holder, pending)
+    ) -> futures_util::future::BoxFuture<'a, Result<PersistedSession, SessionPreparationError>>
+    {
+        Box::pin(async move {
+            let mutations = &self.mutations;
+            let mut session = crate::mutation::aggregate_from_snapshot(session)
+                .map_err(repository_failure)
+                .map_err(mutation_failure)?;
+            for attempt in 0..ROOT_CAS_ATTEMPTS {
+                let holder = self.resource_plaintext_holder(&session)?;
+                let mut active = session.resources.active.clone();
+                let mut pending = session.resources.pending.clone();
+                self.pin_repository_credentials(owner_scope, &holder, &mut active)
                     .await?;
-            }
-            let changed = session
-                .resources()
-                .migrate_repository_credential_pins(active, pending)
-                .map_err(|error| {
-                    SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
-                })?;
-            if !changed {
-                return Ok(session.into_snapshot());
-            }
-            let session_id = session.session_id.clone();
-            match mutations
-                .commit_session_snapshot_with_outcome(
-                    owner_scope,
-                    session,
-                    "repository-credential-pin-migration",
-                    Vec::new(),
-                )
-                .await
-            {
-                Ok(commit) => return Ok(commit.into_session()),
-                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
-                    session = mutations
-                        .session_aggregate(&session_id)
-                        .await
-                        .map_err(repository_failure)
-                        .map_err(mutation_failure)?;
+                if let Some(pending) = &mut pending {
+                    self.pin_repository_credentials(owner_scope, &holder, pending)
+                        .await?;
                 }
-                Err(error) => return Err(mutation_failure(error)),
+                let changed = session
+                    .resources()
+                    .migrate_repository_credential_pins(active, pending)
+                    .map_err(|error| {
+                        SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
+                    })?;
+                if !changed {
+                    return Ok(session.into_snapshot());
+                }
+                let session_id = session.session_id.clone();
+                match mutations
+                    .commit_session_snapshot_with_outcome(
+                        owner_scope,
+                        session,
+                        "repository-credential-pin-migration",
+                        Vec::new(),
+                    )
+                    .await
+                {
+                    Ok(commit) => return Ok(commit.into_session()),
+                    Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {
+                        session = mutations
+                            .session_aggregate(&session_id)
+                            .await
+                            .map_err(repository_failure)
+                            .map_err(mutation_failure)?;
+                    }
+                    Err(error) => return Err(mutation_failure(error)),
+                }
             }
-        }
-        Err(SessionPreparationError::Conflict)
+            Err(SessionPreparationError::Conflict)
+        })
     }
 }
 

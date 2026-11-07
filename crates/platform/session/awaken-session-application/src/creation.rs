@@ -752,13 +752,8 @@ impl SessionCreationCommands {
         &self,
         command: CreateSessionCommand,
     ) -> Result<PersistedSession, SessionCreationError> {
-        Box::pin(
-            self.create_session_with_completion(
-                command,
-                SessionCreationCompletion::AwaitRealization,
-            ),
-        )
-        .await
+        self.create_session_with_completion(command, SessionCreationCompletion::AwaitRealization)
+            .await
     }
 
     /// Accept one Session as soon as its complete root is durable. Physical
@@ -768,13 +763,8 @@ impl SessionCreationCommands {
         &self,
         command: CreateSessionCommand,
     ) -> Result<PersistedSession, SessionCreationError> {
-        Box::pin(
-            self.create_session_with_completion(
-                command,
-                SessionCreationCompletion::AcceptDurableRoot,
-            ),
-        )
-        .await
+        self.create_session_with_completion(command, SessionCreationCompletion::AcceptDurableRoot)
+            .await
     }
 
     pub(super) async fn create_session_with_completion(
@@ -782,7 +772,8 @@ impl SessionCreationCommands {
         command: CreateSessionCommand,
         completion: SessionCreationCompletion,
     ) -> Result<PersistedSession, SessionCreationError> {
-        Box::pin(self.create_session_with_binding(command, completion, None)).await
+        self.create_session_with_binding(command, completion, None)
+            .await
     }
 
     /// The caller must authenticate and authorize current private ingress.
@@ -793,11 +784,11 @@ impl SessionCreationCommands {
         binding: awaken_session_contract::SessionPrivateBinding,
         command: CreateSessionCommand,
     ) -> Result<PersistedSession, SessionCreationError> {
-        Box::pin(self.create_session_with_binding(
+        self.create_session_with_binding(
             command,
             SessionCreationCompletion::AwaitRealization,
             Some(binding),
-        ))
+        )
         .await
     }
 
@@ -808,289 +799,297 @@ impl SessionCreationCommands {
         binding: awaken_session_contract::SessionPrivateBinding,
         command: CreateSessionCommand,
     ) -> Result<PersistedSession, SessionCreationError> {
-        Box::pin(self.create_session_with_binding(
+        self.create_session_with_binding(
             command,
             SessionCreationCompletion::AcceptDurableRoot,
             Some(binding),
-        ))
+        )
         .await
     }
 
-    pub(super) async fn create_session_with_binding(
-        &self,
+    // Request-path state machines in this file return their future already
+    // boxed. An unoptimized poll frame reserves a slot for every inline callee
+    // it awaits and never reuses it; nested inline, one Managed request needed
+    // more than a 2 MiB thread stack (see `tests/stack_boundaries.rs`).
+    pub(super) fn create_session_with_binding<'a>(
+        &'a self,
         command: CreateSessionCommand,
         completion: SessionCreationCompletion,
         private_binding: Option<awaken_session_contract::SessionPrivateBinding>,
-    ) -> Result<PersistedSession, SessionCreationError> {
-        if private_binding
-            .as_ref()
-            .is_some_and(|binding| binding.workspace_id() != command.owner_scope)
-        {
-            self.repository_participants
+    ) -> futures_util::future::BoxFuture<'a, Result<PersistedSession, SessionCreationError>> {
+        Box::pin(async move {
+            if private_binding
+                .as_ref()
+                .is_some_and(|binding| binding.workspace_id() != command.owner_scope)
+            {
+                self.repository_participants
                 .compensate(
                     &command.session_id,
                     &command.repository_configurations,
                     "Session Repository compensation remains pending after private scope rejection",
                 )
                 .await;
-            return Err(SessionCreationError::Rejected(
-                RunError::bad_request_classified(
-                    "private_session_scope_mismatch",
-                    "private Session binding has another Workspace",
-                ),
-            ));
-        }
-        let mutations = &self.mutations;
-        let CreateSessionCommand {
-            owner_scope,
-            session_id,
-            intent,
-            title,
-            metadata,
-            tools,
-            budget,
-            repository_configurations,
-            idempotency,
-            initial_events,
-            initial_agent_configuration,
-        } = command;
-        // Compile the complete intent before insert so invalid input can never
-        // strand a durable Session waiting for a second authoring path.
-        let (compiled, tools) = match compile_creation_configuration(
-            self.tool_configuration_compiler.as_ref(),
-            intent,
-            tools,
-        ) {
-            Ok(compiled) => compiled,
-            Err(error) => {
-                let first = SessionCreationError::Rejected(error);
-                self.repository_participants
+                return Err(SessionCreationError::Rejected(
+                    RunError::bad_request_classified(
+                        "private_session_scope_mismatch",
+                        "private Session binding has another Workspace",
+                    ),
+                ));
+            }
+            let mutations = &self.mutations;
+            let CreateSessionCommand {
+                owner_scope,
+                session_id,
+                intent,
+                title,
+                metadata,
+                tools,
+                budget,
+                repository_configurations,
+                idempotency,
+                initial_events,
+                initial_agent_configuration,
+            } = command;
+            // Compile the complete intent before insert so invalid input can never
+            // strand a durable Session waiting for a second authoring path.
+            let (compiled, tools) = match compile_creation_configuration(
+                self.tool_configuration_compiler.as_ref(),
+                intent,
+                tools,
+            ) {
+                Ok(compiled) => compiled,
+                Err(error) => {
+                    let first = SessionCreationError::Rejected(error);
+                    self.repository_participants
                     .compensate(
                         &session_id,
                         &repository_configurations,
                         "Session Repository compensation remains pending after compile rejection",
                     )
                     .await;
-                return Err(first);
-            }
-        };
-        let layout = awaken_session_configuration_contract::SessionSandboxLayout {
-            workspace_id: owner_scope.clone(),
-            agent_id: compiled.baseline.agent_id.clone(),
-            agent_revision: compiled.baseline.agent_revision,
-            runtime_placement: compiled.baseline.runtime_placement,
-            model_override: compiled.baseline.model_override.clone(),
-            runtime: compiled.baseline.runtime.clone(),
-            mounts: compiled.baseline.mounts.clone(),
-            env: compiled.baseline.env.clone(),
-            environment: compiled.baseline.environment.clone(),
-            resources: compiled.initial_resources.sandbox_layout_bindings(),
-        };
-        if let Err(error) = self.validate_session_sandbox_layout(&session_id, &layout) {
-            let first = SessionCreationError::Rejected(error);
-            self.repository_participants.compensate(
+                    return Err(first);
+                }
+            };
+            let layout = awaken_session_configuration_contract::SessionSandboxLayout {
+                workspace_id: owner_scope.clone(),
+                agent_id: compiled.baseline.agent_id.clone(),
+                agent_revision: compiled.baseline.agent_revision,
+                runtime_placement: compiled.baseline.runtime_placement,
+                model_override: compiled.baseline.model_override.clone(),
+                runtime: compiled.baseline.runtime.clone(),
+                mounts: compiled.baseline.mounts.clone(),
+                env: compiled.baseline.env.clone(),
+                environment: compiled.baseline.environment.clone(),
+                resources: compiled.initial_resources.sandbox_layout_bindings(),
+            };
+            if let Err(error) = self.validate_session_sandbox_layout(&session_id, &layout) {
+                let first = SessionCreationError::Rejected(error);
+                self.repository_participants.compensate(
                 &session_id,
                 &repository_configurations,
                 "Session Repository compensation remains pending after Sandbox-layout rejection",
             )
             .await;
-            return Err(first);
-        }
-        let compiled_root = match CompleteSessionRoot::compile(
-            session_id.clone(),
-            title,
-            metadata,
-            tools,
-            budget,
-            compiled,
-            (
-                initial_events,
-                initial_agent_configuration,
-                private_binding.clone(),
-            ),
-        ) {
-            Ok(root) => root,
-            Err(first) => {
-                self.repository_participants
+                return Err(first);
+            }
+            let compiled_root = match CompleteSessionRoot::compile(
+                session_id.clone(),
+                title,
+                metadata,
+                tools,
+                budget,
+                compiled,
+                (
+                    initial_events,
+                    initial_agent_configuration,
+                    private_binding.clone(),
+                ),
+            ) {
+                Ok(root) => root,
+                Err(first) => {
+                    self.repository_participants
                     .compensate(
                         &session_id,
                         &repository_configurations,
                         "Session Repository compensation remains pending after root compilation",
                     )
                     .await;
-                return Err(first);
-            }
-        };
-        // Request identity predates server-owned first-materialization facts,
-        // just as it predates observe_creation's timestamps. Keep the one
-        // canonical hasher; admission/replacement hashes retain the full fact.
-        let idempotency = idempotency.unwrap_or_else(|| {
-            SessionMutationPayload::default_create_idempotency(compiled_root.as_session())
-        });
-        let create_result = match mutations
-            .create_session_root(&owner_scope, compiled_root, idempotency.clone(), Vec::new())
-            .await
-        {
-            Ok(result) => result,
-            Err(first) => {
-                match mutations
-                    .replay_session_create_with_completion(
-                        &owner_scope,
-                        &awaken_session_types::SessionId::from(&session_id),
-                        &idempotency,
-                        completion,
-                        private_binding.as_ref(),
-                    )
-                    .await
-                {
-                    Ok(Some(session)) => return validated_create_replay(session, completion),
-                    Ok(None) => {
-                        self.repository_participants.compensate(
+                    return Err(first);
+                }
+            };
+            // Request identity predates server-owned first-materialization facts,
+            // just as it predates observe_creation's timestamps. Keep the one
+            // canonical hasher; admission/replacement hashes retain the full fact.
+            let idempotency = idempotency.unwrap_or_else(|| {
+                SessionMutationPayload::default_create_idempotency(compiled_root.as_session())
+            });
+            let create_result = match mutations
+                .create_session_root(&owner_scope, compiled_root, idempotency.clone(), Vec::new())
+                .await
+            {
+                Ok(result) => result,
+                Err(first) => {
+                    match mutations
+                        .replay_session_create_with_completion(
+                            &owner_scope,
+                            &awaken_session_types::SessionId::from(&session_id),
+                            &idempotency,
+                            completion,
+                            private_binding.as_ref(),
+                        )
+                        .await
+                    {
+                        Ok(Some(session)) => return validated_create_replay(session, completion),
+                        Ok(None) => {
+                            self.repository_participants.compensate(
                             &session_id,
                             &repository_configurations,
                             "Session Repository compensation remains pending after create failure",
                         )
                         .await;
-                    }
-                    Err(error) if error.leaves_adoption_unknown() => {
-                        // An unavailable/corrupt replay query cannot prove the
-                        // atomic root transaction absent. Preserve participants
-                        // until exact durable truth can classify adoption.
-                    }
-                    Err(_) => {
-                        // Conflict/tombstone/idempotency mismatch proves this
-                        // exact create receipt was not adopted. The compensation
-                        // helper still rereads the root and preserves any
-                        // participant referenced by a concurrent winner.
-                        self.repository_participants.compensate(
+                        }
+                        Err(error) if error.leaves_adoption_unknown() => {
+                            // An unavailable/corrupt replay query cannot prove the
+                            // atomic root transaction absent. Preserve participants
+                            // until exact durable truth can classify adoption.
+                        }
+                        Err(_) => {
+                            // Conflict/tombstone/idempotency mismatch proves this
+                            // exact create receipt was not adopted. The compensation
+                            // helper still rereads the root and preserves any
+                            // participant referenced by a concurrent winner.
+                            self.repository_participants.compensate(
                             &session_id,
                             &repository_configurations,
                             "Session Repository compensation remains pending after deterministic create rejection",
                         )
                         .await;
+                        }
                     }
+                    return Err(first);
                 }
-                return Err(first);
-            }
-        };
-        let (receipt, mut persisted) = match create_result {
-            CompleteSessionCreateResult::Applied(root) => {
-                (SessionCreateReceiptKind::Applied, root.into_session())
-            }
-            CompleteSessionCreateResult::Replayed(root) => {
-                (SessionCreateReceiptKind::Replayed, root.into_session())
-            }
-        };
-        match session_create_effect_plan(receipt, completion) {
-            SessionCreateEffectPlan::ReturnDurableReplay => {
-                // The repository receipt and aggregate are the sole replay
-                // truth. Returning here prevents duplicate installation,
-                // activation, Work dispatch, or cleanup from an uncommitted
-                // newly lowered candidate.
-                return validated_create_replay(persisted, completion);
-            }
-            SessionCreateEffectPlan::AcceptAppliedRoot => {
-                // The root contains the frozen baseline, initial Event plan,
-                // and idempotency receipt. Waking the sole recovery driver is
-                // only an optimization: startup scanning recovers the same
-                // root after process loss without a Job row or second lifecycle.
-                self.lifecycle.request_reconciliation();
-                return Ok(persisted);
-            }
-            SessionCreateEffectPlan::ContinueAppliedRealization => {}
-        }
-
-        let realized = if persisted.requires_external_environment_owner() {
-            self.realizations
-                .install_dispatch_projection(&owner_scope, &persisted)
-                .await
-                .map(|()| persisted.clone())
-        } else {
-            self.realizations
-                .realize_session_after_refresh(&awaken_session_types::SessionId::from(&session_id))
-                .await
-        };
-        persisted = match realized {
-            Ok(session) => session,
-            Err(error) => {
-                let recoverable_control = matches!(
-                    &error,
-                    SessionRealizationDriveError::Control(control)
-                        if session_create_control_failure_plan(control.disposition())
-                            == SessionCreateControlFailurePlan::ReplayDurableRootAndWake
-                );
-                // Cleanup authority comes from the current durable execution
-                // state, never from an effect error or a control-error label.
-                // The accepting replay exposes that state without converting an
-                // ActivationFailed root into a transport-only tombstone.
-                let current = mutations
-                    .replay_accepted_session_create(
-                        &owner_scope,
-                        &awaken_session_types::SessionId::from(&session_id),
-                        &idempotency,
-                    )
-                    .await;
-                match current {
-                    Ok(Some(session)) if session.execution.is_terminal() => {
-                        let _ = self
-                            .terminal_cleanups
-                            .release_terminal_resources(&owner_scope, &session_id)
-                            .await;
-                    }
-                    Ok(Some(session)) if recoverable_control => {
-                        self.lifecycle.request_reconciliation();
-                        return Ok(session);
-                    }
-                    Ok(Some(_)) => {
-                        // The root still owns unfinished physical responsibility.
-                        // Keep it intact and wake the sole lifecycle driver, but
-                        // retain the original fail-closed effect/control result.
-                        self.lifecycle.request_reconciliation();
-                    }
-                    Ok(None) => {}
-                    Err(replay_error) => return Err(replay_error),
+            };
+            let (receipt, mut persisted) = match create_result {
+                CompleteSessionCreateResult::Applied(root) => {
+                    (SessionCreateReceiptKind::Applied, root.into_session())
                 }
-                return Err(SessionCreationError::realization(error));
+                CompleteSessionCreateResult::Replayed(root) => {
+                    (SessionCreateReceiptKind::Replayed, root.into_session())
+                }
+            };
+            match session_create_effect_plan(receipt, completion) {
+                SessionCreateEffectPlan::ReturnDurableReplay => {
+                    // The repository receipt and aggregate are the sole replay
+                    // truth. Returning here prevents duplicate installation,
+                    // activation, Work dispatch, or cleanup from an uncommitted
+                    // newly lowered candidate.
+                    return validated_create_replay(persisted, completion);
+                }
+                SessionCreateEffectPlan::AcceptAppliedRoot => {
+                    // The root contains the frozen baseline, initial Event plan,
+                    // and idempotency receipt. Waking the sole recovery driver is
+                    // only an optimization: startup scanning recovers the same
+                    // root after process loss without a Job row or second lifecycle.
+                    self.lifecycle.request_reconciliation();
+                    return Ok(persisted);
+                }
+                SessionCreateEffectPlan::ContinueAppliedRealization => {}
             }
-        };
 
-        persisted = match commit_creation_activation(&self.mutations, &owner_scope, persisted).await
-        {
-            Ok(commit) => commit.into_session(),
-            Err(SessionMutationError::Conflict) => {
-                // The realization is complete, so a concurrent root writer (or
-                // a lost acknowledgement from this final CAS) cannot invalidate
-                // the create receipt. Return the exact receipt's current root
-                // instead of exposing a retry-unsafe failed POST.
-                let Some(session) = mutations
-                    .replay_session_create(
-                        &owner_scope,
-                        &awaken_session_types::SessionId::from(&session_id),
-                        &idempotency,
-                    )
-                    .await?
-                else {
-                    return Err(SessionCreationError::Conflict);
+            let realized = if persisted.requires_external_environment_owner() {
+                self.realizations
+                    .install_dispatch_projection(&owner_scope, &persisted)
+                    .await
+                    .map(|()| persisted.clone())
+            } else {
+                self.realizations
+                    .realize_session_after_refresh(&awaken_session_types::SessionId::from(
+                        &session_id,
+                    ))
+                    .await
+            };
+            persisted = match realized {
+                Ok(session) => session,
+                Err(error) => {
+                    let recoverable_control = matches!(
+                        &error,
+                        SessionRealizationDriveError::Control(control)
+                            if session_create_control_failure_plan(control.disposition())
+                                == SessionCreateControlFailurePlan::ReplayDurableRootAndWake
+                    );
+                    // Cleanup authority comes from the current durable execution
+                    // state, never from an effect error or a control-error label.
+                    // The accepting replay exposes that state without converting an
+                    // ActivationFailed root into a transport-only tombstone.
+                    let current = mutations
+                        .replay_accepted_session_create(
+                            &owner_scope,
+                            &awaken_session_types::SessionId::from(&session_id),
+                            &idempotency,
+                        )
+                        .await;
+                    match current {
+                        Ok(Some(session)) if session.execution.is_terminal() => {
+                            let _ = self
+                                .terminal_cleanups
+                                .release_terminal_resources(&owner_scope, &session_id)
+                                .await;
+                        }
+                        Ok(Some(session)) if recoverable_control => {
+                            self.lifecycle.request_reconciliation();
+                            return Ok(session);
+                        }
+                        Ok(Some(_)) => {
+                            // The root still owns unfinished physical responsibility.
+                            // Keep it intact and wake the sole lifecycle driver, but
+                            // retain the original fail-closed effect/control result.
+                            self.lifecycle.request_reconciliation();
+                        }
+                        Ok(None) => {}
+                        Err(replay_error) => return Err(replay_error),
+                    }
+                    return Err(SessionCreationError::realization(error));
+                }
+            };
+
+            persisted =
+                match commit_creation_activation(&self.mutations, &owner_scope, persisted).await {
+                    Ok(commit) => commit.into_session(),
+                    Err(SessionMutationError::Conflict) => {
+                        // The realization is complete, so a concurrent root writer (or
+                        // a lost acknowledgement from this final CAS) cannot invalidate
+                        // the create receipt. Return the exact receipt's current root
+                        // instead of exposing a retry-unsafe failed POST.
+                        let Some(session) = mutations
+                            .replay_session_create(
+                                &owner_scope,
+                                &awaken_session_types::SessionId::from(&session_id),
+                                &idempotency,
+                            )
+                            .await?
+                        else {
+                            return Err(SessionCreationError::Conflict);
+                        };
+                        validated_create_replay(session, completion)?
+                    }
+                    Err(error) => return Err(SessionCreationError::mutation(error)),
                 };
-                validated_create_replay(session, completion)?
-            }
-            Err(error) => return Err(SessionCreationError::mutation(error)),
-        };
 
-        // The aggregate is already the authoritative dispatch intent. An
-        // ambiguous create failure here could induce a duplicate client create;
-        // the canonical reconciler therefore retries this disposable projection.
-        if let Err(error) = self.work_assignments.dispatch(&persisted).await {
-            tracing::warn!(
-                session = %session_id,
-                error = ?error,
-                "Session WorkQueue dispatch remains pending after create"
-            );
-        }
-        if persisted.needs_event_reconciliation() {
-            self.lifecycle.request_reconciliation();
-        }
-        Ok(persisted)
+            // The aggregate is already the authoritative dispatch intent. An
+            // ambiguous create failure here could induce a duplicate client create;
+            // the canonical reconciler therefore retries this disposable projection.
+            if let Err(error) = self.work_assignments.dispatch(&persisted).await {
+                tracing::warn!(
+                    session = %session_id,
+                    error = ?error,
+                    "Session WorkQueue dispatch remains pending after create"
+                );
+            }
+            if persisted.needs_event_reconciliation() {
+                self.lifecycle.request_reconciliation();
+            }
+            Ok(persisted)
+        })
     }
 }
 
