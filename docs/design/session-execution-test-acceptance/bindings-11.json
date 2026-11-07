@@ -599,23 +599,23 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 326,
-        "file_sha256": "599be26b90c3e2d1f2bc58206460b78b1c06fe8624903664d9985088b2e506e7",
+        "line": 332,
+        "file_sha256": "b0e85611db0a4ea22f13d9678ebc565c8eb4adf00c98df5d910da4141e8badce",
         "relocated_from": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs:326"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 310
+        "line": 316
       },
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 314
+        "line": 320
       },
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 318
+        "line": 324
       }
     ],
     "execution_witnesses": [
@@ -650,23 +650,23 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 335,
-        "file_sha256": "599be26b90c3e2d1f2bc58206460b78b1c06fe8624903664d9985088b2e506e7",
+        "line": 341,
+        "file_sha256": "b0e85611db0a4ea22f13d9678ebc565c8eb4adf00c98df5d910da4141e8badce",
         "relocated_from": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs:335"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 310
+        "line": 316
       },
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 314
+        "line": 320
       },
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 318
+        "line": 324
       }
     ],
     "execution_witnesses": [
