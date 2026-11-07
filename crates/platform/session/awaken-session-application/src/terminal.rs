@@ -270,7 +270,7 @@ impl SessionTerminationCommands {
         lifecycle: Arc<crate::SessionLifecycle>,
         terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
         activities: Arc<crate::SessionActivities>,
-        runtime: &crate::SessionExecutor,
+        runtime: &crate::SessionExecutionRoles,
     ) -> Self {
         Self {
             mutations,

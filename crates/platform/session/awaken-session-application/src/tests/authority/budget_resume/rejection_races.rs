@@ -23,7 +23,8 @@ async fn race_fixture(id: &str) -> BudgetAdmissionRace {
     let runtime = Arc::new(EffectCountingRuntime::default());
     runtime.set_budget_tickets(Vec::new());
     let reads = Arc::new(crate::tests::event_batches::EventBatchRuntime::default());
-    let selected = crate::SessionExecutor::colocated(runtime.clone(), Arc::new(NoopMcpRealizer));
+    let selected =
+        crate::SessionExecutionRoles::colocated(runtime.clone(), Arc::new(NoopMcpRealizer));
     let mut roles = (*selected).clone();
     roles.thread_reads = reads.clone();
     let app = Arc::new(

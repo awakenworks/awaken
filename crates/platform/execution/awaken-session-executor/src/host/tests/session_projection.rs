@@ -1392,7 +1392,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
     let mut host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_agent_publications(Arc::new(publications));
-    host.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+    host.execution.claim_pool = crate::ClaimPool::RemoteWorkersOnly;
     let host = (host).build().expect("validated Host dependencies");
     install_test_session_application(&host);
 
@@ -2049,7 +2049,7 @@ async fn executor_components_supply_every_session_role() {
             as Arc<dyn awaken_session_execution_contract::LiveInboxAccess>),
         &roles.live_inbox
     ));
-    let bindings = awaken_session_execution_contract::SessionExecutor::from(roles);
+    let bindings = awaken_session_execution_contract::SessionExecutionRoles::from(roles);
     assert_eq!(bindings.default_model(), host.capabilities.model());
 }
 

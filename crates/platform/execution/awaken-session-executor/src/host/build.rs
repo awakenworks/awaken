@@ -98,7 +98,7 @@ impl SessionExecutorBuilder {
         // remaining contradiction is a registration under a local authority.
         if dependencies
             .execution
-            .local
+            .claim_pool
             .pool_sizing()
             .and_then(crate::DispatchPoolSizing::registered)
             .is_some()
@@ -163,7 +163,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         realizations.clone(),
         environment_holding(
             env,
-            execution.local.runs_local_pool(),
+            execution.claim_pool.runs_local_pool(),
             &realizations,
             environment_binding_sink,
             authority.as_ref(),
@@ -204,7 +204,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
     let dispatch_hint = dispatch_hint(authority.as_ref());
     let durable_run_cancellation = crate::host::DurableRunCancellation::new(
         installed_sessions.clone(),
-        execution.local.runs_local_pool(),
+        execution.claim_pool.runs_local_pool(),
         capability::local_dispatch_owner(authority.as_ref()),
         dispatch_hint.clone(),
     );
@@ -557,8 +557,8 @@ impl ExecutorComponents {
     #[must_use]
     pub fn session_execution_roles(
         &self,
-    ) -> awaken_session_execution_contract::SessionExecutionRoles {
-        awaken_session_execution_contract::SessionExecutionRoles {
+    ) -> awaken_session_execution_contract::SessionExecutionRoleSelection {
+        awaken_session_execution_contract::SessionExecutionRoleSelection {
             default_model: self.capabilities.model(),
             placement: awaken_session_execution_contract::SessionPlacementRoles::Colocated(
                 awaken_session_execution_contract::ColocatedRealizationRoles {

@@ -1010,6 +1010,6 @@ pub(crate) async fn with_test_memory_history(
 /// served by the component that owns it.
 pub(crate) fn session_executor(
     host: &Arc<ExecutorComponents>,
-) -> awaken_session_execution_contract::SessionExecutor {
+) -> awaken_session_execution_contract::SessionExecutionRoles {
     host.session_execution_roles().into()
 }

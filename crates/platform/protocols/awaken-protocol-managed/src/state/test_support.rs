@@ -25,7 +25,7 @@ pub(crate) fn managed_state_from_parts(
 ) -> crate::ManagedState {
     crate::ManagedState::from_application(
         awaken_protocol_managed_testkit::session_application_from_parts(
-            awaken_session_execution_contract::SessionExecutor::colocated(
+            awaken_session_execution_contract::SessionExecutionRoles::colocated(
                 runtime,
                 mcp.unwrap_or_else(|| {
                     std::sync::Arc::new(awaken_session_execution_contract::NeutralRuntime)

@@ -326,7 +326,7 @@ pub async fn mount_with_managed_and_application_access_and_models(
     let resource_registry = resource_authorities.resource_registry();
     let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let execution = managed_state.execution.clone();
-    let remote_worker_required = !execution.dispatch.topology().local.runs_local_pool();
+    let remote_worker_required = !execution.dispatch.topology().claim_pool.runs_local_pool();
     let dream_process_store = scenario_dream_process_store(execution.storage_dir.as_deref()).await;
     // The Worker transport judges assertions on the Scenario executor's clock.
     let worker_clock = managed_state.clock.clone();
@@ -803,7 +803,7 @@ async fn mount_with_managed_over(
     let resource_authorities = resources.authorities();
     let resource_registry = resource_authorities.resource_registry();
     let execution = managed_state.execution.clone();
-    let remote_worker_required = !execution.dispatch.topology().local.runs_local_pool();
+    let remote_worker_required = !execution.dispatch.topology().claim_pool.runs_local_pool();
     // A scenario that opts into the same durable storage root as production
     // must not silently retain an in-memory Dream authority. Sessions and
     // Dreams share the concrete sessions.db aggregate in product startup; keep

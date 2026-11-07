@@ -157,7 +157,7 @@ impl SessionResourceReconciliation {
         resource_references: Arc<crate::SessionResourceReferences>,
         repository_participants: Arc<crate::SessionRepositoryParticipants>,
         terminal_cleanups: Arc<crate::SessionTerminalCleanups>,
-        runtime: &crate::SessionExecutor,
+        runtime: &crate::SessionExecutionRoles,
     ) -> Self {
         Self {
             mutations,

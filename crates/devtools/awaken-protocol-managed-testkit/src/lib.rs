@@ -125,7 +125,9 @@ pub trait ManagedStateFixture: Sized {
         R: CompleteSessionRuntime + McpAttachmentRealizer + 'static;
 
     /// A Managed state over executor roles selected from separate owners.
-    async fn with_roles(roles: awaken_session_execution_contract::SessionExecutionRoles) -> Self;
+    async fn with_roles(
+        roles: awaken_session_execution_contract::SessionExecutionRoleSelection,
+    ) -> Self;
 }
 
 impl ManagedStateFixture for ManagedState {
@@ -158,7 +160,9 @@ impl ManagedStateFixture for ManagedState {
         )
     }
 
-    async fn with_roles(roles: awaken_session_execution_contract::SessionExecutionRoles) -> Self {
+    async fn with_roles(
+        roles: awaken_session_execution_contract::SessionExecutionRoleSelection,
+    ) -> Self {
         let clock = awaken_time::system_clock();
         ManagedState::from_application(
             session_application_from_parts(
@@ -196,7 +200,7 @@ pub fn managed_state_from_parts(
 ) -> ManagedState {
     ManagedState::from_application(
         session_application_from_parts(
-            awaken_session_execution_contract::SessionExecutor::colocated(
+            awaken_session_execution_contract::SessionExecutionRoles::colocated(
                 runtime,
                 mcp.unwrap_or_else(|| Arc::new(awaken_session_execution_contract::NeutralRuntime)),
             ),
@@ -224,7 +228,7 @@ pub fn managed_state_from_parts(
 /// The caller explicitly selects its complete execution observations before
 /// publishing this App; this fixture supplies no late-install or Registry fallback.
 pub fn session_application_from_parts(
-    runtime: impl Into<awaken_session_execution_contract::SessionExecutor>,
+    runtime: impl Into<awaken_session_execution_contract::SessionExecutionRoles>,
     sessions: Arc<dyn awaken_session_application::SessionStore>,
     environments: Arc<awaken_environment_application::execution::EnvironmentExecutionApplication>,
     clock: Arc<dyn awaken_time::WallClock>,

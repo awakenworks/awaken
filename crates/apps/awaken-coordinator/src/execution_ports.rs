@@ -185,7 +185,7 @@ pub struct ColocatedExecutionInputs {
 /// Session application. The launcher owns the captured executor; shared startup
 /// sees only the existing role contracts and original process components.
 pub struct PreparedColocatedExecution {
-    pub roles: awaken_session_execution_contract::SessionExecutionRoles,
+    pub roles: awaken_session_execution_contract::SessionExecutionRoleSelection,
     pub dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
     pub dispatch_observation: Arc<dyn awaken_dispatch::DispatchOperationalFeed>,
     pub capture_policy: awaken_data_governance_contract::CapturePolicy,

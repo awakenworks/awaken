@@ -1150,7 +1150,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
     use awaken_session_configuration_contract::SessionInit;
     use awaken_skill_store::{SkillBundleFile, SkillVersion, bundle_sha256};
     let mut host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await;
-    host.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+    host.execution.claim_pool = crate::ClaimPool::RemoteWorkersOnly;
     let host = (host).build().expect("validated Host dependencies");
 
     install_test_session_application(&host);
@@ -1268,7 +1268,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     let mut dependencies = crate::acp_backend::with_fixture_acp(
         crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub").await,
     );
-    dependencies.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+    dependencies.execution.claim_pool = crate::ClaimPool::RemoteWorkersOnly;
     let host = (dependencies).build().expect("validated Host dependencies");
     let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
         awaken_runtime_contract::resolved::ModelBinding::new("local", "", "acp:codex"),

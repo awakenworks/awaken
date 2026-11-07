@@ -118,7 +118,7 @@ pub(crate) struct SessionRunAdmissionCollaborators {
     pub(crate) work_assignments: Arc<crate::SessionWorkAssignments>,
     pub(crate) executable_projections: crate::ExecutableProjections,
     pub(crate) execution_admission: Arc<crate::SessionExecutionAdmission>,
-    pub(crate) runtime: crate::SessionExecutor,
+    pub(crate) runtime: crate::SessionExecutionRoles,
 }
 
 struct RunActivityAdmission {

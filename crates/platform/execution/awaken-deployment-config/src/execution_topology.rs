@@ -1,3 +1,6 @@
+// @formal surface exclude=composition_wiring
+// @formal reason: Plain topology values the composition root selects once; durable claim and ingress
+// @formal reason: decisions belong to ProcessDispatch and the dispatch store, which carry their own proofs.
 //! How this process takes part in Run execution, decided by the composition
 //! root before the Session executor exists (ADR-0091 D6: only process compositions read
 //! deployment configuration).
@@ -5,7 +8,7 @@
 //! Dispatch never derives these choices from a configuration file. Each value
 //! names the one decision it carries: whether a foreground Run is delivered
 //! through the durable queue ([`ForegroundRunDelivery`]), whether this process drains that
-//! queue itself and with how many slots ([`LocalExecution`]), the identity its
+//! queue itself and with how many slots ([`ClaimPool`]), the identity its
 //! dispatch leases are fenced with ([`LeaseOwnerId`]), how long a lost wake can
 //! delay recovery, and who observes queue depth ([`QueueDepthSource`]).
 
@@ -91,32 +94,32 @@ impl DispatchPoolSizing {
 
 /// Whether this process executes claimed Runs itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LocalExecution {
+pub enum ClaimPool {
     /// One process-level dispatch pool with this many slots drains the queue
     /// here, and Session Environments may be realized locally.
-    InProcessPool(DispatchPoolSizing),
+    InProcess(DispatchPoolSizing),
     /// Admission only: this process owns the queue but never executes a Run;
     /// registered remote Workers are the sole drainers.
     RemoteWorkersOnly,
 }
 
-impl LocalExecution {
+impl ClaimPool {
     /// The CPU-sized in-process pool of an unregistered process.
     #[must_use]
-    pub fn in_process_pool() -> Self {
-        Self::InProcessPool(DispatchPoolSizing::local_parallelism())
+    pub fn in_process() -> Self {
+        Self::InProcess(DispatchPoolSizing::local_parallelism())
     }
 
     #[must_use]
     pub const fn runs_local_pool(self) -> bool {
-        matches!(self, Self::InProcessPool(_))
+        matches!(self, Self::InProcess(_))
     }
 
     /// The pool sizing when this process executes Runs.
     #[must_use]
     pub const fn pool_sizing(self) -> Option<DispatchPoolSizing> {
         match self {
-            Self::InProcessPool(sizing) => Some(sizing),
+            Self::InProcess(sizing) => Some(sizing),
             Self::RemoteWorkersOnly => None,
         }
     }
@@ -157,7 +160,7 @@ pub enum QueueDepthSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionTopology {
     pub foreground_delivery: ForegroundRunDelivery,
-    pub local: LocalExecution,
+    pub claim_pool: ClaimPool,
     pub lease_owner: LeaseOwnerId,
     /// Maximum fallback wait before a pool checks durable dispatch again after
     /// a lost wake. The cross-node wake is only a hint; this is the recovery
@@ -187,7 +190,7 @@ mod tests {
     fn standalone() -> ExecutionTopology {
         ExecutionTopology {
             foreground_delivery: ForegroundRunDelivery::Direct,
-            local: LocalExecution::in_process_pool(),
+            claim_pool: ClaimPool::in_process(),
             lease_owner: LeaseOwnerId::new("node-a").unwrap(),
             lost_wake_recovery_bound: std::time::Duration::from_millis(250),
             queue_depth: QueueDepthSource::BuiltInSampler,
@@ -225,13 +228,10 @@ mod tests {
         assert!(LeaseOwnerId::new("  ").is_err());
         assert_eq!(LeaseOwnerId::new("node-a").unwrap().as_str(), "node-a");
         let sizing = DispatchPoolSizing::Registered(std::num::NonZeroUsize::new(3).unwrap());
-        assert_eq!(
-            LocalExecution::InProcessPool(sizing).pool_sizing(),
-            Some(sizing)
-        );
-        assert!(LocalExecution::InProcessPool(sizing).runs_local_pool());
-        assert_eq!(LocalExecution::RemoteWorkersOnly.pool_sizing(), None);
-        assert!(!LocalExecution::RemoteWorkersOnly.runs_local_pool());
+        assert_eq!(ClaimPool::InProcess(sizing).pool_sizing(), Some(sizing));
+        assert!(ClaimPool::InProcess(sizing).runs_local_pool());
+        assert_eq!(ClaimPool::RemoteWorkersOnly.pool_sizing(), None);
+        assert!(!ClaimPool::RemoteWorkersOnly.runs_local_pool());
         assert!(
             ForegroundRunDelivery::Durable.is_durable()
                 && !ForegroundRunDelivery::Direct.is_durable()

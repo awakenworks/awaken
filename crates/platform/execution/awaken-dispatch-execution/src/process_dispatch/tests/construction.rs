@@ -8,7 +8,7 @@ async fn pool_initialization_exposes_immutable_port_selection_until_failure() {
     // The resolver is running but the OnceCell has no published pool. This
     // observation must refuse application configuration; a failed factory
     // then releases the window and permits a later valid startup.
-    let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::InProcessPool(
+    let fixture = coordinator_fixture(awaken_deployment_config::ClaimPool::InProcess(
         DispatchPoolSizing::LocalParallelism(std::num::NonZeroUsize::new(1).unwrap()),
     ));
     assert_eq!(
@@ -70,7 +70,7 @@ async fn pool_initialization_exposes_immutable_port_selection_until_failure() {
 
 #[tokio::test]
 async fn terminal_initialization_exposes_immutable_port_selection_until_failure() {
-    let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    let fixture = coordinator_fixture(awaken_deployment_config::ClaimPool::RemoteWorkersOnly);
     assert_eq!(
         fixture.dispatch.configure_before_services_start(|| 7),
         Some(7)

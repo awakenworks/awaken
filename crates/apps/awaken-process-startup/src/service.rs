@@ -247,7 +247,7 @@ async fn prepare_configured_local_worker(
     if !deployment.run_local_pool
         || !awaken_service_lifecycle::startup_requires(
             role.startup_role(),
-            awaken_service_lifecycle::StartupComponent::LocalWorker,
+            awaken_service_lifecycle::StartupComponent::ColocatedWorker,
         )
     {
         return Ok(None);
@@ -819,6 +819,75 @@ where
             public.map_err(|error| format!("public server stopped: {error}"))
         }
     }
+}
+
+/// Test-support: serve `private_app` on `listener` and supervise the
+/// co-located Worker against it as one lifecycle task, with the same drain
+/// order as the AllInOne service: the Worker stops and deregisters before the
+/// private surface it reaches its Coordinator through.
+#[cfg(any(test, feature = "test-support"))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the co-located Worker composition's inputs, each consumed once"
+)]
+pub(crate) async fn spawn_colocated_worker(
+    lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    listener: tokio::net::TcpListener,
+    private_app: axum::Router,
+    worker: Arc<dyn crate::ColocatedWorker>,
+    upstream: String,
+    deployment: ResolvedDeployment,
+    admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Result<(), String> {
+    let (server_shutdown, server_stop) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, private_app)
+            .with_graceful_shutdown(async move {
+                let _ = server_stop.await;
+            })
+            .await
+            .map_err(|error| format!("private server stopped: {error}"))
+    });
+    let server = async move {
+        server
+            .await
+            .map_err(|error| format!("private server task: {error}"))?
+    };
+    if let Err(error) = worker
+        .validate(upstream.clone(), &deployment, &admin_tools, clock.clone())
+        .await
+    {
+        let _ = server_shutdown.send(());
+        let _ = server.await;
+        return Err(error);
+    }
+    lifecycle.spawn("colocated-worker", move |cancel| async move {
+        let (worker_shutdown, worker_stop) = tokio::sync::watch::channel(None);
+        let supervised = tokio::spawn(supervise_local_worker(
+            worker,
+            admin_tools,
+            upstream,
+            deployment,
+            worker_stop,
+            clock,
+        ));
+        tokio::pin!(supervised);
+        let worker_result = tokio::select! {
+            () = cancel.cancelled() => {
+                let _ = worker_shutdown.send(Some(awaken_worker_contract::WorkerShutdown::Prompt));
+                local_worker_result((&mut supervised).await)
+            }
+            result = &mut supervised => local_worker_result(result),
+        };
+        finish_local_worker_before_surfaces(
+            std::future::ready(worker_result),
+            server,
+            server_shutdown,
+        )
+        .await
+    });
+    Ok(())
 }
 
 fn local_worker_restart_delay(attempt: u32) -> std::time::Duration {

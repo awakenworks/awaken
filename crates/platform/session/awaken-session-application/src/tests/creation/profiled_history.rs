@@ -152,7 +152,7 @@ async fn profiled_without_a_profile_keeps_capability_selection_and_missing_child
     let mut observed = ObservedProfiledChildren::new(None, 500, 0);
     observed.root_present = false;
     let source = Arc::new(observed);
-    let selected = awaken_session_execution_contract::SessionExecutor::colocated(
+    let selected = awaken_session_execution_contract::SessionExecutionRoles::colocated(
         Arc::new(NoopRuntime),
         Arc::new(NoopMcpRealizer),
     );

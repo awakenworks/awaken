@@ -6,7 +6,7 @@
 //! pending tools, Run outcomes, capabilities, Session initialization, and Run errors.
 
 mod executor;
-pub use executor::{SessionExecutionRoles, SessionExecutor};
+pub use executor::{SessionExecutionRoleSelection, SessionExecutionRoles};
 
 mod neutral;
 mod placement;

@@ -303,7 +303,7 @@ async fn local_managed_state_over(
     // startup. Deriving placement from the canonical Host value eliminates
     // the former second path where ManagedState always selected LocalWorker even
     // when this process deliberately had no local dispatch pool.
-    let execution_placement = if host.dispatch().topology().local.runs_local_pool() {
+    let execution_placement = if host.dispatch().topology().claim_pool.runs_local_pool() {
         awaken_session_application::SessionExecutionPlacement::LocalWorker
     } else {
         awaken_session_application::SessionExecutionPlacement::RegisteredWorker

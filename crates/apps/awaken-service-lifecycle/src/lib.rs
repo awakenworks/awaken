@@ -182,7 +182,7 @@ impl ProcessRole {
     /// Hosted origin reachability remains a composition fact, not role authority.
     #[must_use]
     pub const fn mounts_managed_runtime(self) -> bool {
-        self.owns_startup_component(StartupComponent::LocalWorker)
+        self.owns_startup_component(StartupComponent::ColocatedWorker)
     }
 }
 
@@ -216,7 +216,8 @@ pub enum StartupComponent {
     Control = 0,
     Resources = 1,
     Coordinator = 2,
-    LocalWorker = 3,
+    /// The launcher's registered Worker co-located with its Coordinator.
+    ColocatedWorker = 3,
 }
 
 impl StartupComponent {
@@ -228,7 +229,7 @@ impl StartupComponent {
 const ALL_STARTUP_COMPONENTS: u8 = StartupComponent::Control.bit()
     | StartupComponent::Resources.bit()
     | StartupComponent::Coordinator.bit()
-    | StartupComponent::LocalWorker.bit();
+    | StartupComponent::ColocatedWorker.bit();
 
 /// The exact authority manifest for one product service role.
 #[must_use]
@@ -602,7 +603,7 @@ mod tests {
     #[test]
     fn process_role_owns_one_exact_startup_manifest() {
         // Cause/effect decision table:
-        // R1 AllInOne -> Control+Resources+Coordinator+LocalWorker;
+        // R1 AllInOne -> Control+Resources+Coordinator+ColocatedWorker;
         // R2 Control -> Control only; R3 Coordinator -> Resources+Coordinator;
         // R4 Worker -> no service component, startup role, migration authority,
         // or local Managed mount. Effects: every CLI/store/router consumer sees
@@ -612,7 +613,7 @@ mod tests {
             StartupComponent::Control,
             StartupComponent::Resources,
             StartupComponent::Coordinator,
-            StartupComponent::LocalWorker,
+            StartupComponent::ColocatedWorker,
         ];
         for (role, expected) in [
             (ProcessRole::AllInOne, [true, true, true, true]),
@@ -797,7 +798,7 @@ mod exhaustive {
         StartupComponent::Control,
         StartupComponent::Resources,
         StartupComponent::Coordinator,
-        StartupComponent::LocalWorker,
+        StartupComponent::ColocatedWorker,
     ];
 
     const fn listed_startup_component(component: StartupComponent) -> usize {
@@ -805,7 +806,7 @@ mod exhaustive {
             StartupComponent::Control => 0,
             StartupComponent::Resources => 1,
             StartupComponent::Coordinator => 2,
-            StartupComponent::LocalWorker => 3,
+            StartupComponent::ColocatedWorker => 3,
         }
     }
 
@@ -1028,7 +1029,7 @@ mod exhaustive {
         for role in EVERY_PROCESS_ROLE {
             assert_eq!(
                 role.mounts_managed_runtime(),
-                role.owns_startup_component(StartupComponent::LocalWorker)
+                role.owns_startup_component(StartupComponent::ColocatedWorker)
             );
             assert_eq!(role.mounts_managed_runtime(), role == ProcessRole::AllInOne);
         }

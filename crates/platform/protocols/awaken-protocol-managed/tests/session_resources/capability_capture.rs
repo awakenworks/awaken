@@ -8,7 +8,7 @@ use awaken_session_contract::{
 };
 use awaken_session_contract::{SessionScanQuery, SessionUpdateHistory};
 use awaken_session_execution_contract::{
-    EnvironmentRuntime, SessionExecutionRoles, SessionExecutor,
+    EnvironmentRuntime, SessionExecutionRoleSelection, SessionExecutionRoles,
 };
 use std::sync::{
     Mutex,
@@ -223,14 +223,14 @@ impl EnvironmentRuntime for RefusingSkills {
     }
 }
 
-fn selected_roles(runtime: RehydrateFake) -> SessionExecutionRoles {
+fn selected_roles(runtime: RehydrateFake) -> SessionExecutionRoleSelection {
     let runtime = Arc::new(runtime);
-    let selected = SessionExecutor::colocated(runtime.clone(), runtime);
+    let selected = SessionExecutionRoles::colocated(runtime.clone(), runtime);
     (*selected).clone()
 }
 
 fn state(
-    roles: SessionExecutionRoles,
+    roles: SessionExecutionRoleSelection,
     repo: Arc<SqliteManagedSessionRepository>,
     profiles: Arc<ObservedBudgetProfiles>,
     prices: Arc<GatedPrices>,

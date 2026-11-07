@@ -59,7 +59,7 @@ pub(crate) fn session_worker_resolver(
             dispatch,
             lease_owner: topology.lease_owner.as_str().to_owned(),
         });
-    if !topology.local.runs_local_pool() {
+    if !topology.claim_pool.runs_local_pool() {
         return Ok(SessionWorkerResolver::coordinator(
             queue,
             clock,

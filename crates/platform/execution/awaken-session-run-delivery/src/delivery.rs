@@ -187,8 +187,8 @@ impl WorkerPlacedSessions {
     #[must_use]
     pub fn session_execution_roles(
         self: &Arc<Self>,
-    ) -> awaken_session_execution_contract::SessionExecutionRoles {
-        awaken_session_execution_contract::SessionExecutionRoles {
+    ) -> awaken_session_execution_contract::SessionExecutionRoleSelection {
+        awaken_session_execution_contract::SessionExecutionRoleSelection {
             default_model: self.ports.default_model.clone(),
             placement: awaken_session_execution_contract::SessionPlacementRoles::RegisteredWorkers(
                 self.clone(),
@@ -563,7 +563,7 @@ mod tests {
         let process = Arc::new(awaken_dispatch_execution::ProcessDispatch::new(
             awaken_deployment_config::ExecutionTopology {
                 foreground_delivery: awaken_deployment_config::ForegroundRunDelivery::Durable,
-                local: awaken_deployment_config::LocalExecution::RemoteWorkersOnly,
+                claim_pool: awaken_deployment_config::ClaimPool::RemoteWorkersOnly,
                 lease_owner: awaken_deployment_config::LeaseOwnerId::new("coordinator")
                     .expect("lease owner"),
                 lost_wake_recovery_bound: std::time::Duration::from_millis(5),
