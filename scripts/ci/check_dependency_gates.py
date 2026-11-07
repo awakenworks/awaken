@@ -34,6 +34,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
+from service_test_plan import group_rows
 
 # The scan is whole-repository by design (see above): every crate, every e2e
 # runner and every gate script; generate_hooks.py renders the trigger from this.
@@ -469,7 +470,9 @@ def check_all(root: Path) -> list[str]:
     }
     return (
         gate_declaration_errors(gates)
-        + pg_gate_violations(rust_sources, gates.get(PG_GATE, ""))
+        # pg_tests.sh runs the postgres rows of the suite table by id.
+        + pg_gate_violations(rust_sources, gates.get(PG_GATE, "") + "\n".join(
+            row.line() for row in group_rows("postgres", root)))
         + silent_skip_violations(sources, gates)
         + unsupplied_switch_violations(sources, gates)
     )

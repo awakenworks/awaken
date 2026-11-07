@@ -198,27 +198,46 @@ python3 scripts/ci/service_test_plan.py --group postgres --base <base> --explain
 
 ### Affected service groups (postgres, reliability)
 
+Every suite of both groups is a row of `scripts/ci/service_suites.toml`, listed in the
+order the whole group runs it: a stable `id`, the `phase` (shell step) that runs it, and
+either the `args` its runner receives (`pg_required_test`, `run_required_rust_tests`, or
+`runner = "pg_test"`; the packages are the `-p`/`--package`/`--test-package` values) or,
+for a step the group script runs itself (object store, recovery drill, fuzz, sanitizers,
+mutants), its `packages`. The shells run rows with `suite_run <id>` and their own steps
+with `suite_step <id> <command>` (`_affected_suites.sh`); an id outside the table exits 2.
+`service_test_plan.py --self-test` runs both groups with stand-in tools and requires every
+row to run once, in table order, with exactly its arguments and environment.
+
 `scripts/ci/pg_tests.sh --require-docker --affected <base>` and
 `scripts/ci/check-reliability.sh --require-tools --affected <base>` run only the
-suites the change since `<base>` can reach; `check-all.sh --group postgres|reliability`
+rows the change since `<base>` can reach; `check-all.sh --group postgres|reliability`
 passes the same base from `AWAKEN_SERVICE_AFFECTED_BASE` (as `AWAKEN_FORMAL_AFFECTED_BASE`
 does for the formal tier). `service_test_plan.py` reuses `rust_test_plan.py`'s change
-set, input globs and Cargo owner/consumer walk; the shells look its verdict up by
-the line that starts each suite (`_affected_suites.sh`).
+set, input globs and Cargo owner/consumer walk.
 
 | Change since `<base>` | Selection |
 |---|---|
 | docs, web, e2e, a CI script the group neither runs nor names | none: the group prints why and exits 0 before Docker, MinIO or any tool check |
-| member-crate sources | every suite whose `-p`/`--package`/`--test-package` (or fuzz path dependency, or helper script's packages) is a changed owner or a transitive consumer |
+| member-crate sources | every row whose packages include a changed owner or a transitive consumer |
+| rows of `service_suites.toml` (added or edited; compared as parsed rows, so a comment or a re-wrapped line changes nothing) | those rows; the table's own checks run in pre-commit (`service-suite-map`, the native selection tests, `pg_tests.sh --self-test`) |
+| `service_suites.toml` reordered, absent or unreadable at `<base>` | whole group |
 | `Cargo.toml` anywhere, `Cargo.lock`, `.config/**`, toolchain, `fuzz/**`, an unowned Rust input | whole group |
 | the entry, anything it sources/runs/imports (both planners included), `check-all.sh`, a `scripts/` data file one of them names | whole group |
-| a suite with no package, an unknown package or stage, a test command outside the wrapper | hard error (exit 2), at commit time in the `service-suite-map` hook and again at run time |
+| a row with no package or an unknown package, an id the table lacks | hard error (exit 2), at commit time in the `service-suite-map` hook and again at run time |
 
-A selected suite runs unchanged, so its `--require-case` list applies in full.
-The recovery drill exercises only the substrates and runs with the whole group;
-the object-store credential rotation and `check_reliability.py` evidence checks
-share the decision of the suite before them. Without `--affected`, and always
-under `--full-gate` or a qualification run, every suite runs.
+A selected row runs unchanged, so its `--require-case` list applies in full.
+The recovery drill exercises only the substrates and runs with the whole group.
+Without `--affected`, and always under `--full-gate` or a qualification run, every row runs.
+
+Each row keeps its own Cargo selection. One superset build of every postgres package and
+feature (as `check-rust.sh` does for clippy) was measured on 2026-11-07 with `cargo tree`
+(units keyed by package, features and dependency subtree): the 43 suite builds compile
+1,562 distinct units, a superset build 591. It is not used, because it changes what the
+suites test: in 41 of 43 suites some compiled awaken crate gets other features, among them
+`awaken-session-application/test-support` (read by `#[cfg(not(any(test, feature =
+"test-support")))]` in `construction.rs`) and `awaken-process-startup/container-k8s`
+(read by `#[cfg(not(feature = "container-k8s"))]`); `awaken-coordinator` and
+`awaken-protocol-managed` also branch on `test-support` being absent.
 
 Run one tier by hand: `lefthook run pre-commit`, `scripts/ci/check-rust.sh --quick|--push|--full`,
 `lefthook run push-qualification`, `python3 scripts/ci/generate_hooks.py --script-tests <path>...`.

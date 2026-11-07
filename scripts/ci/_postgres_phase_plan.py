@@ -1,20 +1,26 @@
-"""Derive native PostgreSQL qualification phases from the authored selectors.
+"""Native PostgreSQL qualification phases, read from the suite table.
 
-Only literal required-test calls are admitted. Unknown shell syntax refuses
-planning instead of producing a partial list that could qualify an omitted
-phase. This module never executes a selector, Cargo or a service command.
+A phase is one pg_required_test row of scripts/ci/service_suites.toml whose
+`phase` is a named selector (backend_parity, storage_evidence, ...). The table's
+schema (service_test_plan.py) already admits only literal words; a native phase
+also needs exactly one -p, at least one --require-case and only the fixed
+environment the native runner reproduces. Anything else refuses planning instead
+of producing a partial list. This module never executes a selector, Cargo or a
+service command.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 import re
-import shlex
 import sys
 
-INPUT_GLOBS = ("scripts/ci/pg_tests.sh",)
+from service_test_plan import load
+
+INPUT_GLOBS = ("scripts/ci/service_suites.toml",)
 ROOT = Path(__file__).resolve().parents[2]
-SELECTOR = "scripts/ci/pg_tests.sh"
+SELECTOR = "scripts/ci/service_suites.toml"
+ENVIRONMENT = (("AWAKEN_CRASH_BACKEND", "postgres"), ("AWAKEN_SESSION_PERF_ROOTS", "100000"))
 
 
 @dataclass(frozen=True)
@@ -33,39 +39,20 @@ class PostgresPhase:
         return f"{self.selector}:{self.ordinal}:{self.package}"
 
 
-def selector_phases(source: str, selector: str) -> tuple[PostgresPhase, ...]:
+def selector_phases(table: str, selector: str) -> tuple[PostgresPhase, ...]:
     if not re.fullmatch(r"[a-z_]+", selector):
         raise ValueError("invalid PostgreSQL selector name")
-    matches = list(re.finditer(r"(?ms)^" + selector + r"\(\) \{\n(.*?)^\}", source))
-    if len(matches) != 1:
-        raise ValueError(f"{SELECTOR}: expected exactly one {selector} definition")
-    body = re.sub(r"\\\n[ \t]*", " ", matches[0].group(1))
-    phases, composed = [], []
-    for line_number, line in enumerate(body.splitlines(), 1):
-        location = f"{SELECTOR}:{selector}:statement {line_number}"
-        try:
-            words = shlex.split(line, comments=True)
-        except ValueError as error:
-            raise ValueError(location + ": unsupported literal command shape") from error
-        if not words:
+    phases = []
+    for row in load(table):
+        if row.group != "postgres" or row.phase != selector:
             continue
-        environment = ()
-        literal_environment = {
-            "AWAKEN_CRASH_BACKEND=postgres": ("AWAKEN_CRASH_BACKEND", "postgres"),
-            "AWAKEN_SESSION_PERF_ROOTS=100000": ("AWAKEN_SESSION_PERF_ROOTS", "100000"),
-        }
-        if words[0] in literal_environment:
-            environment = (literal_environment[words[0]],)
-            words = words[1:]
-        if not words or words[0] != "pg_required_test":
-            raise ValueError(location + ": only literal pg_required_test calls are admitted")
-        guarded = words[-3:] == ["||", "record_failure", "$?"]
-        arguments = words[1:-3] if guarded else words[1:]
-        # No expansion, pipelines, substitution, globbing or shell statements.
-        # Diagnostic text deliberately omits argument values and credentials.
-        if any(any(character in word for character in "$`;|&<>*?[]~\n") for word in arguments):
-            raise ValueError(location + ": dynamic or compound shell argument is not admitted")
-        frontend = arguments[:arguments.index("--")] if "--" in arguments else arguments
+        location = f"{SELECTOR}:{row.id}"
+        # Diagnostics name the row, never argument values: a value may hold a credential.
+        if row.runner != "pg_required_test":
+            raise ValueError(location + ": only pg_required_test rows are admitted")
+        if len(row.env) > 1 or any(pair not in ENVIRONMENT for pair in row.env):
+            raise ValueError(location + ": only the fixed native environment is admitted")
+        frontend = row.args[:row.args.index("--")] if "--" in row.args else row.args
         if frontend.count("-p") != 1:
             raise ValueError(location + ": exactly one literal package is required")
         package_index = frontend.index("-p") + 1
@@ -74,41 +61,60 @@ def selector_phases(source: str, selector: str) -> tuple[PostgresPhase, ...]:
         floors = [word.removeprefix("--require-case=") for word in frontend if word.startswith("--require-case=")]
         if not floors or any(not word for word in floors):
             raise ValueError(location + ": nonempty required case floors are mandatory")
-        phases.append(PostgresPhase(selector, len(phases) + 1, tuple(arguments), environment))
-        composed.append(guarded)
+        phases.append(PostgresPhase(selector, len(phases) + 1, row.args, row.env))
     if not phases:
         raise ValueError(f"{SELECTOR}:{selector}: required phase selection is empty")
-    if len(phases) > 1 and not all(composed):
-        raise ValueError(f"{SELECTOR}:{selector}: every multi-phase failure must be composed")
     return tuple(phases)
+
+
+def edit_row(table: str, ident: str, transform) -> str:
+    """Test support: ``table`` with row ``ident``'s args rewritten, as one line of words, by ``transform``."""
+    found = re.search(r'(?ms)^id = "' + re.escape(ident) + r'"\n(?:(?!^\[\[).)*?^args = \'\'\'\n(.*?)\'\'\'', table)
+    if found is None:
+        raise ValueError(f"{SELECTOR}: no row {ident} with multi-line args")
+    words = " ".join(found.group(1).split()) + " "
+    changed = transform(words)
+    if changed == words:
+        raise ValueError(f"{SELECTOR}: the edit left row {ident} unchanged")
+    return table[:found.start(1)] + changed.strip() + "\n" + table[found.end(1):]
+
+
+def row_block(table: str, ident: str) -> str:
+    """Test support: the whole ``[[group]]`` block of row ``ident``, up to the next row or comment."""
+    found = re.search(r'(?ms)^\[\[\w+\]\]\nid = "' + re.escape(ident) + r'"\n.*?(?=^\[\[|^#|\Z)', table)
+    if found is None:
+        raise ValueError(f"{SELECTOR}: no row {ident}")
+    return found.group(0)
 
 
 def read_phases(root: Path, selectors: tuple[str, ...]) -> tuple[PostgresPhase, ...]:
     # Read the subject afresh; filesystem path/mtime is never a cache key.
-    source = (root / SELECTOR).read_text(encoding="utf-8")
-    return tuple(phase for selector in selectors for phase in selector_phases(source, selector))
+    table = (root / SELECTOR).read_text(encoding="utf-8")
+    return tuple(phase for selector in selectors for phase in selector_phases(table, selector))
 
 
 def self_test(root: Path) -> None:
-    call = "pg_required_test -p package --lib --require-case=case -- --test-threads=1"
-    source = "selected() {\n  " + call + "\n}\n"
-    one = selector_phases(source, "selected")
-    assert len(one) == 1 and one[0].package == "package", "P1 literal terminal selector"
-    assert not one[0].environment
-    guarded = call + ' || record_failure "$?"'
-    two = selector_phases("selected() {\n  " + guarded + "\n  " + guarded + "\n}\n", "selected")
+    row = "[[postgres]]\nid = \"postgres.{name}\"\nphase = \"selected\"\n{env}args = '{args}'\n"
+    args = "-p package --lib --require-case=case -- --test-threads=1"
+
+    def table(*rows: tuple[str, str, str]) -> str:
+        return "\n".join(row.format(name=name, env=env, args=words) for name, env, words in rows)
+
+    one = selector_phases(table(("a", "", args)), "selected")
+    assert len(one) == 1 and one[0].package == "package" and not one[0].environment, "P1 literal terminal selector"
+    two = selector_phases(table(("a", "", args), ("b", "", args)), "selected")
     assert len(two) == 2 and two[0].identity != two[1].identity, "P2 preserve phase multiplicity"
-    pg = selector_phases(source.replace("  pg_required_test", "  AWAKEN_CRASH_BACKEND=postgres pg_required_test"), "selected")
-    assert pg[0].environment == (("AWAKEN_CRASH_BACKEND", "postgres"),), "P3 backend is execution input"
-    capacity = selector_phases(source.replace("  pg_required_test", "  AWAKEN_SESSION_PERF_ROOTS=100000 pg_required_test"), "selected")
-    assert capacity[0].environment == (("AWAKEN_SESSION_PERF_ROOTS", "100000"),), "P9 fixed native capacity workload"
+    crash = 'env = { AWAKEN_CRASH_BACKEND = "postgres" }\n'
+    assert selector_phases(table(("a", crash, args)), "selected")[0].environment == (ENVIRONMENT[0],), "P3 backend"
+    capacity = 'env = { AWAKEN_SESSION_PERF_ROOTS = "100000" }\n'
+    assert selector_phases(table(("a", capacity, args)), "selected")[0].environment == (ENVIRONMENT[1],), "P9 capacity"
     for mutant in (
-        source.replace("  pg_required_test", "  AWAKEN_SESSION_PERF_ROOTS=10000 pg_required_test"),
-        source + source, source.replace(call, ""), source.replace("-p package", "-p $PACKAGE"),
-        source.replace(call, call + "\n  " + call), source.replace("--require-case=case", ""),
-        source.replace("pg_required_test", "ordinary_test"), source.replace("-p package", "-p package; touch ignored"),
-        source.replace(call, "if true; then " + call + "; fi"),
-        source.replace("  pg_required_test", "  AWAKEN_CRASH_BACKEND=sqlite pg_required_test"),
+        table(("a", capacity.replace("100000", "10000"), args)), table(("a", crash.replace("postgres", "sqlite"), args)),
+        table(("a", "", args), ("a", "", args)), table(("a", "", args.replace("selected", "other"))).replace("selected", "other"),
+        table(("a", "", args.replace("-p package", "-p $PACKAGE"))), table(("a", "", args.replace("--require-case=case", ""))),
+        table(("a", "runner = \"pg_test\"\n", "cargo test -p package --require-case=case")),
+        table(("a", "", args.replace("-p package", "-p package; touch ignored"))),
+        table(("a", "", args.replace("-p package", "-p package -p other"))),
     ):
         try:
             selector_phases(mutant, "selected")
@@ -118,21 +124,21 @@ def self_test(root: Path) -> None:
             raise AssertionError("P4 unsupported or incomplete phase must refuse")
     sentinel = "SENTINEL-not-for-diagnostics"
     try:
-        selector_phases(source.replace(call, "UNSUPPORTED_ASSIGNMENT=" + sentinel + " " + call), "selected")
+        selector_phases(table(("a", f'env = {{ UNSUPPORTED = "{sentinel}" }}\n', args)), "selected")
     except ValueError as error:
         assert sentinel not in str(error), "P5 no argument material in diagnostics"
     else:
-        raise AssertionError("P5 unsupported assignment must refuse")
+        raise AssertionError("P5 unsupported environment must refuse")
     selectors = ("backend_parity", "work_store_evidence", "http_transport_evidence",
                  "critical_durability_evidence", "storage_observation_evidence", "resources_evidence", "storage_evidence")
     phases = read_phases(root, selectors)
     assert len(phases) == 39, "P6 current required selector inventory"
     startup = [phase for phase in phases if phase.package == "awaken-process-startup"]
     assert len(startup) == 2 and startup[0].arguments != startup[1].arguments, "P7 distinct process bootstrap phases"
-    assert all(phase.environment == (("AWAKEN_CRASH_BACKEND", "postgres"),)
+    assert all(phase.environment == (ENVIRONMENT[0],)
                for phase in phases if phase.package in ("awaken-config-store", "awaken-session-store", "awaken-credential-store")
                and phase.selector == "critical_durability_evidence"), "P8 crash backend overrides"
-    print("PostgreSQL phase plan: literal calls, refusals and current selectors passed")
+    print("PostgreSQL phase plan: table rows, refusals and current selectors passed")
 
 
 def main(arguments: list[str]) -> int:

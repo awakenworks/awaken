@@ -65,7 +65,7 @@ from pathlib import Path, PurePosixPath
 # lefthook.yml, its authored source, and every scripts/ci module whose
 # INPUT_GLOBS this renderer reads.  The renderer is itself a gate with inputs, so its own hook trigger is
 # rendered from this declaration rather than written by hand.
-INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/hooks.yml", "scripts/ci/*.py", "scripts/ci/*.sh",
+INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/hooks.yml", "scripts/ci/*.py", "scripts/ci/*.sh", "scripts/ci/*.toml",
                                  "scripts/ci/pre-commit/*.sh", "scripts/ci/pre-push/*.sh")
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -661,7 +661,7 @@ def local_imports(name: str, scripts: Path = SCRIPTS) -> list[str]:
 # A `scripts/ci` path named in a shell line, literally or through the script's
 # own directory variable (`$script_dir/x.sh`, `"$deadline_dir/deadline.py"`).
 SHELL_REFERENCE = re.compile(
-    r"(?:scripts/ci/|\$\{?[A-Za-z_]*dir\}?\"?/)((?:pre-commit/|pre-push/)?[A-Za-z0-9_.-]+\.(?:sh|py))\b")
+    r"(?:scripts/ci/|\$\{?[A-Za-z_]*dir\}?\"?/)((?:pre-commit/|pre-push/)?[A-Za-z0-9_.-]+\.(?:sh|py|toml))\b")
 # Shell commands that only read, print or compare the file they name: the
 # reference is data (the file itself), not code that runs its own callees.
 SHELL_DATA_COMMANDS = frozenset({

@@ -22,7 +22,7 @@ import _native_s3 as s3
 
 INPUT_GLOBS = (
     ".github/workflows/windows-native-services.yml",
-    "scripts/ci/pg_tests.sh", "scripts/ci/test_inventory_ledger.json",
+    "scripts/ci/pg_tests.sh", "scripts/ci/service_suites.toml", "scripts/ci/test_inventory_ledger.json",
     # The work-tier selection tests it imports read the acceptance ledger.
     "docs/design/session-execution-test-acceptance/**",
     "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/**",
@@ -619,51 +619,66 @@ class S3InstallTests(unittest.TestCase):
 class IndependentPostgresDomainTests(unittest.TestCase):
     def test_selector_cannot_drop_or_replace_a_required_domain_with_a_duplicate(self):
         import re
-        import shlex
         from _postgres_phase_plan import selector_phases
         from _native_postgres_scopes import postgres_phases
         source=(gate.ROOT/"scripts/ci/pg_tests.sh").read_text(encoding="utf-8")
-        parity=selector_phases(source,"backend_parity")
+        table=(gate.ROOT/"scripts/ci/service_suites.toml").read_text(encoding="utf-8")
+        parity=selector_phases(table,"backend_parity")
         memory=next(phase for phase in parity if phase.package=="awaken-memory-store")
         replacements=(tuple(phase for phase in parity if phase.package!="awaken-session-store"),
                       tuple(memory if phase.package=="awaken-session-store" else phase for phase in parity))
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);path=root/"scripts/ci/pg_tests.sh";path.parent.mkdir(parents=True)
             path.write_text(source,encoding="utf-8")
+            rows=root/"scripts/ci/service_suites.toml";rows.write_text(table,encoding="utf-8")
             self.assertEqual(len(postgres_phases("core",root)),18)
+            parity_rows=r'(?ms)^\[\[postgres\]\]\nid = "[^"]+"\nphase = "backend_parity"\n.*?(?=^\[\[|^#|\Z)'
             for phases in replacements:
-                replacement="backend_parity() {\n"+"\n".join(
-                    "  pg_required_test "+shlex.join(phase.arguments)+' || record_failure "$?"'
-                    for phase in phases)+"\n}"
-                changed=re.sub(r"(?ms)^backend_parity\(\) \{\n.*?^\}",lambda match:replacement,source,count=1)
-                path.write_text(changed,encoding="utf-8")
+                changed=re.sub(parity_rows,"",table)+"".join(
+                    f"\n[[postgres]]\nid = \"postgres.replaced.{index}\"\nphase = \"backend_parity\"\nargs = '{' '.join(phase.arguments)}'\n"
+                    for index,phase in enumerate(phases))
+                rows.write_text(changed,encoding="utf-8")
                 with self.subTest(phases=len(phases)),self.assertRaisesRegex(ValueError,"independent required domain"):
                     postgres_phases("core",root)
 
     def test_script_cannot_silently_reclassify_a_required_postgres_crash_as_sqlite(self):
         from _native_postgres_scopes import postgres_phases
+        from _postgres_phase_plan import row_block
         source=(gate.ROOT/"scripts/ci/pg_tests.sh").read_text(encoding="utf-8")
-        marker="AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-session-store"
-        self.assertIn(marker,source)
+        table=(gate.ROOT/"scripts/ci/service_suites.toml").read_text(encoding="utf-8")
+        block=row_block(table,"postgres.critical.session-store")
+        marker='env = { AWAKEN_CRASH_BACKEND = "postgres" }\n'
+        self.assertIn(marker,block)
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);path=root/"scripts/ci/pg_tests.sh";path.parent.mkdir(parents=True)
-            path.write_text(source.replace(marker,"pg_required_test -p awaken-session-store",1),encoding="utf-8")
+            path.write_text(source,encoding="utf-8")
+            (root/"scripts/ci/service_suites.toml").write_text(table.replace(block,block.replace(marker,""),1),encoding="utf-8")
             with self.assertRaisesRegex(ValueError,"independent crash backend policy"):
                 postgres_phases("core",root)
 
+
+
+def write_postgres_selection(root, table):
+    """A fixture tree holding the real pg_tests.sh and a (mutated) suite table."""
+    scripts=root/'scripts/ci';scripts.mkdir(parents=True)
+    (scripts/'pg_tests.sh').write_text((gate.ROOT/'scripts/ci/pg_tests.sh').read_text(encoding='utf-8'),encoding='utf-8')
+    (scripts/'service_suites.toml').write_text(table,encoding='utf-8')
+
+
+def suite_table():
+    return (gate.ROOT/'scripts/ci/service_suites.toml').read_text(encoding='utf-8')
 
 
 class DispatchObservationSelectionTests(unittest.TestCase):
     def verify(self, text):
         from _native_postgres_scopes import postgres_phases
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);source=root/'scripts/ci/pg_tests.sh';source.parent.mkdir(parents=True)
-            source.write_text(text,encoding='utf-8')
+            root=Path(directory);write_postgres_selection(root,text)
             return postgres_phases('core',root)
 
     def test_dispatch_observation_is_ordinary_core_and_not_a_heavy_storage_phase(self):
         from _native_postgres_scopes import postgres_phases
-        text=(gate.ROOT/'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+        text=suite_table()
         phases=self.verify(text)
         dispatch=[phase for phase in phases if phase.package=='awaken-dispatch']
         self.assertEqual(len(phases),18)
@@ -674,7 +689,7 @@ class DispatchObservationSelectionTests(unittest.TestCase):
         self.assertEqual(len(postgres_phases('storage-observations',gate.ROOT)),3)
 
     def test_same_package_substitution_cannot_erase_the_real_dispatch_outcome(self):
-        text=(gate.ROOT/'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+        text=suite_table()
         original='--require-case=postgres_exact_physical_execution_observations_use_the_original_store_clock'
         self.assertEqual(text.count(original),1)
         mutations=(
@@ -688,10 +703,10 @@ class DispatchObservationSelectionTests(unittest.TestCase):
 
     def test_dispatch_target_and_feature_and_ordinary_runtime_shape_are_required(self):
         import re
-        text=(gate.ROOT/'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+        text=suite_table()
         marker='--test dispatch_queries postgres_exact_physical_execution_observations_use_the_original_store_clock'
         self.assertEqual(text.count(marker),1)
-        expression=r'(?ms)(pg_required_test --locked -p awaken-dispatch .*?-- )--exact( --test-threads=1)'
+        expression=r'(?ms)(--locked -p awaken-dispatch .*?-- )--exact( --test-threads=1)'
         ignored,count=re.subn(expression,r'\1--exact --ignored\2',text,count=1)
         self.assertEqual(count,1)
         no_exact,count=re.subn(expression,r'\1\2',text,count=1)
@@ -711,8 +726,8 @@ class DispatchObservationSelectionTests(unittest.TestCase):
 
     def test_dispatch_runtime_flag_aliases_cannot_hide_or_include_other_cases(self):
         import re
-        text=(gate.ROOT/'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
-        expression=r'(?ms)(pg_required_test --locked -p awaken-dispatch .*?-- --exact)( --test-threads=1)'
+        text=suite_table()
+        expression=r'(?ms)(--locked -p awaken-dispatch .*?-- --exact)( --test-threads=1)'
         for flag in ('--include-ignored','--include-ignored=true',
                      '--skip=postgres_exact_physical_execution_observations_use_the_original_store_clock'):
             changed,count=re.subn(expression,lambda match:match.group(1)+' '+flag+match.group(2),text,count=1)
@@ -721,31 +736,25 @@ class DispatchObservationSelectionTests(unittest.TestCase):
                 self.verify(changed)
 
     def test_dispatch_same_package_cannot_move_out_of_backend_parity(self):
-        import re
-        text=(gate.ROOT/'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
-        expression=r'(?ms)^  pg_required_test --locked -p awaken-dispatch .*?record_failure "\$\?"\n'
-        statements=list(re.finditer(expression,text))
-        self.assertEqual(len(statements),1)
-        statement=statements[0].group(0)
-        changed=text.replace(statement,'',1)
-        critical=re.search(r'(?ms)^critical_durability_evidence\(\) \{\n.*?^\}',changed)
-        self.assertIsNotNone(critical)
-        changed=changed[:critical.end()-1]+statement+changed[critical.end()-1:]
+        from _postgres_phase_plan import row_block
+        text=suite_table()
+        block=row_block(text,'postgres.parity.dispatch')
+        moved=block.replace('phase = "backend_parity"','phase = "critical_durability_evidence"',1)
+        self.assertNotEqual(moved,block)
+        changed=text.replace(block,moved,1)
         with self.assertRaisesRegex(ValueError,'independent Dispatch observation outcome'):
             self.verify(changed)
 
 
 class SessionCapacityObservationSelectionTests(unittest.TestCase):
     def text(self):
-        return (gate.ROOT / "scripts/ci/pg_tests.sh").read_text(encoding="utf-8")
+        return suite_table()
 
     def verify(self, text):
         from _native_postgres_scopes import postgres_phases
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / "scripts/ci/pg_tests.sh"
-            source.parent.mkdir(parents=True)
-            source.write_text(text, encoding="utf-8")
+            write_postgres_selection(root, text)
             return postgres_phases("storage-observations", root)
 
     def phase(self):
@@ -761,23 +770,22 @@ class SessionCapacityObservationSelectionTests(unittest.TestCase):
         self.assertEqual(phase.arguments[-4:], ("--", "--ignored", "--exact", "--test-threads=1"))
 
     def test_missing_substituted_or_small_workload_capacity_phase_cannot_pass(self):
-        import re
         from _native_postgres_scopes import SESSION_CAPACITY_OBSERVATION_CASE as case
+        from _postgres_phase_plan import row_block
         text = self.text()
-        statement = re.search(
-            r'(?ms)^  AWAKEN_SESSION_PERF_ROOTS=100000 pg_required_test .*?record_failure "\$\?"\n',
-            text,
-        ).group(0)
+        statement = row_block(text, "postgres.observations.session-store")
+        workload = 'env = { AWAKEN_SESSION_PERF_ROOTS = "100000" }\n'
         mutants = {
             "omitted": text.replace(statement, "", 1),
-            "duplicated": text.replace(statement, statement + statement, 1),
+            "duplicated": text.replace(statement, statement + "\n" + statement.replace(
+                "postgres.observations.session-store", "postgres.observations.session-store-copy"), 1),
             "wrong-floor": text.replace(statement, statement.replace("--require-case=" + case, "--require-case=another_case"), 1),
             "wrong-filter": text.replace(statement, statement.replace("--test session_repo_conformance " + case, "--test session_repo_conformance another_case"), 1),
             "ordinary": text.replace(statement, statement.replace("--ignored ", ""), 1),
             "skipped": text.replace(statement, statement.replace("--ignored", "--skip " + case), 1),
-            "small-workload": text.replace(statement, statement.replace("ROOTS=100000", "ROOTS=10000"), 1),
-            "ambient-workload": text.replace(statement, statement.replace("AWAKEN_SESSION_PERF_ROOTS=100000 ", ""), 1),
-            "wrong-backend": text.replace(statement, statement.replace("AWAKEN_SESSION_PERF_ROOTS=100000", "AWAKEN_CRASH_BACKEND=postgres"), 1),
+            "small-workload": text.replace(statement, statement.replace(workload, workload.replace('"100000"', '"10000"')), 1),
+            "ambient-workload": text.replace(statement, statement.replace(workload, ""), 1),
+            "wrong-backend": text.replace(statement, statement.replace(workload, 'env = { AWAKEN_CRASH_BACKEND = "postgres" }\n'), 1),
         }
         for name, changed in mutants.items():
             self.assertNotEqual(changed, text)

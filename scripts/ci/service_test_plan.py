@@ -1,336 +1,343 @@
 #!/usr/bin/env python3
-"""Select the suites of a service-backed group (postgres, reliability) a change can reach.
+"""The suite table of the service-backed groups (postgres, reliability) and the affected plan over it.
 
-`pg_tests.sh --affected <base>` and `check-reliability.sh --affected <base>`
-ask this planner which of their suites to run; the shells only look the
-decision up by the line that starts the suite (`_affected_suites.sh`). It reuses
-the Rust gate's planner (`rust_test_plan.py`): the same changed-path union, the
-same Rust input globs and the same Cargo ownership walk over owners and their
-transitive consumers, including test dependencies.
+scripts/ci/service_suites.toml lists every suite of pg_tests.sh and
+check-reliability.sh, in the order the whole group runs them: a stable id, the
+phase (shell step) that runs it, and either the arguments its runner receives
+(its packages are their -p/--package/--test-package values) or, for a step the
+group script runs itself (object store, recovery drill, fuzz, sanitizers,
+mutants), its packages. The shells read the rows with --rows and run them by
+id; --group/--base says which ids a change since <base> can reach.
 
+Row schema:
+  R1 id is unique and starts with its group; phase is a shell step name
+  R2 args are literal words that name their packages; a step row has no args
+     and names its packages, or says in whole_only why it has none
+  R3 env holds literal NAME=value pairs; every package is a workspace member,
+     and a fuzz row names exactly the fuzz crate's path dependencies
 Scope decision table (one change set, one group):
-  S1 no path the group reads changed (docs, web, a CI script the group never
-     runs or names)                                              -> none
-  S2 a group script: the entry, anything it sources, runs or imports (this
-     planner and rust_test_plan.py included), its caller check-all.sh, or a
-     data file under scripts/ one of them names                  -> whole
-  S3 a manifest, the lockfile, .config profiles, the toolchain or a Rust
-     input no workspace crate owns                               -> whole
-  S4 member-crate sources only                                   -> packages
-Suite mapping (a suite is one command the group's wrapper runs):
-  M1 its packages are the -p/--package/--test-package values it names;
-  M2 `cargo fuzz run` maps to the fuzz crate's path dependencies;
-  M3 a command that runs another scripts/ci shell script maps to the packages
-     that script's suites name; SUBSTRATE_ONLY scripts run only with S2/S3;
-  M4 a FOLLOWS command shares the decision of the suite just before it;
-  M5 anything else, an unknown package, an unknown stage or a test command
-     outside the wrapper is a hard error, never a silent skip.
-Under S4 a suite runs when one of its packages is an owner or a consumer.
+  S1 no path the group reads changed                              -> none
+  S2 the runner: the entry, anything it sources, runs or imports
+     (this planner too), its caller, or data a group script names  -> whole
+  S3 a manifest, the lockfile, .config, the toolchain or a Rust
+     input no workspace crate owns                                 -> whole
+  S4 member-crate sources -> rows whose packages are owners or consumers
+  S5 the table: rows of this group added or edited -> those rows; a reorder
+     or a base table that is absent or does not load -> whole; a comment or
+     another group's row -> nothing
 """
 from __future__ import annotations
 
 import argparse
-import ast
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import tomllib
 
-import crate_test
-import generate_hooks
-import rust_test_plan
-from _crate_boundary_workspace import crate_manifests
-
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "scripts/ci"
-# Inputs of the suite map the self-test checks against the real groups.
-INPUT_GLOBS = ("crates/**/Cargo.toml", "fuzz/Cargo.toml", "scripts/ci/*.py", "scripts/ci/*.sh",
+TABLE = "scripts/ci/service_suites.toml"
+INPUT_GLOBS = ("crates/**/Cargo.toml", "fuzz/Cargo.toml", "scripts/ci/service_suites.toml", "scripts/ci/*.py", "scripts/ci/*.sh",
                "scripts/ci/pre-commit/*.sh", "scripts/ci/pre-push/*.sh")
-OWNED = "changed owners and transitive consumers, including test dependencies"
+GROUPS = {"postgres": ("pg_tests.sh", ("pg_required_test", "pg_test")),
+          "reliability": ("check-reliability.sh", ("run_required_rust_tests",))}
 CALLERS = ("check-all.sh",)
-RULE = "rule: every suite of an affected group maps to the packages it tests"
-WHY = "why: an affected run skips a suite it cannot map, so a missing mapping would hide a red suite"
+OWNED = "changed owners and transitive consumers, including test dependencies"
+RULE = ("rule: every suite of a service group is a row of scripts/ci/service_suites.toml that names its packages\n"
+        "why: an affected run skips what a change cannot reach, so a suite without packages would hide a red suite")
+UNSAFE = re.compile(r"[$`;|&<>*?~\\\n\[\]{}()'\"]")
+KEYS = {"id", "phase", "runner", "env", "args", "packages", "whole_only"}
 
 
-@dataclass(frozen=True)
-class Group:
-    entry: str
-    wrappers: tuple[str, ...]
-    excluded: tuple[str, str]  # (first line, closing line) of a block that holds no group suite
-
-
-GROUPS = {
-    # self_test() stubs the wrappers; its lines are fixtures, not suites.
-    "postgres": Group("pg_tests.sh", ("pg_required_test", "pg_test", "pg_run_with_deadline"),
-                      (r"self_test\(\) \{", r"\}")),
-    # --session-observations is a separate evidence mode that --affected never narrows.
-    "reliability": Group("check-reliability.sh", ("affected_suite",),
-                         (r'if \[ "\$\{1:-\}" = "--session-observations" \]; then', r"fi")),
-}
-# pg_run_with_deadline stages that set up, observe or clean the substrate.
-INFRA_STAGES = ("docker-info", "postgres-create", "postgres-port", "postgres-ready",
-                "object-create", "object-port", "object-ready", "object-policy")
-INFRA_STAGE_PREFIXES = ("cleanup-", "diagnostic-", "test:")
-FOLLOWS = {
-    "object-credential-rotation": "rotates the object-store fixture credential between its seed and verify suites",
-    "scripts/ci/check_reliability.py": "judges the evidence the suite before it wrote",
-}
-SUBSTRATE_ONLY = {
-    "scripts/ci/postgres_recovery_drill.sh": "point-in-time restore of the Postgres and MinIO substrates; it runs no workspace crate",
-}
-CARGO_INFRA = ("clean", "install", "metadata")
-KEYWORDS = frozenset({"if", "then", "elif", "else", "do", "while", "until", "!", "{", "}", "time", "fi", "done", "esac"})
-ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
-SHELL_SCRIPT = re.compile(r"scripts/ci/[A-Za-z0-9_.-]+\.sh")
-
-
-class PlanError(Exception):
+class PlanError(ValueError):
     pass
 
 
 @dataclass(frozen=True)
-class Suite:
-    file: str
-    line: int
-    text: str
+class Row:
+    group: str
+    id: str
+    phase: str
+    runner: str  # "step": the group script runs its own command under this id
+    env: tuple[tuple[str, str], ...]
+    args: tuple[str, ...]
     packages: tuple[str, ...]
-    rule: str  # "packages", "follows" or "substrate"
-    note: str = ""
+    whole_only: str = ""
 
-    @property
-    def key(self) -> str:
-        return f"{self.file}:{self.line}"
+    def line(self) -> str:
+        """``id phase env runner args``, shell-quoted: what the group scripts read."""
+        return shlex.join([self.id, self.phase, " ".join(f"{k}={v}" for k, v in self.env), self.runner, *self.args])
 
-
-def _tokens(text: str) -> list[str]:
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    return list(lexer)
+    def summary(self) -> str:
+        return " ".join(self.args)[:100] if self.args else f"step of {GROUPS[self.group][0]}"
 
 
-def commands(path: Path, excluded: tuple[str, str] | None = None) -> list[tuple[int, list[str]]]:
-    """``(first line, words)`` of every simple command in a shell script."""
-    lines = path.read_text(encoding="utf-8").splitlines()
-    skip: set[int] = set()
-    if excluded:
-        start = next((i for i, line in enumerate(lines) if re.fullmatch(excluded[0], line)), None)
-        end = None if start is None else next(
-            (i for i in range(start + 1, len(lines)) if re.fullmatch(excluded[1], lines[i])), None)
-        if end is None:
-            raise PlanError(f"{path.name}: the block /{excluded[0]}/ ... /{excluded[1]}/ this planner excludes is gone;"
-                            " update GROUPS in service_test_plan.py")
-        skip = set(range(start, end + 1))
-    found, index = [], 0
-    while index < len(lines):
-        first, text = index, lines[index]
-        while True:
-            if text.endswith("\\") and index + 1 < len(lines):
-                index += 1
-                text = text[:-1] + " " + lines[index]
-                continue
-            try:
-                words = _tokens(text)
-                break
-            except ValueError:  # a quoted string continues on the next line
-                if index + 1 < len(lines) and index - first < 60:
-                    index += 1
-                    text += "\n" + lines[index]
-                    continue
-                words = []
-                break
-        index += 1
-        if first in skip:
-            continue
-        command: list[str] = []
-        for position, word in enumerate(words + [";"]):
-            if not command and words[position + 1:position + 2] == ["()"]:
-                continue  # a function definition, not a call
-            if word and set(word) <= set("();|&"):
-                if command:
-                    found.append((first + 1, command))
-                command = []
-            elif not command and (word in KEYWORDS or ASSIGNMENT.match(word)):
-                continue
+def _named_packages(words: tuple[str, ...]) -> tuple[str, ...]:
+    found = [words[i + 1] for i, word in enumerate(words[:-1]) if word in ("-p", "--package", "--test-package")]
+    found += [word.split("=", 1)[1] for word in words if word.startswith(("--package=", "--test-package="))]
+    return tuple(sorted(set(found)))
+
+
+def load(text: str) -> list[Row]:
+    """Rows of a table text, schema-checked (R1, R2, R3 env); a violation is a PlanError."""
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise PlanError(f"{TABLE}: {error}") from error
+    errors, rows, seen = [f"{TABLE}: unknown group {key!r}" for key in data if key not in GROUPS], [], set()
+    for group, (_, runners) in GROUPS.items():
+        for index, item in enumerate(data.get(group, [])):
+            ident, phase, env = str(item.get("id", "")), str(item.get("phase", "")), item.get("env", {})
+            problems = [f"unknown keys {sorted(set(item) - KEYS)}"] if set(item) - KEYS else []
+            if not re.fullmatch(rf"{group}\.[a-z0-9][a-z0-9.-]*", ident) or ident in seen:
+                problems.append(f"id must be unique and start with '{group}.'")
+            if not re.fullmatch(r"[a-z][a-z_]*", phase):
+                problems.append("phase must name the shell step that runs the row")
+            if not isinstance(env, dict) or not all(re.fullmatch(r"[A-Z][A-Z0-9_]*", str(k)) and
+                                                    re.fullmatch(r"[A-Za-z0-9_.,:/=+-]*", str(v)) for k, v in env.items()):
+                problems.append("env must map NAME to a literal value")
+                env = {}
+            words: tuple[str, ...] = ()
+            if "args" in item:
+                words = tuple(shlex.split(str(item["args"])))
+                runner, packages = item.get("runner", runners[0]), _named_packages(words)
+                if runner not in runners:
+                    problems.append(f"runner must be one of {', '.join(runners)}")
+                if any(UNSAFE.search(word) for word in words):
+                    problems.append("args must be literal words: no expansion, quoting or shell syntax")
+                if not packages:
+                    problems.append("args name no package with -p/--package/--test-package")
+                if {"packages", "whole_only"} & set(item):
+                    problems.append("a row with args takes its packages from them")
             else:
-                command.append(word)
-    return found
-
-
-def _cargo_subcommand(words: list[str]) -> str:
-    rest = [word for word in words[1:] if not word.startswith("+")]
-    return "--version" if "--version" in words else (rest[0] if rest else "")
-
-
-def _is_test_command(words: list[str]) -> bool:
-    if words[0] == "run_required_rust_tests":
-        return True
-    return words[0] == "cargo" and _cargo_subcommand(words) not in (*CARGO_INFRA, "--version")
-
-
-def _named_packages(words: list[str]) -> list[str]:
-    packages = []
-    for position, word in enumerate(words):
-        if word in ("-p", "--package", "--test-package") and position + 1 < len(words):
-            packages.append(words[position + 1])
-        elif word.startswith(("--package=", "--test-package=")):
-            packages.append(word.split("=", 1)[1])
-    return packages
-
-
-def fuzz_packages(root: Path) -> list[str]:
-    manifest = tomllib.loads((root / "fuzz/Cargo.toml").read_text(encoding="utf-8"))
-    names = []
-    for value in manifest.get("dependencies", {}).values():
-        if isinstance(value, dict) and "path" in value:
-            dependency = (root / "fuzz" / value["path"] / "Cargo.toml").resolve()
-            names.append(tomllib.loads(dependency.read_text(encoding="utf-8"))["package"]["name"])
-    return sorted(names)
-
-
-def script_packages(path: Path) -> list[str]:
-    """Packages every test command of a helper script names (M3)."""
-    return sorted({package for _, words in commands(path) if _is_test_command(words)
-                   for package in _named_packages(words)})
-
-
-def suites(group: str, root: Path = ROOT) -> list[Suite]:
-    spec, scripts = GROUPS[group], root / "scripts/ci"
-    errors, found = [], []
-    for line, words in commands(scripts / spec.entry, spec.excluded):
-        where = f"scripts/ci/{spec.entry}:{line}"
-        text = " ".join(words)[:110]
-        if words[0] not in spec.wrappers:
-            if _is_test_command(words) and words[1:] != ["$@"]:
-                errors.append(f"{where}: test command outside {' / '.join(spec.wrappers)}: {text}")
-            continue
-        command = words[1:]
-        if command == ["$@"]:
-            continue  # the wrapper forwarding its own arguments
-        if words[0] == "pg_run_with_deadline":
-            stage = command[0] if command else ""
-            if stage in INFRA_STAGES or stage.startswith(INFRA_STAGE_PREFIXES):
-                continue
-            command = command[2:]
-        packages = _named_packages(command)
-        if command[:1] == ["cargo"] and _cargo_subcommand(command) == "fuzz":
-            packages = fuzz_packages(root)
-        helpers = [match for word in command for match in SHELL_SCRIPT.findall(word)]
-        follows = next((key for key in FOLLOWS if key in words), None)
-        if packages:
-            found.append(Suite(spec.entry, line, text, tuple(sorted(set(packages))), "packages"))
-        elif helpers and helpers[0] in SUBSTRATE_ONLY:
-            found.append(Suite(spec.entry, line, text, (), "substrate", SUBSTRATE_ONLY[helpers[0]]))
-        elif helpers and (named := script_packages(root / helpers[0])):
-            found.append(Suite(spec.entry, line, text, tuple(named), "packages", f"via {helpers[0]}"))
-        elif follows and found:
-            found.append(Suite(spec.entry, line, text, found[-1].packages, "follows", FOLLOWS[follows]))
-        else:
-            errors.append(f"{where}: no package mapping: {text}")
-    known = {tomllib.loads(path.read_text(encoding="utf-8"))["package"]["name"]
-             for path in crate_manifests(root / "crates")}
-    errors += [f"scripts/ci/{suite.file}:{suite.line}: unknown package {package}"
-               for suite in found for package in suite.packages if package not in known]
+                runner, packages = "step", tuple(item.get("packages", ()))
+                if ("runner" in item or not isinstance(item.get("packages"), list)
+                        or not all(isinstance(package, str) for package in packages)
+                        or (not packages) != bool(item.get("whole_only"))):
+                    problems.append("a step row names its packages, or says in whole_only why it has none")
+            seen.add(ident)
+            errors += [f"{TABLE}: [[{group}]] #{index + 1} {ident or '?'}: {problem}" for problem in problems]
+            rows.append(Row(group, ident, phase, runner, tuple(sorted(env.items())), words,
+                            tuple(packages), str(item.get("whole_only", ""))))
     if errors:
         raise PlanError("\n".join(errors))
-    return found
+    return rows
+
+
+def group_rows(group: str, root: Path = ROOT) -> list[Row]:
+    return [row for row in load((root / TABLE).read_text(encoding="utf-8")) if row.group == group]
+
+
+def validate(rows: list[Row], root: Path = ROOT) -> None:
+    """R3: packages are workspace members; fuzz rows name the fuzz crate's path dependencies."""
+    from _crate_boundary_workspace import crate_manifests
+    def name(manifest: Path) -> str:
+        return tomllib.loads(manifest.read_text(encoding="utf-8"))["package"]["name"]
+    known = {name(path) for path in crate_manifests(root / "crates")}
+    fuzz = tomllib.loads((root / "fuzz/Cargo.toml").read_text(encoding="utf-8")).get("dependencies", {})
+    paths = sorted(name(root / "fuzz" / value["path"] / "Cargo.toml")
+                   for value in fuzz.values() if isinstance(value, dict) and "path" in value)
+    errors = [f"{TABLE}: {row.id}: unknown package {package}" for row in rows for package in row.packages
+              if package not in known]
+    errors += [f"{TABLE}: {row.id}: a fuzz row names the fuzz crate's path dependencies {paths}"
+               for row in rows if ".fuzz." in row.id and sorted(row.packages) != paths]
+    if errors:
+        raise PlanError("\n".join(errors))
+
+
+def changed_rows(group: str, base_text: str | None, text: str) -> tuple[set[str] | None, str]:
+    """S5: ids of this group's rows the table change adds or edits, or (None, why whole)."""
+    if base_text is None:
+        return None, "absent at the base"
+    try:
+        old = {row.id: row for row in load(base_text) if row.group == group}
+    except PlanError:
+        return None, "does not load at the base"
+    new = {row.id: row for row in load(text) if row.group == group}
+    if [ident for ident in old if ident in new] != [ident for ident in new if ident in old]:
+        return None, f"reorders {group} rows"
+    return {ident for ident, row in new.items() if old.get(ident) != row}, ""
 
 
 def group_files(group: str, scripts: Path) -> set[str]:
     """S2: the entry, its whole script closure and its callers, as repository paths."""
-    entry = GROUPS[group].entry
-    names = {entry, *generate_hooks.script_closure(entry, scripts), *CALLERS}
-    return {f"scripts/ci/{name}" for name in names}
+    import generate_hooks
+    entry = GROUPS[group][0]
+    return {f"scripts/ci/{name}" for name in {entry, *generate_hooks.script_closure(entry, scripts), *CALLERS}} - {TABLE}
 
 
-def named_strings(path: Path) -> str:
-    """The text in which a group file can name a data file: a shell script whole;
-    a Python module's string constants outside its own tests (a self-test that
-    lists a path as a fixture does not make the group read it)."""
-    if not path.is_file():
-        return ""
-    text = path.read_text(encoding="utf-8", errors="replace")
-    if path.suffix != ".py":
-        return text
-    tests, module = set(), ast.parse(text)
-    for node in ast.walk(module):
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and re.match(r"(_?self_?test|test)|.*Tests$", node.name):
-            tests |= {id(child) for child in ast.walk(node)}
-    return "\n".join(node.value for node in ast.walk(module) if id(node) not in tests
-                     and isinstance(node, ast.Constant) and isinstance(node.value, str))
-
-
-def names_data(text: str, path: str) -> bool:
+def names_data(texts: list[str], path: str) -> bool:
     """A full repository path, or a scripts/ci file's own name as a whole word."""
     name = path.removeprefix("scripts/ci/")
-    return path in text or ("/" not in name and re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w.-])", text) is not None)
+    return any(path in text or ("/" not in name and re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w.-])", text))
+               for text in texts)
 
 
-def classify(group: str, changed: list[str], metadata_loader, root: Path = ROOT) -> tuple[str, list[str], str, list[str]]:
-    """``(scope, affected packages, reason, explain lines)`` for one change set."""
-    scripts = root / "scripts/ci"
-    own = group_files(group, scripts)
-    texts = [named_strings(scripts / path.removeprefix("scripts/ci/")) for path in sorted(own)]
-    rust = rust_test_plan.rust_inputs()
-    whole, built, lines = "", [], []
+def classify(group: str, changed: list[str], metadata_loader, base_table, root: Path = ROOT):
+    """``(whole reason or "", affected packages, edited row ids, reason, explain lines)``."""
+    import generate_hooks
+    import rust_test_plan
+    own = group_files(group, root / "scripts/ci")
+    texts = [(root / path).read_text(encoding="utf-8", errors="replace") for path in sorted(own) if (root / path).is_file()]
+    whole, built, edited, lines = "", [], set(), []
     for path in changed:
-        if path in own:
+        if path == TABLE:
+            found, why = changed_rows(group, base_table(), (root / TABLE).read_text(encoding="utf-8"))
+            why = f"suite table {why} -> whole group" if found is None else f"suite table -> its {len(found)} edited {group} row(s)"
+            edited |= found or set()
+        elif path in own:
             why = "group script -> whole group"
-        elif path.startswith("scripts/") and not path.endswith((".sh", ".py")) and any(
-                names_data(text, path) for text in texts):
+        elif path.startswith("scripts/") and not path.endswith((".sh", ".py")) and names_data(texts, path):
             why = "data a group script names -> whole group"
-        elif any(generate_hooks.glob_matches(glob, path) for glob in rust):
+        elif any(generate_hooks.glob_matches(glob, path) for glob in rust_test_plan.rust_inputs()):
             why = "Rust build input -> owners and consumers (whole if unowned or a manifest)"
             built.append(path)
         else:
             why = "not read by this group -> ignored"
         if "whole group" in why and not whole:
-            whole = f"{why.split(' ->')[0]} changed: {path}"
+            whole = f"{why.split(' ->')[0]}: {path}"
         lines.append(f"explain: {path}: {why}")
     if whole:
-        return "whole", [], whole, lines
+        return whole, [], edited, whole, lines
     if not built:
-        return "none", [], "no input of this group changed", lines
+        return "", [], edited, "suite table rows edited" if edited else "no input of this group changed", lines
     selected, reason = rust_test_plan.affected_packages(metadata_loader(), built, root)
-    return ("packages" if reason == OWNED else "whole"), selected, reason, lines
+    return ("" if reason == OWNED else reason), selected, edited, reason, lines
 
 
-def decide(found: list[Suite], scope: str, affected: list[str], reason: str) -> list[tuple[Suite, bool, str]]:
-    rows: list[tuple[Suite, bool, str]] = []
-    for suite in found:
-        if scope != "packages":
-            run, why = scope == "whole", reason
-        elif suite.rule == "follows":
-            run, why = rows[-1][1], f"follows {rows[-1][0].key}: {suite.note}"
-        elif suite.rule == "substrate":
-            run, why = False, f"runs with the whole group only: {suite.note}"
+def decide(rows: list[Row], whole: str, affected: list[str], edited: set[str]) -> list[tuple[Row, bool, str]]:
+    decisions = []
+    for row in rows:
+        hit = sorted(set(row.packages) & set(affected))
+        if whole:
+            decisions.append((row, True, whole))
+        elif row.id in edited:
+            decisions.append((row, True, "its row was edited in the suite table"))
+        elif hit:
+            decisions.append((row, True, f"reached: {', '.join(hit)}"))
+        elif not row.packages:
+            decisions.append((row, False, f"runs with the whole group only: {row.whole_only}"))
         else:
-            hit = sorted(set(suite.packages) & set(affected))
-            run = bool(hit)
-            why = f"reached: {', '.join(hit)}" if run else f"not reached: {', '.join(suite.packages)}"
-        rows.append((suite, run, why))
-    return rows
+            decisions.append((row, False, f"not reached: {', '.join(row.packages)}"))
+    return decisions
 
 
-def render(scope: str, reason: str, rows: list[tuple[Suite, bool, str]]) -> list[str]:
-    selected = sum(run for _, run, _ in rows)
-    lines = [f"scope={scope}", f"reason={reason}", f"selected={selected}/{len(rows)}"]
-    lines += [f"{'run ' if run else 'skip'} {suite.key} {why} | {suite.text}" for suite, run, why in rows]
-    return lines
+def render(whole: str, reason: str, decisions) -> list[str]:
+    selected = sum(run for _, run, _ in decisions)
+    scope = "whole" if whole else "packages" if selected else "none"
+    lines = [f"scope={scope}", f"reason={reason}", f"selected={selected}/{len(decisions)}"]
+    return lines + [f"{'run ' if run else 'skip'} {row.id} {why} | {row.summary()}" for row, run, why in decisions]
 
 
 def workspace_metadata() -> dict:
+    import crate_test
     environment = crate_test.environment(ROOT)
-    # Every feature and platform, as the Rust gate scope does: an edge in any
-    # graph a suite compiles must reach its consumer set.
+    # Every feature and platform, as the Rust gate scope does.
     return json.loads(subprocess.check_output(crate_test.native_command(
         ["cargo", "metadata", "--locked", "--format-version", "1", "--all-features"], environment),
         cwd=ROOT, env=environment))
+
+
+# Trace: run a group script with stand-in tools. Each appends "<suite id>|<watched env>|<argv>"
+# to $TRACE; the id is the AWAKEN_SERVICE_SUITE the shell exports while a suite runs.
+WATCHED = ("AWAKEN_CRASH_BACKEND", "AWAKEN_SESSION_PERF_ROOTS", "RUSTFLAGS")
+LOG = ('log() { local e="" n; for n in ' + " ".join(WATCHED) + '; do [ -z "${!n+x}" ] || e+="$n=${!n} "; done\n'
+       '  local a="$*"; printf "%s|%s|%s\\n" "${AWAKEN_SERVICE_SUITE:-}" "$e" "${a//$\'\\n\'/ }" >> "$TRACE"; }\n'
+       # Deadline wrappers put their own options before `--` (`SECONDS --`, `--admit SECONDS --`).
+       'bounded() { while [ $# -gt 0 ] && [ "$1" != -- ]; do shift; done; shift\n'
+       '  case "$1" in docker) exec "$@" ;; esac; log "$@"; exit 0; }\n')
+STUBS = {
+    "cargo": '[ "$1" != awaken-ci-deadline ] || bounded "${@:2}"\nlog cargo "$@"\n'
+             'case "$*" in "install --list") echo "cargo-fuzz 1"; echo "cargo-mutants 1" ;; esac\n',
+    "python3": 'case "$1" in -c|-|*service_test_plan.py) exec "$REAL_PYTHON" "$@" ;; *deadline.py) bounded "${@:2}" ;; esac\n'
+               'log python3 "$@"\n',
+    "docker": 'log docker "$@"\ncase "$1" in port) echo 127.0.0.1:55432 ;; esac\n',
+    "rustup": 'log rustup "$@"\necho nightly-x86_64-unknown-linux-gnu\n',
+    "rustc": 'echo "host: x86_64-unknown-linux-gnu"\n',
+}
+VOLATILE = ((re.compile(r"\S*/rust-execution\.\w{6}"), "<evidence>"), (re.compile(r"\S*/awaken-pg-recovery\.\w{6}"), "<recovery>"),
+            (re.compile(r"awaken-ci-(pg|object)-\d+-[0-9a-f]{12}"), r"awaken-ci-\1-<run>"),
+            (re.compile(r"\b[0-9a-f]{32}\b"), "<owner>"), (re.compile(r"rotation-\d+"), "rotation-<pid>"))
+
+
+def _outside_inputs(directory: str, names: list[str]) -> set[str]:
+    """copytree filter: keep the scripts/ci files INPUT_GLOBS covers (and the hook subdirectories)."""
+    here = Path(directory)
+    keep = {"pre-commit", "pre-push"} if here.name == "ci" else set()
+    return {name for name in names if name not in keep
+            and not (here.name in ("ci", "pre-commit", "pre-push") and (name.endswith((".py", ".sh"))
+                     or (here.name == "ci" and name == "service_suites.toml")))}
+
+
+def trace(source: Path, group: str, arguments: list[str]) -> tuple[int, list[tuple[str, str, str]]]:
+    """``(status, [(suite id, env, command)])`` of one group run over a copy of ``source``'s scripts."""
+    with tempfile.TemporaryDirectory(prefix="service-trace-") as directory:
+        base = Path(directory)
+        # Copy exactly what INPUT_GLOBS declares, so the trace reads nothing its trigger misses.
+        shutil.copytree(source / "scripts/ci", base / "repo/scripts/ci", ignore=_outside_inputs)
+        for path in ("repo/fuzz", "bin", "tmp"):
+            (base / path).mkdir(parents=True)
+        for name, body in STUBS.items():
+            (base / "bin" / name).write_text("#!/usr/bin/env bash\n" + LOG + body, encoding="utf-8")
+            (base / "bin" / name).chmod(0o755)
+        environment = {"PATH": f"{base / 'bin'}:/usr/bin:/bin", "HOME": directory, "TRACE": f"{directory}/trace",
+                       "REAL_PYTHON": sys.executable, "TMPDIR": f"{directory}/tmp", "CARGO_TARGET_DIR": f"{directory}/target"}
+        if group == "postgres" and arguments != ["--require-docker"]:
+            environment["AWAKEN_TEST_DATABASE_URL"] = "postgres://fixture"
+        result = subprocess.run(["bash", "scripts/ci/" + GROUPS[group][0], *arguments], cwd=base / "repo",
+                                env=environment, capture_output=True, text=True, timeout=600)
+        text = (base / "trace").read_text(encoding="utf-8") if (base / "trace").exists() else ""
+        text = text.replace(directory, "<tmp>")
+        for pattern, replacement in VOLATILE:
+            text = pattern.sub(replacement, text)
+        if result.returncode:
+            sys.stderr.write(result.stdout[-1500:] + result.stderr[-1500:])
+        return result.returncode, [tuple(line.split("|", 2)) for line in text.splitlines()]
+
+
+def runner_commands(row: Row) -> list[str]:
+    """What a row's runner hands the stand-in tools."""
+    if row.runner == "pg_test":
+        return [" ".join(row.args)]
+    return [" ".join(["python3 scripts/ci/nextest_execution.py build --", *row.args]),
+            " ".join(["python3 scripts/ci/nextest_execution.py run --evidence <evidence> --", *row.args])]
+
+
+TRACED = {"postgres": (["--require-docker"], ["--storage-observations"]), "reliability": (["--require-tools"],)}
+
+
+def equivalence(root: Path = ROOT) -> list[str]:
+    """E1 a row's runner receives exactly its args and env; E2 nothing runs under an unknown
+    id; E3 the whole group (plus the focused observation run) runs every row once, in table order."""
+    failures = []
+    for group, runs in TRACED.items():
+        rows, ran = {row.id: row for row in group_rows(group, root)}, []
+        for arguments in runs:
+            status, lines = trace(root, group, arguments)
+            if status:
+                failures.append(f"E3 {group} {' '.join(arguments)} exited {status} under stand-in tools")
+            for ident, env, command in lines:
+                if ident and ident not in rows:
+                    failures.append(f"E2 {group}: {command!r} ran under unknown suite {ident}")
+                elif ident:
+                    if not ran or ran[-1][0] != ident:
+                        ran.append((ident, []))
+                    ran[-1][1].append((env, command))
+        if [ident for ident, _ in ran] != list(rows):
+            failures.append(f"E3 {group} ran {[ident for ident, _ in ran]}, not every row once in table order")
+        for ident, commands in ran:
+            row = rows.get(ident)
+            if row and row.runner != "step":
+                want = "".join(f"{k}={v} " for k, v in row.env)
+                if [command for _, command in commands] != runner_commands(row) or any(env != want for env, _ in commands):
+                    failures.append(f"E1 {ident}: ran {commands}, not {runner_commands(row)} with env {want!r}")
+    return failures
 
 
 def self_test() -> int:
@@ -340,187 +347,219 @@ def self_test() -> int:
         if not condition:
             failures.append(label)
 
+    def refuses(text: str, needle: str, label: str) -> None:
+        try:
+            validate(load(text), root)
+            failures.append(f"{label}: accepted")
+        except PlanError as error:
+            expect(needle in str(error), f"{label}: {error}")
+
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         scripts = root / "scripts/ci"
         scripts.mkdir(parents=True)
         names = {"kernel": (), "store-a": ("kernel",), "store-b": (), "app": ("store-a",)}
         for name in names:
-            manifest = root / "crates" / name / "Cargo.toml"
-            manifest.parent.mkdir(parents=True)
-            manifest.write_text(f'[package]\nname = "{name}"\n', encoding="utf-8")
+            (root / "crates" / name).mkdir(parents=True)
+            (root / "crates" / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n', encoding="utf-8")
         (root / "fuzz").mkdir()
         (root / "fuzz/Cargo.toml").write_text('[dependencies]\nk = { path = "../crates/kernel" }\n', encoding="utf-8")
         metadata = {"workspace_members": list(names),
                     "packages": [{"id": n, "name": n, "manifest_path": str(root / "crates" / n / "Cargo.toml")} for n in names],
                     "resolve": {"nodes": [{"id": n, "deps": [{"pkg": d} for d in deps]} for n, deps in names.items()]}}
-        (scripts / "object_store_tests.sh").write_text("run_required_rust_tests -p store-b --lib \\\n  -- --exact\n", encoding="utf-8")
-        (scripts / "postgres_recovery_drill.sh").write_text("docker exec x psql\n", encoding="utf-8")
+        (scripts / "pg_tests.sh").write_text('source scripts/ci/_affected_suites.sh\ndocker run -v "$PWD/scripts/ci/policy.json:/p" i\n',
+                                             encoding="utf-8")
+        (scripts / "_affected_suites.sh").write_text("python3 scripts/ci/service_test_plan.py --rows x\n", encoding="utf-8")
         (scripts / "check-all.sh").write_text("run postgres postgres scripts/ci/pg_tests.sh\n", encoding="utf-8")
-        (scripts / "policy.json").write_text("{}\n", encoding="utf-8")
-        (scripts / "unrelated.json").write_text("{}\n", encoding="utf-8")
-        (scripts / "unrelated.py").write_text("\n", encoding="utf-8")
-        entry = scripts / "pg_tests.sh"
-        body = (
-            "pg_required_test() {\n  run_required_rust_tests \"$@\"\n}\n"
-            "self_test() {\n  pg_required_test --stub\n}\n"
-            "pg_required_test -p store-a --features postgres \\\n  --require-case=a -- --test-threads=1 || record_failure \"$?\"\n"
-            "pg_test cargo test -p store-b --features test-support || record_failure \"$?\"\n"
-            "AWAKEN_CRASH_BACKEND=postgres pg_required_test -p app --locked || record_failure \"$?\"\n"
-            "pg_run_with_deadline docker-info 30 docker info\n"
-            "pg_run_with_deadline object-seed 30 python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --seed\n"
-            "pg_run_with_deadline object-credential-rotation 30 \\\n  docker run --rm --entrypoint /bin/sh img -c \\\n"
-            "  'mc alias set &&\n   mc admin user add'\n"
-            "pg_run_with_deadline recovery-drill 900 \\\n  scripts/ci/postgres_recovery_drill.sh a b c\n"
-            "docker run -v \"$PWD/scripts/ci/policy.json:/p\" img\n")
-        entry.write_text(body, encoding="utf-8")
+        for name in ("policy.json", "unrelated.json", "unrelated.py"):
+            (scripts / name).write_text("{}\n", encoding="utf-8")
+        table = ("[[postgres]]\nid = \"postgres.a\"\nphase = \"p\"\nargs = '''\n-p store-a --features postgres\n"
+                 "--require-case=a -- --test-threads=1\n'''\n\n"
+                 "[[postgres]]\nid = \"postgres.b\"\nphase = \"p\"\nrunner = \"pg_test\"\nargs = 'cargo test -p store-b'\n\n"
+                 "[[postgres]]\nid = \"postgres.app\"\nphase = \"p\"\nenv = { AWAKEN_CRASH_BACKEND = \"postgres\" }\n"
+                 "args = '-p app --locked'\n\n"
+                 "[[postgres]]\nid = \"postgres.object\"\nphase = \"object\"\npackages = [\"store-b\"]\n\n"
+                 "[[postgres]]\nid = \"postgres.drill\"\nphase = \"drill\"\npackages = []\nwhole_only = \"restores the substrates\"\n\n"
+                 "[[reliability]]\nid = \"reliability.fuzz.k\"\nphase = \"tools\"\npackages = [\"kernel\"]\n\n"
+                 "[[reliability]]\nid = \"reliability.k\"\nphase = \"quick\"\nargs = '-p kernel --lib'\n")
+        (scripts / "service_suites.toml").write_text(table, encoding="utf-8")
         loader = lambda: metadata  # noqa: E731
 
-        def plan(changed: list[str]) -> tuple[str, dict[int, bool], list[str]]:
-            scope, affected, reason, lines = classify("postgres", changed, loader, root)
-            rows = decide(suites("postgres", root), scope, affected, reason)
-            return scope, {suite.line: run for suite, run, _ in rows}, render(scope, reason, rows) + lines
+        def plan(changed: list[str], base: str | None = table, group: str = "postgres"):
+            whole, affected, edited, reason, lines = classify(group, changed, loader, lambda: base, root)
+            decisions = decide(group_rows(group, root), whole, affected, edited)
+            return whole, {row.id.split(".", 1)[1]: run for row, run, _ in decisions}, render(whole, reason, decisions) + lines
 
-        found = suites("postgres", root)
-        expect([(s.line, s.packages, s.rule) for s in found] == [
-            (7, ("store-a",), "packages"), (9, ("store-b",), "packages"), (10, ("app",), "packages"),
-            (12, ("store-b",), "packages"), (13, ("store-b",), "follows"), (17, (), "substrate")],
-            f"suite map: {[(s.line, s.packages, s.rule) for s in found]}")
+        rows = group_rows("postgres", root)
+        validate(load(table), root)
+        expect([(r.id, r.runner, r.packages, r.env) for r in rows] == [
+            ("postgres.a", "pg_required_test", ("store-a",), ()), ("postgres.b", "pg_test", ("store-b",), ()),
+            ("postgres.app", "pg_required_test", ("app",), (("AWAKEN_CRASH_BACKEND", "postgres"),)),
+            ("postgres.object", "step", ("store-b",), ()), ("postgres.drill", "step", (), ())], f"schema rows: {rows}")
+        expect(rows[2].line() == "postgres.app p AWAKEN_CRASH_BACKEND=postgres pg_required_test -p app --locked"
+               and rows[3].line() == "postgres.object object '' step", f"--rows lines: {rows[2].line()} / {rows[3].line()}")
         # T1 a doc-only (or unrelated-script) change selects nothing.
-        scope, runs, _ = plan(["docs/design/a.md", "web/src/x.ts", "scripts/ci/unrelated.py", "scripts/ci/unrelated.json"])
-        expect(scope == "none" and not any(runs.values()), "T1 doc-only selects nothing")
-        # T2 one store crate selects its suites and its consumers' suites only.
-        scope, runs, _ = plan(["crates/store-b/src/lib.rs"])
-        expect(scope == "packages" and runs == {7: False, 9: True, 10: False, 12: True, 13: True, 17: False},
-               f"T2 store-b selects only its suites: {runs}")
-        scope, runs, _ = plan(["crates/kernel/src/lib.rs", "docs/x.md"])
-        expect(runs == {7: True, 9: False, 10: True, 12: False, 13: False, 17: False}, f"T2 consumers: {runs}")
-        # T3 lockfile, manifest, profile, group script, caller and named data select everything.
+        whole, runs, _ = plan(["docs/design/a.md", "web/src/x.ts", "scripts/ci/unrelated.py", "scripts/ci/unrelated.json"])
+        expect(not whole and not any(runs.values()), f"T1 doc-only selects nothing: {runs}")
+        # T2 one crate selects its rows and its consumers' rows only.
+        whole, runs, _ = plan(["crates/store-b/src/lib.rs"])
+        expect(runs == {"a": False, "b": True, "app": False, "object": True, "drill": False}, f"T2 store-b: {runs}")
+        whole, runs, _ = plan(["crates/kernel/src/lib.rs", "docs/x.md"])
+        expect(runs == {"a": True, "b": False, "app": True, "object": False, "drill": False}, f"T2 consumers: {runs}")
+        # T3 lockfile, manifest, profile, the runner, its helper, caller and named data select everything.
         for path in ("Cargo.lock", "crates/store-b/Cargo.toml", ".config/nextest.toml", "scripts/ci/pg_tests.sh",
-                     "scripts/ci/object_store_tests.sh", "scripts/ci/check-all.sh", "scripts/ci/policy.json",
+                     "scripts/ci/_affected_suites.sh", "scripts/ci/check-all.sh", "scripts/ci/policy.json",
                      "fuzz/fuzz_targets/x.rs"):
-            scope, runs, _ = plan([path, "crates/store-b/src/lib.rs"])
-            expect(scope == "whole" and all(runs.values()), f"T3 {path} selects everything")
-        # T5 explain names each suite, its verdict and why, and each path's class.
+            whole, runs, _ = plan([path, "crates/store-b/src/lib.rs"])
+            expect(bool(whole) and all(runs.values()), f"T3 {path} selects everything: {runs}")
+        # D1 a row edit runs that row only; D2 a comment or another group's row runs nothing;
+        # D3 an added row runs; D4 a reorder, an absent or unreadable base table runs everything.
+        edited = table.replace("--require-case=a ", "--require-case=a --require-case=a2 ")
+        (scripts / "service_suites.toml").write_text(edited, encoding="utf-8")
+        whole, runs, lines = plan([TABLE])
+        expect(not whole and runs == {"a": True, "b": False, "app": False, "object": False, "drill": False},
+               f"D1 a row edit runs that row: {runs}")
+        expect("selected=1/5" in lines and any("run  postgres.a its row was edited" in line for line in lines),
+               f"D1 explain: {lines[:4]}")
+        whole, runs, _ = plan([TABLE, "crates/store-b/src/lib.rs"])
+        expect(runs == {"a": True, "b": True, "app": False, "object": True, "drill": False}, f"D1 with a crate: {runs}")
+        for label, text in (("D2 comment", "# a note\n" + table.replace("phase = \"drill\"", "phase = \"drill\" # why")),
+                            ("D2 other group", table.replace("-p kernel --lib", "-p kernel --lib --bins")),
+                            ("D2 relaid words", table.replace("--features postgres\n", "--features postgres "))):
+            (scripts / "service_suites.toml").write_text(text, encoding="utf-8")
+            whole, runs, _ = plan([TABLE])
+            expect(not whole and not any(runs.values()), f"{label} runs nothing: {runs}")
+        (scripts / "service_suites.toml").write_text(table + "\n[[postgres]]\nid = \"postgres.c\"\nphase = \"p\"\n"
+                                                     "args = '-p store-b --lib'\n", encoding="utf-8")
+        whole, runs, _ = plan([TABLE])
+        expect(not whole and [k for k, v in runs.items() if v] == ["c"], f"D3 an added row runs: {runs}")
+        for label, text, base in (("D4 reorder", table, table.replace("postgres.a\"", "postgres.z\"").replace(
+                                       "postgres.b\"", "postgres.a\"").replace("postgres.z\"", "postgres.b\"")),
+                                  ("D4 absent base", table, None), ("D4 unreadable base", table, "[[postgres]]\nid = 3\n")):
+            (scripts / "service_suites.toml").write_text(text, encoding="utf-8")
+            whole, runs, _ = plan([TABLE], base)
+            expect(bool(whole) and all(runs.values()), f"{label} runs everything: {runs}")
+        (scripts / "service_suites.toml").write_text(table, encoding="utf-8")
+        # T5 explain names each row, its verdict and why, and each path's class.
         _, _, lines = plan(["crates/store-b/src/lib.rs", "docs/a.md"])
-        text = "\n".join(lines)
-        for needle in ("scope=packages", "selected=3/6", "run  pg_tests.sh:9 reached: store-b",
-                       "skip pg_tests.sh:7 not reached: store-a", "run  pg_tests.sh:13 follows pg_tests.sh:12",
-                       "skip pg_tests.sh:17 runs with the whole group only",
-                       "explain: docs/a.md: not read by this group -> ignored"):
-            expect(needle in text, f"T5 explain lacks {needle!r}")
-        # T4 an unmapped suite, an unknown package or stage, or an unwrapped test is a hard error.
-        for broken, label in (("pg_required_test --lib only\n", "no package mapping"),
-                              ("pg_test cargo test -p ghost\n", "unknown package ghost"),
-                              ("pg_run_with_deadline brand-new-stage 30 docker run x\n", "no package mapping"),
-                              ("cargo test -p store-a\n", "test command outside"),
-                              ("RUSTFLAGS=x run_required_rust_tests -p store-a\n", "test command outside")):
-            entry.write_text(body + broken, encoding="utf-8")
-            try:
-                suites("postgres", root)
-                expect(False, f"T4 accepted {broken.strip()!r}")
-            except PlanError as error:
-                expect(label in str(error) and ":20:" in str(error), f"T4 {broken.strip()!r}: {error}")
-        entry.write_text(body.replace("self_test() {", "selftest() {"), encoding="utf-8")
-        try:
-            suites("postgres", root)
-            expect(False, "T4 a vanished excluded block must fail")
-        except PlanError:
-            pass
-        # M2 the fuzz runner maps to the fuzz crate's path dependencies.
-        (scripts / "check-reliability.sh").write_text(
-            'if [ "${1:-}" = "--session-observations" ]; then\n  cargo test -p kernel\nfi\n'
-            "(cd fuzz && affected_suite cargo +nightly fuzz run t -- -max_total_time=1)\n"
-            "(cd fuzz && cargo +nightly metadata --locked)\ncargo clean -p kernel\n"
-            'RUSTFLAGS="-Zsanitizer=thread" affected_suite cargo +nightly test -p store-b 2>&1 | tee log\n'
-            'affected_suite python3 scripts/ci/check_reliability.py --tsan-log "$log"\n', encoding="utf-8")
-        reliability = suites("reliability", root)
-        expect([(s.line, s.packages, s.rule) for s in reliability]
-               == [(4, ("kernel",), "packages"), (7, ("store-b",), "packages"), (8, ("store-b",), "follows")],
-               f"M2 reliability map: {[(s.line, s.packages, s.rule) for s in reliability]}")
-        # R1 the shell helper runs only what the planner selected; an unmapped line stops the run.
+        for needle in ("scope=packages", "selected=2/5", "run  postgres.b reached: store-b", "skip postgres.a not reached: store-a",
+                       "skip postgres.drill runs with the whole group only", "explain: docs/a.md: not read by this group -> ignored"):
+            expect(needle in "\n".join(lines), f"T5 explain lacks {needle!r}")
+        # U1-U8 a row the planner cannot map is refused, never skipped.
+        row = "[[postgres]]\nid = \"postgres.x\"\nphase = \"p\"\n"
+        for text, needle, label in (
+                (row + "args = '--lib only'\n", "name no package", "U1 args without a package"),
+                (row + "args = '-p ghost --lib'\n", "unknown package ghost", "U2 unknown package"),
+                (row + "args = '-p app $EXTRA'\n", "literal words", "U3 shell expansion"),
+                (row + "packages = []\n", "whole_only", "U4 step without packages or reason"),
+                (row + "args = '-p app'\n" + row + "args = '-p app'\n", "unique", "U5 duplicate id"),
+                (row + "args = '-p app'\nrunner = \"bash\"\n", "runner must be", "U6 unknown runner"),
+                ("[[kubernetes]]\nid = \"kubernetes.x\"\n", "unknown group", "U7 unknown group"),
+                ("[[reliability]]\nid = \"reliability.fuzz.x\"\nphase = \"t\"\npackages = [\"app\"]\n", "fuzz crate", "U8 fuzz")):
+            refuses(text, needle, label)
         failures += _helper_test(root)
-    # The real groups: every suite maps to an existing workspace package.
+    # The real table: every row maps to workspace packages, and the shells run exactly the table.
     try:
-        postgres, reliability = suites("postgres"), suites("reliability")
-        expect(len(postgres) >= 45 and len(reliability) >= 20, f"real suite counts {len(postgres)}/{len(reliability)}")
-        expect(any(s.note.startswith("via scripts/ci/object_store_tests.sh") for s in postgres), "object stages map via M3")
+        real = load((ROOT / TABLE).read_text(encoding="utf-8"))
+        validate(real, ROOT)
+        counts = {group: sum(row.group == group for row in real) for group in GROUPS}
+        expect(counts["postgres"] >= 40 and counts["reliability"] >= 20, f"real row counts {counts}")
+        failures += equivalence(ROOT)
     except PlanError as error:
-        failures.append(f"real groups: {error}")
-    pg_text = (SCRIPTS / "pg_tests.sh").read_text(encoding="utf-8")
-    for function in ("pg_required_test", "pg_test", "pg_run_with_deadline"):
-        body = pg_text.split(f"\n{function}() {{\n", 1)[-1].split("\n}\n", 1)[0]
-        expect("affected_skip_" in body, f"{function} does not consult the affected decision")
-    caller = (SCRIPTS / "check-all.sh").read_text(encoding="utf-8")
+        failures.append(f"real table: {error}")
+    caller = (ROOT / "scripts/ci/check-all.sh").read_text(encoding="utf-8")
     expect('[ "$full_gate" -eq 0 ]' in caller.split("AWAKEN_SERVICE_AFFECTED_BASE", 1)[-1][:200],
            "check-all.sh must never narrow --full-gate")
     for failure in failures:
         print(f"service_test_plan self-test: FAIL {failure}", file=sys.stderr)
     if not failures:
-        print("service_test_plan self-test: S1-S4, M1-M5, T1-T5 and the shell helper hold")
+        print("service_test_plan self-test: R1-R3, S1-S5, T1-T5, D1-D4, U1-U8, E1-E3 and the shell helper hold")
     return 1 if failures else 0
 
 
 def _helper_test(root: Path) -> list[str]:
-    """Run the real _affected_suites.sh against a canned plan."""
+    """H1-H4: the real _affected_suites.sh runs rows by id and refuses an id it cannot place."""
     scripts = root / "scripts/ci"
-    (scripts / "_affected_suites.sh").write_bytes((SCRIPTS / "_affected_suites.sh").read_bytes())
+    shutil.copy(ROOT / "scripts/ci/_affected_suites.sh", scripts / "_affected_suites.sh")
     (scripts / "service_test_plan.py").write_text(
-        "print('scope=packages')\nprint('selected=1/2')\n"
-        "print('run  probe.sh:5 reached: a | x')\nprint('skip probe.sh:6 not reached: b | y')\n", encoding="utf-8")
+        "import sys\nif sys.argv[1] == '--rows':\n"
+        "    print(\"x.run p '' probe --flag 'two words'\\nx.skip q A=1 probe y\\nx.step s '' step\")\n"
+        "else:\n    print('scope=packages\\nselected=2/3\\nrun  x.run r | a\\nskip x.skip s | b\\nrun  x.step r | c')\n",
+        encoding="utf-8")
     (scripts / "probe.sh").write_text(
-        "set -euo pipefail\nsource scripts/ci/_affected_suites.sh\n"
-        'affected_suites_load postgres HEAD >/dev/null || exit $?\n'
-        "touch line4\n"
-        "affected_suite touch ran\naffected_suite touch skipped\n"
-        'affected_selected_after 6 && touch later || touch none-later\n'
-        "affected_suite touch unmapped\n", encoding="utf-8", newline="\n")
+        "set -euo pipefail\nsource scripts/ci/_affected_suites.sh\nsuites_load x\n"
+        'probe() { printf "%s|%s|%s\\n" "$AWAKEN_SERVICE_SUITE" "${A:-}" "$*" >> calls; }\n'
+        '[ "${NARROW:-0}" = 0 ] || affected_suites_load x HEAD >/dev/null\n'
+        "suite_run x.run\nsuite_run x.skip\nsuite_step x.step probe stepped\n"
+        "suites_selected p && echo p >> calls\nsuites_selected q && echo q >> calls\n"
+        'suite_step "${UNKNOWN:-x.step}" probe last\n', encoding="utf-8", newline="\n")
     failures = []
-    command = [sys.executable, str(SCRIPTS / "_native_shell.py"), "scripts/ci/probe.sh"]
-    environment = dict(os.environ)
-    environment.pop("AWAKEN_BUILD_WORKLOAD_KIND", None)
-    result = subprocess.run(command, cwd=root, capture_output=True, text=True, env=environment)
-    made = {path.name for path in root.iterdir() if path.is_file()}
-    if result.returncode != 2 or made != {"line4", "ran", "none-later"} or "no affected decision" not in result.stderr:
-        failures.append(f"R1 helper: exit {result.returncode}, files {sorted(made)}, {result.stderr.strip()}")
-    result = subprocess.run(command, cwd=root, capture_output=True, text=True,
-                            env={**environment, "AWAKEN_BUILD_WORKLOAD_KIND": "qualification"})
+
+    def probe(**environment: str) -> tuple[subprocess.CompletedProcess, str]:
+        (root / "calls").unlink(missing_ok=True)
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/ci/_native_shell.py"), "scripts/ci/probe.sh"],
+                                cwd=root, capture_output=True, text=True,
+                                env={"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin", **environment})
+        return result, (root / "calls").read_text() if (root / "calls").exists() else ""
+
+    result, calls = probe()
+    if result.returncode or calls != "x.run||--flag two words\nx.skip|1|y\nx.step||stepped\np\nq\nx.step||last\n":
+        failures.append(f"H1 rows run by id with their env: exit {result.returncode} {calls!r} {result.stderr}")
+    result, calls = probe(NARROW="1")
+    if result.returncode or calls != "x.run||--flag two words\nx.step||stepped\np\nx.step||last\n":
+        failures.append(f"H2 an affected run skips only unselected ids: exit {result.returncode} {calls!r} {result.stderr}")
+    result, calls = probe(UNKNOWN="x.ghost")
+    if result.returncode != 2 or "x.ghost" not in result.stderr or "last" in calls:
+        failures.append(f"H3 an id outside the table stops the run with 2: exit {result.returncode} {result.stderr}")
+    result, _ = probe(NARROW="1", AWAKEN_BUILD_WORKLOAD_KIND="qualification")
     if result.returncode != 2 or "never narrowed" not in result.stderr:
-        failures.append(f"R2 a qualification run is never narrowed: exit {result.returncode}")
+        failures.append(f"H4 a qualification run is never narrowed: exit {result.returncode}")
     return failures
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__.splitlines()[0])
+    parser.add_argument("--rows", choices=sorted(GROUPS), help="print the group's rows for its shell (id phase env runner args)")
     parser.add_argument("--group", choices=sorted(GROUPS))
     parser.add_argument("--base", help="revision the change is measured from (index, worktree and untracked included)")
     parser.add_argument("--explain", action="store_true", help="also print why each changed path counts (stderr)")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
-    if args.self_test:
-        if args.group or args.base:
-            parser.error("--self-test is a standalone mode")
-        return self_test()
-    if not args.group or not args.base:
+    if args.self_test or args.rows:
+        if args.group or args.base or (args.self_test and args.rows):
+            parser.error("--self-test and --rows are standalone modes")
+        if args.self_test:
+            return self_test()
+    elif not args.group or not args.base:
         parser.error("--group and --base are required")
     try:
-        found = suites(args.group)
+        if args.rows:
+            print("\n".join(row.line() for row in group_rows(args.rows)))
+            return 0
+        import rust_test_plan
+        rows = group_rows(args.group)
+        validate(rows)
         base = rust_test_plan.git_output("rev-parse", "--verify", "--end-of-options", args.base + "^{commit}").decode().strip()
-        changed = rust_test_plan.changed_sources(base)
-        scope, affected, reason, lines = classify(args.group, changed, workspace_metadata)
+
+        def base_table() -> str | None:
+            shown = subprocess.run(["git", "show", f"{base}:{TABLE}"], cwd=ROOT, capture_output=True, text=True)
+            return shown.stdout if shown.returncode == 0 else None
+
+        whole, affected, edited, reason, lines = classify(args.group, rust_test_plan.changed_sources(base),
+                                                          workspace_metadata, base_table)
     except PlanError as error:
-        print(f"{error}\n{RULE}\n{WHY}\nfix: name the package with -p, or declare the command in "
-              "FOLLOWS/SUBSTRATE_ONLY/INFRA_STAGES of scripts/ci/service_test_plan.py", file=sys.stderr)
+        print(f"{error}\n{RULE}\nfix: name the package with -p in the row's args, or give a step row its packages",
+              file=sys.stderr)
         return 2
     except subprocess.CalledProcessError as error:
         print(f"Cannot plan the affected {args.group} group (status {error.returncode}): {error.cmd}", file=sys.stderr)
         return error.returncode if error.returncode > 0 else 1
     except (OSError, ValueError, KeyError, TypeError) as error:
-        print(f"Cannot plan the affected {args.group} group: {error}", file=sys.stderr)
+        print(f"Cannot plan the {args.group or args.rows} group: {error}", file=sys.stderr)
         return 1
     if args.explain:
         print("\n".join(lines), file=sys.stderr)
-    print("\n".join(render(scope, reason, decide(found, scope, affected, reason))))
+    print("\n".join(render(whole, reason, decide(rows, whole, affected, edited))))
     return 0
 
 

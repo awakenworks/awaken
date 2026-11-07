@@ -52,7 +52,8 @@ if [ "${1:-}" = "--session-observations" ]; then
   exit 0
 fi
 
-# --affected <base> runs only the suites the change since <base> can reach
+# Every suite is a row of scripts/ci/service_suites.toml, run here by id.
+# --affected <base> runs only the rows the change since <base> can reach
 # (scripts/ci/service_test_plan.py) and sets up no tool when none is.
 mode=--quick
 affected_base=""
@@ -69,9 +70,10 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 source scripts/ci/_affected_suites.sh
+suites_load reliability
 if [ -n "$affected_base" ]; then
   affected_suites_load reliability "$affected_base"
-  if ! affected_selected_after 0; then
+  if ! suites_selected quick full tools mutation; then
     echo "reliability: no suite is reached by the change since $affected_base"
     exit 0
   fi
@@ -95,31 +97,21 @@ cleanup_mutation_artifacts() {
 }
 python3 scripts/ci/check_reliability.py
 source scripts/ci/_rust_test_execution.sh
-affected_suite run_required_rust_tests -p awaken-reliability-testkit --lib
-affected_suite run_required_rust_tests -p awaken-mcp-wire --lib sse::tests
-affected_suite run_required_rust_tests -p awaken-dispatch --features test-support --test dispatch_conformance \
-  memory_and_sqlite_refine_the_same_crash_recovery_history
+for id in $(suite_ids quick); do suite_run "$id"; done
 
 if [ "$mode" = "--quick" ]; then
   echo "reliability quick gate: passed"
   exit 0
 fi
 
-affected_suite run_required_rust_tests -p awaken-store-sqlite --features test-support --test failure_atomicity
-affected_suite run_required_rust_tests -p awaken-session-store --test process_crash_outbox
-# The Postgres variants need a live database and are required by pg_tests.sh;
-# here they could only print a fixture skip, which the runner refuses.
-affected_suite run_required_rust_tests -p awaken-session-application --lib tests::creation::time_assurance -- --skip postgres_
-affected_suite run_required_rust_tests -p awaken-credential-store --features sqlite,sealed-aead,test-support \
-  --test process_crash_creation --test process_crash_managed_creation
-affected_suite run_required_rust_tests -p awaken-config-store --test process_crash_audit
+for id in $(suite_ids full); do suite_run "$id"; done
 
 if [ "$mode" = "--full" ]; then
   echo "reliability full executable gate: passed (tool-assisted gates not requested)"
   exit 0
 fi
 
-if ! affected_selected_after "$LINENO"; then
+if ! suites_selected tools mutation; then
   echo "reliability: no tool-assisted suite is reached by the change since $affected_base"
   exit 0
 fi
@@ -157,75 +149,75 @@ fuzz_seconds="${AWAKEN_FUZZ_SECONDS:-15}"
 # cargo-fuzz has no --locked switch. Resolve its separate workspace through
 # Cargo's existing locked reader before any fuzz build can rewrite source.
 (cd fuzz && cargo +nightly metadata --locked --format-version 1 > /dev/null)
-(cd fuzz && affected_suite cargo +nightly fuzz run sse_chunks -- -max_total_time="$fuzz_seconds")
-(cd fuzz && affected_suite cargo +nightly fuzz run thread_commit_wire -- -max_total_time="$fuzz_seconds")
-(cd fuzz && affected_suite cargo +nightly fuzz run tool_batch_transitions -- -max_total_time="$fuzz_seconds")
-affected_suite cargo +nightly miri test -p awaken-mcp-wire --lib
+(cd fuzz && suite_step reliability.fuzz.sse-chunks cargo +nightly fuzz run sse_chunks -- -max_total_time="$fuzz_seconds")
+(cd fuzz && suite_step reliability.fuzz.thread-commit-wire cargo +nightly fuzz run thread_commit_wire -- -max_total_time="$fuzz_seconds")
+(cd fuzz && suite_step reliability.fuzz.tool-batch-transitions cargo +nightly fuzz run tool_batch_transitions -- -max_total_time="$fuzz_seconds")
+suite_step reliability.miri.mcp-wire cargo +nightly miri test -p awaken-mcp-wire --lib
 sanitizer_target="$(rustc +nightly -vV | sed -n 's/^host: //p')"
-RUSTFLAGS="-Zsanitizer=address" affected_suite cargo +nightly test -p awaken-mcp-wire --lib \
+RUSTFLAGS="-Zsanitizer=address" suite_step reliability.asan.mcp-wire cargo +nightly test -p awaken-mcp-wire --lib \
   --target "$sanitizer_target" -Zbuild-std
 # T1 the exact existing production-cache workload runs under TSan; T2 zero
 # selected/ignored/failed tests or tool failure reject. CrashProcess is a helper
 # library with no tests, not a concurrent production workload.
 tsan_log="target/test-timings/worker-heartbeat-tsan.log"
 mkdir -p "$(dirname "$tsan_log")"
-RUSTFLAGS="-Zsanitizer=thread" affected_suite cargo +nightly test -p awaken-worker --lib \
+RUSTFLAGS="-Zsanitizer=thread" suite_step reliability.tsan.worker cargo +nightly test -p awaken-worker --lib \
   --target "$sanitizer_target" -Zbuild-std \
   credential_liveness::tests::heartbeat_snapshot_never_mixes_concurrent_publication_batches \
   -- --exact 2>&1 | tee "$tsan_log"
-affected_suite python3 scripts/ci/check_reliability.py --tsan-log "$tsan_log"
+suite_step reliability.tsan.worker python3 scripts/ci/check_reliability.py --tsan-log "$tsan_log"
 mutation_evidence="${AWAKEN_RELIABILITY_EVIDENCE_DIR:-$CARGO_TARGET_DIR/reliability}"
 (
 # Keep BOTH Cargo directories isolated: a runner may configure build.build-dir
 # outside target-dir. The subshell also restores the normal graph for callers.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR%/}/reliability-mutation-build"
 export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
-affected_selected_after "$LINENO" || exit 0
+suites_selected mutation || exit 0
 cleanup_mutation_artifacts
 trap cleanup_mutation_artifacts EXIT
 mkdir -p "$mutation_evidence"
-affected_suite cargo mutants --package awaken-mcp-wire \
+suite_step reliability.mutants.sse cargo mutants --package awaken-mcp-wire \
   --output "$mutation_evidence/sse" \
   --file crates/sdk/providers/awaken-mcp-wire/src/sse.rs --timeout 30 --no-times -- sse::tests
-affected_suite python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/sse/mutants.out"
-affected_suite cargo mutants --package awaken-tool-contract \
+suite_step reliability.mutants.sse python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/sse/mutants.out"
+suite_step reliability.mutants.tool-batch cargo mutants --package awaken-tool-contract \
   --output "$mutation_evidence/tool-batch" \
   --file crates/sdk/contracts/awaken-tool-contract/src/tool_batch.rs \
   --re 'permits_call_transition|next_execution_attempt' \
   --timeout 30 --no-times -- tool_batch::tests
-affected_suite python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/tool-batch/mutants.out"
+suite_step reliability.mutants.tool-batch python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/tool-batch/mutants.out"
 # Shared production metadata/authorization reducers: every selected mutation
 # must be caught by the domain decision tables; baseline/build failures do not
 # qualify as kills. cargo-mutants owns isolation and the outcome artifact.
-affected_suite cargo mutants --package awaken-session-contract \
+suite_step reliability.mutants.session-event-observations cargo mutants --package awaken-session-contract \
   --output "$mutation_evidence/session-event-observations" \
   --file crates/platform/session/awaken-session-contract/src/event/mod.rs \
   --re 'mark_processed_observation' \
   --timeout 60 --no-times -- --lib
-affected_suite python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-event-observations/mutants.out"
-affected_suite cargo mutants --package awaken-session-execution-contract \
+suite_step reliability.mutants.session-event-observations python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-event-observations/mutants.out"
+suite_step reliability.mutants.session-realization-observations cargo mutants --package awaken-session-execution-contract \
   --output "$mutation_evidence/session-realization-observations" \
   --file crates/platform/session/awaken-session-execution-contract/src/session_realization/generation_authority.rs \
   --re 'realization_generation_authorizes' \
   --timeout 60 --no-times -- --lib
-affected_suite python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-realization-observations/mutants.out"
-affected_suite cargo mutants --package awaken-time \
+suite_step reliability.mutants.session-realization-observations python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-realization-observations/mutants.out"
+suite_step reliability.mutants.session-work-observations cargo mutants --package awaken-time \
   --test-package awaken-time --test-package awaken-worker-contract \
   --output "$mutation_evidence/session-work-observations" \
   --file crates/sdk/support/awaken-time/src/utc.rs \
   --re 'bounded_rfc3339_nanos' \
   --timeout 60 --no-times -- --lib
-affected_suite python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-work-observations/mutants.out"
+suite_step reliability.mutants.session-work-observations python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-work-observations/mutants.out"
 # R1/R3 causes: a newer or stale root revision reaches the canonical shared
 # ordering kernel; effects: the complete executor installation advances or
 # rejects without rewriting its correlated receipt. The Host convergence test
 # owns the observation, while the mutation belongs to the shared type owner.
-affected_suite cargo mutants --package awaken-session-types --test-package awaken-session-executor \
+suite_step reliability.mutants.environment-projection cargo mutants --package awaken-session-types --test-package awaken-session-executor \
   --output "$mutation_evidence/environment-projection" \
   --file crates/platform/session/awaken-session-types/src/monotone.rs \
   --re 'replace > with <|replace > with >=' \
   --timeout 60 --no-times -- --lib projection_convergence
-affected_suite python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/environment-projection/mutants.out"
+suite_step reliability.mutants.environment-projection python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/environment-projection/mutants.out"
 cleanup_mutation_artifacts
 trap - EXIT
 )

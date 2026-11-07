@@ -285,7 +285,7 @@ class ReliabilityCheckerTests(unittest.TestCase):
         # tests. Source capture, required list/run and deadline must execute.
         return f'''#!/usr/bin/env bash
 case "$1" in
-  *deadline.py|*cargo-awaken-ci-deadline|*nextest_execution.py) exec {shlex.quote(Path(sys.executable).as_posix())} "$@" ;;
+  *deadline.py|*cargo-awaken-ci-deadline|*nextest_execution.py|*service_test_plan.py) exec {shlex.quote(Path(sys.executable).as_posix())} "$@" ;;
   *) exit 0 ;;
 esac
 '''
