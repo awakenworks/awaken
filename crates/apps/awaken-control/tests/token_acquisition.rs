@@ -378,9 +378,9 @@ async fn hosted_credential_api_preserves_private_grants_and_reuses_the_same_rene
         availability: Default::default(),
         clock: clock.clone(),
     })
-    .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
-        "workspace".into(),
-    )));
+    .layer(axum::Extension(
+        awaken_runtime_contract::runs::scope::WorkspaceScope("workspace".into()),
+    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!(
         "http://{}/v1/config/credentials",
