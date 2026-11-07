@@ -225,12 +225,13 @@ class HookFeedbackTests(unittest.TestCase):
         # I5 a declaring checker with no caller is rejected by the real early
         # preflight in both check/write modes, before rewriting configuration
         # or starting expensive suites. The graph checker shares this owner.
-        with tempfile.TemporaryDirectory() as raw:
-            path = Path(raw) / 'lefthook.yml'
+        with tempfile.TemporaryDirectory() as directory:
+            path, source = Path(directory) / 'lefthook.yml', Path(directory) / 'hooks.yml'
             path.write_text(rendered)
+            source.write_text(raw)
             for arguments in (['--check'], []):
                 errors = io.StringIO()
-                with patch.object(generate_hooks, 'HOOKS', path), \
+                with patch.object(generate_hooks, 'HOOKS', path), patch.object(generate_hooks, 'SOURCE', source), \
                      patch.object(generate_hooks, 'declared_input_globs', return_value={**declared, 'unwired.py': ('src/**',)}), \
                      contextlib.redirect_stderr(errors):
                     self.assertEqual(generate_hooks.main(arguments), 1)

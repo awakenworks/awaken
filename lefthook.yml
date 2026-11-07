@@ -1,3 +1,7 @@
+# GENERATED from scripts/ci/hooks.yml by python3 scripts/ci/generate_hooks.py -- do not edit.
+# Edit scripts/ci/hooks.yml, then regenerate. A rebase conflict in this file is
+# resolved by regenerating it from the merged source, never by hand-merging.
+
 # Selected hook workers print concise live progress; full output stays in run logs.
 output:
   - failure
