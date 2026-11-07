@@ -193,6 +193,15 @@ impl EnvironmentApplication {
         environment_id: &str,
         patch: EnvUpdate,
     ) -> Result<EnvItem, EnvironmentApplicationError> {
+        self.update_if_revision(environment_id, patch, None).await
+    }
+
+    pub async fn update_if_revision(
+        &self,
+        environment_id: &str,
+        patch: EnvUpdate,
+        if_revision: Option<EnvironmentRevision>,
+    ) -> Result<EnvItem, EnvironmentApplicationError> {
         self.ensure_mutable(environment_id)?;
         let mut candidate = self
             .queries
@@ -200,6 +209,9 @@ impl EnvironmentApplication {
             .await?
             .ok_or(EnvironmentApplicationError::NotFound)?;
         let expected_revision = candidate.revision;
+        if if_revision.is_some_and(|revision| revision != expected_revision) {
+            return Err(EnvironmentStoreError::RevisionConflict.into());
+        }
         candidate
             .apply(patch.clone())
             .map_err(EnvironmentStoreError::from)?;

@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import {
   availablePort,
   deploymentEnv,
+  hardKillServer,
   realServerEnv,
   spawnServer,
   startUpstream,
@@ -255,7 +256,7 @@ async function exerciseRecovery(python, temporary) {
   // Cross-process cause/effect graph: Node owns only topology and shutdown;
   // the exact Python wheel owns all API encoding/decoding in both phases. One
   // upstream survives A->B while the same durable directory is reopened.
-  // Effects: the state JSON carries ids only, graceful shutdown flushes facts,
+  // Effects: the state JSON carries ids and cursors, hard kill loses process state,
   // and a fresh client/process must prove Session/Event/Memory/File/Skill
   // recovery. Any child, bind, shutdown, or verification failure rejects.
   const storage = resolve(temporary, 'recovery-storage');
@@ -273,7 +274,7 @@ async function exerciseRecovery(python, temporary) {
     running = first.server;
     await waitForPort(port, 900_000, running);
     await runDriver(python, DRIVER, first.baseUrl, { args: ['prepare-recovery', state] });
-    await stopServer(running);
+    await hardKillServer(running, 'official Python SDK recovery');
     running = undefined;
 
     const second = spawnServer('management', port, environment);

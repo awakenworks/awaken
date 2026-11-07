@@ -343,6 +343,9 @@ def exercise_webhook_decoder() -> None:
     client.close()
 
 
+RECOVERY_EVENTS = [{"type": "user.message", "content": [{"type": "text", "text": "python-recovery"}]}]
+
+
 def prepare_recovery(state_path: Path) -> None:
     # Test design: python_sdk_resource_recovery
     # Recovery causal graph, phase A: C1=the exact current Python projections create
@@ -352,14 +355,19 @@ def prepare_recovery(state_path: Path) -> None:
     # cursor, response cache, or in-memory server state can satisfy phase B.
     with anthropic.Anthropic(api_key="e2e-dummy", base_url=BASE_URL, max_retries=0) as client:
         session = client.beta.sessions.create(agent="assistant", environment_id="env_local")
+        event_key = f"python-recovery-{session.id}"
         receipt = client.beta.sessions.events.send(
             session.id,
-            events=[{"type": "user.message", "content": [{"type": "text", "text": "python-recovery"}]}],
+            events=RECOVERY_EVENTS,
+            extra_headers={"Idempotency-Key": event_key},
         )
         suffix = wait_for_idle(client, session.id, receipt.data[0].id)
         assert next(event for event in suffix if event.type == "agent.message").content[0].text == (
             "Echo: python-recovery"
         )
+        first_event_page = client.beta.sessions.events.list(session.id, limit=1)
+        assert first_event_page.next_page
+        event_ids = [event.id for event in client.beta.sessions.events.list(session.id, limit=1)]
         store = client.beta.memory_stores.create(name="python-recovery-store")
         memory = client.beta.memory_stores.memories.create(
             store.id,
@@ -385,6 +393,10 @@ def prepare_recovery(state_path: Path) -> None:
             json.dumps({
                 "session_id": session.id,
                 "receipt_id": receipt.data[0].id,
+                "event_key": event_key,
+                "event_ids": event_ids,
+                "event_page": first_event_page.next_page,
+                "first_event_id": first_event_page.data[0].id,
                 "store_id": store.id,
                 "memory_id": memory.id,
                 "memory_original_sha": memory.content_sha256,
@@ -414,7 +426,17 @@ def verify_recovery(state_path: Path) -> None:
     with anthropic.Anthropic(api_key="e2e-dummy", base_url=BASE_URL, max_retries=0) as client:
         session = client.beta.sessions.retrieve(state["session_id"])
         assert session.id == state["session_id"] and session.status == "idle"
+        replay = client.beta.sessions.events.send(
+            session.id, events=RECOVERY_EVENTS,
+            extra_headers={"Idempotency-Key": state["event_key"]},
+        )
+        assert replay.data[0].id == state["receipt_id"]
         history = list(client.beta.sessions.events.list(session.id, limit=1))
+        assert [event.id for event in history] == state["event_ids"]
+        resumed_events = client.beta.sessions.events.list(
+            session.id, page=state["event_page"], limit=1,
+        )
+        assert [state["first_event_id"]] + [event.id for event in resumed_events] == state["event_ids"]
         receipt_index = next(index for index, event in enumerate(history) if event.id == state["receipt_id"])
         suffix = history[receipt_index:]
         assert next(event for event in suffix if event.type == "agent.message").content[0].text == (

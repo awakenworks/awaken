@@ -348,11 +348,28 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(1 + 1, 2)
 
     def test_may_fail(self):
+        if "PROBE_SKIP" in os.environ:
+            self.skipTest("fixture missing")
         self.assertNotIn("PROBE_FAIL", os.environ)
 
 
+class NoisyStream:
+    def write(self, text):
+        sys.stderr.write(text)
+        if text.startswith("skipped "):
+            sys.stderr.write("\\nok\\n")
+
+    def flush(self):
+        sys.stderr.flush()
+
+
 suite = unittest.TestSuite() if "--none" in sys.argv else unittest.defaultTestLoader.loadTestsFromTestCase(ProbeTests)
-result = unittest.TextTestRunner(verbosity=2).run(suite)
+if "--observed" in sys.argv:
+    from _strict_unittest import observed_runner
+    runner = observed_runner
+else:
+    runner = unittest.TextTestRunner
+result = runner(verbosity=2, stream=NoisyStream()).run(suite)
 sys.exit(0 if "--none" in sys.argv else int(not result.wasSuccessful()))
 '''
 
@@ -440,22 +457,17 @@ class EvidenceRecorderTests(unittest.TestCase):
             self.assertIn("L06 E90 receipt bytes differ from receipt_sha256",
                           check_session_acceptance.ledger_errors(data, root))
 
-    def test_unittest_and_nextest_logs_name_every_case_or_are_refused(self) -> None:
-        parse = check_session_acceptance.parse_cases
-        unittest_log = ("test_a (__main__.A.test_a) ... printed\nok\ntest_b (__main__.A.test_b) ... skipped 'x'\n"
-                        "test_c (pkg.A.test_c)\nDocstring line ... FAIL\n" + "=" * 70 + "\nFAIL: test_c\nok\n"
-                        + "-" * 70 + "\nRan 3 tests in 0.1s\n")
-        nextest_log = ("    Starting 2 tests across 1 binary (5 tests skipped)\n"
-                       "        PASS [   0.004s] (1/2) crate tests::one\n"
-                       "        FAIL [   0.010s] (2/2) crate::it tests::two\n"
-                       "        PASS [   0.004s] (1/2) crate tests::one\n"
-                       "     Summary [   0.014s] 2 tests run: 1 passed, 1 failed, 5 skipped\n")
-        for line_ending in ("\n", "\r\n"):
-            with self.subTest(line_ending=line_ending):
-                self.assertEqual(parse(unittest_log.replace("\n", line_ending), False),
-                                 ({"A.test_a": "passed", "A.test_b": "skipped", "pkg.A.test_c": "failed"}, 3, 1))
-                self.assertEqual(parse(nextest_log.replace("\n", line_ending), True),
-                                 ({"crate tests::one": "passed", "crate::it tests::two": "failed"}, 2, 5))
+    def test_skipped_case_stays_skipped_when_output_contains_ok(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="acceptance-recorder-") as directory:
+            root = self.ledger(directory)
+            environment = {"PROBE_SKIP": "1"}
+            self.refused("R04", root, required=("ProbeTests.test_may_fail",),
+                         environment=environment)
+            entry = self.record(root, "--observed", environment=environment)
+            self.assertEqual((entry["executed_count"], entry["skipped_count"]), (1, 1))
+            report = (root / entry["receipt"]).with_name("unittest.json")
+            self.assertEqual(json.loads(report.read_bytes())["cases"]["ProbeTests.test_may_fail"],
+                             "skipped")
 
 
 class EvidenceArtifactByteTests(unittest.TestCase):

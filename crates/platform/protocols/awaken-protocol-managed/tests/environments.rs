@@ -27,6 +27,59 @@ fn app() -> Router {
 }
 
 #[tokio::test]
+async fn retry_with_original_environment_revision_preserves_an_intervening_update() {
+    let app = app();
+    let created = call(
+        &app,
+        "POST",
+        "/v1/environments",
+        Some(json!({"name": "initial"})),
+    )
+    .await
+    .expect(StatusCode::OK);
+    let uri = format!("/v1/environments/{}", created["id"].as_str().unwrap());
+    let retrieve = || {
+        app.clone()
+            .oneshot(Request::get(uri.as_str()).body(Body::empty()).unwrap())
+    };
+    let first = retrieve().await.unwrap();
+    let original = first.headers()["etag"].clone();
+    let update = |name: &'static str, revision: axum::http::HeaderValue| {
+        app.clone().oneshot(
+            Request::post(uri.as_str())
+                .header("content-type", "application/json")
+                .header("if-match", revision)
+                .body(Body::from(json!({"name": name}).to_string()))
+                .unwrap(),
+        )
+    };
+
+    let first_update = update("first update", original.clone()).await.unwrap();
+    assert_eq!(first_update.status(), StatusCode::OK);
+    // Observe the committed revision independently of the first response.
+    let current = retrieve().await.unwrap().headers()["etag"].clone();
+    assert_ne!(current, original);
+    let second = update("second update", current).await.unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+    let final_revision = second.headers()["etag"].clone();
+
+    let stale_retry = update("first update", original).await.unwrap();
+    assert_eq!(stale_retry.status(), StatusCode::PRECONDITION_FAILED);
+    let final_response = retrieve().await.unwrap();
+    assert_eq!(final_response.headers()["etag"], final_revision);
+    let body = final_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["name"],
+        "second update"
+    );
+}
+
+#[tokio::test]
 async fn official_inventory_excludes_the_unregistered_execution_default() {
     // Causes: C1 built-in / authored definition; C2 active / archived inventory;
     // C3 list / retrieve / archive. Rules: built-in -> absent from either page,

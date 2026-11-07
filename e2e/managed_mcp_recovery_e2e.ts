@@ -15,6 +15,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import type { ServerResponse } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
@@ -308,7 +309,6 @@ async function main(): Promise<void> {
 
     const serialized = JSON.stringify(afterRemovalRestart);
     assert.ok(!serialized.includes(TOKEN_A) && !serialized.includes(TOKEN_B));
-    console.log('E2E PASS: ADR-0066 MCP recovery decision table.');
   } finally {
     const failedTrace = path.join(observationDir, 'trace.ndjson');
     if (process.env.AWAKEN_OBSERVATION_TRACE_DIR && fs.existsSync(failedTrace)) {
@@ -324,7 +324,89 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error('E2E FAIL:', error);
-  process.exitCode = 1;
-});
+// This cut owns a separate deployment and provider. Its deliberately
+// interrupted transport must never leak activity into the publication matrix.
+async function verifyInterruptedInitialize(): Promise<void> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-mcp-initialize-'));
+  const port = await availablePort(PREFERRED_PORT);
+  const initialFixture = await startCalcFixture(TOKEN_A);
+  const upstream = await startUpstream('mcp');
+  const env = {
+    SESSION_DEPLOYMENT_STORAGE_DIR: path.join(root, 'runtime'),
+    ...realServerEnv('mcp', upstream, { mode: 'management' }),
+  };
+  let original: { id: string; closed: boolean } | undefined;
+  let releaseHeldReply = () => {};
+  const heldReply = new Promise<void>((resolve) => { releaseHeldReply = resolve; });
+  const interruptedFixture = await startCalcFixture(TOKEN_B, {
+    stateful: true,
+    beforeInitialize(id: string, response: ServerResponse) {
+      if (original) return;
+      const initialize = { id, closed: false };
+      original = initialize;
+      response.once('close', () => { initialize.closed = true; });
+      return heldReply;
+    },
+  });
+  let server: ReturnType<typeof spawnServer>['server'] | undefined;
+  try {
+    const before = spawnServer('management', port, env);
+    server = before.server;
+    await waitForPort(port, 180_000, server);
+    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: before.baseUrl, maxRetries: 0 });
+    const vault = await client.beta.vaults.create({ display_name: 'interrupted initialize', betas: BETAS });
+    for (const [fixture, token] of [[initialFixture, TOKEN_A], [interruptedFixture, TOKEN_B]] as const) {
+      await client.beta.vaults.credentials.create(vault.id, {
+        auth: { type: 'static_bearer', mcp_server_url: fixture.url, token },
+        betas: BETAS,
+      });
+    }
+    const initial: McpServer = { name: 'calc', type: 'url', url: initialFixture.url };
+    const desired: McpServer[] = [{ ...initial, url: interruptedFixture.url }];
+    const session = await client.beta.sessions.create({
+      agent: alwaysAllowMcpAgent('assistant', [initial]),
+      environment_id: 'env_local',
+      vault_ids: [vault.id],
+      betas: BETAS,
+    });
+    const pending = update(client, session.id, desired, 'interrupted-initialize')
+      .then(() => 'response', () => 'interrupted');
+    const interrupted: { id: string; closed: boolean } | undefined = await waitForValue(
+      () => original, Boolean, 'upstream allocated the original transport session', { timeoutMs: 30_000 },
+    );
+    assert.ok(interrupted?.id);
+    assert.equal(interruptedFixture.calls.filter((call: any) => call.method === 'initialize').length, 1);
+    await hardKillServer(server, 'MCP initialize response not delivered');
+    server = undefined;
+    assert.equal(await pending, 'interrupted');
+    await waitForValue(() => interrupted.closed, Boolean, 'the old transport closes when its owner dies', { timeoutMs: 30_000 });
+    releaseHeldReply();
+
+    const after = spawnServer('management', port, env);
+    server = after.server;
+    await waitForPort(port, 180_000, server);
+    const recovered = new Anthropic({ apiKey: 'e2e-dummy', baseURL: after.baseUrl, maxRetries: 0 });
+    const continued = await recovered.beta.sessions.retrieve(session.id, { betas: BETAS });
+    assert.deepEqual(continued.agent.mcp_servers, desired);
+    await sendManagedMessage(recovered, session.id, 'add 2 5', BETAS);
+    const toolCalls = interruptedFixture.calls.filter((call: any) => call.method === 'tools/call');
+    assert.equal(toolCalls.length, 1);
+    assert.ok(toolCalls[0].sessionId && toolCalls[0].sessionId !== interrupted.id);
+    pass('MCP restart closes the interrupted transport and runs on the recovered allocation');
+  } finally {
+    releaseHeldReply();
+    if (server) await stopServer(server);
+    await interruptedFixture.close();
+    await initialFixture.close();
+    await upstream.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+main()
+  .then(verifyInterruptedInitialize)
+  .then(() => console.log('E2E PASS: ADR-0066 MCP recovery decision table and interrupted transport.'))
+  .catch((error) => {
+    console.error('E2E FAIL:', error);
+    process.exitCode = 1;
+  });

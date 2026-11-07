@@ -8,6 +8,8 @@
 // Run: (from e2e/)  node management_environments_e2e.mjs
 
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import http from 'node:http';
 import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 
@@ -17,6 +19,57 @@ async function drain(pagePromise) {
   const items = [];
   for await (const item of pagePromise) items.push(item);
   return items;
+}
+
+async function verifyLostUpdateResponse(client, baseUrl) {
+  const environment = await client.beta.environments.create({ name: 'lost-update-reply', betas: BETAS });
+  const resourceUrl = new URL(`/v1/environments/${environment.id}`, baseUrl);
+  const headers = { 'anthropic-beta': BETAS[0] };
+  const retrieve = () => fetch(resourceUrl, { headers });
+  const original = await retrieve();
+  assert.equal(original.status, 200);
+  const originalTag = original.headers.get('etag');
+  assert.ok(originalTag);
+  await original.body.cancel();
+
+  const options = {
+    method: 'POST',
+    headers: { ...headers, 'content-type': 'application/json', 'if-match': originalTag },
+    body: JSON.stringify({ description: 'committed before losing reply' }),
+  };
+  // Close the client socket only after the real server sends its final status.
+  const receivedStatuses = [];
+  const proxy = http.createServer((request, response) => {
+    const upstream = http.request(resourceUrl, { method: request.method, headers: request.headers }, (reply) => {
+      receivedStatuses.push(reply.statusCode);
+      reply.resume();
+      response.destroy();
+    });
+    upstream.on('error', () => response.destroy());
+    request.pipe(upstream);
+  });
+  proxy.listen(0, '127.0.0.1');
+  try {
+    await once(proxy, 'listening');
+    await assert.rejects(fetch(`http://127.0.0.1:${proxy.address().port}`, options));
+    assert.deepEqual(receivedStatuses, [200]);
+    const committed = await retrieve();
+    assert.equal((await committed.json()).description, 'committed before losing reply');
+    assert.notEqual(committed.headers.get('etag'), originalTag);
+
+    await client.beta.environments.update(environment.id, { description: 'intervening update', betas: BETAS });
+    const newest = await retrieve();
+    assert.equal((await newest.json()).description, 'intervening update');
+    const stale = await fetch(resourceUrl, options);
+    assert.equal(stale.status, 412);
+    await stale.body.cancel();
+    const afterRetry = await retrieve();
+    assert.equal(afterRetry.headers.get('etag'), newest.headers.get('etag'));
+    assert.equal((await afterRetry.json()).description, 'intervening update');
+    pass('Environment lost-response retry preserves the intervening committed update');
+  } finally {
+    if (proxy.listening) await new Promise((resolve) => proxy.close(resolve));
+  }
 }
 
 async function main() {
@@ -48,6 +101,8 @@ async function main() {
       assert.equal(env.config.type, 'self_hosted');
       assert.ok(env.id.startsWith('env_'), `id: ${env.id}`);
       pass('beta.environments.create -> BetaEnvironment');
+
+      await verifyLostUpdateResponse(client, baseUrl);
 
       // Scope decision table: omitted is absent; organization/account round-trip;
       // an unknown scope fails before Environment creation.
