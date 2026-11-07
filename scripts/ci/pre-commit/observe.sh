@@ -6,6 +6,7 @@ if [ "$#" -ne 1 ] || [ "$1" != --observe ]; then
   exit 2
 fi
 cd "$(dirname "$0")/../../.." || exit 1
+. scripts/ci/_cargo_target.sh && awaken_configure_gate_temp "$PWD" || exit $?
 hook_status=""
 trap 'exit "${hook_status:-130}"' INT
 trap 'exit "${hook_status:-143}"' TERM

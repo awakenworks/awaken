@@ -9,6 +9,72 @@ awaken_configure_cargo_target() {
   if [ -z "${CARGO_TARGET_DIR:-}" ]; then
     export CARGO_TARGET_DIR="$repository_root/target"
   fi
+  awaken_configure_gate_temp "$repository_root" || exit $?
+}
+
+# Gate temporary files go to the disk that holds the build, not to /tmp.
+#
+# On the shared host / filled to 100% while the build disk had 200 GB free:
+# test tempdirs, SQLite tempdirs and `_deadline.sh`'s own deadline directory
+# then failed with ENOSPC, tests failed at random and a 48-minute formal run
+# died. The target directory is where this checkout already decided its bulk
+# writes go, so temporary files follow it:
+#
+# | Rule | caller's TMPDIR      | target directory             | TMPDIR for this gate             |
+# |------|----------------------|------------------------------|----------------------------------|
+# | T1   | set, writable dir    | any                          | unchanged: an explicit choice wins |
+# | T2   | set, not writable    | any                          | refuse (exit 74), naming TMPDIR  |
+# | T3   | unset or empty       | outside the checkout (a symlinked or relocated target) | <physical target>/gate-tmp/<pid> |
+# | T4   | unset or empty       | inside the checkout          | <checkout parent>/.<checkout>.gate-tmp/<pid> |
+# | T5   | unset, root unwritable | any                        | refuse (exit 74), naming the directory |
+# | T6   | native Windows shell | any                          | unchanged: native tools read TEMP/TMP, not TMPDIR |
+#
+# Never inside the checkout (T4): a temporary crate there joins this Cargo
+# workspace ("believes it's in a workspace when it's not") and a temporary
+# directory there is inside this Git repository. Each gate run owns one <pid>
+# directory, so concurrent gates in one worktree never share or delete each
+# other's files; at the next start, directories whose process is gone are
+# removed. A nested entry point inherits the exported TMPDIR (T1), so one run
+# keeps one directory. The checkout parent is on the target's disk whenever the
+# target is inside the checkout.
+awaken_gate_temp_root() {
+  local repository_root="$1" target anchor checkout
+  target="${CARGO_TARGET_DIR:-$repository_root/target}"
+  mkdir -p -- "$target" 2>/dev/null || return 1
+  anchor=$(cd -- "$target" && pwd -P) || return 1
+  checkout=$(cd -- "$repository_root" && pwd -P) || return 1
+  case "$anchor/" in
+    "$checkout"/*) printf '%s/.%s.gate-tmp\n' "$(dirname -- "$checkout")" "$(basename -- "$checkout")" ;;
+    *) printf '%s/gate-tmp\n' "$anchor" ;;
+  esac
+}
+
+awaken_configure_gate_temp() {
+  local repository_root="$1" temp_root entry run
+  case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
+  if [ -n "${TMPDIR:-}" ]; then
+    [ -d "$TMPDIR" ] && [ -w "$TMPDIR" ] && return 0
+    echo "gate temp: TMPDIR=$TMPDIR is not a writable directory; create it, point TMPDIR at a" \
+      "writable directory on the build disk, or unset it to use one beside the Cargo target" >&2
+    return 74
+  fi
+  if ! temp_root=$(awaken_gate_temp_root "$repository_root") || ! mkdir -p -- "$temp_root" 2>/dev/null; then
+    echo "gate temp: cannot create a temporary directory beside the Cargo target" \
+      "(${CARGO_TARGET_DIR:-$repository_root/target}${temp_root:+ -> $temp_root});" \
+      "make it writable or set TMPDIR to a writable directory on the build disk" >&2
+    return 74
+  fi
+  for entry in "$temp_root"/*; do
+    run="${entry##*/}"
+    [[ "$run" =~ ^[0-9]+$ ]] && [ -d "$entry" ] && [ ! -L "$entry" ] || continue
+    kill -0 "$run" 2>/dev/null || ps -p "$run" >/dev/null 2>&1 || rm -rf -- "$entry"
+  done
+  if ! mkdir -p -- "$temp_root/$$" 2>/dev/null || [ ! -w "$temp_root/$$" ]; then
+    echo "gate temp: $temp_root/$$ is not writable; make $temp_root writable or set TMPDIR" \
+      "to a writable directory on the build disk" >&2
+    return 74
+  fi
+  export TMPDIR="$temp_root/$$"
 }
 
 # Public API generation uses a pinned nightly compiler. Keep its rustdoc and
@@ -54,6 +120,9 @@ awaken_cargo_target_self_test() {
   local second_root="/tmp/awaken-worktree-b"
   local explicit_target="/tmp/awaken-explicit-target"
   local actual
+  # These rows are about the target only; an explicit TMPDIR (T1) keeps the
+  # gate-temp placement from creating directories under the fictional roots.
+  local -x TMPDIR="${TMPDIR:-/tmp}"
 
   # Cause/effect graph:
   # C1 caller omits CARGO_TARGET_DIR -> E1 use the current worktree target.
@@ -101,8 +170,67 @@ awaken_cargo_target_self_test() {
   grep -Fq '../../scripts/ci/check_managed_sdk_behavior.sh' packages/managed-sdk-oracle/package.json || return 1
 
   awaken_public_api_target_self_test || return 1
+  awaken_gate_temp_self_test || return 1
   echo "Cargo target isolation self-test passed"
 }
+
+awaken_gate_temp_self_test() (
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      [ "$(TMPDIR=; awaken_configure_gate_temp /nonexistent; printf '%s' "${TMPDIR-}")" = "" ] || return 1
+      echo "Gate temp placement: T6 native Windows keeps TEMP/TMP"; return 0 ;;
+  esac
+  local fixture checkout outside actual status dead live
+  # Rows clear TMPDIR with `TMPDIR=` (empty reads as unset), never `unset`: the
+  # caller holds TMPDIR as a local, and unsetting a local re-exposes the hook's
+  # exported value instead of clearing it.
+  fixture=$(cd -- "$(mktemp -d)" && pwd -P) || return 1
+  trap 'chmod -R u+w -- "$fixture" 2>/dev/null; rm -rf -- "$fixture"' EXIT
+  checkout="$fixture/work tree"
+  outside="$fixture/build disk/target"
+  mkdir -p "$checkout" "$outside"
+  # T4 target inside the checkout -> a sibling of the checkout, never inside it.
+  actual=$(TMPDIR=; unset CARGO_TARGET_DIR; awaken_configure_gate_temp "$checkout" && printf '%s' "$TMPDIR") || return 1
+  [ "$actual" = "$fixture/.work tree.gate-tmp/$$" ] && [ -d "$actual" ] && [ -w "$actual" ] ||
+    { echo "T4 in-checkout target placed temp at $actual" >&2; return 1; }
+  # T3 a target outside the checkout (relocated, or reached through a symlink).
+  rm -rf -- "$checkout/target"; ln -s "$outside" "$checkout/target"
+  actual=$(TMPDIR=; unset CARGO_TARGET_DIR; awaken_configure_gate_temp "$checkout" && printf '%s' "$TMPDIR") || return 1
+  [ "$actual" = "$outside/gate-tmp/$$" ] && [ -d "$actual" ] ||
+    { echo "T3 relocated target placed temp at $actual" >&2; return 1; }
+  actual=$(TMPDIR=; CARGO_TARGET_DIR="$outside"; awaken_configure_gate_temp "$checkout" && printf '%s' "$TMPDIR") || return 1
+  [ "$actual" = "$outside/gate-tmp/$$" ] || { echo "T3 empty TMPDIR was not treated as unset" >&2; return 1; }
+  # T1 an explicit writable TMPDIR wins, creates nothing, and a nested entry keeps it.
+  actual=$(export TMPDIR="$fixture"; unset CARGO_TARGET_DIR
+    awaken_configure_gate_temp "$fixture/elsewhere" && awaken_configure_gate_temp "$checkout" && printf '%s' "$TMPDIR") || return 1
+  [ "$actual" = "$fixture" ] && [ ! -e "$fixture/.elsewhere.gate-tmp" ] ||
+    { echo "T1 an explicit TMPDIR was replaced by $actual" >&2; return 1; }
+  # T2 an explicit TMPDIR that is not a writable directory is refused by name.
+  status=0
+  actual=$(export TMPDIR="$fixture/absent"; awaken_configure_gate_temp "$checkout" 2>&1) || status=$?
+  [ "$status" -eq 74 ] && [[ "$actual" == *"TMPDIR=$fixture/absent is not a writable directory"* ]] ||
+    { echo "T2 a missing TMPDIR was not refused: $status $actual" >&2; return 1; }
+  # Stale runs: a finished process's directory goes, a live one and a foreign name stay.
+  sleep 0 & dead=$!; wait "$dead"
+  sleep 30 & live=$!
+  mkdir -p "$outside/gate-tmp/$dead/x" "$outside/gate-tmp/$live" "$outside/gate-tmp/keep-me"
+  (TMPDIR=; unset CARGO_TARGET_DIR; awaken_configure_gate_temp "$checkout") || { kill "$live"; return 1; }
+  [ ! -e "$outside/gate-tmp/$dead" ] && [ -d "$outside/gate-tmp/$live" ] && [ -d "$outside/gate-tmp/keep-me" ] ||
+    { kill "$live"; echo "stale-run cleanup removed the wrong directories" >&2; return 1; }
+  kill "$live"; wait "$live" 2>/dev/null
+  # T5 a temp root that cannot be created is refused by name (root ignores modes).
+  if [ "$(id -u)" -ne 0 ]; then
+    rm -rf -- "$outside/gate-tmp"; chmod 555 "$outside"; status=0
+    actual=$(TMPDIR=; unset CARGO_TARGET_DIR; awaken_configure_gate_temp "$checkout" 2>&1) || status=$?
+    chmod 755 "$outside"
+    [ "$status" -eq 74 ] && [[ "$actual" == *"cannot create a temporary directory beside the Cargo target"* ]] ||
+      { echo "T5 an unwritable temp root was not refused: $status $actual" >&2; return 1; }
+  fi
+  # doctor.sh --self-test (T8) proves the entry points that select no Cargo
+  # target still call this; naming them here would make every edit to them
+  # trigger the Rust hook, whose inputs include this file.
+  echo "Gate temp placement: T1-T5 and stale-run cleanup passed"
+)
 
 awaken_public_api_target_self_test() {
   local pin="nightly-2026-07-14" selected first second status

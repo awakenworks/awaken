@@ -18,6 +18,7 @@ INPUT_GLOBS: tuple[str, ...] = (
     "scripts/ci/deadline.py",
     "scripts/ci/check-all.sh",
     "scripts/ci/_build_observation.sh",
+    "scripts/ci/_cargo_target.sh",
     "scripts/ci/test_full_gate_admission.py",
 )
 ROOT = Path(__file__).resolve().parents[2]
