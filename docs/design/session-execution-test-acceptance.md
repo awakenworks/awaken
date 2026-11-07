@@ -141,41 +141,6 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 | `not_applicable` | 本部署不提供该模式；写明原因，并以已执行的能力拒绝测试证明，只证明拒绝而非行为通过 |
 
 
-### 批次
-
-| 批次 | 场景 | 状态 | 证据 |
-| --- | --- | --- | --- |
-| 静态门禁 | T00-C01、T00-C02、T00-C03、T34-C03、T36-C01、T36-C02、T36-C03 | `current_clause_complete` | E11、E12、E15 |
-| 组件 | T01-C01、T14-C01 | `current_clause_complete` | E13 |
-| 组件 | T06-C01、T07-C01、T11-C02、T12-C01、T13-C03、T15-C01、T27-C01、T27-C02、T41-C01 | `current_clause_complete` | E13、E40、E41 |
-| SQL、全后端与原生效果 | T05-C01、T11-C03、T18-C01、T26-C03、T25-C03、T24-C02、T20-C03、T34-C01、T34-C02、T07-C03、T28-C03、T28-C02 | `current_clause_complete` | E16（T26-C03 另有 E18） |
-| SQL、全后端与原生效果 | T08-C02、T08-C03、T09-C02、T10-C03、T16-C01 | `product_gap` | E16（已成立部分）；E17 为复现测试的预期失败 |
-| ADR-0102 修复，待批量执行 | T04-C03、T06-C02、T12-C03、T17-C01、T17-C02、T17-C03、T23-C03、T33-C02、T38-C02、T38-C03 | `source_binding_only` | 复现测试已取消忽略；本机 Windows 批量执行后改为条款绑定 |
-| 凭据读取与回执等待 | T15-C02 | `current_subset` | E42（Linux Provider/A2A 的具名等待断言）；完整场景未验收 |
-| 设计场景补测（SDK、组件、真实服务） | T02-C01、T03-C01、T03-C03、T14-C03、T27-C03、T30-C02、T30-C03、T32-C03 | `current_clause_complete` | E-DOL-RUST/SDK/SDKPY/E2E-*-20261031 |
-| 设计场景补测（SDK、组件、真实服务），ADR-0103 修复，待批量执行 | T02-C03、T13-C02、T25-C01、T31-C03、T32-C01、T33-C03 | `source_binding_only` | 已成立部分同上；复现测试已取消忽略，本机 Windows 批量执行后改为条款绑定（E-DOL-GAPS、E-DOL-SDKPYGAP、E-DOL-E2E-MULTIPROCGAP 记录的是修复前的预期失败） |
-| 设计场景补测（SDK、组件、真实服务） | T21-C04、T35-C01、T35-C03 | `current_subset` | E-DOL-E2E-CTRLCOORD、E-DOL-RUST；未覆盖切片见各场景 |
-| 设计场景补测（平台与能力） | T24-C03、T35-C02 | `platform_pending` | 需原生 Linux 内核 FUSE/namespace，本任务不执行 Linux |
-| 设计场景补测（平台与能力） | T40-C03 | `not_applicable` | E-DOL-RUST 的能力拒绝测试；无部署提供跨进程 live FUSE |
-
-#### 静态门禁
-
-[门禁测试](../../scripts/ci/test_session_acceptance.py)以真实工作区和台账为输入，先证明未修改的输入被接受，再注入一个反例并要求生产守卫按自己的规则拒绝：越界依赖进入 Host/MCP/Environment/Memory、通过改名或移动文件的再导出暴露宽对象、在所有者外直接写 Session 状态、移动组入口、共享契约变更的真实反向依赖、只按文件所在 crate 选取的变异规划器、未知或全局输入、按名称和次数对齐的执行验证与只比较总数的变异验证器，以及台账的名称、断言、跳过、仅编译、改写历史 receipt 等规则。T36-C02 的“源码不变”条款绑定既有的执行围栏自测。
-
-已知限制：依赖守卫按自身表格允许部分跨上下文基础设施依赖（例如 memory-store 到 session-executor），本批只证明其规则禁止的边会被拒绝；影响选择只证明 Cargo 反向依赖，L2/L3 层级扩展由各门禁脚本负责。
-
-E11 是 13 个门禁测试在本机 Windows 的执行，E15 是 rebase 到 `f3ae320728` 后的同一组复跑；E12 是 Rust 必需执行验证器自测（27 例通过，10 例为 POSIX/Linux 专属固件而跳过，未绑定）。原始 receipt 和日志在 `target/session-acceptance-evidence/`，哈希登记在证据注册表。
-
-#### 组件
-
-各测试调用生产入口，以副作用计数、持久 root 与确切身份断言，并在测试内执行反向控制（变异检查器或注入故障）。E13 为 23 个非忽略用例在本机 Windows 的 nextest 执行，全部通过；E14 以 `--run-ignored only` 执行 14 个产品缺口复现测试，全部按预期失败，只用于证明缺口存在。E40 是修复后在本机 Windows 的 nextest 复跑：其中 9 个原复现测试取消忽略并通过，改为条款绑定；其余 5 个仍为忽略的复现测试。E41 是 [ADR-0094](../adr/0094-session-access-and-run-admission-outcomes.md) 落地后的复跑：其余 5 个复现测试取消忽略并通过（T07 复现按 ADR 改为断言“结果未定、修复恰好接纳一次”），本批组件缺口全部关闭。
-
-T01-C01 在本批修复了一个小缺口：Secret Broker 原先只安装到当时已选的 Provider，之后选择、替换或迁移的 Provider 不会获得它；现在 builder 保存 Broker，并与 Memory mounter 一起重新安装。
-
-本批 9 个组件缺口均已关闭：T12-C01、T15-C01、T27-C01、T27-C02、T41-C01 见 E40；T06-C01、T07-C01、T11-C02、T13-C03 按 [ADR-0094](../adr/0094-session-access-and-run-admission-outcomes.md) 修复，见 E41。
-
-本节新增的绑定从 B101 起登记在 `bindings-4.json` 及后续分片，每条带断言行、覆盖的 oracle 编号与反向控制标记；下文“现有测试绑定索引”只列基线时的 100 个绑定。
-
 
 
 ### Recording and retrieval

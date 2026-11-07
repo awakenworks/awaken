@@ -718,6 +718,12 @@ def command_disk(manifest: dict, stage: str, path: str | None, override: float |
     return 75
 
 
+def admission_wait_seconds() -> int:
+    """The host admission's own wait bound (AWAKEN_ADMISSION_WAIT_SECONDS, default 1800)."""
+    value = os.environ.get('AWAKEN_ADMISSION_WAIT_SECONDS', '1800')
+    return int(value) if value.isdigit() else 1800
+
+
 def command_resources(manifest: dict, profile: str, *, require_host: bool = False,
                       observe: bool = False) -> int:
     """Delegate resource eligibility; the repository owns no host thresholds."""
@@ -730,8 +736,13 @@ def command_resources(manifest: dict, profile: str, *, require_host: bool = Fals
         print('host resource observation unavailable; runner must supply its resource contract')
         return 0
     try:
+        # `--require` may wait out transient host pressure, so its deadline follows the
+        # host's wait bound and its progress lines reach the developer live (stderr is
+        # not captured). `--status` is an instant read-only answer.
         result = subprocess.run([found.where, '--status' if observe else '--require',
-                                 '--profile', profile], capture_output=True, text=True, timeout=30)
+                                 '--profile', profile], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE if observe else None, text=True,
+                                timeout=30 if observe else admission_wait_seconds() + 60)
         report = json.loads(result.stdout)
         if (type(report.get('schema_version')) is not int or report.get('schema_version') != 1
                 or report.get('profile') != profile
@@ -772,6 +783,10 @@ def _host_resource_problems() -> list[str]:
             if child.call_args.args[0] != ['/fixture/observer', '--status' if observe else '--require',
                                            '--profile', 'qualification']:
                 errors.append('host resource request did not preserve exact profile/mode')
+            if child.call_args.kwargs['timeout'] != (30 if observe else admission_wait_seconds() + 60):
+                errors.append('--require deadline must outlast the host admission wait')
+            if (child.call_args.kwargs['stderr'] is None) == observe:
+                errors.append('--require progress must stream; --status stays captured')
     with patch(__name__ + '.locate', return_value=Found('absent')), \
             patch.object(subprocess, 'run') as child:
         if _quiet(lambda: command_resources(fixture, 'qualification', require_host=True)) != 75:

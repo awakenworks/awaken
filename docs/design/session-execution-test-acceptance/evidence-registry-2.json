@@ -524,5 +524,59 @@
     "log_sha256": "82d297533f82f74bdd7e470977b9d3b3176aeb42fbdf007955ce06c4f7a1c9d1",
     "historical": false,
     "entry_sha256": "ebe2c53f7bafe5dc90ee3e4c373f64c9276ed361392de288b4c9c79d56295a93"
+  },
+  {
+    "id": "E-NEXTEST-SELFTEST-20261107",
+    "receipt": "target/session-acceptance-evidence/E-NEXTEST-SELFTEST-20261107/receipt.json",
+    "receipt_sha256": "016c046ff3dd5504b18273d4012ea75e714c1fc2249315e09b5e178ce6835266",
+    "source": {
+      "head": "22c220848fa2a712ddd8ab3c8458e37ad8c18201",
+      "dirty_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "platform": "native-Linux x86_64",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "nextest_execution.py self-test on native Linux: QualifyTests drive run() and qualify() with nextest replaced by a writer of its list and JUnit reports, including a source change during the run",
+    "argv": [
+      "python3",
+      "scripts/ci/nextest_execution.py",
+      "--self-test"
+    ],
+    "environment_names": [],
+    "exit": 0,
+    "seconds": 0.1,
+    "executed_count": 12,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "201edac9c80e9f92bc0772a2641f264065d4005a4a43a868fc931413e242214f",
+    "historical": false,
+    "entry_sha256": "bbf919dd489359b6536c60d060b8f38a7bdf1e491f3e29ae0c0e16cfd229f213"
+  },
+  {
+    "id": "E-NEXTEST-SELFTEST-20261107B",
+    "receipt": "target/session-acceptance-evidence/E-NEXTEST-SELFTEST-20261107B/receipt.json",
+    "receipt_sha256": "938d40f757aea6d7a3df6a35402207483ee54a9806a0d0aa1fe77c84696d0cdd",
+    "source": {
+      "head": "81a90d96108c8361eb59767d53e64874c8e70174",
+      "dirty_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "platform": "native-Linux x86_64",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "nextest_execution self-test on the second DX batch head 81a90d9610",
+    "argv": [
+      "python3",
+      "scripts/ci/nextest_execution.py",
+      "--self-test"
+    ],
+    "environment_names": [],
+    "exit": 0,
+    "seconds": 0.1,
+    "executed_count": 15,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "3b1b4902d40739b5a1fb2a638f3138076756634e2ad8ed8ac5446ae9c8b9ac0b",
+    "historical": false,
+    "entry_sha256": "a0e3a647c9bcfc1a0070e04855e1659d429285c6b0e2fce3ce5368f016c322c1"
   }
 ]

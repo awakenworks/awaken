@@ -94,5 +94,58 @@
     },
     "review": "Former product-gap reproducer, un-ignored after the ADR-0103 fix; asserts the corrected behaviour through the production entrypoint.",
     "limitation": "Not yet execution evidence: awaits the batched native Windows verification; the case stays source_binding_only until its receipt is registered."
+  },
+  {
+    "name": "test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept",
+    "source_locations": [
+      {
+        "path": "scripts/ci/nextest_execution.py",
+        "line": 398,
+        "file_sha256": "efe56c8e75f3d08fc00d4484716597e0187f28cea51fc802e37f10bd8a5ce010"
+      }
+    ],
+    "assertion_locations": [
+      {
+        "path": "scripts/ci/nextest_execution.py",
+        "line": 399
+      },
+      {
+        "path": "scripts/ci/nextest_execution.py",
+        "line": 401
+      },
+      {
+        "path": "scripts/ci/nextest_execution.py",
+        "line": 402
+      },
+      {
+        "path": "scripts/ci/nextest_execution.py",
+        "line": 403
+      }
+    ],
+    "execution_witnesses": [
+      {
+        "evidence": "E-NEXTEST-SELFTEST-20261107B",
+        "case": "QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept",
+        "package": "scripts/ci",
+        "target": "nextest_execution.py --self-test",
+        "result": "passed",
+        "skipped": false,
+        "source_head": "81a90d96108c8361eb59767d53e64874c8e70174",
+        "historical": false,
+        "log_sha256": "3b1b4902d40739b5a1fb2a638f3138076756634e2ad8ed8ac5446ae9c8b9ac0b"
+      }
+    ],
+    "relation": "covers_case_clauses",
+    "covers": {
+      "T36-C02": {
+        "oracles": [
+          3
+        ],
+        "negative_control": false
+      }
+    },
+    "review": "Drives nextest_execution.run with nextest replaced by a writer of its list and JUnit reports: an unchanged source snapshot passes, a snapshot that differs after the run fails with source_unchanged=false and 'source changed during the required run', and a nextest status of 23 is returned unchanged. Replaces B114, whose libtest qualifier self-test was retired.",
+    "limitation": "The source snapshot is substituted (rust_test_plan.source_snapshot is mocked); the real working-tree digest reader is exercised by the live required runs, not by this self-test.",
+    "id": "B265"
   }
 ]
