@@ -165,7 +165,8 @@ async fn provider_owner_crash_reacquires_fuse_before_new_scoped_execution() {
     std::fs::write(base.path().join("outside"), b"outside owned root").unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut owner = spawn_owner(base.path(), &listener, true);
-    let nodes = observe_tree(&listener).await;
+    let _participant_stdin = hold_participant_stdin(&mut owner);
+    let nodes = observe_tree(&listener, owner.wait()).await;
     let original = marker(base.path());
     // The writer's wait already proved exit; record_execution reclaims that
     // positively absent identity before recording the still-live tree.
