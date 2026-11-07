@@ -159,7 +159,7 @@ impl TaskNotifications {
         task: &BackgroundTask,
         state: &Store,
     ) -> Option<(Message, Command)> {
-        let BackgroundTaskLifecycle::Ended { end } = &task.lifecycle else {
+        let BackgroundTaskLifecycle::Ended { end } = task.lifecycle() else {
             return None;
         };
         let event = match end {
@@ -172,25 +172,25 @@ impl TaskNotifications {
         // from aliasing another task/revision. Content is not part of identity.
         let id = Id(format!(
             "background-result:{}:{}:{}",
-            task.id.as_str().len(),
-            task.id.as_str(),
-            task.revision
+            task.id().as_str().len(),
+            task.id().as_str(),
+            task.revision()
         ));
         let receipt = StateCell::<u64>::new(
             Scope::Thread,
             MergePolicy::Exclusive,
-            format!("{RECEIPT_PREFIX}{}", task.id.as_str()),
+            format!("{RECEIPT_PREFIX}{}", task.id().as_str()),
         );
         // A tiny delivery receipt shares ThreadCommit with the message. It
         // survives transcript compaction and cannot be forged via message ids.
         if receipt
             .load(state)
             .ok()?
-            .is_some_and(|revision| revision >= task.revision)
+            .is_some_and(|revision| revision >= task.revision())
         {
             return None;
         }
-        let tool = &task.invocation.call.tool_id;
+        let tool = &task.invocation().call.tool_id;
         let rule = self
             .tools
             .get(tool)
@@ -232,10 +232,10 @@ impl TaskNotifications {
         };
         let heading = rule
             .heading
-            .replace("{task_id}", task.id.as_str())
+            .replace("{task_id}", task.id().as_str())
             .replace("{tool_id}", tool)
             .replace("{event}", event.name());
-        let envelope = json!({"source":"background_task", "task_id":task.id.as_str(),
+        let envelope = json!({"source":"background_task", "task_id":task.id().as_str(),
             "event":event, "heading":heading, "result":body});
         let text = match rule.format {
             TaskNotificationFormat::Json => envelope.to_string(),
@@ -253,7 +253,7 @@ impl TaskNotifications {
         };
         Some((
             Message::text(id, Role::User, text),
-            receipt.write(&task.revision).ok()?,
+            receipt.write(&task.revision()).ok()?,
         ))
     }
 }

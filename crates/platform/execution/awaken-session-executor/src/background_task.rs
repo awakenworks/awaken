@@ -335,16 +335,16 @@ impl BackgroundTaskTerminalObserver {
 
     async fn launch(&self, task: BackgroundTask, observed: &RunId) {
         let attempt = task.attempt().expect("committed Running attempt");
-        let fence = attempt.tenure(&task.id);
+        let fence = attempt.tenure(task.id());
         let attention_tenure = placement::task_tenure_read(&task, &self.session_id);
         let expected = attempt.policy.clone();
-        let Some(cancellation) = self.supervisor.register(&task.id, &fence) else {
+        let Some(cancellation) = self.supervisor.register(task.id(), &fence) else {
             return;
         };
         let context = self.execution_context(&task, cancellation);
-        let task_id = task.id;
-        let call = task.invocation.call;
-        let thread_id = task.origin.thread_id;
+        let task_id = task.id().clone();
+        let call = task.invocation().call.clone();
+        let thread_id = task.origin().thread_id.clone();
         let prepared =
             match PreparedToolExecutor::new(self.runtime.clone(), &self.snapshot, context) {
                 Ok(prepared) => Arc::new(prepared),
@@ -528,7 +528,7 @@ impl BackgroundTaskTerminalObserver {
     }
 
     async fn launch_remote(&self, task: BackgroundTask, observed: &RunId) {
-        let (attempt, continuation, cancelling) = match &task.lifecycle {
+        let (attempt, continuation, cancelling) = match task.lifecycle() {
             BackgroundTaskLifecycle::Waiting {
                 attempt,
                 wait: BackgroundWait::Remote(handle),
@@ -539,24 +539,24 @@ impl BackgroundTaskTerminalObserver {
             } => (attempt, handle.clone(), true),
             _ => unreachable!("committed remote continuation"),
         };
-        let fence = attempt.tenure(&task.id);
+        let fence = attempt.tenure(task.id());
         let attention_tenure = placement::task_tenure_read(&task, &self.session_id);
         let expected = attempt.policy.clone();
         let lease_expires_at_ms = attempt.lease_expires_at_ms;
         let cancellation = self
             .supervisor
-            .resume_wait(&task.id, &fence)
-            .or_else(|| self.supervisor.register(&task.id, &fence));
+            .resume_wait(task.id(), &fence)
+            .or_else(|| self.supervisor.register(task.id(), &fence));
         let Some(cancellation) = cancellation else {
             if cancelling {
-                self.supervisor.cancel(&task.id, &fence);
+                self.supervisor.cancel(task.id(), &fence);
             }
             return;
         };
         let context = self.execution_context(&task, cancellation.clone());
-        let task_id = task.id;
-        let call = task.invocation.call;
-        let thread_id = task.origin.thread_id;
+        let task_id = task.id().clone();
+        let call = task.invocation().call.clone();
+        let thread_id = task.origin().thread_id.clone();
         let prepared =
             match PreparedToolExecutor::new(self.runtime.clone(), &self.snapshot, context) {
                 Ok(prepared) => Arc::new(prepared),
@@ -892,7 +892,7 @@ impl BackgroundTaskTerminalObserver {
                 .await?,
         );
         for task in tasks_from_state(&state).map_err(|error| error.to_string())? {
-            match &task.lifecycle {
+            match task.lifecycle() {
                 BackgroundTaskLifecycle::Running { attempt }
                     if attempt.worker_id == self.supervisor.worker_id() =>
                 {
@@ -911,9 +911,10 @@ impl BackgroundTaskTerminalObserver {
                 BackgroundTaskLifecycle::Cancelling { attempt, .. }
                     if attempt.worker_id == self.supervisor.worker_id() =>
                 {
-                    self.supervisor.cancel(&task.id, &attempt.tenure(&task.id));
+                    self.supervisor
+                        .cancel(task.id(), &attempt.tenure(task.id()));
                 }
-                BackgroundTaskLifecycle::Ended { .. } => self.supervisor.retire_terminal(&task.id),
+                BackgroundTaskLifecycle::Ended { .. } => self.supervisor.retire_terminal(task.id()),
                 _ => {}
             }
         }
@@ -2112,11 +2113,11 @@ mod tests {
             .unwrap();
         let after = Store::rebuild(&memory.committed_state(&ThreadId("child".into())));
         assert!(
-            task_state_cell(&task.id)
+            task_state_cell(task.id())
                 .load(&after)
                 .unwrap()
                 .unwrap()
-                .lifecycle
+                .lifecycle()
                 .is_terminal(),
             "E4 original StepStart persisted"
         );
@@ -2244,7 +2245,7 @@ mod tests {
             )
             .expect("claim");
         authoritative_state.replace(Ok(vec![
-            task_state_cell(&task.id)
+            task_state_cell(task.id())
                 .write(&task)
                 .expect("R2 authoritative task command"),
         ]));
@@ -2286,7 +2287,7 @@ mod tests {
         );
         drop(attention_calls);
         assert_eq!(after_tool_calls.load(Ordering::SeqCst), 0, "R4/E4");
-        let completion = supervisor.completion(&task.id).expect("R3/E3 completion");
+        let completion = supervisor.completion(task.id()).expect("R3/E3 completion");
         assert_eq!(completion.fence, fence);
         assert!(matches!(
             &completion.end,
@@ -2308,7 +2309,7 @@ mod tests {
             "R5/E5: detached execution reuses the canonical stable spill identity"
         );
         assert!(
-            supervisor.register(&task.id, &fence).is_none(),
+            supervisor.register(task.id(), &fence).is_none(),
             "completion remains a deduplication guard until durable Ended truth"
         );
     }
@@ -2509,7 +2510,7 @@ mod tests {
                 ),
                 true,
                 Vec::new(),
-                vec![task_state_cell(&task.id).write(task).expect("task state")],
+                vec![task_state_cell(task.id()).write(task).expect("task state")],
                 Vec::new(),
             )
         };
@@ -2528,7 +2529,7 @@ mod tests {
         assert!(background.drain(Duration::from_secs(2)).await);
         assert_eq!(remote.starts.load(Ordering::SeqCst), 1, "R1");
         let waiting = supervisor
-            .wait_candidate(&task.id)
+            .wait_candidate(task.id())
             .expect("R1 wait candidate");
         task.wait(&waiting.fence, waiting.wait)
             .expect("R2 fold wait");
@@ -2550,7 +2551,7 @@ mod tests {
         assert!(
             matches!(
                 supervisor
-                    .completion(&task.id)
+                    .completion(task.id())
                     .map(|completion| completion.end),
                 Some(BackgroundTaskEnd::Completed { .. })
             ),
@@ -2855,8 +2856,8 @@ mod tests {
                 counter.0.load(Ordering::SeqCst),
                 1,
                 "R1/R2 one actual tool effect; warm={warm}, completion={:?}, wait={:?}",
-                supervisor.completion(&task.id),
-                supervisor.wait_candidate(&task.id),
+                supervisor.completion(task.id()),
+                supervisor.wait_candidate(task.id()),
             );
             {
                 let calls = application.calls.lock().unwrap();

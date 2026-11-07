@@ -140,9 +140,9 @@ async fn terminal_notification_reaches_inference_and_commits_without_result_look
             .unwrap();
     let task = &tasks[0];
     let fence = task.tenure().unwrap();
-    assert!(supervisor.register(&task.id, &fence).is_some());
+    assert!(supervisor.register(task.id(), &fence).is_some());
     supervisor.complete(
-        task.id.clone(),
+        task.id().clone(),
         awaken_tool_contract::tool::background_task::BackgroundTaskCompletion {
             fence,
             end: BackgroundTaskEnd::Completed {
@@ -310,10 +310,10 @@ async fn runtime_commits_submission_through_the_ordinary_thread_state_boundary()
         .collect::<Vec<_>>();
     assert_eq!(tasks.len(), 1, "C2/E1: exactly one durable submission");
     assert!(matches!(
-        tasks[0].lifecycle,
+        tasks[0].lifecycle(),
         BackgroundTaskLifecycle::Running { .. }
     ));
-    assert_eq!(tasks[0].origin.thread_id, ThreadId("thread-1".into()));
+    assert_eq!(tasks[0].origin().thread_id, ThreadId("thread-1".into()));
     let attempt = tasks[0]
         .attempt()
         .expect("submission freezes execution facts");
@@ -399,7 +399,7 @@ async fn terminal_reclaim_rejects_then_recovers_from_committed_thread_truth() {
                 run: RunDisposition::ended(origin_run, EndCause::NaturalEnd),
                 messages: Vec::new(),
                 state: vec![
-                    task_state_cell(&running.id)
+                    task_state_cell(running.id())
                         .write(&running)
                         .expect("serialize running aggregate"),
                 ],
@@ -420,7 +420,7 @@ async fn terminal_reclaim_rejects_then_recovers_from_committed_thread_truth() {
         );
         assert!(
             matches!(
-                (&terminal.lifecycle, indeterminate),
+                (&terminal.lifecycle(), indeterminate),
                 (
                     BackgroundTaskLifecycle::Ended {
                         end: BackgroundTaskEnd::Indeterminate { .. }
@@ -447,7 +447,7 @@ async fn terminal_reclaim_rejects_then_recovers_from_committed_thread_truth() {
                     run: RunDisposition::ended(retry_run.clone(), EndCause::NaturalEnd),
                     messages: Vec::new(),
                     state: vec![
-                        task_state_cell(&terminal.id)
+                        task_state_cell(terminal.id())
                             .write(&terminal)
                             .expect("serialize terminal aggregate")
                     ],
@@ -464,7 +464,7 @@ async fn terminal_reclaim_rejects_then_recovers_from_committed_thread_truth() {
             .expect("reopen after rejection");
         let recovered_state =
             Store::rebuild(&CommittedThreadView::committed_state(&store, &thread_id));
-        let mut recovered = task_state_cell(&running.id)
+        let mut recovered = task_state_cell(running.id())
             .load(&recovered_state)
             .expect("decode committed aggregate")
             .expect("prior aggregate remains present");
@@ -481,7 +481,7 @@ async fn terminal_reclaim_rejects_then_recovers_from_committed_thread_truth() {
                 run: RunDisposition::ended(retry_run, EndCause::NaturalEnd),
                 messages: Vec::new(),
                 state: vec![
-                    task_state_cell(&recovered.id)
+                    task_state_cell(recovered.id())
                         .write(&recovered)
                         .expect("serialize recovered terminal aggregate"),
                 ],
@@ -496,7 +496,7 @@ async fn terminal_reclaim_rejects_then_recovers_from_committed_thread_truth() {
             .expect("reopen after success");
         let final_state =
             Store::rebuild(&CommittedThreadView::committed_state(&reopened, &thread_id));
-        let final_task = task_state_cell(&terminal.id)
+        let final_task = task_state_cell(terminal.id())
             .load(&final_state)
             .expect("decode terminal aggregate after restart")
             .expect("terminal aggregate remains present");
