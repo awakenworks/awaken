@@ -30,6 +30,8 @@ impl EnterCredentialRequest {
             env_key: None,
             secret,
             material,
+            auxiliary_materials: Default::default(),
+            grant_lifetime: None,
             oauth_helper: None,
         })
     }
@@ -70,6 +72,8 @@ impl EnterCredentialRequest {
             env_key: None,
             secret,
             material,
+            auxiliary_materials: Default::default(),
+            grant_lifetime: None,
             oauth_helper: None,
         })
     }
@@ -92,6 +96,33 @@ impl EnterCredentialRequest {
             ));
         }
         self.replacement_of = Some(replacement_of);
+        Ok(self)
+    }
+
+    /// Forward private grant input to the original described entry path.
+    /// Slot/lifetime admission remains owned by the canonical Vault command.
+    pub fn with_grant_inputs(
+        mut self,
+        auxiliary_materials: std::collections::BTreeMap<
+            String,
+            awaken_agent_contract::RedactedString,
+        >,
+        grant_lifetime: Option<awaken_credential_contract::CredentialGrantLifetime>,
+    ) -> Result<Self, CredentialError> {
+        if (!auxiliary_materials.is_empty() || grant_lifetime.is_some())
+            && (self.kind != CredentialKind::Vault
+                || self.descriptor.is_none()
+                || self.idempotency_key.is_none())
+        {
+            return Err(CredentialError::InvalidSource(
+                "private grant input requires a described idempotent Vault request".into(),
+            ));
+        }
+        self.auxiliary_materials = auxiliary_materials
+            .into_iter()
+            .map(|(slot, value)| (slot, value.expose_secret().to_owned()))
+            .collect();
+        self.grant_lifetime = grant_lifetime;
         Ok(self)
     }
 

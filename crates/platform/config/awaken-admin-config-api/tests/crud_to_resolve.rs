@@ -40,6 +40,7 @@ fn harness() -> Harness {
         secrets: secrets.clone(),
         profiles: Arc::new(awaken_config_resolver::InMemoryProfileStore::new()),
         resources: Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new()),
+        grant_renewal: None,
         probe: None,
         model_discovery: None,
         brokered_catalog: None,

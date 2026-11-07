@@ -46,6 +46,29 @@ impl VaultRefreshFactory {
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_admin_config_api::CredentialGrantRenewal for VaultRefreshFactory {
+    async fn inspect(
+        &self,
+        workspace: &str,
+        source: &awaken_agent_contract::credential::CredentialRef,
+        min_validity_ms: u64,
+    ) -> Result<Option<awaken_credential_contract::CredentialRenewalStatus>, TokenAcquisitionError>
+    {
+        self.inspect_described(workspace, source, min_validity_ms)
+            .await
+    }
+
+    async fn renew(
+        &self,
+        workspace: &str,
+        source: &awaken_agent_contract::credential::CredentialRef,
+        replacement: CredentialSourceId,
+    ) -> Result<awaken_credential_vault::CredentialSource, TokenAcquisitionError> {
+        self.renew_described(workspace, source, replacement).await
+    }
+}
+
 impl CredentialRefreshFactory for VaultRefreshFactory {
     fn refresher(
         &self,
@@ -225,18 +248,20 @@ impl VaultRefreshFactory {
         if state.refresh_expires_at_unix_ms.is_some_and(|at| at <= now) {
             return Ok(Some(Status::NeedsAuthorization));
         }
-        if state.access_expires_at_unix_ms.is_none() {
+        let Some(expires_at) = state.access_expires_at_unix_ms else {
             return Ok(Some(Status::ExpiryUnknown));
+        };
+        let window = min_validity_ms.max(profile.response.refresh_margin_ms);
+        if state.predecessor.is_some()
+            && expires_at.saturating_sub(state.issued_at_unix_ms) <= window
+        {
+            return Ok(Some(Status::InsufficientLifetime));
         }
-        Ok(Some(
-            if state.access_expires_at_unix_ms.is_none_or(|at| {
-                at <= now.saturating_add(min_validity_ms.max(profile.response.refresh_margin_ms))
-            }) {
-                Status::Due
-            } else {
-                Status::Ready
-            },
-        ))
+        Ok(Some(if expires_at <= now.saturating_add(window) {
+            Status::Due
+        } else {
+            Status::Ready
+        }))
     }
     /// Renew one described grant into an exact replacement for its governance
     /// owner. The caller receives only a source receipt, never issued material.

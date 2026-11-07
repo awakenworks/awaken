@@ -534,6 +534,11 @@ pub fn control_router(input: ControlRouterInput) -> Router {
             // root — the only place the model SDK is named; the admin CRUD crate stays
             // SDK-free.
             probe: Some(probe),
+            grant_renewal: Some(Arc::new(VaultRefreshFactory::new(
+                credentials.clone(),
+                secrets.clone(),
+                clock.clone(),
+            ))),
             model_discovery: Some(model_discovery),
             brokered_catalog,
             // Shared credential-availability cooldowns (E3-4).

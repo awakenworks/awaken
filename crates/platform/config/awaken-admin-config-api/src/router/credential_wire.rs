@@ -55,6 +55,14 @@ pub struct EnterCredentialRequest {
     /// exclusive with the legacy `secret` field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) material: Option<CredentialMaterialInput>,
+    /// Write-only auxiliary inputs declared by the acquisition profile. The
+    /// canonical Vault entry validates their exact slots and seals them with
+    /// the primary material; no response contains these values.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(super) auxiliary_materials: std::collections::BTreeMap<String, String>,
+    /// Optional initial grant evidence, stored with the same sealed generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) grant_lifetime: Option<awaken_credential_contract::CredentialGrantLifetime>,
     /// A server-owned OAuth refresh helper. This is an allowlisted identifier,
     /// never an operator-supplied command line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,11 +87,33 @@ pub struct RotateCredentialRequest {
 
 /// Retire one exact credential revision. The expected version is mandatory so
 /// an operator cannot erase material that was rotated after its read.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ArchiveCredentialRequest {
-    pub(super) expected_version: i64,
+    pub expected_version: i64,
+}
+
+/// Renew an exact described source under the original hosted operation identity.
+/// This command carries no token, password or auxiliary secret value.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RenewCredentialRequest {
+    pub workspace_id: String,
+    pub expected_version: u64,
+    pub idempotency_key: String,
+    pub descriptor: CredentialDescriptor,
+}
+
+/// Exact metadata-only observation; it never grants materialization authority.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct CredentialRenewalObservation {
+    pub workspace_id: String,
+    pub reference: CredentialRef,
+    pub status: Option<awaken_credential_contract::CredentialRenewalStatus>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -248,6 +278,8 @@ mod tests {
         "descriptor",
         "material",
         "oauth_helper",
+        "auxiliary_materials",
+        "grant_lifetime",
     ];
 
     #[test]
@@ -290,6 +322,8 @@ mod tests {
         every_producer_key["replacement_of"] = serde_json::Value::Null;
         every_producer_key["oauth_helper"] = serde_json::Value::Null;
         every_producer_key["descriptor"] = serde_json::Value::Null;
+        every_producer_key["auxiliary_materials"] = serde_json::json!({});
+        every_producer_key["grant_lifetime"] = serde_json::Value::Null;
         let object = every_producer_key.as_object().expect("object body");
         for key in PRODUCER_KEYS {
             assert!(
