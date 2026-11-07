@@ -528,33 +528,6 @@ pub(crate) fn parse_idempotency_key(headers: &HeaderMap) -> Result<Option<String
         .map_err(|message| error_response(StateError::Run(RunError::bad_request(message))))
 }
 
-fn parse_if_match(headers: &HeaderMap, representation: &str) -> Result<Option<u64>, WireErr> {
-    headers
-        .get(header::IF_MATCH)
-        .map(|value| {
-            let raw = value.to_str().map_err(|_| {
-                error_response(StateError::Run(RunError::bad_request(format!(
-                    "If-Match must be a quoted {representation} revision"
-                ))))
-            })?;
-            if raw == "*" {
-                return Ok(None);
-            }
-            let revision = raw
-                .strip_prefix('"')
-                .and_then(|value| value.strip_suffix('"'))
-                .and_then(|value| value.parse::<u64>().ok())
-                .ok_or_else(|| {
-                    error_response(StateError::Run(RunError::bad_request(format!(
-                        "If-Match must be `*` or a quoted {representation} revision"
-                    ))))
-                })?;
-            Ok(Some(revision))
-        })
-        .transpose()
-        .map(Option::flatten)
-}
-
 async fn retrieve_session(
     ManagedRequestState(state): ManagedRequestState,
     Path(id): Path<String>,
@@ -705,7 +678,8 @@ async fn update_session(
         )),
     };
     let idempotency_key = parse_idempotency_key(&headers)?;
-    let if_match = parse_if_match(&headers, "Session")?.map(awaken_session_types::SessionRevision);
+    let if_match =
+        super::parse_if_match(&headers, "Session")?.map(awaken_session_types::SessionRevision);
     let title = title.map(|value| match value {
         Some(value) => awaken_session_contract::SessionFieldUpdate::Replace(value),
         None => awaken_session_contract::SessionFieldUpdate::Clear,
@@ -1176,7 +1150,7 @@ pub async fn replace_resource_manifest(
 > {
     ensure_session_scope(state.as_ref(), &id, Some(&WorkspaceScope(workspace))).await?;
     let idempotency_key = parse_idempotency_key(&headers)?;
-    let if_match = parse_if_match(&headers, "Resource manifest")?;
+    let if_match = super::parse_if_match(&headers, "Resource manifest")?;
     let fingerprints = body
         .resources
         .iter()

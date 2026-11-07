@@ -1,4 +1,5 @@
 use super::*;
+use crate::worker::ReservationRecoveryContext;
 use awaken_dispatch_erasure::{AnyCoordinatorDispatch, DispatchBinding};
 use std::mem::size_of_val;
 
@@ -113,7 +114,22 @@ async fn claim_path_futures_stay_small_enough_for_a_default_thread_stack() {
     }
 
     let boxed = std::mem::size_of::<crate::worker::ClaimFuture<'static, ()>>();
+    let reservation_clock = clock();
     let heap_boundaries = [
+        (
+            "recover_session_run_reservation",
+            size_of_val(&worker.reservation_recovery.recover(
+                &body_claim,
+                reservation_clock.as_ref(),
+                ReservationRecoveryContext {
+                    store: worker.store.as_ref(),
+                    execution_authority: &worker.ports,
+                    settlement_observer: None,
+                    recovery_source: None,
+                    reservation_ttl_ms: worker.lease_ms,
+                },
+            )),
+        ),
         (
             "drive_claimed_with_cancellation",
             size_of_val(&worker.drive_claimed_with_cancellation(

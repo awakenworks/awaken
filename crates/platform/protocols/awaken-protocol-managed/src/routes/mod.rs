@@ -9,6 +9,11 @@
 //! - [`agents_registry`], [`deployments`], [`environments`], [`user_profiles`],
 //!   [`vaults`] — the management-plane resource CRUD surfaces.
 
+use crate::types::ErrorResponse;
+use axum::{
+    Json,
+    http::{HeaderMap, StatusCode, header},
+};
 use sha2::{Digest, Sha256};
 
 pub(crate) mod agents_registry;
@@ -44,4 +49,40 @@ fn sha256_identity(domain: &str, parts: &[&str]) -> String {
         digest.update(part.as_bytes());
     }
     format!("{:x}", digest.finalize())
+}
+
+fn parse_if_match(
+    headers: &HeaderMap,
+    representation: &str,
+) -> Result<Option<u64>, (StatusCode, Json<ErrorResponse>)> {
+    let invalid_revision = |message| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new("invalid_request_error", message)),
+        )
+    };
+    headers
+        .get(header::IF_MATCH)
+        .map(|value| {
+            let raw = value.to_str().map_err(|_| {
+                invalid_revision(format!(
+                    "If-Match must be a quoted {representation} revision"
+                ))
+            })?;
+            if raw == "*" {
+                return Ok(None);
+            }
+            let revision = raw
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    invalid_revision(format!(
+                        "If-Match must be `*` or a quoted {representation} revision"
+                    ))
+                })?;
+            Ok(Some(revision))
+        })
+        .transpose()
+        .map(Option::flatten)
 }

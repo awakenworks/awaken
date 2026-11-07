@@ -72,6 +72,7 @@ export function startCalcFixture(token, options = {}) {
     serverFactory = http.createServer,
     stateful = false,
     controlHandler = null,
+    beforeInitialize = null,
     beforeToolCall = null,
   } = options;
 
@@ -208,6 +209,10 @@ export function startCalcFixture(token, options = {}) {
             const id = randomUUID(); sessions.add(id);
             responseHeaders['mcp-session-id'] = id;
             responseHeaders['mcp-protocol-version'] = '2025-06-18';
+          }
+          if (beforeInitialize) {
+            await beforeInitialize(responseHeaders['mcp-session-id'], res);
+            if (res.destroyed) return;
           }
           result = {
             protocolVersion: '2025-06-18',

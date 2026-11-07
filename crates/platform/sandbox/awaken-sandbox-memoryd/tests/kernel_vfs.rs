@@ -35,6 +35,19 @@ fn fuse_unavailable_reason() -> Option<String> {
     None
 }
 
+fn fuse_available() -> bool {
+    let Some(reason) = fuse_unavailable_reason() else {
+        return true;
+    };
+    assert_ne!(
+        std::env::var("AWAKEN_TEST_REQUIRE_FUSE").as_deref(),
+        Ok("1"),
+        "required Linux kernel FUSE fixture is unavailable: {reason}"
+    );
+    eprintln!("SKIP kernel_vfs: {reason}");
+    false
+}
+
 fn unique(tag: &str) -> PathBuf {
     let n = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -47,8 +60,7 @@ fn unique(tag: &str) -> PathBuf {
 
 #[test]
 fn kernel_reads_writes_renames_and_persists_across_remount() {
-    if let Some(reason) = fuse_unavailable_reason() {
-        eprintln!("SKIP kernel_vfs: {reason}");
+    if !fuse_available() {
         return;
     }
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -160,8 +172,7 @@ fn kernel_reads_writes_renames_and_persists_across_remount() {
 
 #[test]
 fn independent_mounter_projections_invalidate_peer_caches_and_teardown_independently() {
-    if let Some(reason) = fuse_unavailable_reason() {
-        eprintln!("SKIP kernel_vfs coherence: {reason}");
+    if !fuse_available() {
         return;
     }
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -248,8 +259,7 @@ fn independent_mounter_projections_invalidate_peer_caches_and_teardown_independe
 fn kernel_exercises_metadata_truncate_offsets_dirs_and_errors() {
     use std::io::{Read, Seek, SeekFrom, Write};
 
-    if let Some(reason) = fuse_unavailable_reason() {
-        eprintln!("SKIP kernel_vfs edges: {reason}");
+    if !fuse_available() {
         return;
     }
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -311,6 +321,27 @@ fn kernel_exercises_metadata_truncate_offsets_dirs_and_errors() {
         .as_deref(),
         Some("01XY"),
         "offset write + truncate flushed coherently"
+    );
+
+    // The open descriptor follows the original inode through rename and a
+    // new file at the old path cannot acquire its pending writes.
+    let mut original = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(mnt.join("f.md"))
+        .unwrap();
+    std::fs::rename(mnt.join("f.md"), mnt.join("moved.md")).unwrap();
+    std::fs::write(mnt.join("f.md"), "replacement").unwrap();
+    original.write_all(b"AB").unwrap();
+    original.sync_all().unwrap();
+    drop(original);
+    assert_eq!(
+        std::fs::read_to_string(mnt.join("moved.md")).unwrap(),
+        "ABXY"
+    );
+    assert_eq!(
+        std::fs::read_to_string(mnt.join("f.md")).unwrap(),
+        "replacement"
     );
 
     // stat and read a nonexistent path → ENOENT (lookup error arm).
