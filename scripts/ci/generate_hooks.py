@@ -661,7 +661,7 @@ def local_imports(name: str, scripts: Path = SCRIPTS) -> list[str]:
 # A `scripts/ci` path named in a shell line, literally or through the script's
 # own directory variable (`$script_dir/x.sh`, `"$deadline_dir/deadline.py"`).
 SHELL_REFERENCE = re.compile(
-    r"(?:scripts/ci/|\$\{?[A-Za-z_]*dir\}?\"?/)((?:pre-commit/|pre-push/)?[A-Za-z0-9_.-]+\.(?:sh|py))\b")
+    r"(?:scripts/ci/|\$\{?[A-Za-z_]*dir\}?\"?/)((?:pre-commit/|pre-push/)?[A-Za-z0-9_.-]+\.(?:sh|py|toml))\b")
 # Shell commands that only read, print or compare the file they name: the
 # reference is data (the file itself), not code that runs its own callees.
 SHELL_DATA_COMMANDS = frozenset({

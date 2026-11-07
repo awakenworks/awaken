@@ -17,7 +17,8 @@
 # --backend-parity uses a caller-owned live URL and runs only the named matrix.
 # --work-store uses a caller-owned live URL and requires the complete Work suite.
 # --http requires the four live transport targets, including native failover.
-# --affected <base> runs only the suites the change since <base> can reach
+# Every suite is a row of scripts/ci/service_suites.toml, run here by id.
+# --affected <base> runs only the rows the change since <base> can reach
 # (scripts/ci/service_test_plan.py), and starts no substrate when none is.
 set -uo pipefail
 # Keep phase diagnostics visible even when a command suppresses probe output.
@@ -30,6 +31,7 @@ source scripts/ci/_postgres_recovery_root.sh
 source scripts/ci/_deadline.sh
 source scripts/ci/_rust_test_execution.sh
 source scripts/ci/_affected_suites.sh
+suites_load postgres || exit $?
 
 require_docker=0
 RECOVERY_PARENT=$(postgres_recovery_parent) || exit 2
@@ -61,7 +63,6 @@ positive_seconds() {
 pg_run_with_deadline() {
   local stage="$1" seconds="$2"
   shift 2
-  if affected_skip_stage "${BASH_SOURCE[1]##*/}:${BASH_LINENO[0]}"; then return 0; fi
   positive_seconds "$seconds" || {
     echo "invalid PostgreSQL deadline for $stage: $seconds" >&2
     return 2
@@ -93,16 +94,31 @@ pg_run_with_deadline() {
 }
 
 pg_test() {
-  if affected_skip_suite "${BASH_SOURCE[1]##*/}:${BASH_LINENO[0]}"; then return 0; fi
   pg_run_with_deadline "test:${4:-command}" "$PG_TEST_TIMEOUT_SECONDS" "$@"
 }
 
 pg_required_test() {
-  if affected_skip_suite "${BASH_SOURCE[1]##*/}:${BASH_LINENO[0]}"; then return 0; fi
   local remaining=$((PG_GATE_BUDGET_SECONDS - $(pg_gate_elapsed)))
   [ "$remaining" -gt 0 ] || { echo "PostgreSQL gate budget exhausted before required tests" >&2; return 124; }
   [ "$remaining" -le "$PG_TEST_TIMEOUT_SECONDS" ] || remaining=$PG_TEST_TIMEOUT_SECONDS
   AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="$remaining" run_required_rust_tests "$@"
+}
+
+# pg_phase <phase>: run the table rows of one phase in order. A phase of several
+# rows composes their failures (record_failure keeps the first status); a phase of
+# one row returns its status to the caller.
+pg_phase() {
+  local -a ids
+  local id
+  mapfile -t ids < <(suite_ids "$1")
+  [ "${#ids[@]}" -gt 0 ] || { echo "scripts/ci/service_suites.toml has no row of phase $1" >&2; return 2; }
+  if [ "${#ids[@]}" -eq 1 ]; then
+    suite_run "${ids[0]}"
+    return
+  fi
+  for id in "${ids[@]}"; do
+    suite_run "$id" || record_failure "$?"
+  done
 }
 
 checked_backend_parity() {
@@ -112,91 +128,7 @@ checked_backend_parity() {
 }
 
 backend_parity() {
-  # One selection owner for native and Docker fixtures. Every row requires its
-  # concrete backend bindings in the inventory, then reconciles actual outcomes.
-  # SQLite is explicit even when a crate's defaults leave it disabled.
-  pg_required_test -p awaken-reliability-testkit --features postgres --lib fixture::tests \
-    --require-case=fixture::tests::postgres_fixture_pool_connects_when_configured \
-    --require-case=fixture::tests::postgres_fixture_pool_admission_respects_configuration \
-    --require-case=fixture::tests::admitted_fixtures_cannot_see_each_others_rows \
-    --require-case=fixture::tests::admitted_fixture_isolation_respects_configuration \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test -p awaken-model-catalog-store --features postgres,sqlite,test-support --test repo_conformance \
-    --require-case=in_memory_repo_conforms --require-case=sqlite::sqlite_repo_conforms \
-    --require-case=postgres::postgres_repo_conforms \
-    --require-case=postgres::configured_database_failure_is_not_a_successful_skip -- --test-threads=1 || record_failure "$?"
-  pg_required_test -p awaken-credential-store --features postgres,sqlite,test-support,sealed-aead --test repo_conformance \
-    --require-case=in_memory_repo_conforms --require-case=sqlite_repo_conforms \
-    --require-case=postgres::postgres_repo_conforms \
-    --require-case=postgres::fixture_absence_and_configured_failure_are_distinct -- --test-threads=1 || record_failure "$?"
-  pg_required_test -p awaken-data-subject-store --features postgres,test-support --test repo_conformance \
-    --require-case=in_memory_repo_conforms --require-case=sqlite_repo_conforms \
-    --require-case=postgres::postgres_repo_conforms \
-    --require-case=postgres::postgres_erasure_independent_connections_preserve_winner_after_reopen \
-    --require-case=postgres::fixture_cleanup_preserves_another_live_schema \
-    --require-case=postgres::fixture_absence_and_configured_failure_are_distinct -- --test-threads=1 || record_failure "$?"
-  pg_required_test -p awaken-captured-content-store --features postgres,test-support --test repo_conformance \
-    --require-case=in_memory_captured_content_conforms --require-case=sqlite_captured_content_conforms \
-    --require-case=postgres::postgres_captured_content_conforms \
-    --require-case=postgres::postgres_fixture_absence_and_configured_failure_have_distinct_outcomes -- --test-threads=1 || record_failure "$?"
-  # Current backend laws and enabled ACK/stop regressions are required.
-  # The remaining legacy owner-only incarnation gap stays unaccepted and checked.
-  pg_required_test -p awaken-work-store --features test-support --test work_queue_conformance \
-    --require-case=in_memory_backend_conforms \
-    --require-case=sqlite_backend_conforms \
-    --require-case=postgres_backend_conforms \
-    --require-case=fixture_absence_and_configured_failure_are_distinct \
-    --require-case=lease_acceptance::concurrent_takeover_admits_only_the_current_owner_on_volatile_and_file_sqlite \
-    --require-case=lease_acceptance::postgres_work_lease_acceptance \
-    --require-case=lease_acceptance::postgres_work_lease_acceptance_fixture_admission \
-    --require-case=lease_acceptance::session_and_healthcheck_leases_are_taken_over_independently \
-    --require-case=lease_acceptance::terminal_ack_retries_only_the_original_identity \
-    --require-case=work_fixture_cleanup_preserves_another_live_schema \
-    --require-case=lease_acceptance::ack_after_the_lease_lapsed_is_refused \
-    --require-case=lease_acceptance::retried_ack_replays_the_original_acknowledgement \
-    --require-case=lease_acceptance::acknowledgement_receipts_do_not_cross_lease_generations \
-    --require-case=lease_acceptance::concurrent_acknowledgements_share_one_original_receipt \
-    --require-case=lease_acceptance::sqlite_ack_checks_expiry_after_waiting_for_its_write_transaction \
-    --require-case=lease_acceptance::postgres_ack_reply_belongs_to_its_committed_lease_snapshot \
-    --require-case=lease_acceptance::retried_stop_after_lost_response_replays \
-    --require-case=lease_acceptance::stop_replay::concurrent_stops_share_one_original_receipt \
-    --require-case=lease_acceptance::stop_replay::old_stop_receipts_never_authorize_a_woken_generation \
-    --require-case=lease_acceptance::stop_replay::sqlite_stop_receipt_survives_reopening_without_restoring_authority \
-    --require-case=lease_acceptance::stop_replay::postgres_stop_receipt_survives_a_new_pool_without_restoring_authority \
-    --require-case=lease_acceptance::stop_replay::postgres_stop_reply_belongs_to_its_committed_lease_snapshot \
-    --require-case=lease_acceptance::credential_generation::same_credential_session_reclaim_fences_the_exact_generation \
-    --require-case=lease_acceptance::credential_generation::owner_only_reclaim_preserves_the_credential_principal_boundary \
-    -- \
-    --test-threads=1 || record_failure "$?"
-  pg_required_test -p awaken-session-store --features test-support --test session_repo_conformance \
-    --require-case=sqlite_backend_conforms --require-case=postgres_backend_conforms \
-    --require-case=postgres_fixture_absence_and_configured_failure_are_distinct \
-    -- --skip postgres_session_capacity_reference_and_indexed_observation --test-threads=1 || record_failure "$?"
-  # Package-wide selection keeps new acceptance targets in the real-service
-  # lane. Only owned private participants are excluded; parents execute them.
-  pg_required_test -p awaken-memory-store --features postgres,sqlite,test-support --lib --tests \
-    --require-case=volatile_materialized_path_cas --require-case=sqlite_materialized_path_cas \
-    --require-case=postgres::postgres_memory_repository_conforms \
-    --require-case=postgres::fixture_absence_and_configured_failure_are_distinct \
-    --require-case=file_sqlite_concurrent_writeback_and_rename_linearize_across_clients \
-    --require-case=postgres_writeback_checks_every_condition_across_pools \
-    --require-case=file_sqlite_independent_clients_snapshot_one_committed_prefix \
-    --require-case=postgres_independent_pools_snapshot_one_committed_prefix \
-    --require-case=postgres_redaction_and_delete_history_survive_an_independent_pool \
-    --require-case=postgres_memory_quota_rejects_atomically_across_independent_pools \
-    --require-case=volatile_memory_quota_rejects_atomically_and_retry_commits_once \
-    --require-case=postgres_process_death_inside_the_production_write_path_exposes_only_the_old_state \
-    --require-case=postgres_process_death_after_acknowledgement_exposes_the_complete_new_state \
-    --require-case=postgres_sql_error_inside_the_production_write_path_rolls_the_command_back \
-    -- --skip sqlite::transaction_crash_tests::transaction_interruption_child --skip postgres_write_path_crash_child --test-threads=1 || record_failure "$?"
-  pg_required_test -p awaken-skill-store --features postgres,sqlite,test-support --test conformance \
-    --require-case=in_memory_conforms --require-case=sqlite_conforms --require-case=postgres::postgres_conforms \
-    --require-case=postgres::fixture_absence_and_configured_failure_are_distinct \
-    -- --test-threads=1 || record_failure "$?"
-  # Ordinary real-backend correctness; heavy scale observations stay separate.
-  pg_required_test --locked -p awaken-dispatch --features test-support --test dispatch_queries postgres_exact_physical_execution_observations_use_the_original_store_clock \
-    --require-case=postgres_exact_physical_execution_observations_use_the_original_store_clock \
-    -- --exact --test-threads=1 || record_failure "$?"
+  pg_phase backend_parity
 }
 
 checked_work_store_evidence() {
@@ -205,263 +137,27 @@ checked_work_store_evidence() {
 }
 
 work_store_evidence() {
-  # These physical database cases stay out of the substrate-free workspace
-  # lane. The live lane must list and execute every named outcome, including
-  # ignored cases, with the existing required-runner receipt and deadline.
-  # Restart helpers receive private fixtures from their parent tests and must
-  # not be launched independently by this package-wide selection.
-  # Backend parity owns work_queue_conformance and its explicit gap policy.
-  # This phase owns the remaining native targets and their restart parents.
-  pg_required_test -p awaken-work-store --features test-support \
-    --lib --test archive --test environment_revision --test lease_book_properties --test work_identity --test work_queue_parity --test work_queue_properties \
-    --require-case=schema::identity_upgrade_tests::postgres_both_published_histories_preserve_live_leases_and_fence_deleted_ids \
-    --require-case=schema::ack_upgrade_tests::sqlite_both_published_histories_add_only_known_ack_generations \
-    --require-case=schema::ack_upgrade_tests::postgres_both_published_histories_add_only_known_ack_generations \
-    --require-case=schema::stop_upgrade_tests::sqlite_both_published_histories_preserve_unknown_old_stop_subjects \
-    --require-case=schema::stop_upgrade_tests::postgres_both_published_histories_preserve_unknown_old_stop_subjects \
-    --require-case=mutation::tests::stop_receipts_preserve_absence_and_reject_incomplete_or_ungranted_subjects \
-    --require-case=mutation::tests::stop_receipt_replay_requires_original_owner_and_current_generation \
-    --require-case=postgres_archive_keeps_existing_session_authority_after_reconnect \
-    --require-case=durable::postgres_allocator_work_and_watermark_roll_back_as_one_transaction \
-    --require-case=durable::postgres_independent_pools_allocate_concurrently_without_reset \
-    --require-case=durable::postgres_missing_malformed_and_exhausted_allocators_fail_closed \
-    --require-case=postgres_work_identity_is_not_reused_after_lifecycle_removal \
-    --require-case=restart::postgres_identity_high_watermark_survives_a_native_process_restart \
-    -- --include-ignored --test-threads=1 \
-    --skip environment_revision_restart_child --skip restart::identity_restart_child
+  pg_phase work_store_evidence
 }
 
 http_transport_evidence() {
-  pg_required_test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http \
-    --require-case=two_control_processes_retry_recover_and_settle_without_sticky_routing \
-    --require-case=active_active_child_diagnostics_are_isolated_and_bounded \
-    --require-case=immutable_pod_registration_postgres_when_configured \
-    --require-case=postgres_signed_registration_rejects_historical_incarnation \
-    --require-case=postgres_guarded_admission_uses_one_process_connection_and_rejects_foreign_pools \
-    -- --skip active_active_control_child --test-threads=1
+  pg_phase http_transport_evidence
 }
 
 critical_durability_evidence() {
-  AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-config-store --locked --features test-support --test process_crash_audit \
-    --require-case=durable_audit_survives_process_kill_before_business_commit -- --test-threads=1 || record_failure "$?"
-  AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-session-store --locked --features test-support --test process_crash_outbox \
-    --require-case=session_commit_survives_process_kill_before_notification -- --test-threads=1 || record_failure "$?"
-  AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-credential-store --locked --features postgres,sqlite,sealed-aead,test-support --test process_crash_creation --test process_crash_managed_creation \
-    --require-case=secret_write_survives_kill_and_is_compensated_from_the_intent \
-    --require-case=writing_material_survives_kill_but_expired_owner_is_aborted \
-    --require-case=published_material_retirement_survives_process_crash -- --test-threads=1 || record_failure "$?"
-  pg_required_test -p awaken-process-startup --locked --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy \
-    --require-case=installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --exact --test-threads=1 || record_failure "$?"
-  pg_required_test -p awaken-process-startup --locked --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling \
-    --require-case=postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling -- --ignored --exact --test-threads=1 || record_failure "$?"
-  pg_required_test -p awaken-coordinator --locked --lib application_access_store::tests::provisioned_postgres_application_access_durability_release_gate --require-case=application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact --test-threads=1 || record_failure "$?"
+  pg_phase critical_durability_evidence
 }
 
 storage_observation_evidence() {
-  AWAKEN_SESSION_PERF_ROOTS=100000 pg_required_test --locked -p awaken-session-store --features test-support \
-    --test session_repo_conformance postgres_session_capacity_reference_and_indexed_observation \
-    --require-case=postgres_session_capacity_reference_and_indexed_observation \
-    -- --ignored --exact --test-threads=1 || record_failure "$?"
-
-  # These seven heavy observations are selected explicitly, not silently ignored
-  # inside the ordinary correctness lane. Timings do not establish a fleet SLO.
-  pg_required_test --locked -p awaken-sql-storage --features postgres --lib postgres_tests::checkout_health_policy_performance_observation \
-    --require-case=postgres_tests::checkout_health_policy_performance_observation \
-    -- --ignored --exact --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-store-postgres --test postgres_live \
-    --require-case=chunk_boundary_commit_throughput_observation \
-    --require-case=hot_thread_history_open_reports_its_scoped_cost \
-    --require-case=independent_thread_commit_throughput_observation \
-    --require-case=million_historical_facts_do_not_gate_startup_or_unrelated_thread_open \
-    --require-case=multi_fact_commit_throughput_observation \
-    -- --ignored --test-threads=1 || record_failure "$?"
+  pg_phase storage_observation_evidence
 }
 
 resources_evidence() {
-  pg_required_test --locked -p awaken-admin-config-api --features postgres --test postgres_store \
-    --require-case=postgres_admin_rows_survive_a_reconnect \
-    --require-case=postgres_admin_store_serves_every_port \
-    --require-case=postgres_agent_input_ambiguous_keys_fail_closed \
-    --require-case=postgres_agent_input_first_writers_have_one_authoritative_winner \
-    --require-case=postgres_agent_input_rollback_replay_and_corrupt_key_readback \
-    --require-case=postgres_mcp_configuration_cas_and_restart \
-    --require-case=postgres_telemetry_configuration_cas_restart_and_scope \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-resource-store --all-features \
-    --require-case=postgres::tests::live_postgres_identical_reference_replacement_is_a_storage_noop \
-    --require-case=postgres::tests::live_postgres_rehydrates_references_for_every_resource_kind \
-    --require-case=postgres::tests::live_postgres_serializes_references_with_reclamation_fences \
-    --require-case=postgres::tests::live_postgres_verify_is_fail_closed_and_read_only \
-    --require-case=postgres::tests::live_postgres_verify_is_fail_closed_and_read_only_fixture_admission \
-    --require-case=postgres::tests::live_postgres_serializes_references_with_reclamation_fences_fixture_admission \
-    --require-case=postgres::tests::live_postgres_identical_reference_replacement_is_a_storage_noop_fixture_admission \
-    --require-case=postgres::tests::live_postgres_rehydrates_references_for_every_resource_kind_fixture_admission \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-resource-persistence \
-    --require-case=postgres_registry_satisfies_the_same_contract_and_survives_reconnect \
-    --require-case=tests::postgres_metadata_and_injected_blob_store_form_one_application \
-    --require-case=tests::postgres_resource_authorities_survive_verify_mode_restart \
-    --require-case=tests::postgres_resource_authorities_fixture_admission \
-    --require-case=tests::postgres_injected_blob_store_fixture_admission \
-    --require-case=postgres_registry_fixture_admission \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-session-application --lib postgres_ \
-    --require-case=tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration \
-    --require-case=tests::creation::time_assurance::postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack \
-    --require-case=tests::event_batches::postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict \
-    --require-case=tests::construction::required_tool_compiler_postgres_preserves_the_frozen_configuration_fixture_admission \
-    --require-case=tests::event_batches::postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict_fixture_admission \
-    --require-case=tests::creation::time_assurance::postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack_fixture_admission \
-    --require-case=tests::authority::archive_race::postgres_archive_races_admission_replacement_and_recovery_through_root_cas \
-    --require-case=tests::authority::archive_race::postgres_archive_races_admission_replacement_and_recovery_through_root_cas_fixture_admission \
-    --require-case=tests::creation::prepared_participants::postgres_prepared_participant_survives_root_failure_and_rebuild \
-    --require-case=tests::creation::prepared_participants::postgres_prepared_participant_survives_root_failure_and_rebuild_fixture_admission \
-    --require-case=tests::event_batches::concurrent_consumption::postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite \
-    --require-case=tests::event_batches::concurrent_consumption::postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite_fixture_admission \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-protocol-managed --lib postgres_two_connection_late_hitl_frontier_preserves_old_cursors \
-    --require-case=state::events::tests::hitl_frontier::postgres_two_connection_late_hitl_frontier_preserves_old_cursors \
-    --require-case=state::events::tests::hitl_frontier::postgres_two_connection_late_hitl_frontier_preserves_old_cursors_fixture_admission \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-sandbox-policy-store --features test-support \
-    --require-case=tests::postgres_verify_is_fail_closed_and_read_only \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-executable-agent-catalog \
-    --require-case=postgres::tests::active_active_peer_refreshes_the_durable_command_projection \
-    --require-case=postgres::tests::agent_command_above_captured_high_water_waits_for_next_refresh \
-    --require-case=postgres::tests::concurrent_agent_refreshes_are_serialized_by_the_domain_registrar \
-    --require-case=postgres::tests::install_error_precedes_agent_target_publication \
-    --require-case=postgres::tests::legacy_registration_time_is_appended_without_rewriting_its_command \
-    --require-case=postgres::tests::persisted_registration_replays_the_previous_tool_identity_wire \
-    --require-case=postgres::tests::persistence_precedes_projection_and_failure_leaves_catalog_unchanged \
-    --require-case=postgres::tests::postgres_adapter_migrates_persists_verifies_and_rehydrates \
-    --require-case=postgres::tests::restart_replays_registration_and_withdrawal_through_canonical_state_machine \
-    --require-case=tests::historical_postgres_order_is_unknown_after_two_unfenced_rows \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-executable-environment-catalog \
-    --require-case=postgres::tests::active_active_peer_refreshes_the_durable_environment_projection \
-    --require-case=postgres::tests::concurrent_environment_refreshes_are_serialized_by_the_domain_registrar \
-    --require-case=postgres::tests::durable_history_replay_is_distinct_from_admission_and_allows_later_promotion \
-    --require-case=postgres::tests::environment_command_above_captured_high_water_waits_for_next_refresh \
-    --require-case=postgres::tests::install_error_precedes_environment_target_publication \
-    --require-case=postgres::tests::postgres_history_command_reopens_without_admission_and_fences_cross_mode_conflicts \
-    --require-case=postgres::tests::postgres_migration_persists_high_water_and_rehydrates_environment \
-    --require-case=postgres::tests::postgres_history_command_reopens_without_admission_and_fences_cross_mode_conflicts_fixture_admission \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-environment-application --test registration_replay \
-    --require-case=postgres_delayed_registration_after_reconnect_cannot_restore_withdrawn_work \
-    --require-case=postgres_history_cannot_consume_unapplied_higher_registration \
-    --require-case=postgres_pending_history_does_not_swallow_new_registration_effect \
-    --require-case=durable_pending::postgres_pending_history_survives_a_rebuild_through_independent_pools \
-    --require-case=history_visibility::postgres_withdrawn_history_stays_readable_on_independent_pools \
-    --require-case=durable_pending::postgres_pending_history_survives_a_rebuild_through_independent_pools_fixture_admission \
-    --require-case=durable_pending::postgres_history_cannot_consume_unapplied_higher_registration_fixture_admission \
-    --require-case=durable_pending::postgres_pending_history_does_not_swallow_new_registration_effect_fixture_admission \
-    --require-case=history_visibility::postgres_withdrawn_history_stays_readable_on_independent_pools_fixture_admission \
-    --require-case=history_visibility::postgres_delayed_registration_after_reconnect_cannot_restore_withdrawn_work_fixture_admission \
-    --require-case=history_visibility::a_non_durable_reconnect_cannot_pass_the_delayed_registration_check \
-    --require-case=history_visibility::unrelated_faults_never_qualify_lost_withdrawal_detection \
-    --require-case=durable_pending::a_catalog_high_watermark_projection_is_rejected_by_the_convergence_verdict \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-environment-image-build postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
-    --require-case=postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
-    -- --exact --test-threads=1 || record_failure "$?"
+  pg_phase resources_evidence
 }
 
 storage_evidence() {
-  pg_required_test --locked -p awaken-sql-storage --features postgres --lib postgres_tests \
-    --require-case=postgres_tests::cancelled_begin_cannot_poison_the_next_recovery_transaction \
-    --require-case=postgres_tests::checkout_supports_read_only_role_without_schema_create_permission \
-    --require-case=postgres_tests::missing_permission_and_blocked_health_check_fail_within_their_boundary \
-    --require-case=postgres_tests::returned_transaction_cancellation_preserves_commits_and_backend_reuse \
-    --require-case=postgres_tests::untracked_aborted_transaction_is_retired_before_another_borrower \
-    -- --ignored --skip checkout_health_policy_performance_observation --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-session-store --features test-support --lib postgres_ \
-    --require-case=dream::tests::postgres_dream_store_conforms_and_reopens \
-    --require-case=extraction::tests::postgres_extraction_execution_selection_and_first_claim_share_one_revision_fence \
-    --require-case=extraction::tests::postgres_integer_conversion_rejects_clamping_and_lease_erasure \
-    --require-case=tests::keyset_query_plans::postgres_cached_recovery_and_startup_cursors_keep_the_index_condition \
-    --require-case=tests::postgres_normalization_and_index_repair_share_one_crash_boundary \
-    --require-case=tests::postgres_original_history_converges_with_the_same_domain_effects \
-    --require-case=tests::postgres_owner_scope_is_recorded_and_survives_a_reopen \
-    --require-case=tests::postgres_published_prefixes_converge_and_server_open_is_read_only \
-    --require-case=tests::postgres_round_trips_and_upserts \
-    --require-case=tests::postgres_v2_dependency_backfill_and_operational_repair_use_the_same_root_decoder \
-    --require-case=tests::repository_reads::postgres_reader_preserves_quarantine_and_only_maintenance_clears_it \
-    --require-case=tests::root_update_history::session_update_history_survives_postgres_pool_reconnect \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-config-store --features test-support --test postgres \
-    --require-case=existing_postgres_store_validates_without_applying_schema \
-    --require-case=postgres_allows_one_source_revision_in_distinct_execution_workspaces \
-    --require-case=postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fenced \
-    --require-case=postgres_audit_begin_serializes_concurrent_exact_and_conflicting_requests \
-    --require-case=postgres_audit_identity_decision_table \
-    --require-case=postgres_audit_identity_migration_preserves_truth_or_rolls_back \
-    --require-case=postgres_conditional_publication_fences_one_fingerprint_per_source_revision \
-    --require-case=postgres_config_cas_exhaustion_preserves_reopenable_truth \
-    --require-case=postgres_config_cas_missing_row_and_revision_decision_table \
-    --require-case=postgres_config_history_insert_failure_rolls_back_all_write_paths \
-    --require-case=postgres_config_store_round_trips_config_and_publication \
-    --require-case=postgres_list_published_reloads_published_rows_of_the_scope \
-    --require-case=postgres_list_published_warm_load_same_agent_reloads_the_full_set \
-    --require-case=postgres_management_effect_stale_completion_preserves_replacement \
-    --require-case=postgres_publication_commit_order_lock_serializes_only_its_workspace \
-    --require-case=postgres_publication_order_migration_does_not_certify_old_rows \
-    --require-case=postgres_publication_source_admission_preserves_rejected_frame \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-store-postgres --test postgres_live \
-    --require-case=concurrent_thread_open_observes_one_complete_postgres_snapshot \
-    --require-case=corrupt_waiting_ticket_is_isolated_from_postgres_restart_and_recovery \
-    --require-case=peer_lifecycle_feed_reads_authoritative_postgres_without_projection_refresh \
-    --require-case=recovery_time_truncates_postgres_submilliseconds_and_normalizes_timezone \
-    --require-case=thread_projection_opens_from_postgres_after_reconnect \
-    -- --skip chunk_boundary_commit_throughput_observation \
-      --skip hot_thread_history_open_reports_its_scoped_cost \
-      --skip independent_thread_commit_throughput_observation \
-      --skip million_historical_facts_do_not_gate_startup_or_unrelated_thread_open \
-      --skip multi_fact_commit_throughput_observation \
-      --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-env-store --features test-support --lib --tests \
-    --require-case=migration_upgrade_tests::postgres_v8_upgrade_seeds_history_once_across_independent_pools \
-    --require-case=fixture_admission_tests::postgres_v8_upgrade_seeds_history_once_across_independent_pools_fixture_admission \
-    --require-case=postgres_failed_intent_insert_rolls_back_for_independent_pools \
-    --require-case=postgres_failed_intent_insert_rolls_back_for_independent_pools_fixture_admission \
-    --require-case=postgres_corrupt_rows_fail_closed_on_independent_pools_without_repair \
-    --require-case=postgres_corrupt_rows_fail_closed_on_independent_pools_without_repair_fixture_admission \
-    --require-case=postgres_outbox_pairs_survive_independent_pools \
-    --require-case=postgres_outbox_pairs_survive_independent_pools_fixture_admission \
-    --require-case=a_split_commit_adapter_is_rejected_by_the_rollback_verdict \
-    --require-case=current_row_shortcuts_fail_the_outbox_table_on_volatile_and_file_sqlite \
-    --require-case=unrelated_failures_cannot_qualify_an_outbox_countermodel \
-    --require-case=unrelated_failure_is_not_backend_divergence_evidence \
-    --require-case=tests::file_open_and_pg_connect_entry_points \
-    --require-case=fixture_admission_tests::file_and_postgres_entry_points_fixture_admission \
-    --require-case=fixture_admission_tests::postgres_parity_fixture_admission \
-    --require-case=postgres_backend_conforms \
-    --require-case=tests::postgres_parity_over_a_live_db \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-file-store --features postgres,sqlite,object-store \
-    --require-case=postgres_capture_contract_and_reconnect \
-    --require-case=tests::postgres_round_trip \
-    --require-case=tests::postgres_shared_set_and_empty_blob_laws \
-    --require-case=tests::postgres_v4_widens_legacy_file_flags_without_losing_values \
-    -- --skip minio_ --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-store-schema --test apply \
-    --require-case=fixture_admission::postgres_fixture_admission \
-    --require-case=bundle_applies_on_real_postgres \
-    --require-case=concurrent_postgres_startup_has_one_migration_applier \
-    --require-case=every_postgres_historical_prefix_migrates_to_full \
-    --require-case=postgres_failed_migration_rolls_back_schema_and_ledger_rows \
-    --require-case=postgres_v10_canonicalizes_historical_kinds_and_rolls_back_as_one_unit \
-    --require-case=postgres_v11_indexes_run_predecessors_without_rewriting_history \
-    --require-case=postgres_v12_indexes_recovery_ranges_atomically_without_changing_rows \
-    -- --test-threads=1 || record_failure "$?"
-  pg_required_test --locked -p awaken-store-sqlite --features test-support --test failure_atomicity \
-    --require-case=corrupt_uncommitted_wal_never_projects_a_partial_commit \
-    --require-case=sqlite_full_rolls_back_the_complete_domain_commit \
-    --require-case=sqlite_read_only_rolls_back_the_complete_domain_commit \
-    --require-case=uncommitted_transaction_is_rolled_back_after_process_kill \
-    -- --test-threads=1 || record_failure "$?"
+  pg_phase storage_evidence
 }
 
 published_port() {
@@ -767,13 +463,17 @@ json.dump({"requested_at_unix": now - 40, "granted_at_unix": now - 10, "queue_bo
   # targets whose volatile fixtures are isolated behind `test-support` enable
   # that feature explicitly; Cargo refusing to start a target is a red gate,
   # never evidence that the Postgres behavior passed.
+  # The suites are rows of scripts/ci/service_suites.toml; each check below reads
+  # them as one command line ("[ENV=value] runner args"), as this gate runs them.
+  local suite_commands
+  suite_commands="$(printf '%s\n' "${SUITE_ROWS[@]}" | sed -E "s/^[^ ]+ [^ ]+ ('' )?//")"
   # P13 the Registry migration and conformance cases use the canonical fixture
   # URL and execute both library and integration targets in the live PG gate.
-  grep -Fxq 'pg_test cargo test -p awaken-worker-registry --features test-support --lib --test conformance || record_failure "$?"' "$0" || {
+  grep -Fxq 'pg_test cargo test -p awaken-worker-registry --features test-support --lib --test conformance' <<< "$suite_commands" || {
     echo "Postgres gate must run WorkerRegistry migration and conformance tests" >&2
     return 1
   }
-  grep -Fxq 'pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"' "$0" || {
+  grep -Fxq 'pg_test cargo test -p awaken-dispatch --features test-support' <<< "$suite_commands" || {
     echo "Postgres gate must run the complete ingress suite with test-support" >&2
     return 1
   }
@@ -829,73 +529,73 @@ json.dump({"requested_at_unix": now - 40, "granted_at_unix": now - 10, "queue_bo
   # P8 the claim/commit guard lives in durable_postgres and its HTTP receipt
   # boundary in active_active_postgres. The removed RuntimeHost filter matched
   # zero tests; it is not a compatibility route or additional test coverage.
-  if grep -Eq '^(pg_test )?cargo test -p awaken-session-executor' "$0"; then
+  if grep -Eq '^(pg_test )?cargo test -p awaken-session-executor' "$0" <(printf '%s\n' "$suite_commands"); then
     echo "Postgres gate retains the retired RuntimeHost test selector" >&2
     return 1
   fi
   # P9 immutable Pod registration must exercise the real database rather than
   # merely compiling a self-skipping test in the no-database workspace gate.
   # P10 independent predecessor stopping exercises the same exact Registry CAS.
-  grep -Fq "pg_required_test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http" "$0" || {
+  grep -Fq "pg_required_test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http" <<< "$suite_commands" || {
     echo "Postgres gate omits the coordinator-owned active/active transport test" >&2
     return 1
   }
-  grep -Fq 'pg_required_test -p awaken-session-store --features test-support --test session_repo_conformance' "$0" || {
+  grep -Fq 'pg_required_test -p awaken-session-store --features test-support --test session_repo_conformance' <<< "$suite_commands" || {
     echo "Postgres gate omits Session and Deployment repository conformance" >&2
     return 1
   }
-  grep -Fqx '  pg_required_test --locked -p awaken-session-store --features test-support --lib postgres_ \' "$0" || {
+  grep -Fq 'pg_required_test --locked -p awaken-session-store --features test-support --lib postgres_ ' <<< "$suite_commands" || {
     echo "Postgres gate omits Session history, read-only open, and repository parity" >&2
     return 1
   }
-  grep -Fq 'pg_required_test -p awaken-process-startup --locked --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy' "$0" || {
+  grep -Fq 'pg_required_test -p awaken-process-startup --locked --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy' <<< "$suite_commands" || {
     echo "Postgres gate omits exact CLI installation-binding continuity" >&2
     return 1
   }
   # P15 an ignored process-pool test exists + this runner supplies a live URL
   # => execute that exact test under the existing deadline/first-failure owner.
   # Without --ignored the default CLI suite can pass without measuring cap2.
-  grep -Fq 'pg_required_test -p awaken-process-startup --locked --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling' "$0" || {
+  grep -Fq 'pg_required_test -p awaken-process-startup --locked --lib postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling' <<< "$suite_commands" || {
     echo "Postgres gate omits live process-pool cardinality and closure" >&2
     return 1
   }
   # P16 live URL + postgres feature + ignored correctness tests -> execute R1-R7
   # in this fixture. The separate performance observation keeps its own opt-in.
-  grep -Fqx '  pg_required_test --locked -p awaken-sql-storage --features postgres --lib postgres_tests \' "$0" || {
+  grep -Fq 'pg_required_test --locked -p awaken-sql-storage --features postgres --lib postgres_tests ' <<< "$suite_commands" || {
     echo "Postgres gate omits explicit shared checkout correctness" >&2
     return 1
   }
-  grep -Fqx '  pg_required_test -p awaken-coordinator --locked --lib application_access_store::tests::provisioned_postgres_application_access_durability_release_gate --require-case=application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact --test-threads=1 || record_failure "$?"' "$0" || {
+  grep -Fxq 'pg_required_test -p awaken-coordinator --locked --lib application_access_store::tests::provisioned_postgres_application_access_durability_release_gate --require-case=application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact --test-threads=1' <<< "$suite_commands" || {
     echo "Postgres gate omits fail-closed ApplicationAccess durability conformance" >&2
     return 1
   }
-  grep -Fq 'pg_required_test -p awaken-model-catalog-store --features postgres,sqlite,test-support' "$0" || {
+  grep -Fq 'pg_required_test -p awaken-model-catalog-store --features postgres,sqlite,test-support' <<< "$suite_commands" || {
     echo "Postgres gate omits the authoritative model-catalog store" >&2
     return 1
   }
-  grep -Fq "concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority" "$0" || {
+  grep -Fq "concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority" <<< "$suite_commands" || {
     echo "Postgres gate omits Environment image-build concurrency and restart fencing" >&2
     return 1
   }
   # C1 independent schema fixtures share one finite PostgreSQL connection
   # budget; C2 each test's explicit race witnesses must remain concurrent.
   # R1 serialize only outer test cases; R2 preserve concurrency inside each.
-  grep -Fq 'pg_required_test -p awaken-credential-store --features postgres,sqlite,test-support,sealed-aead --test repo_conformance' "$0" || {
+  grep -Fq 'pg_required_test -p awaken-credential-store --features postgres,sqlite,test-support,sealed-aead --test repo_conformance' <<< "$suite_commands" || {
     echo "Postgres gate omits serialized sealed credential store conformance" >&2
     return 1
   }
-  grep -Fq 'pg_required_test -p awaken-data-subject-store --features postgres,test-support' "$0" || {
+  grep -Fq 'pg_required_test -p awaken-data-subject-store --features postgres,test-support' <<< "$suite_commands" || {
     echo "Postgres gate omits postgres,test-support for awaken-data-subject-store" >&2
     return 1
   }
   local crate
   for crate in awaken-admin-config-api; do
-    grep -Fq "pg_required_test --locked -p $crate --features postgres" "$0" || {
+    grep -Fq "pg_required_test --locked -p $crate --features postgres" <<< "$suite_commands" || {
       echo "Postgres gate omits --features postgres for $crate" >&2
       return 1
     }
   done
-  grep -Fq "pg_required_test --locked -p awaken-file-store --features postgres,sqlite,object-store" "$0" || {
+  grep -Fq "pg_required_test --locked -p awaken-file-store --features postgres,sqlite,object-store" <<< "$suite_commands" || {
     echo "Durable backend gate omits the production object-store adapter" >&2
     return 1
   }
@@ -917,7 +617,7 @@ json.dump({"requested_at_unix": now - 40, "granted_at_unix": now - 10, "queue_bo
     echo "Durable backend gate omits the least-privilege object-store policy" >&2
     return 1
   }
-  grep -Fq "pg_required_test --locked -p awaken-resource-persistence" "$0" || {
+  grep -Fq "pg_required_test --locked -p awaken-resource-persistence" <<< "$suite_commands" || {
     echo "Postgres gate omits the composed Resources restart matrix" >&2
     return 1
   }
@@ -933,11 +633,11 @@ json.dump({"requested_at_unix": now - 40, "granted_at_unix": now - 10, "queue_bo
     echo "Postgres recovery drill is not executable" >&2
     return 1
   }
-  grep -Fq "pg_required_test --locked -p awaken-store-sqlite --features test-support --test failure_atomicity" "$0" || {
+  grep -Fq "pg_required_test --locked -p awaken-store-sqlite --features test-support --test failure_atomicity" <<< "$suite_commands" || {
     echo "Durable backend gate omits SQLite crash and injected fault atomicity" >&2
     return 1
   }
-  grep -Fq -- '--test dispatch_claim_perf -- --ignored --test-threads=1 --nocapture' "$0" || {
+  grep -Fq -- '--test dispatch_claim_perf -- --ignored --test-threads=1 --nocapture' <<< "$suite_commands" || {
     echo "Durable backend gate omits explicit ignored scale qualification" >&2
     return 1
   }
@@ -1013,7 +713,8 @@ fi
 
 if [ -n "$affected_base" ]; then
   affected_suites_load postgres "$affected_base" || exit $?
-  if ! affected_selected_after 0; then
+  if ! suites_selected storage_evidence ingress http_transport_evidence critical_durability_evidence \
+    backend_parity object_store resources_evidence work_store_evidence recovery_drill; then
     echo "postgres: no suite is reached by the change since $affected_base; no substrate started"
     exit 0
   fi
@@ -1235,15 +936,7 @@ fi
 # Shared checkout's cancellation, poisoned backend and capability boundaries
 # are meaningful only against this live database. This selects all R1-R7 rules.
 storage_evidence
-pg_test cargo test -p awaken-worker-registry --features test-support --lib --test conformance || record_failure "$?"
-pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"
-# Scale qualification remains owned by the existing ingress target and this
-# exact database/image fixture. Explicit selection prevents its three ignored
-# cases from becoming green without execution. Timings qualify this fixture,
-# not production capacity or an unmeasured baseline improvement.
-pg_test cargo test -p awaken-dispatch --features test-support \
-  --test dispatch_claim_perf -- --ignored --test-threads=1 --nocapture \
-  || record_failure "$?"
+pg_phase ingress
 http_transport_evidence || record_failure "$?"
 critical_durability_evidence
 # P15 live fixture + explicit ignored selector => measure the canonical shared
@@ -1254,14 +947,14 @@ checked_backend_parity || record_failure "$?"
 # Credential-lifecycle state machine: seed -> revoke old credential -> issue
 # replacement -> read the same durable object. Both transitions are mandatory.
 export AWAKEN_TEST_S3_ROTATION_ID="rotation-$$"
-pg_run_with_deadline object-admission "$PG_TEST_TIMEOUT_SECONDS" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --admission || record_failure "$?"
-pg_run_with_deadline object-conformance "$PG_TEST_TIMEOUT_SECONDS" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --conformance || record_failure "$?"
-pg_run_with_deadline object-seed "$PG_TEST_TIMEOUT_SECONDS" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --seed || record_failure "$?"
+suite_step postgres.object-store pg_run_with_deadline object-admission "$PG_TEST_TIMEOUT_SECONDS" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --admission || record_failure "$?"
+suite_step postgres.object-store pg_run_with_deadline object-conformance "$PG_TEST_TIMEOUT_SECONDS" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --conformance || record_failure "$?"
+suite_step postgres.object-store pg_run_with_deadline object-seed "$PG_TEST_TIMEOUT_SECONDS" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --seed || record_failure "$?"
 FILE_STORE_ROTATED_SECRET_KEY="awaken-file-store-rotated" # awaken-allow(secret): (throwaway fixture)
 export FILE_STORE_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY" # awaken-allow(secret):
 # awaken-allow(secret): (replacement passed into the same disposable container)
 rotation_status=0
-pg_run_with_deadline object-credential-rotation "$PG_OPERATION_TIMEOUT_SECONDS" \
+suite_step postgres.object-store pg_run_with_deadline object-credential-rotation "$PG_OPERATION_TIMEOUT_SECONDS" \
   docker run --rm --network "container:$OBJECT_NAME" \
   --env FILE_STORE_ACCESS_KEY \
   --env FILE_STORE_SECRET_KEY \
@@ -1277,7 +970,7 @@ if [ "$rotation_status" -ne 0 ]; then
 fi
 export AWAKEN_TEST_S3_OLD_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow(secret):
 export AWAKEN_TEST_S3_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY"
-pg_run_with_deadline object-verify "$PG_TEST_TIMEOUT_SECONDS" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --verify || record_failure "$?"
+suite_step postgres.object-store pg_run_with_deadline object-verify "$PG_TEST_TIMEOUT_SECONDS" python3 scripts/ci/_native_shell.py scripts/ci/object_store_tests.sh --verify || record_failure "$?"
 # Run the existing Managed HITL frontier decision table with two independent
 # PostgreSQL Session connections; a no-URL workspace test cannot claim this.
 # Both entry points require these physical outcomes. Private restart children
@@ -1288,7 +981,7 @@ checked_work_store_evidence || record_failure "$?"
 # The same live PostgreSQL and object-store substrates finish with a physical
 # point-in-time restore. This is a recovery drill, not another repository or
 # an independent test graph.
-pg_run_with_deadline recovery-drill "$PG_RECOVERY_TIMEOUT_SECONDS" \
+suite_step postgres.recovery-drill pg_run_with_deadline recovery-drill "$PG_RECOVERY_TIMEOUT_SECONDS" \
   scripts/ci/postgres_recovery_drill.sh "$NAME" "$OBJECT_NAME" "$MC_IMAGE" \
   || record_failure "$?"
 
