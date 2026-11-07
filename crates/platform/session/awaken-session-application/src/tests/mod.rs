@@ -5362,3 +5362,4 @@ mod recovery_sweep;
 mod resource_commands;
 mod resource_resume;
 mod run_admission;
+mod stack_boundaries;

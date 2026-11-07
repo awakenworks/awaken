@@ -87,39 +87,45 @@ impl RunAssembly {
 
     /// Install all immutable facts selected by one typed mode through the sole
     /// complete projection owner.
-    pub(crate) async fn install_projection_facts(
-        &self,
-        thread: &str,
-        projection: &awaken_session_execution_contract::FrozenSessionProjection,
-        mode: &awaken_session_execution_contract::SessionProjectionInstallMode,
-    ) -> Result<(), RunError> {
-        match mode {
-            awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch => {
-                self.installed_sessions
-                    .install_dispatch_frozen_session_projection(
-                        (&self.realization_executor, &self.mcp),
-                        thread,
-                        projection.clone(),
-                    )
-                    .await
+    // Returned boxed: this state machine is awaited inside Session realization,
+    // which a Managed request polls inline; an unoptimized poll frame reserves a
+    // slot for every inline callee it awaits, and the nested request path
+    // otherwise exceeded a 2 MiB thread stack.
+    pub(crate) fn install_projection_facts<'a>(
+        &'a self,
+        thread: &'a str,
+        projection: &'a awaken_session_execution_contract::FrozenSessionProjection,
+        mode: &'a awaken_session_execution_contract::SessionProjectionInstallMode,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), RunError>> {
+        Box::pin(async move {
+            match mode {
+                awaken_session_execution_contract::SessionProjectionInstallMode::Dispatch => {
+                    self.installed_sessions
+                        .install_dispatch_frozen_session_projection(
+                            (&self.realization_executor, &self.mcp),
+                            thread,
+                            projection.clone(),
+                        )
+                        .await
+                }
+                awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
+                    prepare_session,
+                    lease,
+                } => {
+                    self.installed_sessions
+                        .install_frozen_session_projection(
+                            (&self.realization_executor, &self.mcp),
+                            thread,
+                            projection.clone(),
+                            None,
+                            *prepare_session,
+                            Some(lease.clone()),
+                        )
+                        .await
+                }
             }
-            awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
-                prepare_session,
-                lease,
-            } => {
-                self.installed_sessions
-                    .install_frozen_session_projection(
-                        (&self.realization_executor, &self.mcp),
-                        thread,
-                        projection.clone(),
-                        None,
-                        *prepare_session,
-                        Some(lease.clone()),
-                    )
-                    .await
-            }
-        }
-        .map_err(to_run_error)
+            .map_err(to_run_error)
+        })
     }
     /// Unit-test fixture for low-level Runtime behavior that does not construct
     /// a persisted Session aggregate. Production paths use the complete port.

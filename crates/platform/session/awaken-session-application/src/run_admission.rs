@@ -395,86 +395,92 @@ impl SessionRunAdmissions {
         })
     }
 
-    async fn finish_run_admission(
-        &self,
+    // Request-path state machines in this file return their future already
+    // boxed. An unoptimized poll frame reserves a slot for every inline callee
+    // it awaits and never reuses it; nested inline, one Managed request needed
+    // more than a 2 MiB thread stack (see `tests/stack_boundaries.rs`).
+    fn finish_run_admission<'a>(
+        &'a self,
         admission: RunActivityAdmission,
         reservation: awaken_session_execution_contract::SessionRunReservation,
         recover_only: bool,
         admitted_after_cursor: Option<u64>,
-    ) -> Result<AdmittedSessionRun, RunError> {
-        let RunActivityAdmission {
-            session_id,
-            run_id,
-            projected_revision,
-            existing_activity_epoch,
-            prepared,
-        } = admission;
-        let thread_id = awaken_agent_contract::ThreadId(session_id.to_string());
-        let operation = session_run_activity_operation_id(&session_id, &run_id);
-        let delivery = |session_activity_epoch| SessionRunDelivery {
-            session_id: session_id.clone(),
-            run_id: run_id.clone(),
-            session_activity_epoch,
-        };
+    ) -> futures_util::future::BoxFuture<'a, Result<AdmittedSessionRun, RunError>> {
+        Box::pin(async move {
+            let RunActivityAdmission {
+                session_id,
+                run_id,
+                projected_revision,
+                existing_activity_epoch,
+                prepared,
+            } = admission;
+            let thread_id = awaken_agent_contract::ThreadId(session_id.to_string());
+            let operation = session_run_activity_operation_id(&session_id, &run_id);
+            let delivery = |session_activity_epoch| SessionRunDelivery {
+                session_id: session_id.clone(),
+                run_id: run_id.clone(),
+                session_activity_epoch,
+            };
 
-        match session_run_activity_receipt_plan(reservation, existing_activity_epoch) {
-            SessionRunActivityReceiptPlan::CommitActivity {
-                reservation_replayed,
-            } => {
-                let session_activity_epoch = if recover_only {
-                    return Err(RunError::unavailable_classified(
-                        "session_run_admission_pending",
-                        "Run has no committed activity receipt",
-                    ));
-                } else if prepared {
-                    self.activities
-                        .commit_prepared_run_activity(
-                            &session_id,
-                            &operation,
-                            projected_revision,
-                            (&thread_id, &run_id),
-                            admitted_after_cursor,
-                        )
-                        .await?
-                } else {
-                    self.activities
-                        .begin_run_activity_at_revision(
-                            &session_id,
-                            &operation,
-                            projected_revision,
-                            (&thread_id, &run_id),
-                        )
-                        .await?
-                };
-                Ok(if reservation_replayed {
+            match session_run_activity_receipt_plan(reservation, existing_activity_epoch) {
+                SessionRunActivityReceiptPlan::CommitActivity {
+                    reservation_replayed,
+                } => {
+                    let session_activity_epoch = if recover_only {
+                        return Err(RunError::unavailable_classified(
+                            "session_run_admission_pending",
+                            "Run has no committed activity receipt",
+                        ));
+                    } else if prepared {
+                        self.activities
+                            .commit_prepared_run_activity(
+                                &session_id,
+                                &operation,
+                                projected_revision,
+                                (&thread_id, &run_id),
+                                admitted_after_cursor,
+                            )
+                            .await?
+                    } else {
+                        self.activities
+                            .begin_run_activity_at_revision(
+                                &session_id,
+                                &operation,
+                                projected_revision,
+                                (&thread_id, &run_id),
+                            )
+                            .await?
+                    };
+                    Ok(if reservation_replayed {
+                        AdmittedSessionRun::AlreadyReserved(delivery(session_activity_epoch))
+                    } else {
+                        AdmittedSessionRun::Reserved(delivery(session_activity_epoch))
+                    })
+                }
+                SessionRunActivityReceiptPlan::UseReceipt {
+                    session_activity_epoch,
+                    reservation_replayed,
+                } => Ok(if reservation_replayed {
                     AdmittedSessionRun::AlreadyReserved(delivery(session_activity_epoch))
                 } else {
                     AdmittedSessionRun::Reserved(delivery(session_activity_epoch))
-                })
+                }),
+                SessionRunActivityReceiptPlan::UseActivatedReceipt {
+                    session_activity_epoch,
+                } => Ok(AdmittedSessionRun::AlreadyActivated(delivery(
+                    session_activity_epoch,
+                ))),
+                SessionRunActivityReceiptPlan::RecoveryClaimed => {
+                    Ok(AdmittedSessionRun::RecoveryClaimed { session_id, run_id })
+                }
+                SessionRunActivityReceiptPlan::Completed => {
+                    Ok(AdmittedSessionRun::Completed { session_id, run_id })
+                }
+                SessionRunActivityReceiptPlan::RejectInvalidReceipt => Err(RunError::internal(
+                    "reserved or activated Session Run has no activity epoch",
+                )),
             }
-            SessionRunActivityReceiptPlan::UseReceipt {
-                session_activity_epoch,
-                reservation_replayed,
-            } => Ok(if reservation_replayed {
-                AdmittedSessionRun::AlreadyReserved(delivery(session_activity_epoch))
-            } else {
-                AdmittedSessionRun::Reserved(delivery(session_activity_epoch))
-            }),
-            SessionRunActivityReceiptPlan::UseActivatedReceipt {
-                session_activity_epoch,
-            } => Ok(AdmittedSessionRun::AlreadyActivated(delivery(
-                session_activity_epoch,
-            ))),
-            SessionRunActivityReceiptPlan::RecoveryClaimed => {
-                Ok(AdmittedSessionRun::RecoveryClaimed { session_id, run_id })
-            }
-            SessionRunActivityReceiptPlan::Completed => {
-                Ok(AdmittedSessionRun::Completed { session_id, run_id })
-            }
-            SessionRunActivityReceiptPlan::RejectInvalidReceipt => Err(RunError::internal(
-                "reserved or activated Session Run has no activity epoch",
-            )),
-        }
+        })
     }
 
     /// Admit, register before activation, and observe one foreground Run for
@@ -523,136 +529,146 @@ impl SessionRunAdmissions {
 
     /// Rebuild the disposable Runtime projection at an execution admission
     /// boundary. This is deliberately separate from [`crate::SessionQueries::read_session_projection`].
-    pub async fn recover_session_projection(
-        &self,
-        thread_id: &str,
-        expected_owner: Option<&str>,
-    ) -> Result<Option<RecoveredSessionProjection>, SessionProjectionRecoveryError> {
-        let Some(recovered) = self
-            .queries
-            .read_session_projection(thread_id, expected_owner)
-            .await?
-        else {
-            return Ok(None);
-        };
-        // Archived Sessions remain readable projections but deny every new
-        // effect. Recovery must not reacquire a realization lease for them.
-        if recovered.session.is_terminal() {
-            return Ok(Some(recovered));
-        }
-        let admission = self
-            .executable_projections
-            .refresh()
-            .await
-            .map_err(|error| {
-                SessionProjectionRecoveryError::Unavailable(format!(
-                    "executable projection refresh failed: {error}"
-                ))
-            })?;
-        let owner = recovered.owner_scope;
-        // Resource convergence is the largest Session state machine. Keep its
-        // future behind one heap indirection at this application boundary so
-        // protocol handlers do not synchronously embed the complete recovery,
-        // credential, and Resource reconciliation graph in their poll stack.
-        // The owned aggregate still crosses exactly one domain boundary; this
-        // is execution-shape isolation, not another persistence abstraction.
-        let session = Box::pin(admission.enter(|| {
-            self.resource_reconciliation
-                .reconcile_persisted_resources(&owner, recovered.session)
-        }))
-        .await
-        .map_err(|error| SessionProjectionRecoveryError::Rejected(preparation_error(error)))?;
-        let requires_external_realization = session.requires_external_environment_owner();
-        let session = if requires_external_realization {
-            self.realizations
-                .install_dispatch_projection(&owner, &session)
-                .await
-                .map_err(|error| SessionProjectionRecoveryError::Rejected(error.into()))?;
-            self.work_assignments
-                .dispatch(&session)
+    pub fn recover_session_projection<'a>(
+        &'a self,
+        thread_id: &'a str,
+        expected_owner: Option<&'a str>,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        Result<Option<RecoveredSessionProjection>, SessionProjectionRecoveryError>,
+    > {
+        Box::pin(async move {
+            let Some(recovered) = self
+                .queries
+                .read_session_projection(thread_id, expected_owner)
+                .await?
+            else {
+                return Ok(None);
+            };
+            // Archived Sessions remain readable projections but deny every new
+            // effect. Recovery must not reacquire a realization lease for them.
+            if recovered.session.is_terminal() {
+                return Ok(Some(recovered));
+            }
+            let admission = self
+                .executable_projections
+                .refresh()
                 .await
                 .map_err(|error| {
-                    SessionProjectionRecoveryError::Rejected(RunError::unavailable_classified(
-                        "session_work_dispatch_failed",
-                        format!("Session realization work could not be dispatched: {error}"),
+                    SessionProjectionRecoveryError::Unavailable(format!(
+                        "executable projection refresh failed: {error}"
                     ))
                 })?;
-            session
-        } else if !session.environment.admits_realization_effects() {
-            // Suspending/Hibernated/Restoring are canonical continuation
-            // phases, not invalid realization states. Install only the
-            // complete non-physical dispatch projection so the durable Run can
-            // be reserved. Its later activity boundary joins the one
-            // continuation operation and performs the Resident handoff before
-            // activation; no realization effect may run against the old phase.
-            self.realizations
-                .install_dispatch_projection(&owner, &session)
-                .await
-                .map_err(|error| SessionProjectionRecoveryError::Rejected(error.into()))?;
-            session
-        } else {
-            self.realizations
-                .realize_session_after_refresh(&awaken_session_types::SessionId::from(thread_id))
-                .await
-                .map_err(|error| SessionProjectionRecoveryError::Rejected(error.into()))?
-        };
-        Ok(Some(RecoveredSessionProjection {
-            owner_scope: owner,
-            session,
-        }))
-    }
-
-    async fn recover_admitted_session(
-        &self,
-        workspace_id: &str,
-        thread_id: &str,
-    ) -> Result<SessionRevision, RunError> {
-        let recovered = self
-            .recover_session_projection(thread_id, Some(workspace_id))
-            .await
-            .map_err(|error| match error {
-                SessionProjectionRecoveryError::NotFound => {
-                    RunError::bad_request("Session was not found")
-                }
-                SessionProjectionRecoveryError::Rejected(error) => error,
-                SessionProjectionRecoveryError::Unavailable(message) => {
-                    RunError::unavailable(message)
-                }
-            })?
-            .ok_or_else(|| RunError::bad_request("Session was not found"))?;
-        if recovered.session.is_terminal() {
-            return Err(RunError::bad_request("Session no longer accepts new Runs"));
-        }
-        if let Some(baseline) = recovered
-            .session
-            .frozen_baseline()
-            .filter(|baseline| baseline.environment.self_hosted)
-        {
-            self.work_assignments
-                .wake(
-                    &baseline.environment.environment_id,
-                    &recovered.session.session_id,
-                )
+            let owner = recovered.owner_scope;
+            // Resource convergence is the largest Session state machine; it
+            // returns its future already boxed, so this poll frame holds only
+            // the heap pointer. The owned aggregate still crosses exactly one
+            // domain boundary.
+            let session = admission
+                .enter(|| {
+                    self.resource_reconciliation
+                        .reconcile_persisted_resources(&owner, recovered.session)
+                })
                 .await
                 .map_err(|error| {
-                    RunError::unavailable_classified(
-                        "session_work_wake_failed",
-                        format!("Session Work could not be awakened: {error}"),
-                    )
+                    SessionProjectionRecoveryError::Rejected(preparation_error(error))
                 })?;
-        }
-        if !recovered.session.requires_external_environment_owner()
-            && !recovered.session.execution.admits_activity()
-        {
-            return Err(RunError::unavailable_classified(
-                "session_not_ready",
-                format!(
-                    "Session realization has not completed; current state is `{}`",
-                    recovered.session.execution
-                ),
-            ));
-        }
-        Ok(recovered.session.revision)
+            let requires_external_realization = session.requires_external_environment_owner();
+            let session = if requires_external_realization {
+                self.realizations
+                    .install_dispatch_projection(&owner, &session)
+                    .await
+                    .map_err(|error| SessionProjectionRecoveryError::Rejected(error.into()))?;
+                self.work_assignments
+                    .dispatch(&session)
+                    .await
+                    .map_err(|error| {
+                        SessionProjectionRecoveryError::Rejected(RunError::unavailable_classified(
+                            "session_work_dispatch_failed",
+                            format!("Session realization work could not be dispatched: {error}"),
+                        ))
+                    })?;
+                session
+            } else if !session.environment.admits_realization_effects() {
+                // Suspending/Hibernated/Restoring are canonical continuation
+                // phases, not invalid realization states. Install only the
+                // complete non-physical dispatch projection so the durable Run can
+                // be reserved. Its later activity boundary joins the one
+                // continuation operation and performs the Resident handoff before
+                // activation; no realization effect may run against the old phase.
+                self.realizations
+                    .install_dispatch_projection(&owner, &session)
+                    .await
+                    .map_err(|error| SessionProjectionRecoveryError::Rejected(error.into()))?;
+                session
+            } else {
+                self.realizations
+                    .realize_session_after_refresh(&awaken_session_types::SessionId::from(
+                        thread_id,
+                    ))
+                    .await
+                    .map_err(|error| SessionProjectionRecoveryError::Rejected(error.into()))?
+            };
+            Ok(Some(RecoveredSessionProjection {
+                owner_scope: owner,
+                session,
+            }))
+        })
+    }
+
+    fn recover_admitted_session<'a>(
+        &'a self,
+        workspace_id: &'a str,
+        thread_id: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<SessionRevision, RunError>> {
+        Box::pin(async move {
+            let recovered = self
+                .recover_session_projection(thread_id, Some(workspace_id))
+                .await
+                .map_err(|error| match error {
+                    SessionProjectionRecoveryError::NotFound => {
+                        RunError::bad_request("Session was not found")
+                    }
+                    SessionProjectionRecoveryError::Rejected(error) => error,
+                    SessionProjectionRecoveryError::Unavailable(message) => {
+                        RunError::unavailable(message)
+                    }
+                })?
+                .ok_or_else(|| RunError::bad_request("Session was not found"))?;
+            if recovered.session.is_terminal() {
+                return Err(RunError::bad_request("Session no longer accepts new Runs"));
+            }
+            if let Some(baseline) = recovered
+                .session
+                .frozen_baseline()
+                .filter(|baseline| baseline.environment.self_hosted)
+            {
+                self.work_assignments
+                    .wake(
+                        &baseline.environment.environment_id,
+                        &recovered.session.session_id,
+                    )
+                    .await
+                    .map_err(|error| {
+                        RunError::unavailable_classified(
+                            "session_work_wake_failed",
+                            format!("Session Work could not be awakened: {error}"),
+                        )
+                    })?;
+            }
+            if !recovered.session.requires_external_environment_owner()
+                && !recovered.session.execution.admits_activity()
+            {
+                return Err(RunError::unavailable_classified(
+                    "session_not_ready",
+                    format!(
+                        "Session realization has not completed; current state is `{}`",
+                        recovered.session.execution
+                    ),
+                ));
+            }
+            Ok(recovered.session.revision)
+        })
     }
 
     async fn create_default_run_session(
@@ -688,45 +704,49 @@ impl SessionRunAdmissions {
             .map(|session| session.revision)
     }
 
-    pub async fn admit_run_session(
-        &self,
-        workspace_id: &str,
-        thread_id: &str,
-        agent_id: &str,
-    ) -> Result<SessionRevision, RunError> {
-        match self
-            .queries
-            .session(&awaken_session_types::SessionId::from(thread_id))
-            .await
-        {
-            Ok(_) => self.recover_admitted_session(workspace_id, thread_id).await,
-            Err(SessionRepositoryError::NotFound) => {
-                match self
-                    .create_default_run_session(workspace_id, thread_id, agent_id)
-                    .await
-                {
-                    Ok(revision) => Ok(revision),
-                    // Concurrent first Runs race only at the durable create fence;
-                    // every loser adopts the exact winner through the same recovery.
-                    Err(error)
-                        if error.kind
-                            == awaken_runtime_contract::runs::RunErrorKind::Unavailable =>
+    pub fn admit_run_session<'a>(
+        &'a self,
+        workspace_id: &'a str,
+        thread_id: &'a str,
+        agent_id: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<SessionRevision, RunError>> {
+        Box::pin(async move {
+            match self
+                .queries
+                .session(&awaken_session_types::SessionId::from(thread_id))
+                .await
+            {
+                Ok(_) => self.recover_admitted_session(workspace_id, thread_id).await,
+                Err(SessionRepositoryError::NotFound) => {
+                    match self
+                        .create_default_run_session(workspace_id, thread_id, agent_id)
+                        .await
                     {
-                        match self
-                            .queries
-                            .session(&awaken_session_types::SessionId::from(thread_id))
-                            .await
+                        Ok(revision) => Ok(revision),
+                        // Concurrent first Runs race only at the durable create fence;
+                        // every loser adopts the exact winner through the same recovery.
+                        Err(error)
+                            if error.kind
+                                == awaken_runtime_contract::runs::RunErrorKind::Unavailable =>
                         {
-                            Ok(_) => self.recover_admitted_session(workspace_id, thread_id).await,
-                            Err(SessionRepositoryError::NotFound) => Err(error),
-                            Err(error) => Err(session_repository_error(error)),
+                            match self
+                                .queries
+                                .session(&awaken_session_types::SessionId::from(thread_id))
+                                .await
+                            {
+                                Ok(_) => {
+                                    self.recover_admitted_session(workspace_id, thread_id).await
+                                }
+                                Err(SessionRepositoryError::NotFound) => Err(error),
+                                Err(error) => Err(session_repository_error(error)),
+                            }
                         }
+                        Err(error) => Err(error),
                     }
-                    Err(error) => Err(error),
                 }
+                Err(error) => Err(session_repository_error(error)),
             }
-            Err(error) => Err(session_repository_error(error)),
-        }
+        })
     }
 }
 

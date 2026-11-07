@@ -362,80 +362,89 @@ impl SessionRealizations {
 
     /// Continue realization after the owning application operation refreshed
     /// every executable projection before its first catalog read or mutation.
-    pub(super) async fn realize_session_after_refresh(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<PersistedSession, SessionRealizationDriveError> {
-        let realization_runtime = self
-            .placement
-            .realization()
-            .map_err(SessionRealizationDriveError::from)?;
+    // Request-path state machines in this file return their future already
+    // boxed. An unoptimized poll frame reserves a slot for every inline callee
+    // it awaits and never reuses it; nested inline, one Managed request needed
+    // more than a 2 MiB thread stack (see `tests/stack_boundaries.rs`).
+    pub(super) fn realize_session_after_refresh<'a>(
+        &'a self,
+        session_id: &'a awaken_session_types::SessionId,
+    ) -> futures_util::future::BoxFuture<'a, Result<PersistedSession, SessionRealizationDriveError>>
+    {
+        Box::pin(async move {
+            let realization_runtime = self
+                .placement
+                .realization()
+                .map_err(SessionRealizationDriveError::from)?;
 
-        // One co-located phase driver per Session. The request path and the
-        // recovery sweep share this process; letting both drive interleaves
-        // their phases and repeats the same external MCP effect. The permit is
-        // the only way to reach `drive_session_realization` below.
-        let permit = self
-            .local_realization_locks
-            .acquire(session_id.as_str())
-            .await;
-        let request_started = realization_runtime
-            .observe_realization_request()
-            .map_err(SessionRealizationDriveError::from)?;
-        let lease_expires_at_unix_ms = self
-            .clock
-            .now_ms()
-            .checked_add(LOCAL_SESSION_REALIZATION_LEASE_MS)
-            .ok_or_else(|| {
-                SessionRealizationDriveError::from(RunError::internal("lease expiry overflow"))
-            })?;
-        let directive = self
-            .begin_session_realization_after_refresh(BeginSessionRealization {
-                expected_resources: None,
-                session_id: session_id.clone(),
-                target: awaken_session_execution_contract::SessionRealizationTarget {
-                    owner: self.local_realization_owner().to_string(),
-                    runtime_incarnation: self.runtime_incarnation().to_string(),
-                    lease_expires_at_unix_ms,
-                    reassign_existing_lease: false,
-                },
-            })
-            .await
-            .map_err(SessionRealizationDriveError::Control)?;
-        self.drive_local_realization(&permit, directive, request_started, realization_runtime)
-            .await?;
-        self.mutations
-            .session_aggregate(session_id)
-            .await
-            .map_err(repository_control)
-            .map_err(SessionRealizationDriveError::Control)
-            .map(SessionAggregate::into_snapshot)
+            // One co-located phase driver per Session. The request path and the
+            // recovery sweep share this process; letting both drive interleaves
+            // their phases and repeats the same external MCP effect. The permit is
+            // the only way to reach `drive_session_realization` below.
+            let permit = self
+                .local_realization_locks
+                .acquire(session_id.as_str())
+                .await;
+            let request_started = realization_runtime
+                .observe_realization_request()
+                .map_err(SessionRealizationDriveError::from)?;
+            let lease_expires_at_unix_ms = self
+                .clock
+                .now_ms()
+                .checked_add(LOCAL_SESSION_REALIZATION_LEASE_MS)
+                .ok_or_else(|| {
+                    SessionRealizationDriveError::from(RunError::internal("lease expiry overflow"))
+                })?;
+            let directive = self
+                .begin_session_realization_after_refresh(BeginSessionRealization {
+                    expected_resources: None,
+                    session_id: session_id.clone(),
+                    target: awaken_session_execution_contract::SessionRealizationTarget {
+                        owner: self.local_realization_owner().to_string(),
+                        runtime_incarnation: self.runtime_incarnation().to_string(),
+                        lease_expires_at_unix_ms,
+                        reassign_existing_lease: false,
+                    },
+                })
+                .await
+                .map_err(SessionRealizationDriveError::Control)?;
+            self.drive_local_realization(&permit, directive, request_started, realization_runtime)
+                .await?;
+            self.mutations
+                .session_aggregate(session_id)
+                .await
+                .map_err(repository_control)
+                .map_err(SessionRealizationDriveError::Control)
+                .map(SessionAggregate::into_snapshot)
+        })
     }
 
-    async fn drive_local_realization(
-        &self,
-        permit: &awaken_session_execution_contract::SessionRealizationPermit,
+    fn drive_local_realization<'a>(
+        &'a self,
+        permit: &'a awaken_session_execution_contract::SessionRealizationPermit,
         directive: SessionRealizationDirective,
         request_started: awaken_lease_contract::authority::AuthorityProofStarted,
-        realization: &dyn RealizationRuntime,
-    ) -> Result<(), SessionRealizationDriveError> {
-        let control = RefreshedSessionRealizationControl(self);
-        crate::drive_session_realization(
-            permit,
-            None,
-            &control,
-            &LocalProjectionSynchronizer {
-                runtime: realization,
-            },
-            self.placement
-                .require_colocated()
-                .map_err(SessionRealizationDriveError::from)?
-                .mcp
-                .as_ref(),
-            directive,
-            request_started,
-        )
-        .await
+        realization: &'a dyn RealizationRuntime,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), SessionRealizationDriveError>> {
+        Box::pin(async move {
+            let control = RefreshedSessionRealizationControl(self);
+            crate::drive_session_realization(
+                permit,
+                None,
+                &control,
+                &LocalProjectionSynchronizer {
+                    runtime: realization,
+                },
+                self.placement
+                    .require_colocated()
+                    .map_err(SessionRealizationDriveError::from)?
+                    .mcp
+                    .as_ref(),
+                directive,
+                request_started,
+            )
+            .await
+        })
     }
 
     /// Renew due local projections through the lease-only root-CAS command.
@@ -703,30 +712,36 @@ impl SessionRealizations {
         Ok((owner_scope, session))
     }
 
-    async fn session_for_realization(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<(String, crate::SessionAggregate), SessionRealizationControlFailure> {
-        let (owner_scope, session) = self.load_realization_root(session_id).await?;
-        // A failed initial realization is terminal. Treating its now-empty
-        // Stage/Publish sets as `Complete` would allow a retried Run claim to
-        // execute after silently dropping the failed MCP/Resource projection.
-        if session.is_terminal() {
-            return Err(SessionRealizationControlFailure::Terminal);
-        }
-        if session.frozen_baseline().is_none() || !session.environment.admits_realization_effects()
-        {
-            return Err(SessionRealizationControlFailure::NotReady);
-        }
+    fn session_for_realization<'a>(
+        &'a self,
+        session_id: &'a awaken_session_types::SessionId,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        Result<(String, crate::SessionAggregate), SessionRealizationControlFailure>,
+    > {
+        Box::pin(async move {
+            let (owner_scope, session) = self.load_realization_root(session_id).await?;
+            // A failed initial realization is terminal. Treating its now-empty
+            // Stage/Publish sets as `Complete` would allow a retried Run claim to
+            // execute after silently dropping the failed MCP/Resource projection.
+            if session.is_terminal() {
+                return Err(SessionRealizationControlFailure::Terminal);
+            }
+            if session.frozen_baseline().is_none()
+                || !session.environment.admits_realization_effects()
+            {
+                return Err(SessionRealizationControlFailure::NotReady);
+            }
 
-        let session = self
-            .credentials
-            .ensure_repository_credentials_pinned(&owner_scope, session)
-            .await
-            .map_err(unavailable)?;
-        Ok((
-            owner_scope,
-            crate::mutation::aggregate_from_snapshot(session).map_err(repository_control)?,
-        ))
+            let session = self
+                .credentials
+                .ensure_repository_credentials_pinned(&owner_scope, session)
+                .await
+                .map_err(unavailable)?;
+            Ok((
+                owner_scope,
+                crate::mutation::aggregate_from_snapshot(session).map_err(repository_control)?,
+            ))
+        })
     }
 }

@@ -768,9 +768,9 @@ impl SessionCreationCommands {
         } else {
             super::SessionCreationCompletion::AwaitRealization
         };
-        let session =
-            Box::pin(self.create_session_with_binding(command, completion, private_binding))
-                .await?;
+        let session = self
+            .create_session_with_binding(command, completion, private_binding)
+            .await?;
         Ok(session)
     }
 }

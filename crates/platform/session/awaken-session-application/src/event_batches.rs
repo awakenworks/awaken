@@ -670,41 +670,50 @@ impl SessionEventBatchCommands {
     /// before notifying the full recovery sweep. This removes a duplicate race
     /// between the synchronous driver and its own wake while retaining the
     /// periodic recovery authority if this future is lost after acceptance.
-    pub(crate) async fn append_and_drive_session_event_batch_idempotent(
-        &self,
-        session_id: &awaken_session_types::SessionId,
+    // Request-path state machines in this file return their future already
+    // boxed. An unoptimized poll frame reserves a slot for every inline callee
+    // it awaits and never reuses it; nested inline, one Managed request needed
+    // more than a 2 MiB thread stack (see `tests/stack_boundaries.rs`).
+    pub(crate) fn append_and_drive_session_event_batch_idempotent<'a>(
+        &'a self,
+        session_id: &'a awaken_session_types::SessionId,
         inputs: Vec<SessionEventInput>,
         data_subject_id: Option<String>,
         traceparent: Option<String>,
         idempotency: Option<(String, String)>,
-    ) -> Result<(SessionEventBatchResult, Option<RunError>), RunError> {
-        let batch = self
-            .resolve_session_event_batch(
-                session_id,
-                EventBatchAdmission::Accept {
-                    inputs,
-                    data_subject_id,
-                    traceparent,
-                    idempotency,
-                },
-                false,
-            )
-            .await?;
-        batch
-            .require_accepted()
-            .map_err(|_| awaken_session_contract::event_admission_closed())?;
-        let Some(retained) = batch.as_batch() else {
-            return Ok((batch, None));
-        };
-        let drive_error = self
-            .drive_session_event_batches(session_id, Some(&retained.batch_id))
-            .await
-            .err();
-        // The full sweep remains the one retry owner. Waking after the local
-        // attempt preserves queued predecessors and retryable failures without
-        // racing this request's append/admission/activation root mutations.
-        self.lifecycle.request_reconciliation();
-        Ok((batch, drive_error))
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        Result<(SessionEventBatchResult, Option<RunError>), RunError>,
+    > {
+        Box::pin(async move {
+            let batch = self
+                .resolve_session_event_batch(
+                    session_id,
+                    EventBatchAdmission::Accept {
+                        inputs,
+                        data_subject_id,
+                        traceparent,
+                        idempotency,
+                    },
+                    false,
+                )
+                .await?;
+            batch
+                .require_accepted()
+                .map_err(|_| awaken_session_contract::event_admission_closed())?;
+            let Some(retained) = batch.as_batch() else {
+                return Ok((batch, None));
+            };
+            let drive_error = self
+                .drive_session_event_batches(session_id, Some(&retained.batch_id))
+                .await
+                .err();
+            // The full sweep remains the one retry owner. Waking after the local
+            // attempt preserves queued predecessors and retryable failures without
+            // racing this request's append/admission/activation root mutations.
+            self.lifecycle.request_reconciliation();
+            Ok((batch, drive_error))
+        })
     }
 
     /// Resolve response loss without replaying execution. If acceptance already
@@ -867,221 +876,227 @@ impl SessionEventBatchCommands {
             .await?)
     }
 
-    async fn resolve_session_event_batch(
-        &self,
-        session_id: &awaken_session_types::SessionId,
+    fn resolve_session_event_batch<'a>(
+        &'a self,
+        session_id: &'a awaken_session_types::SessionId,
         admission: EventBatchAdmission,
         wake_after_accept: bool,
-    ) -> Result<SessionEventBatchResult, RunError> {
-        let mutations = &self.mutations;
-        let (thread_reads, coordination) = (self.thread_reads.as_ref(), &*self.coordination_reads);
-        let record = admission.record(mutations, &self.runtime_incarnation, session_id);
+    ) -> futures_util::future::BoxFuture<'a, Result<SessionEventBatchResult, RunError>> {
+        Box::pin(async move {
+            let mutations = &self.mutations;
+            let (thread_reads, coordination) =
+                (self.thread_reads.as_ref(), &*self.coordination_reads);
+            let record = admission.record(mutations, &self.runtime_incarnation, session_id);
 
-        for attempt in 0..ROOT_CAS_ATTEMPTS {
-            let receipt = mutations
-                .repository()
-                .idempotency_receipt(session_id, &record.key)
-                .await
-                .map_err(repository_run_error)?;
-            let (owner, mut session) = self.load_event_root(session_id).await?;
-            let retained = retained_event_batch_admission(
-                &session.event_batches,
-                admission.idempotency().map(|(key, _)| key),
-                &record,
-                receipt.as_ref(),
-                session.revision,
-            )?;
-            let plan = retained.resolution(admission.action());
-            match plan {
-                SessionEventBatchAdmissionPlan::ReplayAccepted
-                | SessionEventBatchAdmissionPlan::ReplayClosed => {
-                    if retained.no_op {
-                        return Ok(SessionEventBatchResult::NoOp);
+            for attempt in 0..ROOT_CAS_ATTEMPTS {
+                let receipt = mutations
+                    .repository()
+                    .idempotency_receipt(session_id, &record.key)
+                    .await
+                    .map_err(repository_run_error)?;
+                let (owner, mut session) = self.load_event_root(session_id).await?;
+                let retained = retained_event_batch_admission(
+                    &session.event_batches,
+                    admission.idempotency().map(|(key, _)| key),
+                    &record,
+                    receipt.as_ref(),
+                    session.revision,
+                )?;
+                let plan = retained.resolution(admission.action());
+                match plan {
+                    SessionEventBatchAdmissionPlan::ReplayAccepted
+                    | SessionEventBatchAdmissionPlan::ReplayClosed => {
+                        if retained.no_op {
+                            return Ok(SessionEventBatchResult::NoOp);
+                        }
+                        return Ok(SessionEventBatchResult::Batch(
+                            retained
+                                .batch
+                                .expect("replay admission plan has one retained batch")
+                                .clone(),
+                        ));
                     }
-                    return Ok(SessionEventBatchResult::Batch(
-                        retained
-                            .batch
-                            .expect("replay admission plan has one retained batch")
-                            .clone(),
+                    SessionEventBatchAdmissionPlan::RejectClosed => {
+                        return Err(awaken_session_contract::event_admission_closed());
+                    }
+                    SessionEventBatchAdmissionPlan::Conflict => {
+                        return Err(awaken_session_contract::event_admission_conflict());
+                    }
+                    SessionEventBatchAdmissionPlan::AppendAccepted
+                    | SessionEventBatchAdmissionPlan::AppendClosed => {}
+                }
+                if session.is_terminal() && plan == SessionEventBatchAdmissionPlan::AppendAccepted {
+                    return Err(RunError::bad_request(
+                        "Session no longer accepts Event batches",
                     ));
                 }
-                SessionEventBatchAdmissionPlan::RejectClosed => {
-                    return Err(awaken_session_contract::event_admission_closed());
-                }
-                SessionEventBatchAdmissionPlan::Conflict => {
-                    return Err(awaken_session_contract::event_admission_conflict());
-                }
-                SessionEventBatchAdmissionPlan::AppendAccepted
-                | SessionEventBatchAdmissionPlan::AppendClosed => {}
-            }
-            if session.is_terminal() && plan == SessionEventBatchAdmissionPlan::AppendAccepted {
-                return Err(RunError::bad_request(
-                    "Session no longer accepts Event batches",
-                ));
-            }
-            let mut interrupts_absorbed = false;
-            if let EventBatchAdmission::Accept { inputs, .. } = &admission {
-                for input in inputs {
-                    if let SessionEventInput::Interrupt(interrupt) = input {
-                        interrupt.validate()?;
+                let mut interrupts_absorbed = false;
+                if let EventBatchAdmission::Accept { inputs, .. } = &admission {
+                    for input in inputs {
+                        if let SessionEventInput::Interrupt(interrupt) = input {
+                            interrupt.validate()?;
+                        }
                     }
-                }
-                // The shared Thread law applies to every internal/protocol
-                // caller before either retaining a batch or acknowledging no-op.
-                admit_event_batch_topology(coordination, thread_reads, session_id, inputs).await?;
-                let interrupts = self
-                    .budget_pause_absorbed_interrupts(&session, inputs)
-                    .await?;
-                interrupts_absorbed = !interrupts.is_empty();
-                if interrupts_absorbed && interrupts.len() == inputs.len() {
-                    let result = mutations
-                        .commit_mutation(
-                            &owner,
-                            awaken_session_contract::SessionMutation {
-                                expected_revision: session.revision,
-                                idempotency: record.clone(),
-                                payload:
-                                    awaken_session_contract::SessionMutationPayload::EventNoOp {
-                                        session_id: session_id.clone(),
-                                        interrupts,
-                                    },
-                                lifecycle_facts: Vec::new(),
-                            },
-                        )
-                        .await
-                        .map_err(mutation_run_error)?;
-                    match result {
-                        awaken_session_contract::SessionMutationResult::AcknowledgedNoOp {
-                            observed_revision,
-                        } if observed_revision.0 > 0 => return Ok(SessionEventBatchResult::NoOp),
-                        awaken_session_contract::SessionMutationResult::Replayed { .. }
-                        | awaken_session_contract::SessionMutationResult::Conflict { .. } => {
-                            continue;
-                        }
-                        awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
-                            return Err(awaken_session_contract::event_admission_conflict());
-                        }
-                        _ => {
-                            return Err(RunError::classified(
-                                "session_event_receipt_invalid",
-                                "Repository returned a root mutation for an Event no-op",
-                            ));
+                    // The shared Thread law applies to every internal/protocol
+                    // caller before either retaining a batch or acknowledging no-op.
+                    admit_event_batch_topology(coordination, thread_reads, session_id, inputs)
+                        .await?;
+                    let interrupts = self
+                        .budget_pause_absorbed_interrupts(&session, inputs)
+                        .await?;
+                    interrupts_absorbed = !interrupts.is_empty();
+                    if interrupts_absorbed && interrupts.len() == inputs.len() {
+                        let result = mutations
+                            .commit_mutation(
+                                &owner,
+                                awaken_session_contract::SessionMutation {
+                                    expected_revision: session.revision,
+                                    idempotency: record.clone(),
+                                    payload:
+                                        awaken_session_contract::SessionMutationPayload::EventNoOp {
+                                            session_id: session_id.clone(),
+                                            interrupts,
+                                        },
+                                    lifecycle_facts: Vec::new(),
+                                },
+                            )
+                            .await
+                            .map_err(mutation_run_error)?;
+                        match result {
+                            awaken_session_contract::SessionMutationResult::AcknowledgedNoOp {
+                                observed_revision,
+                            } if observed_revision.0 > 0 => {
+                                return Ok(SessionEventBatchResult::NoOp);
+                            }
+                            awaken_session_contract::SessionMutationResult::Replayed { .. }
+                            | awaken_session_contract::SessionMutationResult::Conflict { .. } => {
+                                continue;
+                            }
+                            awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
+                                return Err(awaken_session_contract::event_admission_conflict());
+                            }
+                            _ => {
+                                return Err(RunError::classified(
+                                    "session_event_receipt_invalid",
+                                    "Repository returned a root mutation for an Event no-op",
+                                ));
+                            }
                         }
                     }
                 }
-            }
-            let admission_projection_anchor =
-                if plan == SessionEventBatchAdmissionPlan::AppendAccepted {
-                    let source_commit_cursor = thread_reads
-                        .session_thread_recovery_snapshot(session_id, session_id.as_str())
-                        .await?
-                        .map_or(0, |snapshot| snapshot.store_cursor);
-                    Some(SessionEventProjectionAnchor {
-                        source_commit_cursor,
-                    })
-                } else {
-                    None
-                };
-            let committed_revision = SessionRevision(
-                session
-                    .revision
-                    .0
-                    .checked_add(1)
-                    .ok_or_else(|| RunError::internal("Session revision is exhausted"))?,
-            );
-            let batch_id = session_event_batch_id(session_id, committed_revision)?;
-            let mut batch = match (plan, &admission) {
-                (
-                    SessionEventBatchAdmissionPlan::AppendAccepted,
-                    EventBatchAdmission::Accept {
-                        inputs,
-                        data_subject_id,
-                        traceparent,
-                        ..
-                    },
-                ) => SessionEventBatch::compile_attributed(
-                    session_id,
-                    batch_id,
-                    retained_event_inputs(inputs, interrupts_absorbed),
-                    data_subject_id.clone(),
-                    traceparent.clone(),
-                ),
-                (
-                    SessionEventBatchAdmissionPlan::AppendClosed,
-                    EventBatchAdmission::Close {
-                        key,
-                        request_fingerprint,
-                    },
-                ) => SessionEventBatch::closed_admission(
-                    batch_id,
-                    committed_revision,
-                    key.clone(),
-                    request_fingerprint.clone(),
-                ),
-                _ => unreachable!("admission plan is derived from the requested action"),
-            }?;
-            batch.admitted_revision = committed_revision;
-            if let Some(anchor) = admission_projection_anchor {
-                batch
-                    .anchor_admission_projection(anchor)
-                    .map_err(|error| RunError::internal(error.to_string()))?;
-            }
-            if !batch.admission_closed
-                && let Some((key, request_fingerprint)) = admission.idempotency()
-            {
-                batch.bind_idempotency(key.to_owned(), request_fingerprint.to_owned())?;
-            }
-            batch.validate_tool_reply_occupancy(&session.event_batches)?;
-            session
-                .events()
-                .append_batch(batch.clone())
-                .map_err(|error| RunError::internal(error.to_string()))?;
-            match Box::pin(crate::SessionMutations::commit_observed_snapshot(
-                mutations.repository().as_ref(),
-                &owner,
-                &mut session,
-                record.clone(),
-                Vec::new(),
-                self.clock.now_ms(),
-            ))
-            .await
-            {
-                Ok(awaken_session_contract::SessionMutationResult::Applied { new_revision })
-                    if new_revision == committed_revision =>
+                let admission_projection_anchor =
+                    if plan == SessionEventBatchAdmissionPlan::AppendAccepted {
+                        let source_commit_cursor = thread_reads
+                            .session_thread_recovery_snapshot(session_id, session_id.as_str())
+                            .await?
+                            .map_or(0, |snapshot| snapshot.store_cursor);
+                        Some(SessionEventProjectionAnchor {
+                            source_commit_cursor,
+                        })
+                    } else {
+                        None
+                    };
+                let committed_revision = SessionRevision(
+                    session
+                        .revision
+                        .0
+                        .checked_add(1)
+                        .ok_or_else(|| RunError::internal("Session revision is exhausted"))?,
+                );
+                let batch_id = session_event_batch_id(session_id, committed_revision)?;
+                let mut batch = match (plan, &admission) {
+                    (
+                        SessionEventBatchAdmissionPlan::AppendAccepted,
+                        EventBatchAdmission::Accept {
+                            inputs,
+                            data_subject_id,
+                            traceparent,
+                            ..
+                        },
+                    ) => SessionEventBatch::compile_attributed(
+                        session_id,
+                        batch_id,
+                        retained_event_inputs(inputs, interrupts_absorbed),
+                        data_subject_id.clone(),
+                        traceparent.clone(),
+                    ),
+                    (
+                        SessionEventBatchAdmissionPlan::AppendClosed,
+                        EventBatchAdmission::Close {
+                            key,
+                            request_fingerprint,
+                        },
+                    ) => SessionEventBatch::closed_admission(
+                        batch_id,
+                        committed_revision,
+                        key.clone(),
+                        request_fingerprint.clone(),
+                    ),
+                    _ => unreachable!("admission plan is derived from the requested action"),
+                }?;
+                batch.admitted_revision = committed_revision;
+                if let Some(anchor) = admission_projection_anchor {
+                    batch
+                        .anchor_admission_projection(anchor)
+                        .map_err(|error| RunError::internal(error.to_string()))?;
+                }
+                if !batch.admission_closed
+                    && let Some((key, request_fingerprint)) = admission.idempotency()
                 {
-                    if !batch.admission_closed && wake_after_accept {
-                        self.lifecycle.request_reconciliation();
+                    batch.bind_idempotency(key.to_owned(), request_fingerprint.to_owned())?;
+                }
+                batch.validate_tool_reply_occupancy(&session.event_batches)?;
+                session
+                    .events()
+                    .append_batch(batch.clone())
+                    .map_err(|error| RunError::internal(error.to_string()))?;
+                match Box::pin(crate::SessionMutations::commit_observed_snapshot(
+                    mutations.repository().as_ref(),
+                    &owner,
+                    &mut session,
+                    record.clone(),
+                    Vec::new(),
+                    self.clock.now_ms(),
+                ))
+                .await
+                {
+                    Ok(awaken_session_contract::SessionMutationResult::Applied {
+                        new_revision,
+                    }) if new_revision == committed_revision => {
+                        if !batch.admission_closed && wake_after_accept {
+                            self.lifecycle.request_reconciliation();
+                        }
+                        return Ok(SessionEventBatchResult::Batch(batch));
                     }
-                    return Ok(SessionEventBatchResult::Batch(batch));
+                    Ok(awaken_session_contract::SessionMutationResult::AcknowledgedNoOp {
+                        observed_revision,
+                    }) if observed_revision.0 > 0 => return Ok(SessionEventBatchResult::NoOp),
+                    Ok(awaken_session_contract::SessionMutationResult::Replayed { .. }) => {
+                        continue;
+                    }
+                    Ok(awaken_session_contract::SessionMutationResult::Conflict { .. })
+                        if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
+                    Ok(awaken_session_contract::SessionMutationResult::IdempotencyMismatch) => {
+                        return Err(awaken_session_contract::event_admission_conflict());
+                    }
+                    Ok(awaken_session_contract::SessionMutationResult::Conflict { .. }) => {
+                        return Err(RunError::unavailable(
+                            "Session Event state changed concurrently",
+                        ));
+                    }
+                    Ok(_) => {
+                        return Err(RunError::classified(
+                            "session_event_receipt_invalid",
+                            "Repository returned an invalid Event receipt revision",
+                        ));
+                    }
+                    Err(error) => return Err(repository_run_error(error)),
                 }
-                Ok(awaken_session_contract::SessionMutationResult::AcknowledgedNoOp {
-                    observed_revision,
-                }) if observed_revision.0 > 0 => return Ok(SessionEventBatchResult::NoOp),
-                Ok(awaken_session_contract::SessionMutationResult::Replayed { .. }) => {
-                    continue;
-                }
-                Ok(awaken_session_contract::SessionMutationResult::Conflict { .. })
-                    if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
-                Ok(awaken_session_contract::SessionMutationResult::IdempotencyMismatch) => {
-                    return Err(awaken_session_contract::event_admission_conflict());
-                }
-                Ok(awaken_session_contract::SessionMutationResult::Conflict { .. }) => {
-                    return Err(RunError::unavailable(
-                        "Session Event state changed concurrently",
-                    ));
-                }
-                Ok(_) => {
-                    return Err(RunError::classified(
-                        "session_event_receipt_invalid",
-                        "Repository returned an invalid Event receipt revision",
-                    ));
-                }
-                Err(error) => return Err(repository_run_error(error)),
             }
-        }
-        Err(RunError::unavailable(
-            "Session Event batch admission changed concurrently",
-        ))
+            Err(RunError::unavailable(
+                "Session Event batch admission changed concurrently",
+            ))
+        })
     }
 
     /// Revisit every unfinished root-owned Event batch through the one Session
@@ -1189,140 +1204,144 @@ impl SessionEventBatchCommands {
         Ok(())
     }
 
-    async fn reconcile_session_event_batches(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        preferred_batch_id: Option<&str>,
+    fn reconcile_session_event_batches<'a>(
+        &'a self,
+        session_id: &'a awaken_session_types::SessionId,
+        preferred_batch_id: Option<&'a str>,
         mut initial_session: Option<PersistedSession>,
-    ) -> Result<bool, RunError> {
-        // Bound one supervisor slice. Retained history may contain many batches,
-        // but each Advanced result persists one entry and a later scan resumes.
-        for _ in 0..EVENT_BATCH_RECONCILIATION_STEPS {
-            let session = match initial_session.take() {
-                Some(session) => session,
-                None => self
-                    .mutations
-                    .repository()
-                    .get(session_id)
-                    .await
-                    .map_err(repository_run_error)?,
-            };
-            if session.is_terminal() {
-                return self.resolve_terminal_event_batches(session_id).await;
-            }
-            let selected = select_session_event(
-                &session,
-                SessionEventSelection::Normal { preferred_batch_id },
-            );
-            let Some(selected) = selected else {
-                return Ok(true);
-            };
-            let failed_tool_reply = match &selected.event {
-                SessionEventCommand::ToolReply { operation_id, .. }
-                    if preferred_batch_id.is_none() =>
-                {
-                    Some((selected.batch_id.clone(), operation_id.clone()))
-                }
-                _ => None,
-            };
-            match self.reconcile_one_session_event(&session, selected).await {
-                Ok(EventBatchProgress::Advanced) => {}
-                Ok(EventBatchProgress::Pending) => return Ok(false),
-                Err(reply_error) => {
-                    let Some((batch_id, operation_id)) = failed_tool_reply else {
-                        return Err(reply_error);
-                    };
-                    // A failed ToolReply can depend on damaged Runtime reply
-                    // authority forever. Reload the root after that exact
-                    // failure and let only a later retained Interrupt cross it.
-                    // The normal selector remains retained-order FIFO; this is
-                    // a recovery escape, not an alternate event scheduler.
-                    let fresh = self
+    ) -> futures_util::future::BoxFuture<'a, Result<bool, RunError>> {
+        Box::pin(async move {
+            // Bound one supervisor slice. Retained history may contain many batches,
+            // but each Advanced result persists one entry and a later scan resumes.
+            for _ in 0..EVENT_BATCH_RECONCILIATION_STEPS {
+                let session = match initial_session.take() {
+                    Some(session) => session,
+                    None => self
                         .mutations
                         .repository()
                         .get(session_id)
                         .await
-                        .map_err(repository_run_error)?;
-                    if fresh.is_terminal() {
-                        let _ = self.resolve_terminal_event_batches(session_id).await?;
-                        return Err(reply_error);
+                        .map_err(repository_run_error)?,
+                };
+                if session.is_terminal() {
+                    return self.resolve_terminal_event_batches(session_id).await;
+                }
+                let selected = select_session_event(
+                    &session,
+                    SessionEventSelection::Normal { preferred_batch_id },
+                );
+                let Some(selected) = selected else {
+                    return Ok(true);
+                };
+                let failed_tool_reply = match &selected.event {
+                    SessionEventCommand::ToolReply { operation_id, .. }
+                        if preferred_batch_id.is_none() =>
+                    {
+                        Some((selected.batch_id.clone(), operation_id.clone()))
                     }
-                    let Some(interrupt) = select_session_event(
-                        &fresh,
-                        SessionEventSelection::InterruptAfterFailedToolReply {
-                            batch_id: &batch_id,
-                            operation_id: &operation_id,
-                        },
-                    ) else {
-                        return Err(reply_error);
-                    };
-                    match self.reconcile_one_session_event(&fresh, interrupt).await {
-                        Ok(EventBatchProgress::Advanced) => {
-                            // Preserve the failed reply's retry signal only after
-                            // the Interrupt effect and processed-root CAS succeed.
+                    _ => None,
+                };
+                match self.reconcile_one_session_event(&session, selected).await {
+                    Ok(EventBatchProgress::Advanced) => {}
+                    Ok(EventBatchProgress::Pending) => return Ok(false),
+                    Err(reply_error) => {
+                        let Some((batch_id, operation_id)) = failed_tool_reply else {
+                            return Err(reply_error);
+                        };
+                        // A failed ToolReply can depend on damaged Runtime reply
+                        // authority forever. Reload the root after that exact
+                        // failure and let only a later retained Interrupt cross it.
+                        // The normal selector remains retained-order FIFO; this is
+                        // a recovery escape, not an alternate event scheduler.
+                        let fresh = self
+                            .mutations
+                            .repository()
+                            .get(session_id)
+                            .await
+                            .map_err(repository_run_error)?;
+                        if fresh.is_terminal() {
+                            let _ = self.resolve_terminal_event_batches(session_id).await?;
                             return Err(reply_error);
                         }
-                        Ok(EventBatchProgress::Pending) => {
-                            return Err(RunError::unavailable(
-                                "recovery Interrupt remained pending after a failed ToolReply",
-                            ));
+                        let Some(interrupt) = select_session_event(
+                            &fresh,
+                            SessionEventSelection::InterruptAfterFailedToolReply {
+                                batch_id: &batch_id,
+                                operation_id: &operation_id,
+                            },
+                        ) else {
+                            return Err(reply_error);
+                        };
+                        match self.reconcile_one_session_event(&fresh, interrupt).await {
+                            Ok(EventBatchProgress::Advanced) => {
+                                // Preserve the failed reply's retry signal only after
+                                // the Interrupt effect and processed-root CAS succeed.
+                                return Err(reply_error);
+                            }
+                            Ok(EventBatchProgress::Pending) => {
+                                return Err(RunError::unavailable(
+                                    "recovery Interrupt remained pending after a failed ToolReply",
+                                ));
+                            }
+                            Err(interrupt_error) => return Err(interrupt_error),
                         }
-                        Err(interrupt_error) => return Err(interrupt_error),
                     }
                 }
             }
-        }
-        Ok(false)
+            Ok(false)
+        })
     }
 
     /// Close only the legacy race in which an old writer terminalized a root
     /// after accepting, but before anchoring, an Event batch. The canonical
     /// supervisor marks those receipts resolved under root CAS and never calls
     /// any Runtime effect after terminal state.
-    async fn resolve_terminal_event_batches(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-    ) -> Result<bool, RunError> {
-        let mutations = &self.mutations;
-        for attempt in 0..ROOT_CAS_ATTEMPTS {
-            let (owner_scope, mut session) = self.load_event_root(session_id).await?;
-            if !session.is_terminal() {
-                return Ok(false);
+    fn resolve_terminal_event_batches<'a>(
+        &'a self,
+        session_id: &'a awaken_session_types::SessionId,
+    ) -> futures_util::future::BoxFuture<'a, Result<bool, RunError>> {
+        Box::pin(async move {
+            let mutations = &self.mutations;
+            for attempt in 0..ROOT_CAS_ATTEMPTS {
+                let (owner_scope, mut session) = self.load_event_root(session_id).await?;
+                if !session.is_terminal() {
+                    return Ok(false);
+                }
+                let terminal_cleanup = session
+                    .verified_terminal_cleanup()
+                    .map_err(|error| RunError::internal(error.to_string()))?;
+                if !terminal_cleanup.is_requested() && !terminal_cleanup.is_completed() {
+                    // The fence has not yet joined every root/child Runtime
+                    // writer. Resolving now would misclassify a current row as
+                    // legacy and could place accepted input before an unstable
+                    // terminal high-water.
+                    return Ok(false);
+                }
+                let resolved = session
+                    .events()
+                    .resolve_terminally(self.clock.now_ms())
+                    .map_err(|error| RunError::internal(error.to_string()))?;
+                if resolved == 0 {
+                    return Ok(true);
+                }
+                match mutations
+                    .commit_session_snapshot_with_outcome(
+                        &owner_scope,
+                        session,
+                        "resolve-terminal-event-batches",
+                        Vec::new(),
+                    )
+                    .await
+                {
+                    Ok(_) => return Ok(true),
+                    Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
+                    Err(error) => return Err(mutation_run_error(error)),
+                }
             }
-            let terminal_cleanup = session
-                .verified_terminal_cleanup()
-                .map_err(|error| RunError::internal(error.to_string()))?;
-            if !terminal_cleanup.is_requested() && !terminal_cleanup.is_completed() {
-                // The fence has not yet joined every root/child Runtime
-                // writer. Resolving now would misclassify a current row as
-                // legacy and could place accepted input before an unstable
-                // terminal high-water.
-                return Ok(false);
-            }
-            let resolved = session
-                .events()
-                .resolve_terminally(self.clock.now_ms())
-                .map_err(|error| RunError::internal(error.to_string()))?;
-            if resolved == 0 {
-                return Ok(true);
-            }
-            match mutations
-                .commit_session_snapshot_with_outcome(
-                    &owner_scope,
-                    session,
-                    "resolve-terminal-event-batches",
-                    Vec::new(),
-                )
-                .await
-            {
-                Ok(_) => return Ok(true),
-                Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
-                Err(error) => return Err(mutation_run_error(error)),
-            }
-        }
-        Err(RunError::unavailable(
-            "terminal Session Event-batch resolution conflicted repeatedly",
-        ))
+            Err(RunError::unavailable(
+                "terminal Session Event-batch resolution conflicted repeatedly",
+            ))
+        })
     }
 
     fn reconcile_one_session_event<'a>(
@@ -1664,87 +1683,90 @@ impl SessionEventBatchCommands {
     /// Input visibility and command completion are separate observations of
     /// the same retained command. Running input keeps FIFO blocked and carries
     /// no processed time; terminal fallback remains owned by the exact Run.
-    async fn observe_user_run(
-        &self,
-        session: &PersistedSession,
-        batch_id: &str,
-        operation_id: &str,
-        run_id: &awaken_agent_contract::agent::run::Id,
-        content: &[awaken_agent_contract::agent::content::ContentBlock],
-    ) -> Result<Option<EventBatchProgress>, RunError> {
-        let coordination_reads = self.coordination_reads.as_ref();
-        let thread_reads = self.thread_reads.as_ref();
+    fn observe_user_run<'a>(
+        &'a self,
+        session: &'a PersistedSession,
+        batch_id: &'a str,
+        operation_id: &'a str,
+        run_id: &'a awaken_agent_contract::agent::run::Id,
+        content: &'a [awaken_agent_contract::agent::content::ContentBlock],
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<EventBatchProgress>, RunError>> {
+        Box::pin(async move {
+            let coordination_reads = self.coordination_reads.as_ref();
+            let thread_reads = self.thread_reads.as_ref();
 
-        let Some(state) = coordination_reads
-            .session_run_state(&session.session_id, run_id)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let message_id = MessageId::session_event_input(session.session_id.as_str(), operation_id);
-        let observation = if state == RunState::Running {
-            // The durable root already retained the immutable input coordinate.
-            // Repeated supervisor scans must not reload a growing transcript
-            // merely to re-prove a completed visibility observation.
-            if session.event_batches.iter().any(|batch| {
-                batch.batch_id == batch_id
-                    && batch.events.iter().any(|entry| {
-                        entry.event.operation_id() == operation_id
-                            && entry.projection_anchor.is_some()
-                    })
-            }) {
-                self.settle_event_batch_wake(session, batch_id).await?;
-                return Ok(Some(EventBatchProgress::Pending));
-            }
-            let snapshot = thread_reads
-                .session_thread_run_recovery_snapshot(
+            let Some(state) = coordination_reads
+                .session_run_state(&session.session_id, run_id)
+                .await?
+            else {
+                return Ok(None);
+            };
+            let message_id =
+                MessageId::session_event_input(session.session_id.as_str(), operation_id);
+            let observation = if state == RunState::Running {
+                // The durable root already retained the immutable input coordinate.
+                // Repeated supervisor scans must not reload a growing transcript
+                // merely to re-prove a completed visibility observation.
+                if session.event_batches.iter().any(|batch| {
+                    batch.batch_id == batch_id
+                        && batch.events.iter().any(|entry| {
+                            entry.event.operation_id() == operation_id
+                                && entry.projection_anchor.is_some()
+                        })
+                }) {
+                    self.settle_event_batch_wake(session, batch_id).await?;
+                    return Ok(Some(EventBatchProgress::Pending));
+                }
+                let snapshot = thread_reads
+                    .session_thread_run_recovery_snapshot(
+                        &session.session_id,
+                        session.session_id.as_str(),
+                        run_id,
+                    )
+                    .await?;
+                match snapshot
+                    .as_ref()
+                    .map(|snapshot| committed_message_anchor(snapshot, &message_id))
+                    .transpose()?
+                    .flatten()
+                {
+                    Some((message, anchor)) => {
+                        if message.role != Role::User || message.content != content {
+                            return Err(RunError::internal(
+                                "committed Session User input conflicts with root command intent",
+                            ));
+                        }
+                        Some(EventObservation::InputCommitted(anchor))
+                    }
+                    None => None,
+                }
+            } else {
+                // Terminal Thread truth alone cannot publish a processed User
+                // receipt. The Dispatch owner invokes the typed post-settlement
+                // callback only after its CAS returns Applied; that callback joins
+                // the commit anchor, exact activity removal and processed marker in
+                // one Session root mutation.
+                None
+            };
+            self.settle_event_batch_wake(session, batch_id).await?;
+            if let Some(observation) = observation {
+                self.observe_session_event(
                     &session.session_id,
-                    session.session_id.as_str(),
-                    run_id,
+                    batch_id,
+                    operation_id,
+                    observation,
+                    None,
                 )
                 .await?;
-            match snapshot
-                .as_ref()
-                .map(|snapshot| committed_message_anchor(snapshot, &message_id))
-                .transpose()?
-                .flatten()
-            {
-                Some((message, anchor)) => {
-                    if message.role != Role::User || message.content != content {
-                        return Err(RunError::internal(
-                            "committed Session User input conflicts with root command intent",
-                        ));
-                    }
-                    Some(EventObservation::InputCommitted(anchor))
-                }
-                None => None,
             }
-        } else {
-            // Terminal Thread truth alone cannot publish a processed User
-            // receipt. The Dispatch owner invokes the typed post-settlement
-            // callback only after its CAS returns Applied; that callback joins
-            // the commit anchor, exact activity removal and processed marker in
-            // one Session root mutation.
-            None
-        };
-        self.settle_event_batch_wake(session, batch_id).await?;
-        if let Some(observation) = observation {
-            self.observe_session_event(
-                &session.session_id,
-                batch_id,
-                operation_id,
-                observation,
-                None,
-            )
-            .await?;
-        }
-        // Running and terminal Runtime observations both wait here. Running
-        // still needs its eventual terminal boundary; terminal truth still
-        // needs the Dispatch-Applied callback that alone joins the commit
-        // anchor, activity removal and processed marker. Returning Advanced
-        // for that pre-callback window would immediately select the same
-        // unprocessed command again and hot-loop the bounded supervisor slice.
-        Ok(Some(EventBatchProgress::Pending))
+            // Running and terminal Runtime observations both wait here. Running
+            // still needs its eventual terminal boundary; terminal truth still
+            // needs the Dispatch-Applied callback that alone joins the commit
+            // anchor, activity removal and processed marker. Returning Advanced
+            // for that pre-callback window would immediately select the same
+            // unprocessed command again and hot-loop the bounded supervisor slice.
+            Ok(Some(EventBatchProgress::Pending))
+        })
     }
 
     async fn observe_session_event(
@@ -1796,25 +1818,27 @@ impl SessionEventBatchCommands {
         ))
     }
 
-    async fn settle_event_batch_wake(
-        &self,
-        session: &PersistedSession,
-        batch_id: &str,
-    ) -> Result<(), RunError> {
-        let wake = session
-            .event_batches
-            .iter()
-            .find(|batch| batch.batch_id == batch_id)
-            .and_then(|batch| batch.wake_activity_epoch);
-        if let Some(epoch) = wake
-            && session.active_activity_epochs.contains(&epoch)
-        {
-            self.lifecycle
-                .settle_activity_observed(&session.session_id, epoch, None)
-                .await
-                .map_err(crate::SessionActivityError::run_error)?;
-        }
-        Ok(())
+    fn settle_event_batch_wake<'a>(
+        &'a self,
+        session: &'a PersistedSession,
+        batch_id: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), RunError>> {
+        Box::pin(async move {
+            let wake = session
+                .event_batches
+                .iter()
+                .find(|batch| batch.batch_id == batch_id)
+                .and_then(|batch| batch.wake_activity_epoch);
+            if let Some(epoch) = wake
+                && session.active_activity_epochs.contains(&epoch)
+            {
+                self.lifecycle
+                    .settle_activity_observed(&session.session_id, epoch, None)
+                    .await
+                    .map_err(crate::SessionActivityError::run_error)?;
+            }
+            Ok(())
+        })
     }
 
     async fn reconcile_blocking_root_run(

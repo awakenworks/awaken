@@ -414,30 +414,38 @@ impl SessionResourceReconciliation {
     }
 
     /// Reconcile one persisted Session's Resource projection and reclamation.
-    pub async fn reconcile_persisted_resources(
-        &self,
-        owner_scope: &str,
+    // Request-path state machines in this file return their future already
+    // boxed. An unoptimized poll frame reserves a slot for every inline callee
+    // it awaits and never reuses it; nested inline, one Managed request needed
+    // more than a 2 MiB thread stack (see `tests/stack_boundaries.rs`).
+    pub fn reconcile_persisted_resources<'a>(
+        &'a self,
+        owner_scope: &'a str,
         session: PersistedSession,
-    ) -> Result<PersistedSession, SessionPreparationError> {
-        let session = self
-            .credentials
-            .ensure_repository_credentials_pinned(owner_scope, session)
-            .await?;
-        // The aggregate decides once. A Hold (Resource changes deferred while a
-        // Run owns execution, or nothing to converge) returns here, before the
-        // complete activation/retirement future is constructed on the
-        // supervisor poll stack; every other step consumes the same value.
-        let instruction = SessionResourceReconciliationInstruction::decide(&session);
-        if instruction == SessionResourceReconciliationInstruction::Hold {
-            return Ok(session);
-        }
-        self.reconcile_prepared_resources(
-            owner_scope,
-            crate::mutation::aggregate_from_snapshot(session).map_err(repository_preparation)?,
-            instruction,
-        )
-        .await
-        .map(SessionAggregate::into_snapshot)
+    ) -> futures_util::future::BoxFuture<'a, Result<PersistedSession, SessionPreparationError>>
+    {
+        Box::pin(async move {
+            let session = self
+                .credentials
+                .ensure_repository_credentials_pinned(owner_scope, session)
+                .await?;
+            // The aggregate decides once. A Hold (Resource changes deferred while a
+            // Run owns execution, or nothing to converge) returns here, before the
+            // complete activation/retirement future is constructed on the
+            // supervisor poll stack; every other step consumes the same value.
+            let instruction = SessionResourceReconciliationInstruction::decide(&session);
+            if instruction == SessionResourceReconciliationInstruction::Hold {
+                return Ok(session);
+            }
+            self.reconcile_prepared_resources(
+                owner_scope,
+                crate::mutation::aggregate_from_snapshot(session)
+                    .map_err(repository_preparation)?,
+                instruction,
+            )
+            .await
+            .map(SessionAggregate::into_snapshot)
+        })
     }
 
     /// Run the Repository retirements a detached Resource generation left

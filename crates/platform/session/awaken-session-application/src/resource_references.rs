@@ -91,48 +91,54 @@ impl SessionResourceReferences {
     ) -> Result<SnapshotCommit, SessionMutationError> {
         let idempotency =
             crate::mutation::compile_session_snapshot_idempotency(&candidate, operation);
-        // Keep the complete aggregate-owning Resource bracket on the heap.
-        // Its references and root CAS are polled inline by this same caller;
-        // no task or cancellation owner is detached.
-        Box::pin(self.commit_with_record(owner_scope, candidate, idempotency, lifecycle_facts))
+        // `commit_with_record` returns the complete aggregate-owning Resource
+        // bracket already boxed. Its references and root CAS are polled inline
+        // by this same caller; no task or cancellation owner is detached.
+        self.commit_with_record(owner_scope, candidate, idempotency, lifecycle_facts)
             .await
     }
 
-    pub(crate) async fn commit_with_record(
-        &self,
-        owner_scope: &str,
+    // Request-path state machines in this file return their future already
+    // boxed. An unoptimized poll frame reserves a slot for every inline callee
+    // it awaits and never reuses it; nested inline, one Managed request needed
+    // more than a 2 MiB thread stack (see `tests/stack_boundaries.rs`).
+    pub(crate) fn commit_with_record<'a>(
+        &'a self,
+        owner_scope: &'a str,
         candidate: SessionAggregate,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<SnapshotCommit, SessionMutationError> {
-        let session_id = candidate.session_id.clone();
-        self.synchronize(owner_scope, &candidate)
-            .await
-            .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
-        match self
-            .mutations
-            .commit_session_snapshot_with_record(
-                owner_scope,
-                candidate,
-                idempotency,
-                lifecycle_facts,
-            )
-            .await
-        {
-            Ok(commit) => {
-                if !commit.transitioned() {
-                    // The exact receipt may reload a newer Resource manifest.
-                    // Restore its projection after publishing our stale candidate,
-                    // without turning an accepted replay into another failure.
-                    self.repair(owner_scope, &session_id).await;
+    ) -> futures_util::future::BoxFuture<'a, Result<SnapshotCommit, SessionMutationError>> {
+        Box::pin(async move {
+            let session_id = candidate.session_id.clone();
+            self.synchronize(owner_scope, &candidate)
+                .await
+                .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
+            match self
+                .mutations
+                .commit_session_snapshot_with_record(
+                    owner_scope,
+                    candidate,
+                    idempotency,
+                    lifecycle_facts,
+                )
+                .await
+            {
+                Ok(commit) => {
+                    if !commit.transitioned() {
+                        // The exact receipt may reload a newer Resource manifest.
+                        // Restore its projection after publishing our stale candidate,
+                        // without turning an accepted replay into another failure.
+                        self.repair(owner_scope, &session_id).await;
+                    }
+                    Ok(commit)
                 }
-                Ok(commit)
+                Err(error) => {
+                    self.repair(owner_scope, &session_id).await;
+                    Err(error)
+                }
             }
-            Err(error) => {
-                self.repair(owner_scope, &session_id).await;
-                Err(error)
-            }
-        }
+        })
     }
 
     pub(crate) async fn repair(
