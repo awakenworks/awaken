@@ -8,7 +8,8 @@ license.workspace = true
 # Transport plumbing (yamux multiplexing, dial policy) over the agent-channel
 # contract. It holds no worker authority: the control plane dials the same
 # channel, so it sits in the shared ring both planes may use. Its readers are
-# the container sandboxes and the MCP protocol, so it belongs to sandbox.
+# the container sandboxes and the roots that compose them, so it belongs to
+# sandbox.
 context = "shared"
 product = "platform"
 bounded_context = "sandbox"
