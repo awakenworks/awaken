@@ -112,6 +112,7 @@ pub enum SessionRealizationBegin {
 
 /// Why `begin` refused. A refusal leaves the candidate unchanged except for
 /// the three command failures, which the caller discards with the candidate.
+/// `reassign` refuses with the `EpochExhausted` and `Assignment` subset.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SessionRealizationBeginRejection {
     #[error(transparent)]
@@ -305,12 +306,7 @@ impl SessionAssignmentOperations<'_> {
         count_initial_attempt: bool,
     ) -> Result<(), SessionAggregateCommandError> {
         let state = &mut self.aggregate.state;
-        let expected_epoch = state
-            .realization
-            .as_ref()
-            .map_or(Some(Epoch::FIRST), |old| {
-                Epoch::from_persisted(old.epoch).and_then(Epoch::next)
-            });
+        let expected_epoch = successor_epoch(state.realization.as_ref());
         let same = state
             .realization
             .as_ref()
@@ -356,6 +352,40 @@ impl SessionAssignmentOperations<'_> {
         }
         state.realization = Some(lease);
         Ok(())
+    }
+
+    /// Install the next owner generation for `owner`/`runtime_incarnation`
+    /// unconditionally, the way a terminal-cleanup claimant takes over a
+    /// terminal Session whatever lease it last carried. Returns the installed
+    /// lease; with the predecessor read before the call it is exactly what
+    /// [`Self::restore_predecessor`] needs to compensate this one write.
+    ///
+    /// | step | facts                                        | decision                                      |
+    /// |------|----------------------------------------------|-----------------------------------------------|
+    /// | R1   | no lease was ever granted                    | install epoch 1                               |
+    /// | R2   | current epoch `n` (live or expired, any owner)| install epoch `n + 1`                         |
+    /// | R3   | current epoch has no successor (`u64::MAX`, 0)| `EpochExhausted`, root unchanged              |
+    /// | R4   | owner or incarnation is blank                | `Assignment(InvalidLeaseGeneration)`, unchanged |
+    ///
+    /// The installed lease counts no initial attempt: reassignment never
+    /// clears a predecessor's failure fields.
+    pub fn reassign(
+        &mut self,
+        owner: &str,
+        runtime_incarnation: &str,
+        lease_expires_at_unix_ms: u64,
+    ) -> Result<SessionRealizationLease, SessionRealizationBeginRejection> {
+        let epoch = successor_epoch(self.aggregate.state.realization.as_ref())
+            .ok_or(SessionRealizationBeginRejection::EpochExhausted)?;
+        let lease = SessionRealizationLease {
+            owner: owner.to_owned(),
+            runtime_incarnation: runtime_incarnation.to_owned(),
+            epoch: epoch.get(),
+            expires_at_unix_ms: lease_expires_at_unix_ms,
+        };
+        self.claim(lease.clone(), false)
+            .map_err(SessionRealizationBeginRejection::Assignment)?;
+        Ok(lease)
     }
 
     /// Renew only the selected generation and never regress its expiry.
@@ -475,17 +505,19 @@ impl SessionAssignmentOperations<'_> {
         if state.realization.as_ref() != Some(attempted) {
             return Err(SessionAggregateCommandError::StaleCompensation);
         }
-        if predecessor
-            .as_ref()
-            .map_or(Some(Epoch::FIRST), |lease| {
-                Epoch::from_persisted(lease.epoch).and_then(Epoch::next)
-            })
-            .map(Epoch::get)
-            != Some(attempted.epoch)
-        {
+        if successor_epoch(predecessor.as_ref()).map(Epoch::get) != Some(attempted.epoch) {
             return Err(SessionAggregateCommandError::InvalidPredecessor);
         }
         state.realization = predecessor;
         Ok(())
     }
+}
+
+/// The generation the next grant mints over `current`: the first for a Session
+/// never leased, otherwise the successor of the persisted epoch. `None` when
+/// the persisted epoch has no successor -- exhausted, or a zero no grant mints.
+fn successor_epoch(current: Option<&SessionRealizationLease>) -> Option<Epoch> {
+    current.map_or(Some(Epoch::FIRST), |lease| {
+        Epoch::from_persisted(lease.epoch).and_then(Epoch::next)
+    })
 }
