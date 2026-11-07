@@ -334,11 +334,18 @@ async fn scoped_owner_participant() {
 
 type ObservedNode = (String, BufReader<tokio::net::TcpStream>);
 
-async fn observe_tree(listener: &tokio::net::TcpListener) -> Vec<ObservedNode> {
-    let mut nodes = Vec::new();
-    let mut groups = std::collections::BTreeSet::new();
-    let mut roles = std::collections::BTreeSet::new();
-    tokio::time::timeout(Duration::from_secs(2), async {
+/// Accept the three detached members of [`tree_command`]. Each member's own
+/// connection is the awaited event; the only way one can no longer arrive is
+/// that whatever launched the tree has exited, so `launcher_exit` resolving
+/// first -- not a wall-clock budget a loaded host can outrun -- fails the wait.
+async fn observe_tree<E: std::fmt::Debug>(
+    listener: &tokio::net::TcpListener,
+    launcher_exit: impl std::future::Future<Output = E>,
+) -> Vec<ObservedNode> {
+    let members = async {
+        let mut nodes = Vec::new();
+        let mut groups = std::collections::BTreeSet::new();
+        let mut roles = std::collections::BTreeSet::new();
         for _ in 0..3 {
             let (stream, _) = listener.accept().await.unwrap();
             let mut stream = BufReader::new(stream);
@@ -354,11 +361,27 @@ async fn observe_tree(listener: &tokio::net::TcpListener) -> Vec<ObservedNode> {
             }
             nodes.push((fields[0].to_owned(), stream));
         }
-    })
-    .await
-    .expect("three running detached nodes before trigger");
+        nodes
+    };
+    let nodes = tokio::select! {
+        nodes = members => nodes,
+        exit = launcher_exit => panic!(
+            "the tree's launcher exited before three running detached nodes connected: {exit:?}"
+        ),
+    };
     assert_tree_live(&nodes);
     nodes
+}
+
+/// Hold a participant child's stdin open for the rest of the test. The
+/// participant blocks reading it, and `Child::wait` -- the launcher exit that
+/// [`observe_tree`] races -- closes a child's stdin before waiting, which would
+/// let the participant exit and take its tree down.
+fn hold_participant_stdin(participant: &mut tokio::process::Child) -> tokio::process::ChildStdin {
+    participant
+        .stdin
+        .take()
+        .expect("the participant's stdin is piped")
 }
 
 fn assert_tree_live(nodes: &[ObservedNode]) {
@@ -405,7 +428,7 @@ async fn scoped_cutoff_refresh_preserves_authorization_and_eventual_tree_exit() 
             Duration::from_secs(2),
         )
         .await;
-        let nodes = observe_tree(&listener).await;
+        let nodes = observe_tree(&listener, process.wait()).await;
         // S22 invalid timeout rejects before consulting authority. Persistent
         // backpressure times out without extending the original cutoff.
         for invalid_timeout in [Duration::ZERO, Duration::MAX] {
@@ -551,7 +574,12 @@ async fn scoped_detached_trees_close_on_all_failure_triggers() {
                 .await,
             );
         }
-        let mut nodes = observe_tree(&listener).await;
+        let _participant_stdin = owner.as_mut().map(hold_participant_stdin);
+        let mut nodes = match (owner.as_mut(), scope.as_ref()) {
+            (Some(owner), _) => observe_tree(&listener, owner.wait()).await,
+            (None, Some(scope)) => observe_tree(&listener, scope.wait()).await,
+            (None, None) => unreachable!("every trigger launches the tree"),
+        };
         if trigger == "owner-stall-renewed" {
             // S21 renewal sent before SIGSTOP; all three nodes must survive the
             // old cutoff without owner progress, then expire at the new one.

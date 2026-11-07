@@ -248,7 +248,7 @@ async fn provider_spawn_records_all_trees_and_cold_adoption_waits_for_exact_exit
         .spawn(tree(listener.local_addr().unwrap().port()))
         .await
         .unwrap();
-    let nodes = observe_tree(&listener).await;
+    let nodes = observe_tree(&listener, process.wait()).await;
     let mut command = pc::Command::new([
         "/bin/bash",
         "-c",
@@ -454,7 +454,7 @@ async fn provider_refresh_reobserves_exact_tree_exit_after_delivery_failure() {
                 .spawn(tree(listener.local_addr().unwrap().port()))
                 .await
                 .unwrap();
-            let nodes = observe_tree(&listener).await;
+            let nodes = observe_tree(&listener, process.wait()).await;
             let original_marker = marker(base.path());
             let (reached, observed) = tokio::sync::oneshot::channel();
             let (resume, waiting) = std::sync::mpsc::channel();
@@ -548,7 +548,8 @@ async fn provider_authority_wait_cannot_extend_launch_or_refresh_budget() {
                 .spawn(tree(listener.local_addr().unwrap().port()))
                 .await
                 .unwrap();
-            Some((process, observe_tree(&listener).await))
+            let nodes = observe_tree(&listener, process.wait()).await;
+            Some((process, nodes))
         } else {
             None
         };
@@ -759,7 +760,8 @@ async fn provider_owner_crash_preserves_marker_and_recovery_never_signals_saved_
     let base = tempfile::tempdir().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut owner = spawn_owner(base.path(), &listener, false);
-    let nodes = observe_tree(&listener).await;
+    let _participant_stdin = hold_participant_stdin(&mut owner);
+    let nodes = observe_tree(&listener, owner.wait()).await;
     let original = marker(base.path());
     assert_eq!(original["executions"].as_array().unwrap().len(), 1);
     kill_owner_and_observe_exit(&mut owner, nodes, &original).await;
@@ -896,7 +898,7 @@ async fn provider_terminal_retry_retains_resources_until_the_last_tree_is_absent
         .spawn(tree(listener.local_addr().unwrap().port()))
         .await
         .unwrap();
-    let nodes = observe_tree(&listener).await;
+    let nodes = observe_tree(&listener, process.wait()).await;
     assert!(
         sandbox
             .prepare_disposal_for_effect(
