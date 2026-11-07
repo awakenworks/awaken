@@ -61,10 +61,10 @@ import shlex
 import sys
 from pathlib import Path, PurePosixPath
 
-# lefthook.yml and every scripts/ci module whose INPUT_GLOBS this renderer
-# reads.  The renderer is itself a gate with inputs, so its own hook trigger is
+# lefthook.yml, its authored source, and every scripts/ci module whose
+# INPUT_GLOBS this renderer reads.  The renderer is itself a gate with inputs, so its own hook trigger is
 # rendered from this declaration rather than written by hand.
-INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/*.py", "scripts/ci/*.sh",
+INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/hooks.yml", "scripts/ci/*.py", "scripts/ci/*.sh",
                                  "scripts/ci/pre-commit/*.sh", "scripts/ci/pre-push/*.sh")
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -894,6 +894,32 @@ def render(hooks: str, declarations: dict[str, tuple[str, ...]]) -> str:
     return _with_matcher("".join(output))
 
 
+def authored_glob_errors(source: str, root: Path) -> list[str]:
+    """Hand-written globs in the source that name a repository path which is gone.
+
+    A job that runs no declaring checker keeps an authored trigger, and nothing
+    else notices when a directory it names moves: the job simply stops running.
+    Each brace alternative's literal leading path (the segments before the first
+    wildcard) must exist once it is below the top level. A top-level name may be
+    absent on purpose (``yarn.lock`` arms frontend-quick if one ever appears).
+    """
+    errors = []
+    lines, spans = _spans(source)
+    for name, start, end in spans:
+        for line in lines[start + 1:end]:
+            glob = re.match(r'^\s+glob: "(.*)"\s*$', line)
+            for pattern in _expand_braces(glob.group(1)) if glob else ():
+                parts = pattern.split("/")
+                literal = next((index for index, part in enumerate(parts) if re.search(r"[*?\[]", part)),
+                               len(parts))
+                prefix = "/".join(parts[:literal])
+                if "/" in prefix and not (root / prefix).exists():
+                    errors.append(f"{SOURCE_NAME}: job {name} globs {pattern}, but {prefix} does not "
+                                  "exist; a moved path leaves this trigger dead, so name its current "
+                                  "location")
+    return errors
+
+
 def render_source(source: str, declarations: dict[str, tuple[str, ...]]) -> str:
     """The whole lefthook.yml: the generated header plus the rendered source.
 
@@ -1209,19 +1235,34 @@ def selftest() -> None:
         anchor = "    # 4. Rust checks are active"
         assert source.count(anchor) == 1, "H3 fixture anchor is missing"
         source_path.write_text(source.replace(anchor, "    - name: probe-added\n"
-                                              '      glob: "docs/probe.md"\n'
+                                              '      glob: "docs/**/*.md"\n'
                                               "      timeout: 77\n"
                                               "      run: echo probe\n\n" + anchor, 1), encoding="utf-8")
         assert cli("--check")[0] == 1 and cli()[0] == 0, "H3 the source change is not yet rendered"
         added = hooks_path.read_text(encoding="utf-8")
         assert "probe-added" in command_blocks(added), "H3 the added job is missing"
         assert "--hook-label probe-added --timeout 77 --shell 'echo probe'" in added \
-            and "timeout:" not in added, "H5"
+            and not re.search(r"(?m)^\s+timeout:", added), "H5"
         removed = re.sub(r"(?ms)^    # Protocol/credential codec.*?(?=^    # 5\. Frontend)", "", source)
         assert removed != source and "worker-fixture-contract" not in removed, "H4 fixture anchor is missing"
         source_path.write_text(removed, encoding="utf-8")
         assert cli()[0] == 0, "H4"
         assert "worker-fixture-contract" not in hooks_path.read_text(encoding="utf-8"), "H4 removed job remains"
+        # | P1 | an authored glob names an existing file or directory | accepted     |
+        # | P2 | its directory moved (literal path, or before a `*`)  | refused, named |
+        # | P3 | a top-level optional name (`yarn.lock`, `apps/**`)   | accepted     |
+        assert authored_glob_errors(source, ROOT) == [], "P1 the real source"
+        moved = ('commit-checks:\n  jobs:\n    - name: moved\n'
+                 '      glob: "{yarn.lock,apps/**/*.ts,crates/gone/awaken-x/src/lib.rs,crates/gone/awaken-y/src/**/*.rs}"\n'
+                 '      run: echo moved\n')
+        assert authored_glob_errors(moved, ROOT) == [
+            f"{SOURCE_NAME}: job moved globs {pattern}, but {prefix} does not exist; a moved path leaves "
+            "this trigger dead, so name its current location"
+            for pattern, prefix in (("crates/gone/awaken-x/src/lib.rs", "crates/gone/awaken-x/src/lib.rs"),
+                                    ("crates/gone/awaken-y/src/**/*.rs", "crates/gone/awaken-y/src"))], "P2/P3"
+        source_path.write_text(source.replace('glob: "e2e/**"', 'glob: "e2e/gone/**"', 1), encoding="utf-8")
+        status, message = cli("--check")
+        assert status == 1 and "e2e/gone does not exist" in message, "P2 through the CLI"
         source_path.write_text(source.replace("      timeout: 1800\n", "      timeout: 1800\n      timeout: 9\n", 1),
                                encoding="utf-8")
         try:
@@ -1377,7 +1418,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     rendered = render_source(source, declarations)
-    execution_errors = hook_entry_errors(rendered) + generated_hook_glob_errors(rendered, declarations)
+    execution_errors = (authored_glob_errors(source, ROOT) + hook_entry_errors(rendered)
+                        + generated_hook_glob_errors(rendered, declarations))
     if execution_errors:
         print('\n'.join(execution_errors) + f'\nfix: edit {SOURCE_NAME}', file=sys.stderr)
         return 1

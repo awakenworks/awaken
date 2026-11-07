@@ -39,7 +39,10 @@ INPUT_GLOBS: tuple[str, ...] = (
     "deploy/**/*.yaml",
     "deploy/**/*.yml",
     ".github/**/*.yml",
-    "lefthook.yml",
+    # The authored hook source, not the lefthook.yml rendered from it: a path
+    # is reported where it is written and fixed. generate_hooks.py also refuses
+    # a source glob whose directory is gone (a glob is no file path here).
+    "scripts/ci/hooks.yml",
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -125,15 +128,18 @@ def self_test() -> None:
         "scripts/ci/check-reliability.sh",
         "scripts/e2e/sub/run.sh",
         "lefthook.yml",
+        "scripts/ci/hooks.yml",
         ".github/workflows/quality.yml",
         "crates/contract/awaken-x/src/lib.rs",
         "docs/adr/0001.md",
         "scripts/ci/check_reliability.py",
     ]
+    # C4 also: the generated lefthook.yml is not a gate source; its authored
+    # source scripts/ci/hooks.yml is.
     assert scanned_files(tracked) == [
         ".github/workflows/quality.yml",
-        "lefthook.yml",
         "scripts/ci/check-reliability.sh",
+        "scripts/ci/hooks.yml",
         "scripts/e2e/sub/run.sh",
     ], f"C4 scope {scanned_files(tracked)}"
     # SX6: declaring an imported Python data input must trigger this guard
