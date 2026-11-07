@@ -709,7 +709,6 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     hooks = generate_hooks.pre_commit_view(hooks)
     errors = []
     pre_commit = hooks.split("pre-commit:", 1)[-1].split("\npre-push:", 1)[0]
-    pre_push = hooks.split("\npush-qualification:", 1)[-1] if "\npush-qualification:" in hooks else ""
     owner = re.search(r"(?m)^    rust-quick:\n((?:      .*\n)+)", pre_commit)
     owner_text = owner.group(1) if owner else ""
     if owner_text.count("run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --quick") != 1:
@@ -722,17 +721,8 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     errors.extend(sdk_admission_errors(owner_text, gate))
     if hooks.count("run: python3 scripts/ci/check_crate_boundaries.py") != 1:
         errors.append("crate boundaries must have one universal pre-commit owner")
-    push_owner = re.search(r"(?m)^    rust-quick:\n((?:      .*\n)+)", pre_push)
-    push_text = push_owner.group(1) if push_owner else ""
-    if push_text.count("run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --push") != 1:
-        errors.append("Rust pre-push must delegate to the canonical gate's --push mode once")
-    if "check-rust.sh --quick" in pre_push:
-        errors.append("Rust pre-push still runs --quick, which skips clippy and the formal ledger")
-    public_api_command = "run: python3 scripts/ci/_native_shell.py scripts/ci/check_public_api.sh --require-tools"
-    if pre_push.count(public_api_command) != 1:
-        errors.append(
-            "pre-push must invoke the canonical fail-closed public API gate exactly once"
-        )
+    # Pre-push running `--push` (never `--quick`) and the public API gate is
+    # generate_hooks.hook_entry_errors' exact push-qualification list.
     push_branch = re.search(r"(?ms)^  --quick\|--push\)\n(.*?)^    ;;", gate)
     push_body = push_branch.group(1) if push_branch else ""
     if not push_branch or 'if [ "$mode" = "--push" ]' not in push_body:
@@ -1025,27 +1015,19 @@ def self_test() -> None:
     # | Rule | P1 | P2 | P3 | P4 | P5 | P6 | Effect |
     # | H5   | T  | T  | T  | T  | F  | T  | accept |
     # | H6   | F  | T  | T  | T  | F  | T  | reject: pre-commit off --quick |
-    # | H7   | T  | F  | T  | T  | T  | T  | reject: pre-push still --quick |
     # | H8   | T  | F  | T  | T  | F  | T  | reject: pre-push names no gate mode |
     # | H9   | T  | T  | F  | T  | F  | T  | reject: --push without clippy |
     # | H10  | T  | T  | T  | F  | F  | T  | reject: --push without the ledger |
     # | H11  | T  | T  | T* | T  | F  | T  | reject: clippy present but warnings allowed |
     # | H12  | --full widens its compile/lint surface, --push does not | reject |
     # | H13  | the lint surface is narrower than the compiled surface  | reject |
-    # | H14  | T  | T  | T  | T  | F  | F  | reject: public API unchecked |
     pre_push_at = hooks.index("\npre-push:")
     assert rust_hook_errors(
         hooks[:pre_push_at].replace("check-rust.sh --quick", "check-rust.sh --push") + hooks[pre_push_at:],
         gate,
     ), "H6 pre-commit must keep --quick"
-    assert rust_hook_errors(
-        hooks[:pre_push_at] + hooks[pre_push_at:].replace("check-rust.sh --push", "check-rust.sh --quick"),
-        gate,
-    ), "H7 pre-push must not fall back to --quick"
-    assert rust_hook_errors(
-        hooks[:pre_push_at] + hooks[pre_push_at:].replace("check-rust.sh --push", "check-rust.sh --full"),
-        gate,
-    ), "H8 pre-push must name --push"
+    # H7/H8 (pre-push names --push, never --quick) and H14 (public API) are
+    # generate_hooks --self-test / _lefthook_fitness E3 rows on hook_entry_errors.
     push_start = gate.index("  --quick|--push)")
     push_end = gate.index("    ;;", push_start)
     push_body = gate[push_start:push_end]
@@ -1078,39 +1060,9 @@ def self_test() -> None:
     assert rust_hook_errors(hooks, without_ledger), "H10 --push must run the formal ledger"
     allowing = gate[:push_start] + push_body.replace("-D warnings", "-W warnings") + gate[push_end:]
     assert rust_hook_errors(hooks, allowing), "H11 --push clippy must deny warnings"
-    assert rust_hook_errors(
-        hooks.replace("run: python3 scripts/ci/_native_shell.py scripts/ci/check_public_api.sh --require-tools", "run: true"),
-        gate,
-    ), "H14 pre-push must run the canonical public API gate"
     assert rust_hook_errors(hooks, gate.replace("  --quick|--push)", "  --quick)")), "H8 gate without a --push branch"
-    # Generated trigger-glob table, on a synthetic hook file.
-    # | Rule | generated regions match the render | declaring checker wired | Effect |
-    # | N1   | yes                                | yes                     | accept |
-    # | N2   | no, one glob was hand-edited       | yes                     | reject |
-    # | N3   | yes                                | no                      | reject |
-    # | N4   | n/a, the invoked checker declares nothing | n/a              | admitted, glob untouched |
-    declarations = {"check_alpha.py": ("docs/*.md",)}
-    synthetic = generate_hooks.render(
-        "pre-commit:\n  commands:\n    alpha:\n"
-        "      run: python3 scripts/ci/check_alpha.py {staged_files}\n"
-        "\n    shell:\n"
-        '      glob: "crates/**/*.rs"\n'
-        "      run: tools/opaque.sh\n",
-        declarations,
-    )
-    assert not generate_hooks.generated_hook_glob_errors(synthetic, declarations), "N1"
-    hand_edited = synthetic.replace(
-        '{docs/*.md,scripts/ci/check_alpha.py}', "docs/README.md"
-    )
-    assert hand_edited != synthetic and generate_hooks.generated_hook_glob_errors(hand_edited, declarations), "N2"
-    assert generate_hooks.generated_hook_glob_errors(
-        synthetic, {**declarations, "check_unwired.py": ("formal/*.json",)}
-    ), "N3"
-    assert '      glob: "crates/**/*.rs"\n' in synthetic and "opaque.sh" in synthetic, "N4"
-    # Live: the repository's own hooks are exactly what their declarations render.
-    assert not generate_hooks.generated_hook_glob_errors(
-        hooks, generate_hooks.declared_input_globs(ROOT / "scripts/ci")
-    ), "N1 live"
+    # Generated trigger globs (N1-N3) are generate_hooks --self-test rows; the
+    # live hook file is generate_hooks --check.
     for checker in GATE_OWNED_CHECKERS:
         command = f"python3 scripts/ci/{checker}"
         duplicate = hooks.replace("pre-commit:", f"pre-commit:\n    duplicate:\n      run: {command}", 1)

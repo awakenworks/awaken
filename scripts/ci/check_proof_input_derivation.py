@@ -33,7 +33,7 @@ does not already carry, and ``--debt-ratchet`` refuses more debts at HEAD than
 at its merge-base (failing closed when that history is missing).
 
 Modes: ``--require-complete`` walks the tree, ``--staged <paths>`` asks the
-same question about the given files, ``--survey`` prints the classification.
+same question about the given files.
 """
 
 from __future__ import annotations
@@ -657,51 +657,21 @@ def report(found: list[dict[str, str]], complete: bool) -> None:
     )
 
 
-def survey() -> None:
-    found = findings()
-    everything = rust_sources()
-    sources = {
-        path: _crate_boundary_workspace.rust_without_comments(
-            path.read_text(errors="replace")
-        )
-        for path in everything
-    }
-    total = sum(len(list(harnesses(text))) for text in sources.values())
-    flagged = {(finding["source"], finding["harness"]) for finding in found}
-    by_rule: dict[str, int] = {}
-    for finding in found:
-        by_rule[finding["rule"]] = by_rule.get(finding["rule"], 0) + 1
-    print(f"harnesses: {total}")
-    print(f"(a) derived from real types: {total - len(flagged)}")
-    print(f"(b)+(c) flagged harnesses: {len(flagged)}")
-    for rule in RULES:
-        print(f"    {rule}: {by_rule.get(rule, 0)} finding(s)")
-    for finding in sorted(found, key=key):
-        print(
-            f"  {finding['rule']:<11} {finding['source']}::{finding['harness']}"
-            f" [{finding['kernel']}{'/' + finding['parameter'] if finding['parameter'] else ''}]"
-        )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--require-complete", action="store_true")
-    parser.add_argument("--survey", action="store_true")
     parser.add_argument("--staged", nargs="*", default=None)
-    parser.add_argument("--selftest", action="store_true")
+    parser.add_argument("--self-test", action="store_true")
     parser.add_argument(
         "--debt-ratchet", nargs="?", const="", default=None, metavar="REF",
         help="refuse more debts at HEAD than at its merge-base with REF (default origin/main, then main)",
     )
     options = parser.parse_args()
-    if options.selftest:
+    if options.self_test:
         selftest()
         return
     if options.debt_ratchet is not None:
         debt_ratchet(options.debt_ratchet or None)
-    if options.survey:
-        survey()
-        return
     if options.staged is not None:
         paths = [ROOT / candidate for candidate in options.staged]
         interesting = [path for path in paths if path.suffix == ".rs"]

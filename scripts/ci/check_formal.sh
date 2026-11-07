@@ -227,6 +227,7 @@ python3 scripts/ci/formal_budget.py --self-test
 python3 scripts/ci/formal_ledger.py --self-test
 python3 scripts/ci/formal_plan.py --self-test
 python3 scripts/ci/formal_vacuity.py --self-test
+python3 scripts/ci/formal_inventory.py --self-test
 python3 scripts/ci/test_formal_profile.py
 python3 scripts/ci/test_formal_run_evidence.py
 python3 scripts/ci/test_bootstrap_kani.py
@@ -237,9 +238,9 @@ python3 scripts/ci/check_formal_web_surface.py
 python3 scripts/ci/check_proof_boundaries.py
 python3 scripts/ci/check_formal_mutations.py
 # Mutation adequacy is a full-tier (nightly/release) check. The validators'
-# own self-tests above hold their rejection classes every run; these four
-# mutants hold the strict-CI wiring rules check_formal_coverage reads from
-# this file, which no fixture self-test reaches yet.
+# own self-tests above hold their rejection classes every run (the Kani batch
+# loop is test_formal_profile row P4); these three mutants hold the remaining
+# strict-CI wiring rules check_formal_coverage reads from this file.
 if [ "$formal_tier" = full ]; then
   python3 scripts/ci/check_formal_mutations.py --gate-mutants
 fi

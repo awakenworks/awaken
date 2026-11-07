@@ -35,7 +35,7 @@ CONTEXT_DEPENDENCIES: dict[str, frozenset[str]] = {
     # and the neutral runtime; everything else arrives through a contract.
     # This used to be `CONTEXTS`, and that wildcard is how the shared runtime
     # host came to link the worker's sandbox implementations and the
-    # coordinator's stores into the control plane (see KNOWN_INVERSIONS).
+    # coordinator's stores into the control plane; those inversions are gone and the rule is a plain deny.
     "shared": frozenset({"shared", "runtime"}),
     # Protocol crates translate public wire vocabularies across domain
     # applications but own no domain state or persistence authority; the
@@ -75,12 +75,6 @@ LAYER_DEPENDENCIES: dict[str, frozenset[str]] = {
 # reading it from a wire adapter is how the same projection came to be computed
 # twice (protocol state/ beside the session application).
 PROTOCOL_INFRASTRUCTURE_CONTEXTS = frozenset({"shared", "runtime", "protocol"})
-
-# Edges that violate the direction above and exist today. Each entry names the
-# refactor that removes it. The set only shrinks: a listed edge that no longer
-# exists, or no longer violates, is itself an error, so the removal is recorded
-# in the same commit that achieves it. Nothing may be added here.
-KNOWN_INVERSIONS: dict[tuple[str, str], str] = {}
 
 # Placement is a second axis beside `context`. `context` records the deployment
 # plane a crate serves; `product` and `bounded_context` record what the crate is
@@ -157,31 +151,9 @@ def metadata_violations(spec: CrateSpec) -> list[str]:
     return errors
 
 
-def dependency_violations(
-    specs: list[CrateSpec],
-    known: dict[tuple[str, str], str] | None = None,
-) -> list[str]:
-    """Direction violations, minus the ratcheted KNOWN_INVERSIONS.
-
-    `known` defaults to the module ratchet; the self-test passes an explicit
-    table so its fixtures do not depend on today's workspace.
-    """
-
-    known = KNOWN_INVERSIONS if known is None else known
-    raw = _raw_dependency_violations(specs)
-    errors = [message for edge, message in raw if edge not in known]
-    violating = {edge for edge, _ in raw}
-    names = {spec.name for spec in specs}
-    for edge, removal in sorted(known.items()):
-        source, target = edge
-        if source not in names:
-            continue
-        if edge not in violating:
-            errors.append(
-                f"KNOWN_INVERSIONS lists {source} -> {target}, which no longer violates the "
-                f"dependency direction ({removal}); delete the entry in the commit that removed it"
-            )
-    return errors
+def dependency_violations(specs: list[CrateSpec]) -> list[str]:
+    """Direction violations; a plain deny (the inversion ratchet reached zero)."""
+    return [message for _, message in _raw_dependency_violations(specs)]
 
 
 def _raw_dependency_violations(specs: list[CrateSpec]) -> list[tuple[tuple[str, str], str]]:
@@ -279,37 +251,27 @@ def selftest() -> None:
     | R12  | contract      | extension       | no                | no            | E12    |
     """
     c = lambda n, x, l, a="owner", d=frozenset(): CrateSpec(n, x, l, a, d)
-    # R13-R16: the shared wildcard, the protocol persistence rule, and the ratchet.
+    # R13-R14: the shared wildcard and the protocol persistence rule (plain denies).
     shared_to_worker = [
         c("host", "shared", "infrastructure", d=frozenset({"sandbox"})),
         c("sandbox", "worker", "infrastructure"),
     ]
-    assert dependency_violations(shared_to_worker, known={}), "R13 shared may not reach a worker implementation"
+    assert dependency_violations(shared_to_worker), "R13 shared may not reach a worker implementation"
     assert dependency_violations(
         [c("host", "shared", "infrastructure", d=frozenset({"port"})), c("port", "worker", "contract")],
-        known={},
     ) == [], "R13 shared reaches a worker contract"
     assert dependency_violations(
         [
             c("wire", "protocol", "interface", d=frozenset({"store"})),
             c("store", "coordinator", "infrastructure"),
         ],
-        known={},
     ), "R14 protocol may not read another context's store"
     assert dependency_violations(
         [
             c("wire", "protocol", "interface", d=frozenset({"http"})),
             c("http", "shared", "infrastructure"),
         ],
-        known={},
     ) == [], "R14 protocol may use shared plumbing"
-    ratchet = {("host", "sandbox"): "fixture"}
-    assert dependency_violations(shared_to_worker, known=ratchet) == [], "R15 a ratcheted edge is admitted"
-    stale = dependency_violations(
-        [c("host", "shared", "infrastructure"), c("sandbox", "worker", "infrastructure")],
-        known=ratchet,
-    )
-    assert stale and "no longer violates" in stale[0], "R16 a removed edge must leave the ratchet"
     assert metadata_violations(c("missing", "", "", "")), "R2"
     # Placement table. P1 SDK in its one context; P2 Platform in a listed
     # context; P3 apps/devtools without a context; P4 unknown product; P5

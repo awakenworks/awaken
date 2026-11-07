@@ -671,28 +671,9 @@ def self_test() -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    action = parser.add_mutually_exclusive_group(required=True)
-    action.add_argument("--self-test", action="store_true", help="run the decision table")
-    action.add_argument(
-        "--export", type=Path, nargs="?", const=Path("target/formal/coverage.json"), metavar="PATH",
-        help="write the assembled v1 ledger (under target/ only; it is never committed)",
-    )
-    arguments = parser.parse_args(argv)
-    if arguments.self_test:
-        self_test()
-        return 0
-    root = Path(__file__).resolve().parents[2]
-    output = arguments.export if arguments.export.is_absolute() else root / arguments.export
-    if (root / "target") not in output.resolve().parents:
-        parser.error("--export writes under target/ only; the assembled ledger is never committed")
-    try:
-        ledger = load(root)
-    except LedgerError as error:
-        print(f"formal ledger: {error}", file=sys.stderr)
-        return 1
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(ledger, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"formal ledger: {len(ledger['obligations'])} obligations -> {output} ({digest(ledger)})")
+    parser.add_argument("--self-test", action="store_true", required=True, help="run the decision table")
+    parser.parse_args(argv)
+    self_test()
     return 0
 
 
