@@ -17,7 +17,9 @@ Adding ``e2e`` to the workspace one day would change this checker's advice
 without anybody editing it.
 
 Nothing here installs anything: a gate must still fail by name when a dependency
-is genuinely missing from a manifest.
+is genuinely missing from a manifest. ``scripts/ci/doctor.sh --fix`` is the one
+command that installs, and the lockfile command it runs for each root is derived
+here (``lockfile_install_command``) beside the advice, from the same workspace file.
 """
 
 from __future__ import annotations
@@ -30,6 +32,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE = "pnpm-workspace.yaml"
+# The one command that installs every root from its lockfile; gate_tools.py's
+# bootstrap runs ``lockfile_install_command`` for each root that is missing.
+FIX_COMMAND = "scripts/ci/doctor.sh --fix"
 
 # Roots whose dependencies a gate imports. Each must either be installed or say
 # how to install it; a root absent from the tree is simply not checked.
@@ -93,6 +98,40 @@ def install_command(root: Path, relative: str, members: set[Path]) -> str:
     return f"npm --prefix {relative} install"
 
 
+def lockfile_install_command(root: Path, relative: str, members: set[Path],
+                             *, online: bool = False) -> list[str]:
+    """The lockfile-exact install of one root; offline unless the caller opts in.
+
+    | Rule | root                    | online | command                                   |
+    |------|-------------------------|--------|-------------------------------------------|
+    | L1   | workspace member or `.` | no     | pnpm install --offline --frozen-lockfile  |
+    | L2   | workspace member or `.` | yes    | pnpm install --frozen-lockfile            |
+    | L3   | outside the workspace   | no     | npm ci --prefix <root> --offline ...      |
+    | L4   | outside the workspace   | yes    | npm ci --prefix <root> ...                |
+
+    Neither form rewrites a lockfile: ``npm ci`` refuses a drifted one and
+    ``--frozen-lockfile`` makes pnpm refuse too. A workspace member is installed
+    from the repository root, because that is where pnpm's lockfile lives.
+    """
+
+    if install_command(root, relative, members) == "pnpm install":
+        return ["pnpm", "install", "--frozen-lockfile", *(() if online else ("--offline",))]
+    return ["npm", "ci", "--prefix", relative, "--no-audit", "--no-fund",
+            *(() if online else ("--offline",))]
+
+
+def missing_summary(root: Path, relative: str) -> str:
+    """What is missing under one root, or "" when nothing is."""
+
+    missing = missing_dependencies(root, relative) if (root / relative).is_dir() else []
+    if not missing:
+        return ""
+    shown = ", ".join(missing[:4])
+    if len(missing) > 4:
+        shown += f", and {len(missing) - 4} more"
+    return f"{len(missing)} declared dependencies are not installed ({shown})"
+
+
 def missing_dependencies(root: Path, relative: str) -> list[str]:
     """Declared dependencies with no directory under this root's node_modules."""
 
@@ -121,17 +160,13 @@ def dependency_errors(root: Path, roots: tuple[str, ...]) -> list[str]:
     members = workspace_members(root)
     errors: list[str] = []
     for relative in roots:
-        if not (root / relative).is_dir():
+        summary = missing_summary(root, relative)
+        if not summary:
             continue
-        missing = missing_dependencies(root, relative)
-        if not missing:
-            continue
-        shown = ", ".join(missing[:4])
-        if len(missing) > 4:
-            shown += f", and {len(missing) - 4} more"
+        lockfile = " ".join(lockfile_install_command(root, relative, members))
         errors.append(
-            f"{relative}: {len(missing)} declared dependencies are not installed "
-            f"({shown}); run: {install_command(root, relative, members)}"
+            f"{relative}: {summary}; run: {FIX_COMMAND} "
+            f"(it runs `{lockfile}` from the local package cache)"
         )
     return errors
 
@@ -160,13 +195,29 @@ def selftest() -> None:
 
         errors = dependency_errors(root, roots)
         assert len(errors) == 2, f"D2 twice, D3 and D4 silent: {errors}"
-        assert any(error.startswith("web:") and "pnpm install" in error for error in errors), (
-            "D2 a workspace member is pnpm's to install"
+        assert all(f"run: {FIX_COMMAND} " in error for error in errors), (
+            f"D2 every refusal names the one fix command: {errors}"
         )
         assert any(
-            error.startswith("outside:") and "npm --prefix outside install" in error
+            error.startswith("web:") and "pnpm install --frozen-lockfile --offline" in error
+            for error in errors
+        ), "D2 a workspace member is pnpm's to install"
+        assert any(
+            error.startswith("outside:") and "npm ci --prefix outside" in error
             for error in errors
         ), "D2 a root outside the workspace installs itself"
+        members = workspace_members(root)
+        assert install_command(root, "outside", members) == "npm --prefix outside install"
+        # L1-L4: offline unless asked, lockfile-exact either way.
+        for relative, online, expected in (
+            ("web", False, ["pnpm", "install", "--frozen-lockfile", "--offline"]),
+            ("web", True, ["pnpm", "install", "--frozen-lockfile"]),
+            ("outside", False, ["npm", "ci", "--prefix", "outside", "--no-audit", "--no-fund",
+                                "--offline"]),
+            ("outside", True, ["npm", "ci", "--prefix", "outside", "--no-audit", "--no-fund"]),
+        ):
+            actual = lockfile_install_command(root, relative, members, online=online)
+            assert actual == expected, f"L1-L4 {relative}/{online}: {actual}"
         assert all("plain" not in error and "absent" not in error for error in errors), "D3 + D4"
 
         # D1: install them and the root falls silent.
@@ -182,7 +233,7 @@ def selftest() -> None:
             "packages:\n  - web\n  - packages/*\n  - outside\n", encoding="utf-8"
         )
         adopted = dependency_errors(root, roots)
-        assert len(adopted) == 1 and "pnpm install" in adopted[0], f"advice follows adoption: {adopted}"
+        assert len(adopted) == 1 and "`pnpm install" in adopted[0], f"advice follows adoption: {adopted}"
     print("check_node_dependencies self-test: the decision table and the advice hold")
 
 

@@ -10,8 +10,14 @@ commands and their flags by `check_gate_arguments.py`).
 - **Rust** is pinned by [`rust-toolchain.toml`](rust-toolchain.toml) (1.96.0);
   rustup installs it on first use. Install `cargo-nextest` too.
 - **Node 22 and pnpm 11.6.0** (the version in [`package.json`](package.json)):
-  `corepack prepare pnpm@11.6.0 --activate`, then
-  `pnpm install --frozen-lockfile` and `npm ci --prefix e2e`.
+  `corepack prepare pnpm@11.6.0 --activate`.
+- **Each new worktree**: `scripts/ci/doctor.sh --fix`. It installs the
+  repository root, `web` and `e2e` from their lockfiles (`pnpm install
+  --frozen-lockfile --offline`, `npm ci --prefix e2e --offline`) out of the local
+  package cache, with no network, and does nothing when they are already
+  installed. If the cache lacks a pinned package it says so; then
+  `scripts/ci/doctor.sh --fix --online` lets npm and pnpm fetch it. It never
+  installs host tools or writes Git configuration.
 - **Devcontainer**: [`.devcontainer/`](.devcontainer/devcontainer.json) builds
   Rust plus PostgreSQL and runs the installs above.
 - **Hooks**: `lefthook install`. [`lefthook.yml`](lefthook.yml) runs the
@@ -49,7 +55,9 @@ commands and their flags by `check_gate_arguments.py`).
   requirements for an explicitly selected `updateInstead` receive mode.
 - **What is missing on this machine**: `scripts/ci/doctor.sh` reports each
   absent tool and the check group it costs ([`gate_tools.json`](scripts/ci/gate_tools.json)
-  declares them all).
+  declares them all). A gate that refuses to start names exactly what is
+  missing and the one command that fixes it, e.g. `the static gate did not
+  start: missing e2e/node_modules` followed by `fix: scripts/ci/doctor.sh --fix`.
 
 For native Windows checks, use Git Bash for shell gates. In PowerShell,
 select the same shell for pnpm scripts and hooks:
@@ -150,6 +158,16 @@ come from equivalent complete builds before reporting a build-time reduction.
   A target shared between worktrees reuses stale artifacts from another tree and
   produces failures that belong to neither. Builds wait silently in the host
   admission queue: an empty log is not a dead build.
+- **Temporary files follow the target.** When `TMPDIR` is unset, gate and hook
+  entry points ([`_cargo_target.sh`](scripts/ci/_cargo_target.sh)
+  `awaken_configure_gate_temp`) set it to a per-run directory on the target's
+  disk but outside the checkout: `<target>/gate-tmp/<pid>` for a relocated or
+  symlinked target, `<checkout parent>/.<checkout>.gate-tmp/<pid>` for an
+  in-tree one (a temporary crate inside the checkout would join this Cargo
+  workspace). Directories of finished runs are removed at the next start. An
+  explicit `TMPDIR` always wins, and one that is not a writable directory stops
+  the gate by name. Native Windows shells are unchanged: their tools read
+  `TEMP`/`TMP`.
 - **No ambient API keys.** The gates unset provider keys
   ([`_provider_environment.sh`](scripts/ci/_provider_environment.sh)); model
   configuration goes through the config-plane API, not the environment.
