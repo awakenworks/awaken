@@ -4,11 +4,14 @@ use super::*;
 // Keep the existing directory fixture and its authoritative record together.
 // The extra leaves inject only a read failure and count that same read; old
 // fixtures retain their original healthy Default and mutation implementations.
+// The last leaf is the incarnation exclusion physical admission holds; record
+// mutations wait for it exactly as a real Registry's do.
 #[derive(Default)]
 pub(super) struct TestWorkerDirectory(
     pub(super) Mutex<Option<RegisteredWorker>>,
     std::sync::atomic::AtomicBool,
     AtomicUsize,
+    pub(super) Arc<tokio::sync::Mutex<()>>,
 );
 
 #[tokio::test(flavor = "multi_thread")]

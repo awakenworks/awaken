@@ -1321,7 +1321,11 @@ impl awaken_dispatch_contract::DispatchAttemptControl for PostgresDispatchStore 
     ) -> Result<AttemptAdmission, DispatchError> {
         let snapshot = guard.snapshot().clone();
         let identity = &snapshot.identity;
-        if identity.lease_owner() != claim.owner || binding.is_none_or(|b| b.worker() != identity) {
+        // A binding, when present, names the guarded incarnation; an unbound
+        // admission is judged by the claim owner alone. Either way the standing
+        // law below runs on database time inside the carried transaction.
+        if identity.lease_owner() != claim.owner || binding.is_some_and(|b| b.worker() != identity)
+        {
             return Err(DispatchError::Rejected(
                 "Registry guard does not match the physical attempt".into(),
             ));

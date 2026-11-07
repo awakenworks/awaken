@@ -1447,7 +1447,11 @@ impl awaken_dispatch_contract::DispatchAttemptControl for MemoryDispatchStore {
         guard: awaken_worker_contract::WorkerIncarnationGuard,
         handoff: bool,
     ) -> Result<AttemptAdmission, DispatchError> {
-        crate::application::admit_with_incarnation_guard(self, claim, binding, guard, handoff).await
+        let now_ms = self.clock.now_ms();
+        crate::application::admit_with_incarnation_guard(
+            self, now_ms, claim, binding, guard, handoff,
+        )
+        .await
     }
 }
 

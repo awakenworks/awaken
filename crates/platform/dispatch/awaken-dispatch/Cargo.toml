@@ -69,6 +69,7 @@ nats = ["durable", "dep:async-nats", "dep:futures-lite"]
 awaken-tool-contract.workspace = true
 awaken-lease-testkit.workspace = true
 awaken-store-conformance.workspace = true
+awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 awaken-dispatch-testkit = { workspace = true }
 awaken-store-inmem.workspace = true
@@ -91,6 +92,10 @@ required-features = ["test-support"]
 
 [[test]]
 name = "dispatch_conformance"
+required-features = ["test-support"]
+
+[[test]]
+name = "guarded_admission_conformance"
 required-features = ["test-support"]
 
 # Compile-surface cause/effect table for the bounded-query and reconciliation

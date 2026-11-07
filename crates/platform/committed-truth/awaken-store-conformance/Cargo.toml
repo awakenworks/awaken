@@ -17,6 +17,7 @@ awaken-executable-environment-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-deployment-contract.workspace = true
+awaken-dispatch-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-time.workspace = true
 awaken-lease-testkit.workspace = true

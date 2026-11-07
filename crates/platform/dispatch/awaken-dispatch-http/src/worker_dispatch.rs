@@ -455,7 +455,8 @@ pub struct RegisteredDispatchDependencies {
     /// Present only where a provider (systemd user units, Kubernetes Pods)
     /// observes Worker processes. Without it the unbound transport (the
     /// header-authenticated co-located Worker) freezes no physical binding;
-    /// attempts are still admitted only to the current registered incarnation.
+    /// attempts are still admitted only to the current registered incarnation,
+    /// under its Registry exclusion, exactly as bound attempts are.
     pub execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     /// Present with the same providers. Without it no predecessor stop is ever
     /// observed, so a blocked successor stays blocked and closed-idle evidence

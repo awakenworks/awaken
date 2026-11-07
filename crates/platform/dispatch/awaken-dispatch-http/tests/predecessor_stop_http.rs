@@ -298,6 +298,10 @@ async fn register(
     identity
 }
 
+/// Fits the durable Registries' signed 64-bit columns and outlasts any wall or
+/// database clock a test can observe.
+const SUCCESSOR_LIVE_ON_EITHER_CLOCK_TTL_MS: u64 = 1 << 62;
+
 struct Fixture {
     store: Arc<dyn WorkerDispatchAuthority>,
     directory: Arc<dyn WorkerDirectory>,
@@ -349,7 +353,16 @@ impl Fixture {
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         let old_worker = register(directory.as_ref(), &format!("{tag}-old"), 100, old_ttl).await;
-        let worker = register(directory.as_ref(), &format!("{tag}-next"), 200, 10_000).await;
+        // The successor's Registry lease must hold on both clocks: this fixture
+        // stamps the Registry at 200 while every Dispatch store judges the
+        // guarded incarnation's standing on its own (wall or database) clock.
+        let worker = register(
+            directory.as_ref(),
+            &format!("{tag}-next"),
+            200,
+            SUCCESSOR_LIVE_ON_EITHER_CLOCK_TTL_MS,
+        )
+        .await;
         let request = RunDispatch::new(activation(&tag))
             .with_placement(awaken_dispatch::PlacementRequirements::remote_required())
             .with_worker_codec_requirements();

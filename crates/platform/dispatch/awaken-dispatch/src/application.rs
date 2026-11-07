@@ -1195,27 +1195,24 @@ impl ClaimedCommitService {
 
 /// Memory/SQLite consume the original Registry exclusion around their canonical
 /// slot operation. PostgreSQL transfers the same resource into its transaction.
+/// `now_ms` is the store's own clock: the guarded incarnation must still hold
+/// authority there (one standing decision, the same law PostgreSQL applies on
+/// database time). A binding, when present, must name the guarded incarnation;
+/// an unbound admission is judged by the claim owner alone.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) async fn admit_with_incarnation_guard(
     dispatch: &dyn DispatchExecution,
+    now_ms: u64,
     claim: &crate::RunClaim,
     binding: Option<&crate::AttemptExecutionBinding>,
     guard: awaken_worker_contract::WorkerIncarnationGuard,
     handoff: bool,
 ) -> Result<crate::AttemptAdmission, crate::DispatchError> {
     let snapshot = guard.snapshot();
-    if matches!(
-        snapshot.state,
-        crate::WorkerState::Quiesced | crate::WorkerState::Dead
-    ) {
-        guard
-            .release()
-            .await
-            .map_err(crate::DispatchError::unavailable)?;
-        return Ok(crate::AttemptAdmission::Fenced);
-    }
+    // Same order as PostgreSQL: a guard that names another attempt is an
+    // integrity error whatever the time; only a matching guard is judged.
     if snapshot.identity.lease_owner() != claim.owner
-        || binding.is_none_or(|binding| binding.worker() != &snapshot.identity)
+        || binding.is_some_and(|binding| binding.worker() != &snapshot.identity)
     {
         guard
             .release()
@@ -1224,6 +1221,13 @@ pub(crate) async fn admit_with_incarnation_guard(
         return Err(crate::DispatchError::Rejected(
             "Registry guard does not match the physical attempt".into(),
         ));
+    }
+    if !snapshot.standing(now_ms).holds_authority() {
+        guard
+            .release()
+            .await
+            .map_err(crate::DispatchError::unavailable)?;
+        return Ok(crate::AttemptAdmission::Fenced);
     }
     let admission = if handoff {
         dispatch.handoff_attempt(claim, binding).await
