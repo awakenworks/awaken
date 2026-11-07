@@ -216,7 +216,12 @@ pub(crate) fn lifecycle(
         crate::process_roles::selected_test_lifecycle(host, completion)
             .expect("fixture must retain both complete local roles")
     } else {
-        let selected = if host.run_assembly.authority.hosts_session_application() {
+        let selected = if host
+            .run_assembly
+            .authority
+            .committed_truth()
+            .hosts_session_application()
+        {
             SessionApplications::Standalone
         } else {
             SessionApplications::ClaimedWorker

@@ -51,6 +51,7 @@ pub(crate) fn session_worker_resolver(
     // always carries its local dispatch owner.
     let terminals = run_assembly
         .authority
+        .committed_truth()
         .scans_committed_terminals()
         .then(|| capability::local_dispatch_owner(run_assembly.authority.as_ref()))
         .flatten()

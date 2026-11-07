@@ -94,7 +94,7 @@ impl ChildRunLauncher {
             thread,
             sandbox.clone(),
             self.background.clone(),
-            self.authority.hosts_session_application(),
+            self.authority.committed_truth().hosts_session_application(),
             || {
                 crate::host::resident_process_environment(
                     &self.realization_executor,

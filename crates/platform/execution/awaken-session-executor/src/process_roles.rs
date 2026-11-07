@@ -54,7 +54,11 @@ pub fn session_dispatch_lifecycle(
     if host.dispatch.has_started_services() {
         return Err(E::ServicesAlreadyStarted);
     }
-    let local = host.run_assembly.authority.hosts_session_application();
+    let local = host
+        .run_assembly
+        .authority
+        .committed_truth()
+        .hosts_session_application();
     match applications.mode() {
         M::Local | M::Standalone if !local => {
             return Err(E::InvalidTopology(
@@ -109,6 +113,7 @@ fn retained_lifecycle(
     let assembly = host.run_assembly.clone();
     let authority = assembly.authority.as_ref();
     let terminal_owner = authority
+        .committed_truth()
         .scans_committed_terminals()
         .then(|| crate::host::capability::local_dispatch_owner(authority))
         .flatten();

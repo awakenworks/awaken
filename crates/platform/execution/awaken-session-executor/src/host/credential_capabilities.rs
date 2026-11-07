@@ -382,7 +382,10 @@ mod tests {
                             "profiles",
                             environment.clone(),
                             host.resources.memory.background(),
-                            host.run_assembly.authority.hosts_session_application(),
+                            host.run_assembly
+                                .authority
+                                .committed_truth()
+                                .hosts_session_application(),
                             || {
                                 environment_reads.set(environment_reads.get() + 1);
                                 if environment_read_succeeds {
