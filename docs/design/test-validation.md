@@ -155,6 +155,11 @@ wall-clock budget; this change does not extend it or qualify a full gate.
   merge-base, plus workspace clippy and the formal ledger), public API, frontend.
 - **qualification**: `scripts/ci/check-all.sh --full-gate` runs everything, unscoped.
 
+The hooks are authored in `scripts/ci/hooks.yml`; `lefthook.yml` is generated from it in full by
+`python3 scripts/ci/generate_hooks.py`, and `--check` refuses a hand edit. Change a job in the source
+and regenerate. On a rebase conflict in `lefthook.yml`, resolve `scripts/ci/hooks.yml` and
+regenerate; never merge the generated file by hand.
+
 All Cargo steps of one gate run share one host build admission; while queued, the gate prints the
 current holder and its own wait every 30 s.
 

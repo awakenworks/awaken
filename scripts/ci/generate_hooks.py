@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Render every lefthook trigger glob from the checker that owns the inputs.
+"""Render the whole ``lefthook.yml`` from ``scripts/ci/hooks.yml``.
+
+``scripts/ci/hooks.yml`` is the one authored hook definition: jobs, groups,
+tags, raw run bodies, an optional ``timeout:``, hand-written globs of jobs that
+run no declaring checker, and the top-level keys. ``lefthook.yml`` is entirely
+generated from it: a header naming the source, every trigger glob below, and
+the observation transport around each run body. A rebase conflict in
+``lefthook.yml`` is therefore resolved by regenerating it from the merged
+source; ``--check`` refuses any difference from that rendering.
 
 A file-triggered hook is a gate whose *trigger set* must contain its *input
 set*.  Hand-writing the trigger makes the two drift silently: the check simply
@@ -24,7 +32,8 @@ Scope and its reasons:
   commit-message validator takes the message file as ``{1}``, and the push gate
   runs unconditionally.
 * Generated globs and observation transport surround the original checker body.
-  Command names, bodies, read-only grouping and comments stay human-authored.
+  Command names, bodies, read-only grouping and comments are authored in the
+  source and copied through verbatim.
   The renderer decodes that same body for every composition/input reader; no
   second command inventory or filter is maintained. The Rust shell's literal mode
   arms and guards select its Python input owners; unsupported control shapes
@@ -52,15 +61,26 @@ import shlex
 import sys
 from pathlib import Path, PurePosixPath
 
-# lefthook.yml and every scripts/ci module whose INPUT_GLOBS this renderer
-# reads.  The renderer is itself a gate with inputs, so its own hook trigger is
+# lefthook.yml, its authored source, and every scripts/ci module whose
+# INPUT_GLOBS this renderer reads.  The renderer is itself a gate with inputs, so its own hook trigger is
 # rendered from this declaration rather than written by hand.
-INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/*.py", "scripts/ci/*.sh",
+INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/hooks.yml", "scripts/ci/*.py", "scripts/ci/*.sh",
                                  "scripts/ci/pre-commit/*.sh", "scripts/ci/pre-push/*.sh")
 
 ROOT = Path(__file__).resolve().parents[2]
 HOOKS = ROOT / "lefthook.yml"
 SCRIPTS = ROOT / "scripts" / "ci"
+# The one authored hook definition. lefthook.yml is rendered from it in full.
+SOURCE = SCRIPTS / "hooks.yml"
+SOURCE_NAME = "scripts/ci/hooks.yml"
+REGENERATE = (f"lefthook.yml is generated from {SOURCE_NAME}; edit that and run "
+              "python3 scripts/ci/generate_hooks.py")
+HEADER = (
+    f"# GENERATED from {SOURCE_NAME} by python3 scripts/ci/generate_hooks.py -- do not edit.\n"
+    f"# Edit {SOURCE_NAME}, then regenerate. A rebase conflict in this file is\n"
+    "# resolved by regenerating it from the merged source, never by hand-merging.\n"
+    "\n"
+)
 
 UNIVERSAL = "**/*"
 MARKER_BEGIN = "# >>> generated glob"
@@ -249,13 +269,24 @@ def observed_hook_run(name: str, body: str, *, readonly: bool, timeout=None) -> 
 
 
 def _observed_body(name, body):
+    # An authored `timeout:` sits beside `run:` in the source and is folded into
+    # the observation transport; lefthook.yml never carries the key itself.
+    run_indent = next((match[1] for line in body if (match := re.match(r'^(\s*)run:', line))), None)
+    authored = [line for line in body if run_indent is not None
+                and re.fullmatch(re.escape(run_indent) + r'timeout: [0-9]+\s*', line)]
+    if len(authored) > 1:
+        raise SystemExit('generate_hooks: job ' + name + ' declares more than one timeout')
+    body = [line for line in body if line not in authored]
     text = ''.join(body)
     readonly = bool(re.search(r'(?m)^\s+tags: \[read-only\]$', text))
     raw = hook_run(text, unwrap=False)
-    timeout = None
+    timeout = int(authored[0].split(':', 1)[1]) if authored else None
     if raw.startswith('python3 scripts/ci/parallel_check.py --hook-label '):
         from parallel_check import parser
-        timeout = parser().parse_args(shlex.split(raw)[2:]).timeout
+        wrapped = parser().parse_args(shlex.split(raw)[2:]).timeout
+        if timeout is not None and timeout != wrapped:
+            raise SystemExit('generate_hooks: job ' + name + ' declares two different timeouts')
+        timeout = wrapped
     value = observed_hook_run(name, hook_run(text), readonly=readonly, timeout=timeout)
     return _replace_hook_run(body, value)
 
@@ -798,8 +829,7 @@ def generated_hook_glob_errors(hooks: str, declarations: dict[str, tuple[str, ..
     """
     errors = []
     if render(hooks, declarations) != hooks:
-        errors.append('lefthook.yml trigger globs are hand-edited or stale; regenerate them with '
-                      'python3 scripts/ci/generate_hooks.py')
+        errors.append('lefthook.yml trigger globs are hand-edited or stale; ' + REGENERATE)
     for script in sorted(set(declarations) - wired_scripts(hooks)):
         errors.append(f'scripts/ci/{script} declares INPUT_GLOBS but no lefthook pre-commit '
                       'command runs it, so the declaration triggers nothing')
@@ -862,6 +892,45 @@ def render(hooks: str, declarations: dict[str, tuple[str, ...]]) -> str:
         cursor = body_end
     output.extend(lines[cursor:])
     return _with_matcher("".join(output))
+
+
+def authored_glob_errors(source: str, root: Path) -> list[str]:
+    """Hand-written globs in the source that name a repository path which is gone.
+
+    A job that runs no declaring checker keeps an authored trigger, and nothing
+    else notices when a directory it names moves: the job simply stops running.
+    Each brace alternative's literal leading path (the segments before the first
+    wildcard) must exist once it is below the top level. A top-level name may be
+    absent on purpose (``yarn.lock`` arms frontend-quick if one ever appears).
+    """
+    errors = []
+    lines, spans = _spans(source)
+    for name, start, end in spans:
+        for line in lines[start + 1:end]:
+            glob = re.match(r'^\s+glob: "(.*)"\s*$', line)
+            for pattern in _expand_braces(glob.group(1)) if glob else ():
+                parts = pattern.split("/")
+                literal = next((index for index, part in enumerate(parts) if re.search(r"[*?\[]", part)),
+                               len(parts))
+                prefix = "/".join(parts[:literal])
+                if "/" in prefix and not (root / prefix).exists():
+                    errors.append(f"{SOURCE_NAME}: job {name} globs {pattern}, but {prefix} does not "
+                                  "exist; a moved path leaves this trigger dead, so name its current "
+                                  "location")
+    return errors
+
+
+def render_source(source: str, declarations: dict[str, tuple[str, ...]]) -> str:
+    """The whole lefthook.yml: the generated header plus the rendered source.
+
+    The source carries no generated region, no observation transport and no
+    header; ``render`` adds the first two exactly as it maintains them in a
+    rendered file, so rendering a rendered body is still a fixpoint.
+    """
+    if source.startswith(HEADER) or MARKER_BEGIN in source:
+        raise SystemExit(f"generate_hooks: {SOURCE_NAME} holds generated content; keep only the "
+                         "authored jobs there")
+    return HEADER + render(source, declarations)
 
 
 def selftest() -> None:
@@ -1127,6 +1196,81 @@ def selftest() -> None:
         # test_x.py runs gate.sh, which runs check_x.py, which imports _shared.py.
         assert picked("scripts/ci/_shared.py") == {"python3 scripts/ci/check_x.py --self-test": "x",
                                                    "python3 scripts/ci/test_x.py": ""}, "R3"
+    # Single source (H): lefthook.yml is rendered whole from SOURCE, so a hand
+    # edit is refused, a regeneration replaces any hand-merged copy, and a job
+    # exists in lefthook.yml exactly when it exists in the source. Driven through
+    # main() over copies of the real source, so the real CLI is what is proven.
+    # | Rule | Cause                                         | Effect                           |
+    # | H1   | lefthook.yml edited by hand                   | --check exits 1, says REGENERATE |
+    # | H2   | H1, or conflict markers, then regenerate       | the rendering replaces the copy  |
+    # | H3   | a job added to the source                     | it appears after regeneration    |
+    # | H4   | a job removed from the source                 | it disappears after regeneration |
+    # | H5   | an authored `timeout:` beside `run:`           | folded into the transport only   |
+    import contextlib
+    import io
+    source = SOURCE.read_text(encoding="utf-8")
+    real = declared_input_globs(SCRIPTS)
+    with tempfile.TemporaryDirectory() as directory:
+        hooks_path, source_path = Path(directory) / "lefthook.yml", Path(directory) / "hooks.yml"
+
+        def cli(*arguments: str) -> tuple[int, str]:
+            errors = io.StringIO()
+            with patch.dict(globals(), HOOKS=hooks_path, SOURCE=source_path,
+                            declared_input_globs=lambda _: real), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+                return main(list(arguments)), errors.getvalue()
+
+        source_path.write_text(source, encoding="utf-8")
+        assert cli()[0] == 0 and cli("--check")[0] == 0, "H2 a fresh rendering is current"
+        rendered = hooks_path.read_text(encoding="utf-8")
+        assert rendered.startswith(HEADER) and SOURCE_NAME in HEADER, "the header names the source"
+        for edited in (rendered.replace("--timeout 600 --read-only", "--timeout 60 --read-only", 1),
+                       rendered.replace("\ncommit-msg:", "\n<<<<<<< HEAD\n=======\n>>>>>>> lane\ncommit-msg:", 1)):
+            assert edited != rendered
+            hooks_path.write_text(edited, encoding="utf-8")
+            status, message = cli("--check")
+            assert status == 1 and REGENERATE in message, "H1 a hand edit is refused"
+            assert hooks_path.read_text(encoding="utf-8") == edited, "H1 --check never writes"
+            assert cli()[0] == 0 and hooks_path.read_text(encoding="utf-8") == rendered, "H2"
+        anchor = "    # 4. Rust checks are active"
+        assert source.count(anchor) == 1, "H3 fixture anchor is missing"
+        source_path.write_text(source.replace(anchor, "    - name: probe-added\n"
+                                              '      glob: "docs/**/*.md"\n'
+                                              "      timeout: 77\n"
+                                              "      run: echo probe\n\n" + anchor, 1), encoding="utf-8")
+        assert cli("--check")[0] == 1 and cli()[0] == 0, "H3 the source change is not yet rendered"
+        added = hooks_path.read_text(encoding="utf-8")
+        assert "probe-added" in command_blocks(added), "H3 the added job is missing"
+        assert "--hook-label probe-added --timeout 77 --shell 'echo probe'" in added \
+            and not re.search(r"(?m)^\s+timeout:", added), "H5"
+        removed = re.sub(r"(?ms)^    # Protocol/credential codec.*?(?=^    # 5\. Frontend)", "", source)
+        assert removed != source and "worker-fixture-contract" not in removed, "H4 fixture anchor is missing"
+        source_path.write_text(removed, encoding="utf-8")
+        assert cli()[0] == 0, "H4"
+        assert "worker-fixture-contract" not in hooks_path.read_text(encoding="utf-8"), "H4 removed job remains"
+        # | P1 | an authored glob names an existing file or directory | accepted     |
+        # | P2 | its directory moved (literal path, or before a `*`)  | refused, named |
+        # | P3 | a top-level optional name (`yarn.lock`, `apps/**`)   | accepted     |
+        assert authored_glob_errors(source, ROOT) == [], "P1 the real source"
+        moved = ('commit-checks:\n  jobs:\n    - name: moved\n'
+                 '      glob: "{yarn.lock,apps/**/*.ts,crates/gone/awaken-x/src/lib.rs,crates/gone/awaken-y/src/**/*.rs}"\n'
+                 '      run: echo moved\n')
+        assert authored_glob_errors(moved, ROOT) == [
+            f"{SOURCE_NAME}: job moved globs {pattern}, but {prefix} does not exist; a moved path leaves "
+            "this trigger dead, so name its current location"
+            for pattern, prefix in (("crates/gone/awaken-x/src/lib.rs", "crates/gone/awaken-x/src/lib.rs"),
+                                    ("crates/gone/awaken-y/src/**/*.rs", "crates/gone/awaken-y/src"))], "P2/P3"
+        source_path.write_text(source.replace('glob: "e2e/**"', 'glob: "e2e/gone/**"', 1), encoding="utf-8")
+        status, message = cli("--check")
+        assert status == 1 and "e2e/gone does not exist" in message, "P2 through the CLI"
+        source_path.write_text(source.replace("      timeout: 1800\n", "      timeout: 1800\n      timeout: 9\n", 1),
+                               encoding="utf-8")
+        try:
+            cli()
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("H5 two authored timeouts were accepted")
     print("generate_hooks self-test: generated globs follow their declarations")
 
 
@@ -1258,9 +1402,12 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(explain(args.explain)))
         return 0
 
-    current = HOOKS.read_text(encoding="utf-8")
+    # lefthook.yml is only compared, never parsed: a copy holding rebase
+    # conflict markers is simply replaced by the rendering of the source.
+    current = HOOKS.read_text(encoding="utf-8") if HOOKS.is_file() else ""
+    source = SOURCE.read_text(encoding="utf-8")
     declarations = declared_input_globs(SCRIPTS)
-    undeclared = undeclared_invocations(current, declarations)
+    undeclared = undeclared_invocations(source, declarations)
     if undeclared:
         print(
             "generate_hooks: these pre-commit checkers declare no INPUT_GLOBS, so their "
@@ -1270,13 +1417,14 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    rendered = render(current, declarations)
-    execution_errors = hook_entry_errors(rendered) + generated_hook_glob_errors(rendered, declarations)
+    rendered = render_source(source, declarations)
+    execution_errors = (authored_glob_errors(source, ROOT) + hook_entry_errors(rendered)
+                        + generated_hook_glob_errors(rendered, declarations))
     if execution_errors:
-        print('\n'.join(execution_errors), file=sys.stderr)
+        print('\n'.join(execution_errors) + f'\nfix: edit {SOURCE_NAME}', file=sys.stderr)
         return 1
     if rendered == current:
-        print("lefthook.yml generated globs are current")
+        print(f"lefthook.yml is current with {SOURCE_NAME}")
         return 0
     if args.check:
         sys.stdout.writelines(
@@ -1284,16 +1432,13 @@ def main(argv: list[str] | None = None) -> int:
                 current.splitlines(keepends=True),
                 rendered.splitlines(keepends=True),
                 fromfile="lefthook.yml",
-                tofile="lefthook.yml (generated)",
+                tofile=f"lefthook.yml (generated from {SOURCE_NAME})",
             )
         )
-        print(
-            "\nlefthook.yml is stale; run: python3 scripts/ci/generate_hooks.py",
-            file=sys.stderr,
-        )
+        print("\n" + REGENERATE, file=sys.stderr)
         return 1
     HOOKS.write_text(rendered, encoding="utf-8")
-    print("lefthook.yml generated globs updated")
+    print(f"lefthook.yml regenerated from {SOURCE_NAME}")
     return 0
 
 
