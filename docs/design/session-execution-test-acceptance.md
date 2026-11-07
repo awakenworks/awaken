@@ -174,11 +174,27 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 
 `acceptance_state` 均保持 `pending`：原始校准按 Windows 范围记录；本任务只补充本机 Windows/MSVC 证据；Linux 等范围仍未验收。历史 receipt 不改写，公共门禁和完整场景仍须分别闭合。
 
+#### 记录执行证据
+
+执行证据只由台账守卫的两个子命令生成，不再手工拼装：
+
+```sh
+python3 scripts/ci/check_session_acceptance.py record --id <证据 id> --scope "<范围>" \
+    --require-case <Class.test 或 "<binary> <test>"> -- <命令>
+python3 scripts/ci/check_session_acceptance.py bind --id <绑定 id> --name <测试名> --source <路径> \
+    --evidence <证据 id> --case <已执行用例名> --package <包> --target <目标> \
+    --covers <场景 id> --oracle <序号> [--negative-control] --review "<审查说明>" [--limitation "<限制>"]
+```
+
+`record` 在干净工作树上运行命令（`-v` 的 unittest 或 cargo nextest），从日志逐名读出用例结果，把日志 `log.txt` 与 `receipt.json`（含 `executed` 列表）写入 `target/session-acceptance-evidence/<id>/`，并在最后一个注册表分片追加与 E11/E12/E15 字段完全相同的条目（`source` 为 head 与 `dirty_digest`，`entry_sha256` 由守卫的同一摘要函数计算）。以下情况拒绝且不写任何证据：工作树不干净（R01，故 `dirty_digest` 只会是空 patch 的摘要）；命令非零退出或有失败用例（R02）；零用例（R03）；`--require-case` 未执行通过（R04）；运行期间 HEAD 或工作树变化（R05）；id 或目录已存在（R06）；日志列出的用例数与汇总不符（R07）。被拒绝的日志保留在 `target/session-acceptance-evidence/refused/`。
+
+`bind` 从当前源码定位唯一的测试定义、其函数体内的断言行和文件 SHA256，见证引用该证据的源码身份与日志摘要，并要求用例出现在本机 receipt 的 `executed` 中；绑定 id 追加到被覆盖场景，整个台账在写入前须通过守卫，否则拒绝。`evidence_state`、切片与计数仍由人工审查后修改，守卫按 L01/L07/L08 复核。receipt 只存于记录它的机器；干净 checkout 上守卫跳过 receipt 字节比对，因此 rebase 后源码身份变化时应在新提交上重新 `record`，不改写旧条目。
+
 ### 批次
 
 | 批次 | 场景 | 状态 | 证据 |
 | --- | --- | --- | --- |
-| 静态门禁 | T00-C01、T00-C02、T00-C03、T34-C03、T36-C01、T36-C02、T36-C03 | `current_clause_complete` | E11、E12、E15 |
+| 静态门禁 | T00-C01、T00-C02、T00-C03、T34-C03、T36-C01、T36-C02、T36-C03 | `current_clause_complete` | E11、E15；T36-C02 的“source 不变”另有 E-NEXTEST-SELFTEST-20261107 |
 | 组件 | T01-C01、T14-C01 | `current_clause_complete` | E13 |
 | 组件 | T06-C01、T07-C01、T11-C02、T12-C01、T13-C03、T15-C01、T27-C01、T27-C02、T41-C01 | `current_clause_complete` | E13、E40、E41 |
 | SQL、全后端与原生效果 | T05-C01、T11-C03、T18-C01、T26-C03、T25-C03、T24-C02、T20-C03、T34-C01、T34-C02、T07-C03、T28-C03、T28-C02 | `current_clause_complete` | E16（T26-C03 另有 E18） |
@@ -193,11 +209,11 @@ T00 是追溯门禁，T34 是后端资格，T35 是平台和执行器资格，T3
 
 #### 静态门禁
 
-[门禁测试](../../scripts/ci/test_session_acceptance.py)以真实工作区和台账为输入，先证明未修改的输入被接受，再注入一个反例并要求生产守卫按自己的规则拒绝：越界依赖进入 Host/MCP/Environment/Memory、通过改名或移动文件的再导出暴露宽对象、在所有者外直接写 Session 状态、移动组入口、共享契约变更的真实反向依赖、只按文件所在 crate 选取的变异规划器、未知或全局输入、按名称和次数对齐的执行验证与只比较总数的变异验证器，以及台账的名称、断言、跳过、仅编译、改写历史 receipt 等规则。T36-C02 的“源码不变”条款绑定既有的执行围栏自测。
+[门禁测试](../../scripts/ci/test_session_acceptance.py)以真实工作区和台账为输入，先证明未修改的输入被接受，再注入一个反例并要求生产守卫按自己的规则拒绝：越界依赖进入 Host/MCP/Environment/Memory、通过改名或移动文件的再导出暴露宽对象、在所有者外直接写 Session 状态、移动组入口、共享契约变更的真实反向依赖、只按文件所在 crate 选取的变异规划器、未知或全局输入、按名称和次数对齐的执行验证与只比较总数的变异验证器，以及台账的名称、断言、跳过、仅编译、改写历史 receipt 等规则。T36-C02 的“源码不变”条款原绑定旧 libtest 验证器的执行围栏自测（E12）；该验证器退役后改绑 `nextest_execution.run` 的自测 `test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept`（B265，E-NEXTEST-SELFTEST-20261107，本机 Linux）。
 
 已知限制：依赖守卫按自身表格允许部分跨上下文基础设施依赖（例如 memory-store 到 session-executor），本批只证明其规则禁止的边会被拒绝；影响选择只证明 Cargo 反向依赖，L2/L3 层级扩展由各门禁脚本负责。
 
-E11 是 13 个门禁测试在本机 Windows 的执行，E15 是 rebase 到 `f3ae320728` 后的同一组复跑；E12 是 Rust 必需执行验证器自测（27 例通过，10 例为 POSIX/Linux 专属固件而跳过，未绑定）。原始 receipt 和日志在 `target/session-acceptance-evidence/`，哈希登记在证据注册表。
+E11 是 13 个门禁测试在本机 Windows 的执行，E15 是 rebase 到 `f3ae320728` 后的同一组复跑；E12 是已退役的 Rust 必需执行验证器自测（27 例通过，10 例为 POSIX/Linux 专属固件而跳过），历史 receipt 保留，现已无绑定引用。原始 receipt 和日志在 `target/session-acceptance-evidence/`，哈希登记在证据注册表。
 
 #### 组件
 

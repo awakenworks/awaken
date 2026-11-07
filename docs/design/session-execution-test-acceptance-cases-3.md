@@ -286,7 +286,7 @@
 - 必须断言：逐名和 occurrence 对齐；每个必须用例实际通过；失败和跳过不签收；source 不变。
 - 反向控制：记录总数等于期望数不能替代逐名对齐。
 - 层级与基质：L1；owned clocks/barriers, component public entrypoint。组件语义；若用真实 adapter，其属性另按 L2 签收；不代表进程崩溃。
-- 绑定及状态：`test_each_misalignment_is_refused_for_its_own_reason`、`test_count_only_validator_accepts_what_name_alignment_refuses`、`test_mutations_at_each_sequence_fence_stop_or_reject_execution`；当前提交本机 Windows L0 执行（E11、E12；rebase 后复跑 E15），每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
+- 绑定及状态：`test_each_misalignment_is_refused_for_its_own_reason`、`test_count_only_validator_accepts_what_name_alignment_refuses`（本机 Windows L0 执行 E11；rebase 后复跑 E15）；“source 不变”条款随旧 libtest 验证器退役改由 `nextest_execution.run` 负责，绑定其自测 `test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept`（本机 Linux 执行 E-NEXTEST-SELFTEST-20261107，由记录工具生成）；每条 oracle 与反向控制已具名绑定。完整场景：待验收（公共门禁 T35 未闭合）。
 
 ### T36-C03 历史证明复用
 
