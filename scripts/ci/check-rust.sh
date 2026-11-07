@@ -105,6 +105,10 @@ step() {
       echo "→ restore: host resource qualification; this command was not admitted"
     else
       echo "→ fix: $fix"
+      # One gate-faithful repro command per failure the step's output names.
+      if [[ "$label" =~ ^(test|test-build|doctest)$ ]]; then
+        printf '%s\n' "$out" | python3 scripts/ci/crate_test.py --repro-hint "$label" || true
+      fi
     fi
   } >&2
   fail=1
@@ -182,6 +186,14 @@ if [ "$mode" = "--self-test" ]; then
     [ "$rc" -eq 75 ] && [ ! -e "$rust_step_evidence/dependent-started" ]
   ); then
     echo "check-rust self-test: streamed evidence or refusal lost its boundary" >&2
+    exit 1
+  fi
+  # H1 a failed test step whose output names a case prints the command that
+  # reproduces that case the way the step ran it (crate_test.py --repro-hint).
+  hint=$(fail=0; step "test" "not applicable" sh -c \
+    'printf "        FAIL [ 0.1s] demo::it tests::boom\n"; exit 1' 2>&1 >/dev/null)
+  if [[ "$hint" != *"→ fix: reproduce demo::it tests::boom: scripts/ci/test.sh -p demo -E 'binary_id(=demo::it) & test(=tests::boom)'"* ]]; then
+    echo "check-rust self-test: a failed test step did not print its repro command" >&2
     exit 1
   fi
   echo "check-rust self-test: success, failure and streamed evidence are exact"
@@ -561,9 +573,9 @@ case "$mode" in
       # Build with Nextest's underlying Cargo command. Discovery happens once,
       # in the execution step, while this step retains stable HTML build timings
       # without nightly JSON instrumentation.
-      if step "test-build" "fix the test compilation/link errors shown above" \
+      if step "test-build" "fix the test compilation/link errors shown above; reproduce with: scripts/ci/test.sh -p <package> --no-run" \
         cargo test --workspace --features "$workspace_features" "${locked[@]}" --no-run --timings; then
-        step "test" "re-run a single failure with: cargo nextest run --workspace -E 'test(<test_name>)' --no-capture" \
+        step "test" "reproduce one failure the way this step runs it: scripts/ci/test.sh -p <package> -E 'test(=<test_name>)'" \
           cargo nextest run --workspace --features "$workspace_features" "${locked[@]}"
       else
         echo "   (skipping workspace execution until test binaries compile)" >&2
@@ -571,7 +583,7 @@ case "$mode" in
       # Stable rustdoc ignores a compile_fail block's pinned E-code, so a body
       # failing for an unrelated reason would still pass. RUSTC_BOOTSTRAP=1
       # makes rustdoc check the pinned codes (ADR-0103).
-      step "doctest" "re-run with: RUSTC_BOOTSTRAP=1 cargo test --workspace --doc <test_name> -- --nocapture" \
+      step "doctest" "reproduce with the pinned error codes checked: scripts/ci/test.sh --doc -p <package> ['<doctest name>']" \
         env RUSTC_BOOTSTRAP=1 cargo test --workspace --doc --features "$workspace_features" "${locked[@]}"
     else
       echo "   (skipping tests until the maximal graph lints clean)" >&2

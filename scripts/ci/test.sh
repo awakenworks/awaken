@@ -9,7 +9,13 @@
 # scripts/ci/crate_test.py derives all three from the profile and Cargo's own
 # resolve, prints every command it runs, and runs them in order.
 #
+# `--doc` runs the crate's doctests (or, given a failing doctest's name, its file's)
+# the way the gate's doctest step does: whole graph, RUSTC_BOOTSTRAP=1, so a
+# compile_fail block's pinned E-code is checked. Every failing gate test,
+# test-build and doctest step prints the command here that reproduces it.
+#
 # usage: scripts/ci/test.sh [--dry-run] -p <crate> [nextest arguments...]
+#        scripts/ci/test.sh [--dry-run] --doc -p <crate> ['<doctest name>']
 #        scripts/ci/test.sh --self-test
 #        scripts/ci/test.sh --affected --base <revision>
 #        scripts/ci/test.sh --benchmark [ordinary benchmark arguments...]
@@ -31,12 +37,12 @@ case "${1:-}" in
     exec python3 scripts/ci/benchmark_rust_build.py "$@"
     ;;
   --self-test)
-    [ "$#" -eq 1 ] || { echo "usage: scripts/ci/test.sh [--dry-run] -p <crate> [nextest arguments...] | --self-test" >&2; exit 2; }
+    [ "$#" -eq 1 ] || { echo "usage: scripts/ci/test.sh [--dry-run] [--doc] -p <crate> [nextest arguments...] | --self-test" >&2; exit 2; }
     exec python3 scripts/ci/crate_test.py --self-test
     ;;
-  -p|--dry-run) exec python3 scripts/ci/crate_test.py "$@" ;;
+  -p|--dry-run|--doc) exec python3 scripts/ci/crate_test.py "$@" ;;
   *)
-    echo "usage: scripts/ci/test.sh [--dry-run] -p <crate> [nextest arguments...] | --affected --base <revision> | --benchmark [args...] | --self-test" >&2
+    echo "usage: scripts/ci/test.sh [--dry-run] [--doc] -p <crate> [nextest arguments... | '<doctest name>'] | --affected --base <revision> | --benchmark [args...] | --self-test" >&2
     exit 2
     ;;
 esac
