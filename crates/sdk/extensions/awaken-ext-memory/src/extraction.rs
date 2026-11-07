@@ -2342,6 +2342,150 @@ mod tests {
         );
     }
 
+    /// An extractor that recalls through a real memory directory before it
+    /// proposes, the way an extractor reads the store it writes to.
+    #[cfg(unix)]
+    struct DirectoryRecallingDriver {
+        inner: TestDriver,
+        store: crate::localfs::MemoryDir,
+        reading: Arc<tokio::sync::Notify>,
+        recalled: Mutex<Vec<String>>,
+    }
+
+    #[cfg(unix)]
+    #[async_trait]
+    impl MemoryExtractionDriver for DirectoryRecallingDriver {
+        fn accepts(&self, intent: &MemoryExtractionIntent) -> bool {
+            self.inner.accepts(intent)
+        }
+
+        async fn validate_binding(
+            &self,
+            intent: &MemoryExtractionIntent,
+        ) -> Result<(), MemoryExtractionError> {
+            self.inner.validate_binding(intent).await
+        }
+
+        async fn extract(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {
+            self.reading.notify_one();
+            let entries = crate::localfs::MemoryStoreHandle::entries(&self.store)
+                .await
+                .expect("directory recall");
+            self.recalled
+                .lock()
+                .unwrap()
+                .extend(entries.into_iter().map(|entry| entry.content));
+            self.inner.extract(intent).await
+        }
+
+        async fn apply(
+            &self,
+            intent: &MemoryExtractionIntent,
+            mutation: &MemoryExtractionMutation,
+        ) -> Result<MemoryMutationReceipt, String> {
+            self.inner.apply(intent, mutation).await
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn claim_stays_live_while_the_extractor_file_read_is_parked_past_the_lease() {
+        // Decision table, lease L = 3 heartbeats H:
+        // C1 the extractor's directory read blocks in the kernel (the memory
+        //    file is a FIFO with no writer yet), as fsync pressure stalls IO;
+        // C2 claim time and the heartbeat cadence move on by 2L, one H at a
+        //    time, while that read stays parked.
+        // E1 the heartbeat renews on every H, so after 2L the claim is still
+        //    held and expires beyond the original lease;
+        // E2 once the read is released the first attempt completes with its
+        //    receipt and the parked content: no retry, one extraction.
+        // A read on the async worker parks the whole runtime instead: nothing
+        // renews, nothing can release it, and only the writer's bounded wait
+        // below ends the read, after which E1 is observed on a finished claim.
+        let root = tempfile::tempdir().unwrap();
+        let held = root.path().join("held.md");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&held)
+            .status()
+            .expect("mkfifo");
+        assert!(status.success(), "mkfifo {}", held.display());
+        let repository = Arc::new(TestRepository::default());
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_000));
+        let controller =
+            MemoryExtractionController::new(repository.clone(), "worker-a", clock.clone())
+                .with_policy(MemoryExtractionPolicy {
+                    lease_ms: 3_000,
+                    heartbeat_ms: 1_000,
+                    max_attempts: 3,
+                    retry_base_ms: 0,
+                });
+        controller.enqueue(intent()).await.unwrap();
+        let reading = Arc::new(tokio::sync::Notify::new());
+        let driver = DirectoryRecallingDriver {
+            inner: TestDriver {
+                extraction_calls: AtomicUsize::new(0),
+                first_outcome: None,
+                binding_valid: true,
+                validation_errors: Default::default(),
+                application_calls: AtomicUsize::new(0),
+            },
+            store: crate::localfs::MemoryDir::open(root.path()).unwrap(),
+            reading: reading.clone(),
+            recalled: Mutex::default(),
+        };
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let writer = std::thread::spawn(move || {
+            // Bounded only so a read that parks the async worker fails this test instead of hanging it
+            let _ = released.recv_timeout(std::time::Duration::from_secs(5));
+            std::fs::write(&held, "parked read released").unwrap();
+        });
+        let observe = async {
+            reading.notified().await;
+            let parked_at = clock.now_ms();
+            for _ in 0..6 {
+                clock.advance(1_000);
+                tokio::time::advance(std::time::Duration::from_millis(1_000)).await;
+            }
+            let during = repository
+                .get_extraction("extract-1")
+                .await
+                .unwrap()
+                .unwrap();
+            let _ = release.send(());
+            (parked_at, during)
+        };
+
+        let ((), (parked_at, during)) =
+            tokio::join!(controller.drive_recoverable(&driver), observe);
+        writer.join().unwrap();
+
+        assert_eq!(during.status, MemoryExtractionStatus::Claimed, "E1");
+        let expires = during.lease_expires_at_unix_ms.expect("E1 a held claim");
+        assert!(
+            expires > clock.now_ms() && expires > parked_at + 3_000,
+            "E1 renewed past the original lease: expires {expires}, now {}",
+            clock.now_ms()
+        );
+        let completed = repository
+            .get_extraction("extract-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.status, MemoryExtractionStatus::Completed, "E2");
+        assert!(completed.receipt.is_some(), "E2");
+        assert_eq!(completed.attempts, 1, "E2 no retry spent");
+        assert_eq!(
+            driver.inner.extraction_calls.load(Ordering::SeqCst),
+            1,
+            "E2 extractor ran once"
+        );
+        assert_eq!(
+            *driver.recalled.lock().unwrap(),
+            ["parked read released"],
+            "E2"
+        );
+    }
+
     #[tokio::test]
     async fn revoked_binding_fails_terminally_without_running_extractor() {
         let repository = Arc::new(TestRepository::default());
