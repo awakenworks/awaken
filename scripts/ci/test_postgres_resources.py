@@ -17,7 +17,7 @@ from _native_service_receipt_fixture import FIXTURE_OWNER, postgres_receipts
 from _native_postgres_scopes import postgres_plan
 import _native_postgres_scopes as policy
 
-INPUT_GLOBS = (".github/workflows/windows-native-services.yml", "scripts/ci/pg_tests.sh")
+INPUT_GLOBS = (".github/workflows/windows-native-services.yml", "scripts/ci/pg_tests.sh", "scripts/ci/service_suites.toml")
 
 PACKAGES=('awaken-admin-config-api','awaken-resource-store','awaken-resource-persistence',
     'awaken-session-application','awaken-protocol-managed','awaken-sandbox-policy-store',
@@ -56,11 +56,13 @@ class ResourceSelectionTests(unittest.TestCase):
             self.assertIsNotNone(match,name);return match.group(0)
         with tempfile.TemporaryDirectory(prefix='resource selector ') as directory:
             root=Path(directory);calls=root/'calls';script=root/'selection.sh'
-            script.write_text('set -uo pipefail\nfirst_failure=0\n'
+            script.write_text('set -uo pipefail\ncd "$REPO" || exit 2\nfirst_failure=0\n'
+                'source scripts/ci/_affected_suites.sh\nsuites_load postgres || exit $?\n'
                 'pg_required_test(){ printf "%s\\0" "$@" >>"$CALLS"; printf "\\n" >>"$CALLS"; return "$RUNNER_STATUS"; }\n'
-                +function('record_failure')+'\n'+function('resources_evidence')+'\nresources_evidence\nexit "$first_failure"\n',encoding='utf-8',newline='\n')
+                +function('record_failure')+'\n'+function('pg_phase')+'\n'+function('resources_evidence')
+                +'\nresources_evidence\nexit "$first_failure"\n',encoding='utf-8',newline='\n')
             child=subprocess.run([sys.executable,str(gate.ROOT/'scripts/ci/_native_shell.py'),script.as_posix()],
-                env=dict(os.environ,CALLS=calls.as_posix(),RUNNER_STATUS=str(status)),capture_output=True,timeout=30)
+                env=dict(os.environ,CALLS=calls.as_posix(),RUNNER_STATUS=str(status),REPO=gate.ROOT.as_posix()),capture_output=True,timeout=30)
             return child.returncode,[row.decode().split('\0')[:-1] for row in calls.read_bytes().split(b'\n') if row]
 
     def test_all_ten_domains_keep_features_named_floor_and_new_admission_laws(self):
@@ -145,13 +147,13 @@ class ResourceSelectionTests(unittest.TestCase):
 class ApplicationCaseFloorTests(unittest.TestCase):
 
     def setUp(self):
-        self.source = (gate.ROOT / 'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+        self.source = (gate.ROOT / 'scripts/ci/service_suites.toml').read_text(encoding='utf-8')
 
     def check(self, text):
         with tempfile.TemporaryDirectory(prefix='pg-case-policy-') as t:
             d = Path(t) / 'scripts/ci'
             d.mkdir(parents=True)
-            (d / 'pg_tests.sh').write_text(text, encoding='utf-8', newline='\n')
+            (d / 'service_suites.toml').write_text(text, encoding='utf-8', newline='\n')
             return policy.postgres_phases('resources', Path(t))
 
     def test_complete_existing_case_set_keeps_all_ten_resource_domains(self):
@@ -166,7 +168,7 @@ class ApplicationCaseFloorTests(unittest.TestCase):
     def test_each_original_outcome_is_independent_and_cannot_be_deleted(self):
         for name in EXPECTED_APPLICATION_CASES:
             with self.subTest(case=name):
-                changed = self.source.replace('    --require-case=' + name + ' \\\n', '')
+                changed = self.source.replace('--require-case=' + name + '\n', '')
                 self.assertNotEqual(changed, self.source)
                 with self.assertRaisesRegex(ValueError, 'independent Session application outcomes'):
                     self.check(changed)
@@ -174,7 +176,7 @@ class ApplicationCaseFloorTests(unittest.TestCase):
     def test_same_package_older_phase_cannot_hide_new_required_outcomes(self):
         changed = self.source
         for name in ORIGINAL_MISSING_FLOORS:
-            changed = changed.replace('    --require-case=' + name + ' \\\n', '')
+            changed = changed.replace('--require-case=' + name + '\n', '')
         with self.assertRaisesRegex(ValueError, 'independent Session application outcomes'):
             self.check(changed)
 
@@ -182,11 +184,11 @@ class ApplicationCaseFloorTests(unittest.TestCase):
         changed = self.source
         moved = []
         for name in ORIGINAL_MISSING_FLOORS:
-            line = '    --require-case=' + name + ' \\\n'
+            line = '--require-case=' + name + '\n'
             self.assertEqual(changed.count(line), 1)
             changed = changed.replace(line, '')
             moved.append(line)
-        marker = '  pg_required_test --locked -p awaken-protocol-managed --lib postgres_two_connection_late_hitl_frontier_preserves_old_cursors \\\n'
+        marker = '--locked -p awaken-protocol-managed --lib postgres_two_connection_late_hitl_frontier_preserves_old_cursors\n'
         self.assertEqual(changed.count(marker), 1)
         changed = changed.replace(marker, marker + ''.join(moved))
         with self.assertRaisesRegex(ValueError, 'independent Session application outcomes'):
@@ -211,24 +213,22 @@ class SessionExtractionFloorTests(unittest.TestCase):
         'extraction::tests::postgres_extraction_execution_selection_and_first_claim_share_one_revision_fence',
         'extraction::tests::postgres_integer_conversion_rejects_clamping_and_lease_erasure',
     })
-    prefix = '  pg_required_test --locked -p awaken-session-store --features test-support --lib postgres_ '
+    prefix = '--locked -p awaken-session-store --features test-support --lib postgres_\n'
 
     def setUp(self):
-        self.source = (gate.ROOT / 'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+        self.source = (gate.ROOT / 'scripts/ci/service_suites.toml').read_text(encoding='utf-8')
 
     def check(self, text):
         with tempfile.TemporaryDirectory(prefix='pg-extraction-policy-') as directory:
             root = Path(directory)
-            target = root / 'scripts/ci/pg_tests.sh'
+            target = root / 'scripts/ci/service_suites.toml'
             target.parent.mkdir(parents=True)
             target.write_text(text, encoding='utf-8')
             return policy.postgres_phases('storage', root)
 
     def statement(self):
-        expression = r'(?ms)^  pg_required_test --locked -p awaken-session-store --features test-support --lib postgres_ .*?record_failure "\$\?"\n'
-        found = list(re.finditer(expression, self.source))
-        self.assertEqual(len(found), 1)
-        return found[0].group(0)
+        from _postgres_phase_plan import row_block
+        return row_block(self.source, 'postgres.storage.session-store')
 
     def test_storage_keeps_race_and_pure_conversion_as_distinct_required_outcomes(self):
         self.assertEqual(policy.STORAGE_SESSION_EXTRACTION_CASE_FLOORS, self.expected)
@@ -240,16 +240,16 @@ class SessionExtractionFloorTests(unittest.TestCase):
 
     def test_each_extraction_outcome_cannot_be_deleted(self):
         for name in self.expected:
-            line = '    --require-case=' + name + ' \\\n'
+            line = '--require-case=' + name + '\n'
             self.assertEqual(self.source.count(line), 1)
             with self.subTest(case=name), self.assertRaisesRegex(ValueError, 'independent Session extraction outcomes'):
                 self.check(self.source.replace(line, '', 1))
 
     def test_other_package_cannot_supply_the_extraction_outcome(self):
         name = 'extraction::tests::postgres_extraction_execution_selection_and_first_claim_share_one_revision_fence'
-        line = '    --require-case=' + name + ' \\\n'
+        line = '--require-case=' + name + '\n'
         text = self.source.replace(line, '', 1)
-        marker = '    --require-case=postgres_exact_physical_execution_observations_use_the_original_store_clock \\\n'
+        marker = '--require-case=postgres_exact_physical_execution_observations_use_the_original_store_clock\n'
         self.assertEqual(text.count(marker), 1)
         with self.assertRaisesRegex(ValueError, 'independent Session extraction outcomes'):
             self.check(text.replace(marker, marker + line, 1))
@@ -259,7 +259,7 @@ class SessionExtractionFloorTests(unittest.TestCase):
         self.assertEqual(statement.count(self.prefix), 1)
         for replacement in (self.prefix.replace('--lib', '--test other_target'),
                             self.prefix.replace('test-support', 'other'),
-                            self.prefix.replace('postgres_', 'unrelated_')):
+                            self.prefix.replace('postgres_\n', 'unrelated_\n')):
             with self.subTest(replacement=replacement), self.assertRaisesRegex(ValueError, 'independent Session extraction outcomes'):
                 self.check(self.source.replace(statement, statement.replace(self.prefix, replacement, 1), 1))
 
@@ -275,8 +275,8 @@ class SessionExtractionFloorTests(unittest.TestCase):
 
     def test_same_package_other_scope_cannot_supply_the_storage_outcome(self):
         name = 'extraction::tests::postgres_extraction_execution_selection_and_first_claim_share_one_revision_fence'
-        line = '    --require-case=' + name + ' \\\n'
-        marker = '  pg_required_test -p awaken-session-store --features test-support --test session_repo_conformance \\\n'
+        line = '--require-case=' + name + '\n'
+        marker = '-p awaken-session-store --features test-support --test session_repo_conformance\n'
         self.assertEqual(self.source.count(line), 1)
         self.assertEqual(self.source.count(marker), 1)
         text = self.source.replace(line, '', 1).replace(marker, marker + line, 1)

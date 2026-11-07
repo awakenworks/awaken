@@ -11,6 +11,7 @@ from _native_postgres_gap_policy import (
     postgres_product_gap_report, validate_work_product_gaps, validate_work_calibration, postgres_work_limitations,
 )
 from _native_postgres_scopes import postgres_phases
+from _postgres_phase_plan import edit_row
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_GAPS = ()
@@ -24,22 +25,20 @@ class WorkParitySelectionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (ROOT / 'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
+        cls.table = (ROOT / 'scripts/ci/service_suites.toml').read_text(encoding='utf-8')
 
-    def verify(self, source):
+    def verify(self, source=None, table=None):
+        # The suite rows live in the table; pg_tests.sh keeps the checked wrappers.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / 'scripts/ci/pg_tests.sh'
             script.parent.mkdir(parents=True)
-            script.write_text(source, encoding='utf-8')
+            script.write_text(self.source if source is None else source, encoding='utf-8')
+            (root / 'scripts/ci/service_suites.toml').write_text(self.table if table is None else table, encoding='utf-8')
             return postgres_phases('core', root)
 
     def changed_work(self, transform):
-        start = self.source.index('  pg_required_test -p awaken-work-store --features test-support --test work_queue_conformance ')
-        end = self.source.index('\n  pg_required_test', start + 1)
-        original = self.source[start:end]
-        changed = transform(original)
-        self.assertNotEqual(original, changed)
-        return self.source[:start] + changed + self.source[end:]
+        return edit_row(self.table, 'postgres.parity.work-store', transform)
 
     def test_all_current_cases_are_required_without_retired_gap_exclusions(self):
         phases = self.verify(self.source)
@@ -60,7 +59,7 @@ class WorkParitySelectionTests(unittest.TestCase):
             for replacement in ('', '--require-case=unrelated'):
                 changed = self.changed_work(lambda text: text.replace('--require-case=' + case, replacement, 1))
                 with self.subTest(case=case, replacement=replacement), self.assertRaisesRegex(ValueError, 'independent Work'):
-                    self.verify(changed)
+                    self.verify(table=changed)
 
     def test_resolved_ack_and_stop_observations_cannot_be_excluded_again(self):
         cases = (
@@ -83,7 +82,7 @@ class WorkParitySelectionTests(unittest.TestCase):
             changed = self.changed_work(lambda text: text.replace('--test-threads=1',
                 '--skip ' + case + ' --test-threads=1', 1))
             with self.subTest(case=case), self.assertRaisesRegex(ValueError, 'independent Work'):
-                self.verify(changed)
+                self.verify(table=changed)
 
 
     def test_no_current_case_can_be_skipped_and_retired_oracle_cannot_return_as_skip(self):
@@ -91,20 +90,20 @@ class WorkParitySelectionTests(unittest.TestCase):
             changed = self.changed_work(lambda text: text.replace('--test-threads=1',
                 '--skip ' + case + ' --test-threads=1', 1))
             with self.subTest(case=case), self.assertRaisesRegex(ValueError, 'independent Work'):
-                self.verify(changed)
+                self.verify(table=changed)
 
     def test_target_features_filter_and_ignored_flags_cannot_change_current_scope(self):
         mutations = (
             lambda text: text.replace('--test work_queue_conformance', '--test other_target', 1),
             lambda text: text.replace('--features test-support', '--features other', 1),
-            lambda text: text.replace('    -- \\\n', '    other_filter -- \\\n', 1),
+            lambda text: text.replace(' -- ', ' other_filter -- ', 1),
             lambda text: text.replace('--test-threads=1', '--ignored --test-threads=1', 1),
             lambda text: text.replace('--test-threads=1', '--include-ignored --test-threads=1', 1),
             lambda text: text.replace('--test-threads=1', '--skip=lease_acceptance --test-threads=1', 1),
         )
         for index, mutation in enumerate(mutations):
             with self.subTest(index=index), self.assertRaisesRegex(ValueError, 'independent Work'):
-                self.verify(self.changed_work(mutation))
+                self.verify(table=self.changed_work(mutation))
 
     def test_every_actual_backend_caller_validates_the_ledger_and_propagates_refusal(self):
         marker = 'python3 scripts/ci/_native_postgres_gap_policy.py --check || return "$?"'
@@ -254,15 +253,10 @@ class WorkStoreSelectionTests(unittest.TestCase):
     verify = WorkParitySelectionTests.verify
 
     def changed_store(self, transform):
-        start = self.source.index('\nwork_store_evidence() {') + 1
-        end = self.source.index('\n}', start)
-        original = self.source[start:end]
-        changed = transform(original)
-        self.assertNotEqual(original, changed)
-        return self.source[:start] + changed + self.source[end:]
+        return edit_row(self.table, 'postgres.work.work-store', transform)
 
     def test_native_targets_preserve_the_complete_union_without_repeating_conformance(self):
-        phases = self.verify(self.source)
+        phases = self.verify()
         store = [p for p in phases if p.selector == 'work_store_evidence']
         self.assertEqual(len(store), 1)
         args = store[0].arguments
@@ -283,11 +277,11 @@ class WorkStoreSelectionTests(unittest.TestCase):
             mutations.append(lambda s, added=added: s.replace('--lib ', '--lib ' + added + ' ', 1))
         for mutation in mutations:
             with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, 'independent Work store'):
-                self.verify(self.changed_store(mutation))
+                self.verify(table=self.changed_store(mutation))
 
     def test_each_required_outcome_and_original_private_helper_policy_are_mandatory(self):
         import re
-        source = self.source.split('\nwork_store_evidence() {', 1)[1].split('\n}', 1)[0]
+        source = self.table.split('id = "postgres.work.work-store"', 1)[1].split('[[', 1)[0]
         floors = re.findall(r'--require-case=([^\s]+)', source)
         self.assertEqual(len(floors), 13)
         mutations = [lambda s, case=case: s.replace('--require-case=' + case, '', 1) for case in floors]
@@ -299,7 +293,7 @@ class WorkStoreSelectionTests(unittest.TestCase):
         ]
         for mutation in mutations:
             with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, 'independent Work store'):
-                self.verify(self.changed_store(mutation))
+                self.verify(table=self.changed_store(mutation))
 
 
     def test_all_live_work_callers_require_actual_metadata_and_propagate_failure(self):

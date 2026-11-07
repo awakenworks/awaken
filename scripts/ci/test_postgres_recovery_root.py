@@ -463,12 +463,13 @@ class CoordinatorDurabilitySelectionTests(unittest.TestCase):
         # S1 one library-only, locked, ignored exact case with a required
         # execution receipt passes the producer guard. S2 independently remove
         # the library target, lock, required case, ignored selector or exact
-        # selector: the actual --self-test must reject the changed runtime
-        # command. Only the runtime line is mutated; the guard is left intact.
+        # selector: the actual --self-test must reject the changed suite row.
+        # Only the row in the suite table is mutated; the guard is left intact.
         producer = DRILL.with_name("pg_tests.sh")
+        table = DRILL.with_name("service_suites.toml")
+        rows = table.read_text(encoding="utf-8")
         original = producer.read_text(encoding="utf-8")
-        commands = [line for line in original.splitlines()
-                    if line.lstrip().startswith("pg_required_test -p awaken-coordinator ")]
+        commands = [line for line in rows.splitlines() if line.startswith("-p awaken-coordinator ")]
         self.assertEqual(len(commands), 1)
         command = commands[0]
         case = "application_access_store::tests::provisioned_postgres_application_access_durability_release_gate"
@@ -500,9 +501,9 @@ class CoordinatorDurabilitySelectionTests(unittest.TestCase):
             for omitted in ("--lib", "--locked", required, "--ignored", "--exact"):
                 with self.subTest(omitted=omitted):
                     replacement = command.replace(omitted + " ", "", 1)
-                    self.assertEqual(original.count("\n" + command + "\n"), 1)
-                    target.write_text(original.replace("\n" + command + "\n", "\n" + replacement + "\n", 1),
-                                      encoding="utf-8", newline="\n")
+                    self.assertEqual(rows.count("\n" + command + "\n"), 1)
+                    (scripts / table.name).write_text(rows.replace("\n" + command + "\n", "\n" + replacement + "\n", 1),
+                                                      encoding="utf-8", newline="\n")
                     result = invoke_fixture([bash_executable(), str(target), "--self-test"],
                                             cwd=root, env=environment, capture_output=True,
                                             text=True, stdin=subprocess.DEVNULL)
@@ -510,6 +511,7 @@ class CoordinatorDurabilitySelectionTests(unittest.TestCase):
                     self.assertIn("ApplicationAccess durability conformance", result.stderr)
             # Keep the selector guard while removing only the runtime budget
             # clamp. The producer's real boundary table must detect the overrun.
+            (scripts / table.name).write_text(rows, encoding="utf-8", newline="\n")
             clamp = '    [ "$seconds" -le "$remaining" ] || seconds=$remaining\n'
             self.assertEqual(original.count(clamp), 1)
             target.write_text(original.replace(clamp, "", 1), encoding="utf-8", newline="\n")

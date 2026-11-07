@@ -19,7 +19,7 @@ import check_native_services as gate
 from _native_service_receipt_fixture import FIXTURE_OWNER, postgres_receipts
 from _native_postgres_scopes import postgres_plan
 
-INPUT_GLOBS = (".github/workflows/windows-native-services.yml", "scripts/ci/pg_tests.sh")
+INPUT_GLOBS = (".github/workflows/windows-native-services.yml", "scripts/ci/pg_tests.sh", "scripts/ci/service_suites.toml")
 PACKAGES = ("awaken-sql-storage", "awaken-session-store", "awaken-config-store",
             "awaken-store-postgres", "awaken-env-store", "awaken-file-store",
             "awaken-store-schema", "awaken-store-sqlite")
@@ -34,20 +34,23 @@ class StorageSelectionTests(unittest.TestCase):
             return match.group(0)
         with tempfile.TemporaryDirectory(prefix="storage selector ") as directory:
             root=Path(directory);calls=root/"calls";script=root/"selection.sh"
-            # Only the real selector and failure composer are evaluated. The
-            # stub records argv; this unit check never starts Cargo or a DB.
+            # Only the real selector, its suite-table rows and the failure composer
+            # are evaluated. The stub records argv; this never starts Cargo or a DB.
             script.write_text('''#!/usr/bin/env bash
 set -uo pipefail
+cd "$REPO" || exit 2
 first_failure=0
+source scripts/ci/_affected_suites.sh
+suites_load postgres || exit $?
 pg_required_test() {
   printf '%s\\0' "$@" >>"$CALLS"
   printf '\\n' >>"$CALLS"
   return "$RUNNER_STATUS"
 }
-'''+function("record_failure")+'\n'+function(name)+
+'''+function("record_failure")+'\n'+function("pg_phase")+'\n'+function(name)+
                 '\n'+name+'\nexit "$first_failure"\n',encoding="utf-8",newline="\n")
             child=subprocess.run([sys.executable,str(gate.ROOT/"scripts/ci/_native_shell.py"),script.as_posix()],
-                env=dict(os.environ,CALLS=calls.as_posix(),RUNNER_STATUS=str(status)),
+                env=dict(os.environ,CALLS=calls.as_posix(),RUNNER_STATUS=str(status),REPO=gate.ROOT.as_posix()),
                 capture_output=True,timeout=30)
             rows=[row.decode().split("\0")[:-1] for row in calls.read_bytes().split(b"\n") if row]
             return child.returncode,rows
