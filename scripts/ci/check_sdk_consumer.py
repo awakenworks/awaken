@@ -800,7 +800,8 @@ class SdkConsumerTests(unittest.TestCase):
                 data = json.loads(evidence.read_text())
                 self.assertEqual(data["exit_code"], 0)
                 self.assertEqual(data["source"]["revision"], subprocess.check_output(
-                    ["git", "rev-parse", "HEAD"], cwd=root, text=True).strip())
+                    ["git", "rev-parse", "HEAD"], cwd=root,
+                    env=formal_sources.detached_git_environment(), text=True).strip())
                 if qualification == "package":
                     self.assertEqual(set(data["artifacts"]), {"default", "all"})
                     for artifacts in data["artifacts"].values():
@@ -1051,9 +1052,11 @@ class SdkConsumerTests(unittest.TestCase):
         # previous registry release; Q1 already covers both real feature argv.
         with tempfile.TemporaryDirectory() as temporary:
             root = self.repository(Path(temporary), successor=True)
-            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,
+                                           env=formal_sources.detached_git_environment(), text=True).strip()
             decoy = self.repository(Path(temporary), "decoy")
-            unrelated = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=decoy, text=True).strip()
+            unrelated = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=decoy,
+                                                env=formal_sources.detached_git_environment(), text=True).strip()
             self.git(root, "fetch", "--quiet", str(decoy), unrelated)
             for baseline in ("", "HEAD", head[:8], "f" * 40, head, unrelated):
                 with self.subTest(baseline=baseline):

@@ -237,6 +237,7 @@ run static "CI performance report self-test" python3 scripts/ci/ci_performance.p
 run static "CI performance artifact policy" python3 scripts/ci/ci_performance.py workflow
 run static "required Rust run (nextest JUnit) self-test" python3 scripts/ci/nextest_execution.py --self-test
 run static "ordinary Rust benchmark evidence self-test" python3 scripts/ci/benchmark_rust_build.py --self-test
+run static "SDK consumer admission self-test" python3 scripts/ci/check_sdk_consumer.py --self-test
 run static "parallel static check tests" python3 scripts/ci/test_parallel_checks.py
 run static "combined coverage gate tests" python3 scripts/ci/test_combined_coverage.py
 run static "unit-test CLI decision table" python3 scripts/ci/test_strict_unittest.py
@@ -257,6 +258,7 @@ run static "gate-argument hygiene" python3 scripts/ci/check_gate_arguments.py
 run static "guard navigation self-test" python3 scripts/ci/guards.py --self-test
 run static "gate path references self-test" python3 scripts/ci/check_gate_path_references.py --self-test
 run static "gate path references" python3 scripts/ci/check_gate_path_references.py
+run static "test inventory self-test" python3 scripts/ci/check_test_inventory.py --self-test
 run static "test inventory" python3 scripts/ci/check_test_inventory.py
 run static "hook input closure self-test" python3 scripts/ci/_input_closure.py --self-test
 run static "hook input closure" python3 scripts/ci/_input_closure.py
@@ -267,7 +269,7 @@ run static "degrading-defaults self-test" python3 scripts/ci/check_degrading_def
 run static "degrading-defaults" python3 scripts/ci/check_degrading_defaults.py
 run static "fabricated-facts self-test" python3 scripts/ci/check_fabricated_facts.py --self-test
 run static "fabricated-facts" python3 scripts/ci/check_fabricated_facts.py
-run static "proof-input-derivation self-test" python3 scripts/ci/check_proof_input_derivation.py --selftest
+run static "proof-input-derivation self-test" python3 scripts/ci/check_proof_input_derivation.py --self-test
 run static "contract-shape self-test" python3 scripts/ci/check_contract_shape.py --self-test
 run static "contract-shape" python3 scripts/ci/check_contract_shape.py
 run static "coverage checker tests" python3 scripts/ci/test_changed_e2e_line_coverage.py

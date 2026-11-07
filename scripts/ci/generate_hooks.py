@@ -826,7 +826,7 @@ def generated_hook_glob_errors(hooks: str, declarations: dict[str, tuple[str, ..
 
     N1 rendered regions + every declaring checker wired => accept;
     N2 stale/hand-edited regions => reject; N3 unwired declaration => reject.
-    The orchestration decision table exercises these same rules.
+    The self-test rows N1-N3 exercise these rules.
     """
     errors = []
     if render(hooks, declarations) != hooks:
@@ -1003,6 +1003,9 @@ def selftest() -> None:
     assert '      glob: "docs/one.md"\n' not in generated, "G2 drops the hand-written glob"
     edited = generated.replace('{docs/*.md,scripts/ci/check_alpha.py}', 'docs/one.md')
     assert render(edited, declarations) == generated, "G3 an in-marker edit is restored"
+    assert not generated_hook_glob_errors(generated, declarations), "N1 rendered and wired"
+    assert generated_hook_glob_errors(edited, declarations), "N2 a hand-edited region is refused"
+    assert generated_hook_glob_errors(generated, {**declarations, "check_unwired.py": ("x/*",)}), "N3 unwired"
     shell = generated.split("    shell:\n", 1)[1].split("\n    ", 1)[0]
     assert '      glob: "crates/**/*.rs"' in shell and MARKER_BEGIN not in shell, "G4"
     everything = generated.split("    everything:\n", 1)[1].split("\n    ", 1)[0]

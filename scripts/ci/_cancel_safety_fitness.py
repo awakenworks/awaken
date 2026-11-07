@@ -380,12 +380,6 @@ def unrecorded_admissions(sources: dict[Path, str], repo_root: Path) -> list[tup
     return found
 
 
-def live_findings(repo_root: Path, crates: Path) -> list[tuple[str, str]]:
-    """Every unexempted finding on the tree, for triage and for the baseline."""
-    found = unowned_effects(_production_sources(crates), repo_root)
-    return [(key, message) for key, message in found if key not in CANCEL_SAFETY_EXEMPTIONS]
-
-
 def check_all(repo_root: Path, crates: Path) -> list[str]:
     sources = _production_sources(crates)
     return _architecture_ratchet.compare_registered(

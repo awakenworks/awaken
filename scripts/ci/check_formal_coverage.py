@@ -75,12 +75,12 @@ obligations = data["obligations"]
 profile = data.get("verified_profile")
 formal_gate = (ROOT / "scripts/ci/check_formal.sh").read_text(encoding="utf-8")
 # The strict gate runs the derived Kani plan: one uncommented plan assignment
-# and one loop that hands every planned batch to the runner. The plan itself
+# (test_formal_profile row P4 executes the loop that hands every planned batch
+# to the runner, so a commented-out runner fails there). The plan itself
 # is derived from the harnesses (formal_plan.py), so a harness cannot be left
 # out of strict CI by an edit to a list; it can only be left out of the plan
 # by failing to plan, which fails here.
 KANI_PLAN_RUN = re.compile(r'^  kani_plan="\$\(python3 scripts/ci/formal_plan\.py kani "\$\{formal_selection\[@\]\}"\)"$')
-KANI_BATCH_RUN = re.compile(r'^    run_kani "\$\{kani_argv\[@\]\}"$')
 gate_python_self_tests: dict[str, int] = {}
 for line in formal_gate.replace("\\\n", " ").splitlines():
     if line.lstrip().startswith("python3 "):
@@ -89,9 +89,7 @@ for line in formal_gate.replace("\\\n", " ").splitlines():
             relative = selection[1]
             gate_python_self_tests[relative] = gate_python_self_tests.get(relative, 0) + 1
 gate_lines = formal_gate.splitlines()
-if sum(bool(KANI_PLAN_RUN.match(line)) for line in gate_lines) != 1 or sum(
-    bool(KANI_BATCH_RUN.match(line)) for line in gate_lines
-) != 1:
+if sum(bool(KANI_PLAN_RUN.match(line)) for line in gate_lines) != 1:
     fail("strict CI does not run the derived Kani plan exactly once (formal_plan.py kani <selection>)")
 try:
     planned = {item.harness.name: item for item in formal_plan.harnesses(ROOT)}
