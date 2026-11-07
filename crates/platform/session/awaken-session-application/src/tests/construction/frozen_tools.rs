@@ -55,14 +55,14 @@ fn app(
     repository: Arc<awaken_session_store::SqliteManagedSessionRepository>,
     strict: bool,
 ) -> SessionApplication {
-    let executor = SessionExecutor::colocated(
+    let executor = SessionExecutionRoles::colocated(
         Arc::new(creation::RecordingCreateRuntime::default()),
         Arc::new(NoopMcpRealizer),
     );
     // This fixture has committed no Thread. Select its existing empty read
     // role before construction; the general creation-failure fixture keeps
     // its intentional unsupported-read behavior for cleanup admission tests.
-    let roles = awaken_session_execution_contract::SessionExecutionRoles {
+    let roles = awaken_session_execution_contract::SessionExecutionRoleSelection {
         thread_reads: Arc::new(NoopRuntime),
         ..(*executor).clone()
     };

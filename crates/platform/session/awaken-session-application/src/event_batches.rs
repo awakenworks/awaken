@@ -398,7 +398,7 @@ pub(crate) struct SessionEventBatchCollaborators {
     pub(crate) activities: Arc<crate::SessionActivities>,
     pub(crate) run_admissions: Arc<crate::SessionRunAdmissions>,
     pub(crate) coordination: Arc<crate::SessionCoordination>,
-    pub(crate) runtime: crate::SessionExecutor,
+    pub(crate) runtime: crate::SessionExecutionRoles,
 }
 
 impl SessionEventBatchCommands {

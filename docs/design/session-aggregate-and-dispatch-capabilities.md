@@ -23,7 +23,7 @@ Process startup derives its hosted observation roles from one repository Arc.
 Model access receives reads; checkpoint retention and demand receive maintenance.
 The complete application retains the full repository for its existing use cases.
 
-Session Runtime composition uses `SessionExecutor::from(Arc<T>)`, where `T`
+Session Runtime composition uses `SessionExecutionRoles::colocated(Arc<T>, ..)`, where `T`
 implements `CompleteSessionRuntime`. Its thirteen role handles come from that
 one owner and are immutable after construction. `SessionRuns` retains four
 core operations; coordination reads, projection reads, realization, terminal

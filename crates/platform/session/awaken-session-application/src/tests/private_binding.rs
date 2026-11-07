@@ -301,7 +301,7 @@ async fn private_binding_owner_matrix_refuses_workspace_admin_and_filters_collec
     )
     .await;
     let executor =
-        crate::SessionExecutor::colocated(Arc::new(NoopRuntime), Arc::new(NoopMcpRealizer));
+        crate::SessionExecutionRoles::colocated(Arc::new(NoopRuntime), Arc::new(NoopMcpRealizer));
     let queries = SessionQueries::new(repo.clone(), &executor, None);
     let id = SessionId::from("personal");
     assert!(
@@ -465,7 +465,7 @@ async fn observed_owner_coordinates_must_match_before_session_access_is_minted()
     create(repository.as_ref(), bob.clone()).await;
     let reads = Arc::new(FaultingSessionRepository::new(repository));
     let executor =
-        crate::SessionExecutor::colocated(Arc::new(NoopRuntime), Arc::new(NoopMcpRealizer));
+        crate::SessionExecutionRoles::colocated(Arc::new(NoopRuntime), Arc::new(NoopMcpRealizer));
     let queries = SessionQueries::new(reads.clone(), &executor, None);
     assert!(queries.authorize_private(&binding(), &id).await.is_ok());
     assert_eq!(

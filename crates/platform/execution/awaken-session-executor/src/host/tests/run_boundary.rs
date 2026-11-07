@@ -1122,10 +1122,10 @@ async fn durable_resume_commands_read_committed_tickets_without_a_pool_or_enviro
                 } else {
                     awaken_deployment_config::ForegroundRunDelivery::Direct
                 };
-                builder.execution.local = if local {
-                    crate::LocalExecution::in_process_pool()
+                builder.execution.claim_pool = if local {
+                    crate::ClaimPool::in_process()
                 } else {
-                    crate::LocalExecution::RemoteWorkersOnly
+                    crate::ClaimPool::RemoteWorkersOnly
                 };
                 let host = builder.build().unwrap();
                 let thread = ThreadId("cold-durable-control".into());

@@ -167,7 +167,7 @@ impl SessionExecutorBuilder {
         capacity: awaken_worker_contract::RegisteredCapacity,
     ) -> Result<Self, SessionExecutionError> {
         authority.validate_worker_connections()?;
-        if !process.execution.local.runs_local_pool() {
+        if !process.execution.claim_pool.runs_local_pool() {
             return Err(SessionExecutionError::bad_request(
                 "registered Worker capacity requires upstream authority and a local execution pool",
             ));
@@ -188,7 +188,7 @@ impl SessionExecutorBuilder {
         // it registered; its composition cannot select anything else.
         selected.execution.foreground_delivery =
             awaken_deployment_config::ForegroundRunDelivery::Durable;
-        selected.execution.local = crate::LocalExecution::InProcessPool(
+        selected.execution.claim_pool = crate::ClaimPool::InProcess(
             crate::DispatchPoolSizing::Registered(capacity.into_slots()),
         );
         Ok(selected)
@@ -530,7 +530,7 @@ impl SessionExecutorBuilder {
         )));
         self.execution.foreground_delivery =
             awaken_deployment_config::ForegroundRunDelivery::Durable;
-        self.execution.local = crate::LocalExecution::in_process_pool();
+        self.execution.claim_pool = crate::ClaimPool::in_process();
         self
     }
 
@@ -542,7 +542,7 @@ impl SessionExecutorBuilder {
         store: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     ) -> Self {
         let mut selected = self.with_ephemeral_dispatch(store);
-        selected.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+        selected.execution.claim_pool = crate::ClaimPool::RemoteWorkersOnly;
         selected
     }
 

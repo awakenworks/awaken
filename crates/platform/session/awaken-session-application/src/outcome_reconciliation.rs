@@ -66,7 +66,7 @@ impl SessionOutcomeReconciliation {
         mutations: Arc<crate::SessionMutations>,
         realizations: Arc<crate::SessionRealizations>,
         run_admissions: Arc<crate::SessionRunAdmissions>,
-        runtime: &crate::SessionExecutor,
+        runtime: &crate::SessionExecutionRoles,
     ) -> Self {
         Self {
             mutations,

@@ -30,7 +30,7 @@ async fn private_sessions(
             .await
             .unwrap();
     }
-    let selected = awaken_session_execution_contract::SessionExecutor::colocated(
+    let selected = awaken_session_execution_contract::SessionExecutionRoles::colocated(
         Arc::new(awaken_session_execution_contract::NeutralRuntime),
         Arc::new(awaken_session_execution_contract::NeutralRuntime),
     );

@@ -55,7 +55,7 @@ pub(crate) struct SessionTerminalCleanupCollaborators {
     pub(crate) realizations: Arc<crate::SessionRealizations>,
     pub(crate) executable_projections: crate::ExecutableProjections,
     pub(crate) execution_admission: Arc<crate::SessionExecutionAdmission>,
-    pub(crate) runtime: crate::SessionExecutor,
+    pub(crate) runtime: crate::SessionExecutionRoles,
 }
 
 impl SessionTerminalCleanups {

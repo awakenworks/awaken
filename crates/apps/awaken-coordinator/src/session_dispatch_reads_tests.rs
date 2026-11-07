@@ -86,7 +86,7 @@ mod scoped_cases {
         });
         let sessions = Arc::new(
             awaken_session_application::SessionApplicationBuilder::new(
-                awaken_session_execution_contract::SessionExecutor::colocated(
+                awaken_session_execution_contract::SessionExecutionRoles::colocated(
                     runtime.clone(),
                     runtime,
                 ),

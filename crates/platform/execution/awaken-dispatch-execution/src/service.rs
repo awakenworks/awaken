@@ -473,14 +473,14 @@ mod maintenance_schedule_tests {
 mod topology_schedule_tests {
     use super::DispatchServiceConfig;
     use awaken_deployment_config::{
-        ExecutionTopology, ForegroundRunDelivery, LeaseOwnerId, LocalExecution, QueueDepthSource,
+        ClaimPool, ExecutionTopology, ForegroundRunDelivery, LeaseOwnerId, QueueDepthSource,
     };
 
     /// A standalone process: direct ingress, CPU-sized pool, built-in sampler.
     fn standalone() -> ExecutionTopology {
         ExecutionTopology {
             foreground_delivery: ForegroundRunDelivery::Direct,
-            local: LocalExecution::in_process_pool(),
+            claim_pool: ClaimPool::in_process(),
             lease_owner: LeaseOwnerId::new("node-a").unwrap(),
             lost_wake_recovery_bound: std::time::Duration::from_millis(250),
             queue_depth: QueueDepthSource::BuiltInSampler,

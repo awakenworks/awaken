@@ -30,11 +30,11 @@ async fn publication_uses_the_selected_local_hint_before_services_start() {
     for local in [false, true] {
         let wake = Arc::new(ObservedWake::default());
         let execution = if local {
-            awaken_deployment_config::LocalExecution::InProcessPool(
-                DispatchPoolSizing::LocalParallelism(std::num::NonZeroUsize::new(1).unwrap()),
-            )
+            awaken_deployment_config::ClaimPool::InProcess(DispatchPoolSizing::LocalParallelism(
+                std::num::NonZeroUsize::new(1).unwrap(),
+            ))
         } else {
-            awaken_deployment_config::LocalExecution::RemoteWorkersOnly
+            awaken_deployment_config::ClaimPool::RemoteWorkersOnly
         };
         let fixture = coordinator_fixture_with_wake(execution, wake.clone());
         for phase in ["cold", "started", "drained"] {
@@ -85,11 +85,11 @@ async fn publication_retains_the_original_outbox_and_cold_hint_delivery() {
     for local in [false, true] {
         let wake = Arc::new(ObservedWake::default());
         let execution = if local {
-            awaken_deployment_config::LocalExecution::InProcessPool(
-                DispatchPoolSizing::LocalParallelism(std::num::NonZeroUsize::new(1).unwrap()),
-            )
+            awaken_deployment_config::ClaimPool::InProcess(DispatchPoolSizing::LocalParallelism(
+                std::num::NonZeroUsize::new(1).unwrap(),
+            ))
         } else {
-            awaken_deployment_config::LocalExecution::RemoteWorkersOnly
+            awaken_deployment_config::ClaimPool::RemoteWorkersOnly
         };
         let fixture = coordinator_fixture_with_wake(execution, wake.clone());
         let publication = fixture.dispatch.publication();
@@ -154,7 +154,7 @@ async fn retained_publication_does_not_keep_the_terminal_service_alive() {
     // L3 root service ownership ends -> the original scanner/resolver ends.
     // L4 publication remains usable over the original queue after L3. The
     // lifetime wait observes actual resolver release, never a guessed delay.
-    let fixture = coordinator_fixture(awaken_deployment_config::LocalExecution::RemoteWorkersOnly);
+    let fixture = coordinator_fixture(awaken_deployment_config::ClaimPool::RemoteWorkersOnly);
     let publication = fixture.dispatch.publication();
     assert!(fixture.dispatch.ensure_terminal_reconciliation(
         true,
@@ -189,11 +189,11 @@ async fn publication_preserves_original_relay_failure_and_exact_retry() {
     for local in [false, true] {
         let wake = Arc::new(ObservedWake::default());
         let execution = if local {
-            awaken_deployment_config::LocalExecution::InProcessPool(
-                DispatchPoolSizing::LocalParallelism(std::num::NonZeroUsize::new(1).unwrap()),
-            )
+            awaken_deployment_config::ClaimPool::InProcess(DispatchPoolSizing::LocalParallelism(
+                std::num::NonZeroUsize::new(1).unwrap(),
+            ))
         } else {
-            awaken_deployment_config::LocalExecution::RemoteWorkersOnly
+            awaken_deployment_config::ClaimPool::RemoteWorkersOnly
         };
         let fixture = coordinator_fixture_with_wake(execution, wake.clone());
         let publication = fixture.dispatch.publication();

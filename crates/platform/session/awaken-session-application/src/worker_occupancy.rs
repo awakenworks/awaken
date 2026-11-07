@@ -78,7 +78,7 @@ impl SessionWorkerOccupancy {
     pub(crate) fn new(
         repository: Arc<dyn SessionRepository>,
         queries: Arc<crate::SessionQueries>,
-        runtime: &crate::SessionExecutor,
+        runtime: &crate::SessionExecutionRoles,
     ) -> Self {
         Self {
             repository,

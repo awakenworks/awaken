@@ -19,7 +19,8 @@ use crate::{
 };
 use std::sync::Arc;
 
-/// Required Session executor roles, selected once by the composition. A
+/// The Session application's view of the required execution roles, selected
+/// once by the composition; it executes nothing itself. A
 /// selected role cannot be replaced afterwards, and the committed projection is
 /// derived from the selected Thread and coordination read roles rather than
 /// selected separately, so it can never read through a third owner.
@@ -28,10 +29,10 @@ use std::sync::Arc;
 ///
 /// ```compile_fail,E0277
 /// use std::sync::Arc;
-/// use awaken_session_execution_contract::{NeutralRuntime, SessionExecutor, SessionRuns};
+/// use awaken_session_execution_contract::{NeutralRuntime, SessionExecutionRoles, SessionRuns};
 ///
 /// fn cannot_bind_partial<T: SessionRuns + 'static>(runtime: Arc<T>) {
-///     let _ = SessionExecutor::colocated(runtime, Arc::new(NeutralRuntime));
+///     let _ = SessionExecutionRoles::colocated(runtime, Arc::new(NeutralRuntime));
 /// }
 /// ```
 ///
@@ -39,21 +40,21 @@ use std::sync::Arc;
 ///
 /// ```compile_fail,E0594
 /// use std::sync::Arc;
-/// use awaken_session_execution_contract::{BudgetAccounting, SessionExecutor};
-/// fn cannot_replace(executor: &mut SessionExecutor, other: Arc<dyn BudgetAccounting>) {
+/// use awaken_session_execution_contract::{BudgetAccounting, SessionExecutionRoles};
+/// fn cannot_replace(executor: &mut SessionExecutionRoles, other: Arc<dyn BudgetAccounting>) {
 ///     executor.budget = other;
 /// }
 /// ```
 #[derive(Clone)]
-pub struct SessionExecutor {
-    roles: SessionExecutionRoles,
+pub struct SessionExecutionRoles {
+    roles: SessionExecutionRoleSelection,
     projection: Arc<CommittedSessionProjection>,
 }
 
 /// Required capabilities selected by one composition. The containing
-/// `SessionExecutor` exposes this view immutably; roles cannot be replaced.
+/// `SessionExecutionRoles` exposes this view immutably; roles cannot be replaced.
 #[derive(Clone)]
-pub struct SessionExecutionRoles {
+pub struct SessionExecutionRoleSelection {
     pub default_model: String,
     /// Where the Sessions are realized: a co-located Worker's realization
     /// roles, or the frozen-input admission of Worker-placed Sessions.
@@ -68,14 +69,14 @@ pub struct SessionExecutionRoles {
     pub capability: Arc<dyn CapabilityRuntime>,
 }
 
-impl std::ops::Deref for SessionExecutor {
-    type Target = SessionExecutionRoles;
+impl std::ops::Deref for SessionExecutionRoles {
+    type Target = SessionExecutionRoleSelection;
     fn deref(&self) -> &Self::Target {
         &self.roles
     }
 }
 
-impl SessionExecutor {
+impl SessionExecutionRoles {
     /// Committed projection facts without execution authority.
     pub fn projection(&self) -> &dyn SessionProjectionSource {
         self.projection.as_ref()
@@ -137,8 +138,8 @@ impl SessionExecutor {
     }
 }
 
-impl From<SessionExecutionRoles> for SessionExecutor {
-    fn from(roles: SessionExecutionRoles) -> Self {
+impl From<SessionExecutionRoleSelection> for SessionExecutionRoles {
+    fn from(roles: SessionExecutionRoleSelection) -> Self {
         let projection = Arc::new(CommittedSessionProjection::new(
             roles.thread_reads.clone(),
             roles.coordination_reads.clone(),
@@ -147,15 +148,15 @@ impl From<SessionExecutionRoles> for SessionExecutor {
     }
 }
 
-impl SessionExecutor {
+impl SessionExecutionRoles {
     /// Bind a complete co-located runtime and its exact MCP effect owner once.
-    /// Worker-only compositions supply `SessionExecutionRoles` directly and
+    /// Worker-only compositions supply `SessionExecutionRoleSelection` directly and
     /// cannot acquire this local effect capability through a placeholder.
     pub fn colocated(
         runtime: Arc<dyn CompleteSessionRuntime>,
         mcp: Arc<dyn crate::McpAttachmentRealizer>,
     ) -> Self {
-        Self::from(SessionExecutionRoles {
+        Self::from(SessionExecutionRoleSelection {
             default_model: runtime.model(),
             placement: SessionPlacementRoles::Colocated(ColocatedRealizationRoles {
                 mcp,
@@ -193,7 +194,7 @@ mod tests {
         // roles retain their original owner. No optional-role discovery or
         // implicit MCP fallback may replace either selected collaborator.
         let mcp: Arc<dyn crate::McpAttachmentRealizer> = Arc::new(crate::NeutralRuntime);
-        let selected = SessionExecutor::colocated(runtime, mcp.clone());
+        let selected = SessionExecutionRoles::colocated(runtime, mcp.clone());
         for executor in [&selected, &selected.clone()] {
             let colocated = executor
                 .placement
@@ -276,8 +277,8 @@ mod tests {
         result.err().expect("the named role refuses").message
     }
 
-    fn neutral_roles(neutral: Arc<crate::NeutralRuntime>) -> SessionExecutionRoles {
-        SessionExecutionRoles {
+    fn neutral_roles(neutral: Arc<crate::NeutralRuntime>) -> SessionExecutionRoleSelection {
+        SessionExecutionRoleSelection {
             default_model: neutral.model(),
             placement: SessionPlacementRoles::Colocated(ColocatedRealizationRoles {
                 mcp: neutral.clone(),
@@ -307,7 +308,7 @@ mod tests {
         let model_owner = Arc::new(crate::NeutralRuntime);
         let witness = Arc::downgrade(&model_owner);
         let expected = model_owner.model();
-        let selected = SessionExecutor::from(SessionExecutionRoles {
+        let selected = SessionExecutionRoles::from(SessionExecutionRoleSelection {
             default_model: expected.clone(),
             ..neutral_roles(Arc::new(crate::NeutralRuntime))
         });
@@ -331,7 +332,7 @@ mod tests {
         // | P3   | terminal Outcome           | thread_reads       |
         // | P4   | coordinated Thread links   | coordination_reads |
         let neutral = Arc::new(crate::NeutralRuntime);
-        let selected = SessionExecutor::from(SessionExecutionRoles {
+        let selected = SessionExecutionRoles::from(SessionExecutionRoleSelection {
             thread_reads: Arc::new(NamedThreadReads),
             ..neutral_roles(neutral)
         });

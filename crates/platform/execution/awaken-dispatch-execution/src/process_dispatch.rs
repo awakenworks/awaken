@@ -133,8 +133,10 @@ impl ProcessDispatch {
         let admission = Arc::new(PoolAdmission::new(
             crate::DispatchServiceConfig::for_topology(&topology).max_attempts,
         ));
-        let publication =
-            crate::DispatchPublication::selected(topology.local.runs_local_pool(), hint.clone());
+        let publication = crate::DispatchPublication::selected(
+            topology.claim_pool.runs_local_pool(),
+            hint.clone(),
+        );
         Self {
             topology,
             clock,
@@ -227,7 +229,7 @@ impl ProcessDispatch {
         completion: Arc<dyn CompletionSink>,
         resolver: impl FnOnce() -> Result<Arc<dyn WorkerResolver<AnyDispatchStore>>, Error>,
     ) -> Result<(), Error> {
-        let sizing = self.topology.local.pool_sizing();
+        let sizing = self.topology.claim_pool.pool_sizing();
         let PoolStart::Spawn(sizing) =
             pool_start(sizing, self.pool.get().is_some(), binding.is_some())
         else {
@@ -270,7 +272,7 @@ impl ProcessDispatch {
     ) -> bool {
         if !starts_terminal_reconciliation(
             self.topology.foreground_delivery.is_durable(),
-            self.topology.local.runs_local_pool(),
+            self.topology.claim_pool.runs_local_pool(),
             scans_committed_terminals,
             self.terminal_reconciler.get().is_some(),
         ) {
@@ -326,7 +328,7 @@ impl ProcessDispatch {
     /// constructed does not delay this fence. Idempotent.
     pub async fn begin_drain(&self) -> Option<PoolDrainFence> {
         let fence = self.admission.begin_drain().await;
-        self.topology.local.runs_local_pool().then_some(fence)
+        self.topology.claim_pool.runs_local_pool().then_some(fence)
     }
 
     /// Install the drain fence and await the original dispatch tasks, including

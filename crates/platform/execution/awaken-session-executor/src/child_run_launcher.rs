@@ -67,7 +67,7 @@ impl ChildRunLauncher {
         // Runtime authorities both own dispatch; gating children on persistence
         // durability leaves a claim-bound parent executing its child with the
         // parent's checkpoint/commit projection instead of a child claim.
-        let scheduler = if self.execution.local.runs_local_pool() {
+        let scheduler = if self.execution.claim_pool.runs_local_pool() {
             Some(crate::agent_runner::RunScheduler {
                 clock: self.clock.clone(),
                 binding: self.authority.dispatch_binding().ok_or_else(|| {

@@ -37,8 +37,10 @@ pub(super) async fn session_file_owner() -> (
         repo.create("test", root, key, Vec::new()).await.unwrap();
     }
     let runtime = Arc::new(awaken_protocol_managed_testkit::RehydrateFake::default());
-    let selected =
-        awaken_session_execution_contract::SessionExecutor::colocated(runtime.clone(), runtime);
+    let selected = awaken_session_execution_contract::SessionExecutionRoles::colocated(
+        runtime.clone(),
+        runtime,
+    );
     let queries = Arc::new(awaken_session_application::SessionQueries::new(
         repo.clone(),
         &selected,

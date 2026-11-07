@@ -43,7 +43,7 @@ impl SessionObservations {
         clock: Arc<dyn awaken_time::WallClock>,
         queries: Arc<crate::SessionQueries>,
         resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
-        runtime: &crate::SessionExecutor,
+        runtime: &crate::SessionExecutionRoles,
     ) -> Self {
         Self {
             mutations,

@@ -768,7 +768,7 @@ pub(super) struct MigrationManifest {
 
 impl MigrationManifest {
     /// Migration ownership is a projection of the canonical startup manifest,
-    /// not a second per-role table. LocalWorker deliberately has no database
+    /// not a second per-role table. The co-located Worker deliberately has no database
     /// migration component.
     pub(super) const fn contains(self, component: &MigrationComponent) -> bool {
         let startup_component = match component {

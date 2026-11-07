@@ -830,7 +830,7 @@ mod tests {
                     .with_ephemeral_dispatch(store.clone());
                 dependencies.execution.foreground_delivery =
                     awaken_deployment_config::ForegroundRunDelivery::Durable;
-                dependencies.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+                dependencies.execution.claim_pool = crate::ClaimPool::RemoteWorkersOnly;
                 let host = dependencies.build().unwrap();
                 crate::test_application_bindings::select_standalone(&host).unwrap();
                 if rule != "nonterminal" {
@@ -1032,7 +1032,7 @@ mod tests {
             crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub").await;
         local_pool.execution.foreground_delivery =
             awaken_deployment_config::ForegroundRunDelivery::Durable;
-        local_pool.execution.local = crate::LocalExecution::in_process_pool();
+        local_pool.execution.claim_pool = crate::ClaimPool::in_process();
         let local_pool = (local_pool).build().expect("validated Host dependencies");
         assert!(
             !crate::test_application_bindings::lifecycle(
@@ -1059,7 +1059,7 @@ mod tests {
                 .with_ephemeral_dispatch(store.clone());
         coordinator.execution.foreground_delivery =
             awaken_deployment_config::ForegroundRunDelivery::Durable;
-        coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+        coordinator.execution.claim_pool = crate::ClaimPool::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
 
@@ -1193,7 +1193,7 @@ mod tests {
                 .with_ephemeral_dispatch(store);
         coordinator.execution.foreground_delivery =
             awaken_deployment_config::ForegroundRunDelivery::Durable;
-        coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+        coordinator.execution.claim_pool = crate::ClaimPool::RemoteWorkersOnly;
         coordinator.build().expect("validated Host dependencies")
     }
 
@@ -1307,7 +1307,7 @@ mod tests {
                 .with_ephemeral_dispatch(store.clone());
         coordinator.execution.foreground_delivery =
             awaken_deployment_config::ForegroundRunDelivery::Durable;
-        coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+        coordinator.execution.claim_pool = crate::ClaimPool::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
         crate::test_application_bindings::select_standalone(&host).unwrap();
@@ -1439,7 +1439,7 @@ mod tests {
                 .with_ephemeral_dispatch(store.clone());
         coordinator.execution.foreground_delivery =
             awaken_deployment_config::ForegroundRunDelivery::Durable;
-        coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+        coordinator.execution.claim_pool = crate::ClaimPool::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
         crate::test_application_bindings::select_standalone(&host).unwrap();
@@ -1536,7 +1536,7 @@ mod tests {
                 .with_ephemeral_dispatch(store.clone());
         coordinator.execution.foreground_delivery =
             awaken_deployment_config::ForegroundRunDelivery::Durable;
-        coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+        coordinator.execution.claim_pool = crate::ClaimPool::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
         crate::test_application_bindings::select_standalone(&host).unwrap();

@@ -17,7 +17,7 @@ use awaken_session_contract::{
     SessionScanQuery,
 };
 use awaken_session_execution_contract::{
-    CapabilityRuntime, SessionExecutor, SessionProjectionSource, ThreadReads,
+    CapabilityRuntime, SessionExecutionRoles, SessionProjectionSource, ThreadReads,
 };
 use awaken_session_types::SessionId;
 use std::sync::Arc;
@@ -158,8 +158,8 @@ impl SessionQueries {
     /// use std::sync::Arc;
     /// use awaken_session_application::SessionQueries;
     /// use awaken_session_contract::SessionRepositoryReads;
-    /// use awaken_session_execution_contract::SessionExecutor;
-    /// fn selected(repo: Arc<dyn SessionRepositoryReads>, executor: SessionExecutor) -> SessionQueries {
+    /// use awaken_session_execution_contract::SessionExecutionRoles;
+    /// fn selected(repo: Arc<dyn SessionRepositoryReads>, executor: SessionExecutionRoles) -> SessionQueries {
     ///     let query = SessionQueries::new(repo, &executor, None);
     ///     drop(executor);
     ///     query
@@ -179,7 +179,7 @@ impl SessionQueries {
     #[must_use]
     pub fn new(
         repository: Arc<dyn SessionRepositoryReads>,
-        selected: &SessionExecutor,
+        selected: &SessionExecutionRoles,
         profiles: Option<Arc<dyn ExecutableAgentProfileSource>>,
     ) -> Self {
         Self {

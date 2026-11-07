@@ -56,7 +56,7 @@ async fn frozen_query_reads_the_original_prefix_without_a_current_source_session
     *runtime.committed.lock().unwrap() = messages.clone();
     let queries = {
         let selected =
-            crate::SessionExecutor::colocated(runtime.clone(), Arc::new(NoopMcpRealizer));
+            crate::SessionExecutionRoles::colocated(runtime.clone(), Arc::new(NoopMcpRealizer));
         crate::SessionQueries::new(
             repository.clone(),
             &selected,
@@ -178,7 +178,8 @@ async fn frozen_query_refuses_source_faults_before_the_later_publication_refusal
             .unwrap(),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
-    let selected = crate::SessionExecutor::colocated(runtime.clone(), Arc::new(NoopMcpRealizer));
+    let selected =
+        crate::SessionExecutionRoles::colocated(runtime.clone(), Arc::new(NoopMcpRealizer));
     let queries = crate::SessionQueries::new(repository.clone(), &selected, None);
     let messages = (0..3)
         .map(|i| {
@@ -317,7 +318,8 @@ async fn scoped_transcript_query_keeps_root_refusals_before_raw_reads() {
     );
     let repository = Arc::new(FaultingSessionRepository::new(durable.clone()));
     let runtime = Arc::new(EventBatchRuntime::default());
-    let selected = crate::SessionExecutor::colocated(runtime.clone(), Arc::new(NoopMcpRealizer));
+    let selected =
+        crate::SessionExecutionRoles::colocated(runtime.clone(), Arc::new(NoopMcpRealizer));
     let queries = crate::SessionQueries::new(repository.clone(), &selected, None);
     let visible = prefix_session("scoped-visible", None, false);
     create(durable.as_ref(), visible.clone()).await;
@@ -465,7 +467,8 @@ async fn frozen_query_refuses_an_unconsumed_creation_intent_before_reading() {
             .unwrap(),
     );
     let runtime = Arc::new(EventBatchRuntime::default());
-    let selected = crate::SessionExecutor::colocated(runtime.clone(), Arc::new(NoopMcpRealizer));
+    let selected =
+        crate::SessionExecutionRoles::colocated(runtime.clone(), Arc::new(NoopMcpRealizer));
     let queries = crate::SessionQueries::new(repository, &selected, None);
     let mut preparing = prefix_session("preparing-prefix", None, false);
     preparing.baseline = SessionBaselineState::Preparing(

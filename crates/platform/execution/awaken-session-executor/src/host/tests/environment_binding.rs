@@ -758,8 +758,8 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         .build()
         .expect("validated Host dependencies");
     assert_eq!(
-        local.dispatch.topology().local,
-        crate::LocalExecution::InProcessPool(crate::DispatchPoolSizing::LocalParallelism(default)),
+        local.dispatch.topology().claim_pool,
+        crate::ClaimPool::InProcess(crate::DispatchPoolSizing::LocalParallelism(default)),
         "R1"
     );
     for capacity in [1, default.get(), default.get() + 2] {
@@ -821,15 +821,15 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
             "R2 actual installed Sessions"
         );
         assert_eq!(
-            worker.dispatch.topology().local,
-            crate::LocalExecution::InProcessPool(crate::DispatchPoolSizing::Registered(
+            worker.dispatch.topology().claim_pool,
+            crate::ClaimPool::InProcess(crate::DispatchPoolSizing::Registered(
                 std::num::NonZeroUsize::new(capacity).expect("R2")
             )),
             "R2 registered branch"
         );
         let _local_fence = worker.dispatch.begin_drain().await;
         let mut coordinator_only = process();
-        coordinator_only.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+        coordinator_only.execution.claim_pool = crate::ClaimPool::RemoteWorkersOnly;
         assert!(
             crate::SessionExecutorBuilder::for_worker(
                 Arc::new(OkModel),

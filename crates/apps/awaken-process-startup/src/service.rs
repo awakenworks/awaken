@@ -247,7 +247,7 @@ async fn prepare_configured_local_worker(
     if !deployment.run_local_pool
         || !awaken_service_lifecycle::startup_requires(
             role.startup_role(),
-            awaken_service_lifecycle::StartupComponent::LocalWorker,
+            awaken_service_lifecycle::StartupComponent::ColocatedWorker,
         )
     {
         return Ok(None);

@@ -1,7 +1,7 @@
 use super::*;
 use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
 use awaken_deployment_config::{
-    DispatchPoolSizing, ExecutionTopology, ForegroundRunDelivery, LeaseOwnerId, LocalExecution,
+    ClaimPool, DispatchPoolSizing, ExecutionTopology, ForegroundRunDelivery, LeaseOwnerId,
     QueueDepthSource,
 };
 use awaken_dispatch_contract::DispatchEnqueue as _;
@@ -113,12 +113,12 @@ fn fixture(
     let dispatch = Arc::new(ProcessDispatch::new(
         ExecutionTopology {
             foreground_delivery: ForegroundRunDelivery::Durable,
-            local: if local {
-                LocalExecution::InProcessPool(DispatchPoolSizing::LocalParallelism(
+            claim_pool: if local {
+                ClaimPool::InProcess(DispatchPoolSizing::LocalParallelism(
                     std::num::NonZeroUsize::new(1).unwrap(),
                 ))
             } else {
-                LocalExecution::RemoteWorkersOnly
+                ClaimPool::RemoteWorkersOnly
             },
             lease_owner: LeaseOwnerId::new("selected-process").unwrap(),
             lost_wake_recovery_bound: Duration::from_millis(5),

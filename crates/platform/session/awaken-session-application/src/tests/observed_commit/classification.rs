@@ -91,7 +91,7 @@ async fn repository_error_classes_survive_application_reads_and_cas() {
             Err(expected.clone()),
             "read: {cause:?}"
         );
-        let executor = awaken_session_execution_contract::SessionExecutor::colocated(
+        let executor = awaken_session_execution_contract::SessionExecutionRoles::colocated(
             Arc::new(super::super::NoopRuntime),
             Arc::new(super::super::NoopMcpRealizer),
         );
