@@ -119,7 +119,30 @@ step() {
   return "$rc"
 }
 
+# The workload kind the host admission schedules this gate as. Pre-commit
+# (--quick) and pre-push (--push) are feedback even when the shell exported
+# another kind: an inherited "qualification" made 36 of 104 hook runs in one
+# week exclusive host jobs. --full keeps a caller's declared kind (the full gate
+# declares qualification) and defaults to feedback.
+rust_gate_workload_kind() {
+  if [ "$1" = --quick ] || [ "$1" = --push ]; then
+    echo feedback
+  else
+    echo "${AWAKEN_BUILD_WORKLOAD_KIND:-feedback}"
+  fi
+}
+
 if [ "$mode" = "--self-test" ]; then
+  # W1 hooks are feedback whatever kind the shell inherited; W2 --full keeps
+  # the declared kind and defaults to feedback.
+  for row in --quick:qualification:feedback --push:formal:feedback --quick::feedback \
+             --full:qualification:qualification --full::feedback; do
+    IFS=: read -r row_mode row_inherited row_expected <<< "$row"
+    if [ "$(AWAKEN_BUILD_WORKLOAD_KIND="$row_inherited" rust_gate_workload_kind "$row_mode")" != "$row_expected" ]; then
+      echo "check-rust self-test: $row_mode with an inherited kind '$row_inherited' must run as $row_expected" >&2
+      exit 1
+    fi
+  done
   # Causes: S1 the wrapped command succeeds; F1 it fails while a later step is
   # eligible. Effects: S1 returns zero and leaves the failure aggregate clear;
   # F1 returns the exact nonzero status, marks the aggregate, and prevents the
@@ -200,7 +223,8 @@ if [ "$mode" = "--self-test" ]; then
   exit 0
 fi
 
-export AWAKEN_BUILD_WORKLOAD_KIND="${AWAKEN_BUILD_WORKLOAD_KIND:-feedback}"
+AWAKEN_BUILD_WORKLOAD_KIND=$(rust_gate_workload_kind "$mode")
+export AWAKEN_BUILD_WORKLOAD_KIND
 export AWAKEN_BUILD_OBSERVATION_KIND="${AWAKEN_BUILD_OBSERVATION_KIND:-project}"
 # Performance telemetry is opt-in (AWAKEN_BUILD_OBSERVE=1, or a caller that
 # already owns an observation run); it never decides or delays the gate.
