@@ -384,12 +384,21 @@ async fn bound_test_memory(
             .await
             .expect("open ephemeral Memory extraction repository"),
     );
+    // The extraction claim's lease is judged on this clock. A wall clock lets
+    // a host stall longer than the 3s lease (fsync pressure on the temp
+    // filesystem blocks the extractor's synchronous file I/O) revoke the claim
+    // mid-Run, which these behaviour tests do not exercise. A clock frozen at
+    // fixture creation keeps every claim the test makes or relies on exactly as
+    // live or as expired as it was written against the wall clock.
+    let claim_clock = Arc::new(awaken_lease_testkit::ManualClock::new(
+        awaken_time::WallClockExt::now_ms(awaken_time::system_clock().as_ref()),
+    ));
     let runtime = Arc::new(MemoryRuntime::new(
         llm,
         Arc::new(LocalProvider::new(sandbox_base)),
         Arc::new(BackgroundRuns::new()),
         extractions.clone(),
-        awaken_time::system_clock(),
+        claim_clock,
         None,
     ));
     let config = awaken_resource_contract::MemoryStoreConfigVersion {
