@@ -124,15 +124,15 @@
     ],
     "execution_witnesses": [
       {
-        "evidence": "E-NEXTEST-SELFTEST-20261107",
+        "evidence": "E-NEXTEST-SELFTEST-20261107B",
         "case": "QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept",
         "package": "scripts/ci",
         "target": "nextest_execution.py --self-test",
         "result": "passed",
         "skipped": false,
-        "source_head": "22c220848fa2a712ddd8ab3c8458e37ad8c18201",
+        "source_head": "81a90d96108c8361eb59767d53e64874c8e70174",
         "historical": false,
-        "log_sha256": "201edac9c80e9f92bc0772a2641f264065d4005a4a43a868fc931413e242214f"
+        "log_sha256": "3b1b4902d40739b5a1fb2a638f3138076756634e2ad8ed8ac5446ae9c8b9ac0b"
       }
     ],
     "relation": "covers_case_clauses",
