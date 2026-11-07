@@ -18,7 +18,8 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::IntoResponse as _;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -32,8 +33,9 @@ use crate::types::environment::{
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 use awaken_environment_application::{EnvironmentApplication, EnvironmentApplicationError};
 use awaken_environment_contract::{
-    EnvUpdate, EnvironmentConfigMutation, EnvironmentFieldUpdate, EnvironmentNetworkingMutation,
-    EnvironmentPackagesMutation,
+    EnvItem, EnvUpdate, EnvironmentConfigMutation, EnvironmentFieldUpdate,
+    EnvironmentNetworkingMutation, EnvironmentPackagesMutation, EnvironmentRevision,
+    EnvironmentStoreError,
 };
 pub(crate) mod work_routes;
 
@@ -153,6 +155,18 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
 }
 
 type WireError = (StatusCode, Json<ErrorResponse>);
+type VersionedEnvironment = (HeaderMap, Json<Environment>);
+
+fn versioned_environment(item: &EnvItem) -> Result<VersionedEnvironment, WireError> {
+    let body = crate::env_registry::project_env(item).map_err(map_environment_projection_error)?;
+    let mut headers = HeaderMap::new();
+    let tag = format!("\"{}\"", item.revision.0);
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&tag).expect("a quoted integer is a valid entity tag"),
+    );
+    Ok((headers, Json(body)))
+}
 
 /// Preserve the Managed body/status while preventing SDK automatic retries of
 /// an authoring command whose definition transaction already committed.
@@ -217,7 +231,7 @@ async fn create_env(
     State(state): State<Arc<EnvironmentApplication>>,
     headers: HeaderMap,
     ManagedJson(params): ManagedJson<EnvironmentCreateParams>,
-) -> Result<Json<Environment>, axum::response::Response> {
+) -> Result<VersionedEnvironment, axum::response::Response> {
     let config = canonical_environment_config(params.config.unwrap_or_default());
     let command_id =
         environment_command_id(&headers).map_err(axum::response::IntoResponse::into_response)?;
@@ -233,11 +247,7 @@ async fn create_env(
         })
         .await
         .map_err(map_environment_command_error)?;
-    Ok(Json(crate::env_registry::project_env(&item).map_err(
-        |error| {
-            axum::response::IntoResponse::into_response(map_environment_projection_error(error))
-        },
-    )?))
+    versioned_environment(&item).map_err(axum::response::IntoResponse::into_response)
 }
 
 fn environment_command_id(headers: &HeaderMap) -> Result<String, WireError> {
@@ -316,7 +326,7 @@ mod command_identity_tests {
 async fn retrieve_env(
     State(state): State<Arc<EnvironmentApplication>>,
     Path(id): Path<String>,
-) -> Result<Json<Environment>, WireError> {
+) -> Result<VersionedEnvironment, WireError> {
     if id == awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID {
         return Err(not_found("environment"));
     }
@@ -325,9 +335,7 @@ async fn retrieve_env(
         .await
         .map_err(map_environment_application_error)?
         .ok_or_else(|| not_found("environment"))?;
-    Ok(Json(
-        crate::env_registry::project_env(&item).map_err(map_environment_projection_error)?,
-    ))
+    versioned_environment(&item)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -366,8 +374,12 @@ async fn list_envs(
 async fn update_env(
     State(state): State<Arc<EnvironmentApplication>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     ManagedJson(params): ManagedJson<EnvironmentUpdateParams>,
-) -> Result<Json<Environment>, axum::response::Response> {
+) -> Result<VersionedEnvironment, axum::response::Response> {
+    let if_revision = super::parse_if_match(&headers, "Environment")
+        .map_err(axum::response::IntoResponse::into_response)?
+        .map(EnvironmentRevision);
     let config = params.config.map(|config| match config {
         None => EnvironmentConfigMutation::Replace(Default::default()),
         Some(config) => environment_config_mutation(config),
@@ -386,14 +398,21 @@ async fn update_env(
         ..Default::default()
     };
     let item = state
-        .update(&id, patch)
+        .update_if_revision(&id, patch, if_revision)
         .await
-        .map_err(map_environment_command_error)?;
-    Ok(Json(crate::env_registry::project_env(&item).map_err(
-        |error| {
-            axum::response::IntoResponse::into_response(map_environment_projection_error(error))
-        },
-    )?))
+        .map_err(|error| match error {
+            EnvironmentApplicationError::Store(EnvironmentStoreError::RevisionConflict)
+                if if_revision.is_some() =>
+            {
+                (
+                    StatusCode::PRECONDITION_FAILED,
+                    Json(ErrorResponse::new("conflict_error", error.to_string())),
+                )
+                    .into_response()
+            }
+            _ => map_environment_command_error(error),
+        })?;
+    versioned_environment(&item).map_err(axum::response::IntoResponse::into_response)
 }
 
 fn environment_config_mutation(config: EnvironmentConfigUpdateParams) -> EnvironmentConfigMutation {

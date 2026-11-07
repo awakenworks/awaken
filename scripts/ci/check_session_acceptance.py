@@ -67,6 +67,7 @@ import tempfile
 import time
 from collections import Counter
 from pathlib import Path
+from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[2]
 LEDGER = Path("docs/design/session-execution-test-acceptance")
@@ -440,59 +441,51 @@ def self_test() -> int:
 
 
 EVIDENCE_DIRECTORY = Path("target/session-acceptance-evidence")
-# A verbose unittest line `name (dotted.id)`, its verdict (after `... ` or on
-# its own line once the case printed output) and the runner's total.
-UNITTEST_CASE = re.compile(r"^(\w+) \(([\w.]+)\)", re.MULTILINE)
-UNITTEST_VERDICT = re.compile(
-    r"(?:^|\.\.\. )(ok|FAIL|ERROR|skipped\b.*|expected failure|unexpected success)$", re.MULTILINE)
-UNITTEST_TOTAL = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
-UNITTEST_END = re.compile(r"^(?:=|-){70}$", re.MULTILINE)
-# A nextest status line `STATUS [ 0.004s] (1/9) binary test` and its summary.
-NEXTEST_CASE = re.compile(
-    r"^\s*([A-Z][A-Z0-9 ]*?)\s+\[\s*[\d.]+s\]\s+(?:\(\s*\d+/\d+\)\s+)?(\S+) (\S+)\s*$", re.MULTILINE)
-NEXTEST_TOTAL = re.compile(r"^\s*Summary \[\s*[\d.]+s\]\s+(\d+) tests? run:(.*)$", re.MULTILINE)
 
 
 class Refused(Exception):
     """A recording or binding the ledger must not receive; the message names the rule."""
 
 
-def parse_cases(log: str, nextest: bool) -> tuple[dict[str, str], int | None, int]:
-    """({case: passed|failed|skipped}, the summary's total, skipped count).
-
-    The total counts exactly the cases in the mapping; nextest's skipped count
-    is its filtered-out cases, which never ran and are not in the mapping.
-    """
-    # Native Windows runners emit CRLF. Normalize only the text we parse;
-    # the recorder writes and hashes the original bytes.
-    log = log.replace("\r\n", "\n")
-    verdicts: dict[str, str] = {}
-
-    def note(case: str, verdict: str) -> None:
-        if verdicts.get(case) != "failed":
-            verdicts[case] = verdict
+def run_recordable(root: Path, argv: list[str], environment: dict[str, str], evidence: Path):
+    """Run a supported test entry point and read its runner-owned verdicts."""
+    if not argv:
+        raise Refused("R07 a test command is required")
+    scripts = Path(__file__).resolve().parent
+    executable = Path(argv[0]).stem.lower()
+    nextest = executable == "cargo" and argv[1:3] == ["nextest", "run"]
+    report = evidence / "unittest.json"
     if nextest:
-        for status, binary, name in NEXTEST_CASE.findall(log):
-            if status not in ("Summary", "Starting", "SLOW", "SKIP"):
-                note(f"{binary} {name}", "passed" if status == "PASS" else "failed")
-        summary = NEXTEST_TOTAL.findall(log)
-        total = int(summary[-1][0]) if summary else None
-        filtered = re.search(r"(\d+) skipped", summary[-1][1]) if summary else None
-        return verdicts, total, int(filtered.group(1)) if filtered else 0
-    starts = list(UNITTEST_CASE.finditer(log))
-    for index, start in enumerate(starts):
-        stop = starts[index + 1].start() if index + 1 < len(starts) else len(log)
-        segment = log[start.end():stop]
-        if index + 1 == len(starts) and (end := UNITTEST_END.search(segment)):
-            segment = segment[:end.start()]
-        method, identity = start.groups()
-        identity = identity if identity.endswith("." + method) else f"{identity}.{method}"
-        found = UNITTEST_VERDICT.findall(segment)
-        verdict = found[-1] if found else "missing"
-        note(identity.removeprefix("__main__."),
-             "passed" if verdict == "ok" else "skipped" if verdict.startswith("skipped") else "failed")
-    total = UNITTEST_TOTAL.findall(log)
-    return verdicts, int(total[-1]) if total else None, sum(v == "skipped" for v in verdicts.values())
+        command = [sys.executable, str(scripts / "nextest_execution.py"),
+                   "run", "--evidence", str(evidence), "--", *argv[3:]]
+    elif re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", executable) and (
+            argv[1:3] == ["-m", "unittest"] or len(argv) > 1 and argv[1].endswith(".py")):
+        command = [argv[0], str(scripts / "_acceptance_unittest.py"), str(report), *argv[1:]]
+    else:
+        raise Refused("R07 use a Python unittest entry point or cargo nextest run")
+
+    completed = subprocess.run(command, cwd=root, env={**os.environ, **environment},
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, check=False)
+    log = completed.stdout
+    cases, total = {}, None
+    try:
+        if nextest:
+            runner_log = evidence / "results.log"
+            if runner_log.is_file():
+                log = runner_log.read_bytes()
+            result = json.loads((evidence / "results.json").read_bytes())
+            if result["status"] == "passed" and completed.returncode == 0:
+                junit = ElementTree.parse(evidence / "junit.xml")
+                names = [f"{row.attrib['classname']} {row.attrib['name']}"
+                         for row in junit.iter("testcase")]
+                cases, total = dict.fromkeys(names, "passed"), len(names)
+        else:
+            result = json.loads(report.read_bytes())
+            cases, total = result["cases"], result["total"]
+    except (OSError, ValueError, KeyError, TypeError, ElementTree.ParseError):
+        pass
+    return completed.returncode, log, cases, total
 
 
 def _write_json(path: Path, value) -> None:
@@ -520,25 +513,27 @@ def record_evidence(root: Path, evidence_id: str, scope: str, argv: list[str],
                       + before["status"].decode("utf-8", "replace"))
     environment = dict(environment or {})
     started = time.monotonic()
-    completed = subprocess.run(argv, cwd=root, env={**os.environ, **environment}, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    with tempfile.TemporaryDirectory() as scratch:
+        runner = Path(scratch)
+        status, log, verdicts, total = run_recordable(root, argv, environment, runner)
+        reports = {name: (runner / name).read_bytes() for name in
+                   ("unittest.json", "list.json", "junit.xml", "results.json")
+                   if (runner / name).is_file()}
     seconds = round(time.monotonic() - started, 1)
     after = formal_sources.source_facts(root)
-    log = completed.stdout
-    verdicts, total, skipped = parse_cases(log.decode("utf-8", "replace"), "nextest" in argv)
+    skipped = sum(case == "skipped" for case in verdicts.values())
     executed = sorted(case for case, verdict in verdicts.items() if verdict == "passed")
     failed = sorted(case for case, verdict in verdicts.items() if verdict == "failed")
     refusals = []
     if (after["revision"], after["status"]) != (before["revision"], before["status"]):
         refusals.append("R05 HEAD or the tree changed while the command ran:\n"
                         + after["status"].decode("utf-8", "replace"))
-    if completed.returncode or failed:
-        refusals.append(f"R02 the run failed (exit {completed.returncode}; failed cases {failed})")
+    if status or failed:
+        refusals.append(f"R02 the run failed (exit {status}; failed cases {failed})")
     if not executed:
         refusals.append("R03 zero cases executed; a selection that runs nothing proves nothing")
     if total is None or total != len(verdicts):
-        refusals.append(f"R07 the log names {len(verdicts)} cases but its summary counts {total}; "
-                        "run unittest with -v or nextest with its default status lines")
+        refusals.append(f"R07 the runner reports {len(verdicts)} named cases for a total of {total}")
     if missing := sorted(set(required) - set(executed)):
         refusals.append(f"R04 required cases did not execute and pass: {missing}")
     if refusals:
@@ -550,13 +545,17 @@ def record_evidence(root: Path, evidence_id: str, scope: str, argv: list[str],
               "dirty_digest": hashlib.sha256(before["patch"]).hexdigest()}
     run = {"platform": f"native-{platform.system()} {platform.machine()}", "passed": True,
            "files_changed_during_run": [], "scope": scope, "argv": list(argv),
-           "environment_names": sorted(environment), "exit": completed.returncode, "seconds": seconds,
+           "environment_names": sorted(environment), "exit": status, "seconds": seconds,
            "executed_count": len(executed), "failed_count": 0, "skipped_count": skipped,
            "log_sha256": hashlib.sha256(log).hexdigest()}
     directory.mkdir(parents=True)
     (directory / "log.txt").write_bytes(log)
+    for name, data in reports.items():
+        (directory / name).write_bytes(data)
     receipt = directory / "receipt.json"
-    _write_json(receipt, {"id": evidence_id, "source": source, **run, "executed": executed})
+    _write_json(receipt, {"id": evidence_id, "source": source, **run, "executed": executed,
+                          "reports_sha256": {name: hashlib.sha256(data).hexdigest()
+                                             for name, data in reports.items()}})
     entry = {"id": evidence_id, "receipt": (EVIDENCE_DIRECTORY / evidence_id / "receipt.json").as_posix(),
              "receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest(), "source": source,
              **run, "historical": False}
