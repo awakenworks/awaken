@@ -15,6 +15,9 @@ consumption paths. Account login remains IAM-owned.
 | Modify | Credential Vault application | One acquisition coordinator for exact partitions, expiry, single-flight, publication and uncertain outcomes. |
 | Modify | Control VaultRefreshFactory / VaultRefresher | Normalize existing RFC OAuth into that coordinator; retain exact-source and private probe boundaries. |
 | New within those owners | Versioned exchange profile, sealed token state and acquisition effect metadata | Provider-independent encoding, response paths, rotation policy, persisted pre-dispatch ownership and result reconciliation. No acquisition repository, scheduler or credential-selection fallback. |
+| Modify | Admin credential entry and Flow Remote adapter | Forward the same declared private auxiliary material and initial lifetime to the existing entry command. |
+| Modify | Existing admin validation/archive DTOs | Make the original wire contracts consumable by the Remote adapter and remove its copied request/response structs. |
+| New within the existing admin interface | Grant renewal RPC, freshness observation and injected application port | Workspace/version/descriptor admission and metadata-only transport over the original VaultRefreshFactory and WAL. |
 
 Static dependency direction is consumer -> credential SPI -> Vault coordinator
 -> admitted exchange/material-publication ports. Flow cannot become a Vault
@@ -49,12 +52,27 @@ required outside loopback fixtures; method/body encoding and bounded response
 paths are declarations. Grant expiry is not access-token expiry: issued access
 and refresh lifetimes travel with the same sealed generation. A missing expiry
 remains explicitly unknown and does not create an inferred recurring schedule.
+The same freshness observation distinguishes `insufficient_lifetime` when a
+published issuer generation's entire access lifetime cannot cover the requested
+validity window. Another immediate exchange cannot
+repair that condition: the existing consumer must surface configuration attention
+and skip automatic reissuance. Imported initial grants may still bootstrap once;
+revocation, pending/uncertain IO and refresh-grant expiry retain precedence.
 The owning tests carry their cause/effect rules for cache admission, expiry,
 isolation, concurrency, malformed responses, revoked sources and uncertain IO.
 Native MCP and Flow's request authentication and legacy Exchange callers use
 the same response/cache kernel. Flow's current automatic recruitment actions
 move their duplicated issuance declarations onto the named Transport. Source fixtures
 and controlled HTTP execution do not establish any SaaS-account acceptance.
+
+Hosted credential entry, renewal and observation use the same credentials route
+family and its existing API-key read/write policy and trusted Workspace stamp.
+The request's exact revision and descriptor are checked before the application
+port dispatches. The renewal factory retains the only issuance implementation;
+the admin adapter returns its exact replacement receipt, and the original
+governance operation registers, relinks and retires through its existing phases.
+Lost responses reuse the same hosted operation identity and receipt lookup;
+rejected or uncertain exchanges never become an automatic new redemption.
 
 > The complete consolidated model — agent config + model catalog + provider +
 > vault/credential + the runtime-unaware secret seam + security layers + staging —

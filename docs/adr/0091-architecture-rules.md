@@ -467,6 +467,22 @@ owns that interpretation; [ADR-0080](0080-full-gate-freshness-and-declared-tool-
 continues to own the sole full-gate record. No additional qualification registry
 or executable suite is introduced.
 
+### Developer workflow (2026-11-06 amendment)
+
+Progress has one source of truth: git history, annotated `verified/*` checkpoints
+and `docs/STATUS.md`. Lanes do not keep per-change ledgers or receipt bundles; a
+lane reports through its commits and its final summary. Only a qualification run
+leaves a receipt, and the `verified/*` annotation is that receipt (commit, commands,
+features and platform, passed and skipped counts, log location).
+
+One lane, one worktree, one branch. Lanes run the checks their change affects;
+completed lanes are rebased onto one integration branch and qualified once, then
+fast-forwarded by the main writer. A worktree is removed, by its exact recorded
+path, once `git cherry main <branch>` lists no remaining commit and the tree is
+clean. Long-running host jobs start under `systemd-run --user`, not detached
+inside an ssh session. Host capacity (memory, pressure, logind sessions, user
+keys) is judged only by the host admission tool's `qualification` profile.
+
 ### Control executable closure (2026-10-29 amendment)
 
 `awaken-control` follows the existing Coordinator executable pattern: its thin

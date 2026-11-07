@@ -73,6 +73,16 @@ export type CredentialSourceId = string;
  */
 export type SelectionPolicy = "first_healthy" | "rotate_spread" | "sticky_resume";
 /**
+ * Secret-free observation; the Vault source and its existing material WAL
+ * remain authoritative. Consumers never infer that Unknown is retryable.
+ *
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "CredentialRenewalStatus".
+ */
+export type CredentialRenewalStatus =
+  | ("ready" | "due" | "in_progress" | "needs_authorization" | "outcome_unknown" | "expiry_unknown")
+  | "insufficient_lifetime";
+/**
  * Exact upstream audience authorized for a credential purpose.
  *
  * This interface was referenced by the generated JSON Schema
@@ -615,6 +625,17 @@ export interface CredentialPoolMember {
   [k: string]: unknown;
 }
 /**
+ * A stable reference to one credential source revision.
+ *
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "CredentialRef".
+ */
+export interface CredentialRef {
+  id: string;
+  revision: number;
+  [k: string]: unknown;
+}
+/**
  * One normalized, secret-free description stored on the canonical source row.
  *
  * This interface was referenced by the generated JSON Schema
@@ -725,15 +746,15 @@ export interface CredentialTarget {
   purpose: CredentialPurpose;
 }
 /**
- * A stable reference to one credential source revision.
+ * Caller-supplied initial grant evidence; access and refresh expiry are distinct.
  *
  * This interface was referenced by the generated JSON Schema
- * via the `definition` "CredentialRef".
+ * via the `definition` "CredentialGrantLifetime".
  */
-export interface CredentialRef {
-  id: string;
-  revision: number;
-  [k: string]: unknown;
+export interface CredentialGrantLifetime {
+  access_expires_at_unix_ms?: number | null;
+  issued_at_unix_ms: number;
+  refresh_expires_at_unix_ms?: number | null;
 }
 /**
  * This interface was referenced by the generated JSON Schema
@@ -1242,6 +1263,17 @@ export interface CredentialPool {
   [k: string]: unknown;
 }
 /**
+ * Exact metadata-only observation; it never grants materialization authority.
+ *
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "CredentialRenewalObservation".
+ */
+export interface CredentialRenewalObservation {
+  reference: CredentialRef;
+  status?: CredentialRenewalStatus | null;
+  workspace_id: string;
+}
+/**
  * The secret-free result of a live credential probe.
  *
  * This interface was referenced by the generated JSON Schema
@@ -1255,7 +1287,6 @@ export interface CredentialValidation {
    */
   credential_version?: number | null;
   status: ProbeStatus;
-  [k: string]: unknown;
 }
 /**
  * The credential-entry wire body. `secret` is write-only: it is sealed into the
@@ -1267,12 +1298,24 @@ export interface CredentialValidation {
  */
 export interface EnterCredentialRequest {
   /**
+   * Write-only auxiliary inputs declared by the acquisition profile. The
+   * canonical Vault entry validates their exact slots and seals them with
+   * the primary material; no response contains these values.
+   */
+  auxiliary_materials?: {
+    [k: string]: string;
+  };
+  /**
    * Canonical secret-free provider, material, and exact target/usage facts.
    * Legacy clients may omit it; described clients receive it on exact reads
    * and must omit the mutually exclusive legacy `provider_id`.
    */
   descriptor?: CredentialDescriptor | null;
   env_key?: string | null;
+  /**
+   * Optional initial grant evidence, stored with the same sealed generation.
+   */
+  grant_lifetime?: CredentialGrantLifetime | null;
   /**
    * Stable hosted-governance operation identity. When present, the canonical
    * provider comes from `descriptor` or the legacy `provider_id`; described
@@ -1500,6 +1543,19 @@ export interface ProviderDriverDescriptor {
 export interface PutModelAttributesRequest {
   context_window?: number | null;
   max_output_tokens?: number | null;
+}
+/**
+ * Renew an exact described source under the original hosted operation identity.
+ * This command carries no token, password or auxiliary secret value.
+ *
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "RenewCredentialRequest".
+ */
+export interface RenewCredentialRequest {
+  descriptor: CredentialDescriptor;
+  expected_version: number;
+  idempotency_key: string;
+  workspace_id: string;
 }
 /**
  * Resolve an authored profile within a workspace's credential scope.

@@ -51,6 +51,7 @@ fn router(probe: Option<Arc<dyn CredentialProbe>>) -> TestRouter {
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         profiles: Arc::new(awaken_config_resolver::InMemoryProfileStore::new()),
         resources: Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new()),
+        grant_renewal: None,
         probe,
         model_discovery: None,
         brokered_catalog: None,

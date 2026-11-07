@@ -186,6 +186,16 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
         action_for(&post, "/v1/config/credentials/c1/validate"),
         Some(APIKEY_WRITE)
     );
+    // Grant observation is the same credential read; renewal uses the existing
+    // credential-write permission before any issuer effect.
+    assert_eq!(
+        action_for(&get, "/v1/config/credentials/c1/renewal"),
+        Some(APIKEY_READ)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/credentials/c1/renew"),
+        Some(APIKEY_WRITE)
+    );
     assert_eq!(
         action_for(&post, "/v1/config/application-mcp-credentials"),
         Some(APIKEY_WRITE)
