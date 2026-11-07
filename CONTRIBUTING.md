@@ -82,10 +82,27 @@ recovery-file permissions, still execute in native Windows Node.js.
 
 | Scope | Command | Notes |
 | --- | --- | --- |
-| One crate | `scripts/ci/test.sh -p awaken-cli` | Compiles the authored whole test graph, filters execution to the requested package, and builds its companion once; `--dry-run` prints exact commands. Supported runner/profile arguments retain their meaning; graph-changing requests fail explicitly before tests. |
+| One crate | `scripts/ci/test.sh -p awaken-cli` | Compiles the authored whole test graph, filters execution to the requested package, and builds its companion once; `--dry-run` prints exact commands. Supported runner/profile arguments retain their meaning; graph-changing requests fail explicitly before tests. `--doc -p <crate>` runs its doctests the way the gate does (see below). |
 | Everything Rust | `scripts/ci/check-rust.sh --full` | Clippy over all features, then the workspace tests. A clippy failure skips the tests. |
 | End to end | `scripts/ci/check-all.sh --group e2e` | Real binaries and processes. `scripts/ci/check-all.sh --list-groups` lists the other groups (postgres, k3d, sandbox, ...). |
 | Formal | `scripts/ci/check_formal.sh --tier pr` | `pr` (the default) runs the critical harnesses and `--affected <base>` narrows it to changed packages; `--tier full` runs every harness and is the only receipt a release accepts. Read [`formal/README.md`](formal/README.md) first. |
+
+**Reproduce a gate failure with the command it prints.** A failing `test`,
+`test-build` or `doctest` step of `check-rust.sh`, and a failing required run
+(`run_required_rust_tests`), ends with one `→ fix: reproduce <name>: <command>`
+line per failure it names. Bare Cargo is not the same run:
+
+| Failure | Reproduce with | What bare Cargo gets wrong |
+| --- | --- | --- |
+| a test | `scripts/ci/test.sh -p <crate> -E 'binary_id(=<binary>) & test(=<name>)'` | `cargo nextest run -p`/`--workspace` lacks the gate's features and the `awaken-sandbox` companion, so a launcher test reports the companion missing instead of its own result |
+| a test build | `scripts/ci/test.sh -p <crate> --no-run` | a `-p` build resolves different features |
+| a doctest | `scripts/ci/test.sh --doc -p <crate> ['<doctest name>']` (a name runs its source file's doctests: rustdoc splits filters at whitespace) | `cargo test -p <crate> --doc` does not check a `compile_fail,E0xxx` block's code, so a wrong code passes |
+| a required run | the printed `cargo nextest run --profile required ...` line, with the fixture variables it names | |
+
+`--doc` is the only entry that sets `RUSTC_BOOTSTRAP=1` (the doctest step's
+ADR-0103 setting, which makes rustdoc check the pinned code); never set it for
+ordinary builds or in Cargo configuration, where it silently admits unstable
+features.
 
 The whole release gate is `scripts/ci/check-all.sh` (hours). Before a push the
 pre-push hook runs `scripts/ci/check-rust.sh --push` and
@@ -248,6 +265,9 @@ diagnostics. Source selection, parsing and evidence-anchor errors still fail.
 - **Missing features**: ten `awaken-cli` test binaries fail with "the `hand` role
   needs a build with `--features hand`", or a test reports the missing
   `awaken-sandbox` companion. Use `scripts/ci/test.sh` instead of bare cargo.
+- **A doctest that passes locally and fails in the gate**: its
+  `compile_fail,E0xxx` code is wrong, and only the gate checks it. Use
+  `scripts/ci/test.sh --doc -p <crate>`.
 - **Tools not on the hook PATH**: hooks run in a non-login shell. The gates
   append `~/.local/bin` and the formal tool directory, but a `pnpm` or `node`
   installed through nvm is invisible there; link it into `~/.local/bin`.
