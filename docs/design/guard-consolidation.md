@@ -719,3 +719,9 @@ Not converted (kept as Kani): every harness with a wide or unconstrained input (
 | Removed or changed rule | New holder | Negative example (command → result) |
 |---|---|---|
 | postgres and reliability always ran every suite (3,459 s and 1,594 s on 2026-11-07) | `--affected <base>` on `pg_tests.sh`/`check-reliability.sh` (`AWAKEN_SERVICE_AFFECTED_BASE` via `check-all.sh`): `service_test_plan.py` maps each suite to its packages and reuses `rust_test_plan.py`'s change set and Cargo owner/consumer walk; manifests, lockfile, profiles, group scripts and unowned inputs select the whole group; an unmapped suite exits 2; `--full-gate` never narrows | selection made to drop a reached suite (`run = bool(hit) and suite.line % 2 == 0`) → `service_test_plan.py --self-test` exit 1 (T2, T5); consumers dropped → exit 1 (T2); helper skipping a selected line → exit 1 (R1); unmapped suite silently skipped → exit 1 (T4) |
+
+### 2026-11-07 Session acceptance evidence recorder
+
+| Removed or changed rule | New holder | Negative example (command → result) |
+|---|---|---|
+| hand-assembled Session acceptance receipts, registry entries and bindings (no tool computed receipt/log/entry hashes, executed cases or assertion lines) | `check_session_acceptance.py record` (runs the command on a clean tree, parses every unittest/nextest case, writes `target/session-acceptance-evidence/<id>/` and appends an E11-shaped entry; R01–R07) and `bind` (definition, assertion lines and file sha256 from the tree; witness must be in the receipt's `executed`; refuses unless the whole ledger validates) | `python3 scripts/ci/test_session_acceptance.py EvidenceRecorderTests` exit 0: failed run R02, zero cases R03, missing case R04, dirty tree R01 refused; a tampered receipt → `L06 E90 receipt bytes differ`; dropping each of the R01/R02/R03/R04 checks makes it exit 1 |

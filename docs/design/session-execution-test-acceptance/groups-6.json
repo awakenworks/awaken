@@ -230,9 +230,10 @@
         },
         "binding_ids": [
           "B108",
-          "B109"
+          "B109",
+          "B265"
         ],
-        "evidence_state": "current_subset",
+        "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
         "acceptance_scope": null,
         "full_group_acceptance_implied": false,
@@ -245,12 +246,12 @@
         ],
         "slices": {
           "executed": [
-            "native Windows x86_64-pc-windows-msvc, Python 3.13, L0 static guards on the real workspace"
+            "native Windows x86_64-pc-windows-msvc, Python 3.13, L0 static guards on the real workspace",
+            "native Linux x86_64, Python 3.12, nextest_execution.py --self-test (oracle 3, E-NEXTEST-SELFTEST-20261107)"
           ],
           "unaccepted": [
             "Owning CI lane wiring beyond check-docs.sh",
-            "T35 platform gate open (Linux/FUSE not run by policy)",
-            "Oracle 3 (source unchanged) moved from the retired libtest qualifier to nextest_execution.run; its self-test test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept has no registered receipt yet"
+            "T35 platform gate open (Linux/FUSE not run by policy)"
           ]
         }
       },
