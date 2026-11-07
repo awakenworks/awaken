@@ -27,17 +27,44 @@ refusal against a mutated copy of a minimal ledger):
 | L12  | a product gap has no reason, follow-up or ignored reproducer | refuse |
 | L13  | group, binding or evidence identities collide               | refuse |
 | L14  | not-applicable without a reason or an executed refusal proof | refuse |
+
+Evidence is produced by two subcommands, never by hand:
+
+    record --id ID --scope TEXT [--require-case CASE]... [--env NAME=VALUE]... -- ARGV...
+    bind --id BID --name TEST --source PATH --evidence ID --case CASE --package P
+         --target T --covers CASE_ID [--oracle N]... [--negative-control] --review TEXT
+
+``record`` runs ARGV (a verbose unittest run or a cargo nextest run), keeps its
+log and receipt under ``target/session-acceptance-evidence/ID/`` and appends a
+registry entry with exactly the fields E11/E12/E15 carry. ``bind`` locates the
+test and its assertion lines in the tree, cites the evidence and the executed
+case, adds the id to the covered case and refuses unless the whole ledger still
+validates. Evidence state and slices stay a reviewed edit. ``record`` refuses:
+
+| Code | Cause                                                       |
+| ---- | ----------------------------------------------------------- |
+| R01  | the tree is dirty (source.dirty_digest is only ever empty)  |
+| R02  | the command exited non-zero or a case failed                |
+| R03  | zero cases executed                                         |
+| R04  | a --require-case did not execute and pass                   |
+| R05  | HEAD or the tree changed while the command ran              |
+| R06  | the id or its receipt directory already exists              |
+| R07  | the log does not name every case its summary counts         |
 """
 
 from __future__ import annotations
 
+import argparse
 import copy
 import hashlib
 import json
+import os
+import platform
 import re
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -412,11 +439,253 @@ def self_test() -> int:
     return 1 if failures else 0
 
 
+EVIDENCE_DIRECTORY = Path("target/session-acceptance-evidence")
+# A verbose unittest line `name (dotted.id)`, its verdict (after `... ` or on
+# its own line once the case printed output) and the runner's total.
+UNITTEST_CASE = re.compile(r"^(\w+) \(([\w.]+)\)", re.MULTILINE)
+UNITTEST_VERDICT = re.compile(
+    r"(?:^|\.\.\. )(ok|FAIL|ERROR|skipped\b.*|expected failure|unexpected success)$", re.MULTILINE)
+UNITTEST_TOTAL = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
+UNITTEST_END = re.compile(r"^(?:=|-){70}$", re.MULTILINE)
+# A nextest status line `STATUS [ 0.004s] (1/9) binary test` and its summary.
+NEXTEST_CASE = re.compile(
+    r"^\s*([A-Z][A-Z0-9 ]*?)\s+\[\s*[\d.]+s\]\s+(?:\(\s*\d+/\d+\)\s+)?(\S+) (\S+)\s*$", re.MULTILINE)
+NEXTEST_TOTAL = re.compile(r"^\s*Summary \[\s*[\d.]+s\]\s+(\d+) tests? run:(.*)$", re.MULTILINE)
+
+
+class Refused(Exception):
+    """A recording or binding the ledger must not receive; the message names the rule."""
+
+
+def parse_cases(log: str, nextest: bool) -> tuple[dict[str, str], int | None, int]:
+    """({case: passed|failed|skipped}, the summary's total, skipped count).
+
+    The total counts exactly the cases in the mapping; nextest's skipped count
+    is its filtered-out cases, which never ran and are not in the mapping.
+    """
+    verdicts: dict[str, str] = {}
+
+    def note(case: str, verdict: str) -> None:
+        if verdicts.get(case) != "failed":
+            verdicts[case] = verdict
+    if nextest:
+        for status, binary, name in NEXTEST_CASE.findall(log):
+            if status not in ("Summary", "Starting", "SLOW", "SKIP"):
+                note(f"{binary} {name}", "passed" if status == "PASS" else "failed")
+        summary = NEXTEST_TOTAL.findall(log)
+        total = int(summary[-1][0]) if summary else None
+        filtered = re.search(r"(\d+) skipped", summary[-1][1]) if summary else None
+        return verdicts, total, int(filtered.group(1)) if filtered else 0
+    starts = list(UNITTEST_CASE.finditer(log))
+    for index, start in enumerate(starts):
+        stop = starts[index + 1].start() if index + 1 < len(starts) else len(log)
+        segment = log[start.end():stop]
+        if index + 1 == len(starts) and (end := UNITTEST_END.search(segment)):
+            segment = segment[:end.start()]
+        method, identity = start.groups()
+        identity = identity if identity.endswith("." + method) else f"{identity}.{method}"
+        found = UNITTEST_VERDICT.findall(segment)
+        verdict = found[-1] if found else "missing"
+        note(identity.removeprefix("__main__."),
+             "passed" if verdict == "ok" else "skipped" if verdict.startswith("skipped") else "failed")
+    total = UNITTEST_TOTAL.findall(log)
+    return verdicts, int(total[-1]) if total else None, sum(v == "skipped" for v in verdicts.values())
+
+
+def _write_json(path: Path, value) -> None:
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _part_files(root: Path, key: str) -> list[Path]:
+    catalog = json.loads((root / LEDGER / "catalog.json").read_text(encoding="utf-8"))
+    return [root / LEDGER / part["file"] for part in catalog["parts"] if part["key"] == key]
+
+
+def record_evidence(root: Path, evidence_id: str, scope: str, argv: list[str],
+                    required: tuple[str, ...] = (), environment: dict[str, str] | None = None) -> dict:
+    """Run ``argv``, keep its log and receipt, and append the registry entry it proves."""
+    import formal_sources
+
+    if any(entry["id"] == evidence_id for entry in _load(root)["evidence_registry"]):
+        raise Refused(f"R06 evidence {evidence_id} is already registered; choose a new id")
+    directory = root / EVIDENCE_DIRECTORY / evidence_id
+    if directory.exists():
+        raise Refused(f"R06 {directory.relative_to(root)} exists; evidence is never overwritten")
+    before = formal_sources.source_facts(root)
+    if before["status"]:
+        raise Refused("R01 the tree is dirty; a receipt binds a commit, so commit or stash first:\n"
+                      + before["status"].decode("utf-8", "replace"))
+    environment = dict(environment or {})
+    started = time.monotonic()
+    completed = subprocess.run(argv, cwd=root, env={**os.environ, **environment}, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    seconds = round(time.monotonic() - started, 1)
+    after = formal_sources.source_facts(root)
+    log = completed.stdout
+    verdicts, total, skipped = parse_cases(log.decode("utf-8", "replace"), "nextest" in argv)
+    executed = sorted(case for case, verdict in verdicts.items() if verdict == "passed")
+    failed = sorted(case for case, verdict in verdicts.items() if verdict == "failed")
+    refusals = []
+    if (after["revision"], after["status"]) != (before["revision"], before["status"]):
+        refusals.append("R05 HEAD or the tree changed while the command ran:\n"
+                        + after["status"].decode("utf-8", "replace"))
+    if completed.returncode or failed:
+        refusals.append(f"R02 the run failed (exit {completed.returncode}; failed cases {failed})")
+    if not executed:
+        refusals.append("R03 zero cases executed; a selection that runs nothing proves nothing")
+    if total is None or total != len(verdicts):
+        refusals.append(f"R07 the log names {len(verdicts)} cases but its summary counts {total}; "
+                        "run unittest with -v or nextest with its default status lines")
+    if missing := sorted(set(required) - set(executed)):
+        refusals.append(f"R04 required cases did not execute and pass: {missing}")
+    if refusals:
+        kept = root / EVIDENCE_DIRECTORY / "refused" / f"{evidence_id}.log"
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        kept.write_bytes(log)
+        raise Refused("\n".join(refusals) + f"\nlog: {kept.relative_to(root)}")
+    source = {"head": before["revision"].decode().strip(),
+              "dirty_digest": hashlib.sha256(before["patch"]).hexdigest()}
+    run = {"platform": f"native-{platform.system()} {platform.machine()}", "passed": True,
+           "files_changed_during_run": [], "scope": scope, "argv": list(argv),
+           "environment_names": sorted(environment), "exit": completed.returncode, "seconds": seconds,
+           "executed_count": len(executed), "failed_count": 0, "skipped_count": skipped,
+           "log_sha256": hashlib.sha256(log).hexdigest()}
+    directory.mkdir(parents=True)
+    (directory / "log.txt").write_bytes(log)
+    receipt = directory / "receipt.json"
+    _write_json(receipt, {"id": evidence_id, "source": source, **run, "executed": executed})
+    entry = {"id": evidence_id, "receipt": (EVIDENCE_DIRECTORY / evidence_id / "receipt.json").as_posix(),
+             "receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest(), "source": source,
+             **run, "historical": False}
+    entry["entry_sha256"] = entry_digest(entry)
+    part = _part_files(root, "evidence_registry")[-1]
+    _write_json(part, json.loads(part.read_text(encoding="utf-8")) + [entry])
+    return entry
+
+
+def _test_body(lines: list[str], start: int, path: str) -> range:
+    """1-based line numbers of the test definition at ``start`` through its end."""
+    if path.endswith(".py"):
+        indent = len(lines[start - 1]) - len(lines[start - 1].lstrip())
+        end = start
+        while end < len(lines) and (not lines[end].strip()
+                                     or len(lines[end]) - len(lines[end].lstrip()) > indent):
+            end += 1
+        return range(start, end + 1)
+    depth, opened = 0, False
+    for number in range(start, len(lines) + 1):
+        depth += lines[number - 1].count("{") - lines[number - 1].count("}")
+        opened = opened or "{" in lines[number - 1]
+        if opened and depth <= 0:
+            return range(start, number + 1)
+    return range(start, len(lines) + 1)
+
+
+def bind_test(root: Path, binding_id: str, name: str, source: str, evidence_id: str, case: str,
+              package: str, target: str, covers: str, oracles: list[int], negative_control: bool,
+              review: str, limitation: str | None = None) -> dict:
+    """Append a clause binding computed from the tree and refuse unless the ledger validates."""
+    data = _load(root)
+    if any(binding["id"] == binding_id for binding in data["bindings"]):
+        raise Refused(f"L13 binding {binding_id} already exists; choose a new id")
+    evidence = next((e for e in data["evidence_registry"] if e["id"] == evidence_id), None)
+    if evidence is None:
+        raise Refused(f"L02 evidence {evidence_id} is not registered; record it first")
+    receipt = root / evidence.get("receipt", "")
+    if not receipt.is_file() or case not in json.loads(receipt.read_text(encoding="utf-8")).get("executed", []):
+        raise Refused(f"L05 {case} is not in the executed cases of {evidence_id}'s receipt on this machine")
+    file = root / source
+    lines = file.read_text(encoding="utf-8").splitlines()
+    regex = re.compile(DEFINITION.format(name=re.escape(name)))
+    starts = [number for number, line in enumerate(lines, 1) if regex.search(line)]
+    if len(starts) != 1:
+        raise Refused(f"L03 {source} defines {name} {len(starts)} times; bind exactly one definition")
+    asserts = [number for number in _test_body(lines, starts[0], source)
+               if ASSERTION.search(lines[number - 1])]
+    if not asserts:
+        raise Refused(f"L04 {name} in {source} has no assertion line to cite")
+    binding = {
+        "name": name,
+        "source_locations": [{"path": source, "line": starts[0],
+                              "file_sha256": hashlib.sha256(file.read_bytes()).hexdigest()}],
+        "assertion_locations": [{"path": source, "line": number} for number in asserts],
+        "execution_witnesses": [{
+            "evidence": evidence_id, "case": case, "package": package, "target": target,
+            "result": "passed", "skipped": False, "source_head": evidence["source"]["head"],
+            "historical": bool(evidence.get("historical")), "log_sha256": evidence["log_sha256"]}],
+        "relation": CLAUSE_RELATION,
+        "covers": {covers: {"oracles": sorted(oracles), "negative_control": negative_control}},
+        "review": review, "limitation": limitation, "id": binding_id,
+    }
+    groups = [(path, json.loads(path.read_text(encoding="utf-8"))) for path in _part_files(root, "groups")]
+    owner = next(((path, value, row) for path, value in groups for group in value
+                  for row in group["cases"] if row["id"] == covers), None)
+    if owner is None:
+        raise Refused(f"L02 case {covers} is not in the ledger")
+    if not set(oracles) <= set(range(len(owner[2]["oracles"]))):
+        raise Refused(f"L07 {covers} has oracles 0..{len(owner[2]['oracles']) - 1}, not {oracles}")
+    if binding_id not in owner[2]["binding_ids"]:
+        owner[2]["binding_ids"].append(binding_id)
+    data["bindings"].append(binding)
+    data["groups"] = [group for _path, value in groups for group in value]
+    errors = ledger_errors(data, root, committed_registry(root))
+    if errors:
+        raise Refused("the ledger would not validate with this binding:\n" + "\n".join(errors))
+    catalog_path = root / LEDGER / "catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    part = [p for p in catalog["parts"] if p["key"] == "bindings"][-1]
+    if "range" in part:
+        part["range"][1] += 1
+        _write_json(catalog_path, catalog)
+    part_path = root / LEDGER / part["file"]
+    _write_json(part_path, json.loads(part_path.read_text(encoding="utf-8")) + [binding])
+    _write_json(owner[0], owner[1])
+    return binding
+
+
+def _subcommand(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="check_session_acceptance.py", allow_abbrev=False)
+    commands = parser.add_subparsers(dest="command", required=True)
+    record = commands.add_parser("record", allow_abbrev=False,
+                                 help="run a command and register its receipt")
+    record.add_argument("--id", required=True)
+    record.add_argument("--scope", required=True)
+    record.add_argument("--require-case", action="append", default=[])
+    record.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
+    record.add_argument("command_argv", nargs=argparse.REMAINDER)
+    bind = commands.add_parser("bind", allow_abbrev=False, help="bind an executed test to a case")
+    for flag in ("--id", "--name", "--source", "--evidence", "--case", "--package", "--target",
+                 "--covers", "--review"):
+        bind.add_argument(flag, required=True)
+    bind.add_argument("--oracle", type=int, action="append", default=[])
+    bind.add_argument("--negative-control", action="store_true")
+    bind.add_argument("--limitation")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "record":
+            command = args.command_argv[1:] if args.command_argv[:1] == ["--"] else args.command_argv
+            if not command or any("=" not in item for item in args.env):
+                parser.error("record needs -- ARGV and --env NAME=VALUE")
+            entry = record_evidence(ROOT, args.id, args.scope, command, tuple(args.require_case),
+                                    dict(item.split("=", 1) for item in args.env))
+        else:
+            entry = bind_test(ROOT, args.id, args.name, args.source, args.evidence, args.case,
+                              args.package, args.target, args.covers, args.oracle,
+                              args.negative_control, args.review, args.limitation)
+    except Refused as refusal:
+        print(f"session-acceptance {args.command}: refused\n{refusal}", file=sys.stderr)
+        return 1
+    print(json.dumps(entry, indent=2, ensure_ascii=False))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if argv == ["--self-test"]:
         return self_test()
+    if argv[:1] in (["record"], ["bind"]):
+        return _subcommand(argv)
     if argv:
-        print("usage: check_session_acceptance.py [--self-test]", file=sys.stderr)
+        print("usage: check_session_acceptance.py [--self-test | record ... | bind ...]", file=sys.stderr)
         return 2
     errors = ledger_errors(_load(ROOT), ROOT, committed_registry(ROOT))
     for error in errors:

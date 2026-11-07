@@ -339,6 +339,121 @@ class EvidenceValidityTests(unittest.TestCase):
         self.assertEqual(check_session_acceptance.self_test(), 0)
 
 
+PROBE = '''import os, sys, unittest
+
+
+class ProbeTests(unittest.TestCase):
+    def test_holds(self):
+        print("output a case prints before its verdict")
+        self.assertEqual(1 + 1, 2)
+
+    def test_may_fail(self):
+        self.assertNotIn("PROBE_FAIL", os.environ)
+
+
+suite = unittest.TestSuite() if "--none" in sys.argv else unittest.defaultTestLoader.loadTestsFromTestCase(ProbeTests)
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+sys.exit(0 if "--none" in sys.argv else int(not result.wasSuccessful()))
+'''
+
+
+class EvidenceRecorderTests(unittest.TestCase):
+    """The recorder and binding helper write only what an executed, clean run proves."""
+
+    def git(self, root: Path, *arguments: str) -> None:
+        subprocess.run(["git", "-c", "user.name=fixture", "-c", "user.email=fixture@invalid", *arguments],
+                       cwd=root, env=formal_sources.detached_git_environment(), check=True,
+                       capture_output=True)
+
+    def ledger(self, directory: str) -> Path:
+        """A committed one-case ledger and a unittest probe in a fresh repository."""
+        root = Path(directory)
+        ledger = root / check_session_acceptance.LEDGER
+        ledger.mkdir(parents=True)
+        (root / ".gitignore").write_text("target/\n", encoding="utf-8")
+        (root / "probe.py").write_text(PROBE, encoding="utf-8")
+        case = {"id": "T00-C01", "oracles": ["holds"], "binding_ids": [], "evidence_state": "current_subset",
+                "acceptance_state": "pending", "acceptance_scope": None}
+        parts = {"evidence-registry.json": [], "bindings-1.json": [],
+                 "groups-1.json": [{"id": "T00", "entrypoint": "probe.py", "cases": [case]}]}
+        for name, value in parts.items():
+            check_session_acceptance._write_json(ledger / name, value)
+        check_session_acceptance._write_json(ledger / "catalog.json", {
+            "parts": [{"key": "evidence_registry", "file": "evidence-registry.json"},
+                      {"key": "bindings", "file": "bindings-1.json", "range": [0, 0]},
+                      {"key": "groups", "file": "groups-1.json", "ids": ["T00"]}],
+            "counts": {"scenarios": 1, "fully_accepted_scenarios": 0,
+                       "case_evidence_states": {"current_subset": 1}}})
+        self.git(root, "init", "--quiet")
+        self.git(root, "add", "--all")
+        self.git(root, "commit", "--quiet", "-m", "fixture")
+        return root
+
+    def record(self, root: Path, *extra: str, required=("ProbeTests.test_holds",), environment=None) -> dict:
+        return check_session_acceptance.record_evidence(
+            root, "E90", "probe", [sys.executable, "probe.py", *extra], required, environment)
+
+    def refused(self, code: str, root: Path, *extra: str, **options) -> None:
+        with self.assertRaises(check_session_acceptance.Refused) as refusal:
+            self.record(root, *extra, **options)
+        self.assertIn(code, str(refusal.exception))
+        self.assertEqual(check_session_acceptance._load(root)["evidence_registry"], [])
+        self.assertFalse((root / check_session_acceptance.EVIDENCE_DIRECTORY / "E90").exists())
+
+    def test_a_failed_dirty_empty_or_missing_case_run_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="acceptance-recorder-") as directory:
+            root = self.ledger(directory)
+            self.refused("R02", root, environment={"PROBE_FAIL": "1"})
+            self.refused("R03", root, "--none", required=())
+            self.refused("R04", root, required=("ProbeTests.test_holds", "ProbeTests.test_absent"))
+            (root / "untracked.py").write_text("", encoding="utf-8")
+            self.refused("R01", root)
+
+    def test_a_recorded_receipt_validates_and_a_tampered_receipt_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="acceptance-recorder-") as directory:
+            root = self.ledger(directory)
+            entry = self.record(root, environment={"PROBE_ONLY": "x"})
+            committed = {e["id"]: e for e in check_session_acceptance._load(ROOT)["evidence_registry"]}
+            self.assertEqual(list(entry), list(committed["E11"]), "the registry schema is E11's, nothing more")
+            self.assertEqual((entry["executed_count"], entry["environment_names"]), (2, ["PROBE_ONLY"]))
+            self.assertEqual(entry["source"]["dirty_digest"], hashlib.sha256(b"").hexdigest())
+            receipt = root / entry["receipt"]
+            self.assertIn("ProbeTests.test_holds", json.loads(receipt.read_text(encoding="utf-8"))["executed"])
+            with self.assertRaises(check_session_acceptance.Refused) as unexecuted:
+                check_session_acceptance.bind_test(root, "B900", "test_holds", "probe.py", "E90",
+                                                   "ProbeTests.test_absent", "probe", "probe.py", "T00-C01",
+                                                   [0], True, "fixture")
+            self.assertIn("L05", str(unexecuted.exception))
+            binding = check_session_acceptance.bind_test(root, "B900", "test_holds", "probe.py", "E90",
+                                                         "ProbeTests.test_holds", "probe", "probe.py",
+                                                         "T00-C01", [0], True, "fixture")
+            self.assertEqual([site["line"] for site in binding["assertion_locations"]], [7])
+            data = check_session_acceptance._load(root)
+            case = data["groups"][0]["cases"][0]
+            self.assertEqual(case["binding_ids"], ["B900"])
+            case.update(evidence_state="current_clause_complete", slices={"executed": ["linux"], "unaccepted": []})
+            data["catalog"]["counts"]["case_evidence_states"] = {"current_clause_complete": 1}
+            self.assertEqual(check_session_acceptance.ledger_errors(data, root), [])
+            receipt.write_bytes(receipt.read_bytes().replace(b'"passed": true', b'"passed": false'))
+            self.assertIn("L06 E90 receipt bytes differ from receipt_sha256",
+                          check_session_acceptance.ledger_errors(data, root))
+
+    def test_unittest_and_nextest_logs_name_every_case_or_are_refused(self) -> None:
+        parse = check_session_acceptance.parse_cases
+        unittest_log = ("test_a (__main__.A.test_a) ... printed\nok\ntest_b (__main__.A.test_b) ... skipped 'x'\n"
+                        "test_c (pkg.A.test_c)\nDocstring line ... FAIL\n" + "=" * 70 + "\nFAIL: test_c\nok\n"
+                        + "-" * 70 + "\nRan 3 tests in 0.1s\n")
+        self.assertEqual(parse(unittest_log, False),
+                         ({"A.test_a": "passed", "A.test_b": "skipped", "pkg.A.test_c": "failed"}, 3, 1))
+        nextest_log = ("    Starting 2 tests across 1 binary (5 tests skipped)\n"
+                       "        PASS [   0.004s] (1/2) crate tests::one\n"
+                       "        FAIL [   0.010s] (2/2) crate::it tests::two\n"
+                       "        PASS [   0.004s] (1/2) crate tests::one\n"
+                       "     Summary [   0.014s] 2 tests run: 1 passed, 1 failed, 5 skipped\n")
+        self.assertEqual(parse(nextest_log, True),
+                         ({"crate tests::one": "passed", "crate::it tests::two": "failed"}, 2, 5))
+
+
 class EvidenceArtifactByteTests(unittest.TestCase):
     """Native Git must store the same raw evidence bytes the registry hashes."""
 
