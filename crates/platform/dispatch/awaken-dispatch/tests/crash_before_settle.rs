@@ -57,7 +57,12 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use harness::{THREAD, TICKET, activation, input_echo_runtime, pending, tool_runtime};
 
-const LEASE: u64 = 1_000;
+/// The worker lease plays two roles. The stores judge expiry against each
+/// test's `ManualClock`; the renewal guard must also re-prove ownership within
+/// the lease in real host time, or it cancels the drive. Only the first role is
+/// under test, so the lease is the production one: with a 1s lease a starved
+/// host let the guard's proof window lapse and cancel an ordinary drive.
+const LEASE: u64 = awaken_dispatch::DEFAULT_LEASE_MS;
 const SQLITE_CRASH_MODE: &str = "AWAKEN_PENDING_INPUT_CRASH_ROOT";
 
 #[derive(Default)]
@@ -296,11 +301,13 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
             .expect("PCR1 crash-window claim")
             .expect("PCR1 pending input wakes Awaiting Run");
         assert_eq!(crashed.pending, vec![input], "PCR1/E1 exact child handoff");
-        std::fs::write(
-            root.join("claimed.marker"),
-            crashed.lease.epoch().to_string().as_bytes(),
-        )
-        .expect("PCR1 publish post-claim marker");
+        // The parent kills on the marker's existence and then reads it, so it
+        // is published whole: written beside it, then renamed into place.
+        let unpublished = root.join("claimed.marker.partial");
+        std::fs::write(&unpublished, crashed.lease.epoch().to_string().as_bytes())
+            .expect("PCR1 write post-claim marker");
+        std::fs::rename(&unpublished, root.join("claimed.marker"))
+            .expect("PCR1 publish post-claim marker");
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         panic!("parent failed to kill pending-input crash child");
     }

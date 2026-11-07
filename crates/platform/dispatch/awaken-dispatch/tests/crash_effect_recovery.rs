@@ -29,7 +29,13 @@ use awaken_tool_contract::tool::{
     RawTool, ToolCall, ToolError, ToolOutput, ToolRecoveryCapability, ToolRecoveryPolicy,
 };
 
-const LEASE: u64 = 1_000;
+/// The worker lease plays two roles. The stores judge expiry against the
+/// test's `ManualClock`, which every `clock.set` below drives; the renewal guard
+/// must also re-prove ownership within the lease in real host time, or it
+/// cancels the drive. Only the first role is under test, so the lease is the
+/// production one: with a 1s lease a renewal held up by fsync pressure past its
+/// ~333ms budget cancelled the drive before the tool on a loaded host.
+const LEASE: u64 = awaken_dispatch::DEFAULT_LEASE_MS;
 const ROOT: &str = "AWAKEN_T07C03_ROOT";
 const WINDOW: &str = "AWAKEN_T07C03_WINDOW";
 const REPLAY_SAFE: &str = "AWAKEN_T07C03_REPLAY_SAFE";
