@@ -418,6 +418,8 @@ class EvidenceRecorderTests(unittest.TestCase):
             self.assertEqual((entry["executed_count"], entry["environment_names"]), (2, ["PROBE_ONLY"]))
             self.assertEqual(entry["source"]["dirty_digest"], hashlib.sha256(b"").hexdigest())
             receipt = root / entry["receipt"]
+            self.assertEqual(entry["log_sha256"],
+                             hashlib.sha256((receipt.parent / "log.txt").read_bytes()).hexdigest())
             self.assertIn("ProbeTests.test_holds", json.loads(receipt.read_text(encoding="utf-8"))["executed"])
             with self.assertRaises(check_session_acceptance.Refused) as unexecuted:
                 check_session_acceptance.bind_test(root, "B900", "test_holds", "probe.py", "E90",
@@ -443,15 +445,17 @@ class EvidenceRecorderTests(unittest.TestCase):
         unittest_log = ("test_a (__main__.A.test_a) ... printed\nok\ntest_b (__main__.A.test_b) ... skipped 'x'\n"
                         "test_c (pkg.A.test_c)\nDocstring line ... FAIL\n" + "=" * 70 + "\nFAIL: test_c\nok\n"
                         + "-" * 70 + "\nRan 3 tests in 0.1s\n")
-        self.assertEqual(parse(unittest_log, False),
-                         ({"A.test_a": "passed", "A.test_b": "skipped", "pkg.A.test_c": "failed"}, 3, 1))
         nextest_log = ("    Starting 2 tests across 1 binary (5 tests skipped)\n"
                        "        PASS [   0.004s] (1/2) crate tests::one\n"
                        "        FAIL [   0.010s] (2/2) crate::it tests::two\n"
                        "        PASS [   0.004s] (1/2) crate tests::one\n"
                        "     Summary [   0.014s] 2 tests run: 1 passed, 1 failed, 5 skipped\n")
-        self.assertEqual(parse(nextest_log, True),
-                         ({"crate tests::one": "passed", "crate::it tests::two": "failed"}, 2, 5))
+        for line_ending in ("\n", "\r\n"):
+            with self.subTest(line_ending=line_ending):
+                self.assertEqual(parse(unittest_log.replace("\n", line_ending), False),
+                                 ({"A.test_a": "passed", "A.test_b": "skipped", "pkg.A.test_c": "failed"}, 3, 1))
+                self.assertEqual(parse(nextest_log.replace("\n", line_ending), True),
+                                 ({"crate tests::one": "passed", "crate::it tests::two": "failed"}, 2, 5))
 
 
 class EvidenceArtifactByteTests(unittest.TestCase):
