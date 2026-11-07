@@ -229,6 +229,16 @@ A selected row runs unchanged, so its `--require-case` list applies in full.
 The recovery drill exercises only the substrates and runs with the whole group.
 Without `--affected`, and always under `--full-gate` or a qualification run, every row runs.
 
+Each row keeps its own Cargo selection. One superset build of every postgres package and
+feature (as `check-rust.sh` does for clippy) was measured on 2026-11-07 with `cargo tree`
+(units keyed by package, features and dependency subtree): the 43 suite builds compile
+1,562 distinct units, a superset build 591. It is not used, because it changes what the
+suites test: in 41 of 43 suites some compiled awaken crate gets other features, among them
+`awaken-session-application/test-support` (read by `#[cfg(not(any(test, feature =
+"test-support")))]` in `construction.rs`) and `awaken-process-startup/container-k8s`
+(read by `#[cfg(not(feature = "container-k8s"))]`); `awaken-coordinator` and
+`awaken-protocol-managed` also branch on `test-support` being absent.
+
 Run one tier by hand: `lefthook run pre-commit`, `scripts/ci/check-rust.sh --quick|--push|--full`,
 `lefthook run push-qualification`, `python3 scripts/ci/generate_hooks.py --script-tests <path>...`.
 Add `AWAKEN_BUILD_OBSERVE=1` to a Rust gate run to record performance telemetry.
