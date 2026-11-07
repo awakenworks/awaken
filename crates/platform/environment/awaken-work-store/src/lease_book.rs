@@ -96,7 +96,7 @@ impl LeaseBook {
         worker_id: &str,
         now_ms: u64,
         ttl_ms: u64,
-    ) -> Result<u64, &'static str> {
+    ) -> Result<u64, awaken_executable_environment_contract::WorkQueueError> {
         let mut authority = self.authority.lock();
         let current = LeaseAuthorityTuple {
             owner: authority.owners.get(work_id).cloned(),
@@ -118,9 +118,15 @@ impl LeaseBook {
                 expires_at: now_ms.saturating_add(ttl_ms),
             },
         ) else {
-            return Err(crate::mutation::EXHAUSTED_LEASE_EPOCH);
+            return Err(crate::mutation::lease_generation_integrity(
+                awaken_lease_contract::fence::EpochExhausted,
+            ));
         };
-        let epoch = next.epoch.ok_or("work lease claim installed no epoch")?;
+        let epoch = next.epoch.ok_or_else(|| {
+            awaken_executable_environment_contract::WorkQueueError::Storage(
+                "work lease claim installed no epoch".into(),
+            )
+        })?;
         authority.epochs.insert(work_id.to_string(), epoch);
         authority
             .owners
@@ -378,7 +384,11 @@ mod tests {
             .insert("work".into(), Epoch::from_persisted(u64::MAX).unwrap());
         assert_eq!(
             book.claim_for("work", "owner", 0, LEASE_TTL_MS),
-            Err("work lease epoch exhausted")
+            Err(
+                awaken_executable_environment_contract::WorkQueueError::LeaseGenerationIntegrity(
+                    awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted
+                )
+            )
         );
         assert!(!book.is_owned_by("work", "owner"), "C1/E1");
     }

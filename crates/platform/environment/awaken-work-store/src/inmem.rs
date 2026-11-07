@@ -389,8 +389,7 @@ impl InMemoryWorkQueue {
         else {
             return Ok(None);
         };
-        book.claim_for(&wid, lease_owner, now_ms, LEASE_TTL_MS)
-            .map_err(|error| WorkQueueError::Storage(error.into()))?;
+        book.claim_for(&wid, lease_owner, now_ms, LEASE_TTL_MS)?;
         let work = works.get_mut(&wid).expect("just found");
         work.state = WorkState::Active;
         work.started_at = Some(awaken_time::utc::epoch_millis_to_rfc3339(now_ms));
@@ -900,8 +899,7 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
             if !work.state.is_claimable() {
                 return Ok(None);
             }
-            book.claim_for(&work_id, worker_owner, now_ms, LEASE_TTL_MS)
-                .map_err(|error| WorkQueueError::Storage(error.into()))?;
+            book.claim_for(&work_id, worker_owner, now_ms, LEASE_TTL_MS)?;
             work.state = WorkState::Active;
             work.started_at = Some(awaken_time::utc::epoch_millis_to_rfc3339(now_ms));
             work.latest_heartbeat_at = None;

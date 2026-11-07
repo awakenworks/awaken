@@ -745,6 +745,7 @@ mod tests {
                 ENVIRONMENT_REJECTED_CODE,
                 UNCLASSIFIED_INTERNAL_CODE,
                 SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE,
+                awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
                 "unavailable",
                 "conflict",
                 "",
@@ -792,6 +793,9 @@ mod tests {
         // | E1 | conflict / unclassified internal | remaining | Retry, no refund |
         // | E2 | conflict / unclassified internal | exhausted | Absorb |
         // | E3 | classified internal / request fault | remaining | Absorb |
+        // | E4 | lease-generation integrity (Work lease Run projection, or the
+        //        Session realization lease Control projection) | none spent |
+        //        Absorb: the first failure ends the loop, attempt count 1 |
         // The report is built from the error exactly as the driver builds it.
         let budget = 3;
         let lease = crate::SessionRealizationLease {
@@ -816,6 +820,24 @@ mod tests {
                 absorb,
             ),
             ("E3", RunError::bad_request("bad"), 0, absorb),
+            (
+                "E4 Work lease",
+                RunError::classified(
+                    awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
+                    "Work lease: lease_generation_integrity_violated: a granted lease carries epoch 0",
+                ),
+                0,
+                absorb,
+            ),
+            (
+                "E4 Session realization lease",
+                crate::SessionRealizationControlFailure::from(
+                    awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted,
+                )
+                .into(),
+                0,
+                absorb,
+            ),
         ];
         for (rule, error, attempts, expected) in rows {
             let report =

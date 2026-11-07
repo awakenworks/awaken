@@ -7,4 +7,5 @@ Notable changes to `awaken-lease-contract`. Versions follow the [SDK versioning 
 ### Added
 
 - `Epoch::successor` and `EpochExhausted`: the one first-grant-or-next law over a lease generation, and the one classification of its exhaustion.
+- `Epoch::successor_of_granted` and `EpochIntegrityViolation`: the one classification of a persisted lease generation no grant history produces (an exhausted epoch, or zero on a lease that exists) as a permanent data-integrity failure with the stable code `lease_generation_integrity_violated`.
 - Authority renewal decisions that let a request run up to the remaining proof and retry the initial heartbeat within its proof window: `RenewalDecision::Apply`, and `AuthorityEnd::{AuthorityLost, ProofExpired}` naming why authority ended.

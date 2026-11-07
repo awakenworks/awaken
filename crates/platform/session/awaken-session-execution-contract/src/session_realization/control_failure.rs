@@ -108,12 +108,25 @@ impl From<SessionRealizationControlFailure> for awaken_runtime_contract::runs::R
     }
 }
 
+/// The one Control projection of a Session realization lease-generation
+/// integrity failure: the durable root is untrustworthy, so the refusal is
+/// `Internal` (terminal, never retried) and carries the stable
+/// `lease_generation_integrity_violated` code in its detail.
+impl From<awaken_lease_contract::fence::EpochIntegrityViolation>
+    for SessionRealizationControlFailure
+{
+    fn from(violation: awaken_lease_contract::fence::EpochIntegrityViolation) -> Self {
+        Self::Internal(format!("Session realization lease: {violation}"))
+    }
+}
+
 /// The one Control projection of an Environment decision's refusal: a terminal
 /// Session is terminal, a lost lease is stale ownership, movement the Session
 /// may still make is not ready, and every causal refusal is invalid.
 /// The aggregate's begin refusals keep the control failure each carried when
 /// the application decided them: the Environment gate's own mapping, a stale
-/// owner, an invalid claim, and command failures as unavailable.
+/// owner, an invalid claim, a lease-integrity failure as its one permanent
+/// projection, and command failures as unavailable.
 impl From<awaken_session_contract::SessionRealizationBeginRejection>
     for SessionRealizationControlFailure
 {
@@ -122,9 +135,10 @@ impl From<awaken_session_contract::SessionRealizationBeginRejection>
         match rejection {
             Rejection::Environment(rejection) => rejection.into(),
             Rejection::StaleOwnership => Self::StaleOwnership,
-            Rejection::ResourceWorkspaceMismatch
-            | Rejection::ResourceGenerationNotRetained
-            | Rejection::EpochExhausted => Self::Invalid(rejection.to_string()),
+            Rejection::ResourceWorkspaceMismatch | Rejection::ResourceGenerationNotRetained => {
+                Self::Invalid(rejection.to_string())
+            }
+            Rejection::LeaseIntegrity(violation) => violation.into(),
             Rejection::Resources(_) | Rejection::Mcp(_) | Rejection::Assignment(_) => {
                 Self::Unavailable(rejection.to_string())
             }
@@ -341,7 +355,9 @@ mod tests {
         // R1 the Environment gate keeps its own projection; R2 a live foreign
         // owner => StaleOwnership (retryable); R3 an invalid claim keeps its
         // exact message; R4 a failed command on the candidate => Unavailable
-        // carrying the command's own message.
+        // carrying the command's own message; R5 a lease-generation integrity
+        // failure => Internal: terminal for every Worker and its Run
+        // projection, never retried, with the stable integrity code.
         use awaken_session_contract::SessionEnvironmentRejection as X;
         use awaken_session_contract::SessionRealizationBeginRejection as B;
         let resources = awaken_session_contract::ResourceActivationError::Terminal;
@@ -379,10 +395,23 @@ mod tests {
                 ),
             ),
             (
-                "R3",
-                B::EpochExhausted,
-                SessionRealizationControlFailure::Invalid(
-                    "Session realization lease epoch is exhausted".into(),
+                "R5",
+                B::LeaseIntegrity(awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted),
+                SessionRealizationControlFailure::Internal(
+                    "Session realization lease: lease_generation_integrity_violated: \
+                     the persisted lease epoch has no successor"
+                        .into(),
+                ),
+            ),
+            (
+                "R5",
+                B::LeaseIntegrity(
+                    awaken_lease_contract::fence::EpochIntegrityViolation::ZeroGranted,
+                ),
+                SessionRealizationControlFailure::Internal(
+                    "Session realization lease: lease_generation_integrity_violated: \
+                     a granted lease carries epoch 0"
+                        .into(),
                 ),
             ),
             (
@@ -406,6 +435,26 @@ mod tests {
                 expected,
                 "{rule}"
             );
+            if rule == "R5" {
+                assert_eq!(
+                    expected.disposition(),
+                    SessionRealizationControlDisposition::Terminal,
+                    "R5 never retried"
+                );
+                assert!(expected.proves_current_realization_cannot_continue(), "R5");
+                let run: awaken_runtime_contract::runs::RunError = expected.into();
+                assert_eq!(
+                    crate::effect_failure_disposition(&run),
+                    SessionRealizationControlDisposition::Terminal,
+                    "R5 Run projection never retried"
+                );
+                assert!(!run.is_unclassified_internal(), "R5");
+                assert!(
+                    run.message
+                        .contains(awaken_lease_contract::fence::EpochIntegrityViolation::CODE),
+                    "R5 greppable"
+                );
+            }
         }
     }
 }

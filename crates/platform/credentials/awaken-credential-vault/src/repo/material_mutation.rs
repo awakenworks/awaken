@@ -5,7 +5,7 @@
 // @formal entrypoint credential.material_is_always_published_or_intent_tracked
 // @formal entrypoint credential.restart_recovery_compensates_unpublished_material
 // @formal entrypoint credential.visible_row_always_has_material
-use awaken_lease_contract::fence::{Epoch, EpochExhausted};
+use awaken_lease_contract::fence::{Epoch, EpochExhausted, EpochIntegrityViolation};
 use awaken_time::{Expiry, UtcTime, WallClock, WallClockExt as _};
 use std::collections::BTreeSet;
 
@@ -187,13 +187,24 @@ impl CredentialMaterialMutationFence {
         claimed.writer_token = Some(new_writer_token()).filter(|token| !token.is_empty());
         // Epoch one is reserved for the original writer. A legacy fence with
         // no epoch must skip it; recovery safety cannot depend on UUID
-        // non-collision. The kernel's successor law refuses to wrap.
+        // non-collision. The kernel's successor law refuses to wrap, and an
+        // exhausted writer epoch is a lease-generation integrity failure of
+        // this one mutation: refused permanently, never reset.
         claimed.writer_epoch = Some(
             Epoch::successor(Some(self.writer_epoch.unwrap_or(Epoch::FIRST))).map_err(
                 |EpochExhausted| {
-                    CredentialError::MutationConflict(
-                        "credential material writer epoch is exhausted".into(),
-                    )
+                    let violation = EpochIntegrityViolation::Exhausted;
+                    tracing::error!(
+                        target: "awaken::lease_generation_integrity",
+                        code = EpochIntegrityViolation::CODE,
+                        lease = "credential_material_writer",
+                        attempt_id = %self.attempt_id,
+                        %violation,
+                        "lease generation integrity violated; refusing this credential mutation recovery permanently"
+                    );
+                    CredentialError::MutationConflict(format!(
+                        "credential material writer: {violation}"
+                    ))
                 },
             )?,
         );
@@ -1322,8 +1333,31 @@ mod exhaustive {
             calls += 1;
             "new".into()
         });
-        assert!(result.is_err(), "T3 exhausted epoch");
         assert_eq!(calls, 1, "T3 existing entropy order");
+        // The refusal is the permanent lease-generation integrity class, the
+        // same on every attempt, and never mints or wraps a generation.
+        let refused = Err(CredentialError::MutationConflict(
+            "credential material writer: lease_generation_integrity_violated: \
+             the persisted lease epoch has no successor"
+                .into(),
+        ));
+        assert_eq!(result, refused, "T3 exhausted epoch");
+        for _ in 0..2 {
+            assert_eq!(
+                input.claim_after_expiry_with_token(1, 2, || "new".into()),
+                refused,
+                "T3 permanent"
+            );
+        }
+        // A persisted 0 is the field's encoding of "no writer epoch" (serde
+        // default and `None`), the legacy fence: it skips the original
+        // writer's epoch 1 and mints 2.
+        let legacy = takeover_fence(Writing, 1, None);
+        let claimed = legacy
+            .claim_after_expiry_with_token(1, 2, || "new".into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.writer_epoch.map(Epoch::get), Some(2), "T3 legacy");
     }
 
     /// @exhaustive no symbolic input (1) = 1

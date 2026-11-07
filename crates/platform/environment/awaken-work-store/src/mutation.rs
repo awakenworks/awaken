@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use awaken_executable_environment_contract::{WorkQueueError, WorkQueueError::Storage};
-use awaken_lease_contract::fence::{Epoch, EpochExhausted};
+use awaken_lease_contract::fence::{Epoch, EpochExhausted, EpochIntegrityViolation};
 use awaken_sql_storage::StoredU64;
 
 pub(super) fn apply_metadata_patch(
@@ -25,8 +25,10 @@ pub(super) fn apply_metadata_patch(
 }
 
 /// Decode the persisted `lease_epoch` column. A negative value is corrupt; `0`
-/// is the column's value before any claim, i.e. no lease was ever granted;
-/// every other value is the generation of the current (or last) grant.
+/// is the column's default before any claim (`V0002` adds it `DEFAULT 0`
+/// together with a NULL owner), i.e. no lease was ever granted; every other
+/// value is the generation of the current (or last) grant. Where a grant must
+/// have written the column, decode through [`granted_epoch`] instead.
 pub(super) fn stored_epoch(current: i64) -> Result<Option<Epoch>, WorkQueueError> {
     Ok(Epoch::from_persisted(
         StoredU64::try_from(current)
@@ -35,10 +37,12 @@ pub(super) fn stored_epoch(current: i64) -> Result<Option<Epoch>, WorkQueueError
     ))
 }
 
-/// The generation of an active, token-bound Session lease row. A live bearer
-/// row at epoch 0 was never granted and is corrupt, not an absent lease.
-pub(super) fn granted_session_epoch(stored: i64) -> Result<Epoch, WorkQueueError> {
-    stored_epoch(stored)?.ok_or_else(|| Storage("active Session Work has no lease epoch".into()))
+/// The generation a grant wrote: of an active or token-bound lease row, an
+/// owned lease or a stop receipt. Zero there was never minted, so it is a
+/// lease-generation integrity failure, not an absent lease.
+pub(super) fn granted_epoch(stored: i64) -> Result<Epoch, WorkQueueError> {
+    stored_epoch(stored)?
+        .ok_or_else(|| lease_generation_integrity(EpochIntegrityViolation::ZeroGranted))
 }
 
 /// The generation a claim grants over `current`, by the lease contract's one
@@ -48,13 +52,14 @@ pub(super) fn claimed_epoch(current: Option<Epoch>) -> Result<Epoch, EpochExhaus
     Epoch::successor(current)
 }
 
-/// The store's one projection of an exhausted Work lease generation, whether
-/// the counter or the signed `lease_epoch` column ran out.
-pub(super) fn exhausted_lease_epoch(_: EpochExhausted) -> WorkQueueError {
-    Storage(EXHAUSTED_LEASE_EPOCH.into())
+/// The store's one projection of an untrustworthy Work lease generation: an
+/// exhausted counter or signed `lease_epoch` column, or zero where a grant
+/// wrote it. Permanent for this Work item; never a retryable storage failure.
+pub(super) fn lease_generation_integrity(
+    violation: impl Into<EpochIntegrityViolation>,
+) -> WorkQueueError {
+    WorkQueueError::LeaseGenerationIntegrity(violation.into())
 }
-
-pub(super) const EXHAUSTED_LEASE_EPOCH: &str = "work lease epoch exhausted";
 
 /// Which lease generation an owner mutation is fenced to.
 ///
@@ -103,8 +108,7 @@ pub(super) fn stored_stop_receipt(
         (None, None) => Ok(None),
         (Some(owner), Some(epoch)) => Ok(Some(StopReceipt {
             owner,
-            epoch: stored_epoch(epoch)?
-                .ok_or_else(|| Storage("stop receipt has no granted epoch".into()))?,
+            epoch: granted_epoch(epoch)?,
         })),
         _ => Err(Storage("incomplete stop receipt subject".into())),
     }
@@ -219,15 +223,22 @@ pub(super) fn lease_authority_transition<O: Eq, T>(
     }
 }
 
+/// Decode one row's lease authority. An owner is only ever written by a grant
+/// together with its epoch, so an owned row at epoch 0 is a lease-generation
+/// integrity failure; an unowned row at 0 was never granted.
 pub(super) fn stored_lease_authority(
     owner: Option<String>,
     epoch: i64,
     refreshed_at: Option<i64>,
     expires_at: Option<i64>,
 ) -> Result<LeaseAuthorityTuple<String, i64>, WorkQueueError> {
+    let epoch = match owner {
+        Some(_) => Some(granted_epoch(epoch)?),
+        None => stored_epoch(epoch)?,
+    };
     Ok(LeaseAuthorityTuple {
         owner,
-        epoch: stored_epoch(epoch)?,
+        epoch,
         refreshed_at,
         expires_at,
     })
@@ -236,7 +247,7 @@ pub(super) fn stored_lease_authority(
 /// Encode a granted generation into the signed `lease_epoch` column, refusing
 /// one the column cannot hold rather than wrapping it negative.
 pub(super) fn stored_lease_epoch(epoch: Epoch) -> Result<i64, WorkQueueError> {
-    i64::try_from(epoch.get()).map_err(|_| exhausted_lease_epoch(EpochExhausted))
+    i64::try_from(epoch.get()).map_err(|_| lease_generation_integrity(EpochExhausted))
 }
 
 pub(super) fn claim_stored_lease_authority(
@@ -257,7 +268,7 @@ pub(super) fn claim_stored_lease_authority(
         },
     ) {
         LeaseAuthorityDecision::Apply(next) => Ok(next),
-        _ => Err(exhausted_lease_epoch(EpochExhausted)),
+        _ => Err(lease_generation_integrity(EpochExhausted)),
     }
 }
 
@@ -346,7 +357,6 @@ mod tests {
         for (owner, generation) in [
             (None, Some(7)),
             (Some("owner"), None),
-            (Some("owner"), Some(0)),
             (Some("owner"), Some(-1)),
         ] {
             assert!(matches!(
@@ -354,6 +364,13 @@ mod tests {
                 Err(Storage(_))
             ));
         }
+        assert_eq!(
+            stored_stop_receipt(Some("owner".into()), Some(0)),
+            Err(WorkQueueError::LeaseGenerationIntegrity(
+                EpochIntegrityViolation::ZeroGranted
+            )),
+            "a stop receipt a grant wrote at epoch 0 is an integrity failure"
+        );
         let receipt = stored_stop_receipt(Some("owner".into()), Some(7))
             .unwrap()
             .unwrap();
@@ -504,14 +521,72 @@ mod tests {
     }
 
     #[test]
+    fn untrustworthy_work_lease_generations_are_one_permanent_integrity_refusal() {
+        // The store classifies a persisted Work lease generation here, once.
+        // C1 the row is unowned (a NULL owner beside the column default);
+        // C2 a grant wrote the value (an owned row, an active Session row, a
+        // stop receipt or an owned ACK); C3 the stored value; C4 the command.
+        //
+        // | Rule | C1/C2       | C3        | C4     | effect                                  |
+        // |------|-------------|-----------|--------|-----------------------------------------|
+        // | W1   | unowned     | 0         | claim  | never granted: grants epoch 1           |
+        // | W2   | owned       | 0         | decode | LeaseGenerationIntegrity(ZeroGranted)   |
+        // | W3   | grant wrote | 0         | decode | LeaseGenerationIntegrity(ZeroGranted)   |
+        // | W4   | unowned     | i64::MAX  | claim  | LeaseGenerationIntegrity(Exhausted)     |
+        // | W5   | any         | negative  | decode | Storage (corrupt encoding, not a lease) |
+        // | W6   | W2..W4      | repeated  | same   | the same refusal; never Storage         |
+        let claim = |owner: Option<&str>, epoch: i64| {
+            claim_stored_lease_authority(
+                owner.map(str::to_owned),
+                epoch,
+                None,
+                None,
+                "next".into(),
+                1,
+                2,
+            )
+            .and_then(|next| stored_lease_epoch(next.granted_epoch()?))
+        };
+        fn integrity<T>(violation: EpochIntegrityViolation) -> Result<T, WorkQueueError> {
+            Err(WorkQueueError::LeaseGenerationIntegrity(violation))
+        }
+        assert_eq!(claim(None, 0), Ok(1), "W1");
+        for _ in 0..3 {
+            assert_eq!(
+                stored_lease_authority(Some("owner".into()), 0, Some(1), Some(2)),
+                integrity(EpochIntegrityViolation::ZeroGranted),
+                "W2"
+            );
+            assert_eq!(
+                claim(Some("owner"), 0),
+                integrity(EpochIntegrityViolation::ZeroGranted),
+                "W2 claim over an owned zero"
+            );
+            assert_eq!(
+                granted_epoch(0),
+                integrity(EpochIntegrityViolation::ZeroGranted),
+                "W3"
+            );
+            assert_eq!(
+                claim(None, i64::MAX),
+                integrity(EpochIntegrityViolation::Exhausted),
+                "W4"
+            );
+        }
+        assert!(matches!(granted_epoch(-1), Err(Storage(_))), "W5");
+        assert_eq!(granted_epoch(7).map(Epoch::get), Ok(7));
+    }
+
+    #[test]
     fn lease_epoch_conversion_fails_closed_at_corrupt_and_exhausted_boundaries() {
         // Cause/effect graph: C1 persisted epoch is negative/corrupt; C2 epoch
         // is the largest SQL BIGINT and a new owner requires advancement; C3
         // the same largest epoch is only being read/renewed; C4 the column's
-        // pre-claim zero. Effects: E1/C1 and E1/C2 return typed Storage errors
-        // without zeroing or reusing a fence; E2/C3 preserves the current
-        // fence; E3/C4 reads as never granted and a claim grants the first
-        // epoch. Decision rows: X1=C1->E1, X2=C2->E1, X3=C3->E2, X4=C4->E3.
+        // pre-claim zero. Effects: E1/C1 returns a typed Storage error and
+        // E1'/C2 the permanent lease-generation integrity refusal, neither
+        // zeroing nor reusing a fence; E2/C3 preserves the current fence;
+        // E3/C4 reads as never granted and a claim grants the first epoch.
+        // Decision rows: X1=C1->E1, X2=C2->E1', X3=C3->E2, X4=C4->E3.
         assert!(
             matches!(stored_epoch(-1), Err(WorkQueueError::Storage(_))),
             "X1"
@@ -520,7 +595,9 @@ mod tests {
         assert!(
             matches!(
                 claimed_epoch(Some(top)).map(stored_lease_epoch),
-                Ok(Err(WorkQueueError::Storage(_)))
+                Ok(Err(WorkQueueError::LeaseGenerationIntegrity(
+                    EpochIntegrityViolation::Exhausted
+                )))
             ),
             "X2"
         );
@@ -606,7 +683,7 @@ fn work_lease_epoch_is_exact_nonnegative_and_nonwrapping() {
                 Ok(Ok(database)) => {
                     assert!(i128::from(database) == i128::from(current) + 1);
                 }
-                Ok(Err(WorkQueueError::Storage(_))) | Err(EpochExhausted) => {
+                Ok(Err(WorkQueueError::LeaseGenerationIntegrity(_))) | Err(EpochExhausted) => {
                     assert!(current == i64::MAX);
                 }
             }

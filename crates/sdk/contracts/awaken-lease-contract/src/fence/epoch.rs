@@ -61,6 +61,32 @@ impl Epoch {
         }
     }
 
+    /// The generation a grant mints over a lease whose persisted generation
+    /// is `granted`, `None` when no lease exists: [`Epoch::FIRST`] for the
+    /// first grant, otherwise the successor of the granted generation.
+    ///
+    /// This is the one classification of a persisted generation no grant
+    /// history produces, for subjects whose lease value is never stored as a
+    /// zero sentinel: an existing lease at zero is
+    /// [`EpochIntegrityViolation::ZeroGranted`], and one with no successor is
+    /// [`EpochIntegrityViolation::Exhausted`]. Storage adapters whose column
+    /// or field default decodes zero for "never granted" keep using
+    /// [`Epoch::from_persisted`] with [`Epoch::successor`].
+    pub const fn successor_of_granted(
+        granted: Option<u64>,
+    ) -> Result<Self, EpochIntegrityViolation> {
+        match granted {
+            None => Ok(Self::FIRST),
+            Some(value) => match NonZeroU64::new(value) {
+                None => Err(EpochIntegrityViolation::ZeroGranted),
+                Some(epoch) => match Self(epoch).next() {
+                    Some(next) => Ok(next),
+                    None => Err(EpochIntegrityViolation::Exhausted),
+                },
+            },
+        }
+    }
+
     /// Decode a persisted generation. `None` for zero, which no grant mints.
     #[must_use]
     pub const fn from_persisted(value: u64) -> Option<Self> {
@@ -118,6 +144,59 @@ impl fmt::Display for ZeroEpoch {
 
 impl std::error::Error for ZeroEpoch {}
 
+/// A persisted lease generation that no trustworthy grant history produces:
+/// one with no successor (about 9.2e18 reassignments of a single lease, which
+/// normal operation never reaches), or zero on a lease that exists. Either
+/// means the stored value is untrustworthy: corruption, a bad migration or sign
+/// conversion, a bug, or tampering.
+///
+/// It is a data-integrity failure: permanent and never retried, it refuses
+/// only the affected subject, and it is never repaired by resetting or wrapping
+/// the epoch. Recovery is a new subject. Every lease maps it to one permanent
+/// refusal of its own, carrying [`EpochIntegrityViolation::CODE`].
+///
+/// Consumers: the Session realization lease (aggregate claim, reassignment
+/// and compensation), Work leases, Dispatch claims, Environment image-build
+/// claims and credential material writers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EpochIntegrityViolation {
+    /// The persisted generation has no successor.
+    Exhausted,
+    /// A lease that exists carries generation zero, which no grant mints.
+    ZeroGranted,
+}
+
+impl EpochIntegrityViolation {
+    /// The stable, greppable code of every lease-generation integrity
+    /// refusal: error codes, messages and the error-level log event all carry
+    /// it.
+    pub const CODE: &'static str = "lease_generation_integrity_violated";
+}
+
+impl fmt::Display for EpochIntegrityViolation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cause = match self {
+            Self::Exhausted => "the persisted lease epoch has no successor",
+            Self::ZeroGranted => "a granted lease carries epoch 0",
+        };
+        write!(formatter, "{}: {cause}", Self::CODE)
+    }
+}
+
+impl std::error::Error for EpochIntegrityViolation {}
+
+impl From<EpochExhausted> for EpochIntegrityViolation {
+    fn from(_: EpochExhausted) -> Self {
+        Self::Exhausted
+    }
+}
+
+impl From<ZeroEpoch> for EpochIntegrityViolation {
+    fn from(_: ZeroEpoch) -> Self {
+        Self::ZeroGranted
+    }
+}
+
 impl TryFrom<u64> for Epoch {
     type Error = ZeroEpoch;
 
@@ -155,6 +234,11 @@ mod tests {
         // | E8   | successor(None)       | FIRST (first grant)        |
         // | E9   | successor(Some(7))    | Epoch 8                    |
         // | E10  | successor(Some(MAX))  | EpochExhausted             |
+        // | G1   | granted None          | FIRST (no lease exists)    |
+        // | G2   | granted Some(0)       | ZeroGranted (integrity)    |
+        // | G3   | granted Some(7)       | Epoch 8                    |
+        // | G4   | granted Some(MAX)     | Exhausted (integrity)      |
+        // | G5   | either violation      | carries the stable CODE    |
         assert_eq!(Epoch::from_persisted(0), None, "E1");
         assert_eq!(Epoch::try_from(0), Err(ZeroEpoch), "E1");
         assert_eq!(Epoch::from_persisted(7).map(Epoch::get), Some(7), "E2");
@@ -174,5 +258,40 @@ mod tests {
             "lease epoch is exhausted",
             "E10"
         );
+        assert_eq!(Epoch::successor_of_granted(None), Ok(Epoch::FIRST), "G1");
+        assert_eq!(
+            Epoch::successor_of_granted(Some(0)),
+            Err(EpochIntegrityViolation::ZeroGranted),
+            "G2"
+        );
+        assert_eq!(
+            Epoch::successor_of_granted(Some(7)).map(Epoch::get),
+            Ok(8),
+            "G3"
+        );
+        assert_eq!(
+            Epoch::successor_of_granted(Some(u64::MAX)),
+            Err(EpochIntegrityViolation::Exhausted),
+            "G4"
+        );
+        assert_eq!(
+            EpochIntegrityViolation::from(EpochExhausted),
+            EpochIntegrityViolation::Exhausted
+        );
+        assert_eq!(
+            EpochIntegrityViolation::from(ZeroEpoch),
+            EpochIntegrityViolation::ZeroGranted
+        );
+        for violation in [
+            EpochIntegrityViolation::Exhausted,
+            EpochIntegrityViolation::ZeroGranted,
+        ] {
+            assert!(
+                violation
+                    .to_string()
+                    .starts_with("lease_generation_integrity_violated: "),
+                "G5"
+            );
+        }
     }
 }

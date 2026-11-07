@@ -283,6 +283,8 @@ impl SessionRealizationTarget {
 }
 
 #[cfg(kani)]
+use awaken_lease_contract::fence::EpochIntegrityViolation;
+#[cfg(kani)]
 use awaken_session_contract::{SessionRealizationAssignment, session_realization_assignment};
 
 #[cfg(kani)]
@@ -303,6 +305,15 @@ fn session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an
         reassign,
     );
 
+    // A persisted zero is never a lease generation: it refuses before any
+    // ownership decision, whatever the other facts.
+    if current_epoch == Some(0) {
+        assert_eq!(
+            decision,
+            SessionRealizationAssignment::LeaseIntegrity(EpochIntegrityViolation::ZeroGranted)
+        );
+        return;
+    }
     if current_is_live && !same_owner && !reassign {
         assert_eq!(decision, SessionRealizationAssignment::StaleOwnership);
     }
@@ -329,7 +340,7 @@ fn session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an
         assert!(matches!(
             decision,
             SessionRealizationAssignment::Assign { .. }
-                | SessionRealizationAssignment::EpochExhausted
+                | SessionRealizationAssignment::LeaseIntegrity(EpochIntegrityViolation::Exhausted)
         ));
     }
     // Once a failed nonterminal assignment is expired in the Session root,
@@ -341,7 +352,8 @@ fn session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an
             decision,
             match current_epoch {
                 None => SessionRealizationAssignment::Assign { epoch: 1 },
-                Some(u64::MAX) => SessionRealizationAssignment::EpochExhausted,
+                Some(u64::MAX) =>
+                    SessionRealizationAssignment::LeaseIntegrity(EpochIntegrityViolation::Exhausted,),
                 Some(epoch) => SessionRealizationAssignment::Assign { epoch: epoch + 1 },
             }
         );

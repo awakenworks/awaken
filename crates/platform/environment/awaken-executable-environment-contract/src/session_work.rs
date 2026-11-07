@@ -421,6 +421,12 @@ pub struct QueueStats {
 pub enum WorkQueueError {
     #[error("work queue storage failure: {0}")]
     Storage(SessionContractErrorDetail),
+    /// The Work item's persisted lease generation is untrustworthy: exhausted,
+    /// or zero on a lease a grant wrote. A data-integrity failure of this Work
+    /// item only: permanent, never retried, never reset; recovery is a new
+    /// Work item.
+    #[error("Work lease: {0}")]
+    LeaseGenerationIntegrity(awaken_lease_contract::fence::EpochIntegrityViolation),
 }
 
 /// Read-only Work items and queue observations. No operation grants or renews authority.

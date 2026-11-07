@@ -216,14 +216,25 @@ fn dispatch_state_db(state: DispatchState) -> &'static str {
 }
 
 /// The one projection of a transition-kernel refusal onto the store error,
-/// shared by the in-memory and SQL adapters.
+/// shared by the in-memory and SQL adapters. An exhausted claim epoch is a
+/// lease-generation integrity failure of that one dispatch row: `Rejected`
+/// (this command did not commit, and retrying it cannot), carrying the stable
+/// integrity code, observed once at error level. Nothing resets the epoch.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 fn transition_error(error: awaken_dispatch_contract::DispatchTransitionError) -> DispatchError {
     match error {
         awaken_dispatch_contract::DispatchTransitionError::LeaseEpochExhausted => {
-            DispatchError::Rejected(
-                "dispatch claim epoch exhausted; refusing to wrap fencing authority".to_string(),
-            )
+            let violation = awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted;
+            tracing::error!(
+                target: "awaken::lease_generation_integrity",
+                code = awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
+                lease = "dispatch_claim",
+                %violation,
+                "lease generation integrity violated; refusing this dispatch claim permanently"
+            );
+            DispatchError::Rejected(format!(
+                "dispatch claim: {violation}; refusing to wrap fencing authority"
+            ))
         }
     }
 }
@@ -352,6 +363,63 @@ mod supersession_epoch_tests {
             next_claim_epoch(i64::MAX),
             Err(DispatchError::Rejected(message)) if message.contains("refusing to wrap")
         ));
+    }
+
+    #[test]
+    fn dispatch_claim_epoch_integrity_is_one_permanent_rejection() {
+        // The kernel owns the successor law (`DispatchTransition::claim` and
+        // its siblings); `transition_error` is the adapters' one projection.
+        // | Rule | persisted lease_epoch                         | effect                                   |
+        // |------|-----------------------------------------------|------------------------------------------|
+        // | D1   | u64::MAX, any claimable state                 | LeaseEpochExhausted, every attempt       |
+        // | D2   | signed column at i64::MAX                     | the same Rejected, integrity code        |
+        // | D3   | 0 (the V0013 `DEFAULT 0` column / new row)    | never claimed: the claim mints epoch 1   |
+        // | D4   | D1/D2 outward                                 | Rejected (did not commit), Terminal for  |
+        // |      |                                               | the claim; never Unavailable or Conflict |
+        use awaken_dispatch_contract::{DispatchTransition, DispatchTransitionError};
+        use awaken_lease_contract::fence::EpochIntegrityViolation;
+        for state in [
+            DispatchState::Pending,
+            DispatchState::Leased,
+            DispatchState::Awaiting,
+        ] {
+            let exhausted = DispatchTransition {
+                state,
+                lease_epoch: u64::MAX,
+                cancellation_requested: false,
+            };
+            for attempt in 0..3 {
+                assert_eq!(
+                    exhausted.claim(),
+                    Err(DispatchTransitionError::LeaseEpochExhausted),
+                    "D1 {state:?} attempt {attempt}"
+                );
+            }
+            let fresh = DispatchTransition {
+                lease_epoch: 0,
+                ..exhausted
+            };
+            assert_eq!(
+                fresh.claim().map(|next| next.map(|next| next.lease_epoch)),
+                Ok(Some(1)),
+                "D3 {state:?}"
+            );
+        }
+        let kernel = transition_error(DispatchTransitionError::LeaseEpochExhausted);
+        let column = next_claim_epoch(i64::MAX).unwrap_err();
+        assert_eq!(kernel, column, "D2 one projection");
+        let DispatchError::Rejected(message) = &kernel else {
+            panic!("D4 Rejected, got {kernel:?}");
+        };
+        assert!(
+            message.contains(EpochIntegrityViolation::CODE),
+            "D4 greppable"
+        );
+        assert_eq!(
+            awaken_dispatch_execution::AdmissionError::Dispatch(kernel).claim_disposition(),
+            awaken_session_execution_contract::SessionRealizationControlDisposition::Terminal,
+            "D4 the claim is never retried as a disposition"
+        );
     }
 
     #[test]

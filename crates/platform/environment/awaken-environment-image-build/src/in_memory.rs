@@ -160,3 +160,93 @@ impl EnvironmentImageBuildStore for InMemoryEnvironmentImageBuildStore {
         self.inner.invalidate_ready(build_key, now_ms).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_executable_environment_contract::EnvironmentImageBuildState;
+    use awaken_lease_contract::fence::Epoch;
+
+    #[tokio::test]
+    async fn an_integrity_refused_build_is_skipped_permanently_and_never_blocks_the_queue() {
+        // The one claim scan (`DurableEnvironmentImageBuildStore::claim_next`)
+        // refuses only the build whose persisted attempt is untrustworthy.
+        // | Rule | head of the scan                         | effect                                   |
+        // |------|------------------------------------------|------------------------------------------|
+        // | Q1   | due Failed at attempt 0 / Pending at MAX | skipped, record unchanged                |
+        // | Q2   | a healthy Pending build behind it        | claimed (no head-of-line blocking)       |
+        // | Q3   | every later scan                         | the refused build is never claimed: the  |
+        // |      |                                          | claim count stays 0 over 3 scans         |
+        let store = InMemoryEnvironmentImageBuildStore::new();
+        let mut keys = Vec::new();
+        for (suffix, state) in [
+            (
+                "a-zero",
+                EnvironmentImageBuildState::Failed {
+                    message: "m".into(),
+                    retry_at_ms: 0,
+                    attempt: 0,
+                },
+            ),
+            (
+                "b-exhausted",
+                EnvironmentImageBuildState::Pending { attempt: u64::MAX },
+            ),
+        ] {
+            let mut demand = crate::test_demand();
+            demand.build_key = format!("{suffix}:{}", demand.build_key);
+            store.ensure(demand.clone(), 1, None).await.unwrap();
+            let current = store.inner_backend_record(&demand.build_key);
+            let next = EnvironmentImageBuildRecord {
+                state,
+                ..current.record.clone()
+            };
+            assert!(
+                store
+                    .inner
+                    .backend()
+                    .compare_and_swap(&current, &next)
+                    .await
+                    .unwrap()
+            );
+            keys.push(demand.build_key);
+        }
+        let mut healthy = crate::test_demand();
+        healthy.build_key = format!("c-healthy:{}", healthy.build_key);
+        store.ensure(healthy.clone(), 1, None).await.unwrap();
+        let refused = keys
+            .iter()
+            .map(|key| store.inner_backend_record(key).record)
+            .collect::<Vec<_>>();
+
+        let claimed = store.claim_next("worker", 10, 10).await.unwrap().unwrap();
+        assert_eq!(claimed.demand.build_key, healthy.build_key, "Q2");
+        assert_eq!(claimed.lease_epoch, Epoch::FIRST, "Q2");
+        for scan in 0..3 {
+            assert!(
+                store
+                    .claim_next("worker", 11 + scan, 10)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "Q3 scan {scan}: only the refused builds remain, and none is claimed"
+            );
+        }
+        for (key, before) in keys.iter().zip(refused) {
+            assert_eq!(store.inner_backend_record(key).record, before, "Q1 {key}");
+        }
+    }
+
+    impl InMemoryEnvironmentImageBuildStore {
+        fn inner_backend_record(&self, key: &str) -> VersionedRecord {
+            self.inner
+                .backend()
+                .0
+                .lock()
+                .jobs
+                .get(key)
+                .cloned()
+                .unwrap()
+        }
+    }
+}
