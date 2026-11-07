@@ -118,6 +118,16 @@ def _status(code: int) -> int:
     return code if code >= 0 else 128 - code
 
 
+def nextest_store(root: Path) -> Path:
+    """Where nextest writes its reports: the workspace config's `[store] dir`, relative to the
+    workspace root (default `target/nextest`). It does not follow CARGO_TARGET_DIR or --target-dir."""
+    import tomllib
+
+    config = root / ".config" / "nextest.toml"
+    settings = tomllib.loads(config.read_text(encoding="utf-8")) if config.is_file() else {}
+    return root / settings.get("store", {}).get("dir", "target/nextest")
+
+
 def run(arguments: list[str], evidence: Path) -> int:
     """List, run and qualify one selection; the receipt stays `running` if this process dies."""
     from crate_test import native_command
@@ -126,7 +136,7 @@ def run(arguments: list[str], evidence: Path) -> int:
     (_, listing, command), required = required_command(arguments)
     if os.environ.get("NEXTEST_NO_CAPTURE") not in (None, "", "0"):
         raise ValueError("required runs need captured output to see fixture skips; unset NEXTEST_NO_CAPTURE")
-    report = Path(os.environ["CARGO_TARGET_DIR"]) / "nextest" / PROFILE / "junit.xml"
+    report = nextest_store(Path(__file__).resolve().parents[2]) / PROFILE / "junit.xml"
     digest, facts = working_subject()
     inputs = execution_inputs()
     receipt = evidence / "results.json"
@@ -282,6 +292,17 @@ class QualifyTests(unittest.TestCase):
             with self.subTest(refused=refused), self.assertRaises(ValueError):
                 required_command(["-p", "pkg", *refused])
 
+    def test_reports_come_from_the_workspace_store_not_the_cargo_target_dir(self) -> None:
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(root / "private-target")}):
+                self.assertEqual(nextest_store(root), root / "target" / "nextest")
+                (root / ".config").mkdir()
+                (root / ".config" / "nextest.toml").write_text('[store]\ndir = "out/nt"\n', encoding="utf-8")
+                self.assertEqual(nextest_store(root), root / "out" / "nt")
+
     def run_fixture(self, status: int, digests: list[str]) -> tuple[int, dict]:
         """Drive run() with nextest replaced by a writer of its two reports; nothing is built."""
         import tempfile
@@ -299,11 +320,14 @@ class QualifyTests(unittest.TestCase):
             stdout.flush()
             return subprocess.CompletedProcess(command, status)
         with tempfile.TemporaryDirectory() as directory:
-            target, evidence = Path(directory) / "target", Path(directory) / "evidence"
-            report = target / "nextest" / PROFILE / "junit.xml"
+            # A private CARGO_TARGET_DIR holds no report: nextest writes to the workspace store.
+            target, evidence = Path(directory) / "private-target", Path(directory) / "evidence"
+            store = Path(directory) / "workspace" / "target" / "nextest"
+            report = store / PROFILE / "junit.xml"
             evidence.mkdir()
             snapshots = iter(digests)
             with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}), \
+                    mock.patch.dict(globals(), nextest_store=lambda root: store), \
                     mock.patch.object(subprocess, "run", side_effect=nextest), \
                     mock.patch.object(crate_test, "native_command", side_effect=lambda command: command), \
                     mock.patch.object(rust_test_plan, "working_subject", return_value=("a", {"revision": b"r"})), \
