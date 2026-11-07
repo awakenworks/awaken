@@ -13,6 +13,7 @@ cd "$(dirname "$0")/../.."
 source scripts/ci/_provider_environment.sh
 awaken_unset_ambient_api_keys
 awaken_append_repo_tools
+source scripts/ci/_cargo_target.sh && awaken_configure_gate_temp "$PWD" || exit $?
 
 groups=(static docs rust api contracts formal reliability postgres kubernetes k3d frontend e2e sandbox)
 requested_group=all
@@ -184,7 +185,7 @@ run() {
     return 0
   fi
   if ! precheck_group "$group"; then
-    echo "group prerequisite unavailable; dependent checks were not started" >&2
+    echo "the $group group did not start; the lines above name what is missing and the fix" >&2
     exit 1
   fi
   if [ "$group" = static ] && [ "${1:-}" = python3 ]; then

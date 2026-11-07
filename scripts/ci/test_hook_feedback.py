@@ -26,7 +26,8 @@ from _strict_unittest import main
 
 ROOT = Path(__file__).resolve().parents[2]
 INPUT_GLOBS = ('lefthook.yml', 'scripts/ci/pre-commit/observe.sh',
-               'scripts/ci/_build_observation.sh', 'scripts/ci/generate_hooks.py',
+               'scripts/ci/_build_observation.sh', 'scripts/ci/_cargo_target.sh',
+               'scripts/ci/generate_hooks.py',
                'scripts/ci/parallel_check.py', 'scripts/ci/ci_performance.py',
                'scripts/ci/deadline.py', 'scripts/ci/_native_shell.py')
 
@@ -129,6 +130,7 @@ class HookFeedbackTests(unittest.TestCase):
                        *generate_hooks.local_imports('_native_shell.py')}:
             shutil.copyfile(ROOT / 'scripts/ci' / module, scripts / module)
         shutil.copyfile(ROOT / 'scripts/ci/_build_observation.sh', scripts / '_build_observation.sh')
+        shutil.copyfile(ROOT / 'scripts/ci/_cargo_target.sh', scripts / '_cargo_target.sh')
         (scripts / 'pre-commit').mkdir()
         shutil.copyfile(ROOT / 'scripts/ci/pre-commit/observe.sh', scripts / 'pre-commit/observe.sh')
         (scripts / 'pre-commit/observe.sh').chmod(0o755)
