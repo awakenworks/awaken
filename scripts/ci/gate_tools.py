@@ -8,6 +8,7 @@ Usage:
   gate_tools.py rows                       one `name|gates|install` line per tool
   gate_tools.py locate <tool>              print where it is, or fail
   gate_tools.py require --gate <gate>      fail when a required tool is absent
+  gate_tools.py bootstrap [--online]       install what local caches supply
   gate_tools.py solver-status <solver>     decide one Kani solver before it runs
   gate_tools.py disk --stage <stage>       fail when the target filesystem is small
   gate_tools.py --self-test                prove the manifest against this machine
@@ -175,11 +176,31 @@ def _kani_solver_directory() -> tuple[str | None, str | None]:
     return (result.stdout.strip().splitlines()[-1] if result.stdout.strip() else None), None
 
 
-def _node_root_missing(relative: str) -> list[str]:
+def _node_dependencies():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import check_node_dependencies  # noqa: PLC0415 - deliberately late, it owns this decision
 
-    return check_node_dependencies.dependency_errors(ROOT, (relative,))
+    return check_node_dependencies
+
+
+def _node_root_missing(relative: str, root: Path | None = None) -> str:
+    """What is missing under one Node root, or "" when it is installed."""
+
+    return _node_dependencies().missing_summary(root or ROOT, relative)
+
+
+# Locate kinds a worktree installs from local caches, with no network, through
+# the one command below. Every other kind is a host tool a person installs.
+BOOTSTRAP_KINDS = {"node-root"}
+BOOTSTRAP_COMMAND = "scripts/ci/doctor.sh --fix"
+
+
+def subject(tool: dict) -> str:
+    """The thing a person looks for when this row is missing."""
+
+    if tool["locate"] != "node-root":
+        return tool["name"]
+    return "node_modules (repository root)" if tool["name"] == "." else f"{tool['name']}/node_modules"
 
 
 # What a container engine says when it looked and the image was not there. Any
@@ -305,14 +326,14 @@ def locate(tool: dict) -> Found:
         return _image_status(name)
     if kind == "node-root":
         try:
-            problems = _node_root_missing(name)
+            problem = _node_root_missing(name)
         except Exception as error:  # noqa: BLE001 - any failure here means we did not look
             return Found(
                 "undecidable",
                 detail=f"the Node dependency checker could not answer for {name}: {error}",
             )
-        if problems:
-            return Found("absent", detail=problems[0])
+        if problem:
+            return Found("absent", detail=problem)
         return Found("present", str(ROOT / name) if name != "." else str(ROOT), "installed")
     raise SystemExit(f"gate_tools: {name} declares an unknown locate kind {kind!r}")
 
@@ -431,12 +452,15 @@ def command_require(manifest: dict, gate: str) -> int:
     drifted: list[str] = []
     undecided: list[str] = []
     notes: list[str] = []
+    # The rows behind each refusal, so the last line names them instead of a count.
+    causes: dict[str, list[dict]] = {"missing": [], "drifted": [], "undecided": []}
     for tool in tools_for(manifest, gate):
         found = locate(tool)
         if found.usable:
             problem = version_problem(tool, found)
             if problem and tool.get("version", {}).get("mismatch") == "hard-error":
                 drifted.append(problem)
+                causes["drifted"].append(tool)
             elif problem:
                 notes.append(f"warning: {problem}")
             continue
@@ -444,6 +468,7 @@ def command_require(manifest: dict, gate: str) -> int:
             # The requirement level does not matter here. "Optional" buys a skip
             # when the tool is known to be absent; it buys nothing when the probe
             # failed, because then nobody knows what would have been skipped.
+            causes["undecided"].append(tool)
             undecided.append(
                 f"undecidable tool for the {gate} gate: {tool['name']}"
                 f"\n    the probe did not answer: {found.detail or 'no detail was recorded'}"
@@ -453,11 +478,12 @@ def command_require(manifest: dict, gate: str) -> int:
             )
             continue
         if tool["requirement"] == "required":
-            detail = f" ({found.detail})" if found.detail else ""
+            detail = f": {found.detail}" if found.detail else ""
+            causes["missing"].append(tool)
             missing.append(
-                f"missing tool for the {gate} gate: {tool['name']}{detail}"
+                f"the {gate} gate needs {subject(tool)}{detail}"
                 f"\n    located by: {tool['locate']}"
-                f"\n    install:    {tool['install']}"
+                f"\n    fix:        {tool['install']}"
             )
         elif tool["requirement"] == "fetched":
             notes.append(
@@ -478,12 +504,111 @@ def command_require(manifest: dict, gate: str) -> int:
     for problem in missing:
         print(f"ERROR: {problem}", file=sys.stderr)
     if missing or drifted or undecided:
-        print(
-            f"the {gate} gate did not start: scripts/ci/doctor.sh reports every tool",
-            file=sys.stderr,
-        )
+        print(refusal_summary(gate, causes), file=sys.stderr)
         return 1
     print(f"gate '{gate}': every required tool is present")
+    return 0
+
+
+def refusal_summary(gate: str, causes: dict[str, list[dict]]) -> str:
+    """The last lines of a refusal: exactly what is missing, and the one fix.
+
+    A refusal used to end "scripts/ci/doctor.sh reports every tool", and
+    check-all.sh's next line began "group prerequisite unavailable", so a single
+    absent ``e2e/node_modules`` read as "every tool group prerequisite
+    unavailable". The summary now names each cause and, when every cause is one
+    the bootstrap installs, gives that command and nothing else.
+
+    | Rule | causes                                  | fix line                         |
+    |------|-----------------------------------------|----------------------------------|
+    | R1   | only bootstrap-installable rows missing | the bootstrap command, alone     |
+    | R2   | host tools (or drift/undecided) only    | each ERROR above; doctor lists all |
+    | R3   | both                                    | bootstrap for its rows + R2      |
+    """
+
+    named = [
+        f"{label} {', '.join(subject(tool) for tool in tools)}"
+        for label, tools in (
+            ("missing", causes["missing"]),
+            ("wrong version of", causes["drifted"]),
+            ("could not decide", causes["undecided"]),
+        )
+        if tools
+    ]
+    lines = [f"the {gate} gate did not start: {'; '.join(named)}"]
+    bootstrap = [tool for tool in causes["missing"] if tool["locate"] in BOOTSTRAP_KINDS]
+    rest = len(causes["missing"]) - len(bootstrap) + len(causes["drifted"]) + len(causes["undecided"])
+    if bootstrap and not rest:
+        lines.append(f"    fix: {BOOTSTRAP_COMMAND}")
+    elif bootstrap:
+        lines.append(
+            f"    fix: {BOOTSTRAP_COMMAND} installs {', '.join(subject(tool) for tool in bootstrap)}"
+        )
+    if rest:
+        lines.append(
+            "    fix: the rest as each ERROR above says; scripts/ci/doctor.sh lists every tool"
+        )
+    return "\n".join(lines)
+
+
+def command_bootstrap(manifest: dict, *, online: bool = False, root: Path | None = None) -> int:
+    """Install every prerequisite a worktree can get from local caches.
+
+    A fresh worktree has no ``node_modules`` anywhere, and every gate refused
+    until somebody remembered which of three roots needed which package manager.
+    This installs each declared Node root from its lockfile, offline unless the
+    caller passes ``--online``, and touches nothing else: no network by default,
+    no Git configuration, no host tools.
+
+    | Rule | root before        | install result | effect                            |
+    |------|--------------------|----------------|-----------------------------------|
+    | B1   | installed          | (not run)      | skipped; a re-run changes nothing |
+    | B2   | missing            | exit 0         | installed, checked again          |
+    | B3   | missing            | exit != 0      | exit 1, names the --online re-run |
+    | B4   | missing            | manager absent | exit 1, names the manager         |
+    | B5   | two roots, one cmd | (one run)      | the shared command runs once      |
+    """
+
+    root = root or ROOT
+    nodes = _node_dependencies()
+    members = nodes.workspace_members(root)
+    roots = [tool for tool in manifest["tools"] if tool["locate"] in BOOTSTRAP_KINDS]
+    failed: list[str] = []
+    ran: set[tuple[str, ...]] = set()
+    for tool in roots:
+        relative = tool["name"]
+        if not _node_root_missing(relative, root):
+            print(f"bootstrap: {subject(tool)} is already installed")
+            continue
+        command = nodes.lockfile_install_command(root, relative, members, online=online)
+        if tuple(command) in ran:
+            continue
+        ran.add(tuple(command))
+        shown = " ".join(command)
+        executable = shutil.which(command[0])
+        if executable is None:
+            failed.append(f"{subject(tool)}: {command[0]} is not on PATH; install Node 22 and "
+                          "pnpm as CONTRIBUTING.md (Setup) says, then re-run")
+            continue
+        print(f"bootstrap: {subject(tool)} is missing; running {shown}", flush=True)
+        status = subprocess.run([executable, *command[1:]], cwd=root).returncode
+        if status != 0:
+            failed.append(
+                f"{subject(tool)}: `{shown}` exited {status}"
+                + ("" if online else
+                   "; the local package cache lacks something the lockfile pins (see the "
+                   f"package manager's message above). With network access: {BOOTSTRAP_COMMAND} --online")
+            )
+    for tool in roots:
+        remaining = _node_root_missing(tool["name"], root)
+        if remaining and not any(entry.startswith(f"{subject(tool)}:") for entry in failed):
+            failed.append(f"{subject(tool)}: still missing after its install: {remaining}")
+    for problem in failed:
+        print(f"ERROR: bootstrap: {problem}", file=sys.stderr)
+    if failed:
+        return 1
+    print("bootstrap: every prerequisite local caches can supply is installed; "
+          "scripts/ci/doctor.sh reports the host tools this cannot install")
     return 0
 
 
@@ -1055,6 +1180,126 @@ def _probe_snapshot_problems() -> list[str]:
     return problems
 
 
+def _bootstrap_problems(manifest: dict) -> list[str]:
+    """M13-M15: a missing Node root is named with its one fix, and that fix is idempotent."""
+
+    import tempfile  # noqa: PLC0415 - only the self-test writes fixtures
+    from unittest.mock import patch
+
+    problems: list[str] = []
+    # M15 the advice and the bootstrap cannot drift apart.
+    for tool in manifest["tools"]:
+        if tool["locate"] in BOOTSTRAP_KINDS and tool.get("install") != BOOTSTRAP_COMMAND:
+            problems.append(f"M15 {tool['name']}: bootstrap-installable but advises "
+                            f"{tool.get('install')!r} instead of {BOOTSTRAP_COMMAND}")
+
+    rows = [
+        {"name": "e2e", "locate": "node-root", "gates": ["static"], "requirement": "required",
+         "install": BOOTSTRAP_COMMAND},
+        {"name": "web", "locate": "node-root", "gates": ["frontend"], "requirement": "required",
+         "install": BOOTSTRAP_COMMAND},
+        {"name": ".", "locate": "node-root", "gates": ["static"], "requirement": "required",
+         "install": BOOTSTRAP_COMMAND},
+    ]
+    host_tool = {"name": "fixture-host-tool", "locate": "path", "gates": ["static"],
+                 "requirement": "required", "install": "your package manager"}
+    fixture = {"tools": rows}
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "pnpm-workspace.yaml").write_text("packages:\n  - web\n", encoding="utf-8")
+        for relative, dependency in (("e2e", "@fixture/sdk"), ("web", "react"), (".", "typescript")):
+            (root / relative).mkdir(exist_ok=True)
+            (root / relative / "package.json").write_text(
+                json.dumps({"dependencies": {dependency: "1.0.0"}}), encoding="utf-8")
+        installs = {"npm": [root / "e2e/node_modules/@fixture/sdk"],
+                    "pnpm": [root / "node_modules/typescript", root / "web/node_modules/react"]}
+        calls: list[list[str]] = []
+        outcome = {"status": 0, "install": True}
+
+        def manager(command, cwd=None, **_):
+            calls.append(list(command))
+            if cwd != root:
+                problems.append("M14 an install ran outside the worktree root")
+            if outcome["install"]:
+                for path in installs[Path(command[0]).name]:
+                    path.mkdir(parents=True, exist_ok=True)
+            return subprocess.CompletedProcess(command, outcome["status"])
+
+        def bootstrap(online=False, which=lambda name: f"/fixture/{name}"):
+            with patch.object(shutil, "which", side_effect=which), \
+                    patch.object(subprocess, "run", side_effect=manager):
+                import contextlib
+                import io
+                sink = io.StringIO()
+                with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                    code = command_bootstrap(fixture, online=online, root=root)
+            return code, sink.getvalue()
+
+        # M13 diagnosis through the real locate: the root, the cause, the one command.
+        with patch(__name__ + ".ROOT", root):
+            import contextlib
+            import io
+            sink = io.StringIO()
+            with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                code = command_require(fixture, "static")
+            text = sink.getvalue()
+            if code != 1 or "e2e/node_modules" not in text or f"fix: {BOOTSTRAP_COMMAND}\n" not in text + "\n":
+                problems.append(f"M13 R1 a missing e2e root was not named with its fix: {text!r}")
+            if "every" in text.splitlines()[-2]:
+                problems.append("M13 R1 one missing directory was reported as every prerequisite")
+            with patch(__name__ + ".locate", side_effect=lambda tool: Found(
+                    "absent", detail="fixture") if tool["locate"] != "path" else Found("absent")):
+                sink = io.StringIO()
+                with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                    command_require({"tools": [rows[0], host_tool]}, "static")
+                mixed = sink.getvalue()
+                sink = io.StringIO()
+                with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                    command_require({"tools": [host_tool]}, "static")
+                host_only = sink.getvalue()
+            if ("missing e2e/node_modules, fixture-host-tool" not in mixed
+                    or f"{BOOTSTRAP_COMMAND} installs e2e/node_modules" not in mixed
+                    or "the rest as each ERROR above says" not in mixed):
+                problems.append(f"M13 R3 mixed causes lost a name or a fix: {mixed!r}")
+            if BOOTSTRAP_COMMAND in host_only or "the rest as each ERROR" not in host_only:
+                problems.append(f"M13 R2 a host tool was sent to the bootstrap: {host_only!r}")
+
+        code, text = bootstrap()
+        expected = [["/fixture/npm", "ci", "--prefix", "e2e", "--no-audit", "--no-fund", "--offline"],
+                    ["/fixture/pnpm", "install", "--frozen-lockfile", "--offline"]]
+        if code != 0 or calls != expected:
+            problems.append(f"M14 B2/B5 first bootstrap: exit {code}, ran {calls}")
+        calls.clear()
+        code, text = bootstrap()
+        if code != 0 or calls or text.count("already installed") != 3:
+            problems.append(f"M14 B1 a second bootstrap was not a no-op: exit {code}, ran {calls}")
+
+        import shutil as _shutil  # noqa: PLC0415
+        for relative in ("e2e", "web", "."):
+            _shutil.rmtree(root / relative / "node_modules")
+        calls.clear()
+        outcome.update(status=1, install=False)
+        code, text = bootstrap()
+        if code != 1 or f"{BOOTSTRAP_COMMAND} --online" not in text or "lacks" not in text:
+            problems.append(f"M14 B3 an offline cache miss did not name the online re-run: {text!r}")
+        if [Path(call[0]).name for call in calls] != ["npm", "pnpm"]:
+            problems.append(f"M14 B5 a failed shared install ran again for its second root: {calls}")
+        calls.clear()
+        code, text = bootstrap(online=True)
+        if code != 1 or "--offline" in " ".join(calls[0]) or "--online" in text:
+            problems.append(f"M14 B3 an online run kept --offline or advised itself: {calls} {text!r}")
+        calls.clear()
+        outcome.update(status=0, install=False)
+        code, text = bootstrap()
+        if code != 1 or "still missing after its install" not in text:
+            problems.append(f"M14 an install that exited 0 but installed nothing passed: {text!r}")
+        calls.clear()
+        code, text = bootstrap(which=lambda name: None)
+        if code != 1 or calls or "npm is not on PATH" not in text:
+            problems.append(f"M14 B4 an absent package manager was not named: {text!r}")
+    return problems
+
+
 def self_test() -> int:
     """Prove the manifest against this machine.
 
@@ -1071,6 +1316,9 @@ def self_test() -> int:
     | M9   | a version pin naming an owning shell constant      | both copies say the same thing |
     | M10  | a probe that answered / that could not answer      | absent / undecidable, never confused |
     | M11  | an undecidable probe                               | refuses the gate, never skips it |
+    | M13  | a missing Node root / host tool / both             | named, with the bootstrap or not |
+    | M14  | bootstrap twice / cache miss / no package manager  | no-op / --online advice / named  |
+    | M15  | a bootstrap-installable row                        | advises the bootstrap command    |
     """
 
     manifest = load()
@@ -1242,6 +1490,7 @@ def self_test() -> int:
     problems.extend(_probe_snapshot_problems())
     problems.extend(_third_outcome_problems())
     problems.extend(_host_resource_problems())
+    problems.extend(_bootstrap_problems(manifest))
 
     if problems:
         print("gate_tools self-test:", file=sys.stderr)
@@ -1267,6 +1516,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--profile", choices=('cargo', 'qualification'), default='cargo')
     parser.add_argument("--require-host", action="store_true")
     parser.add_argument("--observe", action="store_true")
+    parser.add_argument("--online", action="store_true")
     arguments = parser.parse_args(argv)
 
     manifest = load()
@@ -1299,6 +1549,8 @@ def main(argv: list[str]) -> int:
             manifest, arguments.stage or arguments.name or "", arguments.path,
             arguments.minimum_gigabytes,
         )
+    if action == "bootstrap":
+        return command_bootstrap(manifest, online=arguments.online)
     if action == 'resources':
         return command_resources(manifest, arguments.profile, require_host=arguments.require_host,
                                  observe=arguments.observe)

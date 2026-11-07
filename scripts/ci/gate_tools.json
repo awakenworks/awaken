@@ -295,22 +295,22 @@
       "locate": "node-root",
       "gates": ["static", "e2e", "contracts"],
       "requirement": "required",
-      "note": "Outside pnpm-workspace.yaml on purpose, so `pnpm install` reports Already up to date while this root stays empty and the next gate dies with ERR_MODULE_NOT_FOUND.",
-      "install": "npm --prefix e2e install"
+      "note": "Outside pnpm-workspace.yaml on purpose, so `pnpm install` reports Already up to date while this root stays empty and the next gate dies with ERR_MODULE_NOT_FOUND. The bootstrap runs `npm ci --prefix e2e --offline` for it.",
+      "install": "scripts/ci/doctor.sh --fix"
     },
     {
       "name": "web",
       "locate": "node-root",
       "gates": ["frontend"],
       "requirement": "required",
-      "install": "pnpm install"
+      "install": "scripts/ci/doctor.sh --fix"
     },
     {
       "name": ".",
       "locate": "node-root",
       "gates": ["static", "contracts"],
       "requirement": "required",
-      "install": "pnpm install"
+      "install": "scripts/ci/doctor.sh --fix"
     },
     {
       "name": "docker",
