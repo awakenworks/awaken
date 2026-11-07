@@ -23,13 +23,26 @@ This derives everything from those two sources instead of a second list:
   the companion beside its own executable and a separate build directory moves
   test executables away from the binaries.
 
-usage: crate_test.py [--dry-run] -p <crate> [nextest arguments...] | --self-test
+`--doc` is the doctest step's half: the same whole graph under
+`RUSTC_BOOTSTRAP=1`, so rustdoc checks a `compile_fail,E0xxx` block's pinned
+code (ADR-0103). A bare `cargo test -p <crate> --doc` ignores the code and
+passes a block that fails for an unrelated reason. Nothing else here sets that
+variable: on an ordinary build it would silently admit unstable features.
+
+`--repro-hint <step>` reads a failed gate step's output and prints, per failure
+it names, the command above that reproduces it.
+
+usage: crate_test.py [--dry-run] -p <crate> [nextest arguments...]
+       crate_test.py [--dry-run] --doc -p <crate> ['<doctest name>']
+       crate_test.py --repro-hint test|test-build|doctest < <step output>
+       crate_test.py --self-test
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -51,7 +64,11 @@ COMPILE_ENVIRONMENT_OVERRIDES = (
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / ".config/rust-tests.toml"
-USAGE = "usage: crate_test.py [--dry-run] -p <crate> [nextest arguments...] | --self-test"
+USAGE = ("usage: crate_test.py [--dry-run] [--doc] -p <crate> [nextest arguments... | '<doctest name>']"
+         " | --repro-hint test|test-build|doctest | --self-test")
+# The doctest step's only extra environment (ADR-0103); never an ordinary build's.
+DOCTEST_ENVIRONMENT = {"RUSTC_BOOTSTRAP": "1"}
+ENTRY = "scripts/ci/test.sh"
 
 
 class PlanError(Exception):
@@ -273,6 +290,79 @@ def plan_packages(metadata: dict, features: list[str], companions: list[dict[str
     return commands
 
 
+def plan_doctests(metadata: dict, features: list[str], crate: str, name: str | None = None,
+                  root: Path = ROOT) -> list[str]:
+    """The doctest step's command, executing one crate's doctests or one of them.
+
+    The step runs every member's doctests over the whole authored graph. A
+    libtest filter keeps that graph and selects execution: rustdoc names a
+    doctest `<source path from the workspace root> - <item> (line N)`, so the
+    crate's directory selects its doctests and a doctest's source path selects
+    the file holding it. Nothing narrower: rustdoc splits a test filter at
+    whitespace, so a name (`... - Item (line 57)`) becomes the filter `-` that
+    matches every doctest, and `--exact` with it matches none and exits 0.
+    """
+    package = _members(metadata).get(crate)
+    if package is None:
+        raise PlanError(f"{crate} is not a workspace crate")
+    if not any(target.get("doctest") for target in package["targets"]):
+        raise PlanError(f"{crate} has no library target with doctests")
+    directory = Path(package["manifest_path"]).parent.relative_to(root).as_posix() + "/"
+    source = None if name is None else name.split(" - ", 1)[0]
+    if source is not None and not (source.startswith(directory) and source.endswith(".rs")
+                                   and not any(c.isspace() for c in source)):
+        raise PlanError(f"'{name}' is not a doctest of {crate}: pass the name a failure prints "
+                        f"('{directory}src/lib.rs - Item (line N)') or its source path, or none for all")
+    return ["cargo", "test", "--workspace", "--locked", "--doc", "--features", ",".join(features),
+            "--", source or directory]
+
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+# nextest's per-test and final-summary status lines; a crash is a SIG* status.
+NEXTEST_FAILURE = re.compile(
+    r"^\s*(?:TRY \d+ )?(?:FAIL|TIMEOUT|LEAK-FAIL|ABORT|SIG[A-Z]+)\s+\[[^\]]*\]\s+"
+    r"(?:\(\s*\d+/\s*\d+\)\s+)?(?P<binary>[\w-]+(?:::\S+)?)\s+(?P<test>\S+)\s*$", re.M)
+DOCTEST_FAILURE = re.compile(r"^---- (?P<name>\S.* - .*?) stdout ----$", re.M)
+COMPILE_FAILURE = re.compile(r"^error: could not compile `(?P<package>[^`]+)`", re.M)
+HINT_LIMIT = 10
+
+
+def package_of(source: str, root: Path = ROOT) -> str | None:
+    """The workspace package whose manifest is nearest above a doctest's source path."""
+
+    directory = (root / source).parent
+    while directory != root and root in directory.parents:
+        manifest = directory / "Cargo.toml"
+        if manifest.is_file():
+            return tomllib.loads(manifest.read_text(encoding="utf-8")).get("package", {}).get("name")
+        directory = directory.parent
+    return None
+
+
+def repro_hints(step: str, output: str, root: Path = ROOT) -> list[str]:
+    """`→ fix:` lines that reproduce each failure a gate step printed, the way it ran."""
+
+    text = ANSI.sub("", output)
+    rows: dict[str, list[str]] = {}
+    for package in COMPILE_FAILURE.findall(text):
+        rows[f"the build of {package}"] = (
+            [ENTRY, "--doc", "-p", package] if step == "doctest" else [ENTRY, "-p", package, "--no-run"])
+    if step == "test":
+        for match in NEXTEST_FAILURE.finditer(text):
+            binary, test = match["binary"], match["test"]
+            rows[f"{binary} {test}"] = [ENTRY, "-p", binary.split("::", 1)[0],
+                                        "-E", f"binary_id(={binary}) & test(={test})"]
+    elif step == "doctest":
+        for name in DOCTEST_FAILURE.findall(text):
+            package = package_of(name.split(" - ", 1)[0], root)
+            rows[name] = [ENTRY, "--doc", "-p", package, name] if package else [ENTRY, "--doc", "-p", "<package>"]
+    hints = [f"→ fix: reproduce {subject}: {shlex.join(command)}"
+             for subject, command in list(rows.items())[:HINT_LIMIT]]
+    if len(rows) > HINT_LIMIT:
+        hints.append(f"→ fix: {len(rows) - HINT_LIMIT} more failures reproduce the same way")
+    return hints
+
+
 def environment(root: Path = ROOT) -> dict[str, str]:
     values = dict(os.environ)
     values.setdefault("CARGO_TARGET_DIR", str(root / "target"))
@@ -376,13 +466,18 @@ def _execute_commands(commands: list[list[str]], values: dict[str, str], *, root
     return 0, rows
 
 
-def parse(argv: list[str]) -> tuple[bool, str, list[str]]:
-    dry_run = False
-    while argv and argv[0] == "--dry-run":
-        dry_run, argv = True, argv[1:]
+def parse(argv: list[str]) -> tuple[bool, bool, str, list[str]]:
+    """(dry run, doctest mode, crate, the rest); the doctest mode takes at most one name."""
+    flags = set()
+    while argv and argv[0] in ("--dry-run", "--doc"):
+        flags.add(argv[0])
+        argv = argv[1:]
     if len(argv) < 2 or argv[0] != "-p" or argv[1].startswith("-"):
         raise PlanError(USAGE)
-    return dry_run, argv[1], argv[2:]
+    if "--doc" in flags and (len(argv) > 3 or any(word.startswith("-") for word in argv[2:])):
+        raise PlanError("--doc selects every doctest of the crate or one by its full name; "
+                        "it takes no other arguments")
+    return "--dry-run" in flags, "--doc" in flags, argv[1], argv[2:]
 
 
 class CrateTestPlan(unittest.TestCase):
@@ -687,12 +782,136 @@ class CrateTestPlan(unittest.TestCase):
         self.assertIn("awaken-cli/container-k8s", leaf[0][leaf[0].index("--features") + 1])
 
 
+class ReproEntry(unittest.TestCase):
+    """Repro entry decision table; synthetic metadata and output, no Cargo.
+
+    | Rule | input                                        | effect                                         |
+    |------|----------------------------------------------|------------------------------------------------|
+    | R1   | --doc -p <crate> [one full name]             | parsed; extra or flag arguments refused        |
+    | R2   | doctest plan                                 | whole graph, crate directory or --exact name   |
+    | R3   | --doc vs test mode execution environment     | RUSTC_BOOTSTRAP=1 only on the doctest command  |
+    | R4   | nextest / doctest / compile failure output   | one `→ fix:` command per failure, capped       |
+    | R5   | a printed test hint, parsed back             | the plan builds the companion first            |
+    """
+
+    features = CrateTestPlan.features
+
+    def setUp(self):
+        environment = mock.patch.dict(os.environ, {"PATH": os.environ.get("PATH", "")}, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def metadata(self) -> dict:
+        metadata = CrateTestPlan.metadata()
+        for package in metadata["packages"]:
+            for target in package["targets"]:
+                target["doctest"] = target["kind"] == ["lib"]
+        return metadata
+
+    def test_r1_doc_arguments(self):
+        self.assertEqual(parse(["--doc", "-p", "leaf"]), (False, True, "leaf", []))
+        self.assertEqual(parse(["--dry-run", "--doc", "-p", "leaf", "x - y (line 1)"]),
+                         (True, True, "leaf", ["x - y (line 1)"]))
+        self.assertEqual(parse(["-p", "leaf", "--no-capture"]), (False, False, "leaf", ["--no-capture"]))
+        for argv in (["--doc", "-p", "leaf", "a", "b"], ["--doc", "-p", "leaf", "--no-capture"], ["--doc"]):
+            with self.subTest(argv=argv), self.assertRaises(PlanError):
+                parse(argv)
+
+    def test_r2_doctest_plan(self):
+        whole = ["cargo", "test", "--workspace", "--locked", "--doc", "--features", "cli/k8s,hand/hand", "--"]
+        self.assertEqual(plan_doctests(self.metadata(), self.features, "leaf"), [*whole, "crates/leaf/"])
+        # rustdoc splits filters at whitespace, so a named doctest selects its
+        # source file: listed name (` - compile fail`), failure header, or path.
+        for name in ("crates/leaf/src/lib.rs - Lock (line 57) - compile fail",
+                     "crates/leaf/src/lib.rs - Lock (line 57)", "crates/leaf/src/lib.rs"):
+            command = plan_doctests(self.metadata(), self.features, "leaf", name)
+            self.assertEqual(command, [*whole, "crates/leaf/src/lib.rs"])
+            self.assertFalse(any(c.isspace() for c in command[-1]))
+        for crate, name, refusal in (("leaf", "crates/cli/src/lib.rs - X (line 1)", "not a doctest of leaf"),
+                                     ("leaf", "Lock", "not a doctest of leaf"),
+                                     ("leaf", "crates/leaf/src/my lib.rs - Lock (line 1)", "not a doctest of leaf"),
+                                     ("hand", None, "no library target"), ("nope", None, "not a workspace")):
+            with self.subTest(crate=crate, name=name), self.assertRaisesRegex(PlanError, refusal):
+                plan_doctests(self.metadata(), self.features, crate, name)
+
+    def run_main(self, argv: list[str]) -> tuple[int, dict, str]:
+        import contextlib
+        import io
+        printed = io.StringIO()
+        with mock.patch("rust_test_plan.source_snapshot", return_value=("subject", b"")), \
+                mock.patch(__name__ + ".load_profile", return_value=(self.features, CrateTestPlan.companions)), \
+                mock.patch(__name__ + ".full_graph_metadata", return_value=self.metadata()), \
+                mock.patch(__name__ + ".companion_errors", return_value=[]), \
+                mock.patch(__name__ + ".execute_commands", return_value=(0, [])) as execute, \
+                contextlib.redirect_stdout(printed):
+            status = main(argv)
+        return status, execute.call_args, printed.getvalue()
+
+    def test_r3_only_the_doctest_command_sets_rustc_bootstrap(self):
+        status, call, printed = self.run_main(["--doc", "-p", "leaf"])
+        self.assertEqual(status, 0)
+        self.assertEqual(call.args[1]["RUSTC_BOOTSTRAP"], "1")
+        self.assertEqual(call.args[0][0][:5], ["cargo", "test", "--workspace", "--locked", "--doc"])
+        self.assertIn("RUSTC_BOOTSTRAP=1 cargo test", printed)
+        status, call, printed = self.run_main(["-p", "cli"])
+        self.assertEqual(status, 0)
+        self.assertNotIn("RUSTC_BOOTSTRAP", call.args[1])
+        self.assertNotIn("RUSTC_BOOTSTRAP", printed)
+        self.assertEqual(self.run_main(["--dry-run", "--doc", "-p", "leaf"])[1], None, "dry run executes nothing")
+
+    def test_r4_hints_name_each_failure_once(self):
+        nextest = ("        FAIL [   0.004s] ( 1/20) cli::scenario tests::boom\n"
+                   "──── STDERR:             cli::scenario tests::boom\n"
+                   "\x1b[31m     SIGABRT\x1b[0m [   0.100s] (2/20) cli tests::deep\n"
+                   "     Summary [   0.105s] 20 tests run: 18 passed, 2 failed, 0 skipped\n"
+                   "        FAIL [   0.004s] ( 1/20) cli::scenario tests::boom\n"
+                   "        PASS [   0.004s] ( 3/20) cli tests::fine\n")
+        self.assertEqual(repro_hints("test", nextest), [
+            "→ fix: reproduce cli::scenario tests::boom: scripts/ci/test.sh -p cli "
+            "-E 'binary_id(=cli::scenario) & test(=tests::boom)'",
+            "→ fix: reproduce cli tests::deep: scripts/ci/test.sh -p cli -E 'binary_id(=cli) & test(=tests::deep)'"])
+        build = "error[E0425]: x\nerror: could not compile `leaf` (test \"t\") due to 1 previous error\n"
+        self.assertEqual(repro_hints("test-build", build),
+                         ["→ fix: reproduce the build of leaf: scripts/ci/test.sh -p leaf --no-run"])
+        self.assertEqual(repro_hints("doctest", build),
+                         ["→ fix: reproduce the build of leaf: scripts/ci/test.sh --doc -p leaf"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "crates/leaf/src").mkdir(parents=True)
+            (root / "crates/leaf/Cargo.toml").write_text('[package]\nname = "leaf"\n')
+            name = "crates/leaf/src/lib.rs - Lock (line 57) - compile fail"
+            doctest = f"test {name} ... FAILED\n\nfailures:\n\n---- {name} stdout ----\nerror[E0599]\n"
+            self.assertEqual(repro_hints("doctest", doctest, root),
+                             [f"→ fix: reproduce {name}: scripts/ci/test.sh --doc -p leaf '{name}'"])
+        many = "".join(f"        FAIL [ 0.1s] cli tests::case{n}\n" for n in range(HINT_LIMIT + 3))
+        hints = repro_hints("test", many)
+        self.assertEqual(len(hints), HINT_LIMIT + 1)
+        self.assertEqual(hints[-1], "→ fix: 3 more failures reproduce the same way")
+        self.assertEqual(repro_hints("test", "error: test run failed\n"), [])
+
+    def test_r5_a_test_hint_plans_the_companion_first(self):
+        hint = repro_hints("test", "        FAIL [ 0.1s] cli::scenario tests::boom\n")[0]
+        _, doc, crate, rest = parse(shlex.split(hint.split(": ", 2)[2])[1:])
+        commands = plan_packages(self.metadata(), self.features, CrateTestPlan.companions, [crate], rest)
+        self.assertFalse(doc)
+        self.assertEqual(commands[0][:2] + commands[0][4:7], ["cargo", "build", "hand", "--bin", "hand-bin"])
+        self.assertEqual(commands[1][-2:], ["-E", "(package(=cli)) & ((binary_id(=cli::scenario) & test(=tests::boom)))"])
+
+
 def main(argv: list[str]) -> int:
     if argv == ["--self-test"]:
-        suite = unittest.defaultTestLoader.loadTestsFromTestCase(CrateTestPlan)
+        loader = unittest.defaultTestLoader
+        suite = unittest.TestSuite([loader.loadTestsFromTestCase(CrateTestPlan),
+                                    loader.loadTestsFromTestCase(ReproEntry)])
         return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
+    if argv[:1] == ["--repro-hint"]:
+        if len(argv) != 2 or argv[1] not in ("test", "test-build", "doctest"):
+            print(USAGE, file=sys.stderr)
+            return 2
+        print("\n".join(repro_hints(argv[1], sys.stdin.read())))
+        return 0
     try:
-        dry_run, crate, passthrough = parse(argv)
+        dry_run, doc, crate, passthrough = parse(argv)
         # N5/N9: the shared working view binds the index and WT before metadata;
         # the imports are at this consumer entry, never in the graph helpers.
         from rust_test_plan import source_snapshot
@@ -700,10 +919,14 @@ def main(argv: list[str]) -> int:
         features, companions = load_profile()
         values = environment()
         metadata = full_graph_metadata(features, root=ROOT, environment=values, host_only=False)
-        errors = companion_errors(metadata, companions, ROOT)
-        if errors:
-            raise PlanError("; ".join(errors) + f" -- fix the [[companion]] rows in {PROFILE.relative_to(ROOT)}")
-        commands = plan_packages(metadata, features, companions, [crate], passthrough)
+        if doc:
+            commands = [plan_doctests(metadata, features, crate, *passthrough)]
+            values.update(DOCTEST_ENVIRONMENT)
+        else:
+            errors = companion_errors(metadata, companions, ROOT)
+            if errors:
+                raise PlanError("; ".join(errors) + f" -- fix the [[companion]] rows in {PROFILE.relative_to(ROOT)}")
+            commands = plan_packages(metadata, features, companions, [crate], passthrough)
         if source_snapshot()[0] != fingerprint:
             raise PlanError("Source changed during test planning; no execution started")
     except PlanError as error:
@@ -716,7 +939,8 @@ def main(argv: list[str]) -> int:
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"Cannot establish test working subject or plan: {error}", file=sys.stderr)
         return 1
-    prefix = [f"CARGO_TARGET_DIR={values['CARGO_TARGET_DIR']}", f"CARGO_BUILD_BUILD_DIR={values['CARGO_BUILD_BUILD_DIR']}"]
+    prefix = [f"CARGO_TARGET_DIR={values['CARGO_TARGET_DIR']}", f"CARGO_BUILD_BUILD_DIR={values['CARGO_BUILD_BUILD_DIR']}",
+              *(f"{key}={value}" for key, value in DOCTEST_ENVIRONMENT.items() if doc)]
     for command in commands:
         print(shlex.join(prefix + command), flush=True)
     if dry_run:

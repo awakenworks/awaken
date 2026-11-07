@@ -7,8 +7,9 @@ retry or skip element; no selected case is #[ignore]d; every --require-case ran;
 case printed a fixture-skip marker; and the source and fixture inputs did not change.
 Why: an empty filter, an ignored case, a renamed test or a test that returns early
 because its live fixture is absent would otherwise read as green.
-Fix: run the case locally with `cargo nextest run -p <crate> <name> -- --exact`; make
-its fixture available, or update the --require-case in the change that renamed it.
+Fix: rerun the `→ fix: reproduce` command printed for each case (this selection and profile,
+narrowed to the case); make its fixture available, or update the --require-case in the change
+that renamed it.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import unittest
@@ -32,6 +34,8 @@ SKIP = re.compile(r"^[ \t]*(?:skip(?:ped|ping)?\b|\[skip\])", re.MULTILINE | re.
 REFUSED = ("--nocapture", "--no-capture", "--list", "--format", "--message-format", "--no-tests",
            "--retries", "--profile", "-P", "--no-run", "--show-output", "--run-ignored")
 RUNS_IGNORED = ("--ignored", "--include-ignored")
+# Fixture selectors a repro needs; named, never printed, since a URL may hold a secret.
+FIXTURE_ENVIRONMENT = re.compile(r"AWAKEN_TEST_\w+|AWAKEN_CRASH_BACKEND|AWAKEN_K8S_E2E")
 
 
 def required_command(arguments: list[str]) -> tuple[list[list[str]], list[str]]:
@@ -76,7 +80,7 @@ def qualify(listing: str, report: str, status: int, required=(), *,
             if case["filter-match"]["status"] == "matches":
                 (ignored.append(name) if case["ignored"] and not runs_ignored else listed.update([name]))
     root = ET.fromstring(report)
-    ran, output = Counter(), []
+    ran, output, failing = Counter(), [], {}
     for case in root.iter("testcase"):
         name = case.get("name", "")
         ran[name] += 1
@@ -84,6 +88,8 @@ def qualify(listing: str, report: str, status: int, required=(), *,
         text = "".join(child.text or "" for child in case if child.tag in ("system-out", "system-err"))
         errors += [f"{name}: {', '.join(verdicts)}"] * bool(verdicts)
         errors += [f"{name} printed a fixture-skip marker"] * bool(SKIP.search(text))
+        if verdicts or SKIP.search(text):
+            failing[name] = case.get("classname")
         output.append(text)
     if not ran:
         errors.append("no test ran: the selection is empty")
@@ -94,9 +100,36 @@ def qualify(listing: str, report: str, status: int, required=(), *,
                       f"unexpected={dict(ran - listed)}")
     if missing := sorted(set(required) - set(ran)):
         errors.append("required cases did not run: " + ", ".join(missing))
+        failing.update(dict.fromkeys(missing))
     if run_log is not None and (not root.get("uuid") or root.get("uuid") not in run_log):
         errors.append("the JUnit report does not belong to this run")
-    return {"errors": errors, "selected_cases": sorted(ran.elements()), "output": "".join(output)}
+    return {"errors": errors, "selected_cases": sorted(ran.elements()), "output": "".join(output),
+            "failing": failing}
+
+
+def repro_hints(command: list[str], failing: dict[str, str | None], environ=os.environ, limit: int = 10) -> list[str]:
+    """`→ fix:` lines rerunning `command` with the gate's target directories, one per failing case.
+
+    A case narrows the selection with one more filterset, which nextest intersects with
+    the name filters; a selection that already holds a filterset is printed whole,
+    since a second one would widen it.
+    """
+    prefix = [f"{key}={environ[key]}" for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR") if environ.get(key)]
+    fixture = sorted(key for key in environ if FIXTURE_ENVIRONMENT.fullmatch(key))
+    note = f" (with the gate's {', '.join(fixture)})" if fixture else ""
+    split = command.index("--") if "--" in command else len(command)
+    narrowable = not any(word in ("-E", "--filterset") or word.startswith("--filterset=")
+                         for word in command[:split])
+    cases = list(failing.items())[:limit] if narrowable and failing else [(None, None)]
+    hints = []
+    for name, binary in cases:
+        narrowed = command if name is None else [
+            *command[:split], "-E", f"binary_id(={binary}) & test(={name})" if binary else f"test(={name})",
+            *command[split:]]
+        hints.append(f"→ fix: reproduce {name or 'this selection'}: {shlex.join(prefix + narrowed)}{note}")
+    if narrowable and len(failing) > limit:
+        hints.append(f"→ fix: {len(failing) - limit} more cases reproduce the same way")
+    return hints
 
 
 def execution_inputs() -> dict:
@@ -165,7 +198,8 @@ def run(arguments: list[str], evidence: Path) -> int:
                            runs_ignored=bool(set(RUNS_IGNORED) & set(command)),
                            run_log=log.read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError, KeyError, TypeError, ET.ParseError) as error:
-        observed = {"errors": [f"nextest left no readable list/JUnit evidence: {error}"], "selected_cases": []}
+        observed = {"errors": [f"nextest left no readable list/JUnit evidence: {error}"], "selected_cases": [],
+                    "failing": {}}
     errors = observed["errors"]
     unchanged = source_snapshot()[0] == digest
     if not unchanged:
@@ -180,6 +214,7 @@ def run(arguments: list[str], evidence: Path) -> int:
         print(f"Rust execution: {error}", file=sys.stderr)
     if errors:
         print("Rust execution rule: " + __doc__.split("Rule: ", 1)[1], file=sys.stderr)
+        print("\n".join(repro_hints(command, observed["failing"])), file=sys.stderr)
     else:
         print(f"Rust execution: {len(observed['selected_cases'])} selected tests passed without skips")
     return exit_code
@@ -203,7 +238,11 @@ def main() -> int:
     try:
         if args.mode == "build":
             from crate_test import native_command
-            return _status(subprocess.run(native_command(required_command(arguments)[0][0]), cwd=ROOT).returncode)
+            build = required_command(arguments)[0][0]
+            status = _status(subprocess.run(native_command(build), cwd=ROOT).returncode)
+            if status:
+                print("\n".join(repro_hints(build, {})), file=sys.stderr)
+            return status
         return run(arguments, args.evidence)
     except ValueError as error:
         print(f"Rust execution: {error}", file=sys.stderr)
@@ -272,6 +311,27 @@ class QualifyTests(unittest.TestCase):
     def test_a_stale_report_from_another_run_is_rejected(self) -> None:
         self.assertIn("the JUnit report does not belong to this run",
                       self.rejected(self.PASSED, run_log="Starting (run ID: run-2)"))
+
+    def test_failing_cases_carry_their_binary_for_the_repro(self) -> None:
+        report = junit("one|<failure/>", "two|<system-err>SKIPPED no fixture</system-err>").replace(
+            'classname="pkg"', 'classname="pkg::it"', 1)
+        self.assertEqual(qualify(listing("one", "two"), report, 0, ("one", "three"))["failing"],
+                         {"one": "pkg::it", "two": "pkg", "three": None})
+
+    def test_repro_hints_narrow_the_exact_selection_to_each_case(self) -> None:
+        command = required_command(["-p", "pkg", "--lib", "tests::", "--", "--exact"])[0][2]
+        environ = {"CARGO_TARGET_DIR": "/t", "AWAKEN_TEST_DATABASE_URL": "postgres://secret@h/db", "HOME": "/h"}
+        self.assertEqual(repro_hints(command, {"tests::one": "pkg", "tests::gone": None}, environ), [
+            "→ fix: reproduce tests::one: CARGO_TARGET_DIR=/t cargo nextest run --no-tests=fail --locked --profile "
+            "required -p pkg --lib tests:: -E 'binary_id(=pkg) & test(=tests::one)' -- --exact "
+            "(with the gate's AWAKEN_TEST_DATABASE_URL)",
+            "→ fix: reproduce tests::gone: CARGO_TARGET_DIR=/t cargo nextest run --no-tests=fail --locked --profile "
+            "required -p pkg --lib tests:: -E 'test(=tests::gone)' -- --exact (with the gate's AWAKEN_TEST_DATABASE_URL)"])
+        self.assertNotIn("secret", "".join(repro_hints(command, {"tests::one": "pkg"}, environ)))
+        filtered = required_command(["-p", "pkg", "-E", "test(a) | test(b)"])[0][2]
+        self.assertEqual(repro_hints(filtered, {"a": "pkg"}, {}),
+                         ["→ fix: reproduce this selection: " + shlex.join(filtered)])
+        self.assertEqual(len(repro_hints(command, {f"c{n}": "pkg" for n in range(12)}, {})), 11)
 
     def test_captured_output_is_returned_for_live_fixture_witnesses(self) -> None:
         self.assertEqual(qualify(self.LISTED, self.PASSED, 0)["output"], "ok")
