@@ -67,7 +67,7 @@ commit-checks:
             run: python3 scripts/ci/check_repository_hygiene.py --staged
           # Every `glob:` below that sits between generated markers is rendered from
           # the INPUT_GLOBS the invoked checker declares. Editing one by hand is
-          # refused by check_test_orchestration.py, because a trigger narrower than
+          # refused by generate_hooks.py --check, because a trigger narrower than
           # the checker's real input set is a gate that never runs when it matters.
           - name: hook-globs
             tags: [read-only]
