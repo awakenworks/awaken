@@ -1166,7 +1166,7 @@ as an exit receipt.
   [ADR-0045](0045-connection-plan-and-network-topology.md), that adoption did not
   happen: the duplex is `AgentChannel` (`crates/platform/environment/awaken-agent-channel/src/lib.rs:22`),
   dialed through `awaken-connection-plan::TokioChannelFactory`
-  (`crates/platform/dispatch/awaken-connection-plan/src/factory.rs:40`). The workspace
+  (`crates/platform/sandbox/awaken-connection-plan/src/factory.rs:40`). The workspace
   `Cargo.toml` has no `awaken-connection` dependency.
 - **`RunEventSink`.** No such type or crate exists in `crates/`. ACP runs as a
   `RunExecutor` (`crates/sdk/contracts/awaken-runtime-contract/src/execution.rs:198`)

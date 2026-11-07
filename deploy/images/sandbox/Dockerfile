@@ -7,7 +7,7 @@
 # ALL supported ACP CLIs are PRE-BAKED (never pulled at runtime): an egress-fenced pod
 # (network=None/Allowlist) cannot `npm install`, so the adapter versions MUST be baked
 # here and MUST match the MAJOR.MINOR pinned in
-# crates/shared/awaken-acp-catalog/src/acp_cli/catalog.rs.
+# crates/platform/execution/awaken-acp-catalog/src/acp_cli/catalog.rs.
 #
 # Build (binary is built ON THE HOST, then staged into the Docker context):
 #   deploy/images/sandbox/build.sh ghcr.io/awaken/sandbox:<ver>
