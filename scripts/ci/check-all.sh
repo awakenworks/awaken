@@ -232,6 +232,7 @@ run static "hook-glob generation" python3 scripts/ci/generate_hooks.py --check
 run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestration.py --self-test
 run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
 run static "affected Rust plan self-test" python3 scripts/ci/rust_test_plan.py --self-test
+run static "affected service plan self-test" python3 scripts/ci/service_test_plan.py --self-test
 run static "CI performance report self-test" python3 scripts/ci/ci_performance.py --self-test
 run static "CI performance artifact policy" python3 scripts/ci/ci_performance.py workflow
 run static "required Rust run (nextest JUnit) self-test" python3 scripts/ci/nextest_execution.py --self-test
@@ -387,11 +388,18 @@ case "${AWAKEN_FORMAL_TIER:-full}" in
   *) echo "AWAKEN_FORMAL_TIER must be full or pr, got ${AWAKEN_FORMAL_TIER}" >&2; exit 2 ;;
 esac
 run formal "formal" scripts/ci/check_formal.sh --require-tools "${formal_tier[@]}"
-run reliability "reliability" scripts/ci/check-reliability.sh --require-tools
+# The service groups follow the formal tier's rule: a caller that knows its
+# merge-base narrows them to the suites its change can reach (the env var below);
+# --full-gate, a release and the scheduled run always run every suite.
+service_affected=()
+if [ -n "${AWAKEN_SERVICE_AFFECTED_BASE:-}" ] && [ "$full_gate" -eq 0 ]; then
+  service_affected=(--affected "$AWAKEN_SERVICE_AFFECTED_BASE")
+fi
+run reliability "reliability" scripts/ci/check-reliability.sh --require-tools "${service_affected[@]}"
 # Release completeness is strict: unavailable infrastructure is a failed gate,
 # never a successful skip. Developer-specific partial suites remain runnable by
 # invoking their scripts without the required flags.
-run postgres "postgres" scripts/ci/pg_tests.sh --require-docker
+run postgres "postgres" scripts/ci/pg_tests.sh --require-docker "${service_affected[@]}"
 run kubernetes "kubernetes-container" scripts/e2e/k8s_container_e2e.sh
 run k3d "distributed-k3d" env AWAKEN_K3D_REQUIRED=1 e2e/k3d/distributed_control_e2e.sh
 run k3d "generic preallocated local PVCs" e2e/k3d/local_storage_e2e.sh

@@ -13,10 +13,12 @@
 # gate passes ``--require-docker`` so the same condition fails instead of
 # producing a false green.
 #
-# Usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--resources|--self-test]
+# Usage: scripts/ci/pg_tests.sh [--affected <base>] [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--resources|--self-test]
 # --backend-parity uses a caller-owned live URL and runs only the named matrix.
 # --work-store uses a caller-owned live URL and requires the complete Work suite.
 # --http requires the four live transport targets, including native failover.
+# --affected <base> runs only the suites the change since <base> can reach
+# (scripts/ci/service_test_plan.py), and starts no substrate when none is.
 set -uo pipefail
 # Keep phase diagnostics visible even when a command suppresses probe output.
 # This descriptor belongs to this runner; never log command arguments/secrets.
@@ -27,6 +29,7 @@ awaken_configure_cargo_target "$PWD"
 source scripts/ci/_postgres_recovery_root.sh
 source scripts/ci/_deadline.sh
 source scripts/ci/_rust_test_execution.sh
+source scripts/ci/_affected_suites.sh
 
 require_docker=0
 RECOVERY_PARENT=$(postgres_recovery_parent) || exit 2
@@ -50,6 +53,7 @@ positive_seconds() {
 pg_run_with_deadline() {
   local stage="$1" seconds="$2"
   shift 2
+  if affected_skip_stage "${BASH_SOURCE[1]##*/}:${BASH_LINENO[0]}"; then return 0; fi
   positive_seconds "$seconds" || {
     echo "invalid PostgreSQL deadline for $stage: $seconds" >&2
     return 2
@@ -80,10 +84,12 @@ pg_run_with_deadline() {
 }
 
 pg_test() {
+  if affected_skip_suite "${BASH_SOURCE[1]##*/}:${BASH_LINENO[0]}"; then return 0; fi
   pg_run_with_deadline "test:${4:-command}" "$PG_TEST_TIMEOUT_SECONDS" "$@"
 }
 
 pg_required_test() {
+  if affected_skip_suite "${BASH_SOURCE[1]##*/}:${BASH_LINENO[0]}"; then return 0; fi
   local remaining=$((PG_GATE_BUDGET_SECONDS - SECONDS + PG_GATE_STARTED))
   [ "$remaining" -gt 0 ] || { echo "PostgreSQL gate budget exhausted before required tests" >&2; return 124; }
   [ "$remaining" -le "$PG_TEST_TIMEOUT_SECONDS" ] || remaining=$PG_TEST_TIMEOUT_SECONDS
@@ -909,7 +915,21 @@ self_test() {
   }
 }
 
-[ "$#" -le 1 ] || { echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--resources|--self-test]" >&2; exit 2; }
+affected_base=""
+pg_arguments=()
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --affected ] && [ "$#" -ge 2 ] && [ -n "$2" ] && [ -z "$affected_base" ]; then
+    affected_base="$2"
+    shift 2
+  else
+    pg_arguments+=("$1")
+    shift
+  fi
+done
+set -- "${pg_arguments[@]}"
+[ -z "$affected_base" ] || [ "${1:-}" = "" ] || [ "${1:-}" = --require-docker ] || {
+  echo "--affected narrows the full PostgreSQL gate only; it composes with --require-docker alone" >&2; exit 2; }
+[ "$#" -le 1 ] || { echo "usage: scripts/ci/pg_tests.sh [--affected <base>] [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--resources|--self-test]" >&2; exit 2; }
 
 backend_only=0
 work_store_only=0
@@ -929,7 +949,7 @@ case "${1:-}" in
   --storage) storage_only=1 ;;
   --resources) resources_only=1 ;;
   --storage-observations) storage_observations_only=1 ;;
-  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--resources|--self-test]" >&2; exit 2 ;;
+  *) echo "usage: scripts/ci/pg_tests.sh [--affected <base>] [--require-docker|--backend-parity|--work-store|--http|--critical|--storage|--storage-observations|--resources|--self-test]" >&2; exit 2 ;;
 esac
 
 for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
@@ -961,6 +981,14 @@ if [ "$backend_only" -eq 1 ] || [ "$work_store_only" -eq 1 ] || [ "$http_only" -
     checked_backend_parity || record_failure "$?"
   fi
   exit "$first_failure"
+fi
+
+if [ -n "$affected_base" ]; then
+  affected_suites_load postgres "$affected_base" || exit $?
+  if ! affected_selected_after 0; then
+    echo "postgres: no suite is reached by the change since $affected_base; no substrate started"
+    exit 0
+  fi
 fi
 
 if ! command -v docker >/dev/null 2>&1 \
