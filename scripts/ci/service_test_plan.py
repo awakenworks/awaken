@@ -266,11 +266,21 @@ VOLATILE = ((re.compile(r"\S*/rust-execution\.\w{6}"), "<evidence>"), (re.compil
             (re.compile(r"\b[0-9a-f]{32}\b"), "<owner>"), (re.compile(r"rotation-\d+"), "rotation-<pid>"))
 
 
+def _outside_inputs(directory: str, names: list[str]) -> set[str]:
+    """copytree filter: keep the scripts/ci files INPUT_GLOBS covers (and the hook subdirectories)."""
+    here = Path(directory)
+    keep = {"pre-commit", "pre-push"} if here.name == "ci" else set()
+    return {name for name in names if name not in keep
+            and not (here.name in ("ci", "pre-commit", "pre-push") and (name.endswith((".py", ".sh"))
+                     or (here.name == "ci" and name == "service_suites.toml")))}
+
+
 def trace(source: Path, group: str, arguments: list[str]) -> tuple[int, list[tuple[str, str, str]]]:
     """``(status, [(suite id, env, command)])`` of one group run over a copy of ``source``'s scripts."""
     with tempfile.TemporaryDirectory(prefix="service-trace-") as directory:
         base = Path(directory)
-        shutil.copytree(source / "scripts/ci", base / "repo/scripts/ci")
+        # Copy exactly what INPUT_GLOBS declares, so the trace reads nothing its trigger misses.
+        shutil.copytree(source / "scripts/ci", base / "repo/scripts/ci", ignore=_outside_inputs)
         for path in ("repo/fuzz", "bin", "tmp"):
             (base / path).mkdir(parents=True)
         for name, body in STUBS.items():

@@ -79,7 +79,7 @@ commit-checks:
           # the checker's real input set is a gate that never runs when it matters.
           - name: hook-globs
             # >>> generated glob from _input_closure.py, generate_hooks.py INPUT_GLOBS — do not edit
-            glob: "{lefthook.yml,scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/hooks.yml,scripts/ci/pre-commit/*.sh,scripts/ci/pre-push/*.sh}"
+            glob: "{lefthook.yml,scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/*.toml,scripts/ci/hooks.yml,scripts/ci/pre-commit/*.sh,scripts/ci/pre-push/*.sh}"
             # <<< generated glob
             tags: [read-only]
             run: python3 scripts/ci/parallel_check.py --hook-label hook-globs --timeout 600 --read-only --shell 'python3 scripts/ci/generate_hooks.py --check && python3 scripts/ci/_input_closure.py --self-test' --
@@ -117,7 +117,7 @@ commit-checks:
     # `python3 scripts/ci/generate_hooks.py --explain <path>...`.
     - name: script-tests
       # >>> generated glob from generate_hooks.py INPUT_GLOBS — do not edit
-      glob: "{lefthook.yml,scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/hooks.yml,scripts/ci/pre-commit/*.sh,scripts/ci/pre-push/*.sh}"
+      glob: "{lefthook.yml,scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/*.toml,scripts/ci/hooks.yml,scripts/ci/pre-commit/*.sh,scripts/ci/pre-push/*.sh}"
       # <<< generated glob
       tags: [read-only]
       run: python3 scripts/ci/parallel_check.py --hook-label script-tests --timeout 1800 --read-only --shell 'python3 scripts/ci/generate_hooks.py --script-tests "$@"' -- {staged_files}

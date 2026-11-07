@@ -65,7 +65,7 @@ from pathlib import Path, PurePosixPath
 # lefthook.yml, its authored source, and every scripts/ci module whose
 # INPUT_GLOBS this renderer reads.  The renderer is itself a gate with inputs, so its own hook trigger is
 # rendered from this declaration rather than written by hand.
-INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/hooks.yml", "scripts/ci/*.py", "scripts/ci/*.sh",
+INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/hooks.yml", "scripts/ci/*.py", "scripts/ci/*.sh", "scripts/ci/*.toml",
                                  "scripts/ci/pre-commit/*.sh", "scripts/ci/pre-push/*.sh")
 
 ROOT = Path(__file__).resolve().parents[2]
