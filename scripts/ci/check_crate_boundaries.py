@@ -837,9 +837,6 @@ TENANCY_VOCABULARY = re.compile(
 
 AMBIENT_DEFAULT_WINDOW = 240
 
-# key: "<path>::<enclosing fn>" -> prose. Same burden of proof as above.
-AMBIENT_TENANT_DEFAULT_EXEMPTIONS: dict[str, str] = {}
-
 def _is_rust_test_file(relative: Path) -> bool:
     """Whole-file test modules the production projection cannot blank."""
     name = relative.name
@@ -911,16 +908,12 @@ def check_no_ambient_tenant_default(
             if not (named or literal):
                 continue
             owner = _enclosing_rust_fn(production, match.start())
-            if f"{relative.as_posix()}::{owner}" in AMBIENT_TENANT_DEFAULT_EXEMPTIONS:
-                continue
             line = production[: match.start()].count("\n") + 1
             errors.append(
                 f"{relative}:{line}: `{match.group(0)}` in `{owner}` falls back to "
                 "the default tenant. Ownership is resolved once, at the edge; a "
-                "handler that invents it misattributes the write. Fail closed, or "
-                "register the site in AMBIENT_TENANT_DEFAULT_EXEMPTIONS with the "
-                "router that mounts it, why that router cannot carry a tenancy "
-                "edge, and what absence does"
+                "handler that invents it misattributes the write. Fail closed; only "
+                f"{TENANCY_COMPOSITION_ROOT} may name a default tenant"
             )
     return errors
 
@@ -990,15 +983,14 @@ def selftest_no_ambient_tenant_default() -> None:
     """Cause/effect: a defaulted tenant rejects; the composition root admits."""
     # C1 a fallback names DEFAULT_SCOPE/DEFAULT_WORKSPACE_ID; C2 it uses the bare
     # literal "default" beside tenancy vocabulary; C3 the fallback is unrelated
-    # to tenancy; C4 the file is the composition root; C5 the site is registered.
+    # to tenancy; C4 the file is the composition root.
     # Effects: E1 reject; E2 admit.
     #
-    # | Rule | named | literal+vocab | unrelated | root | registered | Effect |
-    # | A1   | T     | F             | F         | F    | F          | E1     |
-    # | A2   | F     | T             | F         | F    | F          | E1     |
-    # | A3   | F     | F             | T         | F    | F          | E2     |
-    # | A4   | T     | F             | F         | T    | F          | E2     |
-    # | A5   | T     | F             | F         | F    | T          | E2     |
+    # | Rule | named | literal+vocab | unrelated | root | Effect |
+    # | A1   | T     | F             | F         | F    | E1     |
+    # | A2   | F     | T             | F         | F    | E1     |
+    # | A3   | F     | F             | T         | F    | E2     |
+    # | A4   | T     | F             | F         | T    | E2     |
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         crates = root / "crates"
@@ -1032,17 +1024,6 @@ def selftest_no_ambient_tenant_default() -> None:
             encoding="utf-8",
         )
         assert not check_no_ambient_tenant_default(root, crates)  # A4
-        source.write_text(
-            "fn owner(s: Option<String>) -> String {\n"
-            "    s.unwrap_or_else(|| DEFAULT_SCOPE.to_string())\n}\n",
-            encoding="utf-8",
-        )
-        key = f"{source.relative_to(root).as_posix()}::owner"
-        AMBIENT_TENANT_DEFAULT_EXEMPTIONS[key] = "selftest"
-        try:
-            assert not check_no_ambient_tenant_default(root, crates)  # A5
-        finally:
-            del AMBIENT_TENANT_DEFAULT_EXEMPTIONS[key]
 
 
 def check_cloud_placement_boundary(

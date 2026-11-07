@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import atexit
 from functools import cache
-import hashlib
 from pathlib import Path
 import os
 import shlex
@@ -11,17 +10,6 @@ import subprocess
 import tempfile
 
 from _native_shell import RUST_WINDOWS_SHELL_ARGUMENT
-
-
-_shared_launcher: Path | None = None
-
-
-def use_shared_launcher(path: Path, digest: str) -> None:
-    """Bind the private launcher compiled by the admitted test supervisor."""
-    if not path.is_absolute() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-        raise ValueError("native fixture launcher differs from the admitted launcher")
-    global _shared_launcher
-    _shared_launcher = path
 
 
 def python_script_header(interpreter: str | Path) -> str:
@@ -40,8 +28,6 @@ def native_fixture_launcher() -> Path:
     # Bare CreateProcess command lookup bypasses PATH-first batch/shell files.
     # Share the suite's compiled tool across workers. Each fixture copies it
     # before delegating argv to its own Python or Bash script.
-    if _shared_launcher is not None:
-        return _shared_launcher
     target = os.environ.get("CARGO_TARGET_DIR")
     parent = Path(target).resolve() / "debug" / "deps" if target else None
     if parent is not None:

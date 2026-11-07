@@ -688,13 +688,13 @@ def main() -> None:
     parser.add_argument("--require-complete", action="store_true")
     parser.add_argument("--survey", action="store_true")
     parser.add_argument("--staged", nargs="*", default=None)
-    parser.add_argument("--selftest", action="store_true")
+    parser.add_argument("--self-test", action="store_true")
     parser.add_argument(
         "--debt-ratchet", nargs="?", const="", default=None, metavar="REF",
         help="refuse more debts at HEAD than at its merge-base with REF (default origin/main, then main)",
     )
     options = parser.parse_args()
-    if options.selftest:
+    if options.self_test:
         selftest()
         return
     if options.debt_ratchet is not None:

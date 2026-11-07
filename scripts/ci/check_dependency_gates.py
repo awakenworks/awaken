@@ -329,10 +329,6 @@ def covered_crates(gates: dict[str, str]) -> tuple[set[str], set[str]]:
     return covered, unskippable
 
 
-def _names(match: "re.Match[str]") -> str:
-    return next(group for group in match.groups() if group)
-
-
 def supplied_environment(sources: dict[str, str], gates: dict[str, str]) -> set[str]:
     """Every AWAKEN_* variable something in this repository sets.
 

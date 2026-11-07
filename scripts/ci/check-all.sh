@@ -267,7 +267,7 @@ run static "degrading-defaults self-test" python3 scripts/ci/check_degrading_def
 run static "degrading-defaults" python3 scripts/ci/check_degrading_defaults.py
 run static "fabricated-facts self-test" python3 scripts/ci/check_fabricated_facts.py --self-test
 run static "fabricated-facts" python3 scripts/ci/check_fabricated_facts.py
-run static "proof-input-derivation self-test" python3 scripts/ci/check_proof_input_derivation.py --selftest
+run static "proof-input-derivation self-test" python3 scripts/ci/check_proof_input_derivation.py --self-test
 run static "contract-shape self-test" python3 scripts/ci/check_contract_shape.py --self-test
 run static "contract-shape" python3 scripts/ci/check_contract_shape.py
 run static "coverage checker tests" python3 scripts/ci/test_changed_e2e_line_coverage.py
