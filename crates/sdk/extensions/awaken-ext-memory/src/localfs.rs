@@ -1,3 +1,9 @@
+// @formal surface requirement=resource.memory.memory_consistency
+// @formal reason: Static owner: the local memory directory's one scheduling boundary. Its async handle
+// @formal reason: runs each unchanged synchronous read or write whole on the blocking pool, so a stalled
+// @formal reason: file system cannot hold the async worker that renews an extraction claim. Evidence:
+// @formal reason: the parked-read claim heartbeat decision-table test; this is a product-requirement
+// @formal reason: classification, not a formal-proof claim.
 //! Local-filesystem access to a directory of memory files: one `<slug>.md` per
 //! memory under a root the host provides.
 //!
@@ -162,16 +168,44 @@ impl MemoryDir {
     }
 }
 
+/// The async handle runs each directory operation whole on the blocking pool.
+/// Recall and extraction await it beside a claim heartbeat; a synchronous read
+/// or write on the async worker would hold that heartbeat for as long as the
+/// filesystem stalls, and under writeback pressure that outlasts the lease.
+/// Each operation is the synchronous one above, unchanged: the same files in
+/// the same order, with no added or removed sync point. Dropping the awaiting
+/// future does not cut an operation short: the blocking job finishes it, so a
+/// cancelled write still leaves the whole content, as an uncancelled one does.
 #[async_trait]
 impl MemoryStoreHandle for MemoryDir {
     async fn write(&self, name: &str, content: &str) -> Result<String, String> {
-        MemoryDir::write(self, name, content)
-            .map(|path| path.display().to_string())
-            .map_err(|error| error.to_string())
+        let directory = self.clone();
+        let (name, content) = (name.to_owned(), content.to_owned());
+        off_async_worker(move || {
+            MemoryDir::write(&directory, &name, &content)
+                .map(|path| path.display().to_string())
+                .map_err(|error| error.to_string())
+        })
+        .await?
     }
 
     async fn entries(&self) -> Result<Vec<Entry>, String> {
-        Ok(MemoryDir::entries(self))
+        let directory = self.clone();
+        off_async_worker(move || MemoryDir::entries(&directory)).await
+    }
+}
+
+/// The one scheduling boundary for [`MemoryDir`]'s synchronous file IO. A
+/// panic inside the operation is resumed on the caller, as it was inline.
+async fn off_async_worker<T, F>(operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    match tokio::task::spawn_blocking(operation).await {
+        Ok(value) => Ok(value),
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => Err(format!("memory directory operation did not run: {error}")),
     }
 }
 

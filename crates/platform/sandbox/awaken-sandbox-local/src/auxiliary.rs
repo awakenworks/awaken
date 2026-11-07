@@ -74,16 +74,8 @@ impl AuxiliarySandboxFactory for LocalAuxiliarySandboxes {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn every_purpose_gets_a_fresh_root_whose_sandbox_exposes_rooted_tools() {
-        // Decision table: A1 two providers minted for one purpose => distinct
-        // roots; A2 a sandbox realized by a minted provider => its rooted tools
-        // are the Workdir provider's own non-empty tool set.
-        let base = tempfile::tempdir().unwrap();
-        let factory = LocalAuxiliarySandboxes::new(base.path());
-        let first = factory.provider("compact");
-        let second = factory.provider("compact");
-        let spec = pc::SandboxSpec {
+    fn aux_spec() -> pc::SandboxSpec {
+        pc::SandboxSpec {
             process_tree_supervision: false,
             scope: "aux-run".into(),
             isolation: pc::IsolationClass::Workdir,
@@ -100,7 +92,43 @@ mod tests {
             filesystem_continuity: pc::FilesystemContinuity::Retained,
             lease_ttl_secs: None,
             control_services: Default::default(),
-        };
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn creation_leaves_the_one_async_worker_free_until_it_returns() {
+        // Decision table: C1 an auxiliary Run's sandbox (no mounts) is being
+        // created on a runtime with one async worker; C2 another task on that
+        // worker is ready, as a claim heartbeat is when it comes due.
+        // E1 the other task runs before the creation returns: the creation's
+        // lock/stage/fsync/rename work runs on the blocking pool;
+        // E2 the creation still realizes the sandbox and its rooted tools.
+        // Run inline, the creation finishes inside its first poll and the
+        // other task can only run after it, however long the fsyncs take.
+        let base = tempfile::tempdir().unwrap();
+        let provider = LocalAuxiliarySandboxes::new(base.path()).provider("memory");
+        let (ran, mut observed) = tokio::sync::oneshot::channel();
+        let other = tokio::spawn(async move {
+            let _ = ran.send(());
+        });
+
+        let created = provider.create_rooted_sandbox(&aux_spec()).await;
+
+        assert!(observed.try_recv().is_ok(), "E1");
+        assert!(!created.unwrap().rooted_tools().is_empty(), "E2");
+        other.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn every_purpose_gets_a_fresh_root_whose_sandbox_exposes_rooted_tools() {
+        // Decision table: A1 two providers minted for one purpose => distinct
+        // roots; A2 a sandbox realized by a minted provider => its rooted tools
+        // are the Workdir provider's own non-empty tool set.
+        let base = tempfile::tempdir().unwrap();
+        let factory = LocalAuxiliarySandboxes::new(base.path());
+        let first = factory.provider("compact");
+        let second = factory.provider("compact");
+        let spec = aux_spec();
         let a = first.create_rooted_sandbox(&spec).await.unwrap();
         let b = second.create_rooted_sandbox(&spec).await.unwrap();
         assert!(!a.rooted_tools().is_empty(), "A2");

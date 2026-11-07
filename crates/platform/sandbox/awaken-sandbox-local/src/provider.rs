@@ -121,7 +121,7 @@ pub struct LocalProvider {
     #[cfg(target_os = "linux")]
     execution_deployment: Option<execution::LocalExecutionDeployment>,
     /// In-memory blob seed for `File`/`Resource` mounts (keyed by id).
-    blobs: HashMap<String, Vec<u8>>,
+    blobs: Arc<HashMap<String, Vec<u8>>>,
     /// Optional content-addressed store consulted after the seed map (Slice 4).
     file_store: Option<Arc<dyn pc::BlobSource>>,
     /// Credential-file materialization port. Kept separate from `BlobSource` so
@@ -144,7 +144,7 @@ impl LocalProvider {
             trusted_host_access: false,
             #[cfg(target_os = "linux")]
             execution_deployment: None,
-            blobs: HashMap::new(),
+            blobs: Arc::default(),
             file_store: None,
             secret_broker: Arc::new(awaken_sync::LeafRwLock::new(None)),
             memory_mounter: Arc::new(awaken_sync::LeafRwLock::new(None)),
@@ -242,7 +242,7 @@ impl LocalProvider {
     /// Register bytes a `File`/`Resource` mount can resolve to (test/seed helper).
     #[must_use]
     pub fn with_blob(mut self, id: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
-        self.blobs.insert(id.into(), bytes.into());
+        Arc::make_mut(&mut self.blobs).insert(id.into(), bytes.into());
         self
     }
 
@@ -328,11 +328,63 @@ impl LocalProvider {
     /// Realize a sandbox and return the concrete [`LocalSandbox`], so a caller can
     /// use the tool-transparent [`LocalSandbox::spawn_agent`] capability. The trait
     /// `create` delegates here and boxes the result.
+    ///
+    /// A creation without mounts is durable directory work and nothing else:
+    /// lock, stage, `fsync`, rename and directory `fsync`, several times over,
+    /// with no await that can wait on anything but that work. Under writeback
+    /// pressure one `fsync` alone can outlast a claim lease, so that creation
+    /// runs whole on the blocking pool and the caller's async worker stays free
+    /// to renew the leases it holds. It is the same operation, unsplit: the
+    /// same calls in the same order, so every `fsync` point and every
+    /// stage-then-rename publication is exactly where it was. Inline it never
+    /// yielded, so a caller could only drop it before it began or after it
+    /// ended; dropping the caller now still never stops it half-way, because
+    /// the blocking job owns it to its end and drops the finished sandbox
+    /// there. A creation record is therefore absent or a whole renamed file.
+    ///
+    /// Mounts resolve through async sources that may wait indefinitely, and a
+    /// caller dropped there abandons the claimed root to the reconciler. That
+    /// creation stays on the caller's task so this cancellation keeps working,
+    /// as does any creation awaited outside a Tokio runtime.
     pub async fn create_sandbox(
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<LocalSandbox, pc::SandboxError> {
-        self.create_sandbox_inner(spec, None, None).await
+        let runtime = match tokio::runtime::Handle::try_current() {
+            Ok(runtime) if spec.mounts.is_empty() => runtime,
+            _ => return self.create_sandbox_inner(spec, None, None).await,
+        };
+        let provider = self.operation_view();
+        let spec = spec.clone();
+        match tokio::task::spawn_blocking(move || {
+            runtime.block_on(provider.create_sandbox_inner(&spec, None, None))
+        })
+        .await
+        {
+            Ok(created) => created,
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            Err(error) => Err(pc::SandboxError::backend("create_sandbox", error)),
+        }
+    }
+
+    /// This provider as an owned value for one operation that leaves the
+    /// caller's task. Every field is configuration or a shared handle, so the
+    /// view sees the same broker, mounter, mount registry and abandoned-root
+    /// set; it is never kept beyond that operation.
+    fn operation_view(&self) -> Self {
+        Self {
+            base: self.base.clone(),
+            inherit_agent_stderr: self.inherit_agent_stderr,
+            trusted_host_access: self.trusted_host_access,
+            #[cfg(target_os = "linux")]
+            execution_deployment: self.execution_deployment.clone(),
+            blobs: Arc::clone(&self.blobs),
+            file_store: self.file_store.clone(),
+            secret_broker: Arc::clone(&self.secret_broker),
+            memory_mounter: Arc::clone(&self.memory_mounter),
+            memory_mounts: self.memory_mounts.clone(),
+            abandoned: Arc::clone(&self.abandoned),
+        }
     }
 
     /// Realize a current durable Local sandbox under one aggregate-owned fence.
