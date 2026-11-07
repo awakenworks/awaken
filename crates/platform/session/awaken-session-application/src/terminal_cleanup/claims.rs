@@ -125,40 +125,25 @@ pub(crate) async fn terminal_cleanup_worker_affinity_rejection(
     }
 }
 
-/// Freeze the predecessor and apply its exact successor as one candidate command.
+/// Freeze the predecessor and let the aggregate install its exact successor
+/// as one candidate command.
 fn claim_terminal_cleanup_candidate(
     owner_scope: &str,
     session: &mut SessionAggregate,
     target: &awaken_session_execution_contract::SessionRealizationTarget,
 ) -> Result<TerminalCleanupClaimConflict, SessionRealizationControlFailure> {
-    use awaken_lease_contract::fence::Epoch;
-    let epoch = session
-        .realization
-        .as_ref()
-        .map_or(Some(Epoch::FIRST), |lease| {
-            Epoch::from_persisted(lease.epoch).and_then(Epoch::next)
-        })
-        .ok_or_else(|| {
-            SessionRealizationControlFailure::Invalid(
-                "Session realization lease epoch is exhausted".into(),
-            )
-        })?;
-    let claim = TerminalCleanupClaimConflict {
+    let previous_realization = session.realization.clone();
+    let attempted_lease = session.assignment().reassign(
+        &target.owner,
+        &target.runtime_incarnation,
+        target.lease_expires_at_unix_ms,
+    )?;
+    Ok(TerminalCleanupClaimConflict {
         owner_scope: owner_scope.to_string(),
         session_id: session.session_id.to_string(),
-        attempted_lease: SessionRealizationLease {
-            owner: target.owner.clone(),
-            runtime_incarnation: target.runtime_incarnation.clone(),
-            epoch: epoch.get(),
-            expires_at_unix_ms: target.lease_expires_at_unix_ms,
-        },
-        previous_realization: session.realization.clone(),
-    };
-    session
-        .assignment()
-        .claim(claim.attempted_lease.clone(), false)
-        .map_err(unavailable)?;
-    Ok(claim)
+        attempted_lease,
+        previous_realization,
+    })
 }
 
 enum TerminalCleanupWorkerRevalidation {

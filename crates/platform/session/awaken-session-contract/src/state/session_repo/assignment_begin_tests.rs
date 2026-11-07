@@ -480,3 +480,90 @@ fn assignment_follows_the_owner_incarnation_epoch_decision_table() {
         );
     }
 }
+
+#[test]
+fn reassign_installs_the_successor_generation_or_refuses_unchanged() {
+    // | Rule | current lease                     | claimant      | effect                                  |
+    // |------|-----------------------------------|---------------|-----------------------------------------|
+    // | R1   | none                              | owner:1       | epoch 1                                 |
+    // | R2   | live foreign, epoch 3             | owner:1       | epoch 4, foreign lease superseded       |
+    // | R2   | expired same owner, epoch 3       | owner:1       | epoch 4 (never reuses the generation)   |
+    // | R3   | epoch u64::MAX / persisted 0      | owner:1       | EpochExhausted, root unchanged          |
+    // | R4   | none                              | blank owner   | Assignment(InvalidLeaseGeneration)      |
+    // Every installed lease is compensable exactly once by restore_predecessor.
+    let idle = |lease| with(SessionExecutionState::Idle, lease, requested_only());
+    let granted: [(&str, Option<SessionRealizationLease>, u64); 3] = [
+        ("R1 never leased", None, 1),
+        (
+            "R2 live foreign",
+            Some(lease("other", "other:1", nth(3), 1_000)),
+            4,
+        ),
+        (
+            "R2 expired same owner",
+            Some(lease("owner", "owner:1", nth(3), NOW)),
+            4,
+        ),
+    ];
+    for (row, predecessor, epoch) in granted {
+        let mut aggregate = idle(predecessor.clone());
+        aggregate.lifecycle().archive("archived", 1).unwrap();
+        aggregate
+            .assignment()
+            .record_failure("prior failure".into(), 7, None);
+        let before = aggregate.clone();
+        let installed = aggregate
+            .assignment()
+            .reassign("owner", "owner:1", 900)
+            .unwrap_or_else(|error| panic!("{row}: {error}"));
+        assert_eq!(
+            installed,
+            lease("owner", "owner:1", nth(epoch), 900),
+            "{row}"
+        );
+        assert_eq!(aggregate.realization.as_ref(), Some(&installed), "{row}");
+        assert_eq!(
+            aggregate.realization_progress, before.realization_progress,
+            "{row}: reassignment counts no initial attempt"
+        );
+        aggregate
+            .assignment()
+            .restore_predecessor(&installed, predecessor)
+            .unwrap_or_else(|error| panic!("{row}: {error}"));
+        assert_eq!(aggregate, before, "{row}: exact compensation");
+    }
+    let mut zero = lease("owner", "owner:1", nth(1), NOW);
+    zero.epoch = 0;
+    let refused: [(&str, Option<SessionRealizationLease>, &str, _); 3] = [
+        (
+            "R3 exhausted",
+            Some(lease("other", "other:1", nth(u64::MAX), NOW)),
+            "owner",
+            SessionRealizationBeginRejection::EpochExhausted,
+        ),
+        (
+            "R3 persisted zero",
+            Some(zero),
+            "owner",
+            SessionRealizationBeginRejection::EpochExhausted,
+        ),
+        (
+            "R4 blank owner",
+            None,
+            " ",
+            SessionRealizationBeginRejection::Assignment(
+                crate::state::SessionAggregateCommandError::InvalidLeaseGeneration,
+            ),
+        ),
+    ];
+    for (row, current, owner, rejection) in refused {
+        let mut aggregate = idle(current);
+        let before = aggregate.clone();
+        assert_eq!(
+            aggregate.assignment().reassign(owner, "owner:1", 900),
+            Err(rejection),
+            "{row}"
+        );
+        assert_eq!(aggregate, before, "{row}");
+    }
+}
