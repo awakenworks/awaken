@@ -161,7 +161,33 @@ and regenerate. On a rebase conflict in `lefthook.yml`, resolve `scripts/ci/hook
 regenerate; never merge the generated file by hand.
 
 All Cargo steps of one gate run share one host build admission; while queued, the gate prints the
-current holder and its own wait every 30 s.
+current slot holders (the host's `--status` slot table, or its queue tickets with the older tool)
+and its own wait every 30 s. The pre-commit and pre-push Rust gates always declare the `feedback`
+workload kind, whatever the shell exported; `--full` keeps a declared kind.
+
+Budgets exclude admission queue time. With the host tool that exports
+`AWAKEN_ADMISSION_GRANTED_AT`/`AWAKEN_ADMISSION_QUEUED_SECONDS` (`fair-slots-v2`), `deadline.py`
+keeps one queue ledger per deadline: an admitted call made through `run_with_deadline` records its
+request and grant in every enclosing deadline's ledger, and each of those clocks (hook `--timeout`,
+`parallel_check.py`, a cooperative Formal root, the `pg_tests.sh` gate budget through
+`awaken_budget_*`) pauses for the queue. The queue itself is bounded at
+`max(budget, AWAKEN_ADMISSION_WAIT_SECONDS) + 600` s, never sooner than a queue-counting budget
+would have stopped it, and exceeding it exits 75 with a line naming the queue. Bare Cargo calls
+inside a Python checker do not pass through `run_with_deadline` and still count. With the older
+tool nothing is recorded and every clock behaves as before.
+
+Developer-experience timings (wall, queued and run time, median and p90, from the existing
+build-observation bundles; queued = the run's own non-nested Cargo admission waits):
+
+```sh
+python3 scripts/ci/ci_performance.py dx            # last 7 days
+python3 scripts/ci/ci_performance.py dx --days 1 --path /other/observation/root
+```
+
+Pre-commit runs are split into script-only, docs-only, single-crate and multi-crate Rust commits
+from the `rust-quick` hook's per-path `explain:` lines; a commit whose Rust gate did not run is
+classified by the hooks that ran (`Rust (crates not recorded)` when `rustfmt` ran). Track these
+numbers before and after a change to the hooks or the host scheduler.
 
 Why did something run (nothing is built):
 ```sh
@@ -368,7 +394,8 @@ admission through the existing `_deadline.sh`/host owners. The root waits for
 initial admission, then starts one unchanged total deadline (default 86,400s,
 `AWAKEN_FORMAL_TIMEOUT_SECONDS`). Existing required-test phases, each Kani batch,
 Java mutation/model calls and TLAPS commands re-enter the same execution lane.
-The initial wait is outside that deadline; subsequent phase queues spend it.
+The initial wait is outside that deadline; with the grant-exporting host tool, so are
+subsequent phase queues (with the older tool they spend it).
 Feedback gets priority for at most four admissions before a waiting batch gets
 a turn. There is still one heavy execution at a time, with no preemption of a
 running solver. `--full-gate` remains exclusive for the complete qualification.
