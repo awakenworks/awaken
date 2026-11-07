@@ -4,7 +4,9 @@
 // @formal reason: not qualification of an opaque production adapter.
 //! The Outcome matrix's one fixed, tool-free newline program and its profile.
 
-use awaken_run_executor_acp::{AcpLaunch, AcpLaunchIdentity, Codec, OpenError};
+#[cfg(unix)]
+use awaken_run_executor_acp::AcpLaunchIdentity;
+use awaken_run_executor_acp::{AcpLaunch, Codec, OpenError};
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 
 /// One tool-free ACP stand-in that can act as either Outcome Worker or Judge.
