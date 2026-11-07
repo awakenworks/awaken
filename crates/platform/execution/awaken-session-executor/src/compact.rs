@@ -339,7 +339,10 @@ mod tests {
         };
 
         backend.prefetch(request.clone()).await;
-        tokio::time::timeout(std::time::Duration::from_secs(1), started.acquire())
+        // The bound only turns a lost start into a failure. The auxiliary
+        // sandbox is created on the blocking pool before inference starts, so
+        // its fsyncs count against this wall clock under writeback pressure.
+        tokio::time::timeout(std::time::Duration::from_secs(30), started.acquire())
             .await
             .expect("background inference started")
             .unwrap()
