@@ -105,6 +105,17 @@ commit-checks:
       tags: [read-only]
       run: python3 scripts/ci/parallel_check.py --hook-label nextest-evidence --timeout 600 --read-only --shell 'python3 scripts/ci/benchmark_rust_build.py --self-test && python3 scripts/ci/nextest_execution.py --self-test' --
 
+    # A changed CI script's own tests run on the commit that changes it: every
+    # self-test or test_*.py a gate runs whose entry runs, reads or names a
+    # staged scripts/ci file. Explain a selection with
+    # `python3 scripts/ci/generate_hooks.py --explain <path>...`.
+    - name: script-tests
+      # >>> generated glob from generate_hooks.py INPUT_GLOBS — do not edit
+      glob: "{lefthook.yml,scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/pre-commit/*.sh,scripts/ci/pre-push/*.sh}"
+      # <<< generated glob
+      tags: [read-only]
+      run: python3 scripts/ci/parallel_check.py --hook-label script-tests --timeout 1800 --read-only --shell 'python3 scripts/ci/generate_hooks.py --script-tests "$@"' -- {staged_files}
+
     - name: hook-feedback
       # >>> generated glob from test_hook_feedback.py, test_strict_unittest.py INPUT_GLOBS — do not edit
       glob: "{lefthook.yml,scripts/ci/_build_observation.sh,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_input_closure.py,scripts/ci/_native_lefthook.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_strict_unittest.py,scripts/ci/_windows_job.py,scripts/ci/check_changed_e2e_line_coverage.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/coverage_summary.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/pre-commit/observe.sh,scripts/ci/rust_test_plan.py,scripts/ci/test_coverage_summary.py,scripts/ci/test_hook_feedback.py,scripts/ci/test_strict_unittest.py}"
@@ -192,12 +203,6 @@ commit-checks:
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label degrading-defaults --timeout 600 --read-only --shell 'python3 scripts/ci/check_degrading_defaults.py --self-test && python3 scripts/ci/check_degrading_defaults.py' --
-                - name: affected-rust-plan
-                  # >>> generated glob from rust_test_plan.py INPUT_GLOBS — do not edit
-                  glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,deny.toml,e2e/fixtures/**,fuzz/**,rust-toolchain.toml,scripts/ci/_build_observation_fixture.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/_crate_dependency_fitness.py,scripts/ci/_native_lefthook.py,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_native_test_launcher.py,scripts/ci/_windows_job.py,scripts/ci/check_file_limits.py,scripts/ci/check_repository_hygiene.py,scripts/ci/check_secrets.py,scripts/ci/ci_performance.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_anchors.py,scripts/ci/formal_kani_options.py,scripts/ci/formal_plan.py,scripts/ci/formal_run_evidence.py,scripts/ci/formal_sources.py,scripts/ci/generate_hooks.py,scripts/ci/parallel_check.py,scripts/ci/rust_test_plan.py,tests/**,xtask/**}"
-                  # <<< generated glob
-                  tags: [read-only]
-                  run: python3 scripts/ci/parallel_check.py --hook-label affected-rust-plan --timeout 600 --read-only --shell 'python3 scripts/ci/rust_test_plan.py --self-test' --
                 # The existing release source validator inventories every tracked writer.
                 # Its declaration and pre-commit trigger cover that same repository corpus.
                 - name: sandbox-release-source
@@ -417,7 +422,7 @@ commit-checks:
     # well as its own package: the trigger names every input so a version bump
     # in one place cannot pass by never running the check.
     - name: managed-sdk-oracle
-      glob: "{packages/managed-sdk-oracle/**/*,contracts/anthropic-managed/*,crates/platform/protocols/awaken-protocol-managed/contracts/*,e2e/package.json,pnpm-lock.yaml}"
+      glob: "{packages/managed-sdk-oracle/**/*,contracts/anthropic-managed/*,crates/server/awaken-protocol-managed/contracts/*,e2e/package.json,pnpm-lock.yaml}"
       run: python3 scripts/ci/parallel_check.py --hook-label managed-sdk-oracle --timeout 14400 --shell 'pnpm --filter @awaken/managed-sdk-oracle test && pnpm --filter @awaken/managed-sdk-oracle check' --
 
     - name: read-only-phase-4
@@ -523,7 +528,7 @@ commit-checks:
     # Generated wire artifacts are derived from the admin-config and Managed
     # DTOs; a DTO edit without regeneration is refused here, not at release.
     - name: generated-contracts
-      glob: "{.gitattributes,contracts/**/*,scripts/contract/**/*,crates/platform/config/awaken-admin-config-api/**/*.rs,crates/platform/protocols/awaken-protocol-managed/src/**/*.rs,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py}"
+      glob: "{.gitattributes,contracts/**/*,scripts/contract/**/*,crates/control/awaken-admin-config-api/**/*.rs,crates/server/awaken-protocol-managed/src/**/*.rs,scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py}"
       run: python3 scripts/ci/parallel_check.py --hook-label generated-contracts --timeout 14400 --shell 'python3 scripts/ci/_native_shell.py scripts/contract/generate-contracts.sh --check' --
 
     - name: read-only-phase-5
