@@ -17,7 +17,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::sink::Sink;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime::{ExecutableAgentSnapshot, Runtime, RuntimeRunContext};
-use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+use awaken_runtime_contract::cancellation::AttemptCancellation;
+use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
 use awaken_runtime_contract::runs::{Pending, RunError, RunResume, Runs, StepOutcome};
 use awaken_sync::LeafLock;
 use awaken_tool_contract::tool::ToolOutput;
@@ -115,6 +116,20 @@ impl ConversationRuns {
             .clone())
     }
 
+    fn attempt_context(&self, sink: Option<Arc<dyn Sink>>) -> RuntimeRunContext {
+        let mut context = self.context.clone();
+        // Keep any explicitly selected host scope. Without one, give every
+        // direct attempt a fresh signal so Stop affects only that attempt.
+        if context.cancellation.is_none() {
+            let cancellation = AttemptCancellation::default();
+            context = context
+                .with_cancellation(cancellation.token)
+                .with_cancellation_cause(cancellation.cause);
+        }
+        context.stream_sink = sink;
+        context
+    }
+
     fn project(&self, thread: &ThreadId, admission: &Admission) -> Result<StepOutcome, RunError> {
         let record = self
             .reader
@@ -204,10 +219,8 @@ impl ConversationRuns {
                 end: None,
             },
         );
-        let mut context = self.context.clone();
-        context.stream_sink = sink;
         awaken_runtime::DirectAttemptDriver::new(self.runtime.clone())
-            .start(activation, context)
+            .start(activation, self.attempt_context(sink))
             .await
             .map_err(execution_error)?;
         state.observe_boundary(&run, self.reader.committed_messages(&thread_id).len());
@@ -276,6 +289,9 @@ impl ConversationRuns {
         };
         let now = self.clock.now().as_epoch_ms();
         let command = ResumeCommand::from_ticket(&ticket, result, now);
+        // An invalid answer must not reserve the replay key. Runtime still
+        // validates the committed ticket again when it admits execution.
+        validate_resume(&ticket, &command).map_err(|error| execution_error(error.into()))?;
         state.receipts.insert(
             key.clone(),
             Admission {
@@ -285,8 +301,8 @@ impl ConversationRuns {
                 end: None,
             },
         );
-        let mut context = self.context.clone();
-        context.stream_sink = sink;
+        let mut context = self.attempt_context(sink);
+        context.physical_quiescence = Default::default();
         self.runtime
             .resume(command, self.reader.as_ref(), context)
             .await

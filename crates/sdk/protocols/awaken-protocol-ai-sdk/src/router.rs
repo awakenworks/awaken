@@ -25,7 +25,6 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use awaken_api_contract::CursorPage;
 use awaken_runtime_contract::runs::scope::{ResolvedResourceId, WorkspaceScope};
 use awaken_runtime_contract::runs::{
     EventForwardingSink, OwnedRuns, Pending, RunError, RunMode, RunResume, Runs, paginate_history,
@@ -528,12 +527,11 @@ async fn thread_messages(
         Err(error) => return no_store(query_error(error)),
     };
     let response = match paginate_history(&history, params.cursor.as_deref(), params.limit()) {
-        // The house cursor-page envelope (`awaken-api-contract`): `{ items, cursor }`,
-        // where `cursor` is the continuation (`null` on the last page).
-        Ok(page) => Json(CursorPage::new(
-            encode_history(page.items, pending.as_ref()),
-            page.next_page,
-        ))
+        // Keep the cursor-page wire shape without a Git-only dependency.
+        Ok(page) => Json(serde_json::json!({
+            "items": encode_history(page.items, pending.as_ref()),
+            "cursor": page.next_page,
+        }))
         .into_response(),
         // A stale or fabricated cursor is a caller fault: a plain 400, not the UI
         // stream error frame (this GET is not a chat stream).

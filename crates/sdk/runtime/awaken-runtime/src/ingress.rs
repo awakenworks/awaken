@@ -16,7 +16,7 @@ use awaken_runtime_contract::execution::{Result, RunAttemptExecutor};
 use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, drive_direct_attempt};
 
 /// In-process attempt driver: runs execute inline on the calling task.
 #[derive(Clone)]
@@ -65,41 +65,24 @@ impl DirectAttemptDriver {
         command: Option<ResumeCommand>,
         mut context: RuntimeRunContext,
     ) -> Result<RunState> {
-        // Like Durable admission, each new physical attempt receives its own
-        // evidence latch. Inline children still share that attempt's context.
+        // Activated admission owns a new physical attempt and its evidence.
         context.physical_quiescence = Default::default();
-        let quiescence = context.physical_quiescence.clone();
-        let _thread_execution = self
-            .runtime
-            .acquire_thread_execution(
-                &activation.thread_id,
-                Some(context.physical_quiescence.clone()),
-            )
-            .await?;
-        let attempt = self.runtime.begin_active_attempt(
-            &activation.run_id,
-            &activation.thread_id,
+        let run_id = activation.run_id.clone();
+        let thread_id = activation.thread_id.clone();
+        drive_direct_attempt(
+            &self.runtime,
+            &run_id,
+            &thread_id,
             context,
             self.executor.capabilities().live_input,
-        );
-        let result = quiescence
-            .observe_return(async {
+            |context| async move {
                 match command {
-                    Some(command) => {
-                        self.executor
-                            .resume(activation, command, attempt.context().clone())
-                            .await
-                    }
-                    None => {
-                        self.executor
-                            .execute(activation, attempt.context().clone())
-                            .await
-                    }
+                    Some(command) => self.executor.resume(activation, command, context).await,
+                    None => self.executor.execute(activation, context).await,
                 }
-            })
-            .await;
-        let _ = quiescence.close_and_wait().await;
-        result
+            },
+        )
+        .await
     }
 
     pub async fn cancel(&self, run_id: &RunId) -> std::result::Result<(), ControlError> {

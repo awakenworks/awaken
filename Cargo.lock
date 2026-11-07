@@ -2337,7 +2337,6 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-api-contract",
  "awaken-runtime-contract",
  "axum",
  "http-body-util",
@@ -2355,7 +2354,6 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-api-contract",
  "awaken-runtime-contract",
  "axum",
  "http-body-util",

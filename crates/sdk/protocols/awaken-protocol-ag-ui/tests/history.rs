@@ -195,7 +195,7 @@ async fn walks_the_thread_by_cursor() {
         .map(|m| m["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids3, vec!["u2", "a2"]);
-    assert_eq!(page3["cursor"], Value::Null);
+    assert_eq!(page3.get("cursor"), Some(&Value::Null));
 }
 
 #[tokio::test]
@@ -203,8 +203,7 @@ async fn an_unknown_thread_is_an_empty_page_not_an_error() {
     let rt = runtime(transcript(1));
     let (status, body) = get(rt, "/v1/ag-ui/threads/does-not-exist/messages").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body["items"].as_array().unwrap().is_empty());
-    assert_eq!(body["cursor"], Value::Null);
+    assert_eq!(body, serde_json::json!({"items": [], "cursor": null}));
 }
 
 #[tokio::test]
