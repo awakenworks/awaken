@@ -173,13 +173,44 @@ async fn run_to_exit_disposing(
         .clone();
     let disposed = sandbox.dispose_unattached().await;
     match disposal {
-        Disposal::MustSucceed => disposed.expect("dispose"),
+        Disposal::MustSucceed => {
+            disposed.expect("dispose");
+            assert_eq!(
+                host_staging_of(&scope),
+                Vec::<std::path::PathBuf>::new(),
+                "a clean disposal removes the row's host staging, read-only Memory copies included",
+            );
+        }
         Disposal::MayFailUnderMemoryPressure => assert!(
             !daemon_holds(&physical),
             "an environment whose harvest was skipped is removed all the same",
         ),
     }
     code
+}
+
+/// Host staging roots the provider allocated for this process-unique scope.
+fn host_staging_of(scope: &str) -> Vec<std::path::PathBuf> {
+    let name: String = scope
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let prefix = format!("awaken-acp-stage-{name}-");
+    std::fs::read_dir(std::env::temp_dir())
+        .expect("read the provider staging namespace")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix))
+        })
+        .collect()
 }
 
 /// Whether the daemon still has this container, asked of the daemon rather

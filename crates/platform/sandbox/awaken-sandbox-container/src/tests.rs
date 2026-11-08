@@ -23,6 +23,7 @@ use tokio::io::AsyncWriteExt;
 
 mod effect_gate_window;
 mod memory_reservation;
+mod staging_removal;
 mod stale_identity;
 mod terminal_missing_handle;
 mod terminal_preparation;
@@ -781,80 +782,6 @@ fn host_live_input_projection_rejects_directory_links_and_files_without_outside_
         "S3"
     );
     assert_eq!(std::fs::read(file).unwrap(), b"existing");
-}
-
-#[tokio::test]
-async fn memory_store_realizes_as_copy_on_the_container_tier() {
-    // Cause/effect graph: C1 a Memory requirement names an exact protocol path;
-    // C2 access is ReadWrite or ReadOnly. E1 the container binds the canonical
-    // mounter copy at that exact path, without `/workspace` or hidden `.mnt`;
-    // E2 the runtime bind's read-only flag exactly projects C2.
-    //
-    // | Rule | access | bind flag | effects |
-    // | M1   | RW     | false     | E1,E2   |
-    // | M2   | RO     | true      | E1,E2   |
-    // Constraint: the container runtime enforces access; the Memory mounter is
-    // the one content/lifecycle owner and must not be reimplemented here.
-    let rt = Arc::new(FakeRuntime::default());
-    let mut s = spec("mem-real");
-    s.mounts.push(pc::MountRequirement {
-        mount_id: "notes".into(),
-        source: pc::MountSource::MemoryStore {
-            store_id: "store-7".into(),
-            materialization_reference: None,
-            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
-        },
-        mount_path: "/mnt/memory/notes".into(),
-        access: pc::MountAccess::ReadWrite,
-        lifetime: pc::MountLifetime::Session,
-        required: true,
-    });
-    s.mounts.push(pc::MountRequirement {
-        mount_id: "archive".into(),
-        source: pc::MountSource::MemoryStore {
-            store_id: "store-8".into(),
-            materialization_reference: None,
-            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
-        },
-        mount_path: "/mnt/memory/archive".into(),
-        access: pc::MountAccess::ReadOnly,
-        lifetime: pc::MountLifetime::Session,
-        required: true,
-    });
-    let p = provider(rt);
-    let torn_down = Arc::new(AtomicBool::new(false));
-    p.install_memory_mounter(Arc::new(FakeMemoryMounter {
-        torn_down: torn_down.clone(),
-        fail_teardown: false,
-    }));
-    let sandbox = p.create(&s).await.unwrap();
-    let mem = sandbox
-        .realized()
-        .iter()
-        .find(|r| r.mount_id == "notes")
-        .expect("memory mount realized");
-    // Portable default: the container tier reports the canonical mounter's Copy,
-    // not a second runtime-local store.
-    assert_eq!(mem.realization, pc::Realization::Copy);
-    {
-        let state = p.runtime.st.lock().unwrap();
-        let bind = state.created_binds["cid-mem-real"]
-            .iter()
-            .find(|bind| bind.mount_path == "/mnt/memory/notes")
-            .expect("portable memory copy is bound into the container");
-        assert!(!bind.read_only);
-        assert_eq!(
-            std::fs::read(std::path::Path::new(&bind.source_ref).join("seed.txt")).unwrap(),
-            b"seed"
-        );
-        let read_only = state.created_binds["cid-mem-real"]
-            .iter()
-            .find(|bind| bind.mount_path == "/mnt/memory/archive")
-            .expect("M2 read-only memory copy is bound into the container");
-        assert!(read_only.read_only, "M2/E2");
-    }
-    sandbox.dispose_unattached().await.unwrap();
-    assert!(torn_down.load(Ordering::SeqCst));
 }
 
 struct UncertainMemoryMounter {

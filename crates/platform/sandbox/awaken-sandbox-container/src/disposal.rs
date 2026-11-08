@@ -62,10 +62,8 @@ fn replace_memory_snapshot(
     root: &std::path::Path,
     files: &[SandboxFile],
 ) -> Result<(), pc::SandboxError> {
-    if root.exists() {
-        std::fs::remove_dir_all(root)
-            .map_err(|error| pc::SandboxError::backend("replace_memory_snapshot", error))?;
-    }
+    crate::restore_target::remove_staging_tree(root)
+        .map_err(|error| pc::SandboxError::backend("replace_memory_snapshot", error))?;
     std::fs::create_dir_all(root)
         .map_err(|error| pc::SandboxError::backend("replace_memory_snapshot", error))?;
     let mut total = 0_u64;
