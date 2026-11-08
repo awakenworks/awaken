@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
-  fakeAnthropicServerEnv,
+  modelUpstreamEnv,
   withServer,
   pass,
   waitForSessionEventReceipt,
@@ -87,7 +87,7 @@ async function main() {
         'the tool result went back through the wire',
       );
       pass('tool_use round-trip: upstream tool call -> glob -> tool_result -> final text');
-    }, fakeAnthropicServerEnv(upstream, { ANTHROPIC_API_KEY: FAKE_KEY }));
+    }, modelUpstreamEnv(upstream, { apiKey: FAKE_KEY }));
     assert.ok(upstream.requests.length >= 2, 'the upstream served the chat turns');
     assert.equal(upstream.unauthorized, 0, 'the key rode every chat request');
     pass(`upstream served ${upstream.requests.length} authorized /messages calls`);

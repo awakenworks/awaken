@@ -1,22 +1,24 @@
 // Real-model Managed Agents e2e: drive a session through the official Anthropic
 // TypeScript SDK against awaken-server in `real` mode, which is backed by a
-// live Anthropic-compatible model selected by the canonical credential factory
-// (ANTHROPIC_API_KEY/BASE_URL/MODEL or the KIMI_* aliases). This exercises the full
+// live Anthropic-compatible model the harness binds through the config-plane API
+// (Kimi, or DeepSeek's Anthropic endpoint; see model_upstream.mjs). This exercises the full
 // managed session path — create → user.message → agent.message → status_idle —
 // with a real model return, not the deterministic echo stub.
 //
-// Run: (from e2e/, with a live key)
-//   ANTHROPIC_API_KEY=... ANTHROPIC_BASE_URL=... ANTHROPIC_MODEL=... node managed_real_e2e.mjs
+// Run: (from e2e/, with a live key in the controller environment or ~/.bashrc)
+//   node managed_real_e2e.mjs
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withServer, modelUpstreamEnv } from './harness.mjs';
+import { liveAnthropicCompatibleUpstream } from './model_upstream.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
 async function main() {
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.KIMI_API_KEY) {
-    console.log('SKIP managed_real_e2e: no ANTHROPIC_API_KEY / KIMI_API_KEY set.');
+  const live = liveAnthropicCompatibleUpstream();
+  if (!live) {
+    console.log('SKIP managed_real_e2e: no live Anthropic-compatible key (ANTHROPIC_API_KEY or ~/.bashrc).');
     return;
   }
   try {
@@ -58,7 +60,7 @@ async function main() {
       const text = (msg.content ?? []).map((c) => c.text ?? '').join('').trim();
       assert.ok(text.length > 0, 'the real model returned non-empty text');
       pass(`real model replied via managed session: ${JSON.stringify(text.slice(0, 80))}`);
-    });
+    }, modelUpstreamEnv(null, live));
 
     console.log('E2E PASS: managed session drives a real model return through the official @anthropic-ai/sdk.');
     process.exitCode = 0;

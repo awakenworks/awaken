@@ -168,10 +168,10 @@ pub async fn build_dream_router_and_host(
 
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
-    // Keep the Dream lifecycle fixture deterministic by default, but route an
-    // explicitly requested HTTP model through the same production provider
-    // adapter as every other scenario. Dream used to bypass `scenario_model`,
-    // so AWAKEN_MODEL_SOURCE=http silently kept the scripted executor.
+    // Keep the Dream lifecycle fixture deterministic by default, but route a
+    // model an operator bound through the config-plane API through the same
+    // production provider adapter as every other scenario. Dream used to
+    // bypass `scenario_model`, which silently kept the scripted executor.
     let (model, model_ref) = scenario_model(Arc::new(DreamScenarioModel), "claude-sonnet-5");
     let resolver = Arc::new(DreamScenarioModelResolver {
         model_ref: model_ref.clone(),

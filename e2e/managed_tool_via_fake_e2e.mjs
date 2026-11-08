@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
-  fakeAnthropicServerEnv,
+  modelUpstreamEnv,
   withServer,
   pass,
   waitForSessionEventReceipt,
@@ -60,7 +60,7 @@ async function main() {
       const replies = second.filter((t) => t === 'agent.message').length;
       assert.ok(replies >= 2, `multi-turn accumulates replies (${replies})`);
       pass('multi-turn continues over the streamed real path');
-    }, fakeAnthropicServerEnv(upstream, { ANTHROPIC_API_KEY: FAKE_KEY }));
+    }, modelUpstreamEnv(upstream, { apiKey: FAKE_KEY }));
     console.log('E2E PASS: streamed tool round-trip + multi-turn over the real provider path.');
     process.exitCode = 0;
   } catch (err) {

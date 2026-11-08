@@ -498,7 +498,9 @@ async function main() {
       assert.equal(r.status, 404);
       assert.equal(r.json.code, 'model_unresolved');
       pass('resolve of an unknown model -> 404 model_unresolved');
-    });
+      // This scenario runs no inference, and its E1 rule needs the catalog the
+      // operator has not touched yet: no model upstream is bound.
+    }, {}, { modelUpstream: null });
 
     console.log('E2E PASS: admin config CRUD + resolve round-trip against the generated TS API contract.');
     process.exitCode = 0;

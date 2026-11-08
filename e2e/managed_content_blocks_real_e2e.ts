@@ -13,16 +13,20 @@
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
-import { FILES_BETA, RED_PNG_B64, pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
+import { FILES_BETA, RED_PNG_B64, modelUpstreamEnv, pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
+// @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
+import { liveAnthropicCompatibleUpstream } from './model_upstream.mjs';
 
 const BETAS = ['managed-agents-2026-04-01', FILES_BETA];
 
 async function main() {
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.KIMI_API_KEY) {
+  const live = liveAnthropicCompatibleUpstream();
+  if (!live) {
     console.log('SKIP managed_content_blocks_real_e2e: no live Anthropic-compatible key.');
     return;
   }
-  // Reuse the offline, conventionally encoded image shared by every protocol.
+  // Fetch a conventionally encoded PNG because several Anthropic-compatible
+  // providers reject valid but aggressively optimized tiny PNG encodings.
   const fixture = Buffer.from(RED_PNG_B64, 'base64');
   await withServer('real', Number(process.env.E2E_PORT), async (baseUrl: string) => {
     const client = new Anthropic({ apiKey: 'e2e-local-only', baseURL: baseUrl }); // awaken-allow(secret):
@@ -77,7 +81,7 @@ async function main() {
       `L1 live answer: ${JSON.stringify(answer)}; events=${JSON.stringify(diagnostics)}`,
     );
     pass('live Anthropic-compatible model inspected an SDK image File through Awaken materialization');
-  });
+  }, modelUpstreamEnv(null, live));
   console.log('E2E PASS: real LLM validated Managed SDK File image content.');
 }
 

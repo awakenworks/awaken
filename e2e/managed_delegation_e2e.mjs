@@ -66,6 +66,10 @@ const PER_INFERENCE_INPUT =
 
 const PORT = Number(process.env.E2E_PORT ?? 38105);
 const BETAS = ['managed-agents-2026-04-01'];
+// The operator binds both of the scenario's models: its Agents' `default`
+// profile and the reserved Advisor's own pinned model, which keeps its name on
+// the wire.
+const ADVISOR_PROFILES = { default: 'fake-haiku', 'fake-advisor': 'fake-advisor' };
 
 async function listEvents(client, sessionId) {
   const events = [];
@@ -1115,7 +1119,7 @@ async function main() {
     assert.ok(!badEvents.some((event) => event.type === 'session.thread_created'));
 
     console.log('E2E PASS: fixed Managed multi-Agent coordination via TS SDK.');
-  }, { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' });
+  }, { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' }, { modelUpstream: { profiles: ADVISOR_PROFILES } });
 
   await withScenarioServer(
     'delegate',
@@ -1151,7 +1155,7 @@ async function main() {
       );
     },
     { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' },
-    { upstream: { failModel: 'fake-advisor' } },
+    { upstream: { failModel: 'fake-advisor' }, modelUpstream: { profiles: ADVISOR_PROFILES } },
   );
 
   await withScenarioServer(
@@ -1269,7 +1273,7 @@ async function main() {
       SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
       SESSION_DEPLOYMENT_STORAGE_DIR: `${E2E_HOME_ROOT}/managed-advisor-cancel`,
     },
-    { upstream: { delayMs: 4_000 } },
+    { upstream: { delayMs: 4_000 }, modelUpstream: { profiles: ADVISOR_PROFILES } },
   );
 }
 

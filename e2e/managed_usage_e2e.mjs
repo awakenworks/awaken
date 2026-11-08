@@ -13,7 +13,8 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer, withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import { modelUpstreamEnv, withRealServer, withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import { liveAnthropicCompatibleUpstream } from './model_upstream.mjs';
 import { FAKE_USAGE } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -77,7 +78,8 @@ async function main() {
   });
 
   // ---- arm 2: live KIMI — real, plausible counts ----
-  if (process.env.E2E_LIVE === '1' && (process.env.ANTHROPIC_API_KEY || process.env.KIMI_API_KEY)) {
+  const live = process.env.E2E_LIVE === '1' ? liveAnthropicCompatibleUpstream() : null;
+  if (live) {
     await withServer('real', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
@@ -93,9 +95,9 @@ async function main() {
       } else {
         pass(`LIVE KIMI real usage = ${JSON.stringify(u)}`);
       }
-    });
+    }, modelUpstreamEnv(null, live));
   } else {
-    console.log('SKIP live-KIMI usage arm: no ANTHROPIC_API_KEY / KIMI_API_KEY set.');
+    console.log('SKIP live usage arm: E2E_LIVE unset or no live Anthropic-compatible key.');
   }
 
   console.log('E2E PASS: managed session token usage (deterministic exact + live-KIMI real).');

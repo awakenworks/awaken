@@ -14,8 +14,8 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
-import { pass, withServer } from './harness.mjs';
-import { loadKimiConfig } from './kimi_config.mjs';
+import { modelUpstreamEnv, pass, withServer } from './harness.mjs';
+import { liveAnthropicCompatibleUpstream } from './model_upstream.mjs';
 import {
   aggregateUsage,
   emitEvaluation,
@@ -64,26 +64,21 @@ async function sessionEvents(client, id) {
 }
 
 async function main() {
-  const kimi = loadKimiConfig();
-  if (!process.env.ANTHROPIC_API_KEY && kimi?.anthropicKey) {
-    Object.assign(process.env, {
-      ANTHROPIC_API_KEY: kimi.anthropicKey,
-      ANTHROPIC_BASE_URL: kimi.anthropicBase,
-      ANTHROPIC_MODEL: kimi.anthropicModel,
-    });
-  }
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.KIMI_API_KEY) {
-    console.log('SKIP managed_dream_real_eval_e2e: no ANTHROPIC_API_KEY / KIMI_API_KEY set.');
+  const live = liveAnthropicCompatibleUpstream();
+  if (!live) {
+    console.log('SKIP managed_dream_real_eval_e2e: no live Anthropic-compatible key (ANTHROPIC_API_KEY or ~/.bashrc).');
     return;
   }
-  process.env.AWAKEN_MODEL_SOURCE = 'http';
 
   const stable = tag('STABLE');
   const stale = tag('STALE');
   const replacement = tag('REPLACEMENT');
   const preference = tag('PREFERENCE');
   const expected = [stable, replacement, preference];
-  const model = process.env.ANTHROPIC_MODEL ?? process.env.KIMI_MODEL ?? 'provider-default';
+  // The evaluated upstream model, and the Dream scenario's own model reference
+  // the operator's `default` inference profile binds to it.
+  const model = live.model;
+  const dreamModel = 'claude-sonnet-5';
 
   await withServer('dream', PORT, async (baseURL) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL, timeout: 700_000 });
@@ -118,7 +113,7 @@ async function main() {
         { type: 'memory_store', memory_store_id: sourceStore.id },
         { type: 'sessions', session_ids: [sourceSession.id] },
       ],
-      model,
+      model: dreamModel,
       instructions: 'Preserve every verified AWKFACT token verbatim. Remove the obsolete token that '
         + 'the newer Session explicitly supersedes. Do not invent any AWKFACT token.',
       betas: BETAS,
@@ -238,7 +233,7 @@ async function main() {
     });
     emitEvaluation(evaluation);
     pass('live Dream consolidation met lifecycle, quality, isolation and latency thresholds');
-  });
+  }, modelUpstreamEnv(null, live));
 }
 
 main().catch((error) => {

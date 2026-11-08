@@ -73,23 +73,27 @@ fn management_scenario_adapters(
 /// The env-selected AllInOne management scenario over one deterministic host
 /// executor. A process whose environment configures its model through ambient
 /// provider keys stays on its own claim pool
-/// ([`awaken_cli::scenario_requires_local_placement`], w5-slices.md §11);
-/// every other one runs the shipped co-located registered Worker.
+/// ([`awaken_cli::scenario_requires_local_placement`], w5-slices.md §11), as
+/// does one whose scenario names `SESSION_DEPLOYMENT_PLACEMENT=local`: the e2e
+/// harness's real-wire scenarios, which held that placement while ambient keys
+/// selected it and observe behaviour only it has so far (w5-slices.md §10,
+/// §15); every other one runs the shipped co-located registered Worker.
 async fn management_scenario_process(
     model: Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     model_ref: String,
     adapters: awaken_process_startup::ManagedServiceAdapters,
     observability: &awaken_observability::ObservabilityConfig,
 ) -> awaken_process_startup::PreparedProcess {
-    let execution = if awaken_cli::scenario_requires_local_placement() {
-        awaken_process_startup::ScenarioExecution::Local(Box::new(
-            awaken_cli::LocalExecution::default(),
-        ))
-    } else {
-        awaken_process_startup::ScenarioExecution::Worker(Box::new(
-            awaken_cli::scenario_worker_preparation,
-        ))
-    };
+    let execution =
+        if awaken_cli::scenario_requires_local_placement() || scenario_requests_local_placement() {
+            awaken_process_startup::ScenarioExecution::Local(Box::new(
+                awaken_cli::LocalExecution::default(),
+            ))
+        } else {
+            awaken_process_startup::ScenarioExecution::Worker(Box::new(
+                awaken_cli::scenario_worker_preparation,
+            ))
+        };
     awaken_process_startup::prepare_all_in_one_process_with_scenario_model(
         model,
         model_ref,
@@ -114,6 +118,16 @@ async fn provider_scenario_process(
         observability,
     )
     .await
+}
+
+/// The scenario's explicit placement selection (topology input, not model
+/// configuration): `local` keeps Sessions on this process's own claim pool.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
+fn scenario_requests_local_placement() -> bool {
+    std::env::var("SESSION_DEPLOYMENT_PLACEMENT").as_deref() == Ok("local")
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -201,6 +215,18 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .await?;
         awaken_scenario_host::install_scenario_runtime_authority(runtime_authority)?;
+    }
+    // Host-backed scenarios own no Control plane, so they serve the production
+    // admin config API over their own model configuration; that API is the
+    // only way an operator points their Agents at a provider.
+    let model_configuration = uses_shared_runtime.then(|| {
+        awaken_scenario_host::ScenarioModelConfiguration::for_scenario(
+            &awaken_scenario_host::scenario_deployment(),
+            awaken_time::system_clock(),
+        )
+    });
+    if let Some(configuration) = &model_configuration {
+        awaken_scenario_host::install_scenario_model_configuration(configuration.clone())?;
     }
     let app = match model_mode.as_deref() {
         Ok("probe") => {
@@ -300,6 +326,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 &observability,
             )
             .await;
+            install_control_model_configuration(&prepared)?;
             scenario_lifecycle = Some(prepared.service_lifecycle);
             prepared.public_router
         }
@@ -311,6 +338,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 &observability,
             )
             .await;
+            install_control_model_configuration(&prepared)?;
             scenario_lifecycle = Some(prepared.service_lifecycle);
             prepared.public_router
         }
@@ -325,6 +353,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 &observability,
             )
             .await;
+            install_control_model_configuration(&prepared)?;
             scenario_lifecycle = Some(prepared.service_lifecycle);
             prepared.public_router
         }
@@ -341,6 +370,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // the authored catalog and execute through the real materializer.
         Ok("management-providers") => {
             let prepared = provider_scenario_process(&observability).await;
+            install_control_model_configuration(&prepared)?;
             scenario_lifecycle = Some(prepared.service_lifecycle);
             prepared.public_router
         }
@@ -356,31 +386,12 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 &observability,
             )
             .await;
+            install_control_model_configuration(&prepared)?;
             scenario_lifecycle = Some(prepared.service_lifecycle);
             prepared.public_router
         }
         Ok("real") => {
             awaken_scenario_host::build_real_router(
-                trace_file_present,
-                scenario_lifecycle
-                    .as_ref()
-                    .expect("Host-backed scenario retains its selected lifecycle")
-                    .clone(),
-            )
-            .await
-        }
-        Ok("real-gemini") => {
-            awaken_scenario_host::build_real_gemini_router(
-                trace_file_present,
-                scenario_lifecycle
-                    .as_ref()
-                    .expect("Host-backed scenario retains its selected lifecycle")
-                    .clone(),
-            )
-            .await
-        }
-        Ok("real-resolved") => {
-            awaken_scenario_host::build_resolved_real_router(
                 trace_file_present,
                 scenario_lifecycle
                     .as_ref()
@@ -679,6 +690,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .await
         }
     };
+    let app = match &model_configuration {
+        Some(configuration) => app.merge(configuration.router()),
+        None => app,
+    };
     // Brain admin surface (ADR-0022 D7): the connection-count metric that KEDA
     // autoscales on, plus /admin/drain + /readyz for graceful, stream-preserving
     // scale-in. Wraps the served router so the in-flight counter sees every request.
@@ -742,6 +757,26 @@ async fn serve_scenario(
     served?;
     shutdown?;
     Ok(())
+}
+
+/// An AllInOne scenario resolves its host model through the Control stores
+/// its own admin config API writes; install them before serving.
+fn install_control_model_configuration(
+    prepared: &awaken_process_startup::PreparedProcess,
+) -> Result<(), std::io::Error> {
+    let Some(handles) = prepared.model_configuration.clone() else {
+        return Ok(());
+    };
+    awaken_scenario_host::install_scenario_model_configuration(
+        awaken_scenario_host::ScenarioModelConfiguration::over(
+            handles.catalog,
+            handles.credentials,
+            handles.secrets,
+            handles.profiles,
+            handles.workspace,
+            prepared.clock.clone(),
+        ),
+    )
 }
 
 fn mode_uses_shared_scenario_runtime(mode: Option<&str>) -> bool {
@@ -851,9 +886,9 @@ mod dispatch_tests {
     //! fails to mount is caught here instead of only as a `e2e/*.mjs` boot failure.
     //!
     //! Covered here: every SYNC, environment-free arm. Excluded (documented, not unit-
-    //! testable refactor-free): the arms that PANIC without operator env or external
-    //! daemons — `real`/`real-gemini`/`real-resolved`/`oauth-resolved` (require a live
-    //! API key / project), `delegate-remote` (`AWAKEN_REMOTE_AGENT_URL`), `acp-container`
+    //! testable refactor-free): the arms that need operator configuration or external
+    //! daemons — `real`/`oauth-resolved` (run only a model bound through the
+    //! config-plane API), `delegate-remote` (`AWAKEN_REMOTE_AGENT_URL`), `acp-container`
     //! (a running Docker daemon), and the async management arms
     //! (`management`/`acp-managed-mcp`/`acp-real-mcp`). The two async but env-free arms
     //! (`config`, plus the default fallback) are asserted directly below.

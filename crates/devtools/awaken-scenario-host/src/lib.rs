@@ -12,6 +12,7 @@ mod deployment;
 mod distributed_control;
 mod dream;
 mod managed_state;
+mod model_configuration;
 mod model_publication;
 mod model_routing;
 mod models;
@@ -42,6 +43,9 @@ pub use managed_state::{
     local_managed_state_with_environments, local_managed_state_with_environments_and_agent_source,
     local_managed_state_with_model_publication_resolver, volatile_environment_execution,
 };
+pub use model_configuration::{
+    DEFAULT_SCENARIO_PROFILE, ScenarioModelConfiguration, install_scenario_model_configuration,
+};
 pub use model_routing::{build_model_route_router, scenario_model};
 pub use scenario_platform::build_unscoped_resource_router;
 pub use web::build_management_web_service;
@@ -67,7 +71,6 @@ use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Role;
 use awaken_dispatch::SessionRunReservations as _;
 use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
-use awaken_provider_genai::GenaiExecutor;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate, ToolKind};
@@ -196,7 +199,7 @@ pub async fn build_git_repo_router(
 /// write-back → git commit/patch export → output-artifact harvest end to end on the native
 /// backend. Driven over the real wire by the `fullChain` behavior (this in-process
 /// `EchoModel` is only the non-http fallback, never run by the e2e).
-/// `AWAKEN_MODEL_MODE=full-chain` with `AWAKEN_MODEL_SOURCE=http`.
+/// `AWAKEN_MODEL_MODE=full-chain`, its model bound through the config-plane API.
 pub async fn build_full_chain_router(
     trace_file_present: bool,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
@@ -621,68 +624,17 @@ pub async fn build_router_with_deployment(
     mount_on_lifecycle(host, lifecycle.clone()).await
 }
 
-/// Choose a usable model only when an operator omitted the explicit model. Kimi
-/// Code's Anthropic-compatible endpoint currently exposes Claude-compatible
-/// public ids; all other endpoints retain the conservative Anthropic default.
-fn default_anthropic_compatible_model(base_url: &str) -> &'static str {
-    if base_url.contains("api.kimi.com/coding") {
-        "claude-sonnet-5"
-    } else {
-        "claude-3-5-haiku-latest"
-    }
-}
-
-/// Claude Code accepts Kimi's `/coding/` root and appends `/v1` itself, while
-/// the provider executor consumes the Messages API base directly.
-fn normalize_anthropic_compatible_base(base_url: &str) -> String {
-    let trimmed = base_url.trim_end_matches('/');
-    if trimmed.contains("api.kimi.com/coding") && !trimmed.ends_with("/v1") {
-        format!("{trimmed}/v1/")
-    } else {
-        format!("{trimmed}/")
-    }
-}
-
-/// Route every direct scenario/live Anthropic endpoint through the same
-/// dialect-aware executor factory as publication-pinned worker materialization.
-/// Keeping this helper in the scenario assembly avoids reviving the legacy
-/// generic-genai Anthropic path merely because a test supplies environment vars.
-fn anthropic_messages_executor(base_url: &str, api_key: String) -> Arc<dyn LlmExecutor> {
-    let credential = awaken_agent_contract::RedactedString::new(api_key);
-    let base_url = normalize_anthropic_compatible_base(base_url);
-    awaken_inference_endpoint::executor_from_materialized_endpoint(
-        "anthropic_messages",
-        "anthropic",
-        Some(&base_url),
-        Some(&credential),
-    )
-    .expect("construct the canonical Anthropic Messages executor")
-}
-
-/// A server backed by a **live** Anthropic-compatible model, configured from the
-/// environment: `ANTHROPIC_API_KEY` (or `KIMI_API_KEY`), `ANTHROPIC_BASE_URL` (or
-/// `KIMI_BASE_URL`), `ANTHROPIC_MODEL` (or `KIMI_MODEL`). This is the same
-/// dialect-aware executor factory used by worker materialization, exposed as a server mode
-/// so the TypeScript e2e can drive a real Run through the Managed / AI SDK / A2A
-/// adapters. Panics if no API key is set, so a misconfigured run fails loudly.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
-)]
+/// A server whose only model is the one an operator configures through the
+/// config-plane API (see [`model_configuration`]): connect a provider, bind the
+/// `default` inference profile, and every Run resolves that profile through the
+/// production publication resolver and the vault-backed credential
+/// materializer. Until then each inference fails, naming the missing binding;
+/// there is no deterministic fallback in this mode.
 async fn real_platform(trace_file_present: bool) -> deployment::ScenarioPlatform {
-    let key = std::env::var("ANTHROPIC_API_KEY")
-        .or_else(|_| std::env::var("KIMI_API_KEY"))
-        .expect("set ANTHROPIC_API_KEY or KIMI_API_KEY for AWAKEN_MODEL_MODE=real");
-    let base = std::env::var("ANTHROPIC_BASE_URL")
-        .or_else(|_| std::env::var("KIMI_BASE_URL"))
-        .unwrap_or_else(|_| "https://api.anthropic.com/v1/".to_string());
-    let model = std::env::var("ANTHROPIC_MODEL")
-        .or_else(|_| std::env::var("KIMI_MODEL"))
-        .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
-    let executor = anthropic_messages_executor(&base, key);
+    let (executor, model_ref) = scenario_model(Arc::new(model_configuration::UnboundModel), "real");
     runtime_resource_host_with_deployment(
         executor,
-        model,
+        model_ref,
         scenario_deployment(),
         trace_file_present,
     )
@@ -696,345 +648,20 @@ pub async fn build_real_router(
     mount_on_lifecycle(real_platform(trace_file_present).await, lifecycle.clone()).await
 }
 
-/// A server backed by **Gemini on Vertex AI**, authenticated by an OAuth2 Bearer
-/// token (ADR-0043 Phase 3 multi-dialect + OAuth). The token is refreshed through
-/// the credential domain's OAuth helper: `GEMINI_ACCESS_TOKEN` if set, else
-/// `gcloud auth print-access-token` (which holds the long-lived Google grant).
-/// Config from the environment: `GEMINI_PROJECT` (required), `GEMINI_LOCATION`
-/// (default `global`), `GEMINI_MODEL` (default `gemini-2.5-flash`). Exposed as a
-/// server mode so the TypeScript e2e can drive a real Gemini Run — proving the
-/// OAuth + Gemini path through the managed / ai-sdk adapters.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
-)]
-pub async fn build_real_gemini_router(
-    trace_file_present: bool,
-    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
-) -> Router {
-    use awaken_credential_vault::{CommandTokenSource, TokenSource};
-
-    let project = std::env::var("GEMINI_PROJECT")
-        .expect("set GEMINI_PROJECT for AWAKEN_MODEL_MODE=real-gemini");
-    let location = std::env::var("GEMINI_LOCATION").unwrap_or_else(|_| "global".to_string());
-    let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
-    let token = match std::env::var("GEMINI_ACCESS_TOKEN") {
-        Ok(token) if !token.is_empty() => token,
-        _ => CommandTokenSource::gcloud()
-            .access_token()
-            .await
-            .expect("refresh a Google OAuth2 token via gcloud")
-            .expose_secret()
-            .to_string(),
-    };
-    let host = if location == "global" {
-        "aiplatform.googleapis.com".to_string()
-    } else {
-        format!("{location}-aiplatform.googleapis.com")
-    };
-    let base_url = format!("https://{host}/v1/projects/{project}/locations/{location}/");
-    let executor = GenaiExecutor::from_materialized_endpoint(
-        awaken_provider_genai::AdapterKind::Vertex,
-        base_url,
-        token,
-    )
-    .expect("explicit Vertex client construction");
-    mount_on_lifecycle(
-        runtime_resource_host_with_deployment(
-            Arc::new(executor),
-            model,
-            scenario_deployment(),
-            trace_file_present,
-        )
-        .await,
-        lifecycle.clone(),
-    )
-    .await
-}
-
-/// A live-model server whose executor is built through the production
-/// publication + worker-materialization path. It authors an in-memory catalog,
-/// persists a credential, freezes one complete model candidate, then lets the
-/// worker adapter materialize exactly that candidate. Env:
-/// `ANTHROPIC_API_KEY`/`KIMI_API_KEY` (+ `*_BASE_URL`, `*_MODEL`).
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
-)]
-pub async fn build_resolved_real_router(
-    trace_file_present: bool,
-    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
-) -> Router {
-    use awaken_agent_config::ModelSelection;
-    use awaken_agent_contract::RedactedString;
-    use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
-    use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
-    use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
-    use awaken_model_catalog::{
-        ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
-    };
-
-    let key = std::env::var("ANTHROPIC_API_KEY")
-        .or_else(|_| std::env::var("KIMI_API_KEY"))
-        .expect("set ANTHROPIC_API_KEY or KIMI_API_KEY for AWAKEN_MODEL_MODE=real-resolved");
-    let base = std::env::var("ANTHROPIC_BASE_URL")
-        .or_else(|_| std::env::var("KIMI_BASE_URL"))
-        .unwrap_or_else(|_| "https://api.anthropic.com/v1/".to_string());
-    let model = std::env::var("ANTHROPIC_MODEL")
-        .or_else(|_| std::env::var("KIMI_MODEL"))
-        .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
-
-    // Author the catalog: one provider + endpoint + offering for `model`.
-    let catalog_repo = Arc::new(InMemoryCatalogRepo::new());
-    catalog_repo
-        .put_provider(Provider {
-            id: ProviderId::new("anthropic"),
-            slug: "anthropic".into(),
-            display_name: "Anthropic".into(),
-            version: 1,
-        })
-        .await
-        .expect("put provider");
-    catalog_repo
-        .put_endpoint(ProtocolEndpoint {
-            workspace_id: None,
-            id: ProtocolEndpointId::new("ep1"),
-            provider_id: ProviderId::new("anthropic"),
-            dialect: ApiDialect::AnthropicMessages,
-            base_url: Some(base),
-            timeout_secs: 300,
-            display_name: "prod".into(),
-            version: 1,
-        })
-        .await
-        .expect("put endpoint");
-    catalog_repo
-        .put_offering(Offering {
-            model_id: model.clone(),
-            provider_id: ProviderId::new("anthropic"),
-            protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-            dialect: ApiDialect::AnthropicMessages,
-            upstream_model: None,
-            source: Default::default(),
-            status: Default::default(),
-            last_seen_at_unix_ms: None,
-        })
-        .await
-        .expect("put offering");
-
-    // Persist the credential, publish a secret-free candidate, and materialize it
-    // only at the worker boundary.
-    let secrets = Arc::new(InMemorySecretStore::new());
-    let cred_repo = Arc::new(InMemoryCredentialRepo::new());
-    let clock = awaken_time::system_clock();
-    enter_credential(
-        CredentialCreateParams {
-            workspace_id: "ws".into(),
-            kind: CredentialKind::Vault,
-            provider_id: Some("anthropic".into()),
-            env_key: Some("ANTHROPIC_API_KEY".into()),
-            secret: Some(RedactedString::new(key)),
-            oauth_command: None,
-        },
-        secrets.as_ref(),
-        cred_repo.as_ref(),
-        clock.as_ref(),
-    )
-    .await
-    .expect("enter credential");
-    let (direct_policy, direct_holder) = attempt_credential::direct_provider_execution();
-    let resolver = awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
-        catalog_repo,
-        cred_repo.clone(),
-        clock.clone(),
-    )
-    .with_direct_provider_credential_execution(direct_policy, direct_holder);
-    let published = awaken_config_service::ModelPublicationResolver::resolve_models(
-        &resolver,
-        &awaken_agent_contract::ScopeId::from("ws"),
-        &ModelSelection::Pinned(
-            ModelBinding::parse("anthropic", &model, "genai")
-                .unwrap_or_else(|error| panic!("ANTHROPIC_MODEL `{model}`: {error}")),
-        ),
-        &[],
-    )
-    .await
-    .expect("publish model candidate");
-    let materializer = awaken_credential_materializer::CredentialInferenceMaterializer::new(
-        Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
-            cred_repo,
-            secrets,
-            clock.clone(),
-        )),
-        clock,
-    );
-    let context = attempt_credential::context(&published.primary);
-    let executor = materializer
-        .materialize_candidate(&published.primary, &context)
-        .await
-        .expect("materialize published model candidate");
-    mount_on_lifecycle(
-        runtime_resource_host_with_deployment(
-            executor,
-            published.primary.binding().identity().1.to_owned(),
-            scenario_deployment(),
-            trace_file_present,
-        )
-        .await,
-        lifecycle.clone(),
-    )
-    .await
-}
-
-/// The resolved path with an **OAuth** credential (#5): the credential source is
-/// `CredentialKind::Oauth`; publication freezes only its reference, and worker
-/// materialization runs its `oauth_command` helper (`printf oauth-minted-key`).
-/// The minted token becomes the executor's API key, so a run succeeds only if the
-/// worker realization path actually ran the helper. `AWAKEN_MODEL_MODE=
-/// oauth-resolved` with a fake upstream that authenticates exactly that token.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
-)]
+/// [`build_real_router`] whose configuration also holds one OAuth-kind
+/// credential source (#5). Its helper (`printf oauth-minted-key`) is a fixture
+/// the admin API deliberately cannot author: the API offers only server-owned
+/// helpers. The operator reuses it by id when connecting the provider, so a
+/// Run authenticates only if materialization actually ran the helper.
+/// `AWAKEN_MODEL_MODE=oauth-resolved`.
 pub async fn build_oauth_resolved_router(
     trace_file_present: bool,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
-    use awaken_agent_config::ModelSelection;
-    use awaken_credential_contract::CredentialSourceId;
-    use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
-    use awaken_credential_vault::{
-        CredentialKind, CredentialSource, CredentialStatus, InMemorySecretStore,
-    };
-    use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
-    use awaken_model_catalog::{
-        ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
-    };
-
-    // The token the helper mints — the fake upstream authenticates exactly this.
-    const OAUTH_MINTED_KEY: &str = "oauth-minted-key"; // awaken-allow(secret):
-    let base = std::env::var("ANTHROPIC_BASE_URL")
-        .expect("set ANTHROPIC_BASE_URL for AWAKEN_MODEL_MODE=oauth-resolved");
-    let model =
-        std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-3-5-haiku-latest".to_string());
-
-    let catalog_repo = Arc::new(InMemoryCatalogRepo::new());
-    catalog_repo
-        .put_provider(Provider {
-            id: ProviderId::new("anthropic"),
-            slug: "anthropic".into(),
-            display_name: "Anthropic".into(),
-            version: 1,
-        })
+    model_configuration::seed_oauth_fixture_credential()
         .await
-        .expect("put provider");
-    catalog_repo
-        .put_endpoint(ProtocolEndpoint {
-            workspace_id: None,
-            id: ProtocolEndpointId::new("ep1"),
-            provider_id: ProviderId::new("anthropic"),
-            dialect: ApiDialect::AnthropicMessages,
-            base_url: Some(base),
-            timeout_secs: 300,
-            display_name: "prod".into(),
-            version: 1,
-        })
-        .await
-        .expect("put endpoint");
-    catalog_repo
-        .put_offering(Offering {
-            model_id: model.clone(),
-            provider_id: ProviderId::new("anthropic"),
-            protocol_endpoint_id: ProtocolEndpointId::new("ep1"),
-            dialect: ApiDialect::AnthropicMessages,
-            upstream_model: None,
-            source: Default::default(),
-            status: Default::default(),
-            last_seen_at_unix_ms: None,
-        })
-        .await
-        .expect("put offering");
-
-    // An OAuth-kind source: nothing sealed; its token is minted by the helper.
-    let source = CredentialSource {
-        id: CredentialSourceId("cred:ws:oauth".into()),
-        replacement_of: None,
-        workspace_id: "ws".into(),
-        kind: CredentialKind::Oauth,
-        descriptor: None,
-        provider_id: Some("anthropic".into()),
-        protocol_endpoint_id: None,
-        env_key: None,
-        material_ref: None,
-        auxiliary_material_refs: Default::default(),
-        // OAuth helper portability decision table:
-        // | Windows | helper                                      | token bytes |
-        // | true    | cmd.exe /D /C echo|set /p=<token>           | exact       |
-        // | false   | printf <token>                              | exact       |
-        // Both rules avoid a trailing newline after materialization trims stdout.
-        oauth_command: Some(if cfg!(windows) {
-            vec![
-                "cmd.exe".into(),
-                "/D".into(),
-                "/C".into(),
-                format!("echo|set /p={OAUTH_MINTED_KEY} & exit /b 0"),
-            ]
-        } else {
-            vec!["printf".into(), OAUTH_MINTED_KEY.into()]
-        }),
-        worker_local_binding: None,
-        status: CredentialStatus::Active,
-        version: 1,
-    };
-    let secrets = Arc::new(InMemorySecretStore::new());
-    let cred_repo = Arc::new(InMemoryCredentialRepo::new());
-    cred_repo
-        .put(source)
-        .await
-        .expect("persist OAuth credential");
-    let clock = awaken_time::system_clock();
-    let (direct_policy, direct_holder) = attempt_credential::direct_provider_execution();
-    let resolver = awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
-        catalog_repo,
-        cred_repo.clone(),
-        clock.clone(),
-    )
-    .with_direct_provider_credential_execution(direct_policy, direct_holder);
-    let published = awaken_config_service::ModelPublicationResolver::resolve_models(
-        &resolver,
-        &awaken_agent_contract::ScopeId::from("ws"),
-        &ModelSelection::Pinned(
-            ModelBinding::parse("anthropic", &model, "genai")
-                .unwrap_or_else(|error| panic!("ANTHROPIC_MODEL `{model}`: {error}")),
-        ),
-        &[],
-    )
-    .await
-    .expect("publish OAuth model candidate");
-    let materializer = awaken_credential_materializer::CredentialInferenceMaterializer::new(
-        Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
-            cred_repo,
-            secrets,
-            clock.clone(),
-        )),
-        clock,
-    );
-    let context = attempt_credential::context(&published.primary);
-    let executor = materializer
-        .materialize_candidate(&published.primary, &context)
-        .await
-        .expect("materialize published OAuth candidate");
-    mount_on_lifecycle(
-        runtime_resource_host_with_deployment(
-            executor,
-            published.primary.binding().identity().1.to_owned(),
-            scenario_deployment(),
-            trace_file_present,
-        )
-        .await,
-        lifecycle.clone(),
-    )
-    .await
+        .expect("seed the OAuth fixture credential");
+    build_real_router(trace_file_present, lifecycle).await
 }
 
 /// Build a direct/non-Managed compatibility router from host-static Skills.
@@ -1604,8 +1231,8 @@ pub async fn build_config_router(
     trace_file_present: bool,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
-    // The MODEL is chosen by `scenario_model` (in-process echo, or the real provider
-    // pointed at the fake upstream when `AWAKEN_MODEL_SOURCE=http`); the fake upstream
+    // The MODEL is chosen by `scenario_model` (in-process echo, or the provider an
+    // operator bound through the config-plane API, e.g. the fake upstream); the fake upstream
     // is what drives the seeded assistant through its admin tools in the run e2e.
     let (model, model_ref) = scenario_model(Arc::new(InstructionEchoModel), "config");
     let deployment = scenario_deployment();
@@ -1788,40 +1415,4 @@ async fn session_reservation_scenario_router(
     Router::new()
         .route("/v1/scenario/session-run/reserve", post(reserve))
         .with_state(dispatch)
-}
-
-#[cfg(test)]
-mod compatible_endpoint_tests {
-    use super::{default_anthropic_compatible_model, normalize_anthropic_compatible_base};
-
-    #[test]
-    fn kimi_coding_root_is_canonicalized_for_the_messages_provider() {
-        // Causes: C1 Kimi coding root omits /v1; C2 it already includes /v1;
-        // C3 another Anthropic-compatible base. Effect: one trailing-slash API
-        // base, adding /v1 only for C1. Rules K1/K2/K3 map directly to cases.
-        assert_eq!(
-            normalize_anthropic_compatible_base("https://api.kimi.com/coding/"),
-            "https://api.kimi.com/coding/v1/"
-        );
-        assert_eq!(
-            normalize_anthropic_compatible_base("https://api.kimi.com/coding/v1/"),
-            "https://api.kimi.com/coding/v1/"
-        );
-        assert_eq!(
-            normalize_anthropic_compatible_base("https://api.anthropic.com/v1"),
-            "https://api.anthropic.com/v1/"
-        );
-    }
-
-    #[test]
-    fn omitted_model_uses_the_endpoint_vocabulary() {
-        assert_eq!(
-            default_anthropic_compatible_model("https://api.kimi.com/coding/v1/"),
-            "claude-sonnet-5"
-        );
-        assert_eq!(
-            default_anthropic_compatible_model("https://api.anthropic.com/v1/"),
-            "claude-3-5-haiku-latest"
-        );
-    }
 }

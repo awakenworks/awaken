@@ -23,6 +23,15 @@ import {
 } from './cargo_binary.mjs';
 import { sqliteRows, stringifyDurableJson } from './sqlite.mjs';
 import { withoutAmbientProviderKeys } from './process_environment.mjs';
+import {
+  FAKE_UPSTREAM_KEY,
+  MODEL_UPSTREAM,
+  assertNoModelEnvironment,
+  configureModelUpstream,
+  modelUpstreamEnv,
+} from './model_upstream.mjs';
+
+export { configureModelUpstream, modelUpstreamEnv } from './model_upstream.mjs';
 
 // The historical 38xxx defaults overlap Linux's ephemeral client-port range.
 // Assign each Node scenario a small, non-ephemeral block before the importing
@@ -260,6 +269,8 @@ function serverProcessEnv(addr, configured = {}, inheritedEnvironment = process.
   const sandboxDir = configured.SESSION_DEPLOYMENT_SANDBOX_DIR
     ?? inheritedEnvironment.SESSION_DEPLOYMENT_SANDBOX_DIR
     ?? (hasDurableRoot ? undefined : `${E2E_HOME_ROOT}/sandboxes`);
+  // A model reaches a scenario process only through the config-plane API.
+  assertNoModelEnvironment(configured);
   return {
     ...withoutAmbientProviderKeys(inheritedEnvironment),
     HOME: E2E_HOME,
@@ -1343,7 +1354,22 @@ export function cleanupFixtureTree(root) {
  * @param {import('node:child_process').ChildProcess | null} [server]
  * @returns {Promise<void>}
  */
-export function waitForPort(port, timeoutMs = 900_000, server = null) {
+// Readiness of a harness-spawned scenario includes its model configuration:
+// a process spawned with a model upstream (`modelUpstreamEnv`) is configured
+// through its config-plane API before any caller can start a Run on it.
+export async function waitForPort(port, timeoutMs = 900_000, server = null) {
+  await waitForListening(port, timeoutMs, server);
+  const state = spawnedServerStates.get(server ?? spawnedServersByPort.get(port) ?? null);
+  if (state?.modelUpstream) {
+    state.modelUpstreamConfigured ??= configureModelUpstream(
+      `http://127.0.0.1:${port}`,
+      state.modelUpstream,
+    );
+    await state.modelUpstreamConfigured;
+  }
+}
+
+function waitForListening(port, timeoutMs, server) {
   // Readiness is an elapsed-time deadline. Wall-clock adjustments can jump
   // `Date.now()` past the deadline between retries even though the child has
   // just announced that it is listening; the monotonic clock cannot.
@@ -1481,20 +1507,7 @@ export async function withServer(mode, port, fn, extraEnv = {}) {
 // The fake-upstream key the real-wire harness authenticates with, exported so a
 // test that spawns the server itself (restart/durability suites) can build the same
 // env via `realServerEnv`.
-export const FAKE_KEY = 'sk-fake-upstream-key'; // awaken-allow(secret):
-
-// Explicit fake-provider configuration is layered through `extraEnv` after
-// inherited provider keys are removed by `serverProcessEnv`. Custom upstream
-// fixtures reuse this owner instead of mutating process.env and accidentally
-// reclassifying their inert key as ambient input.
-export function fakeAnthropicServerEnv(upstream, overrides = {}) {
-  return {
-    ANTHROPIC_API_KEY: FAKE_KEY,
-    ANTHROPIC_BASE_URL: `${upstream.url}/v1/`,
-    ANTHROPIC_MODEL: 'fake-haiku',
-    ...overrides,
-  };
-}
+export const FAKE_KEY = FAKE_UPSTREAM_KEY;
 
 // A scenario with host config (custom tools / delegates / skills / state machine /
 // compaction / memory / config plane / MCP): keep its `mode` router but run the
@@ -1525,19 +1538,31 @@ export function startUpstream(behavior, opts = {}) {
 // vision / probe / …) needs no host config, so the default `mode: 'real'` boots the
 // bare real-model router. A scenario with host config (custom tools, delegate
 // roster, skills, state machine, compaction, memory, config plane) keeps its
-// `AWAKEN_MODEL_MODE=<mode>` router and sets `AWAKEN_MODEL_SOURCE=http` so only its
-// MODEL swaps to the real wire. `opts.extraEnv` layers on scenario-specific settings.
-export function realServerEnv(behavior, upstream, { mode = 'real', extraEnv = {} } = {}) {
+// `AWAKEN_MODEL_MODE=<mode>` router; once it listens, the harness binds its
+// model to the upstream through the config-plane API (`modelUpstreamEnv`), so
+// only its MODEL swaps to the real wire. `opts.extraEnv` layers on
+// scenario-specific settings.
+export function realServerEnv(
+  behavior,
+  upstream,
+  { mode = 'real', extraEnv = {}, modelUpstream = {} } = {},
+) {
   return {
     AWAKEN_MODEL_MODE: mode,
-    ...(mode === 'real' ? {} : { AWAKEN_MODEL_SOURCE: 'http' }),
     // scenario-host consumes its typed Deployment from explicit fixture input;
     // unlike the production CLI it does not rediscover sandbox_tier from
     // config.toml. Provider-backed fixtures therefore select their portable
     // Local substrate here. A substrate-specific test can still override this
     // through extraEnv and must fail closed when that substrate is unavailable.
     SESSION_DEPLOYMENT_SANDBOX_TIER: 'local',
-    ...fakeAnthropicServerEnv(upstream),
+    // A real-wire AllInOne scenario keeps the placement it had while ambient
+    // provider keys selected it: its own claim pool. Several of these specs
+    // observe behaviour the co-located registered Worker does not have yet
+    // (w5-slices.md §10, §15); moving them is that lane's flip, not a
+    // consequence of where the model is configured. Host-backed modes ignore it.
+    SESSION_DEPLOYMENT_PLACEMENT: 'local',
+    // `modelUpstream: null` is a scenario that runs no inference: no binding.
+    ...(modelUpstream === null ? {} : modelUpstreamEnv(upstream, modelUpstream)),
     ...extraEnv,
   };
 }
@@ -1587,18 +1612,20 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
 export function spawnServer(mode, port, extraEnv = {}, inheritedEnvironment = process.env, capture = null) {
   const bin = ensureBuilt();
   const addr = `127.0.0.1:${port}`;
+  const { [MODEL_UPSTREAM]: modelUpstream, ...configured } = extraEnv;
   const server = trackSpawnedServer(
     port,
     spawn(bin, {
       env: preparedServerProcessEnv(
         addr,
-        { ...extraEnv, AWAKEN_MODEL_MODE: mode },
+        { ...configured, AWAKEN_MODEL_MODE: mode },
         inheritedEnvironment,
       ),
       stdio: ['pipe', capture ? 'pipe' : 'inherit', 'pipe'],
     }),
     `awaken-coordinator listening on http://${addr}`,
   );
+  if (modelUpstream) spawnedServerStates.get(server).modelUpstream = modelUpstream;
   // One spawn/capture/readiness owner serves ordinary, real-wire and restart
   // scenarios. Preserve the exact child logs for secret-non-leak assertions.
   const tee = (chunk, sink) => {

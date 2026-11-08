@@ -1,59 +1,26 @@
 use std::sync::Arc;
 
 use awaken_inference_endpoint::InferenceExecutorMaterializer;
-use awaken_provider_genai::{AdapterKind, GenaiExecutor};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::ModelProvisioning;
 use axum::Router;
 
-use super::{
-    LabelModel, anthropic_messages_executor, default_anthropic_compatible_model, resource_host,
-};
+use super::{LabelModel, resource_host};
 
-/// Resolves the scenario model source once, returning its executor and advertised
-/// reference. Tests default to the deterministic in-process executor; explicit
-/// HTTP or Gemini modes use the same provider adapters as production.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
-)]
+/// The scenario model a builder installs: `in_process` until an operator binds
+/// the scenario to a provider through the config-plane API (see
+/// [`crate::model_configuration`]). The advertised reference is always the
+/// builder's own; a bound profile only changes where inference runs.
 pub fn scenario_model(
     in_process: Arc<dyn LlmExecutor>,
     default_ref: &str,
 ) -> (Arc<dyn LlmExecutor>, String) {
-    match std::env::var("AWAKEN_MODEL_SOURCE").as_deref() {
-        Ok("http") => {
-            let key = std::env::var("ANTHROPIC_API_KEY")
-                .or_else(|_| std::env::var("KIMI_API_KEY"))
-                .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_API_KEY");
-            let base = std::env::var("ANTHROPIC_BASE_URL")
-                .or_else(|_| std::env::var("KIMI_BASE_URL"))
-                .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_BASE_URL");
-            let model = std::env::var("ANTHROPIC_MODEL")
-                .or_else(|_| std::env::var("KIMI_MODEL"))
-                .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
-            (anthropic_messages_executor(&base, key), model)
-        }
-        Ok("gemini") => {
-            let key = std::env::var("GEMINI_API_KEY")
-                .or_else(|_| std::env::var("GOOGLE_API_KEY"))
-                .expect("AWAKEN_MODEL_SOURCE=gemini requires GEMINI_API_KEY/GOOGLE_API_KEY");
-            let model =
-                std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
-            (
-                Arc::new(
-                    GenaiExecutor::from_materialized_endpoint(
-                        AdapterKind::Gemini,
-                        "https://generativelanguage.googleapis.com/v1beta",
-                        key,
-                    )
-                    .expect("explicit Gemini client construction"),
-                ),
-                model,
-            )
-        }
-        _ => (in_process, default_ref.to_string()),
-    }
+    (
+        Arc::new(crate::model_configuration::ConfiguredScenarioModel::new(
+            in_process,
+        )),
+        default_ref.to_string(),
+    )
 }
 
 /// Maps a pinned model reference to the deterministic executor carrying that
