@@ -276,11 +276,10 @@ impl crate::RunAssembly {
         let outcomes = futures_util::future::join_all(due.into_iter().map(
             |(session_id, lease, remaining)| {
                 let control = &control;
-                // A slow reply inside the remaining proof still renews; only an
-                // exhausted proof falls back to the nominal request bound.
-                let request_budget = timing
-                    .renewal_request_budget(remaining)
-                    .unwrap_or_else(|| timing.request_timeout());
+                // A slow reply inside the remaining proof still renews. An
+                // exhausted proof supplies a zero deadline: the shared Control
+                // scheduler admits no request, then exact-owner cleanup runs.
+                let request_budget = timing.renewal_request_budget(remaining).unwrap_or_default();
                 // The exact asserted expiry is a Control-clock coordinate.
                 // Extend that coordinate, never add a Worker wall-clock value.
                 let requested_expiry_unix_ms = lease.expires_at_unix_ms.saturating_add(

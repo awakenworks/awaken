@@ -496,7 +496,7 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
      * | Rule | Control | prior lease | Effect |
      * |---|---|---|---|
      * | F1 | timeout/Unavailable | live | E1 + diagnostic error |
-     * | F2 | timeout/Unavailable | expired | E2 |
+     * | F2 | no request permitted | expired | E2 |
      * Both outcomes must finish within the test deadline: revocation owns the
      * lifecycle lock, so its interruption read must not re-enter that lock.
      * Tokio transport deadlines are paused, independently from the platform
@@ -556,6 +556,11 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
             .installed_sessions
             .contains("renewal-expired"),
         "F2/E2"
+    );
+    assert_eq!(
+        *control.renewal_sessions.lock().unwrap(),
+        ["renewal-live"],
+        "F2 exhausted proof permits no Control request"
     );
 }
 
@@ -682,14 +687,15 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
 
     /* Deadline/capacity cause-effect table: C1 sixteen due lease renewals never
      * answer; C2 the renewal cap is eight; C3 the
-     * authority timing yields a 50s virtual per-request deadline; C4 all old leases
+     * all renewals share one observed proof and hence the same virtual
+     * request deadline; C4 all old leases
      * remain live. Effects: E1 the first eight enter, time out, and release
      * their slots; E2 the queued eight exhaust the SAME budget before entry; E3 no cancelled future leaks
      * an active installed; E4 all local projections remain for retry.
      *
      * | Rule | renewals | response | deadline/cap | Effect |
      * |---|---:|---|---|---|
-     * | D1 | 16 | never | 50s virtual / 8 | E1 + E2 + E3 + E4 |
+     * | D1 | 16 | never | common proof deadline / 8 | E1 + E2 + E3 + E4 |
      * Tokio auto-advances one timeout wave; the real 90s proof horizon
      * remains live. The test does not equate scheduling time and OS elapsed time.
      */
@@ -705,18 +711,24 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
     .build()
     .expect("validated Host dependencies");
     let now = awaken_session_realization::test_support::wall_clock_now_ms();
+    let proof = awaken_session_realization::test_support::test_observed_lease(
+        crate::session_resource::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a:incarnation".into(),
+            epoch: 1,
+            expires_at_unix_ms: now.saturating_add(90_000),
+        },
+    );
     for index in 0..SESSION_COUNT {
-        host.run_assembly
-            .install_session_realization_lease(
-                &format!("deadline-session-{index:02}"),
-                crate::session_resource::SessionRealizationLease {
-                    owner: "worker-a".into(),
-                    runtime_incarnation: "worker-a:incarnation".into(),
-                    epoch: 1,
-                    expires_at_unix_ms: now.saturating_add(90_000),
-                },
-            )
-            .unwrap();
+        // Distinct observation times could legitimately let a queued request
+        // enter after a peer with an earlier deadline times out.
+        host.run_assembly.installed_sessions.install_realization(
+            &format!("deadline-session-{index:02}"),
+            |r| {
+                r.execution_mut().authority =
+                    crate::realization_state::SessionRealizationAuthority::Live(proof.clone());
+            },
+        );
     }
 
     tokio::time::timeout(
@@ -754,9 +766,10 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
     use std::sync::atomic::Ordering;
 
     /* Deadline/mutex composition table: C1 sixteen due Control calls never
-     * answer; C2 the first eight expired Sessions have their canonical
+     * answer; C2 the first eight Sessions have their canonical
      * realization mutex held by an earlier phase; C3 the Control capacity is
-     * eight; C4 one request budget elapses, including queue residence. Effects: E1 the first wave releases
+     * eight; C4 their proofs expire after the first wave enters Control, then
+     * one request budget elapses, including queue residence. Effects: E1 the first wave releases
      * all Control permits at its deadline even though revocation must wait; E2
      * queued requests expire before entering Control, without weakening or bypassing any held Session
      * mutex; E3 concurrency never exceeds eight; E4 releasing the original
@@ -790,30 +803,27 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
         .build()
         .expect("validated Host dependencies");
         let now = awaken_session_realization::test_support::wall_clock_now_ms();
+        let lease = crate::session_resource::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a:incarnation".into(),
+            epoch: 1,
+            expires_at_unix_ms: now.saturating_add(90_000),
+        };
+        let proof = awaken_session_realization::test_support::test_observed_lease(lease.clone());
         let mut held = Vec::new();
         for index in 0..SESSION_COUNT {
             let session = format!("deadline-mutex-{index:02}");
-            let lease = crate::session_resource::SessionRealizationLease {
-                owner: "worker-a".into(),
-                runtime_incarnation: "worker-a:incarnation".into(),
-                epoch: 1,
-                expires_at_unix_ms: now.saturating_add(90_000),
-            };
             host.run_assembly
                 .installed_sessions
                 .install_realization(&session, |r| {
                     r.execution_mut().authority =
-                        crate::realization_state::SessionRealizationAuthority::Live(
-                            awaken_session_realization::test_support::test_expired_observed_lease(
-                                lease.clone(),
-                            ),
-                        );
+                        crate::realization_state::SessionRealizationAuthority::Live(proof.clone());
                 });
             control
                 .renewals
                 .lock()
                 .unwrap()
-                .insert(session.clone(), lease);
+                .insert(session.clone(), lease.clone());
             if index < crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS {
                 held.push(
                     host.run_assembly
@@ -857,7 +867,34 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                 )
                 .await
         });
-        // Yield past the one 50s request deadline without a runnable spin loop
+        // C4 expires proof only after entry. Initially expired proof must never
+        // start a Control request (F2); this test isolates completion capacity
+        // from cleanup mutexes instead. Notification selects the exact boundary.
+        loop {
+            let started = control.renewal_request_ready.notified();
+            if control.renewal_sessions.lock().unwrap().len()
+                == crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS
+            {
+                break;
+            }
+            started.await;
+        }
+        for index in 0..SESSION_COUNT {
+            host.run_assembly
+                .installed_sessions
+                .realizations()
+                .modify_realization(&format!("deadline-mutex-{index:02}"), |r| {
+                    let lease = r.execution().authority.lease().unwrap().clone();
+                    r.execution_mut().authority =
+                        crate::realization_state::SessionRealizationAuthority::Live(
+                            awaken_session_realization::test_support::test_expired_observed_lease(
+                                lease,
+                            ),
+                        );
+                })
+                .unwrap();
+        }
+        // Yield past the remaining-proof deadline without a runnable spin loop
         // that would prevent Tokio's paused clock from advancing.
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         assert_eq!(
@@ -1030,37 +1067,15 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a:old".into(),
             epoch: 1,
-            expires_at_unix_ms: if expired {
-                now.saturating_sub(1)
-            } else {
-                now + 1_000
-            },
+            expires_at_unix_ms: now + 90_000,
         };
-        if expired {
-            host.run_assembly
-                .installed_sessions
-                .install_realization(rule, |r| {
-                    r.execution_mut().authority =
-                        crate::realization_state::SessionRealizationAuthority::Live(
-                            awaken_session_realization::test_support::test_expired_observed_lease(
-                                old.clone(),
-                            ),
-                        );
-                });
-            control
-                .renewals
-                .lock()
-                .unwrap()
-                .insert(rule.into(), old.clone());
-        } else {
-            install_test_renewal_authority(&host, &control, rule, old.clone());
-        }
+        install_test_renewal_authority(&host, &control, rule, old.clone());
         let task_host = host.clone();
         let renewal = tokio::spawn(async move {
             task_host
                 .run_assembly
                 .renew_due_session_realizations(
-                    awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(60_000),
+                    awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(300_000),
                 )
                 .await
         });
@@ -1071,6 +1086,22 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
         })
         .await
         .expect("C1 old request reached the controlled barrier");
+        if expired {
+            // P6 expires A while its request is pending, never before entry.
+            // F2 separately proves that initially expired proof sends no I/O.
+            host.run_assembly
+                .installed_sessions
+                .realizations()
+                .modify_realization(rule, |r| {
+                    r.execution_mut().authority =
+                        crate::realization_state::SessionRealizationAuthority::Live(
+                            awaken_session_realization::test_support::test_expired_observed_lease(
+                                old.clone(),
+                            ),
+                        );
+                })
+                .unwrap();
+        }
         let mut newer = old;
         newer.expires_at_unix_ms = now + 120_000;
         if replacement == "generation" {

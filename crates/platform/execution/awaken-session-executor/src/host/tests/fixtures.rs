@@ -241,6 +241,7 @@ pub(crate) struct RemoteTerminalCleanupControl {
         Mutex<Vec<awaken_session_execution_contract::SessionRealizationTarget>>,
     pub(crate) claim_after: Mutex<Vec<Option<awaken_session_types::SessionId>>>,
     pub(crate) renewal_sessions: Mutex<Vec<String>>,
+    pub(crate) renewal_request_ready: tokio::sync::Notify,
     pub(crate) renewal_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     pub(crate) renewal_response_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     pub(crate) renewal_response_ready: tokio::sync::Notify,
@@ -295,6 +296,7 @@ impl awaken_session_execution_contract::SessionRealizationControl for RemoteTerm
             .lock()
             .unwrap()
             .push(command.session_id.to_string());
+        self.renewal_request_ready.notify_one();
         let gate = self.renewal_gate.lock().unwrap().clone();
         if let Some(gate) = gate {
             gate.acquire_owned()

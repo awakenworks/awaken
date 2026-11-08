@@ -222,7 +222,7 @@ impl crate::RunAssembly {
                     "Worker has no Session realization Control client",
                 )
             })?;
-        crate::application::worker_projection::realize_session(
+        let realized = crate::application::worker_projection::realize_session(
             self,
             control.as_ref(),
             &assignment.session_id,
@@ -231,7 +231,25 @@ impl crate::RunAssembly {
             None,
             false,
         )
-        .await
+        .await;
+        // A Control refusal (for example `Conflict` while an interactive turn
+        // settles the same root) or a stalled protocol leaves no Run to retry
+        // this assignment. Close its local projection, as an effect failure
+        // already does: renewal must not keep the run-free lease live forever,
+        // or the root never becomes claimable again and the interactive Session
+        // waits behind an unfinished preparation. The durable lease then
+        // expires and the next sweep re-derives preparation from current truth.
+        if matches!(
+            realized,
+            Err(awaken_session_execution_contract::SessionRealizationDriveError::Control(_)
+                | awaken_session_execution_contract::SessionRealizationDriveError::DidNotConverge)
+        ) {
+            let _ = self.invalidate_session_realization_lease(
+                assignment.session_id.as_str(),
+                &assignment.directive.authority.lease,
+            );
+        }
+        realized
         .map_err(
             awaken_dispatch_execution::session_worker_resolver::map_session_realization_drive_error,
         )
