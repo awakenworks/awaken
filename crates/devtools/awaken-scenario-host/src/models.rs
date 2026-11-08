@@ -636,12 +636,16 @@ impl LlmExecutor for RegistryDelegatingModel {
         let output =
             managed_coordination_output(&request, agent_id, "report your frozen instructions")
                 .unwrap_or_else(|| {
+                    // Report the Agent's frozen instructions: the per-attempt
+                    // environment-context block a dispatched Run carries is not
+                    // part of the published Agent.
                     let system = request
                         .messages
                         .iter()
                         .rev()
-                        .find(|message| message.role == Role::System)
+                        .filter(|message| message.role == Role::System)
                         .map(|message| block_text(&message.content))
+                        .find(|text| !text.starts_with("Awaken environment context"))
                         .unwrap_or_default();
                     AssistantOutput::text(format!("worker instructions: {system}"))
                 });
