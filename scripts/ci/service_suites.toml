@@ -244,6 +244,20 @@ args = '''
 '''
 
 [[postgres]]
+id = "postgres.critical.process-startup-work-release"
+phase = "critical_durability_evidence"
+args = '''
+-p awaken-process-startup --locked --lib session_work_release::tests::live_postgres_
+--require-case=session_work_release::tests::live_postgres_cap_one_and_partial_owner_matrix
+--require-case=session_work_release::tests::live_postgres_borrowed_primitives_preserve_the_callers_transaction
+--require-case=session_work_release::tests::live_postgres_cap_two_serializes_duplicate_release_and_claim_takeover
+--require-case=session_work_release::tests::live_postgres_rejects_stale_claim_and_changed_physical_evidence
+--require-case=session_work_release::tests::live_postgres_work_release_rollback_and_epoch_owner_fences
+--require-case=session_work_release::tests::live_postgres_shared_root_and_separate_work_database
+-- --ignored --test-threads=1
+'''
+
+[[postgres]]
 id = "postgres.critical.coordinator"
 phase = "critical_durability_evidence"
 args = '''

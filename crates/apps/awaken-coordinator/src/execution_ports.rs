@@ -60,6 +60,7 @@ pub struct ExecutionPorts {
     >,
     /// Committed-run recovery the Worker transport serves.
     pub worker_recovery: Arc<dyn RunRecoverySource>,
+    pub worker_work_release: Arc<dyn awaken_dispatch::ConditionalSessionWorkRelease>,
     /// Completion of the claimed Runs Workers settle.
     pub worker_completion: Arc<dyn CompletionSink>,
     /// Terminal Memory settlement of the Runs Workers settle.
@@ -181,21 +182,22 @@ pub struct ColocatedExecutionInputs {
     pub admin_tools: Vec<Arc<dyn RawTool>>,
 }
 
+type FinishColocatedExecution = dyn FnOnce(
+        Arc<awaken_session_application::SessionApplication>,
+        Arc<dyn awaken_dispatch::ConditionalSessionWorkRelease>,
+    ) -> Result<ExecutionPorts, String>
+    + Send;
+
 /// Once-created roles followed by the one completion that connects them to the
 /// Session application. The launcher owns the captured executor; shared startup
 /// sees only the existing role contracts and original process components.
 pub struct PreparedColocatedExecution {
     pub roles: awaken_session_execution_contract::SessionExecutionRoleSelection,
     pub dispatch: Arc<awaken_dispatch_execution::ProcessDispatch>,
-    pub dispatch_observation: Arc<dyn awaken_dispatch::DispatchOperationalFeed>,
+    pub dispatch_observation: Arc<AnyCoordinatorDispatch>,
     pub capture_policy: awaken_data_governance_contract::CapturePolicy,
     pub artifact_fence: Arc<crate::ClaimFencedArtifactPublisher>,
-    pub finish: Box<
-        dyn FnOnce(
-                Arc<awaken_session_application::SessionApplication>,
-            ) -> Result<ExecutionPorts, String>
-            + Send,
-    >,
+    pub finish: Box<FinishColocatedExecution>,
 }
 
 /// A move-only construction role supplied by the launcher that co-locates

@@ -498,34 +498,6 @@ pub(super) async fn persist_session_environment_receipt(
     respond_realization(result)
 }
 
-/// Release through the same exact-worker lease operation for settlement and
-/// deferred physical admission. Each caller decides whether losing ownership
-/// is terminal or merely leaves another holder's Work untouched.
-pub(super) async fn release_session_work_if_owned(
-    service: &WorkerDispatchService,
-    session_id: &awaken_session_types::SessionId,
-    worker_owner: &str,
-) -> Result<bool, awaken_runtime_contract::runs::RunError> {
-    match service
-        .session_work
-        .acquire_session_work(
-            session_id,
-            worker_owner,
-            awaken_session_application_contract::SessionWorkAcquisition::RealizationRenewal,
-        )
-        .await?
-    {
-        awaken_session_application_contract::SessionWorkOwnership::NotRequired => Ok(true),
-        awaken_session_application_contract::SessionWorkOwnership::Leased(lease)
-            if lease.owner() == worker_owner =>
-        {
-            service.session_work.release_session_work(&lease).await
-        }
-        awaken_session_application_contract::SessionWorkOwnership::Unowned
-        | awaken_session_application_contract::SessionWorkOwnership::Leased(_) => Ok(false),
-    }
-}
-
 pub(super) async fn acquire_session_work_owner(
     service: &WorkerDispatchService,
     session_id: &str,

@@ -144,7 +144,7 @@ fn guarded_claim_row(
     state: &State,
     claim: &RunClaim,
     required_state: DispatchState,
-) -> Result<Option<(RunDispatch, u64, bool, PhysicalAttemptSlot)>, DispatchError> {
+) -> Result<Option<awaken_dispatch_contract::CommitEpochObservation>, DispatchError> {
     let Some(row) = state.rows.get(&claim.run_id) else {
         return Ok(None);
     };
@@ -162,17 +162,20 @@ fn guarded_claim_row(
         )),
         CommitEpochAdmission::Guarded => {
             let lease = lease.expect("guard admission requires a complete lease");
-            Ok(Some((
-                row.request.clone(),
-                lease.expires_ms(),
-                row.cancellation_requested,
-                PhysicalAttemptSlot::from_facts(
+            Ok(Some(awaken_dispatch_contract::CommitEpochObservation {
+                request: row.request.clone(),
+                expires_ms: lease.expires_ms(),
+                cancellation_requested: row.cancellation_requested,
+                physical_slot: PhysicalAttemptSlot::from_facts(
                     row.active_attempt.is_some(),
                     row.active_attempt.is_some(),
                     row.active_attempt.as_ref() == Some(claim),
                     row.active_attempt.as_ref() == Some(claim),
                 ),
-            )))
+                // Exact physical details add parking evidence only. Their pure
+                // decode cannot tighten the pre-existing claim guard admission.
+                physical_attempt: row.physical_attempt().ok().flatten(),
+            }))
         }
     }
 }
@@ -325,17 +328,7 @@ impl MemoryDispatchStore {
         let state = lock(&self.state)?;
         let guarded = guarded_claim_row(&state, claim, required_state)?;
         drop(state);
-        Ok(guarded.map(
-            |(request, expires_ms, cancellation_requested, physical_attempt)| {
-                CommitEpochGuard::new(
-                    guard,
-                    request,
-                    expires_ms,
-                    cancellation_requested,
-                    physical_attempt,
-                )
-            },
-        ))
+        Ok(guarded.map(|observation| CommitEpochGuard::new(guard, observation)))
     }
 }
 

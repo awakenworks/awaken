@@ -13,7 +13,7 @@ POSTGRES_PACKAGES = {
         "awaken-data-subject-store", "awaken-captured-content-store", "awaken-work-store",
         "awaken-session-store", "awaken-memory-store", "awaken-dispatch", "awaken-skill-store", "awaken-work-store",
         "awaken-dispatch-http", "awaken-config-store", "awaken-session-store",
-        "awaken-credential-store", "awaken-process-startup", "awaken-process-startup", "awaken-coordinator"),
+        "awaken-credential-store", "awaken-process-startup", "awaken-process-startup", "awaken-process-startup", "awaken-coordinator"),
     "storage": (
         "awaken-sql-storage", "awaken-session-store", "awaken-config-store", "awaken-store-postgres",
         "awaken-env-store", "awaken-file-store", "awaken-store-schema", "awaken-store-sqlite"),
@@ -39,6 +39,16 @@ RESOURCE_APPLICATION_CASE_FLOORS = frozenset({
 
 
 CORE_DISPATCH_OBSERVATION_CASE = 'postgres_exact_physical_execution_observations_use_the_original_store_clock'
+
+CORE_SESSION_WORK_RELEASE_CASE_FLOORS = (
+    'session_work_release::tests::live_postgres_cap_one_and_partial_owner_matrix',
+    'session_work_release::tests::live_postgres_borrowed_primitives_preserve_the_callers_transaction',
+    'session_work_release::tests::live_postgres_cap_two_serializes_duplicate_release_and_claim_takeover',
+    'session_work_release::tests::live_postgres_rejects_stale_claim_and_changed_physical_evidence',
+    'session_work_release::tests::live_postgres_work_release_rollback_and_epoch_owner_fences',
+    'session_work_release::tests::live_postgres_shared_root_and_separate_work_database',
+)
+
 
 # The race requires a live database; the integer conversion is a pure unit
 # boundary retained here as an independently named outcome, not DB evidence.
@@ -159,6 +169,21 @@ def _require_work_store_phase(phases, root):
 
 
 
+def _require_session_work_release_phase(phases):
+    prefix = 'session_work_release::tests::live_postgres_'
+    selected = [phase for phase in phases
+                if phase.selector == 'critical_durability_evidence'
+                and phase.package == 'awaken-process-startup'
+                and prefix in phase.arguments]
+    expected = (
+        '-p', 'awaken-process-startup', '--locked', '--lib', prefix,
+        *('--require-case=' + case for case in CORE_SESSION_WORK_RELEASE_CASE_FLOORS),
+        '--', '--ignored', '--test-threads=1',
+    )
+    if len(selected) != 1 or selected[0].arguments != expected or selected[0].environment:
+        raise ValueError('PostgreSQL selector changed independent Session Work release outcomes')
+
+
 SESSION_CAPACITY_OBSERVATION_CASE = "postgres_session_capacity_reference_and_indexed_observation"
 SESSION_CAPACITY_ROOTS = 100_000
 
@@ -226,6 +251,7 @@ def postgres_phases(scope, root=None):
     if scope == 'core':
         _require_work_parity_phase(phases, root or Path(__file__).resolve().parents[2])
         _require_work_store_phase(phases, root or Path(__file__).resolve().parents[2])
+        _require_session_work_release_phase(phases)
         dispatch = [phase for phase in phases if phase.package == 'awaken-dispatch']
         if len(dispatch) != 1:
             raise ValueError('PostgreSQL selector changed independent Dispatch observation phase')

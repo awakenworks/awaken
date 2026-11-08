@@ -16,6 +16,7 @@ pub(super) struct ProcessStartup {
         Option<Arc<dyn awaken_session_application::replay::SessionReplayReads>>,
     pub(super) service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     pub(super) deployment: Option<awaken_deployment_config::DeploymentConfig>,
+    pub(super) work_release_persistence: crate::SessionWorkReleasePersistence,
     /// Exact Cargo-built companion for test-only process composition. Production
     /// leaves this absent and resolves the installed sibling executable.
     pub(super) namespace_hand_path: Option<PathBuf>,

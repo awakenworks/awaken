@@ -25,6 +25,12 @@ use awaken_time::WallClockExt as _;
 use crate::recovery_scan::scan_recovery_candidates;
 use crate::{SessionPreparationError, WorkDispatchFailure, WorkDispatchReconciliation};
 
+#[derive(Clone)]
+pub struct SessionWorkPersistenceViews {
+    pub roots: Arc<dyn awaken_session_contract::SessionRepositoryReads>,
+    pub leases: Arc<dyn SessionWorkerLeases>,
+}
+
 pub struct SessionWorkAssignments {
     repository: Arc<dyn SessionRepository>,
     assignment: Arc<dyn SessionWorkerAssignment>,
@@ -47,6 +53,15 @@ impl SessionWorkAssignments {
             leases,
             lifecycle,
             clock,
+        }
+    }
+
+    /// These are views of this same owner, never new repositories or queues.
+    #[must_use]
+    pub fn persistence_views(&self) -> SessionWorkPersistenceViews {
+        SessionWorkPersistenceViews {
+            roots: self.repository.clone(),
+            leases: self.leases.clone(),
         }
     }
 
@@ -110,16 +125,22 @@ impl SessionWorkAssignments {
             Err(SessionRepositoryError::NotFound) => return Ok(None),
             Err(error) => return Err(RunError::unavailable(error.to_string())),
         };
-        Ok(session
-            .frozen_baseline()
-            .filter(|baseline| baseline.environment.self_hosted)
-            .map(|baseline| {
-                (
-                    baseline.environment.environment_id.clone(),
-                    session.is_terminal(),
-                )
-            }))
+        Ok(session_work_environment(&session))
     }
+}
+
+/// The existing Session-owned Work topology projection, reused by composed persistence.
+#[must_use]
+pub fn session_work_environment(session: &PersistedSession) -> Option<(String, bool)> {
+    session
+        .frozen_baseline()
+        .filter(|baseline| baseline.environment.self_hosted)
+        .map(|baseline| {
+            (
+                baseline.environment.environment_id.clone(),
+                session.is_terminal(),
+            )
+        })
 }
 
 pub(crate) async fn dispatch_session_work(

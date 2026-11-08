@@ -276,6 +276,28 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
             inference_materializer: coordinator_services.inference_materializer,
             worker_directory: Some(worker_directory),
             runtime_authority: Some(persistence.runtime_authority.clone()),
+            work_release_persistence: match (
+                &deployment.runtime.database_url,
+                &deployment.coordinator.sessions,
+            ) {
+                (Some(runtime), awaken_control::StoreBackend::Postgres(session))
+                    if runtime == session
+                        && deployment.runtime.dispatch_backend
+                            == awaken_deployment_config::DispatchBackend::Postgres =>
+                {
+                    crate::SessionWorkReleasePersistence::Postgres {
+                        pool: persistence
+                            .postgres_pool
+                            .clone()
+                            .expect("selected PG dispatch has its process pool"),
+                        // Product store assembly opens both Session roots and Work
+                        // from coordinator.sessions through ProcessPostgresPools.
+                        roots: crate::ClaimConnectionUse::Borrowed,
+                        work: crate::ClaimConnectionUse::Borrowed,
+                    }
+                }
+                _ => crate::SessionWorkReleasePersistence::Independent,
+            },
             worker_observations: Some(worker_observations),
             control_service_authenticator: None,
             relay_destination_authenticator: coordinator_services.relay_destination_authenticator,

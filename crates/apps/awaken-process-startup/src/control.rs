@@ -363,6 +363,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
             credential_material_resolver: None,
             service_lifecycle: service_lifecycle.clone(),
             deployment: None,
+            work_release_persistence: crate::SessionWorkReleasePersistence::Independent,
             namespace_hand_path: None,
             colocated_execution: None,
             content_capture_ceiling: awaken_data_governance_contract::clamp_for_trace_file(

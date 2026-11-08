@@ -957,21 +957,32 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let session_work = Arc::new(RecordingSessionWorkAuthority::default());
     let environment_bindings = Arc::new(RecordingEnvironmentBindings::default());
     let live_stream = Arc::new(MemoryStreamSink::new());
-    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
-        authenticator: authenticator.clone(),
-        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-        realizations: session_control.clone(),
-        coordination: session_control.clone(),
-        terminal_cleanup: session_control.clone(),
-        session_environment_bindings: environment_bindings.clone(),
-        session_work: session_work.clone(),
-        stream_sink: live_stream.clone(),
-        recovery: Arc::new(CommittedRunRecovery(
+    let service = WorkerDispatchService::new({
+        let selected_0 = authenticator.clone();
+        let selected_1 = Arc::new(FixedWorkerLeasePolicy::new(30_000));
+        let selected_2 = session_control.clone();
+        let selected_3 = session_control.clone();
+        let selected_4 = session_control.clone();
+        let selected_5 = environment_bindings.clone();
+        let selected_6 = session_work.clone();
+        let selected_7 = live_stream.clone();
+        let selected_8 = Arc::new(CommittedRunRecovery(
             awaken_agent_contract::agent::run::RunState::Ended(
                 awaken_agent_contract::agent::run::EndCause::NaturalEnd,
             ),
-        )),
-        ..worker_dispatch_dependencies(dispatch.clone(), directory.clone(), clock.clone())
+        ));
+        let mut selected_dependencies =
+            worker_dispatch_dependencies(dispatch.clone(), directory.clone(), clock.clone());
+        selected_dependencies.authenticator = selected_0;
+        selected_dependencies.lease_policy = selected_1;
+        selected_dependencies.realizations = selected_2;
+        selected_dependencies.coordination = selected_3;
+        selected_dependencies.terminal_cleanup = selected_4;
+        selected_dependencies.session_environment_bindings = selected_5;
+        selected_dependencies.session_work = selected_6;
+        selected_dependencies.stream_sink = selected_7;
+        selected_dependencies.recovery = selected_8;
+        awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
     });
     let warmup = awaken_session_configuration_contract::EnvironmentSnapshot {
         environment_id: "signed-env".into(),

@@ -134,6 +134,7 @@ impl RegisteredExecution {
     pub(super) fn finish(
         self,
         application: &Arc<SessionApplication>,
+        worker_work_release: Arc<dyn awaken_dispatch::ConditionalSessionWorkRelease>,
     ) -> Result<awaken_coordinator::ExecutionPorts, ExecutionCompositionError> {
         let feed: Arc<dyn awaken_dispatch::DispatchOperationalFeed> = self.owner.clone();
         crate::coordinator_execution::verify_composition(&self.dispatch, &feed, application)?;
@@ -205,6 +206,7 @@ impl RegisteredExecution {
             coordinator_dispatch: self.owner,
             worker_commits,
             worker_recovery: self.reads,
+            worker_work_release,
             worker_completion: completion,
             worker_settlement: memory,
             worker_stream: self.completion,

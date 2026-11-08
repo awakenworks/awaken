@@ -760,3 +760,5 @@ impl<
 > ConformanceDispatch for T
 {
 }
+
+pub use worker_dispatch::resolve_worker_dispatch_dependencies;

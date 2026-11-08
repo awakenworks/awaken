@@ -1302,6 +1302,7 @@ async fn mount_with_managed_over_and_models(
             session_environment_bindings: session_application.environment_binding_sink(),
             coordination: session_application.coordination(),
             session_work: session_application.work_assignments(),
+            worker_work_release: execution.worker_work_release.clone(),
             authenticator: worker_authenticator.clone(),
             recovery: execution.worker_recovery.clone(),
             completion: execution.worker_completion.clone(),

@@ -78,7 +78,7 @@ impl ClaimedRunCommit<RunError> for PostgresClaimedRunCommit {
             .begin()
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
-        let dispatch = awaken_dispatch::lock_running_claim_for_commit(&mut tx, &command.claim)
+        let observation = awaken_dispatch::lock_running_claim_for_commit(&mut tx, &command.claim)
             .await
             .map_err(|error| RunError::internal(error.to_string()))?
             .ok_or_else(|| {
@@ -87,12 +87,12 @@ impl ClaimedRunCommit<RunError> for PostgresClaimedRunCommit {
                     "run claim is stale",
                 )
             })?;
-        awaken_dispatch_erasure::validate_claimed_operation(&dispatch, &command)?;
+        awaken_dispatch_erasure::validate_claimed_operation(&observation.request, &command)?;
         let mut archive = None;
         if command.operation.operation_id.ordinal == 0
-            && let Some(scope) = dispatch.execution_scope.as_ref()
+            && let Some(scope) = observation.request.execution_scope.as_ref()
         {
-            let session = &dispatch.session_thread_id().0;
+            let session = &observation.request.session_thread_id().0;
             if awaken_session_store::lock_session_for_run_archive(
                 &mut tx,
                 scope.0.as_str(),
@@ -106,7 +106,7 @@ impl ClaimedRunCommit<RunError> for PostgresClaimedRunCommit {
                     session_id: session.clone(),
                     data: serde_json::to_value(
                         awaken_dispatch_contract::run_dispatch::ArchivedRunActivation::from(
-                            &dispatch,
+                            &observation.request,
                         ),
                     )
                     .map_err(|error| RunError::internal(error.to_string()))?,

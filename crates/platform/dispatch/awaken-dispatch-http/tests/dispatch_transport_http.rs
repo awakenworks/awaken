@@ -448,17 +448,18 @@ async fn foreign_session_work_defers_only_its_dispatch_and_leaves_other_sessions
     }
     let work = Arc::new(RecordingSessionWork::default());
     *work.foreign_session.lock().unwrap() = Some("busy-session".into());
-    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
-        RegisteredDispatchDependencies {
-            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-            session_work: work.clone(),
-            ..worker_dispatch_dependencies(
-                store.clone(),
-                ready_workers(&["worker-1"]),
-                Arc::new(ManualClock::new(0)),
-            )
-        },
-    )));
+    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new({
+        let selected_0 = Arc::new(FixedWorkerLeasePolicy::new(30_000));
+        let selected_1 = work.clone();
+        let mut selected_dependencies = worker_dispatch_dependencies(
+            store.clone(),
+            ready_workers(&["worker-1"]),
+            Arc::new(ManualClock::new(0)),
+        );
+        selected_dependencies.lease_policy = selected_0;
+        selected_dependencies.session_work = selected_1;
+        awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
+    })));
 
     let (status, first) = post(&router, "worker-1", "/v1/worker/dispatch/claim", json!({})).await;
     assert_eq!(status, StatusCode::OK, "R1/E1: {first}");
@@ -741,18 +742,20 @@ async fn session_recovery_reads_committed_truth_only_under_the_exact_work_epoch(
         )),
     );
     let work = Arc::new(RecordingSessionWork::default());
-    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
-        RegisteredDispatchDependencies {
-            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-            recovery: recovery.clone(),
-            session_work: work.clone(),
-            ..worker_dispatch_dependencies(
-                store,
-                ready_workers(&["work-epoch-worker"]),
-                Arc::new(ManualClock::new(0)),
-            )
-        },
-    )));
+    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new({
+        let selected_0 = Arc::new(FixedWorkerLeasePolicy::new(30_000));
+        let selected_1 = recovery.clone();
+        let selected_2 = work.clone();
+        let mut selected_dependencies = worker_dispatch_dependencies(
+            store,
+            ready_workers(&["work-epoch-worker"]),
+            Arc::new(ManualClock::new(0)),
+        );
+        selected_dependencies.lease_policy = selected_0;
+        selected_dependencies.recovery = selected_1;
+        selected_dependencies.session_work = selected_2;
+        awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
+    })));
 
     let (status, body) = post(
         &router,
@@ -1115,20 +1118,25 @@ async fn occupied_physical_attempt_blocks_terminal_observers_and_work_release() 
                 RunState::Ended(EndCause::Indeterminate),
             )),
         );
-        let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
-            RegisteredDispatchDependencies {
-                lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-                recovery: recovery.clone(),
-                terminal_observer: observer.clone(),
-                session_work: work.clone(),
-                coordination: Arc::new(RecordingSessionCoordination::default()),
-                ..worker_dispatch_dependencies(
+        let router =
+            dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new({
+                let selected_0 = Arc::new(FixedWorkerLeasePolicy::new(30_000));
+                let selected_1 = recovery.clone();
+                let selected_2 = observer.clone();
+                let selected_3 = work.clone();
+                let selected_4 = Arc::new(RecordingSessionCoordination::default());
+                let mut selected_dependencies = worker_dispatch_dependencies(
                     store.clone(),
                     ready_workers(&["terminal-worker"]),
                     Arc::new(ManualClock::new(0)),
-                )
-            },
-        )));
+                );
+                selected_dependencies.lease_policy = selected_0;
+                selected_dependencies.recovery = selected_1;
+                selected_dependencies.terminal_observer = selected_2;
+                selected_dependencies.session_work = selected_3;
+                selected_dependencies.coordination = selected_4;
+                awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
+            })));
         for _ in 0..2 {
             let (status, value) = settle_terminal(&router, &claim).await;
             assert_eq!(status, StatusCode::OK);
@@ -1254,18 +1262,21 @@ async fn a_root_run_deferred_behind_an_occupied_slot_parks_only_its_session_work
             "{rule} footprint fixture"
         );
         let work = Arc::new(RecordingSessionWork::default());
-        let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
-            RegisteredDispatchDependencies {
-                lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-                session_work: work.clone(),
-                recovery: terminal_recovery(&session, &thread, &claim.run_id, Ok(snapshot)),
-                ..worker_dispatch_dependencies(
+        let router =
+            dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new({
+                let selected_0 = Arc::new(FixedWorkerLeasePolicy::new(30_000));
+                let selected_1 = work.clone();
+                let selected_2 = terminal_recovery(&session, &thread, &claim.run_id, Ok(snapshot));
+                let mut selected_dependencies = worker_dispatch_dependencies(
                     store.clone(),
                     ready_workers(&["terminal-worker"]),
                     Arc::new(ManualClock::new(0)),
-                )
-            },
-        )));
+                );
+                selected_dependencies.lease_policy = selected_0;
+                selected_dependencies.session_work = selected_1;
+                selected_dependencies.recovery = selected_2;
+                awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
+            })));
         let mut request = json!({ "claim": claim });
         if deferred {
             request["retry_after_ms"] = json!(250);
@@ -1328,18 +1339,20 @@ async fn a_deferral_losing_its_claim_during_recovery_keeps_session_work() {
         .unwrap()
         .replace_claim_during_read = Some((store.clone(), claim.clone(), clock));
     let work = Arc::new(RecordingSessionWork::default());
-    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
-        RegisteredDispatchDependencies {
-            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-            session_work: work.clone(),
-            recovery,
-            ..worker_dispatch_dependencies(
-                store,
-                ready_workers(&["terminal-worker"]),
-                Arc::new(ManualClock::new(0)),
-            )
-        },
-    )));
+    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new({
+        let selected_0 = Arc::new(FixedWorkerLeasePolicy::new(30_000));
+        let selected_1 = work.clone();
+        let selected_2 = recovery;
+        let mut selected_dependencies = worker_dispatch_dependencies(
+            store,
+            ready_workers(&["terminal-worker"]),
+            Arc::new(ManualClock::new(0)),
+        );
+        selected_dependencies.lease_policy = selected_0;
+        selected_dependencies.session_work = selected_1;
+        selected_dependencies.recovery = selected_2;
+        awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
+    })));
     let (status, value) = post(
         &router,
         "terminal-worker",
@@ -1393,19 +1406,22 @@ async fn terminal_observer_failure_withholds_remote_child_done_and_parent_work_r
             RunState::Ended(EndCause::NaturalEnd),
         )),
     );
-    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
-        RegisteredDispatchDependencies {
-            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-            recovery: recovery.clone(),
-            terminal_observer: observer.clone(),
-            session_work: work.clone(),
-            ..worker_dispatch_dependencies(
-                store.clone(),
-                ready_workers(&["terminal-worker"]),
-                Arc::new(ManualClock::new(0)),
-            )
-        },
-    )));
+    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new({
+        let selected_0 = Arc::new(FixedWorkerLeasePolicy::new(30_000));
+        let selected_1 = recovery.clone();
+        let selected_2 = observer.clone();
+        let selected_3 = work.clone();
+        let mut selected_dependencies = worker_dispatch_dependencies(
+            store.clone(),
+            ready_workers(&["terminal-worker"]),
+            Arc::new(ManualClock::new(0)),
+        );
+        selected_dependencies.lease_policy = selected_0;
+        selected_dependencies.recovery = selected_1;
+        selected_dependencies.terminal_observer = selected_2;
+        selected_dependencies.session_work = selected_3;
+        awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
+    })));
     let settle = || {
         settle_terminal(&router, &claim).instrument(tracing::info_span!("settle.request.ambient"))
     };
@@ -1545,16 +1561,21 @@ async fn remote_done_requires_one_exact_committed_terminal_recovery_prefix() {
                 Ok(terminal_snapshot(&thread_id, &run_id, state)),
             ),
         };
-        let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
-            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-            recovery: recovery.clone(),
-            terminal_observer: observer.clone(),
-            session_work: work.clone(),
-            ..worker_dispatch_dependencies(
+        let service = WorkerDispatchService::new({
+            let selected_0 = Arc::new(FixedWorkerLeasePolicy::new(30_000));
+            let selected_1 = recovery.clone();
+            let selected_2 = observer.clone();
+            let selected_3 = work.clone();
+            let mut selected_dependencies = worker_dispatch_dependencies(
                 store.clone(),
                 ready_workers(&["terminal-worker"]),
                 Arc::new(ManualClock::new(0)),
-            )
+            );
+            selected_dependencies.lease_policy = selected_0;
+            selected_dependencies.recovery = selected_1;
+            selected_dependencies.terminal_observer = selected_2;
+            selected_dependencies.session_work = selected_3;
+            awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
         });
         let router = dispatch_transport_router_with_service(Arc::new(service));
 
@@ -1668,17 +1689,23 @@ async fn committed_root_done_settles_after_work_retirement_without_reopening_exe
             mode: Mutex::new(mode),
             ..Default::default()
         });
-        let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
-            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-            recovery: recovery.clone(),
-            terminal_observer: observer.clone(),
-            session_work: work.clone(),
-            coordination: Arc::new(RecordingSessionCoordination::default()),
-            ..worker_dispatch_dependencies(
+        let service = WorkerDispatchService::new({
+            let selected_0 = Arc::new(FixedWorkerLeasePolicy::new(30_000));
+            let selected_1 = recovery.clone();
+            let selected_2 = observer.clone();
+            let selected_3 = work.clone();
+            let selected_4 = Arc::new(RecordingSessionCoordination::default());
+            let mut selected_dependencies = worker_dispatch_dependencies(
                 store.clone(),
                 ready_workers(&["terminal-worker", "other-worker"]),
                 Arc::new(ManualClock::new(0)),
-            )
+            );
+            selected_dependencies.lease_policy = selected_0;
+            selected_dependencies.recovery = selected_1;
+            selected_dependencies.terminal_observer = selected_2;
+            selected_dependencies.session_work = selected_3;
+            selected_dependencies.coordination = selected_4;
+            awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
         });
         let router = dispatch_transport_router_with_service(Arc::new(service));
         for (worker, epoch) in [
@@ -1763,20 +1790,24 @@ async fn work_release_response_loss_retries_done_from_the_same_committed_run() {
         attempts: AtomicUsize::new(1),
         ..Default::default()
     });
-    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
-        RegisteredDispatchDependencies {
-            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-            recovery: recovery.clone(),
-            terminal_observer: observer,
-            session_work: work.clone(),
-            coordination: Arc::new(RecordingSessionCoordination::default()),
-            ..worker_dispatch_dependencies(
-                store.clone(),
-                ready_workers(&["terminal-worker"]),
-                Arc::new(ManualClock::new(0)),
-            )
-        },
-    )));
+    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new({
+        let selected_0 = Arc::new(FixedWorkerLeasePolicy::new(30_000));
+        let selected_1 = recovery.clone();
+        let selected_2 = observer;
+        let selected_3 = work.clone();
+        let selected_4 = Arc::new(RecordingSessionCoordination::default());
+        let mut selected_dependencies = worker_dispatch_dependencies(
+            store.clone(),
+            ready_workers(&["terminal-worker"]),
+            Arc::new(ManualClock::new(0)),
+        );
+        selected_dependencies.lease_policy = selected_0;
+        selected_dependencies.recovery = selected_1;
+        selected_dependencies.terminal_observer = selected_2;
+        selected_dependencies.session_work = selected_3;
+        selected_dependencies.coordination = selected_4;
+        awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
+    })));
     assert_eq!(
         settle_terminal(&router, &claim).await.0,
         StatusCode::INTERNAL_SERVER_ERROR,

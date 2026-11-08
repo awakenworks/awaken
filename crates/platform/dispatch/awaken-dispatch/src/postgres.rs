@@ -49,10 +49,10 @@ use crate::{
 };
 use crate::{
     dispatch::AttemptAdmission, dispatch::AttemptExecutionBinding, dispatch::CasOutcome,
-    dispatch::ClaimEpochStorageRow, dispatch::Claimed, dispatch::CommitEpochGuard,
-    dispatch::ContinuationAdmission, dispatch::DispatchCompletion, dispatch::DispatchDepths,
-    dispatch::DispatchError, dispatch::DispatchLease, dispatch::DispatchOutcome,
-    dispatch::DispatchState, dispatch::DispatchSummary, dispatch::ExactClaimMode, dispatch::Inbox,
+    dispatch::Claimed, dispatch::CommitEpochGuard, dispatch::ContinuationAdmission,
+    dispatch::DispatchCompletion, dispatch::DispatchDepths, dispatch::DispatchError,
+    dispatch::DispatchLease, dispatch::DispatchOutcome, dispatch::DispatchState,
+    dispatch::DispatchSummary, dispatch::ExactClaimMode, dispatch::Inbox,
     dispatch::LeaseRenewalOutcome, dispatch::Outbox, dispatch::PendingInput,
     dispatch::PendingInputSettlementPlan, dispatch::PendingRecord, dispatch::PhysicalAttempt,
     dispatch::SessionChildAdmission, dispatch::SessionRunReservationActivation,
@@ -444,89 +444,25 @@ impl PostgresDispatchStore {
         required_status: &'static str,
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let request = lock_claim_row(&mut tx, claim, required_status).await?;
-        Ok(request.map(
-            |(request, expires_ms, cancellation_requested, physical_attempt)| {
-                CommitEpochGuard::new_releasing(
-                    async move { tx.rollback().await.map_err(|error| error.to_string()) },
-                    request,
-                    expires_ms,
-                    cancellation_requested,
-                    physical_attempt,
-                )
-            },
-        ))
+        let observation = lock_claim_row(&mut tx, claim, required_status).await?;
+        Ok(observation.map(|observation| {
+            CommitEpochGuard::new_releasing(
+                async move { tx.rollback().await.map_err(|error| error.to_string()) },
+                observation,
+            )
+        }))
     }
 }
 
-/// Acquire the ordinary Run commit fence inside the transaction that will
-/// publish committed truth. Reservation repair keeps its separate status gate.
+/// Acquire the ordinary running-claim fence on a caller-owned transaction
+/// connection. The caller retains that transaction through its guarded work.
+/// Exact physical details are additional parking evidence; they do not add a
+/// physical-decode requirement to ordinary committed-truth admission.
 pub async fn lock_running_claim_for_commit(
-    tx: &mut Transaction<'_, Postgres>,
+    connection: &mut sqlx::PgConnection,
     claim: &RunClaim,
-) -> Result<Option<RunDispatch>, DispatchError> {
-    Ok(lock_claim_row(tx, claim, "running")
-        .await?
-        .map(|(request, _, _, _)| request))
-}
-
-async fn lock_claim_row(
-    tx: &mut Transaction<'_, Postgres>,
-    claim: &RunClaim,
-    required_status: &str,
-) -> Result<Option<(RunDispatch, u64, bool, PhysicalAttemptSlot)>, DispatchError> {
-    let current: Option<ClaimEpochStorageRow<Json<RunDispatch>>> = sqlx::query_as("SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch \
-                 FROM runtime_dispatch WHERE run_id = $1 AND status = $2 FOR UPDATE")
-        .bind(&claim.run_id.0)
-        .bind(required_status)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(store_error)?;
-    let request = match current {
-        None => None,
-        Some((
-            epoch,
-            owner,
-            expires_ms,
-            Json(request),
-            cancellation_requested,
-            attempt_owner,
-            attempt_epoch,
-        )) => {
-            let epoch = crate::stored_claim_epoch(epoch)?;
-            match classify_commit_epoch_admission(
-                true,
-                owner.is_some(),
-                expires_ms.is_some(),
-                owner.as_deref() == Some(&claim.owner),
-                epoch == claim.epoch,
-            ) {
-                CommitEpochAdmission::Fenced => None,
-                CommitEpochAdmission::Corrupt => {
-                    return Err(DispatchError::Rejected(
-                        "current dispatch claim has incomplete lease authority".to_string(),
-                    ));
-                }
-                CommitEpochAdmission::Guarded => {
-                    let expires_ms =
-                        expires_ms.expect("guard admission requires a complete lease expiry");
-                    Some((
-                        request,
-                        durable_u64("dispatch lease expiry", expires_ms)?,
-                        cancellation_requested != 0,
-                        awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
-                            attempt_owner.is_some(),
-                            attempt_epoch.is_some(),
-                            attempt_owner.as_deref() == Some(&claim.owner),
-                            attempt_epoch.and_then(|epoch| u64::try_from(epoch).ok())
-                                == Some(claim.epoch),
-                        ),
-                    ))
-                }
-            }
-        }
-    };
-    Ok(request)
+) -> Result<Option<awaken_dispatch_contract::CommitEpochObservation>, DispatchError> {
+    lock_claim_row(connection, claim, "running").await
 }
 
 include!("postgres/release_claim.rs");
@@ -537,4 +473,84 @@ include!("postgres/claim.rs");
 include!("postgres/integrity.rs");
 fn store_error(err: sqlx::Error) -> DispatchError {
     DispatchError::unavailable(err)
+}
+
+/// Capture the existing claim fence on a caller-owned transaction connection.
+/// The caller must keep that transaction alive through its guarded operation;
+/// these data facts alone never authorize work after the row lock releases.
+async fn lock_claim_row(
+    connection: &mut sqlx::PgConnection,
+    claim: &RunClaim,
+    required_status: &'static str,
+) -> Result<Option<awaken_dispatch_contract::CommitEpochObservation>, DispatchError> {
+    let row: Option<crate::dispatch::GuardedClaimStorageRow<Json<RunDispatch>>> = sqlx::query_as(
+        "SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch, active_attempt_binding, active_attempt_closing FROM runtime_dispatch WHERE run_id=$1 AND status=$2 FOR UPDATE"
+    ).bind(&claim.run_id.0).bind(required_status).fetch_optional(&mut *connection).await.map_err(store_error)?;
+    let Some((
+        epoch,
+        owner,
+        expiry,
+        Json(request),
+        cancelled,
+        physical_owner,
+        physical_epoch,
+        binding,
+        closing,
+    )) = row
+    else {
+        return Ok(None);
+    };
+    let epoch = crate::stored_claim_epoch(epoch)?;
+    match classify_commit_epoch_admission(
+        true,
+        owner.is_some(),
+        expiry.is_some(),
+        owner.as_deref() == Some(&claim.owner),
+        epoch == claim.epoch,
+    ) {
+        CommitEpochAdmission::Fenced => return Ok(None),
+        CommitEpochAdmission::Corrupt => {
+            return Err(DispatchError::Rejected(
+                "current dispatch claim has incomplete lease authority".into(),
+            ));
+        }
+        CommitEpochAdmission::Guarded => {}
+    }
+    let physical_slot = PhysicalAttemptSlot::from_facts(
+        physical_owner.is_some(),
+        physical_epoch.is_some(),
+        physical_owner.as_deref() == Some(&claim.owner),
+        physical_epoch.and_then(|value| u64::try_from(value).ok()) == Some(claim.epoch),
+    );
+    // Physical details are additional parking evidence, not a new condition
+    // on the original claim guard. Query/claim errors above remain errors;
+    // an unreadable pure physical record proves no parking permission.
+    let mut physical_attempt = physical_epoch
+        .map(crate::stored_claim_epoch)
+        .transpose()
+        .and_then(|epoch| {
+            crate::dispatch::decode_physical_attempt(
+                &claim.run_id,
+                physical_owner,
+                epoch,
+                binding,
+                closing,
+            )
+        })
+        .ok()
+        .flatten();
+    if let Some(attempt) = &mut physical_attempt {
+        attempt.thread_id = Some(request.thread_id().clone());
+        attempt.session_thread_id = request.session_thread_id.clone();
+    }
+    Ok(Some(awaken_dispatch_contract::CommitEpochObservation {
+        request,
+        expires_ms: durable_u64(
+            "dispatch lease expiry",
+            expiry.expect("guard admission requires expiry"),
+        )?,
+        cancellation_requested: cancelled != 0,
+        physical_slot,
+        physical_attempt,
+    }))
 }

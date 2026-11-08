@@ -679,7 +679,7 @@ use awaken_dispatch_contract::{DispatchAdmissionShape, DispatchIdentityScope, Ru
 /// stores the request as JSON text and PostgreSQL decodes it through `Json<T>`,
 /// but both must interpret the remaining fence columns identically.
 #[cfg(feature = "durable")]
-pub(crate) type ClaimEpochStorageRow<T> = (
+pub(crate) type GuardedClaimStorageRow<T> = (
     i64,
     Option<String>,
     Option<i64>,
@@ -687,6 +687,8 @@ pub(crate) type ClaimEpochStorageRow<T> = (
     i64,
     Option<String>,
     Option<i64>,
+    Option<String>,
+    bool,
 );
 
 /// Persistence-independent evidence available when one caller-owned Run id is

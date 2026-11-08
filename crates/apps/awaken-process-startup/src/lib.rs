@@ -15,6 +15,11 @@
 //! through [`ColocatedWorkerPreparation`]; the Coordinator process package
 //! (`awaken-coordinator-process`) declares `awaken-coordinator` over this same
 //! startup and supplies none.
+mod session_work_release;
+pub use session_work_release::{
+    ClaimConnectionUse, SessionWorkReleasePersistence, conditional_session_work_release,
+};
+
 mod assistant_selection;
 mod brokered_catalog;
 #[cfg(any(test, feature = "test-support"))]

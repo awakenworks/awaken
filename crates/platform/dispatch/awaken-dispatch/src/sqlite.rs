@@ -44,10 +44,10 @@ use crate::{
 };
 use crate::{
     dispatch::AttemptAdmission, dispatch::AttemptExecutionBinding, dispatch::CasOutcome,
-    dispatch::ClaimEpochStorageRow, dispatch::Claimed, dispatch::CommitEpochGuard,
-    dispatch::ContinuationAdmission, dispatch::DispatchCompletion, dispatch::DispatchDepths,
-    dispatch::DispatchError, dispatch::DispatchLease, dispatch::DispatchOutcome,
-    dispatch::DispatchState, dispatch::DispatchSummary, dispatch::ExactClaimMode, dispatch::Inbox,
+    dispatch::Claimed, dispatch::CommitEpochGuard, dispatch::ContinuationAdmission,
+    dispatch::DispatchCompletion, dispatch::DispatchDepths, dispatch::DispatchError,
+    dispatch::DispatchLease, dispatch::DispatchOutcome, dispatch::DispatchState,
+    dispatch::DispatchSummary, dispatch::ExactClaimMode, dispatch::Inbox,
     dispatch::LeaseRenewalOutcome, dispatch::Outbox, dispatch::PendingInput,
     dispatch::PendingInputSettlementPlan, dispatch::PendingRecord, dispatch::PhysicalAttempt,
     dispatch::RunIdentityDecision, dispatch::SessionChildAdmission,
@@ -455,9 +455,9 @@ impl SqliteDispatchStore {
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
         let guard = self.authority.clone().lock_owned().await;
         let run = claim.run_id.0.clone();
-        let current: Option<ClaimEpochStorageRow<String>> = {
+        let current: Option<crate::dispatch::GuardedClaimStorageRow<String>> = {
             let mut conn = self.with_conn_unlocked().await?;
-            sqlx::query_as("SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch \
+            sqlx::query_as("SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch, active_attempt_binding, active_attempt_closing \
                  FROM runtime_dispatch WHERE run_id = ?1 AND status = ?2")
             .bind(run)
             .bind(required_status)
@@ -475,6 +475,8 @@ impl SqliteDispatchStore {
                 cancellation_requested,
                 attempt_owner,
                 attempt_epoch,
+                binding,
+                closing,
             )) => {
                 let epoch = crate::stored_claim_epoch(epoch)?;
                 match classify_commit_epoch_admission(
@@ -493,33 +495,49 @@ impl SqliteDispatchStore {
                     CommitEpochAdmission::Guarded => {
                         let expires_ms =
                             expires_ms.expect("guard admission requires a complete lease expiry");
-                        Some((
-                            serde_json::from_str(&request).map_err(json_err)?,
-                            durable_u64("dispatch lease expiry", expires_ms)?,
-                            cancellation_requested != 0,
+                        let request: RunDispatch =
+                            serde_json::from_str(&request).map_err(json_err)?;
+                        let physical_slot =
                             awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
                                 attempt_owner.is_some(),
                                 attempt_epoch.is_some(),
                                 attempt_owner.as_deref() == Some(&claim.owner),
                                 attempt_epoch.and_then(|epoch| u64::try_from(epoch).ok())
                                     == Some(claim.epoch),
-                            ),
-                        ))
+                            );
+                        // The original claim admission does not depend on pure
+                        // physical-detail decoding. Unreadable details permit no
+                        // parking while preserving that existing guard policy.
+                        let mut physical_attempt = attempt_epoch
+                            .map(crate::stored_claim_epoch)
+                            .transpose()
+                            .and_then(|epoch| {
+                                crate::dispatch::decode_physical_attempt(
+                                    &claim.run_id,
+                                    attempt_owner,
+                                    epoch,
+                                    binding,
+                                    closing,
+                                )
+                            })
+                            .ok()
+                            .flatten();
+                        if let Some(attempt) = &mut physical_attempt {
+                            attempt.thread_id = Some(request.thread_id().clone());
+                            attempt.session_thread_id = request.session_thread_id.clone();
+                        }
+                        Some(awaken_dispatch_contract::CommitEpochObservation {
+                            request,
+                            expires_ms: durable_u64("dispatch lease expiry", expires_ms)?,
+                            cancellation_requested: cancellation_requested != 0,
+                            physical_slot,
+                            physical_attempt,
+                        })
                     }
                 }
             }
         };
-        Ok(request.map(
-            |(request, expires_ms, cancellation_requested, physical_attempt)| {
-                CommitEpochGuard::new(
-                    guard,
-                    request,
-                    expires_ms,
-                    cancellation_requested,
-                    physical_attempt,
-                )
-            },
-        ))
+        Ok(request.map(|observation| CommitEpochGuard::new(guard, observation)))
     }
 }
 

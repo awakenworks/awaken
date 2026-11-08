@@ -132,9 +132,11 @@ def self_test(root: Path) -> None:
     selectors = ("backend_parity", "work_store_evidence", "http_transport_evidence",
                  "critical_durability_evidence", "storage_observation_evidence", "resources_evidence", "storage_evidence")
     phases = read_phases(root, selectors)
-    assert len(phases) == 39, "P6 current required selector inventory"
+    assert len(phases) == 40, "P6 current required selector inventory"
     startup = [phase for phase in phases if phase.package == "awaken-process-startup"]
-    assert len(startup) == 2 and startup[0].arguments != startup[1].arguments, "P7 distinct process bootstrap phases"
+    # P7 old binding/pool phases and the new conditional Work phase are three
+    # independently required commands; none may be collapsed into another.
+    assert len(startup) == 3 and len({phase.arguments for phase in startup}) == 3, "P7 distinct process bootstrap phases"
     assert all(phase.environment == (ENVIRONMENT[0],)
                for phase in phases if phase.package in ("awaken-config-store", "awaken-session-store", "awaken-credential-store")
                and phase.selector == "critical_durability_evidence"), "P8 crash backend overrides"

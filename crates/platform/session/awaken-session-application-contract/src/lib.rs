@@ -86,6 +86,7 @@ pub use worker_lease_value::{SessionWorkGrant, WorkLeaseEpoch};
 mod worker_lease;
 pub use worker_lease::{
     SessionWorkAuthorityReceipt, SessionWorkerLeaseAuthority, acquire_session_work_receipt,
+    release_owned_session_work,
 };
 
 mod worker_lease_types;

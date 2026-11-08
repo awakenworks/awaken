@@ -48,7 +48,11 @@ async fn composition_selects_the_executor_components_and_binds_once() {
     );
     assert!(
         matches!(
-            coordinator_execution(&assembled.host, &assembled.state.sessions),
+            coordinator_execution(
+                &assembled.host,
+                &assembled.state.sessions,
+                ports.worker_work_release.clone()
+            ),
             Err(CoordinatorExecutionError::Coordination(
                 AgentCoordinationInstallError::AlreadyInstalled
             ))
@@ -68,7 +72,11 @@ async fn composition_selects_the_executor_components_and_binds_once() {
     .await;
     assert!(
         matches!(
-            coordinator_execution(&assembled.host, &other.state.sessions),
+            coordinator_execution(
+                &assembled.host,
+                &other.state.sessions,
+                ports.worker_work_release.clone()
+            ),
             Err(CoordinatorExecutionError::Coordination(
                 AgentCoordinationInstallError::DispatchObservationMismatch
             ))
@@ -106,7 +114,7 @@ async fn composition_rejects_started_dispatch_before_binding_applications() {
                     awaken_protocol_managed_testkit::ephemeral_session_repository().await,
                     clock.clone(),
                 ),
-                awaken_protocol_managed_testkit::environment_fixture(clock).execution,
+                awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
                 {
                     let probe = std::sync::Arc::new(
                         awaken_session_application::ExecutionObservationProbe::default(),
@@ -136,7 +144,16 @@ async fn composition_rejects_started_dispatch_before_binding_applications() {
         }
         assert!(
             matches!(
-                coordinator_execution(&host, &application),
+                coordinator_execution(
+                    &host,
+                    &application,
+                    awaken_process_startup::conditional_session_work_release(
+                        awaken_process_startup::SessionWorkReleasePersistence::Independent,
+                        host.coordination().coordinator_dispatch().unwrap(),
+                        application.work_assignments(),
+                        clock.clone(),
+                    )
+                ),
                 Err(CoordinatorExecutionError::DispatchAlreadyStarted)
             ),
             "C4 immutable completion selection"

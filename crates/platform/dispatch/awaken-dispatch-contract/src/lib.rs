@@ -38,6 +38,11 @@
 //! `awaken-session-application`, `awaken-session-executor`, `awaken-session-realization`,
 //! `awaken-session-run-delivery`.
 
+mod work_parking;
+pub use work_parking::{
+    CommitEpochObservation, ConditionalSessionWorkRelease, session_work_release_is_authorized,
+};
+
 mod claimed_commit;
 mod claimed_stream;
 mod completion_sink;

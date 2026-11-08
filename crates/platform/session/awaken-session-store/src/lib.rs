@@ -664,7 +664,8 @@ mod postgres;
 mod sqlite;
 
 pub use postgres::{
-    PostgresManagedSessionRepository, lock_session_for_run_archive, session_revision_at,
+    PostgresManagedSessionRepository, lock_session_for_run_archive, postgres_session_root_on,
+    session_revision_at,
 };
 pub use sqlite::SqliteManagedSessionRepository;
 

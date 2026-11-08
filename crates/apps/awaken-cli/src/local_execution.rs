@@ -115,7 +115,7 @@ impl ColocatedExecution for LocalExecution {
         let dispatch = host.dispatch().clone();
         let dispatch_observation = host
             .coordination()
-            .dispatch_observation_source()
+            .coordinator_dispatch()
             .map_err(|error| error.to_string())?;
         let capture_policy = host.content_capture_policy();
         Ok(PreparedColocatedExecution {
@@ -124,8 +124,9 @@ impl ColocatedExecution for LocalExecution {
             dispatch_observation,
             capture_policy,
             artifact_fence,
-            finish: Box::new(move |sessions| {
-                crate::coordinator_execution(&host, &sessions).map_err(|error| error.to_string())
+            finish: Box::new(move |sessions, worker_work_release| {
+                crate::coordinator_execution(&host, &sessions, worker_work_release)
+                    .map_err(|error| error.to_string())
             }),
         })
     }

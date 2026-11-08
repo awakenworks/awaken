@@ -42,13 +42,20 @@ async fn signed_draining_cleanup_keeps_its_original_renewal_authority() {
     });
     let work = Arc::new(RecordingSessionWorkAuthority::default());
     let dispatch = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
-        authenticator,
-        lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-        realizations: control.clone(),
-        terminal_cleanup: control.clone(),
-        session_work: work.clone(),
-        ..worker_dispatch_dependencies(dispatch, directory.clone(), clock.clone())
+    let service = WorkerDispatchService::new({
+        let selected_0 = authenticator;
+        let selected_1 = Arc::new(FixedWorkerLeasePolicy::new(30_000));
+        let selected_2 = control.clone();
+        let selected_3 = control.clone();
+        let selected_4 = work.clone();
+        let mut selected_dependencies =
+            worker_dispatch_dependencies(dispatch, directory.clone(), clock.clone());
+        selected_dependencies.authenticator = selected_0;
+        selected_dependencies.lease_policy = selected_1;
+        selected_dependencies.realizations = selected_2;
+        selected_dependencies.terminal_cleanup = selected_3;
+        selected_dependencies.session_work = selected_4;
+        awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -310,9 +317,12 @@ async fn registry_outage_does_not_consume_a_dispatch_claim_or_reclassify_identit
     dispatch.enqueue(request).await.unwrap();
     let before = dispatch.list_dispatches().await.unwrap();
     let work = Arc::new(RecordingSessionWorkAuthority::default());
-    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
-        session_work: work.clone(),
-        ..worker_dispatch_dependencies(dispatch.clone(), directory.clone(), clock)
+    let service = WorkerDispatchService::new({
+        let selected_0 = work.clone();
+        let mut selected_dependencies =
+            worker_dispatch_dependencies(dispatch.clone(), directory.clone(), clock);
+        selected_dependencies.session_work = selected_0;
+        awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
     });
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

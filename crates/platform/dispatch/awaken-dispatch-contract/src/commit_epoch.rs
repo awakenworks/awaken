@@ -121,48 +121,33 @@ enum HeldAuthority {
 
 pub struct CommitEpochGuard {
     held: HeldAuthority,
-    request: RunDispatch,
-    expires_ms: u64,
-    cancellation_requested: bool,
-    physical_attempt: crate::PhysicalAttemptSlot,
+    observation: crate::CommitEpochObservation,
 }
 
 impl CommitEpochGuard {
     #[must_use]
-    pub fn new(
-        held: impl Send + 'static,
-        request: RunDispatch,
-        expires_ms: u64,
-        cancellation_requested: bool,
-        physical_attempt: crate::PhysicalAttemptSlot,
-    ) -> Self {
+    pub fn new(held: impl Send + 'static, observation: crate::CommitEpochObservation) -> Self {
         Self {
             held: HeldAuthority::Drop(Box::new(held)),
-            request,
-            expires_ms,
-            cancellation_requested,
-            physical_attempt,
+            observation,
         }
     }
 
-    /// Construct a guard whose backend lock has an asynchronous release
-    /// boundary. PostgreSQL transactions use this path so returning from a
-    /// guarded commit means the row lock is observably gone, rather than only
-    /// scheduled for rollback by `Drop`.
+    /// Keep the existing asynchronous backend close as the one release boundary.
     pub fn new_releasing(
         release: impl Future<Output = Result<(), String>> + Send + 'static,
-        request: RunDispatch,
-        expires_ms: u64,
-        cancellation_requested: bool,
-        physical_attempt: crate::PhysicalAttemptSlot,
+        observation: crate::CommitEpochObservation,
     ) -> Self {
         Self {
             held: HeldAuthority::Release(Box::pin(release)),
-            request,
-            expires_ms,
-            cancellation_requested,
-            physical_attempt,
+            observation,
         }
+    }
+
+    /// Facts remain authoritative only while this exact backend fence is held.
+    #[must_use]
+    pub fn observation(&self) -> &crate::CommitEpochObservation {
+        &self.observation
     }
 
     /// Release the exact backend authority before the guarded operation is
@@ -264,7 +249,7 @@ impl CommitEpochGuard {
     /// Thread id.
     #[must_use]
     pub fn request(&self) -> &RunDispatch {
-        &self.request
+        &self.observation.request
     }
 
     /// Compare a Resource effect's scope with the locked dispatch authority.
@@ -272,37 +257,39 @@ impl CommitEpochGuard {
     /// affinity. Local and remote publication reject caller-supplied scopes.
     #[must_use]
     pub fn matches_execution_scope(&self, workspace_id: &str, session_id: &str) -> bool {
-        self.request
+        self.observation
+            .request
             .execution_scope
             .as_ref()
             .is_some_and(|scope| scope.0.0 == workspace_id)
-            && self.request.thread_id().0 == session_id
+            && self.observation.request.thread_id().0 == session_id
     }
 
     /// Whether the guarded claim's lease is live at `now_ms`: the Expiry law,
     /// dead from the instant a successor may reclaim the row.
     #[must_use]
     pub fn is_live_at(&self, now_ms: u64) -> bool {
-        Expiry::from_epoch_ms(self.expires_ms).is_live_at(UtcTime::from_epoch_ms(now_ms))
+        Expiry::from_epoch_ms(self.observation.expires_ms)
+            .is_live_at(UtcTime::from_epoch_ms(now_ms))
     }
 
     /// Expiry of the exact claim protected by this guard.
     #[must_use]
     pub fn expires_ms(&self) -> u64 {
-        self.expires_ms
+        self.observation.expires_ms
     }
 
     /// Physical evidence from the same locked row as this exact claim. A
     /// committed terminal is intentionally independent of this permission.
     #[must_use]
     pub fn permits_settlement(&self) -> bool {
-        self.physical_attempt.permits_settlement()
+        self.observation.physical_slot.permits_settlement()
     }
 
     /// Whether the same locked dispatch row already requests cancellation.
     #[must_use]
     pub fn cancellation_requested(&self) -> bool {
-        self.cancellation_requested
+        self.observation.cancellation_requested
     }
 }
 
@@ -433,10 +420,13 @@ mod commit_epoch_tests {
                                                 }
                                             }
                                         },
-                                        request,
-                                        100,
-                                        cancelled,
-                                        slot,
+                                        crate::CommitEpochObservation {
+                                            request,
+                                            expires_ms: 100,
+                                            cancellation_requested: cancelled,
+                                            physical_slot: slot,
+                                            physical_attempt: None,
+                                        },
                                     );
                                     let recovery = match source_kind {
                                         6 => Ok(PreparedRunRecovery::ReceiptOnly),
@@ -533,10 +523,13 @@ mod commit_epoch_tests {
                     Ok(())
                 }
             },
-            crate::dispatch::tests::a_request(),
-            1,
-            false,
-            crate::PhysicalAttemptSlot::Empty,
+            crate::CommitEpochObservation {
+                request: crate::dispatch::tests::a_request(),
+                expires_ms: 1,
+                cancellation_requested: false,
+                physical_slot: crate::PhysicalAttemptSlot::Empty,
+                physical_attempt: None,
+            },
         );
         let returning = tokio::spawn(releasing.release_after(Ok::<_, &'static str>(7_u8)));
         tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified())
@@ -549,10 +542,13 @@ mod commit_epoch_tests {
 
         let failed = CommitEpochGuard::new_releasing(
             async { Err("release failed".to_string()) },
-            crate::dispatch::tests::a_request(),
-            1,
-            false,
-            crate::PhysicalAttemptSlot::Empty,
+            crate::CommitEpochObservation {
+                request: crate::dispatch::tests::a_request(),
+                expires_ms: 1,
+                cancellation_requested: false,
+                physical_slot: crate::PhysicalAttemptSlot::Empty,
+                physical_attempt: None,
+            },
         )
         .release_after::<(), _>(Err("inner failed"))
         .await;
@@ -570,10 +566,13 @@ mod commit_epoch_tests {
         let guard = |expires_ms| {
             CommitEpochGuard::new(
                 (),
-                crate::dispatch::tests::a_request(),
-                expires_ms,
-                false,
-                crate::PhysicalAttemptSlot::Empty,
+                crate::CommitEpochObservation {
+                    request: crate::dispatch::tests::a_request(),
+                    expires_ms,
+                    cancellation_requested: false,
+                    physical_slot: crate::PhysicalAttemptSlot::Empty,
+                    physical_attempt: None,
+                },
             )
         };
         let lease = guard(100);

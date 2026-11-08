@@ -42,7 +42,7 @@ class WorkParitySelectionTests(unittest.TestCase):
 
     def test_all_current_cases_are_required_without_retired_gap_exclusions(self):
         phases = self.verify(self.source)
-        self.assertEqual(len(phases), 18)
+        self.assertEqual(len(phases), 19)
         work = [p for p in phases if p.selector == 'backend_parity' and p.package == 'awaken-work-store']
         self.assertEqual(len(work), 1)
         self.assertEqual(len(WORK_CURRENT_CASES), 24)
@@ -267,7 +267,7 @@ class WorkStoreSelectionTests(unittest.TestCase):
         parity = [p for p in phases if p.selector == 'backend_parity' and p.package == 'awaken-work-store']
         self.assertEqual(len(parity), 1)
         self.assertIn('work_queue_conformance', parity[0].arguments)
-        self.assertEqual(len(phases), 18)
+        self.assertEqual(len(phases), 19)
 
     def test_missing_targets_and_broad_all_package_or_conformance_selection_are_refused(self):
         mutations = [lambda s: s.replace('--lib ', '', 1)]
@@ -310,6 +310,70 @@ class WorkStoreSelectionTests(unittest.TestCase):
             self.assertNotEqual(source, self.source)
             with self.subTest(index=index), self.assertRaises(ValueError):
                 self.verify(source)
+
+
+class SessionWorkReleaseSelectionTests(unittest.TestCase):
+    setUpClass = classmethod(WorkParitySelectionTests.setUpClass.__func__)
+    verify = WorkParitySelectionTests.verify
+    # Independent literals, not derived from the executable table or policy.
+    cases = (
+        'session_work_release::tests::live_postgres_cap_one_and_partial_owner_matrix',
+        'session_work_release::tests::live_postgres_borrowed_primitives_preserve_the_callers_transaction',
+        'session_work_release::tests::live_postgres_cap_two_serializes_duplicate_release_and_claim_takeover',
+        'session_work_release::tests::live_postgres_rejects_stale_claim_and_changed_physical_evidence',
+        'session_work_release::tests::live_postgres_work_release_rollback_and_epoch_owner_fences',
+        'session_work_release::tests::live_postgres_shared_root_and_separate_work_database',
+    )
+
+    def changed_release(self, transform):
+        return edit_row(self.table, 'postgres.critical.process-startup-work-release', transform)
+
+    def test_additive_six_case_floor_preserves_the_original_eighteen_domains(self):
+        # R1 old 18 domains + one exact startup Work row => admit 19, with all
+        # six independently named outcomes. The old binding/pool rows remain.
+        phases = self.verify()
+        self.assertEqual(len(phases), 19)
+        startup = [p for p in phases if p.package == 'awaken-process-startup']
+        self.assertEqual(len(startup), 3)
+        for original in (
+            'installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy',
+            'postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling',
+        ):
+            self.assertTrue(any('--require-case=' + original in p.arguments for p in startup))
+        selected = [p for p in startup if 'session_work_release::tests::live_postgres_' in p.arguments]
+        self.assertEqual(len(selected), 1)
+        actual = tuple(a.removeprefix('--require-case=') for a in selected[0].arguments
+                       if a.startswith('--require-case='))
+        self.assertEqual(actual, self.cases)
+
+    def test_every_new_outcome_is_independent_and_cannot_be_deleted_replaced_or_skipped(self):
+        # R2 missing/replaced any floor or skipping its real execution => refuse;
+        # another startup outcome cannot silently substitute for that case.
+        for case in self.cases:
+            for mutation in (
+                lambda s: s.replace('--require-case=' + case, '', 1),
+                lambda s: s.replace('--require-case=' + case, '--require-case=unrelated', 1),
+                lambda s: s.replace('--test-threads=1', '--skip ' + case + ' --test-threads=1', 1),
+            ):
+                with self.subTest(case=case, mutation=mutation), self.assertRaisesRegex(ValueError, 'independent Session Work release'):
+                    self.verify(table=self.changed_release(mutation))
+
+    def test_new_scope_cannot_broaden_or_hide_ignored_cases(self):
+        # R3 wrong lib/filter/runtime mode/thread policy => refuse, even while
+        # all six names are present. R4 another package cannot supply this row.
+        mutations = (
+            lambda s: s.replace('--lib', '--tests', 1),
+            lambda s: s.replace('--lib', '--lib --all-targets', 1),
+            lambda s: s.replace('session_work_release::tests::live_postgres_ ', 'some_other_filter ', 1),
+            lambda s: s.replace('--ignored', '--include-ignored', 1),
+            lambda s: s.replace('--ignored', '--ignored --exact', 1),
+            lambda s: s.replace('--test-threads=1', '--test-threads=2', 1),
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, 'independent Session Work release'):
+                self.verify(table=self.changed_release(mutation))
+        with self.assertRaisesRegex(ValueError, 'independent required domain coverage'):
+            self.verify(table=self.changed_release(lambda s: s.replace('awaken-process-startup', 'awaken-coordinator', 1)))
 
 
 if __name__ == '__main__':

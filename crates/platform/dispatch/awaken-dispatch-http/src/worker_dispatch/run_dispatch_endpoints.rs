@@ -519,15 +519,7 @@ pub(super) async fn relinquish(
 /// | P5   | no       | any      | any         | any                   | kept     |
 ///
 /// P5: a child Run borrows its parent's Work and never releases it.
-const fn deferral_parks_session_work(
-    root_run: bool,
-    slot_occupied: bool,
-    local_entry_closed: bool,
-    entered_only_model_invocations: bool,
-) -> bool {
-    root_run && slot_occupied && local_entry_closed && entered_only_model_invocations
-}
-
+///
 /// The root Session whose Work this deferral parks. Root affinity and slot
 /// occupancy are read under the exact claim's commit guard; local entry
 /// closure from the persisted attempt; containment from the committed
@@ -537,124 +529,34 @@ async fn park_root_session_work(
     service: &WorkerDispatchService,
     claim: &awaken_dispatch::RunClaim,
 ) -> Result<(), ApplicationError> {
-    let guard = match service.dispatch.lock_commit_epoch(claim).await {
-        Ok(Some(guard)) => guard,
+    // Read committed containment without holding a SQL connection. The selected
+    // atomic port rechecks the exact claim and physical record after this read.
+    let attempt = match service.dispatch.load_physical_attempt(&claim.run_id).await {
+        Ok(Some(attempt)) => attempt,
         Ok(None) => return Ok(()),
         Err(error) => {
-            tracing::warn!(run_id = %claim.run_id.0, %error,
-                "deferral keeps Session Work: the claim guard is unreadable");
+            tracing::warn!(run_id=%claim.run_id.0, %error, "deferral keeps Session Work: physical attempt is unreadable");
             return Ok(());
         }
     };
-    let dispatch = guard.request();
-    let root_run = dispatch.requires_session_work_authority()
-        && dispatch.thread_id() == dispatch.session_thread_id();
-    let session_id = dispatch.session_thread_id().0.clone();
-    let slot_occupied = !guard.permits_settlement();
-    if let Err(error) = guard.release().await {
-        tracing::warn!(run_id = %claim.run_id.0, %error,
-            "deferral keeps Session Work: the claim guard did not release");
-        return Ok(());
-    }
-    if !(root_run && slot_occupied) {
-        return Ok(());
-    }
-    let attempt = match service.dispatch.load_physical_attempt(&claim.run_id).await {
-        Ok(Some(attempt)) if attempt.claim.run_id == claim.run_id => attempt,
-        Ok(_) => return Ok(()),
-        Err(error) => {
-            tracing::warn!(run_id = %claim.run_id.0, %error,
-                "deferral keeps Session Work: the attempt slot is unreadable");
-            return Ok(());
-        }
-    };
-    let entered_only_model_invocations = attempt.closing
-        && match awaken_dispatch::PhysicalAttemptRecoveryRead::new(service.recovery.as_ref())
+    let model_only = if attempt.closing {
+        match awaken_dispatch::PhysicalAttemptRecoveryRead::new(service.recovery.as_ref())
             .snapshot_for(&attempt)
             .await
             .map(|snapshot| awaken_dispatch::NativeAttemptFootprint::decode(&snapshot))
         {
             Ok(Ok(footprint)) => footprint.entered_only_model_invocations(),
-            Ok(Err(error)) => {
-                tracing::warn!(run_id = %claim.run_id.0, %error,
-                    "deferral keeps Session Work: the attempt footprint is invalid");
-                false
-            }
-            Err(error) => {
-                tracing::warn!(run_id = %claim.run_id.0, %error,
-                    "deferral keeps Session Work: the attempt footprint is unreadable");
-                false
-            }
-        };
-    if !deferral_parks_session_work(
-        root_run,
-        slot_occupied,
-        attempt.closing,
-        entered_only_model_invocations,
-    ) {
-        return Ok(());
-    }
-    // Reading committed recovery released the first guard. Recheck the exact
-    // claim and hold its existing exclusion through the Work CAS. A deferral's
-    // `applied=false` is insufficient: the Dispatch kernel also refuses to
-    // relinquish a still-current claim that owns the occupied physical slot.
-    // No Dispatch mutation is called under this guard; Work has its own store.
-    let Some(guard) = service
-        .dispatch
-        .lock_commit_epoch(claim)
-        .await
-        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-    else {
-        return Ok(());
-    };
-    let parked = if guard.permits_settlement() {
-        Ok(false)
-    } else {
-        super::session_realization::release_session_work_if_owned(
-            service,
-            &awaken_session_types::SessionId::from(session_id),
-            &claim.owner,
-        )
-        .await
-        .map_err(|error| ApplicationError::unavailable(error.to_string()))
-    };
-    let unlocked = guard.release().await.map_err(ApplicationError::unavailable);
-    parked?;
-    unlocked
-}
-
-#[cfg(test)]
-mod parked_session_work_tests {
-    #[test]
-    fn only_a_closed_model_only_root_attempt_parks_its_session_work() {
-        // Decision table P1-P5 of `deferral_parks_session_work`, exhaustively
-        // over its four facts: exactly P1 releases.
-        for root_run in [false, true] {
-            for slot_occupied in [false, true] {
-                for local_entry_closed in [false, true] {
-                    for model_only in [false, true] {
-                        let rule = match (root_run, slot_occupied, local_entry_closed, model_only) {
-                            (false, ..) => "P5",
-                            (true, false, ..) => "P4",
-                            (true, true, false, _) => "P2",
-                            (true, true, true, false) => "P3",
-                            (true, true, true, true) => "P1",
-                        };
-                        assert_eq!(
-                            super::deferral_parks_session_work(
-                                root_run,
-                                slot_occupied,
-                                local_entry_closed,
-                                model_only,
-                            ),
-                            rule == "P1",
-                            "{rule}"
-                        );
-                    }
-                }
-            }
+            _ => false,
         }
-    }
+    } else {
+        false
+    };
+    service
+        .worker_work_release
+        .release(claim, &attempt, model_only)
+        .await
+        .map(|_| ())
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))
 }
 
 pub(super) async fn resolve_session_run_reservation(

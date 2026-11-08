@@ -23,6 +23,8 @@ awaken-session-execution-contract.workspace = true
 awaken-session-types.workspace = true
 # The shared composition of the Worker dispatch HTTP service for tests.
 awaken-dispatch-http.workspace = true
+# Compose the existing claim-guarded Work release adapter from its owner.
+awaken-dispatch.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-contract.workspace = true

@@ -184,6 +184,53 @@ pub(super) async fn immediate(
         .map_err(storage)
 }
 
+pub(super) async fn insert_postgres_work_on(
+    connection: &mut sqlx::PgConnection,
+    clock: &dyn WallClock,
+    env_id: &str,
+    data_type: &str,
+    session_id: Option<&str>,
+) -> Result<String, WorkQueueError> {
+    sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut *connection)
+        .await
+        .map_err(storage)?;
+    if data_type == "healthcheck" {
+        postgres_require_healthcheck(&mut *connection, env_id).await?;
+    }
+    if let Some(session_id) = session_id
+        && let Some(existing) = sqlx::query_scalar::<_, String>(
+            "SELECT work_id FROM work_queue_item \
+                 WHERE environment_id = $1 AND data_type = 'session' AND data_id = $2 \
+                 ORDER BY seq ASC LIMIT 1",
+        )
+        .bind(env_id)
+        .bind(session_id)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(storage)?
+    {
+        return Ok(existing);
+    }
+    let (next, work_id) = identity::allocate_postgres(&mut *connection).await?;
+    let data_id = session_id.unwrap_or(&work_id).to_string();
+    sqlx::query(
+            "INSERT INTO work_queue_item \
+                (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) \
+             VALUES ($1, $2, $3, $4, $5, '{}', 'queued', $6)",
+        )
+        .bind(&work_id)
+        .bind(next)
+        .bind(env_id)
+        .bind(data_type)
+        .bind(&data_id)
+        .bind(clock.observed_at())
+        .execute(&mut *connection)
+        .await
+        .map_err(storage)?;
+    Ok(work_id)
+}
+
 impl PostgresWorkQueue {
     /// Connect and apply the work-queue migrations under the `work_queue` namespace.
     pub async fn connect(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
@@ -233,46 +280,11 @@ impl PostgresWorkQueue {
         session_id: Option<&str>,
     ) -> Result<String, WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-        if data_type == "healthcheck" {
-            postgres_require_healthcheck(&mut tx, env_id).await?;
-        }
-        if let Some(session_id) = session_id
-            && let Some(existing) = sqlx::query_scalar::<_, String>(
-                "SELECT work_id FROM work_queue_item \
-                 WHERE environment_id = $1 AND data_type = 'session' AND data_id = $2 \
-                 ORDER BY seq ASC LIMIT 1",
-            )
-            .bind(env_id)
-            .bind(session_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(storage)?
-        {
-            tx.commit().await.map_err(storage)?;
-            return Ok(existing);
-        }
-        let (next, work_id) = identity::allocate_postgres(&mut tx).await?;
-        let data_id = session_id.unwrap_or(&work_id).to_string();
-        sqlx::query(
-            "INSERT INTO work_queue_item \
-                (work_id, seq, environment_id, data_type, data_id, metadata_json, state, created_at) \
-             VALUES ($1, $2, $3, $4, $5, '{}', 'queued', $6)",
-        )
-        .bind(&work_id)
-        .bind(next)
-        .bind(env_id)
-        .bind(data_type)
-        .bind(&data_id)
-        .bind(self.clock.observed_at())
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
+        let result =
+            insert_postgres_work_on(&mut tx, self.clock.as_ref(), env_id, data_type, session_id)
+                .await?;
         tx.commit().await.map_err(storage)?;
-        Ok(work_id)
+        Ok(result)
     }
 
     pub(super) async fn fetch_owned(

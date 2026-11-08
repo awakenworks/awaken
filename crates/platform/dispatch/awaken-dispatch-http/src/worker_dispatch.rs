@@ -257,6 +257,7 @@ pub struct WorkerDispatchService {
         Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     session_coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     session_work: Arc<dyn awaken_session_application_contract::SessionWorkerLeaseAuthority>,
+    worker_work_release: Arc<dyn awaken_dispatch::ConditionalSessionWorkRelease>,
     credential_deliveries:
         Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
     max_attempts: u64,
@@ -282,6 +283,7 @@ impl WorkerDispatchService {
             session_environment_bindings,
             coordination,
             session_work,
+            worker_work_release,
             authenticator,
             recovery,
             completion,
@@ -312,6 +314,7 @@ impl WorkerDispatchService {
             session_environment_bindings,
             session_coordination: coordination,
             session_work,
+            worker_work_release,
             credential_deliveries,
             max_attempts: max_attempts.max(1),
             execution_bindings,
@@ -474,6 +477,7 @@ pub struct RegisteredDispatchDependencies {
         Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     pub coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     pub session_work: Arc<dyn awaken_session_application_contract::SessionWorkerLeaseAuthority>,
+    pub worker_work_release: Arc<dyn awaken_dispatch::ConditionalSessionWorkRelease>,
     pub authenticator: Arc<dyn WorkerRequestAuthenticator>,
     pub recovery: Arc<dyn RunRecoverySource>,
     pub completion: Arc<dyn CompletionSink>,
@@ -1255,8 +1259,8 @@ async fn settle(
         // commits have landed; a later activity revives and reacquires its stable
         // Work item. Child Runs borrow the parent's fence and must retain it.
         if owns_session_work {
-            let released = session_realization::release_session_work_if_owned(
-                &service,
+            let released = awaken_session_application_contract::release_owned_session_work(
+                service.session_work.as_ref(),
                 &awaken_session_types::SessionId::from(session_thread_id.0),
                 &claim.owner,
             )

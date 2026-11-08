@@ -26,6 +26,29 @@ pub struct PostgresManagedSessionRepository {
     pub(crate) pool: PgPool,
 }
 
+/// Read the canonical root on the caller's existing transaction connection.
+pub async fn postgres_session_root_on(
+    connection: &mut sqlx::PgConnection,
+    session_id: &awaken_session_types::SessionId,
+) -> Result<PersistedSession, SessionRepositoryError> {
+    let row = sqlx::query(
+        "SELECT aggregate_json, revision \
+             FROM managed_session WHERE session_id = $1",
+    )
+    .bind(session_id.as_str())
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(storage)?;
+    let Some(row) = row else {
+        return Err(SessionRepositoryError::NotFound);
+    };
+    decode(EncodedSessionRow {
+        aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+        revision: row.try_get("revision").map_err(storage)?,
+    })
+    .map_err(corrupt)
+}
+
 impl PostgresManagedSessionRepository {
     /// Connect and apply the session migrations under the `managed` namespace.
     pub async fn connect(url: &str) -> Result<Self, String> {
@@ -603,22 +626,8 @@ impl SessionRepositoryReads for PostgresManagedSessionRepository {
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionRepositoryError> {
-        let row = sqlx::query(
-            "SELECT aggregate_json, revision \
-             FROM managed_session WHERE session_id = $1",
-        )
-        .bind(session_id.as_str())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
-        let Some(row) = row else {
-            return Err(SessionRepositoryError::NotFound);
-        };
-        decode(EncodedSessionRow {
-            aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
-            revision: row.try_get("revision").map_err(storage)?,
-        })
-        .map_err(corrupt)
+        let mut connection = self.pool.acquire().await.map_err(storage)?;
+        postgres_session_root_on(&mut connection, session_id).await
     }
 
     async fn owner(

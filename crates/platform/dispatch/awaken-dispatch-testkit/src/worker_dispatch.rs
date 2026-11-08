@@ -4,10 +4,12 @@
 //! collaborators they exercise with struct-update syntax:
 //!
 //! ```ignore
-//! WorkerDispatchService::new(RegisteredDispatchDependencies {
-//!     session_work: work.clone(),
-//!     ..worker_dispatch_dependencies(dispatch, directory, clock)
-//! })
+//! WorkerDispatchService::new(resolve_worker_dispatch_dependencies(
+//!     RegisteredDispatchDependencies {
+//!         session_work: work.clone(),
+//!         ..worker_dispatch_dependencies(dispatch, directory, clock)
+//!     },
+//! ))
 //! ```
 //!
 //! Every collaborator is present, as in production. Authority and committed
@@ -63,6 +65,10 @@ pub fn worker_dispatch_dependencies(
     RegisteredDispatchDependencies {
         execution_bindings: None,
         execution_stops: None,
+        worker_work_release: Arc::new(awaken_dispatch::ClaimGuardedSessionWorkRelease::new(
+            dispatch.clone(),
+            unconfigured.clone(),
+        )),
         dispatch,
         checkpoint: unconfigured.clone(),
         directory,
@@ -84,6 +90,20 @@ pub fn worker_dispatch_dependencies(
         registry_ttl_ms: WORKER_REGISTRY_TTL_MS,
         max_attempts: WORKER_DISPATCH_MAX_ATTEMPTS,
     }
+}
+
+/// Finalize the independent-store role after a fixture's struct updates.
+/// Both handles are the exact final collaborators; no live service is rebound.
+#[must_use]
+pub fn resolve_worker_dispatch_dependencies(
+    mut dependencies: RegisteredDispatchDependencies,
+) -> RegisteredDispatchDependencies {
+    dependencies.worker_work_release =
+        Arc::new(awaken_dispatch::ClaimGuardedSessionWorkRelease::new(
+            dependencies.dispatch.clone(),
+            dependencies.session_work.clone(),
+        ));
+    dependencies
 }
 
 /// Committed truth in which the claimed Run is in `state`, as the Worker

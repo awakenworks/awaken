@@ -202,16 +202,12 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 134,
-        "file_sha256": "86e2b633ab6ff2a62d622cf583b3ff8e592984f8bf46d8d414a77888b33c8bac",
+        "line": 139,
+        "file_sha256": "1f59154a28ad8325d45885d53859bb8491fcc0a2c0d7c406192cd0786d3ca035",
         "relocated_from": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs:131"
       }
     ],
     "assertion_locations": [
-      {
-        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 167
-      },
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
         "line": 172
@@ -219,6 +215,10 @@
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
         "line": 177
+      },
+      {
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
+        "line": 182
       }
     ],
     "execution_witnesses": [
@@ -246,7 +246,7 @@
       }
     },
     "review": "Calls the production entrypoint over real adapters (file SQLite with independent handles, PostgreSQL with independent pools, real child processes or real loopback servers where stated) and asserts persisted state, effect counts and exact identities; the negative control is executed in-test.",
-    "limitation": null,
+    "limitation": "2026-11-09: current source coordinates follow the mandatory conditional Work-release fixture composition. Retained E16 execution receipt and log still identify their original source head; this relocation does not claim a new recorded acceptance run.",
     "id": "B210"
   },
   {

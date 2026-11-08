@@ -113,21 +113,26 @@ fn router_over(
     published: Arc<PublishedSettlements>,
     work: Arc<LostReleaseWork>,
 ) -> Router {
-    dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
-        RegisteredDispatchDependencies {
-            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
-            recovery,
-            terminal_observer: observer,
-            completion: published,
-            session_work: work,
-            coordination: Arc::new(RecordingSessionCoordination::default()),
-            ..worker_dispatch_dependencies(
-                store,
-                ready_workers(&["terminal-worker"]),
-                Arc::new(ManualClock::new(0)),
-            )
-        },
-    )))
+    dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new({
+        let selected_0 = Arc::new(FixedWorkerLeasePolicy::new(30_000));
+        let selected_1 = recovery;
+        let selected_2 = observer;
+        let selected_3 = published;
+        let selected_4 = work;
+        let selected_5 = Arc::new(RecordingSessionCoordination::default());
+        let mut selected_dependencies = worker_dispatch_dependencies(
+            store,
+            ready_workers(&["terminal-worker"]),
+            Arc::new(ManualClock::new(0)),
+        );
+        selected_dependencies.lease_policy = selected_0;
+        selected_dependencies.recovery = selected_1;
+        selected_dependencies.terminal_observer = selected_2;
+        selected_dependencies.completion = selected_3;
+        selected_dependencies.session_work = selected_4;
+        selected_dependencies.coordination = selected_5;
+        awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
+    })))
 }
 
 #[tokio::test]

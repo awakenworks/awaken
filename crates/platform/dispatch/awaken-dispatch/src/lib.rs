@@ -25,6 +25,12 @@
 //! thread's pending input, and run outcome stays in committed facts, read back
 //! through the commit boundary's single `CommittedThreadView` port.
 
+pub use awaken_dispatch_contract::{
+    CommitEpochObservation, ConditionalSessionWorkRelease, session_work_release_is_authorized,
+};
+
+pub use session_work_release::ClaimGuardedSessionWorkRelease;
+
 pub use awaken_dispatch_execution::{
     NativeAttemptFootprint, NativeAttemptTermination, NativeAttemptTerminationError,
     classify_native_attempt_termination,
@@ -35,6 +41,7 @@ mod application;
 mod clock;
 mod dispatch;
 mod dispatch_schema;
+mod session_work_release;
 mod worker_registration;
 // Synchronous composition convenience for conformance and embedded fixtures.
 // Production Hosts compose DispatchWorker/DispatchPool directly and therefore

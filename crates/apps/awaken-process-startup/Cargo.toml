@@ -23,6 +23,7 @@ path = "src/lib.rs"
 # co-located Worker, the Coordinator process package (awaken-coordinator-process)
 # supplies none.
 [dependencies]
+awaken-session-types.workspace = true
 awaken-sync.workspace = true
 awaken-deployment-config.workspace = true
 awaken-dispatch-erasure.workspace = true
@@ -184,6 +185,7 @@ serde_json.workspace = true
 sha2 = "0.10"
 
 [dev-dependencies]
+awaken-lease-contract.workspace = true
 awaken-dispatch-http.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-executor = { workspace = true, features = ["test-support"] }
@@ -249,7 +251,6 @@ sqlx = { workspace = true, default-features = false, features = ["runtime-tokio"
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
-awaken-session-types.workspace = true
 awaken-agent-channel.workspace = true
 
 [[test]]

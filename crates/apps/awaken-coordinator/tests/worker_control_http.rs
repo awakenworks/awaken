@@ -1004,17 +1004,22 @@ mod environment_renewal {
             )
             .map(SessionWorkGrant::from_transfer)
             .expect("canonical grant has a nonzero epoch");
-            let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
-                lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-                registry_ttl_ms: 1_000,
-                session_work: Arc::new(ObservedWork(SessionWorkOwnership::Leased(work))),
-                session_environment_bindings: sink,
-                ..worker_dispatch_dependencies(
+            let service = WorkerDispatchService::new({
+                let selected_0 = Arc::new(FixedWorkerLeasePolicy::new(1_000));
+                let selected_1 = 1_000;
+                let selected_2 = Arc::new(ObservedWork(SessionWorkOwnership::Leased(work)));
+                let selected_3 = sink;
+                let mut selected_dependencies = worker_dispatch_dependencies(
                     Arc::new(MemoryDispatchStore::new(clock.clone()))
                         as Arc<dyn WorkerDispatchAuthority>,
                     directory,
                     clock.clone(),
-                )
+                );
+                selected_dependencies.lease_policy = selected_0;
+                selected_dependencies.registry_ttl_ms = selected_1;
+                selected_dependencies.session_work = selected_2;
+                selected_dependencies.session_environment_bindings = selected_3;
+                awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
             });
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -1152,16 +1157,20 @@ mod environment_renewal {
         .await
         .unwrap();
         let identity = registered.snapshot.identity;
-        let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
-            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-            registry_ttl_ms: 1_000,
-            session_work: Arc::new(ObservedWork(SessionWorkOwnership::NotRequired)),
-            ..worker_dispatch_dependencies(
+        let service = WorkerDispatchService::new({
+            let selected_0 = Arc::new(FixedWorkerLeasePolicy::new(1_000));
+            let selected_1 = 1_000;
+            let selected_2 = Arc::new(ObservedWork(SessionWorkOwnership::NotRequired));
+            let mut selected_dependencies = worker_dispatch_dependencies(
                 Arc::new(MemoryDispatchStore::new(clock.clone()))
                     as Arc<dyn WorkerDispatchAuthority>,
                 directory,
                 clock.clone(),
-            )
+            );
+            selected_dependencies.lease_policy = selected_0;
+            selected_dependencies.registry_ttl_ms = selected_1;
+            selected_dependencies.session_work = selected_2;
+            awaken_dispatch_testkit::resolve_worker_dispatch_dependencies(selected_dependencies)
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

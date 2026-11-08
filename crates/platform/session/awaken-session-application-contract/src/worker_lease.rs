@@ -244,6 +244,29 @@ fn lease_tenure(lease: &SessionWorkGrant) -> Tenure<SessionWork> {
     lease.tenure().clone()
 }
 
+/// Release only the current Work grant this exact Worker may act on.
+pub async fn release_owned_session_work(
+    authority: &dyn SessionWorkerLeaseAuthority,
+    session_id: &awaken_session_types::SessionId,
+    worker_owner: &str,
+) -> Result<bool, RunError> {
+    let ownership = authority
+        .acquire_session_work(
+            session_id,
+            worker_owner,
+            SessionWorkAcquisition::RealizationRenewal,
+        )
+        .await?;
+    if !ownership.permits_effect_for(worker_owner) {
+        return Ok(false);
+    }
+    match ownership {
+        SessionWorkOwnership::NotRequired => Ok(true),
+        SessionWorkOwnership::Leased(grant) => authority.release_session_work(&grant).await,
+        SessionWorkOwnership::Unowned => Ok(false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

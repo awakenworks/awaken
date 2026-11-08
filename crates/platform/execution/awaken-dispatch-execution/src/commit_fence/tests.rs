@@ -69,22 +69,25 @@ impl DispatchCommitAuthority for Authority {
                 held.store(false, Ordering::SeqCst);
                 Ok(())
             },
-            RunDispatch::new(RunActivation::new(
-                RunId("run".into()),
-                ThreadId("thread".into()),
-                ExecutableAgentSnapshot::builder("snapshot")
-                    .model(
-                        awaken_runtime_contract::resolved::ModelBinding::parse(
-                            "test", "test", "native",
+            awaken_dispatch_contract::CommitEpochObservation {
+                request: RunDispatch::new(RunActivation::new(
+                    RunId("run".into()),
+                    ThreadId("thread".into()),
+                    ExecutableAgentSnapshot::builder("snapshot")
+                        .model(
+                            awaken_runtime_contract::resolved::ModelBinding::parse(
+                                "test", "test", "native",
+                            )
+                            .expect("complete fixture model binding"),
                         )
-                        .expect("complete fixture model binding"),
-                    )
-                    .build(),
-                Vec::new(),
-            )),
-            100,
-            false,
-            PhysicalAttemptSlot::Empty,
+                        .build(),
+                    Vec::new(),
+                )),
+                expires_ms: 100,
+                cancellation_requested: false,
+                physical_slot: PhysicalAttemptSlot::Empty,
+                physical_attempt: None,
+            },
         )))
     }
 }

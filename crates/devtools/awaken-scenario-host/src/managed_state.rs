@@ -355,7 +355,15 @@ async fn local_managed_state_over(
         .build()
         .expect("scenario Session capabilities are complete");
     let application = Arc::new(application);
-    let execution = awaken_cli::coordinator_execution(&host, &application)
+    let worker_work_release = awaken_process_startup::conditional_session_work_release(
+        awaken_process_startup::SessionWorkReleasePersistence::Independent,
+        host.coordination()
+            .coordinator_dispatch()
+            .expect("scenario dispatch"),
+        application.work_assignments(),
+        clock.clone(),
+    );
+    let execution = awaken_cli::coordinator_execution(&host, &application, worker_work_release)
         .expect("scenario Session application binds into its executor once");
     let managed = awaken_protocol_managed::ManagedState::from_application(
         application.clone(),

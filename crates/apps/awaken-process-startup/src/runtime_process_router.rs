@@ -704,7 +704,8 @@ fn assemble_session_plane(
         SelectedExecution::Colocated(execution) => (
             execution.roles.clone(),
             execution.dispatch.clone(),
-            execution.dispatch_observation.clone(),
+            execution.dispatch_observation.clone()
+                as Arc<dyn awaken_dispatch::DispatchOperationalFeed>,
             execution.capture_policy.clone(),
         ),
         SelectedExecution::Registered(execution) => (
@@ -771,6 +772,16 @@ fn assemble_session_plane(
     }
     let session_application = builder.build().map_err(|error| error.to_string())?;
     let session_application = Arc::new(session_application);
+    let work_release_dispatch: Arc<dyn awaken_dispatch::DispatchCommitAuthority> = match &selected {
+        SelectedExecution::Colocated(execution) => execution.dispatch_observation.clone(),
+        SelectedExecution::Registered(execution) => execution.owner.clone(),
+    };
+    let worker_work_release = crate::conditional_session_work_release(
+        base.process.work_release_persistence.clone(),
+        work_release_dispatch,
+        session_application.work_assignments(),
+        base.stores.clock.clone(),
+    );
     let coordinator_execution = match selected {
         SelectedExecution::Colocated(execution) => {
             bind_session_lifecycle_hooks(
@@ -778,12 +789,12 @@ fn assemble_session_plane(
                 Some(&execution.artifact_fence),
                 &session_application,
             )?;
-            (execution.finish)(session_application.clone())
+            (execution.finish)(session_application.clone(), worker_work_release)
         }
         SelectedExecution::Registered(execution) => {
             bind_session_lifecycle_hooks(base, None, &session_application)?;
             execution
-                .finish(&session_application)
+                .finish(&session_application, worker_work_release)
                 .map_err(|error| error.to_string())
         }
     }?;

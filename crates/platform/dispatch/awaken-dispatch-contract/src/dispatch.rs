@@ -98,7 +98,7 @@ pub use model::*;
 include!("dispatch/queue.rs");
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use awaken_agent_contract::credential::CandidateFingerprint;
     use awaken_credential_contract::CredentialAccessAdmission;
@@ -143,7 +143,7 @@ mod tests {
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
 
-    pub(super) fn a_request() -> RunDispatch {
+    pub(crate) fn a_request() -> RunDispatch {
         let activation = RunActivation::new(
             RunId("run-1".into()),
             ThreadId("thrd-1".into()),

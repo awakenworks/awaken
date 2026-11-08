@@ -269,7 +269,9 @@ pub use repository_participants::{
     ConfiguredSessionRepository, SessionRepositoryOwner, SessionRepositoryParticipants,
     SessionRepositoryResourceInput,
 };
-pub use work_assignments::SessionWorkAssignments;
+pub use work_assignments::{
+    SessionWorkAssignments, SessionWorkPersistenceViews, session_work_environment,
+};
 mod update;
 pub use update::{
     SessionMcpUpdate, SessionMetadataUpdate, SessionUpdateCommand, SessionUpdateCommands,
