@@ -231,7 +231,8 @@
         "binding_ids": [
           "B108",
           "B109",
-          "B265"
+          "B265",
+          "B266"
         ],
         "evidence_state": "current_clause_complete",
         "acceptance_state": "pending",
