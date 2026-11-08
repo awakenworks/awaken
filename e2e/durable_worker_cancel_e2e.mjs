@@ -370,10 +370,11 @@ async function cancelAwaitingDurableRun() {
     await publishAlwaysAskManagementProbeAgent(BASE, AWAITING_AGENT);
     // Awaiting-cancel cause/effect graph:
     // C1=a canonical Worker has committed one Awaiting approval boundary;
-    // C2=the durable operations API cancels its exact run id; C3=reconcile and
-    // elapsed time follow cancellation; C4=the run id is unknown or already Done.
+    // C2=the durable operations API cancels its exact run id; C3=an operator
+    // reconcile follows cancellation; C4=the run id is unknown or already Done.
     // Effects: E1=C1+C2 commits Cancelled and removes the dispatch; E2=C3 never
-    // re-drives or double-commits the run; E3=C4 fails closed with HTTP 400.
+    // re-drives or double-commits the run (the Worker-placed Coordinator
+    // refuses it: it executes no Run); E3=C4 fails closed with HTTP 400.
     // Constraint: the never-approved tool effect must remain absent; queue and
     // committed Thread truth are observed only through production APIs.
     //
@@ -429,17 +430,22 @@ async function cancelAwaitingDurableRun() {
     assert.ok(!afterRows.some((d) => d.run_id === runId), 'the cancelled run is removed from the dispatch queue');
     pass('cancelled run removed from the dispatch queue (not runnable)');
 
-    // The exact cancellation is terminal: reconciliation cannot re-drive it,
-    // and the committed transcript contains no tool effect. The empty queue
-    // and no-recovery receipt are durable facts; a fixed delay adds no proof.
+    // The exact cancellation is terminal and cannot be re-driven. This
+    // management-probe AllInOne serves its Sessions from the co-located
+    // registered Worker, so its Coordinator executes no Run: the operator
+    // reconcile route refuses (its terminal reconciliation loop settles
+    // committed terminals), and nothing a Worker could claim is left — the
+    // dispatch row is gone. The committed transcript contains no tool effect.
+    // These are durable facts; a fixed delay adds no proof.
     const rec = await post(`/v1/durable/threads/${THREAD}/reconcile`, undefined);
-    assert.equal(rec.status, 200, 'reconcile ok');
-    assert.ok(!(rec.body.recovered ?? []).includes(runId), 'reconcile does not re-drive the cancelled run');
+    assert.equal(rec.status, 400, `the Coordinator refuses operator reconciliation: ${JSON.stringify(rec.body)}`);
+    assert.match(JSON.stringify(rec.body), /a Coordinator executes no Run/,
+      'the refusal names the Worker topology, not a store failure');
 
     const committed = (await get(`/v1/durable/threads/${THREAD}/messages`)).body.messages;
     assert.ok(!JSON.stringify(committed).includes('done'),
       'the cancelled run committed no terminal reply or tool effect');
-    pass('cancelled run remains absent after explicit reconciliation');
+    pass('cancelled run stays absent: the Coordinator re-drives nothing and no Worker can claim it');
 
     // Fail-closed: an unknown run id, and re-cancelling the now-gone run, both 400.
     const unknown = await post(`/v1/durable/threads/${THREAD}/cancel`, { run_id: 'run-does-not-exist' });
