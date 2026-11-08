@@ -70,6 +70,19 @@ impl awaken_inference_endpoint::InferenceExecutorMaterializer for HostExecutorIn
     }
 }
 
+/// The Worker-side inference of a process that publishes one deterministic
+/// host executor; `None` when publications resolve from the authored catalog.
+pub(crate) fn host_inference(
+    supply: &crate::PublicationModelSupply,
+) -> Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>> {
+    match supply {
+        crate::PublicationModelSupply::Host { executor, .. } => {
+            Some(Arc::new(HostExecutorInference(executor.clone())))
+        }
+        _ => None,
+    }
+}
+
 /// Start an AllInOne test process with its co-located registered Worker.
 /// `model` publishes one deterministic host executor; `None` resolves
 /// publications from the authored catalog.
@@ -97,6 +110,21 @@ pub async fn start_all_in_one_with_worker(
             (stores, Some(iam))
         }
     };
+    let options = crate::exact_host_model::registered_test_process_options(&stores);
+    let model_supply = match model {
+        Some((executor, binding)) => crate::PublicationModelSupply::Host { executor, binding },
+        None => crate::PublicationModelSupply::PublishedProviders,
+    };
+    start_over(stores, authz, options, model_supply, worker).await
+}
+
+async fn start_over(
+    stores: crate::ProcessStores,
+    authz: Option<Arc<crate::ManagementAuthz>>,
+    options: crate::ProcessStartup,
+    model_supply: crate::PublicationModelSupply,
+    worker: impl FnOnce(ColocatedTestWorkerInputs) -> Arc<dyn crate::ColocatedWorker>,
+) -> Result<ColocatedTestProcess, String> {
     let control = stores
         .control
         .as_ref()
@@ -106,24 +134,11 @@ pub async fn start_all_in_one_with_worker(
         secrets: control.secrets.clone(),
     };
     let clock = stores.clock.clone();
-    let options = crate::exact_host_model::registered_test_process_options(&stores);
     let runtime = options
         .deployment
         .clone()
         .ok_or("the test process selects its deployment")?;
-    let (model_supply, host_inference) = match model {
-        Some((executor, binding)) => (
-            crate::PublicationModelSupply::Host {
-                executor: executor.clone(),
-                binding,
-            },
-            Some(Arc::new(HostExecutorInference(executor))
-                as Arc<
-                    dyn awaken_inference_endpoint::InferenceExecutorMaterializer,
-                >),
-        ),
-        None => (crate::PublicationModelSupply::PublishedProviders, None),
-    };
+    let host_inference = host_inference(&model_supply);
     let routers = crate::runtime_process_router::prepare_runtime_routers(
         stores,
         authz.clone(),

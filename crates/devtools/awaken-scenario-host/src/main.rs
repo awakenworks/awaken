@@ -70,6 +70,52 @@ fn management_scenario_adapters(
     )))
 }
 
+/// The env-selected AllInOne management scenario over one deterministic host
+/// executor. A process whose environment configures its model through ambient
+/// provider keys stays on its own claim pool
+/// ([`awaken_cli::scenario_requires_local_placement`], w5-slices.md §11);
+/// every other one runs the shipped co-located registered Worker.
+async fn management_scenario_process(
+    model: Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
+    model_ref: String,
+    adapters: awaken_process_startup::ManagedServiceAdapters,
+    observability: &awaken_observability::ObservabilityConfig,
+) -> awaken_process_startup::PreparedProcess {
+    let execution = if awaken_cli::scenario_requires_local_placement() {
+        awaken_process_startup::ScenarioExecution::Local(Box::new(
+            awaken_cli::LocalExecution::default(),
+        ))
+    } else {
+        awaken_process_startup::ScenarioExecution::Worker(Box::new(
+            awaken_cli::scenario_worker_preparation,
+        ))
+    };
+    awaken_process_startup::prepare_all_in_one_process_with_scenario_model(
+        model,
+        model_ref,
+        adapters,
+        execution,
+        observability,
+    )
+    .await
+}
+
+/// The env-selected AllInOne with the production model supply: publications
+/// resolve from the authored catalog. It stays on this process's own claim
+/// pool: Awaken Cloud brokered inference does not reach the co-located
+/// registered Worker yet (`PreparedLocalWorker` installs only the credential
+/// materializer), so the brokered provider e2e qualify the Local placement
+/// (w5-slices.md §13).
+async fn provider_scenario_process(
+    observability: &awaken_observability::ObservabilityConfig,
+) -> awaken_process_startup::PreparedProcess {
+    awaken_process_startup::prepare_all_in_one_process_with_execution(
+        Box::new(awaken_cli::LocalExecution::default()),
+        observability,
+    )
+    .await
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_process_startup::block_on_service(async_main)
 }
@@ -247,11 +293,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 std::sync::Arc::new(awaken_scenario_host::McpToolModel),
                 "management",
             );
-            let prepared = awaken_process_startup::prepare_all_in_one_process_with_scenario_model(
+            let prepared = management_scenario_process(
                 model,
                 model_ref,
                 management_scenario_adapters(mode == "management-rate-limit"),
-                Box::new(awaken_cli::LocalExecution::default()),
                 &observability,
             )
             .await;
@@ -259,11 +304,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             prepared.public_router
         }
         Ok("management-agents") => {
-            let prepared = awaken_process_startup::prepare_all_in_one_process_with_scenario_model(
+            let prepared = management_scenario_process(
                 std::sync::Arc::new(awaken_scenario_host::RegistryDelegatingModel),
                 "management-agents".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
-                Box::new(awaken_cli::LocalExecution::default()),
                 &observability,
             )
             .await;
@@ -274,11 +318,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // publish explicit Agent policy while a deterministic probe model drives
         // the tool call. This reuses AllInOne; it owns no parallel Host/store.
         Ok("management-probe") => {
-            let prepared = awaken_process_startup::prepare_all_in_one_process_with_scenario_model(
+            let prepared = management_scenario_process(
                 std::sync::Arc::new(awaken_scenario_host::ProbeModel),
                 "management-probe".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
-                Box::new(awaken_cli::LocalExecution::default()),
                 &observability,
             )
             .await;
@@ -297,11 +340,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.
         Ok("management-providers") => {
-            let prepared = awaken_process_startup::prepare_all_in_one_process_with_execution(
-                Box::new(awaken_cli::LocalExecution::default()),
-                &observability,
-            )
-            .await;
+            let prepared = provider_scenario_process(&observability).await;
             scenario_lifecycle = Some(prepared.service_lifecycle);
             prepared.public_router
         }
@@ -310,11 +349,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // resource PEP) with only its deterministic fallback model replaced. Used
         // by the Skill pin/restart e2e; resource repositories remain auth-agnostic.
         Ok("management-skills") => {
-            let prepared = awaken_process_startup::prepare_all_in_one_process_with_scenario_model(
+            let prepared = management_scenario_process(
                 std::sync::Arc::new(awaken_scenario_host::SkillDrivingModel),
                 "management-skills".to_string(),
                 awaken_process_startup::ManagedServiceAdapters::default(),
-                Box::new(awaken_cli::LocalExecution::default()),
                 &observability,
             )
             .await;

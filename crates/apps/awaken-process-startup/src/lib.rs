@@ -299,6 +299,27 @@ pub async fn prepare_coordinator_process_with_services(
     .await
 }
 
+/// Prepares the launcher's co-located Worker from the Worker-side inference
+/// of a test-support process's one host executor.
+#[cfg(any(test, feature = "test-support"))]
+pub type ColocatedWorkerFactory = Box<
+    dyn FnOnce(
+            Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
+        ) -> Arc<dyn ColocatedWorkerPreparation>
+        + Send,
+>;
+
+/// Where a test-support AllInOne scenario startup runs its Sessions.
+#[cfg(any(test, feature = "test-support"))]
+pub enum ScenarioExecution {
+    /// The launcher's co-located registered Worker.
+    Worker(ColocatedWorkerFactory),
+    /// This process's own claim pool, kept for scenario processes whose
+    /// environment configures their model through ambient provider keys,
+    /// which the shipped Worker refuses (w5-slices.md §11).
+    Local(Box<dyn ColocatedExecution>),
+}
+
 /// Build the real env-selected management surface with one explicit in-process
 /// scenario executor. This is a dev/e2e startup, not a provider fallback:
 /// its exact host candidate is published by a dedicated resolver and no
@@ -308,21 +329,35 @@ pub async fn prepare_all_in_one_process_with_scenario_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: String,
     managed_services: ManagedServiceAdapters,
-    execution: Box<dyn ColocatedExecution>,
+    execution: ScenarioExecution,
     observability: &awaken_observability::ObservabilityConfig,
 ) -> PreparedProcess {
-    prepare_all_in_one_process_with_model_supply(
-        PublicationModelSupply::Host {
-            executor: model,
-            binding: awaken_runtime_contract::resolved::ModelBinding::new(
-                "default", model_ref, "default",
-            ),
-        },
-        managed_services,
-        execution,
-        observability,
-    )
-    .await
+    let supply = PublicationModelSupply::Host {
+        executor: model,
+        binding: awaken_runtime_contract::resolved::ModelBinding::new(
+            "default", model_ref, "default",
+        ),
+    };
+    match execution {
+        ScenarioExecution::Worker(worker) => {
+            prepare_all_in_one_process_with_model_supply_on_worker(
+                supply,
+                managed_services,
+                worker,
+                observability,
+            )
+            .await
+        }
+        ScenarioExecution::Local(execution) => {
+            prepare_all_in_one_process_with_model_supply(
+                supply,
+                managed_services,
+                execution,
+                observability,
+            )
+            .await
+        }
+    }
 }
 
 async fn prepare_all_in_one_process_with_model_supply(
@@ -353,6 +388,83 @@ async fn prepare_all_in_one_process_with_model_supply(
     )
     .await
     .unwrap_or_else(|error| panic!("prepare all-in-one process: {error}"))
+}
+
+/// The env-selected AllInOne the scenario host serves, in the order the
+/// `awaken` launcher starts it: the co-located Worker is prepared from the
+/// resolved deployment (disabling the Coordinator's own claim pool), the
+/// process is assembled, and the Worker is supervised on the process lifecycle
+/// against the loopback private surface it registers through.
+#[cfg(any(test, feature = "test-support"))]
+async fn prepare_all_in_one_process_with_model_supply_on_worker(
+    model_supply: PublicationModelSupply,
+    managed_services: ManagedServiceAdapters,
+    worker: impl FnOnce(
+        Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
+    ) -> Arc<dyn ColocatedWorkerPreparation>,
+    observability: &awaken_observability::ObservabilityConfig,
+) -> PreparedProcess {
+    let clock = deployment_process::process_clock_for(None);
+    let mut deployment =
+        config::ResolvedDeployment::load(config::ConfigOverrides::default(), clock.clone())
+            .unwrap_or_else(|error| panic!("deployment configuration: {error}"));
+    // This caller already selected and initialized its exporter. Scenario roots
+    // can override the file input; a second config load cannot replace that fact.
+    deployment.observability = observability.clone();
+    let key = deployment
+        .seal_key
+        .load_or_create()
+        .unwrap_or_else(|error| panic!("control seal key: {error}"));
+    let workspace = installation_binding::verify_deployment_installations(&deployment)
+        .await
+        .and_then(|installations| installations.platform_workspace_before_write())
+        .unwrap_or_else(|error| panic!("deployment installations: {error}"));
+    let preparation = worker(colocated_test_process::host_inference(&model_supply));
+    let colocated = service::prepare_test_colocated_worker(
+        &mut deployment,
+        preparation,
+        &key,
+        workspace,
+        clock,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("prepare the co-located Worker: {error}"));
+    let mut prepared = prepare_runtime_process_with_coordinator_services(
+        &deployment,
+        Some(&key),
+        config::Role::AllInOne,
+        model_supply,
+        managed_services,
+        CoordinatorServiceAdapters::default(),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("prepare all-in-one process: {error}"));
+    if let Some(worker) = colocated {
+        let address = deployment.internal_bind.as_deref().unwrap_or("127.0.0.1:0");
+        let listener = tokio::net::TcpListener::bind(address)
+            .await
+            .unwrap_or_else(|error| panic!("bind the private Worker surface {address}: {error}"));
+        let upstream = format!(
+            "http://{}",
+            listener
+                .local_addr()
+                .unwrap_or_else(|error| panic!("private Worker surface address: {error}"))
+        );
+        let private = std::mem::replace(&mut prepared.private_router, Router::new());
+        service::spawn_colocated_worker(
+            &prepared.service_lifecycle,
+            listener,
+            private,
+            worker,
+            upstream,
+            deployment.clone(),
+            prepared.admin_tools.clone(),
+            prepared.clock.clone(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("start the co-located Worker: {error}"));
+    }
+    prepared
 }
 
 /// [`build_all_in_one_router_with_model`] plus explicit test-only process inputs.

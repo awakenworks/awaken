@@ -821,6 +821,27 @@ where
     }
 }
 
+/// Test-support: prepare the launcher's co-located Worker exactly as an
+/// AllInOne service start does, disabling the Coordinator's own claim pool.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) async fn prepare_test_colocated_worker(
+    deployment: &mut ResolvedDeployment,
+    preparation: Arc<dyn crate::ColocatedWorkerPreparation>,
+    key: &[u8; 32],
+    workspace: Option<String>,
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Result<Option<Arc<dyn crate::ColocatedWorker>>, String> {
+    prepare_configured_local_worker(
+        deployment,
+        ServiceRole::AllInOne,
+        &EmbeddedWorker::Colocated(preparation),
+        Some(key),
+        workspace,
+        clock,
+    )
+    .await
+}
+
 /// Test-support: serve `private_app` on `listener` and supervise the
 /// co-located Worker against it as one lifecycle task, with the same drain
 /// order as the AllInOne service: the Worker stops and deregisters before the

@@ -39,6 +39,15 @@ pub async fn build_all_in_one_service_with_host_customizer(
     .await
 }
 
+/// Whether this scenario process configures its model through ambient
+/// provider-key variables. The shipped Worker refuses them, so such a process
+/// keeps its Sessions on its own claim pool until its e2e author provider
+/// connections through the config-plane API (w5-slices.md §11). Every other
+/// scenario process runs the shipped co-located registered Worker.
+pub fn scenario_requires_local_placement() -> bool {
+    awaken_deployment_config::reject_ambient_api_key_environment().is_err()
+}
+
 /// The co-located registered Worker of a volatile test process: it reads the
 /// process's own credential stores and, when the process publishes one
 /// deterministic host executor, materializes exactly that executor.
@@ -71,6 +80,15 @@ pub async fn start_test_all_in_one(
     awaken_process_startup::start_all_in_one_with_worker(stores, model, colocated_test_worker)
         .await
         .expect("start the AllInOne test process with its co-located Worker")
+}
+
+/// The launcher's own co-located Worker preparation, with the Worker-side
+/// inference a deterministic scenario process publishes.
+#[cfg(feature = "test-support")]
+pub fn scenario_worker_preparation(
+    inference: Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
+) -> Arc<dyn awaken_process_startup::ColocatedWorkerPreparation> {
+    Arc::new(crate::LocalWorkerPreparation { inference })
 }
 
 #[cfg(test)]
