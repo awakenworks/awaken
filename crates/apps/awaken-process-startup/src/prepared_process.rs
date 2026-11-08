@@ -36,7 +36,8 @@ pub struct PreparedProcess {
     /// Exact selected Worker authentication port shared by hosted private routes.
     pub worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
-    pub admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
+    /// What this process lends its co-located Worker (AllInOne only).
+    pub colocated_worker: crate::ColocatedWorkerInputs,
     /// The process's one wall clock, shared with an embedded Worker.
     pub clock: Arc<dyn awaken_time::WallClock>,
 }
@@ -50,7 +51,7 @@ pub(super) struct ProcessRouters {
         Option<Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>>,
     pub(super) worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
-    pub(super) admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
+    pub(super) colocated_worker: crate::ColocatedWorkerInputs,
 }
 
 impl ProcessRouters {
@@ -79,7 +80,10 @@ impl ProcessRouters {
             service_lifecycle,
             event_batch_cutover_validation,
             worker_authenticator: None,
-            admin_tools,
+            colocated_worker: crate::ColocatedWorkerInputs {
+                admin_tools,
+                ..Default::default()
+            },
         }
     }
 

@@ -116,7 +116,7 @@ pub struct PreparedLocalAcp {
 pub struct PreparedLocalWorker {
     resolver: Option<Arc<AcpLocalCredentialResolver>>,
     stores: awaken_control::InferenceMaterializationStores,
-    admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
+    process: awaken_process_startup::ColocatedWorkerInputs,
     inference_override: Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
 }
 
@@ -144,7 +144,7 @@ pub(crate) async fn prepare_local_worker_with_workspace(
         Some(prepared) => PreparedLocalWorker {
             resolver: Some(prepared.resolver),
             stores: prepared.stores,
-            admin_tools: Vec::new(),
+            process: Default::default(),
             inference_override: None,
         },
         None => PreparedLocalWorker {
@@ -154,7 +154,7 @@ pub(crate) async fn prepare_local_worker_with_workspace(
                 seal_key,
             )
             .await,
-            admin_tools: Vec::new(),
+            process: Default::default(),
             inference_override: None,
         },
     };
@@ -246,12 +246,51 @@ fn configured_worker_upstream(
     )
 }
 
+/// The Native inference of an AllInOne process's execution: the
+/// pinned-credential materializer over its Vault, with the process's Awaken
+/// Cloud brokered access when Cloud models are enabled. The registered Worker
+/// and the local claim pool compose it here, so both realize the same
+/// candidates.
+pub(crate) fn credential_inference(
+    credentials: &awaken_credential_materializer::PinnedCredentialMaterializer,
+    cloud_models_enabled: bool,
+    brokered: Option<
+        &Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>,
+    >,
+) -> awaken_credential_materializer::CredentialInferenceMaterializer {
+    let materializer =
+        awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
+            credentials.clone(),
+        )
+        .with_brokered_mode(cloud_models_enabled);
+    match brokered {
+        Some(client) => materializer.with_brokered_client(client.clone()),
+        None => materializer,
+    }
+}
+
+/// The co-located Worker's inference port: a product-supplied materializer
+/// wins; otherwise [`credential_inference`] over what the process lends.
+fn worker_inference(
+    credentials: &awaken_credential_materializer::PinnedCredentialMaterializer,
+    process: &awaken_process_startup::ColocatedWorkerInputs,
+    inference_override: Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
+) -> Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer> {
+    inference_override.unwrap_or_else(|| {
+        Arc::new(credential_inference(
+            credentials,
+            process.cloud_models_enabled,
+            process.brokered_inference.as_ref(),
+        ))
+    })
+}
+
 fn configured_worker_builder(
     upstream: impl Into<String>,
     deployment: &awaken_process_startup::config::ResolvedDeployment,
     credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
     clock: Arc<dyn awaken_time::WallClock>,
-    inference_override: Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
+    inference: Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>,
 ) -> Result<awaken_worker::WorkerNodeBuilder, String> {
     let worker = &deployment.worker;
     let upstream = configured_worker_upstream(upstream, deployment, clock.clone())?;
@@ -274,13 +313,7 @@ fn configured_worker_builder(
             deployment.observability.trace_file.is_some(),
         )
         .with_standard_manifest_config(manifest)
-        .with_inference_materializer(inference_override.unwrap_or_else(|| {
-            Arc::new(
-                awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
-                    credentials.clone(),
-                ),
-            )
-        }))
+        .with_inference_materializer(inference)
         .with_remote_attempt_executor(crate::a2a_attempt_executor(Some(credentials.clone())))
         .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
         .with_credential_materializer(credentials)
@@ -368,7 +401,8 @@ impl PreparedLocalAcp {
             )),
             clock.clone(),
         );
-        configured_worker_builder(upstream, deployment, credentials, clock, None)?
+        let inference = worker_inference(&credentials, &Default::default(), None);
+        configured_worker_builder(upstream, deployment, credentials, clock, inference)?
             .with_worker_local_credential_resolver(resolver.clone())
             .with_acp_capability_observation_source(resolver)
             .without_admin_surface()
@@ -398,16 +432,18 @@ impl PreparedLocalWorker {
         Self {
             resolver: None,
             stores,
-            admin_tools: Vec::new(),
+            process: Default::default(),
             inference_override: None,
         }
     }
 
-    pub fn with_admin_tools(
+    /// What the AllInOne process lends this incarnation: its admin tools and
+    /// its Awaken Cloud brokered access.
+    pub fn with_process_inputs(
         mut self,
-        tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
+        process: awaken_process_startup::ColocatedWorkerInputs,
     ) -> Self {
-        self.admin_tools = tools;
+        self.process = process;
         self
     }
 
@@ -434,16 +470,13 @@ impl PreparedLocalWorker {
             self.stores.secrets.clone(),
             clock.clone(),
         ));
-        let mut builder = configured_worker_builder(
-            upstream,
-            deployment,
-            credentials,
-            clock,
-            self.inference_override.clone(),
-        )?
-        .with_credential_refresh_factory(refresh)
-        .with_admin_tools(self.admin_tools.clone())
-        .without_admin_surface();
+        let inference =
+            worker_inference(&credentials, &self.process, self.inference_override.clone());
+        let mut builder =
+            configured_worker_builder(upstream, deployment, credentials, clock, inference)?
+                .with_credential_refresh_factory(refresh)
+                .with_admin_tools(self.process.admin_tools.clone())
+                .without_admin_surface();
         if let Some(resolver) = &self.resolver {
             builder = builder
                 .with_worker_local_credential_resolver(resolver.clone())
@@ -1069,7 +1102,7 @@ mod tests {
                     credentials: Arc::new(InMemoryCredentialRepo::new()),
                     secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
                 },
-                admin_tools: Vec::new(),
+                process: Default::default(),
                 inference_override: None,
             };
             let prepared = if supplied_inference {
@@ -1116,6 +1149,233 @@ mod tests {
                 supplied_inference,
                 "W2 product-selected inference reaches the actual registered Worker, not a discarded Coordinator context"
             );
+        }
+    }
+
+    /// The process's Awaken Cloud client as the Worker sees it: it records
+    /// every grant request and refuses it, so no Gateway I/O happens.
+    #[derive(Default)]
+    struct RefusingCloudGrants(Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient
+        for RefusingCloudGrants
+    {
+        async fn create_grant(
+            &self,
+            request: awaken_inference_endpoint::brokered_inference::BrokeredInferenceRequest,
+        ) -> Result<
+            awaken_inference_endpoint::brokered_inference::BrokeredInferenceLease,
+            awaken_inference_endpoint::brokered_inference::BrokeredInferenceError,
+        > {
+            self.0.lock().unwrap().push(request.original_model_id);
+            Err(awaken_inference_endpoint::brokered_inference::BrokeredInferenceError::AuthenticationRequired)
+        }
+
+        async fn renew_grant(
+            &self,
+            _: &str,
+        ) -> Result<
+            awaken_inference_endpoint::brokered_inference::BrokeredInferenceLease,
+            awaken_inference_endpoint::brokered_inference::BrokeredInferenceError,
+        > {
+            panic!("a refused grant is never renewed")
+        }
+
+        async fn close_grant(
+            &self,
+            _: &str,
+        ) -> Result<(), awaken_inference_endpoint::brokered_inference::BrokeredInferenceError>
+        {
+            panic!("a refused grant is never closed")
+        }
+    }
+
+    struct CurrentAttempt;
+
+    #[async_trait]
+    impl awaken_runtime_contract::AttemptOwnershipVerifier for CurrentAttempt {
+        async fn verify_current(
+            &self,
+        ) -> Result<(), awaken_runtime_contract::AttemptOwnershipError> {
+            Ok(())
+        }
+    }
+
+    /// Infer once through the Worker's inference port for a Run whose pinned
+    /// publication candidate is brokered, as a claimed attempt does.
+    async fn infer_brokered_on_worker(
+        inference: &dyn awaken_inference_endpoint::InferenceExecutorMaterializer,
+    ) -> awaken_runtime_contract::llm::Error {
+        use awaken_runtime_contract::model_operation::{
+            ModelOperation, ModelOperationContext, with_model_operation_context,
+        };
+        let binding = awaken_runtime_contract::ModelBinding::parse("openai", "gpt-5-e2e", "genai")
+            .expect("a valid native binding");
+        let candidate =
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider(
+                binding.clone(),
+                "openai@1",
+                "awaken-cloud:openai:open_ai_responses@1",
+                "workspace-a",
+                awaken_runtime_contract::InferenceEndpoint {
+                    adapter_kind: "openai".into(),
+                    api_dialect: "open_ai_responses".into(),
+                    base_url: "https://gateway.invalid".into(),
+                    upstream_model: "gpt-5-e2e".into(),
+                    processing_placement: None,
+                },
+            )
+            .expect("coherent brokered candidate");
+        let activation = awaken_runtime_contract::activation::RunActivation::new(
+            awaken_agent_contract::agent::run::Id("run-brokered".into()),
+            awaken_agent_contract::agent::thread::Id("thread-brokered".into()),
+            awaken_runtime_contract::ExecutableAgentSnapshot::builder("brokered-agent")
+                .resolved_model(candidate)
+                .build(),
+            Vec::new(),
+        );
+        let executor = inference
+            .materialize(
+                &activation,
+                &awaken_runtime_contract::RuntimeRunContext::new()
+                    .with_ownership(Arc::new(CurrentAttempt)),
+            )
+            .expect("a credential-free brokered candidate is admitted to materialization")
+            .expect("the Native port realizes a Native publication candidate");
+        let operation = ModelOperationContext::from_operation(
+            &awaken_agent_contract::agent::thread::Id("thread-brokered".into()),
+            &awaken_agent_contract::agent::run::Id("run-brokered".into()),
+            &ModelOperation::next(None, binding.clone()).unwrap(),
+        );
+        with_model_operation_context(
+            Some(operation),
+            executor.infer(awaken_runtime_contract::llm::ChatRequest {
+                model_binding: binding,
+                inference: Default::default(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+            }),
+        )
+        .await
+        .expect_err("the refusing Cloud fixture never grants")
+    }
+
+    #[tokio::test]
+    async fn registered_worker_realizes_brokered_candidates_through_the_process_cloud_identity() {
+        // Causes: C1 the process enables Cloud models; C2 it lends its
+        // authenticated brokered client; C3 the composing product supplied its
+        // own inference port. Effects: E1 the Worker advertises the brokered
+        // grant scheme; E2 a brokered candidate reaches the lent client (one
+        // grant request; the refusal surfaces as the Cloud login error, not a
+        // binding rejection); E3 refused before any grant as
+        // cloud_models_disabled; E4 refused before any grant as
+        // cloud_sign_in_required; E5 the product port is the Worker's port.
+        // | Rule | C1 | C2 | C3 | Effect |
+        // | R1   | Y  | Y  | N  | E1+E2  |
+        // | R2   | N  | N  | N  | E3, no E1 |
+        // | R3   | Y  | N  | N  | E4, no E1 |
+        // | R4   | Y  | Y  | Y  | E5, no E1 |
+        use awaken_inference_endpoint::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY;
+        use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, NoDispatchProof};
+        let not_dispatched =
+            ModelExecutionEvidence::NotDispatched(NoDispatchProof::executor_resolution());
+        for (rule, cloud_models_enabled, lends_client, product_port) in [
+            ("R1", true, true, false),
+            ("R2", false, false, false),
+            ("R3", true, false, false),
+            ("R4", true, true, true),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut deployment = awaken_process_startup::config::local_test_deployment_at(
+                directory.path().into(),
+                awaken_time::system_clock(),
+            );
+            deployment.runtime.disable_local_pool = true;
+            deployment.run_local_pool = false;
+            let cloud = Arc::new(RefusingCloudGrants::default());
+            let process = awaken_process_startup::ColocatedWorkerInputs {
+                admin_tools: Vec::new(),
+                cloud_models_enabled,
+                brokered_inference: lends_client.then(|| {
+                    cloud.clone()
+                        as Arc<
+                            dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient,
+                        >
+                }),
+            };
+            let stores = awaken_control::InferenceMaterializationStores {
+                credentials: Arc::new(InMemoryCredentialRepo::new()),
+                secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+            };
+            let mut prepared = PreparedLocalWorker {
+                resolver: None,
+                stores: stores.clone(),
+                process: Default::default(),
+                inference_override: None,
+            };
+            if product_port {
+                prepared = prepared.with_inference_materializer(Arc::new(CompositionInference));
+            }
+            let worker = prepared
+                .clone()
+                .with_process_inputs(process.clone())
+                .build_worker(
+                    "http://127.0.0.1:1",
+                    &deployment,
+                    awaken_time::system_clock(),
+                )
+                .await
+                .expect("the registered WorkerNode builds");
+            let advertised = &worker.manifest().capabilities;
+            assert_eq!(
+                advertised.contains(BROKERED_INFERENCE_ACCESS_CAPABILITY),
+                rule == "R1",
+                "{rule}/E1"
+            );
+            assert_eq!(
+                advertised.contains("composition-probe"),
+                product_port,
+                "{rule}/E5"
+            );
+            if product_port {
+                continue;
+            }
+            // The same port the Worker build installs, over the same Vault.
+            let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
+                Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                    stores.credentials,
+                    stores.secrets,
+                    awaken_time::system_clock(),
+                )),
+                awaken_time::system_clock(),
+            );
+            let inference = worker_inference(&credentials, &process, None);
+            let error = infer_brokered_on_worker(inference.as_ref()).await;
+            let grants = cloud.0.lock().unwrap().clone();
+            match rule {
+                "R1" => {
+                    assert_eq!(grants, vec!["gpt-5-e2e".to_owned()], "R1/E2");
+                    assert!(
+                        matches!(
+                            error.classification(),
+                            awaken_runtime_contract::llm::Error::LoginRequired(_)
+                        ),
+                        "R1/E2: {error}"
+                    );
+                }
+                "R2" | "R3" => {
+                    let expected = if rule == "R2" {
+                        "cloud_models_disabled"
+                    } else {
+                        "cloud_sign_in_required"
+                    };
+                    assert!(grants.is_empty(), "{rule}: no grant request");
+                    assert!(error.to_string().contains(expected), "{rule}: {error}");
+                    assert_eq!(error.execution_evidence(), not_dispatched, "{rule}");
+                }
+                _ => unreachable!(),
+            }
         }
     }
 

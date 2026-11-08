@@ -27,17 +27,11 @@ pub(super) fn runtime_model_wiring(
             model_ref: awaken_dispatch_execution::session_dispatch::UNCONFIGURED_MODEL_REF
                 .to_string(),
             materializer: credential_materializer.map(|credential_materializer| {
-                Arc::new({
-                    let materializer =
-                    awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
-                        credential_materializer.clone(),
-                    )
-                    .with_brokered_mode(cloud_models_enabled);
-                    match brokered_client {
-                        Some(client) => materializer.with_brokered_client(client.clone()),
-                        None => materializer,
-                    }
-                })
+                Arc::new(crate::acp_local_credentials::credential_inference(
+                    credential_materializer,
+                    cloud_models_enabled,
+                    brokered_client,
+                ))
                     as Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>
             }),
         },

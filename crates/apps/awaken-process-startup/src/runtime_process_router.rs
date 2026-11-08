@@ -111,7 +111,8 @@ pub(super) async fn prepare_runtime_routers(
         &mut base, &resources, &mut cloud, &control, &execution, session,
     )
     .await?;
-    Ok(finish_process_routers(
+    let cloud_models_enabled = base.process.model_supply.cloud_models_enabled;
+    let mut routers = finish_process_routers(
         base,
         &resources,
         &execution,
@@ -119,7 +120,14 @@ pub(super) async fn prepare_runtime_routers(
         coordinator,
         event_batch_cutover_validation,
     )
-    .await)
+    .await;
+    // The co-located Worker realizes brokered candidates through this
+    // process's own Cloud identity; the handle stays in process.
+    routers.colocated_worker.cloud_models_enabled = cloud_models_enabled;
+    routers.colocated_worker.brokered_inference = cloud.brokered_client.take().map(|client| {
+        client as Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>
+    });
+    Ok(routers)
 }
 
 /// Process-scope facts every assembly stage reads: the opened stores, the

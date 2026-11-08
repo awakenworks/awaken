@@ -166,7 +166,7 @@ async fn start_over(
         public_router,
         private_router,
         service_lifecycle,
-        admin_tools,
+        colocated_worker,
         ..
     } = routers;
     crate::service::spawn_colocated_worker(
@@ -176,7 +176,7 @@ async fn start_over(
         worker,
         upstream,
         deployment,
-        admin_tools,
+        colocated_worker,
         clock,
     )
     .await?;

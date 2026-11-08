@@ -43,7 +43,6 @@ use awaken_process_startup::console::ServiceArgs;
 use awaken_process_startup::{
     ColocatedWorker, ColocatedWorkerPreparation, CoordinatorServiceAdapters, ManagedServiceAdapters,
 };
-use awaken_tool_contract::tool::RawTool;
 use awaken_worker_contract::WorkerShutdown;
 
 /// Run the canonical AllInOne service with its co-located Worker.
@@ -105,11 +104,11 @@ impl ColocatedWorker for PreparedLocalWorker {
         &self,
         upstream: String,
         deployment: &ResolvedDeployment,
-        admin_tools: &[Arc<dyn RawTool>],
+        inputs: &awaken_process_startup::ColocatedWorkerInputs,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<(), String> {
         self.clone()
-            .with_admin_tools(admin_tools.to_vec())
+            .with_process_inputs(inputs.clone())
             .build_worker(upstream, deployment, clock)
             .await
             .map(|_| ())
@@ -119,13 +118,13 @@ impl ColocatedWorker for PreparedLocalWorker {
         &self,
         upstream: String,
         deployment: &ResolvedDeployment,
-        admin_tools: &[Arc<dyn RawTool>],
+        inputs: &awaken_process_startup::ColocatedWorkerInputs,
         clock: Arc<dyn awaken_time::WallClock>,
         mut shutdown: tokio::sync::watch::Receiver<Option<WorkerShutdown>>,
     ) -> Result<Result<(), String>, String> {
         let worker = self
             .clone()
-            .with_admin_tools(admin_tools.to_vec())
+            .with_process_inputs(inputs.clone())
             .build_worker(upstream, deployment, clock)
             .await?;
         let result = worker
