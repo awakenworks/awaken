@@ -295,7 +295,16 @@ async function main(): Promise<void> {
       assert.equal(finalRoot.created, lastRoot.created, `${rule}: creation observation retained`);
       assert.equal(finalActive.length, count, `${rule}: active cardinality`);
       assert.ok(finalActive.every((a: any) => a.ack), `${rule}: recovery ACK is durable`);
-      if (count > 0) await sendManagedMessage(client, candidate.id, 'add 2 5', BETAS);
+      if (count > 0) {
+        const runEvents = await sendManagedMessage(client, candidate.id, 'add 2 5', BETAS);
+        const results = runEvents.filter(event => event.type === 'agent.mcp_tool_result');
+        assert.equal(results.length, 1, `${rule}: one committed MCP result`);
+        assert.deepEqual(results[0].content, [{ type: 'text', text: '7' }], `${rule}: recovered tool result`);
+        for (const [index, fixture] of newFixtures.entries()) {
+          const calls = fixture.calls.filter((call: { method: string }) => call.method === 'tools/call');
+          assert.equal(calls.length, index === 0 ? 1 : 0, `${rule}: exact endpoint ${index} tool call count`);
+        }
+      }
       chainTraces.push({ rule, cut: boundary, count, trace: events });
       fs.rmSync(configPath);
       pass(`exact MCP crash/recovery ${rule}`);
