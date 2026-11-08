@@ -1,6 +1,11 @@
 {
   "$comment": "Ceiling of the Python lines in scripts/ci/*.py, held by scripts/ci/check_python_ceiling.py. Lower it with --tighten; raising it needs --write-baseline --reason, kept in growth_reasons.",
   "python lines": {
-    "scripts/ci": 76047
+    "scripts/ci": 76051
+  },
+  "growth_reasons": {
+    "python lines": {
+      "scripts/ci": "{\"reason\":\"the ceiling was measured before main c6e7488cfe landed; that commit (+4 lines) updated the NON_PRODUCT_APIS data in _service_data_ownership_fitness.py for renamed test-support routers, with no logic change\",\"approved_by\":\"integrator at rebase onto c6e7488cfe; the change itself was already on main\",\"date\":\"2026-11-08\",\"remove_when\":\"the next --tighten lowers the ceiling below 76047\"}"
+    }
   }
 }
