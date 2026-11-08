@@ -92,7 +92,7 @@ impl Default for CompletionRegistry {
 
 struct ForegroundRegistration {
     id: u64,
-    settled: tokio::sync::oneshot::Sender<RunState>,
+    settled: Option<tokio::sync::oneshot::Sender<RunState>>,
     stream_sink: Option<Arc<dyn StreamSink>>,
 }
 
@@ -110,9 +110,10 @@ impl CompletionRegistry {
 
     /// Register interest in `run_id` BEFORE it is enqueued, so the pool cannot
     /// settle it before this caller is listening (no lost wakeup). Returns the
-    /// receiver plus a [`WaiterGuard`] that removes the waiter if the caller's
-    /// future is dropped before the run settles (e.g. a client disconnect), so an
-    /// unwaited entry never lingers in the map.
+    /// receiver plus a [`WaiterGuard`] that owns the registration and live
+    /// route until the caller's committed-truth observation finishes or is
+    /// dropped. A Run-id notification may belong to an earlier step, so it
+    /// wakes the caller once but cannot end this registration itself.
     ///
     /// A poisoned registry refuses the observation before anything is
     /// enqueued, so no foreground caller waits on a waiter nobody can settle.
@@ -133,7 +134,7 @@ impl CompletionRegistry {
             .or_default()
             .push(ForegroundRegistration {
                 id: registration_id,
-                settled: tx,
+                settled: Some(tx),
                 stream_sink,
             });
         tracing::trace!(
@@ -194,8 +195,9 @@ fn completion_registry_poisoned(consequence: &'static str) {
 
 /// Removes a completion waiter on drop, so a foreground submit whose future is
 /// dropped (client disconnect) or which timed out never leaves a stale sender in
-/// the registry. On normal completion the sender is already gone (consumed by
-/// [`CompletionSink::settled`]), so the removal is a harmless no-op.
+/// the registry. [`CompletionSink::settled`] consumes only the one-shot sender;
+/// the registration and live route remain owned by this guard while committed
+/// truth still keeps the observer pending.
 pub struct WaiterGuard {
     registry: std::sync::Weak<CompletionRegistry>,
     run_id: String,
@@ -234,7 +236,7 @@ impl CompletionSink for CompletionRegistry {
             completion_registry_poisoned("settlement not notified");
             return;
         };
-        if let Some(registrations) = waiters.remove(&run_id.0) {
+        if let Some(registrations) = waiters.get_mut(&run_id.0) {
             tracing::trace!(
                 run_id = %run_id.0,
                 observers = registrations.len(),
@@ -242,8 +244,11 @@ impl CompletionSink for CompletionRegistry {
                 "settled durable foreground observation"
             );
             for registration in registrations {
-                // A receiver may have already gone — a dropped send is fine.
-                let _ = registration.settled.send(state.clone());
+                // A delayed settlement can wake a resumed step with the same
+                // Run id. Only its guard ends that observer's live route.
+                if let Some(settled) = registration.settled.take() {
+                    let _ = settled.send(state.clone());
+                }
             }
         }
     }
@@ -287,18 +292,22 @@ where
     ReadFuture: std::future::Future<Output = Result<Option<RunState>, E>>,
 {
     let mut settled = std::pin::pin!(settled);
-    // The local event is the fast path. A peer Coordinator can commit the same
-    // shared PostgreSQL Run without owning this process's oneshot sender, so
-    // committed-truth reconciliation is also required. One foreground waiter
-    // performs one narrow read per interval; it never claims, settles, times out,
-    // or creates a second completion authority.
+    let mut signal_pending = true;
+    // The signal only wakes an observation of committed truth. The Run id is
+    // stable across steps: a peer can observe Awaiting and stage its reply
+    // before the answered step's dispatch sends its delayed local signal.
+    // After that wakeup is consumed, the same committed read continues to
+    // reconcile; no second observer or completion authority is installed.
     loop {
         tokio::select! {
-            result = &mut settled => {
-                if let Ok(state) = result {
+            result = &mut settled, if signal_pending => {
+                if let Some(state) = read_settled().await? {
                     return Ok(state);
                 }
-                return read_settled().await?.ok_or_else(|| CompletionSignalClosed.into());
+                if result.is_err() {
+                    return Err(CompletionSignalClosed.into());
+                }
+                signal_pending = false;
             }
             _ = tokio::time::sleep(reconciliation_interval) => {
                 if let Some(state) = read_settled().await? {

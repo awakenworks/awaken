@@ -7,6 +7,15 @@ use awaken_agent_contract::stream::event::{
 use awaken_runtime_contract::runs::RunError;
 use awaken_store_inmem::MemoryStreamSink;
 
+fn text_event(run_id: &str, delta: &str) -> StreamEvent {
+    StreamEvent {
+        run_id: RunId(run_id.into()),
+        kind: AgentEvent::Delta(Delta::TextDelta {
+            delta: delta.into(),
+        }),
+    }
+}
+
 /// A3: dropping the guard (caller future dropped / timed out) removes the
 /// waiter, so a run that never settles does not leak an entry.
 #[tokio::test]
@@ -35,16 +44,31 @@ async fn dropping_the_guard_removes_the_registration() {
     );
 }
 
-/// The happy path: `settled` delivers the state to the waiter and clears the
-/// slot, so the later guard drop is a no-op.
+/// C1 a settlement wakes the caller once; C2 its guard still owns the live
+/// observation; C3 canonical completion drops the guard. E1 notification does
+/// not remove C2; E2 C3 removes the slot and live route. Rules C1+C2=>E1,
+/// C1+C2+C3=>E2; a repeated notification consumes no second sender.
 #[tokio::test]
-async fn settled_delivers_the_state_and_clears_the_slot() {
+async fn settled_notifies_once_and_the_guard_clears_the_slot() {
     let registry = Arc::new(CompletionRegistry::default());
-    let (rx, _guard) = registry
+    let (rx, guard) = registry
         .register(&RunId("r".into()), None)
         .expect("healthy registry");
     registry.settled(&RunId("r".into()), &RunState::Awaiting);
     assert!(matches!(rx.await, Ok(RunState::Awaiting)));
+    assert!(
+        registry
+            .waiters
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .get("r")
+            .unwrap()[0]
+            .settled
+            .is_none(),
+        "E1 sender consumed, route retained"
+    );
+    registry.settled(&RunId("r".into()), &RunState::Awaiting);
+    drop(guard);
     assert!(
         registry
             .waiters
@@ -109,7 +133,7 @@ async fn session_user_run_observation_covers_activation_and_peer_recovery() {
         let run_id = RunId(format!("session-user-{rule}"));
         let activation_registry = registry.clone();
         let activation_run = run_id.clone();
-        let expected_peer = peer_state.clone();
+        let expected_truth = peer_state.clone().or_else(|| local_state.clone());
         let state = activate_and_await_session_run::<RunError, _, _, _, _>(
             &registry,
             &run_id,
@@ -132,8 +156,8 @@ async fn session_user_run_observation_covers_activation_and_peer_recovery() {
                 Ok(activation)
             },
             move || {
-                let expected_peer = expected_peer.clone();
-                async move { Ok(expected_peer) }
+                let expected_truth = expected_truth.clone();
+                async move { Ok(expected_truth) }
             },
         )
         .await
@@ -216,7 +240,7 @@ async fn exact_run_replay_observers_do_not_replace_each_other() {
     let registry = Arc::new(CompletionRegistry::default());
     let run_id = RunId("session-user-replay".into());
     let (first, first_guard) = registry.register(&run_id, None).expect("healthy registry");
-    let (second, _second_guard) = registry.register(&run_id, None).expect("healthy registry");
+    let (second, second_guard) = registry.register(&run_id, None).expect("healthy registry");
     assert_eq!(
         registry
             .waiters
@@ -242,6 +266,7 @@ async fn exact_run_replay_observers_do_not_replace_each_other() {
     );
     registry.settled(&run_id, &RunState::Awaiting);
     assert!(matches!(second.await, Ok(RunState::Awaiting)), "M3/E3");
+    drop(second_guard);
     assert!(
         registry
             .waiters
@@ -258,45 +283,151 @@ async fn durable_foreground_registry_routes_only_the_current_runs_live_stream() 
     // C2 an emitted StreamEvent carries the exact vs another Run id; C3 the
     // registration remains active vs settles/drops. Effects: E1 exact active
     // progress reaches that connection; E2 foreign progress is ignored; E3
-    // settlement delivers the authoritative state and removes both waiter and
-    // live route; E4 later progress is ignored. Constraint: StreamEvent remains
+    // settlement notifies; its observer then drops the guard, removing the
+    // waiter and live route; E4 later progress is ignored. Constraint: StreamEvent remains
     // best-effort observation and never changes committed RunState.
     //
     // | Rule | registered | event id | phase | Effects |
     // | R1 | yes | exact | active | E1 |
     // | R2 | yes | foreign | active | E2 |
-    // | R3 | yes | exact | settled | E3+E4 |
+    // | R3 | yes | exact | guard dropped after notification | E3+E4 |
     // | R4 | no/dropped | any | any | E2 |
     let registry = Arc::new(CompletionRegistry::default());
     let downstream = Arc::new(MemoryStreamSink::new());
     let run = RunId("run-live".into());
-    let (settled, _guard) = registry
+    let (settled, guard) = registry
         .register(&run, Some(downstream.clone() as Arc<dyn StreamSink>))
         .expect("healthy registry");
-    let event = |run_id: &str, delta: &str| StreamEvent {
-        run_id: RunId(run_id.into()),
-        kind: AgentEvent::Delta(Delta::TextDelta {
-            delta: delta.into(),
-        }),
-    };
 
     registry
-        .send(event("run-foreign", "ignored"))
+        .send(text_event("run-foreign", "ignored"))
         .await
         .unwrap();
     assert!(downstream.events().is_empty(), "R2");
 
-    registry.send(event("run-live", "forwarded")).await.unwrap();
+    registry
+        .send(text_event("run-live", "forwarded"))
+        .await
+        .unwrap();
     assert_eq!(
         downstream.events(),
-        vec![event("run-live", "forwarded")],
+        vec![text_event("run-live", "forwarded")],
         "R1"
     );
 
     registry.settled(&run, &RunState::Awaiting);
     assert!(matches!(settled.await, Ok(RunState::Awaiting)), "R3 state");
-    registry.send(event("run-live", "too-late")).await.unwrap();
+    drop(guard);
+    registry
+        .send(text_event("run-live", "too-late"))
+        .await
+        .unwrap();
     assert_eq!(downstream.events().len(), 1, "R3/R4 route removed");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_older_step_notification_cannot_end_the_resumed_observers_live_route() {
+    // C1 peer truth concluded an earlier step before its local notification;
+    // C2 the reply registered the same Run and committed truth is not advanced;
+    // C3 that old Awaiting notification arrives; C4 resumed live progress;
+    // C5 the resumed step commits and its observer drops its guard.
+    // E1 C2+C3 keeps the canonical observer pending; E2 C4 reaches the SAME
+    // registration despite its consumed one-shot; E3 foreign Run progress is
+    // ignored; E4 C5 ends the route. R1=C1+C2+C3=>E1,
+    // R2=R1+C4=>E2+E3, R3=R2+C5=>E4. No second live-route map is admitted.
+    use awaken_agent_contract::agent::run::EndCause;
+    let registry = Arc::new(CompletionRegistry::default());
+    let run = RunId("resumed-live".into());
+    let sink = Arc::new(MemoryStreamSink::new());
+    let (receiver, guard) = registry
+        .register(&run, Some(sink.clone() as Arc<dyn StreamSink>))
+        .unwrap();
+    let truth = Arc::new(std::sync::Mutex::new(None));
+    let observed = truth.clone();
+    let future = await_completion_state::<RunError, _, _>(
+        receiver,
+        std::time::Duration::from_millis(2),
+        move || std::future::ready(Ok(observed.lock().unwrap().clone())),
+    );
+    tokio::pin!(future);
+    registry.settled(&run, &RunState::Awaiting);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(5), &mut future)
+            .await
+            .is_err(),
+        "R1 old notification is not completion truth"
+    );
+    registry
+        .send(text_event("resumed-live", "resumed progress"))
+        .await
+        .unwrap();
+    registry
+        .send(text_event("foreign", "ignored"))
+        .await
+        .unwrap();
+    assert_eq!(
+        sink.events(),
+        vec![text_event("resumed-live", "resumed progress")],
+        "R2"
+    );
+    *truth.lock().unwrap() = Some(RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(future.await.unwrap(), RunState::Ended(EndCause::NaturalEnd));
+    drop(guard);
+    registry
+        .send(text_event("resumed-live", "too late"))
+        .await
+        .unwrap();
+    assert_eq!(sink.events().len(), 1, "R3 route ended with its observer");
+    assert!(
+        registry
+            .waiters
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .is_empty(),
+        "R3 no retained registration"
+    );
+}
+
+#[tokio::test]
+async fn a_late_old_guard_preserves_a_new_registration_of_the_same_run() {
+    // G1 an earlier step was notified but its guard drops late; G2 a new
+    // observer of the SAME Run owns a different registration id. E1 dropping
+    // G1 preserves G2's live sink and notification; E2 dropping G2 removes it.
+    // Rules G1+G2=>E1; G1+G2+drop(G2)=>E2. The id scopes removal, never Run id alone.
+    let registry = Arc::new(CompletionRegistry::default());
+    let run = RunId("late-guard".into());
+    let (old, old_guard) = registry.register(&run, None).unwrap();
+    registry.settled(&run, &RunState::Awaiting);
+    assert_eq!(old.await.unwrap(), RunState::Awaiting);
+    let sink = Arc::new(MemoryStreamSink::new());
+    let (new, new_guard) = registry
+        .register(&run, Some(sink.clone() as Arc<dyn StreamSink>))
+        .unwrap();
+    drop(old_guard);
+    registry
+        .send(text_event("late-guard", "new observer"))
+        .await
+        .unwrap();
+    registry.settled(&run, &RunState::Awaiting);
+    assert_eq!(
+        new.await.unwrap(),
+        RunState::Awaiting,
+        "E1 new sender retained"
+    );
+    assert_eq!(
+        sink.events(),
+        vec![text_event("late-guard", "new observer")],
+        "E1"
+    );
+    drop(new_guard);
+    assert!(
+        registry
+            .waiters
+            .lock()
+            .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+            .is_empty(),
+        "E2"
+    );
 }
 
 /// Live observation cause/effect table: C1 a background Run has no
@@ -360,12 +491,16 @@ async fn a_live_run_outlives_foreground_reconciliation_without_a_transport_timeo
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed_reads = reads.clone();
+    let truth = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed_truth = truth.clone();
     let future = await_completion_state::<RunError, _, _>(
         receiver,
         std::time::Duration::from_millis(2),
         move || {
             observed_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            std::future::ready(Ok(None))
+            std::future::ready(Ok(observed_truth
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .then_some(RunState::Awaiting)))
         },
     );
     tokio::pin!(future);
@@ -381,6 +516,7 @@ async fn a_live_run_outlives_foreground_reconciliation_without_a_transport_timeo
         "F1: reconciliation observed live truth repeatedly"
     );
 
+    truth.store(true, std::sync::atomic::Ordering::SeqCst);
     sender
         .send(RunState::Awaiting)
         .expect("waiter remains live");
@@ -391,13 +527,84 @@ async fn a_live_run_outlives_foreground_reconciliation_without_a_transport_timeo
     assert!(matches!(state, RunState::Awaiting), "F2");
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_resumed_observer_concludes_only_from_committed_truth_past_its_answer() {
+    // Resumed-step observation cause/effect table: C1 the local signal carries
+    // the settlement of the step the reply answered while committed truth still
+    // shows that answer (`read_settled -> None`); C2 committed truth later
+    // advances; C3 the signal arrives when committed truth has already advanced;
+    // C4 the signal closes while committed truth still shows the answer.
+    // Effects: E1 the observer stays pending through C1 and returns C2's
+    // committed state, never the signal's; E2 C3 returns that committed state at
+    // the signal; E3 C4 refuses with CompletionSignalClosed.
+    // | Rule | Causes | Effects |
+    // | R1   | C1+C2  | E1      |
+    // | R2   | C3     | E2      |
+    // | R3   | C4     | E3      |
+    use awaken_agent_contract::agent::run::EndCause;
+    let interval = std::time::Duration::from_millis(2);
+    let observer = |truth: Arc<std::sync::Mutex<Option<RunState>>>,
+                    receiver: tokio::sync::oneshot::Receiver<RunState>| {
+        await_completion_state::<CompletionSignalClosed, _, _>(receiver, interval, move || {
+            std::future::ready(Ok(truth
+                .lock()
+                .unwrap_or_else(|poisoned| panic!("{poisoned}"))
+                .clone()))
+        })
+    };
+
+    let truth = Arc::new(std::sync::Mutex::new(None));
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let future = observer(truth.clone(), receiver);
+    tokio::pin!(future);
+    sender
+        .send(RunState::Awaiting)
+        .expect("R1 the observer is registered");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(15), &mut future)
+            .await
+            .is_err(),
+        "R1 the answered step's settlement must not conclude the resumed step"
+    );
+    *truth.lock().unwrap_or_else(|poisoned| panic!("{poisoned}")) =
+        Some(RunState::Ended(EndCause::NaturalEnd));
+    let state = tokio::time::timeout(std::time::Duration::from_millis(100), &mut future)
+        .await
+        .expect("R1 committed truth releases the observer")
+        .expect("R1 settlement succeeds");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd), "R1");
+
+    let truth = Arc::new(std::sync::Mutex::new(Some(RunState::Awaiting)));
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let future = observer(truth, receiver);
+    tokio::pin!(future);
+    sender
+        .send(RunState::Ended(EndCause::NaturalEnd))
+        .expect("R2 the observer is registered");
+    let state = tokio::time::timeout(std::time::Duration::from_millis(1), &mut future)
+        .await
+        .expect("R2 the signal wakes the observer at once")
+        .expect("R2 settlement succeeds");
+    assert_eq!(
+        state,
+        RunState::Awaiting,
+        "R2 committed truth, not the signal"
+    );
+
+    let (sender, receiver) = tokio::sync::oneshot::channel::<RunState>();
+    drop(sender);
+    let refused = observer(Arc::new(std::sync::Mutex::new(None)), receiver).await;
+    assert_eq!(refused, Err(CompletionSignalClosed), "R3");
+}
+
 /// Rows W2 and W4 of [`CompletionRegistry`]: a poisoned registry refuses a
 /// new observation before anything is enqueued, and neither settlement nor
 /// live relay panics; committed truth settles the waiters already registered.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_poisoned_completion_registry_refuses_new_observations_and_stops_notifying() {
     let hub = Arc::new(crate::ThreadEventHub::new());
     let registry = Arc::new(CompletionRegistry::new(hub));
+    let (mut existing, _guard) = registry.register(&RunId("existing".into()), None).unwrap();
     crate::poison_for_test(&registry.waiters);
     assert!(
         matches!(
@@ -406,7 +613,14 @@ async fn a_poisoned_completion_registry_refuses_new_observations_and_stops_notif
         ),
         "W2"
     );
-    registry.settled(&RunId("poisoned-run".into()), &RunState::Running);
+    registry.settled(&RunId("existing".into()), &RunState::Awaiting);
+    assert!(
+        matches!(
+            existing.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ),
+        "W4 poison never delivers a local notification"
+    );
     registry
         .send_observation(StreamObservation::assistant_delta(
             RunId("poisoned-run".into()),
@@ -417,6 +631,18 @@ async fn a_poisoned_completion_registry_refuses_new_observations_and_stops_notif
         ))
         .await
         .expect("W4 the live relay is best-effort");
+    let state = await_completion_state::<RunError, _, _>(
+        existing,
+        std::time::Duration::from_millis(2),
+        || std::future::ready(Ok(Some(RunState::Awaiting))),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        state,
+        RunState::Awaiting,
+        "W4 existing caller uses committed truth"
+    );
 }
 
 #[test]
