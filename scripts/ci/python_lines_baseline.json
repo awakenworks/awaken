@@ -1,0 +1,6 @@
+{
+  "$comment": "Ceiling of the Python lines in scripts/ci/*.py, held by scripts/ci/check_python_ceiling.py. Lower it with --tighten; raising it needs --write-baseline --reason, kept in growth_reasons.",
+  "python lines": {
+    "scripts/ci": 76047
+  }
+}

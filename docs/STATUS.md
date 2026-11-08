@@ -99,6 +99,9 @@ formal and downstream results retain their own subjects.
   10 baseline files / 753 entries. These hits retain the classifications and
   removal conditions in [injection and typed errors](design/injection-and-error-cleanup.md);
   they are not a count of unexplained violations.
+- **Python CI size.** The layer has no line target any more (user decision
+  2026-11-08): `scripts/ci/check_python_ceiling.py` holds `scripts/ci/*.py` at a
+  ceiling that only falls, 76,047 lines when it landed.
 - **Boundaries.** Build/test receipts are source-bound; Windows/MSVC remains
   unverified. Size and method counts are diagnostics ([ADR-0091](adr/0091-architecture-rules.md));
   W23 directory relocation is deferred and is not a completion gate.

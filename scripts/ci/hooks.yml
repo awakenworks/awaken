@@ -239,6 +239,11 @@ commit-checks:
                 - name: principle-status
                   tags: [read-only]
                   run: python3 scripts/ci/principle_status.py --self-test
+                # 3b. The Python CI layer may not grow past its recorded ceiling; lowering it
+                #     is --tighten, raising it a reviewed --write-baseline --reason.
+                - name: python-ceiling
+                  tags: [read-only]
+                  run: python3 scripts/ci/check_python_ceiling.py --self-test && python3 scripts/ci/check_python_ceiling.py
                 # 3c. A guard's scope must be derived from its subject, never written out a
                 #     second time by hand. The checkers are themselves the corpus here: a new
                 #     literal list of paths among them is refused, and today's are registered

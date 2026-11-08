@@ -137,9 +137,14 @@ def baseline_entries(document: object) -> int:
     return 1
 
 
+def python_lines(scripts: Path) -> int:
+    """V1 "Python lines": every line of the top-level scripts/ci/*.py (check_python_ceiling.py holds it)."""
+    return sum(len(path.read_text(encoding="utf-8").splitlines()) for path in scripts.glob("*.py"))
+
+
 def guard_table(scripts: Path) -> list[tuple[str, ...]]:
     python = sorted(scripts.glob("*.py"))
-    lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in python)
+    lines = python_lines(scripts)
     baselines = sorted(scripts.glob("*_baseline.json"))
     entries = sum(baseline_entries(json.loads(path.read_text(encoding="utf-8"))) for path in baselines)
     kinds = Counter(

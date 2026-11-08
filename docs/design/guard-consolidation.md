@@ -393,6 +393,11 @@ The architecture-guard share falls from about 25,400 lines (classes a, b, c
 and helpers) to about 22,400. Most of the 74,000 lines are tools; S1 does not
 reduce them.
 
+The line target was later restated as about 72,000 and is withdrawn (user
+decision 2026-11-08): no further rule could go without losing a check no other
+tool holds. The count is held at a ceiling instead; see
+[2026-11-08 Python CI ceiling](#2026-11-08-python-ci-ceiling).
+
 ## Phase 2 outcome
 
 Base `1221f70561`. Each retired rule keeps exactly one replacement; where the
@@ -758,3 +763,9 @@ Base main `268ae92c5c`. Lines are `scripts/ci/*.py` as counted by
 |---|---|---|
 | `service_test_plan.py` parsed `pg_tests.sh`/`check-reliability.sh` to find suites and the shells looked decisions up by the line bash reported (a mismatch exited 2); `_postgres_phase_plan.py` parsed the selector functions a second time | `scripts/ci/service_suites.toml`: one row per suite (`id`, `phase`, `args` or step `packages`), schema-checked by `service_test_plan.py` (R1–R3); the shells run rows by id (`suite_run`/`suite_step` in `_affected_suites.sh`), an id the table lacks exits 2; both planners read the table | table and shell made to diverge (a skipped row, a dropped `env`) → `service_test_plan.py --self-test` exit 1 (E1/E3: every row runs once, in table order, with exactly its args and env); an id outside the table → exit 2 (H3); a row with no package, an unknown package or a `$` in its args → refused (U1–U3) |
 | any edit to `pg_tests.sh`/`check-reliability.sh` ran the whole group, so a one-suite edit cost 3,260 s / 5,066 s | rule S5: an edit to rows of the table runs those rows (compared as parsed rows); the runner, its helpers, `check-all.sh` and named data still run the whole group; a reorder or an unreadable base table runs the whole group | selection made to drop the edited row → `--self-test` exit 1 (D1); a `pg_tests.sh` edit mapped to "none" → exit 1 (T3) |
+
+### 2026-11-08 Python CI ceiling
+
+| Removed or changed rule | New holder | Negative example (command → result) |
+|---|---|---|
+| the V1 target "Python lines about 72,000" (reported by `principle_status.py --guards`, never enforced) | "no growth": `check_python_ceiling.py` (pre-commit `python-ceiling`, `check-all.sh` static) holds `scripts/ci/*.py` at the ceiling in `python_lines_baseline.json`, 76,047 lines when it landed; the same `principle_status.python_lines` count; `--tighten` lowers it, raising it is `--write-baseline --reason '<JSON review>'` | `check_python_ceiling.py --self-test` C2: one line over → exit 1 "1 line over the ceiling"; C5: a raise without a review → refused, bytes unchanged |
