@@ -491,6 +491,7 @@ include!("postgres/dispatch_queue.rs");
 include!("postgres/summaries.rs");
 include!("postgres/message_ports.rs");
 include!("postgres/claim.rs");
+include!("postgres/integrity.rs");
 fn store_error(err: sqlx::Error) -> DispatchError {
     DispatchError::unavailable(err)
 }

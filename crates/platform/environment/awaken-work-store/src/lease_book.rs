@@ -86,6 +86,20 @@ impl LeaseBook {
         self.lease_for(work_id, now_ms, LEASE_TTL_MS);
     }
 
+    /// Overwrite one item's persisted generation, as the storage corruption,
+    /// bad migration or tampering the integrity refusal exists for would.
+    #[cfg(all(test, not(feature = "loom")))]
+    pub(crate) fn corrupt_epoch_for_test(
+        &self,
+        work_id: &str,
+        epoch: awaken_lease_contract::fence::Epoch,
+    ) {
+        self.authority
+            .lock()
+            .epochs
+            .insert(work_id.to_string(), epoch);
+    }
+
     /// Atomically install one owner, fencing epoch and lease window.  Keeping
     /// these fields under one mutex prevents an observer from combining a new
     /// epoch with the preceding owner or a lease window without either.

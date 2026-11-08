@@ -914,9 +914,11 @@ async fn a_refused_connection_proves_the_request_never_left_on_every_dialect() {
     // Effects: E1 positive NotDispatched evidence naming the transport
     // connect stage (no request byte was written); E2 the retry loop may
     // therefore submit the request again. Every dialect and transport path.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    drop(listener);
+    // Hold the port bound but not listening for the whole test: connects are
+    // refused, and no parallel test can take the port (a dropped listener frees it).
+    let reserved = tokio::net::TcpSocket::new_v4().unwrap();
+    reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let address = reserved.local_addr().unwrap();
     for (kind, streaming) in [(0, false), (0, true), (1, false), (1, true), (2, false)] {
         let executor: Box<dyn LlmExecutor> = match kind {
             2 => Box::new(

@@ -1374,3 +1374,53 @@ use awaken_dispatch_contract::{
     DispatchAdministration as _, DispatchAttemptControl as _, DispatchClaims as _,
     DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _,
 };
+
+/// Writes an untrustworthy generation straight into the SQLite row, as the
+/// corruption, bad migration or tampering the refusal exists for would.
+struct SqlitePoison(awaken_sqlite_pool::EmbeddedPool);
+
+impl harness::untrustworthy_generation::Poison for SqlitePoison {
+    async fn poison(&self, run_id: &str, expired_attempts: Option<u64>) {
+        let sql = match expired_attempts {
+            Some(_) => {
+                "UPDATE runtime_dispatch SET lease_epoch = ?1, attempt_count = ?2, \
+                 lease_until = 0 WHERE run_id = ?3 AND status = 'running'"
+            }
+            None => {
+                "UPDATE runtime_dispatch SET lease_epoch = ?1 WHERE run_id = ?3 \
+                 AND status = 'pending' AND ?2 IS NULL"
+            }
+        };
+        let changed = sqlx::query(sql)
+            .bind(i64::MAX)
+            .bind(expired_attempts.map(|attempts| i64::try_from(attempts).unwrap()))
+            .bind(run_id)
+            .execute(&self.0)
+            .await
+            .unwrap()
+            .rows_affected();
+        assert_eq!(changed, 1, "poisoned exactly {run_id}");
+    }
+}
+
+#[tokio::test]
+async fn sqlite_claim_scans_dead_letter_an_untrustworthy_generation_and_continue() {
+    // Decision table U1-U7: tests/harness/untrustworthy_generation.rs.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("integrity.db");
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(10);
+    let store = SqliteDispatchStore::open(path.to_str().unwrap(), clock.clock())
+        .await
+        .unwrap();
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
+        .open()
+        .await
+        .unwrap();
+    harness::untrustworthy_generation::assert_untrustworthy_generation_rows(
+        &store,
+        &SqlitePoison(connection),
+        i64::MAX as u64,
+        true,
+    )
+    .await;
+}

@@ -86,12 +86,16 @@ use awaken_worker_contract::RunClaim;
 
 mod credential_binding;
 mod inbox;
+mod integrity;
 mod outbox;
 mod physical_attempt;
 mod selection;
 mod settlement;
 mod store;
 use awaken_time::WallClockExt;
+use integrity::{
+    claim_generation_admits, dead_letter_expired_lease, refuse_untrustworthy_expired_leases,
+};
 use selection::{retry_deadline_is_due, runnable, select_where, thread_has_claim_blocking_peer};
 pub use store::MemoryDispatchStore;
 
@@ -776,8 +780,10 @@ fn claim_next_local(
     now_ms: u64,
     capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
+    refuse_untrustworthy_expired_leases(state, now_ms);
     let Some(run_id) = select_where(state, now_ms, None, |row| {
         (row.cancellation_requested || can_claim_locally(&row.request.placement))
+            && claim_generation_admits(row)
             && row.lease_epoch.checked_add(1).is_some_and(|epoch| {
                 can_admit_claim_credentials(
                     &row.request,
@@ -1080,7 +1086,11 @@ impl awaken_dispatch_contract::DispatchClaims for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let capabilities = installed_worker_credential_capabilities(worker)?;
+        refuse_untrustworthy_expired_leases(&mut state, now_ms);
         let Some(run_id) = select_where(&state, now_ms, Some(worker), |row| {
+            if !claim_generation_admits(row) {
+                return false;
+            }
             if row.cancellation_requested {
                 return row.lease_epoch.checked_add(1).is_some_and(|epoch| {
                     can_admit_claim_credentials(
@@ -1154,6 +1164,7 @@ impl awaken_dispatch_contract::DispatchClaims for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let now_ms = crate::clock::normalize_millis(now_ms);
+        refuse_untrustworthy_expired_leases(&mut state, now_ms);
         let Some(run_id) = state.order.iter().find_map(|run_id| {
             state.rows.get(run_id).and_then(|row| {
                 (retry_exhaustion_eligible(
@@ -1258,47 +1269,15 @@ impl awaken_dispatch_contract::DispatchMaintenance for MemoryDispatchStore {
                     expired_before_ms,
                 );
             // An occupied physical slot no longer short-circuits the operator
-            // route; the shared kernel below decides whether this quarantine
-            // may take that occupied slot.
+            // route; the shared kernel decides whether this quarantine may take
+            // that occupied slot.
             if !expired || row.attempt_count < max_attempts {
                 continue;
             }
+            if let Some(facts) =
+                dead_letter_expired_lease(row, LeaseLossReason::RetryExhausted, expired_before_ms)
             {
-                let lease = row
-                    .lease
-                    .clone()
-                    .expect("an expired running row carries its lease");
-                let claim = RunClaim::from(&lease);
-                // One shared kernel decides the slot disposition here too, so the
-                // in-memory backend cannot drift from SQLite/Postgres.
-                let slot = PhysicalAttemptSlot::from_facts(
-                    row.active_attempt.is_some(),
-                    row.active_attempt.is_some(),
-                    row.active_attempt.as_ref() == Some(&claim),
-                    row.active_attempt.as_ref() == Some(&claim),
-                );
-                if !slot.permits_settlement()
-                    && !slot.quarantine_admits_occupation(row.cancellation_requested)
-                {
-                    continue;
-                }
-                let claim_epoch = claim.epoch;
-                operations.push(DispatchOperation::LeaseLost {
-                    claim: claim.clone(),
-                    reason: LeaseLossReason::RetryExhausted,
-                });
-                operations.push(DispatchOperation::DeadLettered {
-                    claim,
-                    attempt_count: row.attempt_count,
-                });
-                let GuardedTransition::Applied(next) =
-                    row.transition().exhaust_retries(claim_epoch, true)
-                else {
-                    continue;
-                };
-                row.apply_transition(next);
-                row.lease = None;
-                row.dead_lettered_at = Some(expired_before_ms);
+                operations.extend(facts);
             }
         }
         let quarantined = operations.len() / 2;
@@ -1787,7 +1766,11 @@ impl awaken_dispatch_contract::DispatchControlClaims for MemoryDispatchStore {
         let mut state = lock(&self.state)?;
         let mut policy_error = None;
         let capabilities = installed_worker_credential_capabilities(requester)?;
+        refuse_untrustworthy_expired_leases(&mut state, now_ms);
         let run_id = select_where(&state, now_ms, Some(requester), |row| {
+            if !claim_generation_admits(row) {
+                return false;
+            }
             if row.cancellation_requested {
                 return row.lease_epoch.checked_add(1).is_some_and(|epoch| {
                     can_admit_claim_credentials(

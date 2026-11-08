@@ -780,3 +780,145 @@ async fn postgres_concurrent_claim_yields_a_single_active_lease() {
     drop(q);
     fixture.cleanup().await;
 }
+
+/// Decision table for an Environment queue whose head Work item carries a
+/// persisted lease generation no grant history produces, shared by the
+/// in-memory, SQLite and PostgreSQL queues; each supplies only how to write
+/// the generation (`poison`).
+///
+/// | Row | queue                                              | effect                                                   |
+/// |-----|----------------------------------------------------|----------------------------------------------------------|
+/// | W1  | head queued at the exhausted generation, a healthy | the poll returns the healthy item in the same call;      |
+/// |     | Session behind it                                  | never `Err` (the route's 500)                            |
+/// | W2  | the head after W1                                  | durably `stopped` (stop timestamps set), no bearer, its  |
+/// |     |                                                    | generation never reset                                   |
+/// | W3  | the healthy item completes; three more polls       | the head is never selected again: each poll is `None`    |
+/// | W4  | observation over W1-W3                             | exactly one error event: target                          |
+/// |     |                                                    | `awaken::lease_generation_integrity`, the integrity code,|
+/// |     |                                                    | `lease = work`, the work id, `disposition = stopped`     |
+pub(crate) async fn assert_untrustworthy_head_is_stopped<Q, P, F>(queue: &Q, poison: P)
+where
+    Q: WorkConsumer + WorkQueries + SessionWorkStore,
+    P: Fn(String) -> F,
+    F: std::future::Future<Output = ()>,
+{
+    use awaken_lease_contract::fence::EpochIntegrityViolation;
+    use awaken_reliability_testkit::events::CapturedEvents;
+    use tracing::instrument::WithSubscriber as _;
+
+    let env = "integrity-env";
+    let poisoned = queue
+        .enqueue_session(env, &awaken_session_types::SessionId::from("poisoned"))
+        .await
+        .unwrap();
+    poison(poisoned.clone()).await;
+    let healthy = queue
+        .enqueue_session(env, &awaken_session_types::SessionId::from("healthy"))
+        .await
+        .unwrap();
+    let captured = CapturedEvents::default();
+    let digest = test_session_access_digest(7);
+    let poll = || {
+        queue
+            .claim_with_session_access(env, "worker", "poller", None, &digest)
+            .with_subscriber(captured.clone())
+    };
+    let claimed = poll()
+        .await
+        .expect("W1 an untrustworthy head is never the poll's error")
+        .expect("W1 the healthy item behind it is claimed by the same poll");
+    assert_eq!(claimed.item.id, healthy, "W1");
+    let head = queue
+        .get(env, &poisoned)
+        .await
+        .unwrap()
+        .expect("W2 retained");
+    assert_eq!(head.state, WorkState::Stopped, "W2");
+    assert!(
+        head.stopped_at.is_some() && head.stop_requested_at.is_some(),
+        "W2 durable terminal timestamps"
+    );
+    assert!(
+        queue
+            .stop(env, &healthy, "worker")
+            .await
+            .unwrap()
+            .is_accepted(),
+        "W3 the healthy item completes"
+    );
+    for poll_index in 0..3 {
+        assert!(poll().await.unwrap().is_none(), "W3 poll {poll_index}");
+    }
+    assert_eq!(
+        queue
+            .get(env, &poisoned)
+            .await
+            .unwrap()
+            .map(|item| item.state),
+        Some(WorkState::Stopped),
+        "W3"
+    );
+    let events: Vec<_> = captured
+        .snapshot()
+        .into_iter()
+        .filter(|event| {
+            event.get("target").map(String::as_str) == Some("awaken::lease_generation_integrity")
+        })
+        .collect();
+    assert_eq!(events.len(), 1, "W4 observed exactly once: {events:?}");
+    let event = &events[0];
+    assert_eq!(event["code"], EpochIntegrityViolation::CODE, "W4");
+    assert_eq!(event["lease"], "work", "W4");
+    assert_eq!(event["work_id"], poisoned, "W4");
+    assert_eq!(event["disposition"], "stopped", "W4");
+}
+
+#[tokio::test]
+async fn sqlite_untrustworthy_head_is_stopped_and_the_queue_continues() {
+    let queue = q().await;
+    let pool = queue.pool.clone();
+    assert_untrustworthy_head_is_stopped(&queue, |work| {
+        let pool = pool.clone();
+        async move {
+            let changed =
+                sqlx::query("UPDATE work_queue_item SET lease_epoch = ?1 WHERE work_id = ?2")
+                    .bind(i64::MAX)
+                    .bind(&work)
+                    .execute(&pool)
+                    .await
+                    .unwrap()
+                    .rows_affected();
+            assert_eq!(changed, 1);
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn postgres_untrustworthy_head_is_stopped_and_the_queue_continues() {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    let fixture = crate::work_postgres_fixture::WorkPostgresFixture::new(&url, 4).await;
+    let pool = fixture.pool.clone();
+    let queue = PostgresWorkQueue::with_pool(pool.clone(), system_clock())
+        .await
+        .unwrap();
+    assert_untrustworthy_head_is_stopped(&queue, |work| {
+        let pool = pool.clone();
+        async move {
+            let changed =
+                sqlx::query("UPDATE work_queue_item SET lease_epoch = $1 WHERE work_id = $2")
+                    .bind(i64::MAX)
+                    .bind(&work)
+                    .execute(&pool)
+                    .await
+                    .unwrap()
+                    .rows_affected();
+            assert_eq!(changed, 1);
+        }
+    })
+    .await;
+    drop(queue);
+    fixture.cleanup().await;
+}
