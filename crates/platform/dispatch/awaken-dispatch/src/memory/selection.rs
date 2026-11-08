@@ -53,7 +53,7 @@ fn select_in_physical_band(
                 .is_ok()
             && retry_deadline_is_due(row, now_ms)
             && !thread_has_claim_blocking_peer(state, run, false)
-            && claim_generation_admits(row)
+            && claim_generation_admits(&state.reported, row)
         {
             return Some(run.clone());
         }

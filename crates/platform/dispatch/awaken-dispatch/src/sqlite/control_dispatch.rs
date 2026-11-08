@@ -109,9 +109,7 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
         crate::dispatch::decode_physical_attempt(
             &run_id,
             owner,
-            epoch
-                .map(|v| durable_u64("dispatch attempt epoch", v))
-                .transpose()?,
+            epoch.map(crate::stored_claim_epoch).transpose()?,
             binding,
             closing,
         )
@@ -604,7 +602,7 @@ impl awaken_dispatch_contract::DispatchControlClaims for SqliteDispatchStore {
                     cancellation_requested,
                     lease_epoch,
                 ) = row;
-                if !crate::sql_claim_generation_admits(&run_id, lease_epoch) {
+                if !crate::sql_claim_generation_admits(&self.reported, &run_id, lease_epoch) {
                     continue;
                 }
                 let cancellation_requested = cancellation_requested != 0;

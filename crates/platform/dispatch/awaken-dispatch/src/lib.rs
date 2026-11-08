@@ -169,62 +169,101 @@ fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {
 }
 
 /// A claim epoch past the signed column's range is exhausted storage, and is
-/// refused through the same lease-generation class as the kernel's.
+/// refused through the same lease-generation class as the kernel's; a negative
+/// one is the same permanent refusal ([`ClaimGenerationViolation`]).
 #[cfg(any(feature = "durable", test))]
 fn next_claim_epoch(previous_epoch: i64) -> Result<u64, DispatchError> {
-    let next = previous_epoch.checked_add(1).ok_or_else(|| {
-        transition_error(awaken_dispatch_contract::DispatchTransitionError::LeaseEpochExhausted)
-    })?;
-    u64::try_from(next).map_err(|_| {
-        DispatchError::Rejected(
-            "persisted dispatch claim epoch is negative; refusing to normalize fencing authority"
-                .to_string(),
-        )
-    })
-}
-
-/// Whether a persisted SQL claim generation has no successor in the signed
-/// column's range: the exhausted class [`next_claim_epoch`] refuses. Pure, so a
-/// claim scan observes the refusal once, at its own decision site.
-#[cfg(feature = "durable")]
-const fn sql_claim_generation_exhausted(previous_epoch: i64) -> bool {
-    previous_epoch == i64::MAX
-}
-
-/// The SQL claim scans' admission of one candidate's generation: a generation
-/// with no successor is never selected, and each scan that reaches it observes
-/// it. An expired lease at that generation never reaches a scan: each adapter
-/// dead-letters it first.
-#[cfg(feature = "durable")]
-fn sql_claim_generation_admits(run_id: &str, lease_epoch: i64) -> bool {
-    if sql_claim_generation_exhausted(lease_epoch) {
-        observe_untrustworthy_claim_generation(run_id, UntrustworthyClaimGeneration::Skipped);
-        return false;
+    match sql_claim_generation_violation(previous_epoch) {
+        Some(violation) => Err(claim_generation_integrity(violation)),
+        None => Ok(previous_epoch.unsigned_abs() + 1), // nonnegative, below the last
     }
-    true
 }
 
-/// What a claim scan did with one dispatch whose lease generation has no
-/// successor. Consumers: the claim scans of every adapter (in-memory, SQLite,
-/// PostgreSQL) and their decision-table tests.
+/// Why a persisted SQL claim generation cannot be trusted, if it cannot: the
+/// signed column's last value has no successor (the exhausted class), and a
+/// negative one is corrupt. Pure, so a claim scan classifies each candidate
+/// once, at its own decision site.
+#[cfg(any(feature = "durable", test))]
+const fn sql_claim_generation_violation(previous_epoch: i64) -> Option<ClaimGenerationViolation> {
+    if previous_epoch == i64::MAX {
+        Some(ClaimGenerationViolation::Exhausted)
+    } else if previous_epoch < 0 {
+        Some(ClaimGenerationViolation::Negative)
+    } else {
+        None
+    }
+}
+
+/// Why one dispatch's persisted claim generation is untrustworthy. Both are
+/// the same permanent refusal of that one row, carrying
+/// [`EpochIntegrityViolation::CODE`](awaken_lease_contract::fence::EpochIntegrityViolation::CODE).
+/// Consumers: [`claim_generation_integrity`], the claim scans' observation and
+/// their decision-table tests.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimGenerationViolation {
+    /// The lease contract's class: the generation has no successor.
+    Exhausted,
+    /// A signed column below zero. No grant writes one (every generation
+    /// counts up from the column's `DEFAULT 0`), so only corruption can.
+    Negative,
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+impl std::fmt::Display for ClaimGenerationViolation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use awaken_lease_contract::fence::EpochIntegrityViolation;
+        match self {
+            Self::Exhausted => EpochIntegrityViolation::Exhausted.fmt(formatter),
+            Self::Negative => write!(
+                formatter,
+                "{}: the persisted lease epoch is negative",
+                EpochIntegrityViolation::CODE
+            ),
+        }
+    }
+}
+
+/// The claim scans' admission of one candidate's SQL generation, observed
+/// through the store's `reported` record: an untrustworthy generation is never
+/// selected, and is reported once. An expired lease at the exhausted generation
+/// never reaches a scan: each adapter dead-letters it first.
+#[cfg(feature = "durable")]
+fn sql_claim_generation_admits(
+    reported: &ReportedClaimGenerations,
+    run_id: &str,
+    lease_epoch: i64,
+) -> bool {
+    match sql_claim_generation_violation(lease_epoch) {
+        Some(violation) => {
+            reported.observe_skipped(run_id, violation);
+            false
+        }
+        None => true,
+    }
+}
+
+/// What a claim scan did with one dispatch whose lease generation is
+/// untrustworthy. Consumers: the claim scans of every adapter (in-memory,
+/// SQLite, PostgreSQL), the PostgreSQL depth read, and their decision tables.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UntrustworthyClaimGeneration {
-    /// An expired lease: dead-lettered through the kernel's one retry
-    /// exhaustion transition, with `LeaseLost` naming the integrity code.
+    /// An expired lease at the exhausted generation: dead-lettered through the
+    /// kernel's one retry exhaustion transition, with `LeaseLost` naming the
+    /// integrity code.
     DeadLettered,
-    /// Not under an expired, settleable lease: never claimed by this scan,
+    /// Not under an expired, settleable lease: never claimed by any scan,
     /// which moves on to the next candidate.
-    Skipped,
+    Skipped(ClaimGenerationViolation),
 }
 
 /// The one error-level observation of a dispatch whose lease generation is
 /// untrustworthy, carrying the stable integrity code. A dead-lettered row is
-/// observed once, by the scan that settled it; a skipped row is observed by
-/// each scan that reaches it.
+/// observed once, by the scan that settled it; a skipped row once per store,
+/// through [`ReportedClaimGenerations`].
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 fn observe_untrustworthy_claim_generation(run_id: &str, disposition: UntrustworthyClaimGeneration) {
-    let violation = awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted;
     match disposition {
         UntrustworthyClaimGeneration::DeadLettered => tracing::error!(
             target: "awaken::lease_generation_integrity",
@@ -232,10 +271,10 @@ fn observe_untrustworthy_claim_generation(run_id: &str, disposition: Untrustwort
             lease = "dispatch_claim",
             run_id,
             disposition = "dead_lettered",
-            %violation,
+            violation = %ClaimGenerationViolation::Exhausted,
             "lease generation integrity violated; dead-lettered this dispatch permanently"
         ),
-        UntrustworthyClaimGeneration::Skipped => tracing::error!(
+        UntrustworthyClaimGeneration::Skipped(violation) => tracing::error!(
             target: "awaken::lease_generation_integrity",
             code = awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
             lease = "dispatch_claim",
@@ -244,6 +283,79 @@ fn observe_untrustworthy_claim_generation(run_id: &str, disposition: Untrustwort
             %violation,
             "lease generation integrity violated; this dispatch is never claimed"
         ),
+    }
+}
+
+/// The dispatches whose skipped, untrustworthy claim generation one store has
+/// already reported. Every claim scan that reaches such a row skips it again;
+/// this record makes the error-level report once per row, not once per scan.
+///
+/// No durable record of a report exists, so this one is process-local: a
+/// restarted store reports each row once more. Past `capacity` distinct rows it
+/// records no more and reports that saturation once, so neither memory nor the
+/// log grows with the number of corrupt rows; nothing is evicted, so no row is
+/// reported twice. Consumers: the adapters' claim scans and the PostgreSQL
+/// depth read.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+#[derive(Debug)]
+struct ReportedClaimGenerations {
+    capacity: usize,
+    rows: awaken_sync::LeafLock<ReportedRows>,
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+#[derive(Debug, Default)]
+struct ReportedRows {
+    run_ids: std::collections::BTreeSet<String>,
+    saturated: bool,
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+impl Default for ReportedClaimGenerations {
+    fn default() -> Self {
+        Self::with_capacity(Self::CAPACITY)
+    }
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+impl ReportedClaimGenerations {
+    /// Distinct rows reported individually by one store.
+    const CAPACITY: usize = 1024;
+
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity,
+            rows: awaken_sync::LeafLock::new(ReportedRows::default()),
+        }
+    }
+
+    /// Report one skipped dispatch at error level the first time this store
+    /// skips it; later skips of the same row are silent.
+    fn observe_skipped(&self, run_id: &str, violation: ClaimGenerationViolation) {
+        let mut rows = self.rows.lock();
+        if rows.run_ids.contains(run_id) {
+            return;
+        }
+        if rows.run_ids.len() >= self.capacity {
+            if !std::mem::replace(&mut rows.saturated, true) {
+                tracing::error!(
+                    target: "awaken::lease_generation_integrity",
+                    code = awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
+                    lease = "dispatch_claim",
+                    capacity = self.capacity,
+                    disposition = "unreported",
+                    "lease generation integrity violated on more dispatches than are \
+                     reported individually; further skipped dispatches are not reported"
+                );
+            }
+            return;
+        }
+        rows.run_ids.insert(run_id.to_owned());
+        drop(rows);
+        observe_untrustworthy_claim_generation(
+            run_id,
+            UntrustworthyClaimGeneration::Skipped(violation),
+        );
     }
 }
 
@@ -261,7 +373,7 @@ fn persisted_dispatch_transition(
     })?;
     Ok(awaken_dispatch_contract::DispatchTransition {
         state,
-        lease_epoch: durable_u64("dispatch lease epoch", lease_epoch)?,
+        lease_epoch: stored_claim_epoch(lease_epoch)?,
         cancellation_requested,
     })
 }
@@ -280,27 +392,56 @@ fn dispatch_state_db(state: DispatchState) -> &'static str {
 }
 
 /// The one projection of a transition-kernel refusal onto the store error,
-/// shared by the in-memory and SQL adapters. An exhausted claim epoch is a
-/// lease-generation integrity failure of that one dispatch row: `Rejected`
-/// (this command did not commit, and retrying it cannot), carrying the stable
-/// integrity code, observed once at error level. Nothing resets the epoch.
+/// shared by the in-memory and SQL adapters: [`claim_generation_integrity`] of
+/// the exhausted class.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 fn transition_error(error: awaken_dispatch_contract::DispatchTransitionError) -> DispatchError {
     match error {
         awaken_dispatch_contract::DispatchTransitionError::LeaseEpochExhausted => {
-            let violation = awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted;
-            tracing::error!(
-                target: "awaken::lease_generation_integrity",
-                code = awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
-                lease = "dispatch_claim",
-                %violation,
-                "lease generation integrity violated; refusing this dispatch claim permanently"
-            );
-            DispatchError::Rejected(format!(
-                "dispatch claim: {violation}; refusing to wrap fencing authority"
-            ))
+            claim_generation_integrity(ClaimGenerationViolation::Exhausted)
         }
     }
+}
+
+/// The one projection of an untrustworthy dispatch claim generation onto the
+/// store error: the kernel's exhausted refusal, a minted generation the signed
+/// column cannot hold, and a negative persisted one all reach it. It is a
+/// lease-generation integrity failure of that one dispatch row: `Rejected`
+/// (this command did not commit, and retrying it cannot), carrying the stable
+/// integrity code, observed once at error level. Nothing resets the epoch.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+fn claim_generation_integrity(violation: ClaimGenerationViolation) -> DispatchError {
+    tracing::error!(
+        target: "awaken::lease_generation_integrity",
+        code = awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
+        lease = "dispatch_claim",
+        %violation,
+        "lease generation integrity violated; refusing this dispatch claim permanently"
+    );
+    let refusal = match violation {
+        ClaimGenerationViolation::Exhausted => "wrap",
+        ClaimGenerationViolation::Negative => "normalize",
+    };
+    DispatchError::Rejected(format!(
+        "dispatch claim: {violation}; refusing to {refusal} fencing authority"
+    ))
+}
+
+/// Decode one persisted SQL claim generation (a lease epoch, or the claim
+/// epoch a physical attempt slot recorded). Negative is corruption of fencing
+/// authority, refused through [`claim_generation_integrity`].
+#[cfg(feature = "durable")]
+fn stored_claim_epoch(value: i64) -> Result<u64, DispatchError> {
+    u64::try_from(value).map_err(|_| claim_generation_integrity(ClaimGenerationViolation::Negative))
+}
+
+/// Encode a claim generation the kernel minted from a persisted one. The
+/// signed column's last value has no successor there: the exhausted class,
+/// refused through [`claim_generation_integrity`].
+#[cfg(feature = "durable")]
+fn minted_claim_epoch_column(minted: u64) -> Result<i64, DispatchError> {
+    i64::try_from(minted)
+        .map_err(|_| claim_generation_integrity(ClaimGenerationViolation::Exhausted))
 }
 
 /// Decode one non-negative SQL integer used as durable ordering authority.
@@ -498,5 +639,136 @@ mod supersession_epoch_tests {
             durable_i64("lease epoch", u64::MAX),
             Err(DispatchError::Rejected(message)) if message.contains("refusing to wrap")
         ));
+    }
+
+    /// Every untrustworthy SQL claim generation reaches the one projection.
+    ///
+    /// | Rule | stored / minted generation                     | effect                                       |
+    /// |------|------------------------------------------------|----------------------------------------------|
+    /// | E1   | minted successor of the column's last value    | the kernel's exhausted refusal, exactly       |
+    /// | E2   | the column's last value, as a scan reads it    | the same refusal                              |
+    /// | E3   | stored negative (any epoch column)             | Rejected, integrity code, Terminal claim      |
+    /// | E4   | a negative claim base                          | the same refusal as E3                        |
+    /// | E5   | 0, 7, and the column's last value as minted    | decoded / encoded unchanged (control)         |
+    /// | E6   | a caller-supplied epoch past the column        | the ordinary range refusal, no integrity code |
+    #[cfg(feature = "durable")]
+    #[test]
+    fn untrustworthy_sql_claim_generations_share_the_one_integrity_projection() {
+        use awaken_dispatch_contract::DispatchTransitionError;
+        use awaken_lease_contract::fence::EpochIntegrityViolation;
+        let kernel = transition_error(DispatchTransitionError::LeaseEpochExhausted);
+        let minted = minted_claim_epoch_column(i64::MAX.unsigned_abs() + 1).unwrap_err();
+        assert_eq!(minted, kernel, "E1");
+        assert_eq!(next_claim_epoch(i64::MAX).unwrap_err(), kernel, "E2");
+        let negative = stored_claim_epoch(-1).unwrap_err();
+        let DispatchError::Rejected(message) = &negative else {
+            panic!("E3 Rejected, got {negative:?}");
+        };
+        assert!(
+            message.contains(EpochIntegrityViolation::CODE) && message.contains("negative"),
+            "E3 {message}"
+        );
+        assert_eq!(stored_claim_epoch(i64::MIN).unwrap_err(), negative, "E3");
+        assert_eq!(
+            awaken_dispatch_execution::AdmissionError::Dispatch(negative.clone())
+                .claim_disposition(),
+            awaken_session_execution_contract::SessionRealizationControlDisposition::Terminal,
+            "E3 never retried"
+        );
+        assert_eq!(next_claim_epoch(-2).unwrap_err(), negative, "E4");
+        assert_eq!(stored_claim_epoch(0).unwrap(), 0, "E5");
+        assert_eq!(stored_claim_epoch(7).unwrap(), 7, "E5");
+        assert_eq!(
+            minted_claim_epoch_column(i64::MAX.unsigned_abs()).unwrap(),
+            i64::MAX,
+            "E5"
+        );
+        assert_eq!(
+            next_claim_epoch(i64::MAX - 1).unwrap(),
+            i64::MAX.unsigned_abs(),
+            "E5"
+        );
+        let DispatchError::Rejected(range) =
+            durable_i64("dispatch lease epoch", u64::MAX).unwrap_err()
+        else {
+            panic!("E6 Rejected");
+        };
+        assert!(
+            !range.contains(EpochIntegrityViolation::CODE),
+            "E6 a caller's epoch is not stored corruption: {range}"
+        );
+    }
+
+    /// One store reports each skipped untrustworthy row once, within a bound.
+    ///
+    /// Record capacity 2.
+    /// | Rule | skip                                   | error-level events                              |
+    /// |------|----------------------------------------|-------------------------------------------------|
+    /// | R1   | row a, first time (exhausted)          | one: skipped, integrity code, its violation     |
+    /// | R2   | row a, three more scans                | none                                            |
+    /// | R3   | row b, first time (negative)           | one of its own, naming the negative cause       |
+    /// | R4   | row c, the record full                 | no row event; one saturation event              |
+    /// | R5   | row d, and c again                     | none                                            |
+    /// | R6   | another store, row a                   | one (the record is per store)                   |
+    #[test]
+    fn a_skipped_untrustworthy_generation_is_reported_once_per_row_within_a_bound() {
+        use awaken_lease_contract::fence::EpochIntegrityViolation;
+        let captured = awaken_reliability_testkit::events::CapturedEvents::default();
+        let integrity = |captured: &awaken_reliability_testkit::events::CapturedEvents| {
+            captured
+                .snapshot()
+                .into_iter()
+                .filter(|event| {
+                    event.get("target").map(String::as_str)
+                        == Some("awaken::lease_generation_integrity")
+                })
+                .collect::<Vec<_>>()
+        };
+        let reported = ReportedClaimGenerations::with_capacity(2);
+        tracing::subscriber::with_default(captured.clone(), || {
+            reported.observe_skipped("a", ClaimGenerationViolation::Exhausted);
+        });
+        let events = integrity(&captured);
+        assert_eq!(events.len(), 1, "R1 {events:?}");
+        assert_eq!(events[0]["run_id"], "a", "R1");
+        assert_eq!(events[0]["disposition"], "skipped", "R1");
+        assert_eq!(events[0]["code"], EpochIntegrityViolation::CODE, "R1");
+        assert_eq!(
+            events[0]["violation"],
+            EpochIntegrityViolation::Exhausted.to_string(),
+            "R1"
+        );
+        tracing::subscriber::with_default(captured.clone(), || {
+            for _ in 0..3 {
+                reported.observe_skipped("a", ClaimGenerationViolation::Exhausted);
+            }
+        });
+        assert_eq!(integrity(&captured).len(), 1, "R2");
+        tracing::subscriber::with_default(captured.clone(), || {
+            reported.observe_skipped("b", ClaimGenerationViolation::Negative);
+        });
+        let events = integrity(&captured);
+        assert_eq!(events.len(), 2, "R3 {events:?}");
+        assert_eq!(events[1]["run_id"], "b", "R3");
+        assert!(events[1]["violation"].contains("negative"), "R3");
+        tracing::subscriber::with_default(captured.clone(), || {
+            reported.observe_skipped("c", ClaimGenerationViolation::Exhausted);
+        });
+        let events = integrity(&captured);
+        assert_eq!(events.len(), 3, "R4 {events:?}");
+        assert!(!events[2].contains_key("run_id"), "R4 no row event");
+        assert_eq!(events[2]["disposition"], "unreported", "R4");
+        assert_eq!(events[2]["capacity"], "2", "R4");
+        assert_eq!(events[2]["code"], EpochIntegrityViolation::CODE, "R4");
+        tracing::subscriber::with_default(captured.clone(), || {
+            reported.observe_skipped("d", ClaimGenerationViolation::Negative);
+            reported.observe_skipped("c", ClaimGenerationViolation::Exhausted);
+        });
+        assert_eq!(integrity(&captured).len(), 3, "R5");
+        let other = ReportedClaimGenerations::default();
+        tracing::subscriber::with_default(captured.clone(), || {
+            other.observe_skipped("a", ClaimGenerationViolation::Exhausted);
+        });
+        assert_eq!(integrity(&captured).len(), 4, "R6");
     }
 }

@@ -30,7 +30,7 @@ async fn dead_letter_expired_lease(
         .try_get::<i64, _>("attempt_count")
         .map_err(store_error)?;
     let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(store_error)?;
-    let claim_epoch = durable_u64("dispatch lease epoch", epoch)?;
+    let claim_epoch = crate::stored_claim_epoch(epoch)?;
     // The SQL selection only prefilters. The slot disposition is decided here,
     // on the locked row, by the one kernel every backend shares.
     let active_attempt_owner: Option<String> =
@@ -100,7 +100,7 @@ async fn dead_letter_expired_lease(
 /// code, so no scan ever selects it again and the candidates behind it stay
 /// claimable in this scan. Rows another transaction holds are left to its next
 /// scan. The signed column's last value is the one exhausted generation
-/// ([`crate::sql_claim_generation_exhausted`]).
+/// ([`crate::sql_claim_generation_violation`]).
 async fn refuse_untrustworthy_expired_leases(pool: &PgPool) -> Result<usize, DispatchError> {
     let p = NS;
     let mut tx = pool.begin().await.map_err(store_error)?;
@@ -140,4 +140,32 @@ async fn refuse_untrustworthy_expired_leases(pool: &PgPool) -> Result<usize, Dis
         );
     }
     Ok(refused.len())
+}
+
+/// Report, once per row through `reported`, each pending or awaiting dispatch
+/// at the exhausted generation: the rows claim discovery prunes before decoding
+/// (`candidate_epoch_not_exhausted`), so no claim scan ever observes them. A
+/// cheap bounded read run off the claim path, by the store's periodic depth
+/// read; it reads at most one row past the record's capacity, enough to report
+/// its saturation. Reservation rows and negative generations are not pruned,
+/// so the claim scans observe those themselves.
+async fn observe_pruned_claim_generations(
+    pool: &PgPool,
+    reported: &crate::ReportedClaimGenerations,
+) -> Result<(), DispatchError> {
+    let p = NS;
+    let limit = i64::try_from(reported.capacity.saturating_add(1)).unwrap_or(i64::MAX);
+    let run_ids: Vec<String> = sqlx::query_scalar(&format!(
+        "SELECT run_id FROM {p}_dispatch WHERE status IN ('pending', 'awaiting') \
+         AND lease_epoch = $1 ORDER BY created_at, run_id LIMIT $2"
+    ))
+    .bind(i64::MAX)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(store_error)?;
+    for run_id in &run_ids {
+        reported.observe_skipped(run_id, crate::ClaimGenerationViolation::Exhausted);
+    }
+    Ok(())
 }

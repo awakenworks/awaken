@@ -49,7 +49,7 @@ pub(super) async fn dead_letter_expired_lease(
             "expired running dispatch has no persisted lease owner".to_string(),
         ));
     };
-    let claim_epoch = durable_u64("dispatch lease epoch", epoch)?;
+    let claim_epoch = crate::stored_claim_epoch(epoch)?;
     // The SQL selection only prefilters. The slot disposition is decided
     // here, on the locked row, by the one kernel every backend shares.
     let slot = awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
@@ -118,7 +118,7 @@ pub(super) async fn dead_letter_expired_lease(
 /// permanently, with `LeaseLost` carrying the integrity code, so no scan ever
 /// selects it again and the candidates behind it stay claimable in this scan.
 /// The signed column's last value is the one exhausted generation
-/// ([`crate::sql_claim_generation_exhausted`]).
+/// ([`crate::sql_claim_generation_violation`]).
 pub(super) async fn refuse_untrustworthy_expired_leases(
     tx: &mut SqliteConnection,
     p: &str,
@@ -137,7 +137,10 @@ pub(super) async fn refuse_untrustworthy_expired_leases(
     .map_err(store_error)?;
     let mut refused = 0;
     for row in rows {
-        debug_assert!(crate::sql_claim_generation_exhausted(row.2));
+        debug_assert!(
+            crate::sql_claim_generation_violation(row.2)
+                == Some(crate::ClaimGenerationViolation::Exhausted)
+        );
         let run_id = row.0.clone();
         if dead_letter_expired_lease(
             tx,

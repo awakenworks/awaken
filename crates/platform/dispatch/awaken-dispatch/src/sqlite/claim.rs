@@ -255,11 +255,7 @@ pub(super) async fn claim_exact_transaction_with_mode(
     })?;
     let expires = crate::clock::deadline_millis(now_ms, lease_ms);
     let claimed_status = crate::dispatch_state_db(claimed_transition.state);
-    let claim_epoch_db = i64::try_from(claim_epoch).map_err(|_| {
-        DispatchError::Rejected(
-            "dispatch claim epoch exceeds the SQLite authority range".to_string(),
-        )
-    })?;
+    let claim_epoch_db = crate::minted_claim_epoch_column(claim_epoch)?;
     let assignment_json = (!terminal_resolution)
         .then(|| worker.map(WorkerAssignment::from))
         .flatten()
@@ -296,9 +292,7 @@ pub(super) async fn claim_exact_transaction_with_mode(
                     "expired running dispatch has no persisted lease owner".to_string(),
                 )
             })?,
-            epoch: u64::try_from(previous_epoch).map_err(|_| {
-                DispatchError::Rejected("persisted dispatch claim epoch is negative".to_string())
-            })?,
+            epoch: crate::stored_claim_epoch(previous_epoch)?,
         };
         let reason = if matches!(mode, ExactClaimMode::RetryExhausted { .. }) {
             LeaseLossReason::RetryExhausted

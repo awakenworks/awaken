@@ -96,12 +96,16 @@ pub(super) fn refuse_untrustworthy_expired_leases(state: &mut State, now_ms: u64
 }
 
 /// The claim scans' admission of one candidate's generation: a generation with
-/// no successor is never selected, and each scan that reaches it observes it.
-pub(super) fn claim_generation_admits(row: &Row) -> bool {
+/// no successor is never selected, and is reported once through the store's
+/// `reported` record however many scans reach it.
+pub(super) fn claim_generation_admits(
+    reported: &crate::ReportedClaimGenerations,
+    row: &Row,
+) -> bool {
     if claim_generation_exhausted(row) {
-        crate::observe_untrustworthy_claim_generation(
+        reported.observe_skipped(
             &row.request.run_id().0,
-            crate::UntrustworthyClaimGeneration::Skipped,
+            crate::ClaimGenerationViolation::Exhausted,
         );
         return false;
     }
@@ -111,7 +115,7 @@ pub(super) fn claim_generation_admits(row: &Row) -> bool {
 #[cfg(test)]
 mod tests {
     //! The reference store's rows of the decision table in
-    //! `tests/harness/untrustworthy_generation.rs` (U1-U7), written against
+    //! `tests/harness/untrustworthy_generation.rs` (U1-U11), written against
     //! its private state because integration tests cannot reach it.
     use super::super::MemoryDispatchStore;
     use super::*;
@@ -277,25 +281,119 @@ mod tests {
             assert_eq!(events[0]["disposition"], "dead_lettered", "U6 {tag}");
         }
 
-        // U7: a pending generation with no successor and no expired lease.
-        enqueue(&store, "u7-poisoned").await;
-        poison(&store, "u7-poisoned", None);
-        enqueue(&store, "u7-healthy").await;
-        let healthy = store
-            .claim("pool", 60_000, &caps)
-            .with_subscriber(captured.clone())
+        // U8 first: an Awaiting row needs its own claim and settlement, made
+        // while it is the only runnable row.
+        enqueue(&store, "u8-poisoned").await;
+        let awaiting = store
+            .claim("crashed-owner", 60_000, &caps)
             .await
             .unwrap()
-            .expect("U7");
-        assert_eq!(healthy.lease.run_id().0, "run-u7-healthy", "U7");
+            .expect("U8 claimed once, honestly");
+        assert_eq!(awaiting.lease.run_id().0, "run-u8-poisoned", "U8");
+        awaken_dispatch_contract::DispatchSettlement::settle(
+            &store,
+            awaiting.lease.run_id(),
+            awaiting.lease.epoch(),
+            DispatchOutcome::Awaiting,
+            &[],
+        )
+        .await
+        .unwrap();
+        awaken_dispatch_contract::Inbox::append(
+            &store,
+            PendingInput {
+                message_id: "u8-input".to_string(),
+                run_id: RunId("run-u8-poisoned".into()),
+                thread_id: awaiting.request.thread_id().clone(),
+                correlation_id: "u8-ticket".to_string(),
+                available_at_ms: None,
+                result: awaken_runtime_contract::resume::ResumeResult::allow(),
+                context_messages: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        poison(&store, "u8-poisoned", None);
+        // U7: a pending generation with no successor and no expired lease; U9
+        // an expired reservation at it; the healthy Run behind them all.
+        for tag in ["u7-poisoned", "u9-poisoned", "u7-healthy"] {
+            enqueue(&store, tag).await;
+        }
+        poison(&store, "u7-poisoned", None);
+        poison(&store, "u9-poisoned", None);
+        {
+            let mut state = lock(&store.state).unwrap_or_else(|poisoned| panic!("{poisoned}"));
+            let row = state
+                .rows
+                .get_mut(&RunId("run-u9-poisoned".into()))
+                .expect("seeded row");
+            row.state = DispatchState::Reserved;
+            row.reservation_deadline_ms = Some(0);
+        }
+        for scan in 0..3 {
+            let claimed = store
+                .claim("pool", 60_000, &caps)
+                .with_subscriber(captured.clone())
+                .await
+                .unwrap();
+            if scan == 0 {
+                assert_eq!(
+                    claimed.expect("U7").lease.run_id().0,
+                    "run-u7-healthy",
+                    "U7"
+                );
+            } else {
+                assert!(claimed.is_none(), "U7-U9");
+            }
+        }
+        let states = store.list_dispatches().await.unwrap();
+        for (tag, expected, rule) in [
+            ("u7-poisoned", DispatchState::Pending, "U7"),
+            ("u8-poisoned", DispatchState::Awaiting, "U8"),
+            ("u9-poisoned", DispatchState::Reserved, "U9"),
+        ] {
+            let run = format!("run-{tag}");
+            let summary = states.iter().find(|row| row.run_id.0 == run).expect(rule);
+            assert_eq!(summary.state, expected, "{rule} never settled");
+            let skipped = integrity_events(&captured, tag);
+            assert_eq!(skipped.len(), 1, "{rule} reported once: {skipped:?}");
+            assert_eq!(skipped[0]["disposition"], "skipped", "{rule}");
+            assert_eq!(skipped[0]["code"], EpochIntegrityViolation::CODE, "{rule}");
+        }
         assert!(operations(&store, "u7-poisoned").await.is_empty(), "U7");
-        let skipped = integrity_events(&captured, "u7-poisoned");
+        assert_eq!(
+            operations(&store, "u8-poisoned")
+                .await
+                .iter()
+                .filter(|operation| matches!(operation, DispatchOperation::Claimed { .. }))
+                .count(),
+            1,
+            "U8 only its one honest claim"
+        );
         assert!(
-            !skipped.is_empty()
-                && skipped
-                    .iter()
-                    .all(|event| event["disposition"] == "skipped"),
-            "U7: {skipped:?}"
+            integrity_events(&captured, "u7-healthy").is_empty(),
+            "U10 control"
+        );
+
+        // U11: the exact claim refuses the exhausted row with the integrity
+        // code; an exact claim of a healthy Run succeeds (control).
+        let refused = store
+            .claim_run(&RunId("run-u7-poisoned".into()), "pool", 60_000, &caps)
+            .await;
+        assert!(
+            matches!(&refused, Err(DispatchError::Rejected(message))
+                if message.contains(EpochIntegrityViolation::CODE)),
+            "U11 {refused:?}"
+        );
+        assert!(operations(&store, "u7-poisoned").await.is_empty(), "U11");
+        enqueue(&store, "u11-healthy").await;
+        assert!(
+            store
+                .claim_run(&RunId("run-u11-healthy".into()), "pool", 60_000, &caps)
+                .await
+                .unwrap()
+                .is_some(),
+            "U11 control"
         );
     }
 }

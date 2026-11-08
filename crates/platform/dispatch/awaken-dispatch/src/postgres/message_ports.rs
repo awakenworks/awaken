@@ -586,9 +586,7 @@ impl PostgresDispatchStore {
         let row_exists = current.is_some();
         let (slot, closing, original) =
             if let Some((owner, epoch, binding, request, closing)) = current {
-                let epoch = epoch
-                    .map(|value| durable_u64("dispatch attempt epoch", value))
-                    .transpose()?;
+                let epoch = epoch.map(crate::stored_claim_epoch).transpose()?;
                 let slot = PhysicalAttemptSlot::from_facts(
                     owner.is_some(),
                     epoch.is_some(),

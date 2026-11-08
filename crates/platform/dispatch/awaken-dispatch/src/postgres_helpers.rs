@@ -11,7 +11,7 @@ use awaken_runtime_contract::resume::ResumeResult;
 use sqlx::types::Json;
 use sqlx::{Executor, PgPool, Postgres, Row};
 
-use crate::{DispatchError, PendingInput, RunClaim, WorkerIdentity, durable_u64};
+use crate::{DispatchError, PendingInput, RunClaim, WorkerIdentity};
 
 pub(super) async fn postgres_now_ms<'e, E>(executor: E) -> Result<u64, DispatchError>
 where
@@ -49,7 +49,7 @@ pub(super) async fn current_worker_claim(
             Ok(RunClaim {
                 run_id: run_id.clone(),
                 owner,
-                epoch: durable_u64("dispatch lease epoch", epoch)?,
+                epoch: crate::stored_claim_epoch(epoch)?,
             })
         })
         .transpose()

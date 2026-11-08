@@ -28,6 +28,7 @@ async fn first_admissible_in_band(
     terminal_resolution: bool,
     now_ms: u64,
     capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
+    reported: &crate::ReportedClaimGenerations,
 ) -> Result<Option<String>, DispatchError> {
     let mut query = sqlx::query_as::<_, (String, String, i64, i64)>(sql);
     if bind_now {
@@ -40,7 +41,7 @@ async fn first_admissible_in_band(
         let cancellation_requested = cancellation_requested != 0;
         let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
         let operation = claim_credential_operation(terminal_resolution, cancellation_requested);
-        if crate::sql_claim_generation_admits(&run_id, lease_epoch)
+        if crate::sql_claim_generation_admits(reported, &run_id, lease_epoch)
             && next_claim_epoch(lease_epoch).is_ok_and(|epoch| {
                 can_admit_claim_credentials(&request, capabilities, epoch, now_ms, operation)
             })
@@ -60,6 +61,7 @@ async fn select_claim_band(
     quiescent_only: bool,
     now_ms: u64,
     capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
+    reported: &crate::ReportedClaimGenerations,
 ) -> Result<Option<String>, DispatchError> {
     let physical_eligible = if quiescent_only {
         "d.active_attempt_owner IS NULL AND d.active_attempt_epoch IS NULL"
@@ -107,37 +109,61 @@ async fn select_claim_band(
          ORDER BY d.cancel_requested DESC, d.priority DESC, d.created_at"
     );
 
-    let picked =
-        match first_admissible_in_band(tx, &reservation_recovery, true, true, now_ms, capabilities)
+    let picked = match first_admissible_in_band(
+        tx,
+        &reservation_recovery,
+        true,
+        true,
+        now_ms,
+        capabilities,
+        reported,
+    )
+    .await?
+    {
+        Some(found) => Some(found),
+        None => {
+            match first_admissible_in_band(
+                tx,
+                &recovery,
+                true,
+                false,
+                now_ms,
+                capabilities,
+                reported,
+            )
             .await?
-        {
-            Some(found) => Some(found),
-            None => {
-                match first_admissible_in_band(tx, &recovery, true, false, now_ms, capabilities)
+            {
+                Some(found) => Some(found),
+                None => {
+                    match first_admissible_in_band(
+                        tx,
+                        &wake,
+                        true,
+                        false,
+                        now_ms,
+                        capabilities,
+                        reported,
+                    )
                     .await?
-                {
-                    Some(found) => Some(found),
-                    None => {
-                        match first_admissible_in_band(tx, &wake, true, false, now_ms, capabilities)
+                    {
+                        Some(found) => Some(found),
+                        None => {
+                            first_admissible_in_band(
+                                tx,
+                                &fresh,
+                                true,
+                                false,
+                                now_ms,
+                                capabilities,
+                                reported,
+                            )
                             .await?
-                        {
-                            Some(found) => Some(found),
-                            None => {
-                                first_admissible_in_band(
-                                    tx,
-                                    &fresh,
-                                    true,
-                                    false,
-                                    now_ms,
-                                    capabilities,
-                                )
-                                .await?
-                            }
                         }
                     }
                 }
             }
-        };
+        }
+    };
     Ok(picked)
 }
 
@@ -173,7 +199,7 @@ impl awaken_dispatch_contract::DispatchCommitAuthority for SqliteDispatchStore {
                 Ok(RunClaim {
                     run_id: RunId(run),
                     owner,
-                    epoch: durable_u64("dispatch lease epoch", epoch)?,
+                    epoch: crate::stored_claim_epoch(epoch)?,
                 })
             })
             .transpose()
@@ -474,9 +500,13 @@ impl awaken_dispatch_contract::DispatchClaims for SqliteDispatchStore {
         let p = NS;
         let mut tx = immediate(&mut conn).await?;
         refuse_untrustworthy_expired_leases(&mut tx, p, now_ms).await?;
-        let picked = match select_claim_band(&mut tx, p, true, now_ms, capabilities).await? {
+        let picked = match select_claim_band(&mut tx, p, true, now_ms, capabilities, &self.reported)
+            .await?
+        {
             Some(run_id) => Some(run_id),
-            None => select_claim_band(&mut tx, p, false, now_ms, capabilities).await?,
+            None => {
+                select_claim_band(&mut tx, p, false, now_ms, capabilities, &self.reported).await?
+            }
         };
 
         let Some(run_id) = picked else {
@@ -539,7 +569,7 @@ impl awaken_dispatch_contract::DispatchClaims for SqliteDispatchStore {
                     cancellation_requested,
                     lease_epoch,
                 ) = row;
-                if !crate::sql_claim_generation_admits(&run_id, lease_epoch) {
+                if !crate::sql_claim_generation_admits(&self.reported, &run_id, lease_epoch) {
                     continue;
                 }
                 let cancellation_requested = cancellation_requested != 0;
@@ -1355,11 +1385,7 @@ impl awaken_dispatch_contract::DispatchAdministration for SqliteDispatchStore {
                                     "claimed dispatch has no persisted lease owner".to_string(),
                                 )
                             })?,
-                            epoch: u64::try_from(*epoch).map_err(|_| {
-                                DispatchError::Rejected(
-                                    "persisted dispatch claim epoch is negative".to_string(),
-                                )
-                            })?,
+                            epoch: crate::stored_claim_epoch(*epoch)?,
                         },
                         reason: LeaseLossReason::Cancelled,
                     },
