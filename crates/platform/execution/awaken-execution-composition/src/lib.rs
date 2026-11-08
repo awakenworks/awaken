@@ -319,17 +319,16 @@ pub fn with_acp_from_deployment(
             let cli =
                 *awaken_acp_catalog::acp_cli(id).expect("AcpWorkerProfile validates every CLI");
             let resolver = Arc::new(match (&credentials, &brokered) {
-                (Some(_), Some(_)) => {
-                    panic!("ACP credential materializers are mutually exclusive")
-                }
-                (Some(credentials), None) => {
-                    PublishedAcpLaunchResolver::new(cli, Some(base.clone()), credentials.clone())
-                }
-                (None, Some(materializer)) => PublishedAcpLaunchResolver::brokered(
+                // Brokered ACP is the one model authority; credentials still
+                // serve MCP/resources through the shared Session secret broker.
+                (_, Some(materializer)) => PublishedAcpLaunchResolver::brokered(
                     cli,
                     Some(base.clone()),
                     materializer.clone(),
                 ),
+                (Some(credentials), None) => {
+                    PublishedAcpLaunchResolver::new(cli, Some(base.clone()), credentials.clone())
+                }
                 (None, None) => PublishedAcpLaunchResolver::backend_owned(cli, Some(base.clone())),
             });
             (
@@ -344,9 +343,10 @@ pub fn with_acp_from_deployment(
             .unwrap_or_else(|error| panic!("configure ACP launch routes: {error}")),
     );
     let host = install_acp_source(host, deployment, source, None);
-    match credentials {
-        Some(credentials) => host.with_session_secret_broker(Arc::new(credentials)),
-        None => host,
+    match (brokered, credentials) {
+        (Some(materializer), _) => host.with_session_secret_broker(materializer.secret_broker()),
+        (None, Some(credentials)) => host.with_session_secret_broker(Arc::new(credentials)),
+        (None, None) => host,
     }
 }
 

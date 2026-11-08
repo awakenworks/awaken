@@ -715,7 +715,7 @@ fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
             .collect(),
         inference_credentials: &materializer.credential_realization_capabilities(),
         credential_materializer: None,
-        brokered_acp_model_access: None,
+        brokered_acp_credentials: &Default::default(),
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
@@ -805,7 +805,7 @@ fn worker_manifest_reports_trusted_host_only_from_operator_configuration() {
             inference_schemes: &Default::default(),
             inference_credentials: &Default::default(),
             credential_materializer: None,
-            brokered_acp_model_access: None,
+            brokered_acp_credentials: &Default::default(),
             worker_local_credential_resolver_installed: false,
             remote_credential_realization: None,
             sandbox_override: None,
@@ -931,7 +931,7 @@ async fn namespace_fallback_manifest_participant() {
         inference_schemes: &Default::default(),
         inference_credentials: &Default::default(),
         credential_materializer: None,
-        brokered_acp_model_access: None,
+        brokered_acp_credentials: &Default::default(),
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
@@ -1395,7 +1395,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         inference_schemes: &Default::default(),
         inference_credentials: &Default::default(),
         credential_materializer: Some(credential_support()),
-        brokered_acp_model_access: None,
+        brokered_acp_credentials: &Default::default(),
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
@@ -1476,7 +1476,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         inference_schemes: &Default::default(),
         inference_credentials: &Default::default(),
         credential_materializer: Some(credential_support()),
-        brokered_acp_model_access: None,
+        brokered_acp_credentials: &Default::default(),
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
@@ -1519,7 +1519,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         inference_schemes: &Default::default(),
         inference_credentials: &Default::default(),
         credential_materializer: None,
-        brokered_acp_model_access: None,
+        brokered_acp_credentials: &Default::default(),
         worker_local_credential_resolver_installed: true,
         remote_credential_realization: None,
         sandbox_override: None,
@@ -1554,7 +1554,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         inference_schemes: &Default::default(),
         inference_credentials: &Default::default(),
         credential_materializer: None,
-        brokered_acp_model_access: None,
+        brokered_acp_credentials: &Default::default(),
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
@@ -1580,6 +1580,65 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         .is_empty(),
         "R4 absent materializers emit no realization evidence"
     );
+    // R5: brokered ACP is installed with ordinary MCP/resource delivery ->
+    // advertise only the brokered ACP model profile, preserve Native delivery,
+    // and never advertise a local ACP fallback. R6: without an ACP deployment,
+    // the same declaration must not create a Gateway ACP profile.
+    let gateway_holder = awaken_agent_contract::credential::PlaintextHolder::new(
+        awaken_agent_contract::credential::PlaintextBoundary::Platform,
+        "test.gateway",
+    );
+    let brokered = std::collections::BTreeMap::from([(
+        "claude".into(),
+        awaken_credential_contract::CredentialRealizationCapabilities {
+            holders: [gateway_holder.clone()].into_iter().collect(),
+            material_sources: [
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+            ]
+            .into_iter()
+            .collect(),
+            realization_kinds: [
+                awaken_credential_contract::CredentialRealizationKind::PlatformProviderAdapter,
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        },
+    )]);
+    for has_acp in [true, false] {
+        let selected_deployment = if has_acp { &acp } else { &deployment() };
+        let manifest = derive_standard_manifest(StandardManifestInputs {
+            deployment: selected_deployment,
+            inference_schemes: &Default::default(),
+            inference_credentials: &Default::default(),
+            credential_materializer: Some(credential_support()),
+            brokered_acp_credentials: &brokered,
+            worker_local_credential_resolver_installed: false,
+            remote_credential_realization: None,
+            sandbox_override: None,
+            checkpoint_formats: Default::default(),
+            resource_support: ResourceManifestSupport::None,
+            application_capabilities: Default::default(),
+            config: &StandardManifestConfig::default(),
+        });
+        let evidence = awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(&manifest.capabilities).unwrap();
+        let profiles = std::iter::once(&evidence).chain(evidence.alternatives.iter());
+        assert_eq!(
+            profiles
+                .clone()
+                .any(|p| p.holders.contains(&gateway_holder)),
+            has_acp,
+            "R5/R6"
+        );
+        assert!(
+            !profiles.clone().any(supports_workload_process_secret),
+            "R5 no local ACP fallback"
+        );
+        assert!(
+            profiles.clone().any(supports_worker_provider_adapter),
+            "R5 Native mechanism retained"
+        );
+    }
 }
 
 /// Cause-effect graph for externally installed Session providers:
@@ -1613,7 +1672,7 @@ fn standard_manifest_requires_complete_provider_evidence_for_worker_relay() {
             inference_schemes: &Default::default(),
             inference_credentials: &Default::default(),
             credential_materializer: credential_materializer.then(credential_support),
-            brokered_acp_model_access: None,
+            brokered_acp_credentials: &Default::default(),
             worker_local_credential_resolver_installed: false,
             remote_credential_realization: None,
             sandbox_override: Some((sandbox.clone(), "external-secure-provider")),
@@ -1667,7 +1726,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         inference_schemes: &Default::default(),
         inference_credentials: &Default::default(),
         credential_materializer: None,
-        brokered_acp_model_access: None,
+        brokered_acp_credentials: &Default::default(),
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
@@ -1707,7 +1766,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         inference_schemes: &Default::default(),
         inference_credentials: &Default::default(),
         credential_materializer: None,
-        brokered_acp_model_access: None,
+        brokered_acp_credentials: &Default::default(),
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
@@ -1739,7 +1798,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         inference_schemes: &Default::default(),
         inference_credentials: &Default::default(),
         credential_materializer: None,
-        brokered_acp_model_access: None,
+        brokered_acp_credentials: &Default::default(),
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
@@ -1770,7 +1829,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
             .collect(),
         inference_credentials: &materializer.credential_realization_capabilities(),
         credential_materializer: None,
-        brokered_acp_model_access: None,
+        brokered_acp_credentials: &Default::default(),
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
@@ -1825,7 +1884,7 @@ fn worker_manifest_includes_explicit_application_capabilities() {
         inference_schemes: &Default::default(),
         inference_credentials: &Default::default(),
         credential_materializer: None,
-        brokered_acp_model_access: None,
+        brokered_acp_credentials: &Default::default(),
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
@@ -1864,7 +1923,7 @@ fn standard_manifest_uses_one_typed_metadata_source() {
         inference_schemes: &Default::default(),
         inference_credentials: &Default::default(),
         credential_materializer: None,
-        brokered_acp_model_access: None,
+        brokered_acp_credentials: &Default::default(),
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,

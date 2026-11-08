@@ -62,6 +62,8 @@ pub type RegisteredAttemptDecoratorFactory =
 pub struct WorkerApplicationDependencies {
     pub attempt_decorator: Option<AttemptExecutorDecorator>,
     pub inference: Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
+    pub brokered_acp_model_access:
+        Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
     pub web_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     pub checkpoint_store: Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
 }
@@ -70,6 +72,10 @@ pub struct WorkerApplicationDependencies {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerApplicationCapabilities {
     pub inference: bool,
+    pub brokered_acp_credentials: std::collections::BTreeMap<
+        String,
+        awaken_credential_contract::CredentialRealizationCapabilities,
+    >,
     pub inference_schemes: std::collections::BTreeSet<String>,
     pub inference_credentials: awaken_credential_contract::CredentialRealizationCapabilities,
     pub checkpoint_store: bool,
@@ -88,6 +94,21 @@ impl WorkerApplicationDependencies {
     pub fn capabilities(&self) -> WorkerApplicationCapabilities {
         WorkerApplicationCapabilities {
             inference: self.inference.is_some(),
+            brokered_acp_credentials: self
+                .brokered_acp_model_access
+                .as_ref()
+                .map(|materializer| {
+                    awaken_acp_catalog::known_acp_clis()
+                        .iter()
+                        .map(|cli| {
+                            (
+                                cli.id.to_string(),
+                                materializer.credential_realization_capabilities(*cli),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             inference_schemes: self
                 .inference
                 .as_ref()

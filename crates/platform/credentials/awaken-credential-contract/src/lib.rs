@@ -154,12 +154,16 @@ pub use material_resolution::{
     CredentialProviderExpectation, CredentialProviderExpectationOwned, OAuthCredentialMaterial,
     ResolvedCredentialMaterial,
 };
+mod acp_profile;
+pub use acp_profile::{
+    ACP_CREDENTIAL_CONSUMER_PREFIX, PLATFORM_PROVIDER_ADAPTER_MATERIAL_TYPE,
+    PRIVATE_SECRET_FILE_MATERIAL_TYPE, PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
+};
 mod realization_capabilities;
 pub use realization_capabilities::{
-    ACP_CREDENTIAL_CONSUMER_PREFIX, CREDENTIAL_REALIZATION_CAPABILITY_PREFIX,
-    CredentialRealizationCapabilities, CredentialRealizationKind, McpCredentialDelivery,
-    PRIVATE_SECRET_FILE_MATERIAL_TYPE, PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
-    mcp_credential_delivery_receipt_matches, select_mcp_credential_delivery,
+    CREDENTIAL_REALIZATION_CAPABILITY_PREFIX, CredentialRealizationCapabilities,
+    CredentialRealizationKind, McpCredentialDelivery, mcp_credential_delivery_receipt_matches,
+    select_mcp_credential_delivery,
 };
 
 /// Trust domain of the platform-held egress mediator.

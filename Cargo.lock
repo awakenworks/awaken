@@ -933,6 +933,7 @@ dependencies = [
  "awaken-credential-envelope",
  "awaken-credential-vault",
  "awaken-inference-endpoint",
+ "awaken-lease-testkit",
  "awaken-provider-genai",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",

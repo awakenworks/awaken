@@ -1022,3 +1022,10 @@
   [Managed behavior owner](../design/managed-agents-behavior-conformance.md)
   records explicit API-date projection; source tests and deployed qualification
   retain separate evidence boundaries.
+
+
+## 2026-11-09 — Reuse one claim-fenced broker for hosted ACP capabilities
+
+- [The credential/model-access owner](../adr/0067-credential-custody-model-exposure-and-secret-delivery.md) defines the distinction between
+  Provider custody and attempt-local Gateway capabilities. Registered factory
+  admission and last-mile process-secret tests preserve that boundary.

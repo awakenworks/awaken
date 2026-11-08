@@ -390,7 +390,7 @@ Lines are at `1b56f9aea0`, except the rows this batch added (`durable_control.rs
 | `bin/awaken-worker/src/credential_liveness.rs:130` | (iii) | exempt | feature off: a Worker without ACP CLIs publishes an empty capability observation family |
 | `bin/awaken-worker/src/credential_liveness.rs:215` | (iii) | exempt | same as `:129` |
 | `bin/awaken-worker/src/credential_liveness.rs:224` | (iii) | exempt | same as `:130` |
-| `bin/awaken-worker/src/manifest.rs:196` | (iii) | exempt | feature off: without brokered ACP model access no brokered credential profile is advertised; the builder already refuses it beside the local materializer |
+| `bin/awaken-worker/src/manifest.rs:196` | (iii) | exempt | feature off: without a declared brokered ACP materializer no brokered ACP profile is advertised; the single registered application factory realizes the admitted profiles, while MCP/resource materialization remains independent |
 | `contract/awaken-dispatch-contract/src/commit_epoch.rs:186` | (iii) | done | closed enum `PreparedRunRecovery { OriginalAuthority(&dyn RunRecoverySource), ReceiptOnly }`; rows A1-A4 (`prepared_admission_requires_exact_absence_and_observed_release`) |
 | `contract/awaken-provisioning-contract/src/sandbox/effect.rs:32` | (iii) | done | `SandboxEffect::from_parts` deleted: a fence without its authority is unrepresentable (old row P3) |
 | `contract/awaken-provisioning-contract/src/sandbox/runtime.rs:904` | (iii) | exempt | capability query: checkpointing is a property of the Sandbox backend, not a role a deployment selects; `None` is the absent capability |

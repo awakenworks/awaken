@@ -184,14 +184,6 @@ pub struct CredentialRealizationCapabilities {
 /// evidence payload. The Worker contract remains credential-domain agnostic; the
 /// publishing and consuming contexts own this codec.
 pub const CREDENTIAL_REALIZATION_CAPABILITY_PREFIX: &str = "credential-realization.awaken.dev/v2:";
-/// Namespaced extension-consumer key for the exact ACP backend that consumes a
-/// credential realization profile. This keeps independently installed ACP
-/// adapters correlated with their last-mile mechanism after Worker profiles
-/// are composed.
-pub const ACP_CREDENTIAL_CONSUMER_PREFIX: &str = "awaken.acp.credential-delivery/";
-pub const PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE: &str =
-    "awaken.credential.process-secret-environment/v1";
-pub const PRIVATE_SECRET_FILE_MATERIAL_TYPE: &str = "awaken.credential.private-secret-file/v1";
 
 impl CredentialRealizationCapabilities {
     /// Merge evidence from independently installed adapters on the same Worker.
@@ -267,38 +259,6 @@ impl CredentialRealizationCapabilities {
                 .alternatives
                 .iter()
                 .any(|profile| profile.supports_extension(consumer_id, material_type))
-    }
-
-    /// Resolve the one last-mile credential mechanism advertised for an exact
-    /// ACP backend. Missing evidence preserves compatibility with legacy Worker
-    /// manifests; contradictory evidence fails closed.
-    pub fn acp_backend_realization_kind(
-        &self,
-        backend_ref: &str,
-    ) -> Result<Option<CredentialRealizationKind>, String> {
-        let consumer_id = format!("{ACP_CREDENTIAL_CONSUMER_PREFIX}{backend_ref}");
-        let mut kinds = BTreeSet::new();
-        for (material_type, kind) in [
-            (
-                PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
-                CredentialRealizationKind::ProcessSecretEnvironment,
-            ),
-            (
-                PRIVATE_SECRET_FILE_MATERIAL_TYPE,
-                CredentialRealizationKind::PrivateSecretFile,
-            ),
-        ] {
-            if self.supports_extension(&consumer_id, material_type) {
-                kinds.insert(kind);
-            }
-        }
-        match kinds.len() {
-            0 => Ok(None),
-            1 => Ok(kinds.into_iter().next()),
-            _ => Err(format!(
-                "ACP backend `{backend_ref}` advertises contradictory credential delivery mechanisms"
-            )),
-        }
     }
 
     /// Encode this evidence as one canonical Worker capability. Empty evidence

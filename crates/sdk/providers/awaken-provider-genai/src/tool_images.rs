@@ -31,7 +31,7 @@ const HISTORY_NOTE: &str = "[Earlier image omitted from this request to stay wit
 
 fn step_limit_note() -> String {
     format!(
-        "Error: this image was not delivered because this turn exceeds the limit of {MAX_TOOL_IMAGES_PER_STEP} images from tools. Read fewer images at once."
+        "Error: this image was not delivered because this step exceeds the limit of {MAX_TOOL_IMAGES_PER_STEP} images from tools. Read fewer images at once."
     )
 }
 
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn a_model_without_image_input_gets_an_explicit_error_for_every_tool_image() {
-        // Decision table, ImageInput::Rejected: tool image in the current turn or
+        // Decision table, ImageInput::Rejected: tool image in the current step or
         // in history => error note, is_error set, description text kept; a text
         // only tool result => unchanged and not an error; an image the user
         // attached directly => not this layer's decision, unchanged.
@@ -248,10 +248,10 @@ mod tests {
     }
 
     #[test]
-    fn the_byte_budget_refuses_the_current_turn_and_ages_out_history() {
+    fn the_byte_budget_refuses_the_current_step_and_ages_out_history() {
         // Boundary rule on the byte budget: two images that exactly fill it pass;
-        // a third in the same turn is an error naming the byte limit; history is
-        // served after the turn, so an old image gets the age-out note, not an
+        // a third in the same step is an error naming the byte limit; history is
+        // served after the step, so an old image gets the age-out note, not an
         // error, and its tool result stays a success.
         let half = "A".repeat(MAX_TOOL_IMAGE_BYTES_PER_REQUEST / 2);
         let mut messages = vec![
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn history_keeps_the_newest_images_up_to_the_request_limit() {
-        // Boundary rule: with no current-turn images, the newest
+        // Boundary rule: with no current-step images, the newest
         // MAX_TOOL_IMAGES_PER_REQUEST images survive and the older rest fall away
         // as one contiguous prefix; a request at the limit is left untouched.
         let history = |n: usize| {

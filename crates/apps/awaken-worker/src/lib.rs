@@ -154,8 +154,6 @@ pub struct WorkerNodeBuilder {
     credential_refresh_factory:
         Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
     mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_mcp::McpRelayOutboundProxy>>,
-    brokered_acp_model_access:
-        Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
     remote_attempt: Option<awaken_session_executor::RemoteAttemptInstallation>,
     hand_executor_factory:
         Option<Arc<dyn awaken_session_environment_contract::HandExecutorFactory>>,
@@ -269,7 +267,6 @@ impl WorkerNodeBuilder {
             credential_materializer: None,
             credential_refresh_factory: None,
             mcp_relay_outbound_proxy: None,
-            brokered_acp_model_access: None,
             remote_attempt: None,
             hand_executor_factory: None,
             worker_local_credential_resolver: None,
@@ -572,14 +569,16 @@ impl WorkerNodeBuilder {
     }
 
     /// Install the hosted attempt-time model-access exchanger. It produces
-    /// Gateway lease references only and is mutually exclusive with local Vault
-    /// materialization.
+    /// Gateway lease references only. When installed, this is the sole ACP
+    /// model authority; the ordinary materializer may still serve MCP/resources.
     #[must_use]
     pub fn with_brokered_acp_model_access(
         mut self,
         materializer: Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>,
     ) -> Self {
-        self.brokered_acp_model_access = Some(materializer);
+        if let Some(dependencies) = self.application.static_dependencies() {
+            dependencies.brokered_acp_model_access = Some(materializer);
+        }
         self
     }
 
@@ -792,12 +791,6 @@ impl WorkerNodeBuilder {
             .map_err(WorkerNodeBuildError)?;
         awaken_deployment_config::reject_ambient_api_key_environment()
             .map_err(|error| WorkerNodeBuildError(error.to_string()))?;
-        if self.credential_materializer.is_some() && self.brokered_acp_model_access.is_some() {
-            return Err(WorkerNodeBuildError(
-                "local and brokered ACP credential materializers are mutually exclusive"
-                    .to_string(),
-            ));
-        }
         awaken_worker_contract::validate_observation_timing(
             self.credential_probe_interval,
             self.credential_observation_ttl,
@@ -931,7 +924,7 @@ impl WorkerNodeBuilder {
                         .credential_materializer
                         .as_ref()
                         .map(CredentialMaterializerSupport::from),
-                    brokered_acp_model_access: self.brokered_acp_model_access.as_deref(),
+                    brokered_acp_credentials: &dependency_capabilities.brokered_acp_credentials,
                     worker_local_credential_resolver_installed: credential_observation_resolver
                         .is_some(),
                     remote_credential_realization: self
@@ -988,7 +981,6 @@ impl WorkerNodeBuilder {
             credential_materializer: self.credential_materializer,
             credential_refresh_factory: self.credential_refresh_factory,
             mcp_relay_outbound_proxy: self.mcp_relay_outbound_proxy,
-            brokered_acp_model_access: self.brokered_acp_model_access,
             remote_attempt: self.remote_attempt,
             hand_executor_factory: self.hand_executor_factory,
             credential_observation_resolver,
@@ -1088,8 +1080,6 @@ pub struct WorkerNode {
     credential_refresh_factory:
         Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
     mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_mcp::McpRelayOutboundProxy>>,
-    brokered_acp_model_access:
-        Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
     remote_attempt: Option<awaken_session_executor::RemoteAttemptInstallation>,
     hand_executor_factory:
         Option<Arc<dyn awaken_session_environment_contract::HandExecutorFactory>>,
@@ -1662,7 +1652,7 @@ impl WorkerNode {
             deps,
             &deployment,
             self.credential_materializer,
-            self.brokered_acp_model_access,
+            application.brokered_acp_model_access,
         );
         manifest::ensure_registered_local_provider(&self.prepared_local_sandbox, &self.manifest, &deps)?;
 
