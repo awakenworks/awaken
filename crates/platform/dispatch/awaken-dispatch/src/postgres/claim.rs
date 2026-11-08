@@ -73,6 +73,8 @@ fn candidate_retry_due() -> &'static str {
 /// An expired lease at that generation was already dead-lettered by
 /// `refuse_untrustworthy_expired_leases` before discovery; reservation rows
 /// are not pruned and are skipped, observed, by `candidate_is_admissible`.
+/// The pruned pending and awaiting rows are observed off this path, by the
+/// store's periodic depth read (`observe_pruned_claim_generations`).
 fn candidate_epoch_not_exhausted() -> &'static str {
     "d.lease_epoch < 9223372036854775807"
 }
@@ -164,6 +166,7 @@ fn candidate_is_admissible(
     audience: CandidateAudience<'_>,
     capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     now_ms: u64,
+    reported: &crate::ReportedClaimGenerations,
 ) -> Result<bool, DispatchError> {
     let thread_eligible: bool = row.try_get("thread_eligible").map_err(store_error)?;
     let local_eligible: bool = row.try_get("local_eligible").map_err(store_error)?;
@@ -183,10 +186,11 @@ fn candidate_is_admissible(
     let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(store_error)?;
     let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
     // Only reservation rows reach here at an exhausted generation (the SQL
-    // prunes the rest); a reservation recovery would refuse it in the exact
-    // transaction and abort this whole scan, so it is skipped here instead.
+    // prunes the rest), and any row at a negative one; an exact claim would
+    // refuse it in its transaction and abort this whole scan, so it is skipped
+    // here instead.
     let run_id: String = row.try_get("run_id").map_err(store_error)?;
-    if !crate::sql_claim_generation_admits(&run_id, lease_epoch) {
+    if !crate::sql_claim_generation_admits(reported, &run_id, lease_epoch) {
         return Ok(false);
     }
     let terminal_resolution = matches!(status.as_str(), "reserved" | "reservation_running");
@@ -302,7 +306,7 @@ impl PostgresDispatchStore {
             // ordinary early admission without decoding every request first.
             for row in first {
                 let next = CandidatePosition::from_row(&row)?;
-                if candidate_is_admissible(&row, audience, capabilities, now_ms)?
+                if candidate_is_admissible(&row, audience, capabilities, now_ms, &self.reported)?
                     && let Some(claimed) = self
                         .try_claim_discovered(
                             std::iter::once(next.run_id.clone()),
@@ -354,7 +358,13 @@ impl PostgresDispatchStore {
                             break;
                         }
                     };
-                    match candidate_is_admissible(&row, audience, capabilities, now_ms) {
+                    match candidate_is_admissible(
+                        &row,
+                        audience,
+                        capabilities,
+                        now_ms,
+                        &self.reported,
+                    ) {
                         Ok(true) => candidates.push(next.run_id.clone()),
                         Ok(false) => {}
                         Err(error) => {
@@ -656,11 +666,7 @@ async fn claim_exact_transaction_with_mode(
     .bind(crate::clock::db_millis(expires))
     .bind(i64::from(status == "running"))
     .bind(&requested_run.0)
-    .bind(i64::try_from(claim_epoch).map_err(|_| {
-        DispatchError::Rejected(
-            "dispatch claim epoch exceeds the Postgres authority range".to_string(),
-        )
-    })?)
+    .bind(crate::minted_claim_epoch_column(claim_epoch)?)
     .bind(
         (!terminal_resolution)
             .then(|| worker.map(WorkerAssignment::from))
@@ -686,9 +692,7 @@ async fn claim_exact_transaction_with_mode(
                     "expired running dispatch has no persisted lease owner".to_string(),
                 )
             })?,
-            epoch: u64::try_from(previous_epoch).map_err(|_| {
-                DispatchError::Rejected("persisted dispatch claim epoch is negative".to_string())
-            })?,
+            epoch: crate::stored_claim_epoch(previous_epoch)?,
         };
         let reason = if matches!(mode, ExactClaimMode::RetryExhausted { .. }) {
             LeaseLossReason::RetryExhausted

@@ -51,6 +51,7 @@ fn creation_intent(
             runtime_placement: b.runtime_placement,
             agent_id: b.agent_id,
             agent_revision: b.agent_revision,
+            inline_agent_publication: None,
             model: b.model,
             execution_model_ref: b.execution_model_ref,
             model_override: b.model_override,

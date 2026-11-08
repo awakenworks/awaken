@@ -95,7 +95,7 @@ impl SqliteDispatchStore {
                 &RunId(run_id.clone()),
                 active_attempt_owner,
                 active_attempt_epoch
-                    .map(|epoch| durable_u64("dispatch attempt epoch", epoch))
+                    .map(crate::stored_claim_epoch)
                     .transpose()?,
                 active_attempt_binding,
                 active_attempt_closing,

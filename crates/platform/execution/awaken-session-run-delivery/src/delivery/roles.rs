@@ -290,6 +290,28 @@ impl awaken_session_execution_contract::CapabilityRuntime for WorkerPlacedSessio
         }
         Ok(capabilities)
     }
+
+    /// The Worker executes the registered built-in Hand tools, plus the
+    /// delegation tool when the Agent delegates: the advertised surface of
+    /// [`Self::capabilities`], frozen into the publication a Worker-placed
+    /// Session of an unpublished Agent pins.
+    fn unpublished_agent_publication(
+        &self,
+        agent_id: &str,
+        model_ref: &str,
+        delegate_ids: &[String],
+    ) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, RunError> {
+        let mut tools = crate::hand_tool_descriptors();
+        if !delegate_ids.is_empty() {
+            tools.push(crate::delegation_descriptor());
+        }
+        awaken_session_execution_contract::unpublished_agent_publication(
+            agent_id,
+            model_ref,
+            tools,
+            delegate_ids,
+        )
+    }
 }
 
 /// A fresh user message carrying `content`.

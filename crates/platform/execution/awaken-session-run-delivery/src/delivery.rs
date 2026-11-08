@@ -239,7 +239,7 @@ impl WorkerPlacedSessions {
     /// |---|---|---|
     /// | C1 | no projection is installed | retryable refusal; nothing is read or reserved |
     /// | C2 | a frozen MemoryStore or Repository binding changed | refused before the Skill store is read |
-    /// | C3 | the projection pins no Agent publication | refused |
+    /// | C3 | the projection pins no Agent publication (a legacy unpinned Session: an inline Agent's Session freezes one at creation) | refused as a bad request, which Event-batch recovery settles terminally |
     /// | C4 | a pinned Skill bundle is missing or mismatched | refused; nothing is reserved |
     /// | C5 | every input holds | one unclaimable row placed on a registered Worker, carrying the desired manifest and the Session's frozen model |
     pub async fn reserve_session_run(

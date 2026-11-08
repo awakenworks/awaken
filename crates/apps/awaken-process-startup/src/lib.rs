@@ -28,7 +28,7 @@ mod control_component;
 #[cfg(any(test, feature = "test-support"))]
 pub use colocated_test_process::{
     ColocatedTestProcess, ColocatedTestStores, ColocatedTestWorkerInputs,
-    start_all_in_one_with_worker,
+    start_all_in_one_with_worker, start_all_in_one_with_worker_and_web_providers,
 };
 mod coordinator_execution;
 mod credential_probe;
@@ -688,6 +688,7 @@ mod runtime_session_store_tests {
                 runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
                 agent_id: "assistant".into(),
                 agent_revision: None,
+                inline_agent_publication: None,
                 model_override: None,
                 system_prompt:
                     awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,

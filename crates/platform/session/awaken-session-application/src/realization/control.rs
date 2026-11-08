@@ -750,7 +750,6 @@ impl SessionRealizations {
                 command.source_run_id.clone(),
             );
             command.record_bounded_failure(&mut session, self.realization_retry_budget)?;
-            let initial_realization = session.execution != SessionExecutionState::Idle;
             let retry_initial = {
                 match command
                     .initial_realization_failure_plan(&session, self.realization_retry_budget)?
@@ -769,14 +768,11 @@ impl SessionRealizations {
                     awaken_session_execution_contract::RealizationFailureOutcome::Absorb => false,
                 }
             };
-            if retry_initial || !initial_realization {
-                // The driver closes this exact local authority generation after an
-                // effect failure. Any nonterminal recovery must obtain a new epoch;
-                // keeping Idle's lease live would replay a permanently closed Host
-                // projection after a failed hot replacement. Active MCP/Resources
-                // remain retained; only this disposable assignment expires.
-                session.assignment().expire();
-            }
+            // The driver closed this generation locally, so every successor
+            // (a retry, Idle recovery, terminal cleanup) needs a new epoch; a
+            // live lease would hand the closed one back to cleanup, which the
+            // Worker refuses ("time proof is not current") until it lapses.
+            session.assignment().expire();
             if retry_initial {
                 // The retry intent's response carries no applied/replayed
                 // distinction: a replay observes the same realization progress.

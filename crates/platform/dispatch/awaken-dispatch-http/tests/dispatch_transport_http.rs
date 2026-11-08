@@ -1126,6 +1126,64 @@ async fn occupied_physical_attempt_blocks_terminal_observers_and_work_release() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_root_run_deferred_behind_an_occupied_slot_parks_only_its_session_work() {
+    // Causes: C1 a root Session Run or a child Run that borrows its parent's
+    // Work; C2 its Thread's attempt slot is occupied with no stop evidence, or
+    // empty; C3 the Worker defers the claim behind a retry deadline, or
+    // relinquishes it outright. Effects: E1 this Worker's Session Work is
+    // released so the Environment admits another Session; E2 the slot keeps
+    // fencing the Thread. Rules: D1 root+occupied+deferred => E1+E2;
+    // D2 root+empty+deferred => no release (ordinary resolution backoff keeps
+    // the Work for its retry); D3 child+occupied+deferred => no release (the
+    // parent's Work is borrowed); D4 root+occupied+outright => no release.
+    // No row clears or settles the slot.
+    for (rule, placement, occupied, deferred, released) in [
+        ("D1", TerminalThread::Primary, true, true, 1),
+        ("D2", TerminalThread::Primary, false, true, 0),
+        ("D3", TerminalThread::Child, true, true, 0),
+        ("D4", TerminalThread::Primary, true, false, 0),
+    ] {
+        let (store, claim, _, _) = claimed_terminal_dispatch(rule, placement).await;
+        if occupied {
+            store.begin_attempt(&claim, None).await.unwrap();
+        }
+        let work = Arc::new(RecordingSessionWork::default());
+        let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
+            RegisteredDispatchDependencies {
+                lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+                session_work: work.clone(),
+                ..worker_dispatch_dependencies(
+                    store.clone(),
+                    ready_workers(&["terminal-worker"]),
+                    Arc::new(ManualClock::new(0)),
+                )
+            },
+        )));
+        let mut request = json!({ "claim": claim });
+        if deferred {
+            request["retry_after_ms"] = json!(250);
+        }
+        let (status, value) = post(
+            &router,
+            "terminal-worker",
+            "/v1/worker/dispatch/relinquish",
+            request,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{rule}: {value}");
+        assert_eq!(work.releases.load(Ordering::SeqCst), released, "{rule}/E1");
+        let row = store
+            .list_dispatches()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.run_id == claim.run_id)
+            .expect("the relinquished row remains");
+        assert_eq!(row.physical_attempt_active, occupied, "{rule}/E2");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn terminal_observer_failure_withholds_remote_child_done_and_parent_work_release() {
     // Test design.
     // C: C1 one exact child claim has distinct parent physical Session and child

@@ -82,12 +82,9 @@ impl PostgresDispatchStore {
         let active_epoch: Option<i64> = current
             .try_get("active_attempt_epoch")
             .map_err(store_error)?;
-        let persisted_epoch = durable_u64("dispatch lease epoch", persisted_epoch)?;
-        let active_epoch = active_epoch
-            .map(|value| durable_u64("dispatch attempt epoch", value))
-            .transpose()?;
-        let retired_epoch = durable_u64(
-            "retired attempt epoch",
+        let persisted_epoch = crate::stored_claim_epoch(persisted_epoch)?;
+        let active_epoch = active_epoch.map(crate::stored_claim_epoch).transpose()?;
+        let retired_epoch = crate::stored_claim_epoch(
             current
                 .try_get("retired_attempt_epoch")
                 .map_err(store_error)?,
@@ -1217,11 +1214,7 @@ impl awaken_dispatch_contract::DispatchAdministration for PostgresDispatchStore 
                                 "claimed dispatch has no persisted lease owner".to_string(),
                             )
                         })?,
-                        epoch: u64::try_from(previous_epoch).map_err(|_| {
-                            DispatchError::Rejected(
-                                "persisted dispatch claim epoch is negative".to_string(),
-                            )
-                        })?,
+                        epoch: crate::stored_claim_epoch(previous_epoch)?,
                     },
                     reason: LeaseLossReason::Cancelled,
                 },
@@ -1348,6 +1341,9 @@ impl awaken_dispatch_contract::DispatchControlReads for PostgresDispatchStore {
         .fetch_one(&self.pool)
         .await
         .map_err(store_error)?;
+        // The periodic depth read is the cadence that also surfaces the rows
+        // claim discovery prunes as permanently unclaimable.
+        observe_pruned_claim_generations(&self.pool, &self.reported).await?;
         Ok(Some(DispatchDepths {
             runnable: durable_u64("runnable dispatch depth", runnable)?,
             leased: durable_u64("leased dispatch depth", leased)?,
@@ -1371,9 +1367,7 @@ impl awaken_dispatch_contract::DispatchControlReads for PostgresDispatchStore {
         crate::dispatch::decode_physical_attempt(
             run_id,
             row.try_get("active_attempt_owner").map_err(store_error)?,
-            epoch
-                .map(|v| durable_u64("dispatch attempt epoch", v))
-                .transpose()?,
+            epoch.map(crate::stored_claim_epoch).transpose()?,
             row.try_get("active_attempt_binding").map_err(store_error)?,
             closing,
         )
@@ -1812,7 +1806,7 @@ impl PostgresDispatchStore {
         let epoch = row
             .try_get::<Option<i64>, _>("active_attempt_epoch")
             .map_err(store_error)?
-            .map(|value| durable_u64("physical attempt epoch", value))
+            .map(crate::stored_claim_epoch)
             .transpose()?;
         let slot = PhysicalAttemptSlot::from_facts(
             owner.is_some(),

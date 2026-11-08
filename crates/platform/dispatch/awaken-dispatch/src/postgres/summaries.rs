@@ -30,7 +30,7 @@ impl PostgresDispatchStore {
                     row.try_get("active_attempt_owner").map_err(store_error)?,
                     row.try_get::<Option<i64>, _>("active_attempt_epoch")
                         .map_err(store_error)?
-                        .map(|epoch| durable_u64("dispatch attempt epoch", epoch))
+                        .map(crate::stored_claim_epoch)
                         .transpose()?,
                     row.try_get("active_attempt_binding").map_err(store_error)?,
                     row.try_get("active_attempt_closing").map_err(store_error)?,

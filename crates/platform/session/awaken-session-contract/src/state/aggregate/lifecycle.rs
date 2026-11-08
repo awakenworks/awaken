@@ -52,6 +52,37 @@ impl SessionLifecycleOperations<'_> {
         Ok(changed)
     }
 
+    /// Fail the Session terminally because its frozen inputs can no longer
+    /// admit execution: record `cause` as the durable failure (with the Run
+    /// whose terminal sources it, if one was reserved) and enter
+    /// ActivationFailed in one command, closing any Running interval.
+    ///
+    /// | Rule | execution | effect |
+    /// |---|---|---|
+    /// | T1 | live (Preparing, Activating, Running, Rescheduling, Idle) | cause, time and source recorded; ActivationFailed; `Ok(true)` |
+    /// | T2 | ActivationFailed | an idempotent replay: nothing changes; `Ok(false)` |
+    /// | T3 | Terminated | refused; nothing changes |
+    pub fn fail_terminally_at(
+        &mut self,
+        cause: String,
+        now: u64,
+        source_run_id: Option<awaken_agent_contract::agent::run::Id>,
+    ) -> Result<bool, SessionExecutionTransitionError> {
+        let failed = SessionExecutionState::ActivationFailed;
+        let from = self.aggregate.state.execution;
+        if from == failed {
+            return Ok(false);
+        }
+        if !from.can_transition_to(failed) {
+            return Err(SessionExecutionTransitionError { from, to: failed });
+        }
+        let progress = &mut self.aggregate.state.realization_progress;
+        progress.last_error = Some(cause);
+        progress.failed_at_unix_ms = Some(now);
+        progress.failure_source_run_id = source_run_id.map(Box::new);
+        self.transition_execution_at(failed, now)
+    }
+
     /// Apply the canonical PersistedSession::archive law.
     pub fn archive(
         &mut self,

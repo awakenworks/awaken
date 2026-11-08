@@ -1401,11 +1401,40 @@ impl harness::untrustworthy_generation::Poison for SqlitePoison {
             .rows_affected();
         assert_eq!(changed, 1, "poisoned exactly {run_id}");
     }
+
+    async fn poison_generation(&self, run_id: &str, epoch: i64, reserved: bool) {
+        let mut connection = self.0.sqlx().acquire().await.unwrap();
+        if epoch < 0 {
+            // The schema refuses a negative counter; the corruption this row
+            // stands for (a damaged file, a hand edit) is not bound by it.
+            sqlx::raw_sql(
+                "PRAGMA ignore_check_constraints = ON; \
+                 DROP TRIGGER runtime_dispatch_nonnegative_authority_update;",
+            )
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        }
+        let sql = if reserved {
+            "UPDATE runtime_dispatch SET lease_epoch = ?1, status = 'reserved', \
+             lease_until = 0 WHERE run_id = ?2 AND status = 'pending'"
+        } else {
+            "UPDATE runtime_dispatch SET lease_epoch = ?1 WHERE run_id = ?2"
+        };
+        let changed = sqlx::query(sql)
+            .bind(epoch)
+            .bind(run_id)
+            .execute(&mut *connection)
+            .await
+            .unwrap()
+            .rows_affected();
+        assert_eq!(changed, 1, "poisoned exactly {run_id}");
+    }
 }
 
 #[tokio::test]
 async fn sqlite_claim_scans_dead_letter_an_untrustworthy_generation_and_continue() {
-    // Decision table U1-U7: tests/harness/untrustworthy_generation.rs.
+    // Decision table U1-U11: tests/harness/untrustworthy_generation.rs.
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("integrity.db");
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(10);
@@ -1420,7 +1449,27 @@ async fn sqlite_claim_scans_dead_letter_an_untrustworthy_generation_and_continue
         &store,
         &SqlitePoison(connection),
         i64::MAX as u64,
-        true,
+        i64::MAX,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn sqlite_claim_scans_skip_a_negative_generation_and_report_it_once() {
+    // Decision table U12: tests/harness/untrustworthy_generation.rs.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("negative.db");
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(10);
+    let store = SqliteDispatchStore::open(path.to_str().unwrap(), clock.clock())
+        .await
+        .unwrap();
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
+        .open()
+        .await
+        .unwrap();
+    harness::untrustworthy_generation::assert_negative_generation_rows(
+        &store,
+        &SqlitePoison(connection),
     )
     .await;
 }

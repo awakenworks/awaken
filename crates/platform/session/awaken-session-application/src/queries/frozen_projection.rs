@@ -114,7 +114,22 @@ impl SessionQueries {
                     })
                     .transpose()?
             }
-            None => None,
+            // An inline Agent's Session-scoped publication is the Session's
+            // exact pin; the same projection law lowers its overrides.
+            None => baseline
+                .inline_agent_publication
+                .as_deref()
+                .cloned()
+                .map(|snapshot| {
+                    awaken_session_execution_contract::project_effective_agent_publication(
+                        baseline.model_override.as_ref(),
+                        &baseline.system_prompt,
+                        Some(resources.skills()),
+                        &owner_scope,
+                        snapshot,
+                    )
+                })
+                .transpose()?,
         };
         Ok(FrozenSessionProjection {
             bound_source_end: None,

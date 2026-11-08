@@ -2440,6 +2440,23 @@ impl awaken_session_execution_contract::Outcomes for CapableFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CapabilityRuntime for CapableFake {
+    fn unpublished_agent_publication(
+        &self,
+        agent_id: &str,
+        model_ref: &str,
+        delegate_ids: &[String],
+    ) -> Result<
+        awaken_runtime_contract::ExecutableAgentSnapshot,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        awaken_session_execution_contract::unpublished_agent_publication(
+            agent_id,
+            model_ref,
+            Vec::new(),
+            delegate_ids,
+        )
+    }
+
     fn capabilities(&self) -> Result<AgentCapabilities, awaken_runtime_contract::runs::RunError> {
         Ok(AgentCapabilities {
             builtin_tools: vec![
@@ -3642,6 +3659,23 @@ impl awaken_session_execution_contract::ThreadReads for ToolAwaitingFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CapabilityRuntime for ToolAwaitingFake {
+    fn unpublished_agent_publication(
+        &self,
+        agent_id: &str,
+        model_ref: &str,
+        delegate_ids: &[String],
+    ) -> Result<
+        awaken_runtime_contract::ExecutableAgentSnapshot,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        awaken_session_execution_contract::unpublished_agent_publication(
+            agent_id,
+            model_ref,
+            Vec::new(),
+            delegate_ids,
+        )
+    }
+
     fn capabilities(&self) -> Result<AgentCapabilities, awaken_runtime_contract::runs::RunError> {
         Ok(match self.scenario {
             AdapterToolScenario::Permission => AgentCapabilities {

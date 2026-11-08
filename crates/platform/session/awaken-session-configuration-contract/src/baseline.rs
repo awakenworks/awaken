@@ -139,6 +139,10 @@ pub struct ControlSessionCreationInputs {
     /// rows without a pin retain `None` and use their legacy recovery behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_revision: Option<u64>,
+    /// The Session-scoped publication of an Agent its Workspace does not
+    /// publish, frozen at creation (see [`SessionBaseline::inline_agent_publication`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_agent_publication: Option<Box<awaken_runtime_contract::ExecutableAgentSnapshot>>,
     pub model: String,
     pub execution_model_ref: String,
     /// Complete Session-local model semantics when the caller overrides the
@@ -201,6 +205,7 @@ impl SessionCreationIntent {
             runtime_placement,
             agent_id,
             agent_revision,
+            inline_agent_publication,
             model,
             execution_model_ref,
             model_override,
@@ -239,7 +244,8 @@ impl SessionCreationIntent {
             mutation_policy,
             system_prompt,
             application_origin,
-        );
+        )
+        .with_inline_agent_publication(inline_agent_publication);
         Ok(CompiledSessionCreation {
             baseline,
             initial_resources: resources,
@@ -263,6 +269,14 @@ pub struct SessionBaseline {
     pub agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_revision: Option<u64>,
+    /// The Session-scoped publication of an Agent its Workspace does not
+    /// publish (`agent_revision` is then `None`), frozen at creation so a
+    /// Worker-placed Session pins an exact publication. It is immutable: its
+    /// content address enters this baseline's fingerprint, it never enters
+    /// the Workspace's published-Agent catalog, and it is addressable only
+    /// through this Session. Historical and published-Agent baselines omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_agent_publication: Option<Box<awaken_runtime_contract::ExecutableAgentSnapshot>>,
     pub model: String,
     /// Runtime coordinate resolved from `model` by the canonical publication
     /// resolver (the Agent publication or a Session-local override). It is
@@ -530,6 +544,7 @@ impl SessionBaseline {
             mcp_authoring,
             agent_id,
             agent_revision,
+            inline_agent_publication: None,
             model,
             execution_model_ref,
             model_override,
@@ -542,6 +557,26 @@ impl SessionBaseline {
             prompts,
             transcript_prefix,
         }
+    }
+
+    /// Pin the Session-scoped publication frozen for an unpublished Agent.
+    /// Its content address is domain-separated into the fingerprint, so a
+    /// baseline without one keeps its historical fingerprint byte-for-byte
+    /// and a different frozen publication is a different baseline.
+    #[must_use]
+    pub fn with_inline_agent_publication(
+        mut self,
+        publication: Option<Box<awaken_runtime_contract::ExecutableAgentSnapshot>>,
+    ) -> Self {
+        if let Some(publication) = &publication {
+            self.fingerprint = SessionBaselineFingerprint(crate::stable_fingerprint(&(
+                "session-inline-agent-publication-v1",
+                &self.fingerprint.0,
+                &publication.fingerprint.0,
+            )));
+        }
+        self.inline_agent_publication = publication;
+        self
     }
 }
 
@@ -822,6 +857,7 @@ mod tests {
             runtime_placement: SessionRuntimePlacement::Local,
             agent_id: "agent".into(),
             agent_revision: None,
+            inline_agent_publication: None,
             model: "model".into(),
             execution_model_ref: "model".into(),
             model_override: None,
@@ -837,6 +873,66 @@ mod tests {
             resources: crate::ResolvedSessionResources::default(),
             initial_mcp: Vec::new(),
         }
+    }
+
+    #[test]
+    fn inline_agent_publication_is_pinned_by_its_content_address() {
+        // Causes: C1 the intent carries no inline publication; C2 it carries
+        // one; C3 it carries another (different content address); C4 the
+        // frozen baseline round-trips through its durable encoding.
+        // Effects: E1 C1 keeps the historical fingerprint byte-for-byte and
+        // carries none; E2 C2 is a different baseline carrying exactly that
+        // publication; E3 C3 differs from C2; E4 C4 is lossless.
+        // Rules: P1=C1=>E1, P2=C2=>E2, P3=C3=>E3, P4=C2+C4=>E4.
+        let publication = |model: &str| {
+            let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent")
+                .model(
+                    awaken_runtime_contract::resolved::ModelBinding::parse(
+                        "default", model, "default",
+                    )
+                    .expect("a valid fixture binding"),
+                )
+                .build();
+            snapshot.recompute_fingerprint().unwrap();
+            Box::new(snapshot)
+        };
+        let finalize = |inline: Option<Box<awaken_runtime_contract::ExecutableAgentSnapshot>>| {
+            let mut control = control_inputs(SessionNetworkPolicy::None);
+            control.inline_agent_publication = inline;
+            SessionCreationIntent { control }
+                .finalize()
+                .unwrap()
+                .baseline
+        };
+        let historical = SessionCreationIntent {
+            control: control_inputs(SessionNetworkPolicy::None),
+        }
+        .finalize()
+        .unwrap()
+        .baseline;
+        let none = finalize(None);
+        assert_eq!(none.fingerprint, historical.fingerprint, "P1");
+        assert!(none.inline_agent_publication.is_none(), "P1");
+        assert!(
+            !serde_json::to_value(&none)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("inline_agent_publication"),
+            "P1 the historical encoding"
+        );
+        let pinned = finalize(Some(publication("model-a")));
+        assert_ne!(pinned.fingerprint, none.fingerprint, "P2");
+        assert_eq!(
+            pinned.inline_agent_publication,
+            Some(publication("model-a")),
+            "P2"
+        );
+        let other = finalize(Some(publication("model-b")));
+        assert_ne!(other.fingerprint, pinned.fingerprint, "P3");
+        let decoded: SessionBaseline =
+            serde_json::from_value(serde_json::to_value(&pinned).unwrap()).unwrap();
+        assert_eq!(decoded, pinned, "P4");
     }
 
     #[test]

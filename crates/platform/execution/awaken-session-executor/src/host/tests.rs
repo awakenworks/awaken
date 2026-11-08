@@ -1271,6 +1271,7 @@ fn compile_complete_test_session_projection(
             mcp_authoring: Default::default(),
             agent_id,
             agent_revision: None,
+            inline_agent_publication: None,
             model: published_model.clone(),
             execution_model_ref: published_model,
             model_override,

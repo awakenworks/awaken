@@ -94,6 +94,22 @@ pub async fn start_all_in_one_with_worker(
     )>,
     worker: impl FnOnce(ColocatedTestWorkerInputs) -> Arc<dyn crate::ColocatedWorker>,
 ) -> Result<ColocatedTestProcess, String> {
+    start_all_in_one_with_worker_and_web_providers(stores, model, None, worker).await
+}
+
+/// [`start_all_in_one_with_worker`] whose process selects its Web provider
+/// catalog, as an Awaken Cloud identity extends it with its routed providers.
+/// The catalog enters process startup before router assembly, so Control
+/// validation and the co-located Worker's Runs read the same one.
+pub async fn start_all_in_one_with_worker_and_web_providers(
+    stores: ColocatedTestStores<'_>,
+    model: Option<(
+        Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
+        awaken_runtime_contract::resolved::ModelBinding,
+    )>,
+    web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
+    worker: impl FnOnce(ColocatedTestWorkerInputs) -> Arc<dyn crate::ColocatedWorker>,
+) -> Result<ColocatedTestProcess, String> {
     let (stores, authz) = match stores {
         ColocatedTestStores::Volatile => (
             crate::local_process_stores::in_memory_process_stores().await,
@@ -110,7 +126,8 @@ pub async fn start_all_in_one_with_worker(
             (stores, Some(iam))
         }
     };
-    let options = crate::exact_host_model::registered_test_process_options(&stores);
+    let mut options = crate::exact_host_model::registered_test_process_options(&stores);
+    options.web_search_providers = web_search_providers;
     let model_supply = match model {
         Some((executor, binding)) => crate::PublicationModelSupply::Host { executor, binding },
         None => crate::PublicationModelSupply::PublishedProviders,

@@ -128,6 +128,9 @@ async fn published_checksum(
 /// A Postgres-backed dispatch store.
 pub struct PostgresDispatchStore {
     pool: PgPool,
+    /// Rows whose untrustworthy claim generation this store already reported,
+    /// from a claim scan or the depth read.
+    reported: crate::ReportedClaimGenerations,
 }
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
@@ -365,13 +368,19 @@ impl PostgresDispatchStore {
     /// runtime namespace.
     pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
         migrate(&pool).await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            reported: crate::ReportedClaimGenerations::default(),
+        })
     }
 
     /// Build from an existing pool after verifying the externally-owned ledger.
     pub async fn with_existing_pool(pool: PgPool) -> Result<Self, StoreError> {
         verify_schema(&pool).await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            reported: crate::ReportedClaimGenerations::default(),
+        })
     }
 
     /// A clone of the connection pool for a [`PgNotifyWake`](crate::wake::PgNotifyWake):
@@ -439,7 +448,7 @@ impl PostgresDispatchStore {
                 attempt_owner,
                 attempt_epoch,
             )) => {
-                let epoch = durable_u64("dispatch lease epoch", epoch)?;
+                let epoch = crate::stored_claim_epoch(epoch)?;
                 match classify_commit_epoch_admission(
                     true,
                     owner.is_some(),
