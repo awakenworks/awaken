@@ -190,6 +190,21 @@ python3 scripts/ci/check_session_acceptance.py bind --id <绑定 id> --name <测
 
 `bind` 从当前源码定位唯一的测试定义、其函数体内的断言行和文件 SHA256，见证引用该证据的源码身份与日志摘要，并要求用例出现在本机 receipt 的 `executed` 中；绑定 id 追加到被覆盖场景，整个台账在写入前须通过守卫，否则拒绝。`evidence_state`、切片与计数仍由人工审查后修改，守卫按 L01/L07/L08 复核。receipt 只存于记录它的机器；干净 checkout 上守卫跳过 receipt 字节比对，因此 rebase 后源码身份变化时应在新提交上重新 `record`，不改写旧条目。
 
+**集成流程中的证据记录。** 执行证据绑定的是一个源码提交（`source.head`），rebase 会换掉这个提交。所以会 rebase 的集成（多条 lane 合到一个分支再 fast-forward `main`）必须在最后一次 rebase 之后重新记录：在已 rebase、工作树干净的集成分支上 `record`，再 `bind`，把台账改动作为 fast-forward `main` 之前的最后一个提交；之后不能再 rebase，否则要再记录一次。lane 自己不记录证据。以上一批的 `E-NEXTEST-SELFTEST-20261107B`/`B265` 为例，`<日期>`、`<短 sha>` 和下一个空闲的 `B` 编号按当次填写：
+
+```sh
+python3 scripts/ci/check_session_acceptance.py record --id E-NEXTEST-SELFTEST-<日期> \
+    --scope "nextest_execution self-test on the integration head <短 sha>" \
+    --require-case QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept \
+    -- python3 scripts/ci/nextest_execution.py --self-test
+python3 scripts/ci/check_session_acceptance.py bind --id <下一个 B 编号> \
+    --name test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept \
+    --source scripts/ci/nextest_execution.py --evidence E-NEXTEST-SELFTEST-<日期> \
+    --case QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept \
+    --package scripts/ci --target "nextest_execution.py --self-test" --covers T36-C02 --oracle 3 \
+    --review "<审查说明>"
+```
+
 ### 批次
 
 | 批次 | 场景 | 状态 | 证据 |
