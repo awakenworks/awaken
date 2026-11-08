@@ -318,6 +318,8 @@ run static "product release contract" python3 scripts/ci/check_product_release.p
 # The report is informational; only the tool's own decision table can fail.
 run static "principle status self-test" python3 scripts/ci/principle_status.py --self-test
 run static "principle status (informational)" python3 scripts/ci/principle_status.py --guards
+run static "Python CI ceiling self-test" python3 scripts/ci/check_python_ceiling.py --self-test
+run static "Python CI layer holds its ceiling" python3 scripts/ci/check_python_ceiling.py
 run static "observation-collapse self-test" python3 scripts/ci/check_observation_collapse.py --self-test
 run static "observation-collapse" python3 scripts/ci/check_observation_collapse.py
 # Three bounded groups retain every original decision row. Windows runs real
