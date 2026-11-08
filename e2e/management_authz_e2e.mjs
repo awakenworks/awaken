@@ -100,7 +100,7 @@ async function main() {
   let server = null;
   try {
     // ---- lifetime A ---------------------------------------------------------
-    let { server: a, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) });
+    let { server: a, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management', modelUpstream: null }) });
     server = a;
     await waitForPort(PORT);
     // Scope is provisioned once by the platform and persisted beside the other
@@ -189,7 +189,7 @@ async function main() {
     // ---- restart over the same dir -----------------------------------------
     await stopServer(server);
     server = null;
-    ({ server, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) }));
+    ({ server, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management', modelUpstream: null }) }));
     await waitForPort(PORT);
 
     // Hydration, not re-bootstrap: the token file is byte-identical and the
@@ -294,7 +294,7 @@ async function main() {
     // ---- second restart: rotation and mint both persisted -----------------
     await stopServer(server);
     server = null;
-    ({ server, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) }));
+    ({ server, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management', modelUpstream: null }) }));
     await waitForPort(PORT);
 
     r = await req(base, 'GET', '/v1/config/catalog', undefined, token);

@@ -87,7 +87,7 @@ async function main() {
   const upstream = await startUpstream('mcp');
   let server;
   try {
-    ({ server } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) }));
+    ({ server } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management', modelUpstream: null }) }));
     await waitForPort(PORT);
     const base = `http://127.0.0.1:${PORT}`;
     const token = fs.readFileSync(path.join(dir, 'admin-token'), 'utf8').trim();

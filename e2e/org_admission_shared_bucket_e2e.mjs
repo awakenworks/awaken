@@ -37,7 +37,7 @@ async function main() {
           model: {
             mode: 'pinned',
             provider_identity_ref: 'default',
-            model_ref: 'fake-haiku',
+            model_ref: 'management',
             backend_ref: 'default',
           },
         });

@@ -1,6 +1,7 @@
-// Resolver-backed provider path WITHOUT a live key: drives `real-resolved` mode
-// (executor built through resolve_inference + executor_from_materialized_endpoint) against a
-// fake Anthropic upstream. Exercises the config → resolve → run path end to end
+// Resolver-backed provider path WITHOUT a live key: drives `real` mode, whose
+// model the harness binds through the config-plane API (provider connection +
+// inference profile, resolved by the publication resolver and realized from the
+// vault), against a fake Anthropic upstream. Exercises the config → resolve → run path end to end
 // (model-catalog + credential + config-resolver + genai over the wire) that the
 // key-gated managed_resolved_real e2e otherwise skips. Deterministic, CI-safe.
 //
@@ -9,7 +10,7 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
-  fakeAnthropicServerEnv,
+  modelUpstreamEnv,
   withServer,
   pass,
   waitForSessionEventReceipt,
@@ -22,7 +23,7 @@ const FAKE_KEY = 'sk-fake-resolved-key'; // awaken-allow(secret):
 async function main() {
   const upstream = await startFakeAnthropic(FAKE_KEY);
   try {
-    await withServer('real-resolved', Number(process.env.E2E_PORT), async (baseUrl) => {
+    await withServer('real', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const session = await client.beta.sessions.create({
         agent: 'assistant',
@@ -54,7 +55,7 @@ async function main() {
       assert.ok(text.includes('FAKE:resolve me'), `the resolver-backed executor hit the wire: ${text}`);
       assert.ok(upstream.requests.length >= 1, 'the fake upstream received the resolved inference call');
       pass('config → resolve → run drove the resolver-backed executor over the wire');
-    }, fakeAnthropicServerEnv(upstream, { ANTHROPIC_API_KEY: FAKE_KEY }));
+    }, modelUpstreamEnv(upstream, { apiKey: FAKE_KEY }));
     console.log('E2E PASS: resolver-backed provider path over a fake upstream (config → resolve → run).');
     process.exitCode = 0;
   } catch (err) {

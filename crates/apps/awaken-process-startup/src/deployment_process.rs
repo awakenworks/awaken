@@ -205,6 +205,8 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
     } else {
         None
     };
+    #[cfg(any(test, feature = "test-support"))]
+    let model_configuration = crate::prepared_process::ModelConfigurationHandles::of(&stores);
     let prepared = prepare_runtime_routers(
         stores,
         identity.iam,
@@ -270,6 +272,8 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         worker_authenticator: prepared.worker_authenticator,
         colocated_worker: prepared.colocated_worker,
         clock,
+        #[cfg(any(test, feature = "test-support"))]
+        model_configuration,
     })
 }
 

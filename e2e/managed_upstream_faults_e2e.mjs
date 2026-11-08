@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import {
-  cleanupFixtureTree, fakeAnthropicServerEnv, listManagedSessionEvents, withServer,
+  cleanupFixtureTree, modelUpstreamEnv, listManagedSessionEvents, withServer,
   pass, waitForRetainedUnknownExecution, waitForSessionEventReceipt,
 } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
@@ -94,11 +94,11 @@ async function main() {
           }
           assert.equal(upstream.attempts, attempts, `${rule} exact evidence-gated HTTP count`);
         }
-      }, fakeAnthropicServerEnv(upstream, {
-        ANTHROPIC_API_KEY: FAKE_KEY,
+      }, {
+        ...modelUpstreamEnv(upstream, { apiKey: FAKE_KEY }),
         SESSION_DEPLOYMENT_STORAGE_DIR: join(directory, 'store'),
         SESSION_DEPLOYMENT_SANDBOX_DIR: join(directory, 'sandboxes'),
-      }));
+      });
       pass(`${rule}: exact provider outcome and evidence-gated reentry`);
     } finally {
       await upstream.close();

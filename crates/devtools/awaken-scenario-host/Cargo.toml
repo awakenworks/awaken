@@ -10,7 +10,7 @@ product = "devtools"
 layer = "tooling"
 authority = "scenario-host"
 separation = "process"
-enables = ["awaken-admin-config-api", "awaken-credential-store", "awaken-model-catalog-store", "awaken-resource-store"]
+enables = ["awaken-credential-store", "awaken-model-catalog-store", "awaken-resource-store"]
 
 [[bin]]
 name = "awaken-scenario-host"
@@ -66,7 +66,6 @@ awaken-run-executor-acp = { workspace = true, features = ["real-acp"] }
 # (adapter_kind + base_url + already-resolved credential) and builds the host's
 # model executor from it — the runtime never sees the credential binding (D6/D9).
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
-awaken-provider-genai = { workspace = true }
 # The management-plane HTTP surfaces this binary mounts: admin config CRUD and the
 # Managed vault/credential front door, over shared stores — in-memory by default,
 # SQLite-backed when typed data_dir selects durable persistence (`sqlite` features).
@@ -156,6 +155,8 @@ workspace = true
 awaken-protocol-acp.workspace = true
 # Cross-component suites exercise the existing scenario composition.
 awaken-control = { workspace = true, features = ["test-support"] }
+# The ignored live-model suites build their provider executor directly.
+awaken-provider-genai = { workspace = true }
 awaken-coordinator-client = { workspace = true }
 awaken-data-governance-contract = { workspace = true }
 awaken-deployment-application = { workspace = true, features = ["test-support"] }

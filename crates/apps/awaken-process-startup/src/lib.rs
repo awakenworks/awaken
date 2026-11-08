@@ -178,6 +178,8 @@ impl ControlServices {
     }
 }
 mod prepared_process;
+#[cfg(any(test, feature = "test-support"))]
+pub use prepared_process::ModelConfigurationHandles;
 use prepared_process::ProcessRouters;
 pub use prepared_process::{CoordinatorAuthorityHandles, PreparedProcess};
 

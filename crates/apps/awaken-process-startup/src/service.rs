@@ -1207,6 +1207,7 @@ mod tests {
             worker_authenticator: None,
             colocated_worker: Default::default(),
             clock: awaken_time::system_clock(),
+            model_configuration: None,
         }
     }
 
@@ -1643,6 +1644,7 @@ mod tests {
             worker_authenticator: None,
             colocated_worker: Default::default(),
             clock: awaken_time::system_clock(),
+            model_configuration: None,
         };
         let controller = configured_process_admin_controller(&process);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -5,7 +5,7 @@
 //! Harness trustworthiness (this is the whole point): a miswired factory otherwise
 //! surfaces only as a downstream `e2e/*.mjs` failure driving a real binary, hard to
 //! localize. These tests are network-free and deterministic — the scenario models
-//! run in-process (no `AWAKEN_MODEL_SOURCE`), so a drift in a factory's assembly is
+//! run in-process (no model bound through the config plane), so a drift in a factory's assembly is
 //! caught locally. They match `models.rs`'s style: one behavior per test, named for
 //! the claim it pins, driven through the real router the mode builds.
 //!

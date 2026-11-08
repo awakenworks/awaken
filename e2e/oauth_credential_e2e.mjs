@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
-  fakeAnthropicServerEnv,
+  modelUpstreamEnv,
   withServer,
   pass,
   waitForSessionEventReceipt,
@@ -20,12 +20,14 @@ const BETAS = ['managed-agents-2026-04-01'];
 // The token the server's OAuth helper mints (`printf oauth-minted-key`). The
 // upstream accepts only this, so a valid run proves the helper ran.
 const MINTED_KEY = 'oauth-minted-key'; // awaken-allow(secret):
+// The OAuth-kind credential source the `oauth-resolved` scenario holds.
+const OAUTH_FIXTURE_CREDENTIAL = 'cred:scenario:oauth-fixture';
 
 async function main() {
   const upstream = await startFakeAnthropic(MINTED_KEY);
   try {
-    // A deliberately WRONG explicit process key: if the run authenticated with this instead
-    // of the OAuth-minted token, the upstream would 401. Success proves it did not.
+    // The only credential bound is the OAuth-kind source: the upstream accepts
+    // nothing but its minted token, so a reply proves the helper ran.
     await withServer('oauth-resolved', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const session = await client.beta.sessions.create({
@@ -61,8 +63,13 @@ async function main() {
       assert.equal(upstream.unauthorized, 0, 'the OAuth-minted token authenticated (no 401s)');
       assert.ok(upstream.requests.length >= 1, 'the upstream served the OAuth-credentialed inference');
       pass('an OAuth-kind credential mints its token via the helper and authenticates the run (#5)');
-    }, fakeAnthropicServerEnv(upstream, {
-      ANTHROPIC_API_KEY: 'sk-not-the-minted-key', // awaken-allow(secret):
+    }, modelUpstreamEnv(upstream, {
+      // The operator connects the provider (an Anthropic connection takes an
+      // API key), then binds the Agents to the scenario's OAuth-kind credential:
+      // the admin API authors only server-owned helpers, so the fixture helper
+      // is pre-held. Only the bound credential can authenticate the Run.
+      apiKey: MINTED_KEY,
+      bindCredentialSourceId: OAUTH_FIXTURE_CREDENTIAL,
     }));
 
     console.log('E2E PASS: OAuth credential materialization over the real wire (#5).');

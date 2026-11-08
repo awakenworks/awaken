@@ -423,6 +423,8 @@ async fn prepare_control_process_with_model_supply_and_installations(
         worker_authenticator: prepared.worker_authenticator,
         colocated_worker: prepared.colocated_worker,
         clock,
+        #[cfg(any(test, feature = "test-support"))]
+        model_configuration: None,
     })
 }
 

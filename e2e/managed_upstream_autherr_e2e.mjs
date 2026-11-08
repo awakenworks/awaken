@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
-  fakeAnthropicServerEnv,
+  modelUpstreamEnv,
   withServer,
   pass,
   waitForSessionEventReceipt,
@@ -60,8 +60,11 @@ async function main() {
       assert.ok(upstream.unauthorized >= 1, `the upstream rejected the key (${upstream.unauthorized})`);
       assert.ok(sendError !== null || events.length > 0, 'the auth failure surfaced through the run loop');
       pass('a non-retryable 401 surfaces immediately (no retry, no fabricated reply)');
-    }, fakeAnthropicServerEnv(upstream, {
-      ANTHROPIC_API_KEY: 'the-wrong-key', // awaken-allow(secret):
+    }, modelUpstreamEnv(upstream, {
+      // The operator connects the provider with its key, then binds the
+      // Agents to a second key it entered, which the provider refuses.
+      apiKey: 'the-right-key', // awaken-allow(secret):
+      bindSecret: 'the-wrong-key', // awaken-allow(secret):
     }));
     console.log('E2E PASS: non-retryable upstream auth error surfaces through the run loop.');
     process.exitCode = 0;
