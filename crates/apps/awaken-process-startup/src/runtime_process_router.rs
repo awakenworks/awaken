@@ -127,6 +127,9 @@ pub(super) async fn prepare_runtime_routers(
     routers.colocated_worker.brokered_inference = cloud.brokered_client.take().map(|client| {
         client as Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>
     });
+    // Its Runs use the Web provider catalog this process validated their
+    // publications against, Cloud routes included.
+    routers.colocated_worker.web_search_providers = Some(cloud.web_search_providers.clone());
     Ok(routers)
 }
 

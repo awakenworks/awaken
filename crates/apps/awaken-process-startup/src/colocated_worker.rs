@@ -34,6 +34,12 @@ pub struct ColocatedWorkerInputs {
     /// when Cloud models are disabled or no Cloud identity is configured.
     pub brokered_inference:
         Option<Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>>,
+    /// The process's Web provider catalog: the built-ins plus the Awaken Cloud
+    /// routes its brokered client installed. Control validates publications
+    /// against this catalog, so the Worker that executes them uses the same
+    /// one. Absent where the process selected none (the Worker keeps its
+    /// built-ins).
+    pub web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
 }
 
 /// Prepares the co-located Worker of an AllInOne deployment. Consumer: the

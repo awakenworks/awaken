@@ -437,8 +437,8 @@ impl PreparedLocalWorker {
         }
     }
 
-    /// What the AllInOne process lends this incarnation: its admin tools and
-    /// its Awaken Cloud brokered access.
+    /// What the AllInOne process lends this incarnation: its admin tools, its
+    /// Awaken Cloud brokered access and its Web provider catalog.
     pub fn with_process_inputs(
         mut self,
         process: awaken_process_startup::ColocatedWorkerInputs,
@@ -477,6 +477,9 @@ impl PreparedLocalWorker {
                 .with_credential_refresh_factory(refresh)
                 .with_admin_tools(self.process.admin_tools.clone())
                 .without_admin_surface();
+        if let Some(providers) = &self.process.web_search_providers {
+            builder = builder.with_web_search_provider_registry(providers.clone());
+        }
         if let Some(resolver) = &self.resolver {
             builder = builder
                 .with_worker_local_credential_resolver(resolver.clone())
@@ -1303,6 +1306,7 @@ mod tests {
                             dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient,
                         >
                 }),
+                web_search_providers: None,
             };
             let stores = awaken_control::InferenceMaterializationStores {
                 credentials: Arc::new(InMemoryCredentialRepo::new()),

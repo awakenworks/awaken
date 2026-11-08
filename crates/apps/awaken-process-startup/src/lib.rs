@@ -28,7 +28,7 @@ mod control_component;
 #[cfg(any(test, feature = "test-support"))]
 pub use colocated_test_process::{
     ColocatedTestProcess, ColocatedTestStores, ColocatedTestWorkerInputs,
-    start_all_in_one_with_worker,
+    start_all_in_one_with_worker, start_all_in_one_with_worker_and_web_providers,
 };
 mod coordinator_execution;
 mod credential_probe;
