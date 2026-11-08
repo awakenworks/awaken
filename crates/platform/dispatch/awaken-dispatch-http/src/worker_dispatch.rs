@@ -1255,47 +1255,15 @@ async fn settle(
         // commits have landed; a later activity revives and reacquires its stable
         // Work item. Child Runs borrow the parent's fence and must retain it.
         if owns_session_work {
-            let session_work = &service.session_work;
-            let lease = match session_work
-                .acquire_session_work(
-                    &awaken_session_types::SessionId::from(session_thread_id.0),
-                    &claim.owner,
-                    awaken_session_application_contract::SessionWorkAcquisition::RealizationRenewal,
-                )
-                .await
-                .map_err(|error| {
-                    RealizationHttpError::from(ApplicationError::internal(error.to_string()))
-                })? {
-                awaken_session_application_contract::SessionWorkOwnership::NotRequired => None,
-                awaken_session_application_contract::SessionWorkOwnership::Leased(lease)
-                    if lease.owner() == claim.owner =>
-                {
-                    Some(lease)
-                }
-                awaken_session_application_contract::SessionWorkOwnership::Unowned
-                | awaken_session_application_contract::SessionWorkOwnership::Leased(_)
-                    if committed_terminal =>
-                {
-                    // No Work mutation is authorized by another owner's lease.
-                    // The subsequent Dispatch settle still checks its own epoch.
-                    None
-                }
-                awaken_session_application_contract::SessionWorkOwnership::Unowned
-                | awaken_session_application_contract::SessionWorkOwnership::Leased(_) => {
-                    return Err(RealizationHttpError::from(ApplicationError::invalid(
-                        "Session Work ownership was lost before Run settlement",
-                    )));
-                }
-            };
-            let released = match lease.as_ref() {
-                Some(lease) => session_work
-                    .release_session_work(lease)
-                    .await
-                    .map_err(|error| {
-                        RealizationHttpError::from(ApplicationError::internal(error.to_string()))
-                    })?,
-                None => true,
-            };
+            let released = session_realization::release_session_work_if_owned(
+                &service,
+                &awaken_session_types::SessionId::from(session_thread_id.0),
+                &claim.owner,
+            )
+            .await
+            .map_err(|error| {
+                RealizationHttpError::from(ApplicationError::internal(error.to_string()))
+            })?;
             if !released && !committed_terminal {
                 return Err(RealizationHttpError::from(ApplicationError::invalid(
                     "Session Work ownership was lost before Run settlement",

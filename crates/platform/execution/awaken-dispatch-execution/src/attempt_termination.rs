@@ -96,6 +96,7 @@ pub struct NativeAttemptFootprint {
     all_model_effects_closed: bool,
     models_response_only: bool,
     response_only: bool,
+    tool_history: bool,
     domains: Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>,
     recorded_domains: Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>,
 }
@@ -154,6 +155,20 @@ impl NativeAttemptFootprint {
 
     pub(crate) fn response_only(&self) -> bool {
         self.response_only
+    }
+
+    /// Whether this attempt entered nothing but model invocations: a closed
+    /// coverage marker was committed before every entry, and no ToolBatch was
+    /// ever recorded under it. No tool, process or Sandbox participant of this
+    /// attempt can then still act inside its Environment; a model invocation's
+    /// remaining uncertainty is the provider's, outside the Environment.
+    ///
+    /// This classifies containment only. It proves no stop, grants no slot
+    /// release and leaves every model invocation's evidence unchanged.
+    /// Without the marker (a legacy, delegated or unqualified surface) or with
+    /// any tool history, the answer is `false`.
+    pub fn entered_only_model_invocations(&self) -> bool {
+        self.profile != NativeAttemptCoverage::Unspecified && !self.tool_history
     }
 
     /// Read model effects without treating a logical ToolBatch clear as either
@@ -231,6 +246,7 @@ impl NativeAttemptFootprint {
             all_model_effects_closed: false,
             models_response_only: false,
             response_only: false,
+            tool_history: false,
             domains: Vec::new(),
             recorded_domains: Vec::new(),
         };
@@ -317,6 +333,7 @@ impl NativeAttemptFootprint {
             }),
             models_response_only,
             response_only: !has_tool_history && models_response_only,
+            tool_history: has_tool_history,
             domains: Vec::new(),
             recorded_domains: Vec::new(),
         })
@@ -591,6 +608,73 @@ mod tests {
             phase: ModelOperationPhase::Returned,
             execution,
         })))
+    }
+
+    #[test]
+    fn only_a_covered_attempt_without_tool_history_entered_only_model_invocations() {
+        // Decision table for `entered_only_model_invocations`. Causes: C1 the
+        // coverage marker precedes every entry; C2 a ToolBatch is recorded;
+        // C3 the model invocation's evidence is Unknown or terminal.
+        // M1 C1+!C2 => true for either C3 (the provider's uncertainty is not an
+        // Environment effect); M2 C1+C2 => false; M3 !C1 => false; M4 a marker
+        // committed after the model entry qualifies nothing => false.
+        let tool_batch = || {
+            bind(ActiveToolBatch::write(&Some(
+                ToolBatch::for_step(
+                    RunId("run".into()),
+                    1,
+                    [(
+                        ToolCall {
+                            call_id: "tool".into(),
+                            tool_id: "bash".into(),
+                            arguments: serde_json::json!({}),
+                        },
+                        ToolRecoveryPolicy::default(),
+                    )],
+                )
+                .unwrap(),
+            )))
+        };
+        let covered = || {
+            bind(ActiveNativeAttemptCoverage::write(
+                &NativeAttemptCoverage::JournalledV1,
+            ))
+        };
+        let terminal = || {
+            ModelExecutionEvidence::Terminated(
+                TerminalReceipt::from_wire_status(Some("completed")).unwrap(),
+            )
+        };
+        for (rule, state, expected) in [
+            (
+                "M1 unknown",
+                vec![covered(), model(ModelExecutionEvidence::Unknown)],
+                true,
+            ),
+            ("M1 terminal", vec![covered(), model(terminal())], true),
+            (
+                "M2",
+                vec![
+                    covered(),
+                    tool_batch(),
+                    model(ModelExecutionEvidence::Unknown),
+                ],
+                false,
+            ),
+            ("M3", vec![model(ModelExecutionEvidence::Unknown)], false),
+            (
+                "M4",
+                vec![model(ModelExecutionEvidence::Unknown), covered()],
+                false,
+            ),
+        ] {
+            let footprint = NativeAttemptFootprint::decode(&snapshot(state)).unwrap();
+            assert_eq!(
+                footprint.entered_only_model_invocations(),
+                expected,
+                "{rule}"
+            );
+        }
     }
 
     #[test]

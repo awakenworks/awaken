@@ -115,6 +115,11 @@ struct StaticRecovery {
     expected_run_id: RunId,
     result: Result<RunRecoverySnapshot, String>,
     observed: Mutex<Vec<(ThreadId, ThreadId, RunId)>>,
+    replace_claim_during_read: Option<(
+        Arc<MemoryDispatchStore>,
+        RunClaim,
+        awaken_dispatch_testkit::ManualStoreClock,
+    )>,
 }
 
 #[async_trait::async_trait]
@@ -147,6 +152,18 @@ impl RunRecoverySource for StaticRecovery {
             return Err(RecoveryError::Rejected(
                 "settlement recovery coordinates do not match the guarded dispatch".into(),
             ));
+        }
+        if let Some((dispatch, claim, clock)) = &self.replace_claim_during_read {
+            use awaken_dispatch_testkit::ConformanceClock as _;
+            clock.set(30_001);
+            let successor = dispatch
+                .claim(&claim.owner, 30_000, &Default::default())
+                .await
+                .unwrap()
+                .expect("expired mutation claim is reclaimable behind its physical slot");
+            let successor = RunClaim::from(&successor.lease);
+            assert_eq!(successor.run_id, claim.run_id);
+            assert!(successor.epoch > claim.epoch);
         }
         self.result.clone().map_err(RecoveryError::Rejected)
     }
@@ -546,6 +563,19 @@ async fn claimed_terminal_dispatch(
     tag: &str,
     placement: TerminalThread,
 ) -> (Arc<MemoryDispatchStore>, RunClaim, ThreadId, ThreadId) {
+    claimed_terminal_dispatch_with_clock(
+        tag,
+        placement,
+        awaken_dispatch_testkit::ManualStoreClock::new(0),
+    )
+    .await
+}
+
+async fn claimed_terminal_dispatch_with_clock(
+    tag: &str,
+    placement: TerminalThread,
+    clock: awaken_dispatch_testkit::ManualStoreClock,
+) -> (Arc<MemoryDispatchStore>, RunClaim, ThreadId, ThreadId) {
     let run_id = RunId(format!("terminal-run-{tag}"));
     let thread_id = ThreadId(format!("terminal-child-{tag}"));
     let child = matches!(placement, TerminalThread::Child);
@@ -554,7 +584,6 @@ async fn claimed_terminal_dispatch(
     } else {
         thread_id.clone()
     };
-    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
     let mut request = RunDispatch::new(activation(&run_id.0, &thread_id.0))
         .with_traceparent(Some(TERMINAL_TRACEPARENT.to_string()));
@@ -596,6 +625,7 @@ fn terminal_recovery(
         expected_run_id: run_id.clone(),
         result,
         observed: Mutex::new(Vec::new()),
+        replace_claim_during_read: None,
     })
 }
 
@@ -1125,33 +1155,110 @@ async fn occupied_physical_attempt_blocks_terminal_observers_and_work_release() 
     }
 }
 
+/// A committed footprint: the coverage marker, optionally one ToolBatch, then
+/// one model invocation whose outcome is Unknown with an opaque effect.
+fn footprint_snapshot(thread_id: &ThreadId, run_id: &RunId, tools: bool) -> RunRecoverySnapshot {
+    use awaken_agent_contract::agent::state::StateKey;
+    use awaken_runtime_contract::attempt_termination::{
+        ActiveNativeAttemptCoverage, NativeAttemptCoverage,
+    };
+    use awaken_runtime_contract::model_operation::{ActiveModelOperation, ModelOperation};
+    let bind = |mut command: awaken_agent_contract::agent::state::Command| {
+        command.run_id = Some(run_id.clone());
+        command
+    };
+    let mut state = vec![bind(ActiveNativeAttemptCoverage::write(
+        &NativeAttemptCoverage::JournalledV1,
+    ))];
+    if tools {
+        state.push(bind(
+            awaken_tool_contract::tool_batch::ActiveToolBatch::write(&Some(
+                awaken_tool_contract::tool_batch::ToolBatch::for_step(
+                    run_id.clone(),
+                    1,
+                    [(
+                        awaken_tool_contract::tool::ToolCall {
+                            call_id: "tool".into(),
+                            tool_id: "bash".into(),
+                            arguments: json!({}),
+                        },
+                        awaken_tool_contract::tool::ToolRecoveryPolicy::default(),
+                    )],
+                )
+                .unwrap(),
+            )),
+        ));
+    }
+    let model = ModelOperation::next(
+        None,
+        awaken_runtime_contract::resolved::ModelBinding::parse("provider", "model", "genai")
+            .unwrap(),
+    )
+    .unwrap();
+    state.push(bind(ActiveModelOperation::write(&Some(model))));
+    let mut snapshot =
+        terminal_snapshot(thread_id, run_id, RunState::Ended(EndCause::Indeterminate));
+    snapshot.state_commit_cursors = (1..=state.len() as u64).collect();
+    snapshot.state = state;
+    snapshot
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_root_run_deferred_behind_an_occupied_slot_parks_only_its_session_work() {
-    // Causes: C1 a root Session Run or a child Run that borrows its parent's
-    // Work; C2 its Thread's attempt slot is occupied with no stop evidence, or
-    // empty; C3 the Worker defers the claim behind a retry deadline, or
-    // relinquishes it outright. Effects: E1 this Worker's Session Work is
-    // released so the Environment admits another Session; E2 the slot keeps
-    // fencing the Thread. Rules: D1 root+occupied+deferred => E1+E2;
-    // D2 root+empty+deferred => no release (ordinary resolution backoff keeps
-    // the Work for its retry); D3 child+occupied+deferred => no release (the
-    // parent's Work is borrowed); D4 root+occupied+outright => no release.
-    // No row clears or settles the slot.
-    for (rule, placement, occupied, deferred, released) in [
-        ("D1", TerminalThread::Primary, true, true, 1),
-        ("D2", TerminalThread::Primary, false, true, 0),
-        ("D3", TerminalThread::Child, true, true, 0),
-        ("D4", TerminalThread::Primary, true, false, 0),
+    use awaken_dispatch::DispatchControlReads as _;
+    // Causes: C1 a root Session Run, or a child Run borrowing its parent's
+    // Work; C2 its attempt slot is occupied or empty; C3 the Worker durably
+    // recorded the attempt's local entry closure, or not; C4 the committed
+    // footprint shows only model invocations, or a ToolBatch; C5 the Worker
+    // defers the claim behind a retry deadline, or relinquishes it outright.
+    // Effects: E1 this Worker's Session Work is released so the Environment
+    // admits another Session; E2 the slot keeps fencing the Thread.
+    // Rules: D1 root+occupied+closed+model-only+deferred => E1+E2;
+    // D2 local entry still open => Work kept (a local participant may still
+    // act inside the Environment); D3 closed but a ToolBatch recorded => kept;
+    // D4 empty slot => kept (ordinary resolution backoff); D5 child => kept;
+    // D6 outright relinquish => kept. No row clears or settles the slot.
+    for (rule, placement, occupied, closed, tools, deferred, released) in [
+        ("D1", TerminalThread::Primary, true, true, false, true, 1),
+        ("D2", TerminalThread::Primary, true, false, false, true, 0),
+        ("D3", TerminalThread::Primary, true, true, true, true, 0),
+        ("D4", TerminalThread::Primary, false, false, false, true, 0),
+        ("D5", TerminalThread::Child, true, true, false, true, 0),
+        ("D6", TerminalThread::Primary, true, true, false, false, 0),
     ] {
-        let (store, claim, _, _) = claimed_terminal_dispatch(rule, placement).await;
+        let (store, claim, session, thread) = claimed_terminal_dispatch(rule, placement).await;
         if occupied {
             store.begin_attempt(&claim, None).await.unwrap();
         }
+        if closed {
+            store.close_attempt(&claim).await.unwrap();
+        }
+        if occupied {
+            assert_eq!(
+                store
+                    .load_physical_attempt(&claim.run_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .closing,
+                closed,
+                "{rule} local-entry fixture"
+            );
+        }
+        let snapshot = footprint_snapshot(&thread, &claim.run_id, tools);
+        assert_eq!(
+            awaken_dispatch::NativeAttemptFootprint::decode(&snapshot)
+                .unwrap()
+                .entered_only_model_invocations(),
+            !tools,
+            "{rule} footprint fixture"
+        );
         let work = Arc::new(RecordingSessionWork::default());
         let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
             RegisteredDispatchDependencies {
                 lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
                 session_work: work.clone(),
+                recovery: terminal_recovery(&session, &thread, &claim.run_id, Ok(snapshot)),
                 ..worker_dispatch_dependencies(
                     store.clone(),
                     ready_workers(&["terminal-worker"]),
@@ -1171,7 +1278,17 @@ async fn a_root_run_deferred_behind_an_occupied_slot_parks_only_its_session_work
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{rule}: {value}");
-        assert_eq!(work.releases.load(Ordering::SeqCst), released, "{rule}/E1");
+        // The existing Dispatch kernel retains the mutation claim while its
+        // own physical slot is occupied. Work release is independently fenced.
+        assert_eq!(
+            value["relinquished"], !occupied,
+            "{rule} claim CAS: {value}"
+        );
+        assert_eq!(
+            work.releases.load(Ordering::SeqCst),
+            released,
+            "{rule}/E1: {value}"
+        );
         let row = store
             .list_dispatches()
             .await
@@ -1181,6 +1298,58 @@ async fn a_root_run_deferred_behind_an_occupied_slot_parks_only_its_session_work
             .expect("the relinquished row remains");
         assert_eq!(row.physical_attempt_active, occupied, "{rule}/E2");
     }
+}
+
+#[tokio::test]
+async fn a_deferral_losing_its_claim_during_recovery_keeps_session_work() {
+    // Causes: C1 the exact root claim has a closed, model-only occupied slot;
+    // C2 a successor reclaims after expiry while the claim guard is released,
+    // footprint is being read. Effect: the losing request cannot release Work.
+    // Rule R1=C1+!C2 permits release (covered by D1 above); R2=C1+C2 keeps it.
+    // The fixture advances the store clock and claims a newer epoch at this
+    // exact boundary; an assertion verifies that replacement occurred.
+    // no sleep or scheduling assumption is needed to select R2.
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let (store, claim, session, thread) = claimed_terminal_dispatch_with_clock(
+        "deferral-lost-during-recovery",
+        TerminalThread::Primary,
+        clock.clone(),
+    )
+    .await;
+    store.begin_attempt(&claim, None).await.unwrap();
+    store.close_attempt(&claim).await.unwrap();
+    let mut recovery = terminal_recovery(
+        &session,
+        &thread,
+        &claim.run_id,
+        Ok(footprint_snapshot(&thread, &claim.run_id, false)),
+    );
+    Arc::get_mut(&mut recovery)
+        .unwrap()
+        .replace_claim_during_read = Some((store.clone(), claim.clone(), clock));
+    let work = Arc::new(RecordingSessionWork::default());
+    let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
+        RegisteredDispatchDependencies {
+            lease_policy: Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+            session_work: work.clone(),
+            recovery,
+            ..worker_dispatch_dependencies(
+                store,
+                ready_workers(&["terminal-worker"]),
+                Arc::new(ManualClock::new(0)),
+            )
+        },
+    )));
+    let (status, value) = post(
+        &router,
+        "terminal-worker",
+        "/v1/worker/dispatch/relinquish",
+        json!({ "claim": claim, "retry_after_ms": 250 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R2: {value}");
+    assert_eq!(value["relinquished"], false, "R2 lost the mutation claim");
+    assert_eq!(work.releases.load(Ordering::SeqCst), 0, "R2 keeps Work");
 }
 
 #[tokio::test(flavor = "multi_thread")]
