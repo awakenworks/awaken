@@ -601,6 +601,21 @@ class ProfileTests(unittest.TestCase):
                         + " ".join(line.split()[1:]) for line in planned
                     ], "P4 every planned batch reaches Cargo verbatim")
 
+    def test_a_narrowed_plan_with_no_harness_is_nothing_to_verify_not_vacuous(self):
+        # N1 narrowed+empty -> 0 "nothing to verify", unjudged; N2 unnarrowed+empty -> 1;
+        # N3/N4 a batch ran -> vacuity judges it (fails 1 / passes 0).
+        gate = (Path(__file__).resolve().parents[2] / "scripts/ci/check_formal.sh").read_text(encoding="utf-8")
+        section = gate[gate.index('  kani_plan="$('):gate.index('\nelse\n  echo "skipped Kani')]
+        for label, affected, plan, vacuity, status in (("N1", "b", "", 0, 0), ("N2", "", "", 0, 1),
+                                                       ("N3", "b", "p --harness a", 1, 1), ("N4", "b", "p --harness a", 0, 0)):
+            shell = (f"set -euo pipefail\nmissing=0; formal_artifact_dir=.; formal_selection=(); formal_affected={affected!r}\n"
+                     f"run_kani() {{ :; }}\npython3() {{ case $2 in kani) printf %s {shlex.quote(plan)};; "
+                     f"check) echo JUDGED; return {vacuity};; esac; }}\n" + section)
+            with self.subTest(label), tempfile.TemporaryDirectory() as work:
+                result = subprocess.run([bash_executable(), "-c", shell], cwd=work, text=True, capture_output=True)
+                self.assertEqual((result.returncode, "JUDGED" in result.stdout), (status, bool(plan)), label)
+                self.assertEqual("nothing to verify" in result.stdout, label == "N1", label)
+
     def test_live_checker_and_release_consume_the_same_qualification(self):
         # One real ledger is consumed through the CLI and release imports.
         # R1 their denominator, numerator and exact gaps agree, with no mocked

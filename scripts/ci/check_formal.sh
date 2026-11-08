@@ -602,16 +602,22 @@ if command -v cargo-kani >/dev/null 2>&1; then
     exit 1
   fi
   mapfile -t kani_batches <<< "$kani_plan"
+  kani_batches_run=0
   for kani_batch in "${kani_batches[@]}"; do
     [ -n "$kani_batch" ] || continue
     read -r -a kani_argv <<< "$kani_batch"
     run_kani "${kani_argv[@]}"
+    kani_batches_run=$((kani_batches_run + 1))
   done
   # A passing proof can still be vacuous: Kani counts an assertion no input
   # reaches as a pass, and an unsatisfied `kani::cover!` does not change the
   # verdict. formal_vacuity.py refuses both. When every batch ran (missing=0)
   # the results must exist; a run whose batches were all skipped has none.
-  if [ -d result_output_dir ] || [ "$missing" -eq 0 ]; then
+  # A narrowed pr run whose change reaches no harness ran no batch and has no
+  # results to judge: that is "nothing to verify", not a vacuous proof.
+  if [ "$kani_batches_run" -eq 0 ]; then
+    echo "Kani: the narrowed plan selects no harness for this change; nothing to verify"
+  elif [ -d result_output_dir ] || [ "$missing" -eq 0 ]; then
     kani_vacuity=0
     python3 scripts/ci/formal_vacuity.py check result_output_dir \
       --keep "$formal_artifact_dir/kani-vacuity" || kani_vacuity=$?
