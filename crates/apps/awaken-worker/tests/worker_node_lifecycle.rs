@@ -729,6 +729,33 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     }));
 }
 
+struct NoLaunchBrokeredAcp;
+
+#[async_trait::async_trait]
+impl awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer for NoLaunchBrokeredAcp {
+    async fn materialize(
+        &self,
+        _: awaken_acp_catalog::AcpCli,
+        _: &awaken_runtime_contract::activation::RunActivation,
+        _: &awaken_runtime_contract::RuntimeRunContext,
+    ) -> Result<awaken_run_executor_acp::ResolvedModel, awaken_run_executor_acp::OpenError> {
+        panic!("registration test must never launch a model")
+    }
+    fn secret_broker(&self) -> Arc<dyn awaken_provisioning_contract::SecretBroker> {
+        Arc::new(
+            awaken_credential_materializer::PinnedCredentialMaterializer::for_gateway_leases(
+                awaken_time::system_clock(),
+            ),
+        )
+    }
+    fn credential_realization_capabilities(
+        &self,
+        _: awaken_acp_catalog::AcpCli,
+    ) -> awaken_credential_contract::CredentialRealizationCapabilities {
+        Default::default()
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn registered_application_factory_uses_one_identity_and_rejects_drift_before_ready() {
     // Causes C1 compatible registration; C2 factory returns/unwinds/errors;
@@ -737,9 +764,15 @@ async fn registered_application_factory_uses_one_identity_and_rejects_drift_befo
     // R2 C2(error|panic)|!C3 -> exact deregistration, no Ready/claim/provider IO.
     // Drift crosses each declaration axis; no failed row may retain a second
     // application dependency source or silently fall back to static clients.
+    // ACP extends the same table: A1 declared+realized brokered ACP => R1;
+    // A2 absent port or changed per-CLI profile => R2 before Ready. This is the
+    // existing registered factory, not a second mutable identity/port registry.
     use awaken_worker::{WorkerApplicationCapabilities, WorkerApplicationDependencies};
     for fault in [
         "ok",
+        "acp-ok",
+        "acp-absent",
+        "acp-profile",
         "error",
         "panic",
         "inference",
@@ -755,8 +788,23 @@ async fn registered_application_factory_uses_one_identity_and_rejects_drift_befo
         let provider = Arc::new(ExternalSessionProvider::default());
         let expected_worker = format!("registered-{fault}");
         let worker_id = expected_worker.clone();
-        let mut declaration = WorkerApplicationCapabilities::default();
+        let mut declaration = if fault.starts_with("acp-") {
+            WorkerApplicationDependencies {
+                brokered_acp_model_access: Some(Arc::new(NoLaunchBrokeredAcp)),
+                ..Default::default()
+            }
+            .capabilities()
+        } else {
+            WorkerApplicationCapabilities::default()
+        };
         match fault {
+            "acp-profile" => {
+                declaration
+                    .brokered_acp_credentials
+                    .get_mut("opencode")
+                    .unwrap()
+                    .envelope_required = true
+            }
             "inference" => declaration.inference = true,
             "scheme" => {
                 declaration.inference_schemes.insert("invented".into());
@@ -787,7 +835,16 @@ async fn registered_application_factory_uses_one_identity_and_rejects_drift_befo
                         if fault == "error" {
                             return Err("injected registered application error".into());
                         }
-                        Ok(WorkerApplicationDependencies::default())
+                        Ok(WorkerApplicationDependencies {
+                            brokered_acp_model_access: matches!(fault, "acp-ok" | "acp-profile")
+                                .then(|| {
+                                    Arc::new(NoLaunchBrokeredAcp)
+                                as Arc<
+                                    dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer,
+                                >
+                                }),
+                            ..Default::default()
+                        })
                     }),
                 )
                 .with_admin_listen(&admin_addr);
@@ -803,7 +860,7 @@ async fn registered_application_factory_uses_one_identity_and_rejects_drift_befo
         let result = tokio::time::timeout(
             Duration::from_secs(8),
             worker.build().unwrap().run_until(async {
-                if fault != "ok" {
+                if !matches!(fault, "ok" | "acp-ok") {
                     return std::future::pending().await;
                 }
                 assert!(
@@ -816,7 +873,7 @@ async fn registered_application_factory_uses_one_identity_and_rejects_drift_befo
         .await
         .expect("bounded canonical registration withdrawal");
         assert_eq!(factories.load(Ordering::SeqCst), 1);
-        if fault == "ok" {
+        if matches!(fault, "ok" | "acp-ok") {
             result.unwrap();
         } else {
             assert!(result.is_err(), "R2 {fault}");

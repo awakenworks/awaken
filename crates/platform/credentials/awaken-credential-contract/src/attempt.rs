@@ -113,11 +113,22 @@ pub fn compile_candidate_credential_bindings(
         };
         let holder = holder.ok_or(AttemptCredentialBindingError::MissingPlaintextHolder)?;
         let backend = candidate.binding().backend();
+        let acp_profiles = (matches!(backend, Backend::Acp(_))
+            && matches!(
+                holder.boundary,
+                PlaintextBoundary::Workload | PlaintextBoundary::Platform
+            ))
+        .then(|| installed.acp_backend_profiles(candidate.binding().identity().2));
+        let installed = acp_profiles.as_ref().unwrap_or(installed);
         match &backend {
             Backend::Native if access.usage != CredentialUsage::ProviderAdapter => {
                 return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
             }
-            Backend::Acp(_) if !access.usage.is_scalar_process_delivery() => {
+            Backend::Acp(_)
+                if !access.usage.is_scalar_process_delivery()
+                    || (holder.boundary == PlaintextBoundary::Platform
+                        && access.usage != CredentialUsage::ProviderAdapter) =>
+            {
                 return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
             }
             Backend::Remote(_) if !matches!(access.usage, CredentialUsage::HttpHeader { .. }) => {
@@ -136,6 +147,13 @@ pub fn compile_candidate_credential_bindings(
             (Backend::Acp(_), PlaintextBoundary::Workload) => installed
                 .acp_backend_realization_kind(candidate.binding().identity().2)
                 .map_err(AttemptCredentialBindingError::InvalidWorkerCapabilities)?
+                .filter(|kind| {
+                    matches!(
+                        kind,
+                        CredentialRealizationKind::ProcessSecretEnvironment
+                            | CredentialRealizationKind::PrivateSecretFile
+                    )
+                })
                 .ok_or_else(|| AttemptCredentialBindingError::UnsupportedRealization {
                     boundary: PlaintextBoundary::Workload,
                     backend: candidate.binding().identity().2.to_owned(),
@@ -144,10 +162,21 @@ pub fn compile_candidate_credential_bindings(
             (Backend::Remote(_), PlaintextBoundary::Worker) => {
                 CredentialRealizationKind::WorkerRelay
             }
+            // A hosted ACP launch receives an attempt-local Gateway capability,
+            // never this Platform-held Provider credential. The installed exact
+            // Platform adapter profile still must admit the holder/source/kind.
+            (Backend::Acp(_), PlaintextBoundary::Platform) => installed
+                .acp_backend_realization_kind(candidate.binding().identity().2)
+                .map_err(AttemptCredentialBindingError::InvalidWorkerCapabilities)?
+                .filter(|kind| *kind == CredentialRealizationKind::PlatformProviderAdapter)
+                .ok_or_else(|| AttemptCredentialBindingError::UnsupportedRealization {
+                    boundary: PlaintextBoundary::Platform,
+                    backend: candidate.binding().identity().2.to_owned(),
+                })?,
             (Backend::Native, PlaintextBoundary::Platform) => {
                 CredentialRealizationKind::PlatformProviderAdapter
             }
-            (Backend::Native | Backend::Acp(_) | Backend::Remote(_), boundary) => {
+            (Backend::Native | Backend::Remote(_), boundary) => {
                 return Err(AttemptCredentialBindingError::UnsupportedRealization {
                     boundary,
                     backend: candidate.binding().identity().2.to_owned(),
@@ -1304,6 +1333,164 @@ mod tests {
             )
             .expect("backend-correlated admission");
             assert_eq!(bindings[0].selected_realization_kind, expected);
+        }
+    }
+
+    #[test]
+    fn platform_acp_claim_requires_the_exact_platform_adapter_profile() {
+        // Causes: C1 Provider-backed ACP; C2 exact Platform holder/policy;
+        // C3 installed PlatformProviderAdapter holder/source/kind; C4 Provider
+        // usage. Effects: P1 all -> Platform-only claim, never Workload delivery;
+        // P2 any C2/C3/C4 disagreement -> refusal before materialization. Rows
+        // vary each guard independently; scalar-process delivery cannot borrow
+        // the Platform branch merely because the backend is ACP. Backend tags
+        // and holder/source/kind must belong to one complete profile: missing,
+        // foreign, contradictory, or split-profile evidence never borrows the
+        // Native adapter or another CLI's delivery authority.
+        let holder = PlaintextHolder::new(PlaintextBoundary::Platform, "test.gateway");
+        for fault in [
+            "ok",
+            "holder",
+            "kind",
+            "source",
+            "policy",
+            "usage",
+            "missing-backend",
+            "foreign-backend",
+            "split-profile",
+            "contradictory",
+        ] {
+            let candidate = ResolvedModelCandidate::try_provider_with_acp(
+                fixture_binding("provider", "model", "acp:opencode"),
+                "provider@1",
+                "route@1",
+                "workspace-a",
+                Some(
+                    CredentialAccess::new(
+                        CredentialRef {
+                            id: "provider-source".into(),
+                            revision: 1,
+                        },
+                        CredentialMaterialSource::ControlPlaneReference,
+                        if fault == "usage" {
+                            CredentialUsage::process_env("MODEL_ACCESS")
+                        } else {
+                            CredentialUsage::ProviderAdapter
+                        },
+                        if fault == "policy" {
+                            CredentialExecutionPolicy::self_hosted_provider()
+                        } else {
+                            CredentialExecutionPolicy::exact(
+                                holder.clone(),
+                                awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
+                            )
+                        },
+                    )
+                    .with_target(CredentialTarget::new(
+                        CredentialPurpose::ProviderAdapter,
+                        "provider",
+                    )),
+                ),
+                awaken_runtime_contract::InferenceEndpoint {
+                    adapter_kind: "openai".into(),
+                    api_dialect: "open_ai_chat".into(),
+                    base_url: "https://provider.invalid".into(),
+                    upstream_model: "model".into(),
+                    processing_placement: None,
+                },
+                awaken_runtime_contract::resolved::AcpExecutionProfile {
+                    supports_tool_aliases: false,
+                    capability_fingerprint: "test".into(),
+                    capability_adapter_version: "1".into(),
+                    session_configuration: Default::default(),
+                },
+            )
+            .unwrap();
+            let capabilities = CredentialRealizationCapabilities {
+                holders: [if fault == "holder" {
+                    PlaintextHolder::new(PlaintextBoundary::Platform, "foreign.gateway")
+                } else {
+                    holder.clone()
+                }]
+                .into_iter()
+                .collect(),
+                material_sources: [if fault == "source" {
+                    CredentialMaterialSource::WorkerReference
+                } else {
+                    CredentialMaterialSource::ControlPlaneReference
+                }]
+                .into_iter()
+                .collect(),
+                realization_kinds: [if fault == "kind" {
+                    CredentialRealizationKind::ProcessSecretEnvironment
+                } else {
+                    CredentialRealizationKind::PlatformProviderAdapter
+                }]
+                .into_iter()
+                .collect(),
+                extension_consumers: if fault == "missing-backend" {
+                    Default::default()
+                } else {
+                    [(
+                        format!(
+                            "{}acp:{}",
+                            crate::ACP_CREDENTIAL_CONSUMER_PREFIX,
+                            if fault == "foreign-backend" {
+                                "claude"
+                            } else {
+                                "opencode"
+                            }
+                        ),
+                        if fault == "contradictory" {
+                            [
+                                crate::PLATFORM_PROVIDER_ADAPTER_MATERIAL_TYPE.to_string(),
+                                crate::PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE.to_string(),
+                            ]
+                            .into_iter()
+                            .collect()
+                        } else {
+                            [crate::PLATFORM_PROVIDER_ADAPTER_MATERIAL_TYPE.to_string()]
+                                .into_iter()
+                                .collect()
+                        },
+                    )]
+                    .into_iter()
+                    .collect()
+                },
+                ..Default::default()
+            };
+            let capabilities = if fault == "split-profile" {
+                let mut native = capabilities.clone();
+                native.extension_consumers.clear();
+                let mut foreign = capabilities;
+                foreign.holders = [PlaintextHolder::new(
+                    PlaintextBoundary::Platform,
+                    "foreign.gateway",
+                )]
+                .into_iter()
+                .collect();
+                CredentialRealizationCapabilities::alternatives([native, foreign])
+            } else {
+                capabilities
+            };
+            let result = compile_candidate_credential_bindings(
+                &[&candidate],
+                Some(&holder),
+                &capabilities,
+                7,
+                0,
+            );
+            if fault == "ok" {
+                let bindings = result.unwrap();
+                assert_eq!(bindings[0].selected_plaintext_holder, holder, "P1");
+                assert_eq!(
+                    bindings[0].selected_realization_kind,
+                    CredentialRealizationKind::PlatformProviderAdapter,
+                    "P1 no Workload reinterpretation"
+                );
+            } else {
+                assert!(result.is_err(), "P2 {fault}");
+            }
         }
     }
 

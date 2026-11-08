@@ -99,10 +99,21 @@ impl PinnedCredentialMaterializer {
         local_secret_broker: Arc<dyn awaken_provisioning_contract::SecretBroker>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
+        let mut materializer = Self::for_gateway_leases(clock);
+        materializer.local_material_resolver = Some(local_material_resolver);
+        materializer.local_secret_broker = Some(local_secret_broker);
+        materializer
+    }
+
+    /// Install the one-shot process broker without a local or external Provider
+    /// authority. A downstream Gateway adapter may register attempt capabilities;
+    /// all ordinary credential reads remain unavailable.
+    #[must_use]
+    pub fn for_gateway_leases(clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self {
             clock,
-            local_material_resolver: Some(local_material_resolver),
-            local_secret_broker: Some(local_secret_broker),
+            local_material_resolver: None,
+            local_secret_broker: None,
             external_material_resolver: None,
             extension_consumers: Arc::new(BTreeMap::new()),
             pending_process_secrets: Arc::new(InvariantLock::new(HashMap::new())),
@@ -110,26 +121,14 @@ impl PinnedCredentialMaterializer {
         }
     }
 
-    /// Construct the same exact materialization adapter without a local Vault.
-    ///
-    /// Authority-store-isolated Workers use this path for sources supported by
-    /// the installed resolver. No locally backed `ControlPlaneReference` is
-    /// advertised; callers do not need an empty repository or secret-store
-    /// placeholder merely to install the neutral resolver port.
+    /// Construct the same materializer with only the deployment-selected external
+    /// resolver. Absence of local roles never supplies a local Vault fallback.
     #[must_use]
     pub fn external_only(
         resolver: Arc<dyn CredentialMaterialResolver>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
-        Self {
-            clock,
-            local_material_resolver: None,
-            local_secret_broker: None,
-            external_material_resolver: Some(resolver),
-            extension_consumers: Arc::new(BTreeMap::new()),
-            pending_process_secrets: Arc::new(InvariantLock::new(HashMap::new())),
-            pending_credential_artifacts: Arc::new(InvariantLock::new(HashMap::new())),
-        }
+        Self::for_gateway_leases(clock).with_external_material_resolver(resolver)
     }
 
     /// Install the sole non-local material-source adapter. It handles exact

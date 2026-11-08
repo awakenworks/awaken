@@ -1210,3 +1210,30 @@ the canonical admission kernel. Another holder, purpose, header shape or OAuth
 refresh sidecar fails closed. This adds no custody path, key registry, source
 selection or unsealed fallback; the same sealed claims continue to bind the
 Workspace, credential revision, target/use, recipient and expiry.
+
+
+### Amendment: attempt-local Gateway capabilities for hosted ACP (2026-11-09)
+
+The existing brokered ACP materializer port may project a downstream Gateway
+capability into the ACP workload. This capability is not the published Provider
+credential: the exact Platform holder remains authoritative for that credential,
+and only the downstream Gateway may consume it. The open runtime owns no lease
+issuer, provider route, Gateway store, or provider-secret fallback.
+
+The existing `PinnedCredentialMaterializer` process-secret registry also owns
+the last-mile reference for this attempt-local capability. Its two entry kinds
+share one random opaque-reference namespace, one-shot removal, bounded expiry,
+and current attempt-ownership check. The Provider entry retains exact pinned
+materialization; the Gateway entry returns only the downstream-issued capability.
+Neither token nor reference enters a durable snapshot, config-home archive, or
+log. A missing, stale, consumed, or expired reference fails before process launch.
+
+A hosted Worker may install its existing credential materializer for MCP and
+resource delivery together with one brokered ACP model materializer. These have
+distinct responsibilities: whenever the brokered port is installed, it is the
+only Provider-backed ACP route and capability projection. The local ACP path is
+not advertised or used as a fallback. Its complete holder/source/mechanism
+profile is correlated with the exact ACP backend through the existing manifest
+extension-consumer codec; Native and foreign CLI profiles cannot supply missing
+dimensions. The brokered port supplies the Session secret broker; the closed composition reuses the same canonical materializer
+instance for both last-mile deliveries.

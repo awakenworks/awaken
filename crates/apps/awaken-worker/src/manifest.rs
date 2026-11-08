@@ -192,8 +192,10 @@ pub(crate) struct StandardManifestInputs<'a> {
     pub(crate) inference_credentials:
         &'a awaken_credential_contract::CredentialRealizationCapabilities,
     pub(crate) credential_materializer: Option<CredentialMaterializerSupport>,
-    pub(crate) brokered_acp_model_access:
-        Option<&'a dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>,
+    pub(crate) brokered_acp_credentials: &'a std::collections::BTreeMap<
+        String,
+        awaken_credential_contract::CredentialRealizationCapabilities,
+    >,
     /// An exact Worker-local observation/revalidation resolver is installed.
     /// This is independent of whether that resolver returns secret material.
     pub(crate) worker_local_credential_resolver_installed: bool,
@@ -303,7 +305,10 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         credential_profiles.push(materializer.provider_adapter.clone());
     }
     if let (Some(materializer), Some(acp)) = (
-        inputs.credential_materializer.as_ref(),
+        inputs
+            .credential_materializer
+            .as_ref()
+            .filter(|_| inputs.brokered_acp_credentials.is_empty()),
         &inputs.deployment.acp,
     ) {
         for cli_id in acp.cli_ids() {
@@ -312,13 +317,11 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
             }
         }
     }
-    if let (Some(materializer), Some(acp)) =
-        (inputs.brokered_acp_model_access, &inputs.deployment.acp)
-    {
-        credential_profiles.extend(acp.cli_ids().filter_map(|cli_id| {
-            awaken_acp_catalog::acp_cli(cli_id)
-                .map(|cli| materializer.credential_realization_capabilities(*cli))
-        }));
+    if let Some(acp) = &inputs.deployment.acp {
+        credential_profiles.extend(
+            acp.cli_ids()
+                .filter_map(|cli_id| inputs.brokered_acp_credentials.get(cli_id).cloned()),
+        );
     }
     if let Some(materializer) = inputs
         .credential_materializer
