@@ -23,6 +23,7 @@ pub use execution_projection::{
 };
 mod agent_publication_projection;
 mod canonical_publication;
+mod inline_agent_publication;
 mod projection_receipt;
 pub use agent_publication_projection::{
     FrozenAgentPublicationDecision, frozen_agent_publication_decision,
@@ -31,6 +32,9 @@ pub use agent_publication_projection::{
 };
 pub use canonical_publication::{
     CanonicalPublicationError, CanonicalSessionPublication, resolve_canonical_session_projection,
+};
+pub use inline_agent_publication::{
+    UNPUBLISHED_AGENT_INSTRUCTIONS, UNPUBLISHED_AGENT_MAX_STEPS, unpublished_agent_publication,
 };
 pub use projection_receipt::{
     FrozenProjectionReceipt, ProjectionReceiptRefusal, STALE_PROJECTION_CODE,

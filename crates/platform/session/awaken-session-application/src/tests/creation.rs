@@ -681,6 +681,7 @@ pub(super) fn creation_command(session_id: &str) -> CreateSessionCommand {
                 runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
                 agent_id: "agent".into(),
                 agent_revision: None,
+                inline_agent_publication: None,
                 model_override: None,
                 system_prompt:
                     awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,

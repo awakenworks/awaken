@@ -857,4 +857,18 @@ pub trait CapabilityRuntime: Send + Sync {
     /// Runtimes explicitly supply their process-wide view. Unreadable frozen
     /// inputs return an error.
     fn capabilities_for(&self, thread: &str) -> Result<AgentCapabilities, RunError>;
+
+    /// The Session-scoped publication this Runtime freezes for `agent_id`,
+    /// which its Workspace does not publish: the Agent this Runtime executes
+    /// for it on `model_ref`, delegating to `delegate_ids`. A Worker executes
+    /// only an exact publication, so a Worker-placed Session of an inline
+    /// Agent pins this one at creation. Each Runtime supplies the tool surface
+    /// it executes; the rest is [`crate::unpublished_agent_publication`]. An
+    /// invalid model reference is refused.
+    fn unpublished_agent_publication(
+        &self,
+        agent_id: &str,
+        model_ref: &str,
+        delegate_ids: &[String],
+    ) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, RunError>;
 }

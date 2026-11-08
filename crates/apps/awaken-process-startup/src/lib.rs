@@ -688,6 +688,7 @@ mod runtime_session_store_tests {
                 runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
                 agent_id: "assistant".into(),
                 agent_revision: None,
+                inline_agent_publication: None,
                 model_override: None,
                 system_prompt:
                     awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,

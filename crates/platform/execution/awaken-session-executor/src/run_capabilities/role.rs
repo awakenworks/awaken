@@ -67,4 +67,23 @@ impl awaken_session_execution_contract::CapabilityRuntime for RunCapabilities {
         }
         Ok(capabilities)
     }
+
+    /// The host-default surface this Host advertises for any Agent: its Hand
+    /// and client-executed tools, plus delegation when the Agent delegates
+    /// ([`crate::config::advertised_tools`], the same set a generated
+    /// host-default snapshot carries).
+    fn unpublished_agent_publication(
+        &self,
+        agent_id: &str,
+        model_ref: &str,
+        delegate_ids: &[String],
+    ) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, RunError> {
+        let delegates = delegate_ids.iter().cloned().collect();
+        awaken_session_execution_contract::unpublished_agent_publication(
+            agent_id,
+            model_ref,
+            crate::config::advertised_tools(&self.tools.client_tools, &delegates, &[]),
+            delegate_ids,
+        )
+    }
 }

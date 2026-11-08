@@ -480,7 +480,7 @@ impl SessionCreationCommands {
         let delegate_ids = accepted_delegates
             .iter()
             .map(|(id, _)| id.clone())
-            .collect();
+            .collect::<Vec<_>>();
         // Freeze the root execution route before any Resource or Session write.
         // For budgeted Sessions, the single roster compiler also validates that
         // the root, exact ordinary roster revisions, and the Advisor route all
@@ -692,6 +692,17 @@ impl SessionCreationCommands {
         let agent_revision = profile
             .as_ref()
             .and_then(|profile| (profile.source_revision > 0).then_some(profile.source_revision));
+        let inline_agent_publication = self
+            .freeze_inline_agent_publication(
+                profile.is_some(),
+                (&agent_id, &execution_model_ref, &delegate_ids),
+                self.repository_participants.compensate(
+                    &session_id,
+                    &repository_configurations,
+                    "Managed Session Repository compensation remains pending after inline Agent freezing",
+                ),
+            )
+            .await?;
         let intent = awaken_session_configuration_contract::SessionCreationIntent {
             control: awaken_session_configuration_contract::ControlSessionCreationInputs {
                 mutation_policy: crate::session_resource::SessionMutationPolicy::Managed,
@@ -703,6 +714,7 @@ impl SessionCreationCommands {
                 },
                 agent_id: agent_id.clone(),
                 agent_revision,
+                inline_agent_publication,
                 model: resolved_model_id,
                 execution_model_ref,
                 model_override,

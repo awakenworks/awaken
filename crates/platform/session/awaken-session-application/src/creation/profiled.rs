@@ -453,6 +453,22 @@ impl SessionCreationCommands {
                 return Err(first.into());
             }
         }
+        let delegate_ids = profile
+            .iter()
+            .flat_map(|profile| &profile.delegates)
+            .map(|delegate| delegate.agent_id.clone())
+            .collect::<Vec<_>>();
+        let inline_agent_publication = self
+            .freeze_inline_agent_publication(
+                profile.is_some(),
+                (&agent_id, &execution_model_ref, &delegate_ids),
+                self.repository_participants.compensate(
+                    &session_id,
+                    &repository_configurations,
+                    "Profiled Session Repository compensation remains pending after inline Agent freezing",
+                ),
+            )
+            .await?;
         let intent = SessionCreationIntent {
             control: ControlSessionCreationInputs {
                 mutation_policy,
@@ -463,17 +479,14 @@ impl SessionCreationCommands {
                 agent_revision: profile.as_ref().and_then(|profile| {
                     (profile.source_revision > 0).then_some(profile.source_revision)
                 }),
+                inline_agent_publication,
                 model,
                 execution_model_ref,
                 model_override,
                 system_prompt: SessionSystemPromptSelection::Inherit,
                 runtime: published_backend_ref,
                 mcp_authoring: SessionMcpAuthoringContext::default(),
-                delegate_ids: profile
-                    .iter()
-                    .flat_map(|profile| &profile.delegates)
-                    .map(|delegate| delegate.agent_id.clone())
-                    .collect(),
+                delegate_ids,
                 toolsets: tools.toolsets.clone(),
                 mounts,
                 env,

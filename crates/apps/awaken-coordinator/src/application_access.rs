@@ -630,6 +630,7 @@ mod tests {
                         awaken_session_types::SessionRuntimePlacement::Local,
                     agent_id: baseline.agent_id,
                     agent_revision: baseline.agent_revision,
+                    inline_agent_publication: None,
                     model_override: baseline.model_override,
                     system_prompt: *baseline.system_prompt,
                     model: baseline.model.clone(),

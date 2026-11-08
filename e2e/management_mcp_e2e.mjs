@@ -332,20 +332,45 @@ async function main() {
       );
       pass('O3: MCP deny produces a model-visible blocked result without tools/call');
 
-      // Exact-generation staging establishes the MCP connection before durable
-      // activation.  It therefore rejects an invalid credential or unreachable
-      // target at Session creation instead of publishing a Session whose MCP
-      // projection cannot be realized.
+      // The shipped topology realizes a Session on the registered Worker that
+      // claims its first Run, so MCP staging happens after creation, not inside
+      // it (mcp_sessions.rs `registered_worker_*` defines the same semantics):
+      // creation is accepted, and the first Run's realization then fails the
+      // Session loudly and terminally with the server's exact challenge.
       //
       // Cause-effect graph:
-      // C1 target reachable + C2 credential accepted -> E1 activate Session
-      // C1 target reachable + !C2 credential rejected -> E2 creation fails closed
-      // !C1 target unreachable                    -> E3 retryable 503 before activation
+      // C1 target reachable + C2 credential accepted -> E1 the Session converses
+      // C1 target reachable + !C2 credential rejected -> E2 create 200; the first
+      //   Run fails the Session terminally with the challenge, no tool runs
+      // !C1 target unreachable                    -> E3 create 200; the first
+      //   Run's realization retries within its budget, then fails the Session
       //
-      // | Rule | C1 reachable | C2 accepted | Result                    |
-      // | F1   | yes          | yes         | active Session            |
-      // | F2   | yes          | no          | reject before activation  |
-      // | F3   | no           | -           | 503 before activation     |
+      // | Rule | C1 reachable | C2 accepted | Result                                        |
+      // | F1   | yes          | yes         | the Session converses (above)                 |
+      // | F2   | yes          | no          | create 200; terminal session.error, challenge |
+      // | F3   | no           | -           | create 200; one final session.error           |
+      const firstRunFailure = async (sessionId, description) => {
+        const receipt = await client.beta.sessions.events.send(sessionId, {
+          betas: BETAS,
+          events: [{ type: 'user.message', content: [{ type: 'text', text: 'add 2 3' }] }],
+        });
+        const { delta } = await waitForSessionEventReceipt(
+          client,
+          sessionId,
+          receipt.data[0]?.id,
+          BETAS,
+          ({ delta: observed }) => observed.some((event) => event.type === 'session.error'),
+          description,
+          { timeoutMs: 120_000 },
+        );
+        assert.ok(
+          delta.every((event) => event.type !== 'agent.mcp_tool_result'),
+          `${description}: no MCP tool ran — ${JSON.stringify(delta)}`,
+        );
+        const session = await client.beta.sessions.retrieve(sessionId, { betas: BETAS });
+        assert.equal(session.status, 'terminated', `${description}: ${JSON.stringify(session)}`);
+        return delta.filter((event) => event.type === 'session.error').map((event) => event.error);
+      };
       const wrong = await req(base, 'POST', '/v1/config/credentials', {
         idempotency_key: 'management-mcp-wrong',
         workspace_id: workspace,
@@ -365,22 +390,27 @@ async function main() {
       assert.equal(r.status, 200, JSON.stringify(r.json));
       r = await req(base, 'POST', `/v1/config/agents/${badAgent}/publish`);
       assert.equal(r.status, 200, JSON.stringify(r.json));
-      await assert.rejects(
-        client.beta.sessions.create({
-          agent: badAgent,
-          environment_id: 'env_local',
-          betas: BETAS,
-        }),
-        (error) => error?.status === 500 &&
-          error?.message?.includes('auth challenge: HTTP 401') &&
-          !error?.message?.includes('wrong-mcp-token'),
-        'F2: rejected MCP credentials must fail creation without leaking material',
+      const rejected = await client.beta.sessions.create({
+        agent: badAgent,
+        environment_id: 'env_local',
+        betas: BETAS,
+      });
+      const rejectedErrors = await firstRunFailure(rejected.id, 'F2 rejected MCP credential');
+      assert.equal(rejectedErrors.length, 1, `F2: one terminal failure — ${JSON.stringify(rejectedErrors)}`);
+      const [rejection] = rejectedErrors;
+      assert.equal(rejection.retry_status?.type, 'terminal', `F2: never retried — ${JSON.stringify(rejection)}`);
+      assert.equal(rejection.mcp_server_name, 'calc', `F2: names the server — ${JSON.stringify(rejection)}`);
+      assert.ok(
+        rejection.message?.includes('auth challenge: HTTP 401') &&
+          rejection.message?.includes('mcp server `calc`') &&
+          !rejection.message?.includes('wrong-mcp-token'),
+        `F2: the failure carries the challenge without leaking material — ${rejection.message}`,
       );
       assert.ok(
         fixture.tokenRequests['wrong-mcp-token'] > 0, // awaken-allow(secret):
         'F2: exact pinned credential reached only the MCP target during staging',
       );
-      pass('F2: MCP 401 rejects the staged generation before Session activation');
+      pass('F2: MCP 401 fails the Session terminally with the challenge on its first Run');
 
       const offlineAgent = 'calc-connection-failure-agent';
       r = await req(base, 'PUT', `/v1/config/agents/${offlineAgent}`, {
@@ -393,18 +423,24 @@ async function main() {
       assert.equal(r.status, 200, JSON.stringify(r.json));
       r = await req(base, 'POST', `/v1/config/agents/${offlineAgent}/publish`);
       assert.equal(r.status, 200, JSON.stringify(r.json));
-      await assert.rejects(
-        client.beta.sessions.create({
-          agent: offlineAgent,
-          environment_id: 'env_local',
-          betas: BETAS,
-        }),
-        (error) => error?.status === 503 && error?.message?.includes('offline'),
-        'F3: an unreachable MCP target must fail creation before activation',
+      const offline = await client.beta.sessions.create({
+        agent: offlineAgent,
+        environment_id: 'env_local',
+        betas: BETAS,
+      });
+      const offlineErrors = await firstRunFailure(offline.id, 'F3 unreachable MCP target');
+      // The Worker retries the unreachable server within the realization
+      // budget, then the Session fails for good: one final error, never a
+      // `retrying` status on a terminated Session.
+      assert.equal(offlineErrors.length, 1, `F3: one final failure — ${JSON.stringify(offlineErrors)}`);
+      assert.notEqual(
+        offlineErrors[0].retry_status?.type,
+        'retrying',
+        `F3: the failure is final — ${JSON.stringify(offlineErrors)}`,
       );
-      pass('F3: MCP connection failure rejects the staged generation before activation');
+      pass('F3: an unreachable MCP target fails the Session loudly on its first Run');
 
-    });
+    }, {}, { placement: 'worker' });
 
     console.log('E2E PASS: management-plane MCP config drives a multi-turn MCP conversation with the vault-backed bearer.');
     process.exitCode = 0;

@@ -4116,6 +4116,7 @@ async fn realization_owner_follows_the_frozen_placement_decision_table() {
                     runtime_placement: SessionRuntimePlacement::Local,
                     agent_id: baseline.agent_id,
                     agent_revision: baseline.agent_revision,
+                    inline_agent_publication: None,
                     model_override: baseline.model_override,
                     system_prompt: *baseline.system_prompt,
                     model: baseline.model,
@@ -4877,7 +4878,10 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
      * activity settlement alone transitions Idle and emits one interval fact;
      * E3 a retry retains Running plus the open interval for recovery; E4 a
      * terminal failure atomically transitions ActivationFailed, closes the
-     * interval, accumulates runtime, and emits one fact. Constraints: the root
+     * interval, accumulates runtime, emits one fact, and expires the failed
+     * generation's assignment (same epoch, no longer live) so terminal
+     * cleanup claims a successor epoch instead of the generation the Worker
+     * closed. Constraints: the root
      * CAS owns execution and interval together; realization never authors a
      * second billing path; stale lease cases are covered by the realization
      * authority table.
@@ -5009,7 +5013,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         .realizations
         .fail_session_realization(awaken_session_execution_contract::FailSessionRealization {
             session_id: "running-realization-failed".into(),
-            lease,
+            lease: lease.clone(),
             prepared_resource_revision: None,
             retryable: false,
             not_ready: false,
@@ -5085,6 +5089,15 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
     );
     assert!(failed_truth.running_interval.is_none(), "R4/E4");
     assert!(failed_truth.runtime_active_millis > 0, "R4/E4");
+    let failed_lease = failed_truth
+        .realization
+        .as_ref()
+        .expect("R4/E4 the failed generation stays recorded");
+    assert_eq!(failed_lease.epoch, lease.epoch, "R4/E4 same generation");
+    assert_eq!(
+        failed_lease.expires_at_unix_ms, 0,
+        "R4/E4 the failed generation's assignment is no longer live"
+    );
     let facts = repo.pending_lifecycle().await.expect("R2/R4 outbox");
     for session_id in ["running-realization", "running-realization-failed"] {
         assert_eq!(

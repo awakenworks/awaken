@@ -120,6 +120,23 @@ struct ProfiledCapabilities;
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CapabilityRuntime for ProfiledCapabilities {
+    fn unpublished_agent_publication(
+        &self,
+        agent_id: &str,
+        model_ref: &str,
+        delegate_ids: &[String],
+    ) -> Result<
+        awaken_runtime_contract::ExecutableAgentSnapshot,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        awaken_session_execution_contract::unpublished_agent_publication(
+            agent_id,
+            model_ref,
+            Vec::new(),
+            delegate_ids,
+        )
+    }
+
     fn capabilities(
         &self,
     ) -> Result<awaken_session_configuration_contract::AgentCapabilities, RunError> {

@@ -175,7 +175,7 @@ async function main(): Promise<void> {
       );
       assert.equal(fixture.unauthorized, 0, 'no request was ever rejected for missing auth');
       pass('initialize, tools/list and both tools/call requests carried only the preferred bearer');
-    });
+    }, {}, { placement: 'worker' });
 
     console.log('E2E PASS: TypeScript SDK vault injection preserves the complete multi-turn MCP protocol.');
     process.exitCode = 0;

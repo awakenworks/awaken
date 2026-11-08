@@ -879,6 +879,23 @@ impl awaken_session_execution_contract::Outcomes for RehydrateFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::CapabilityRuntime for RehydrateFake {
+    fn unpublished_agent_publication(
+        &self,
+        agent_id: &str,
+        model_ref: &str,
+        delegate_ids: &[String],
+    ) -> Result<
+        awaken_runtime_contract::ExecutableAgentSnapshot,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        awaken_session_execution_contract::unpublished_agent_publication(
+            agent_id,
+            model_ref,
+            Vec::new(),
+            delegate_ids,
+        )
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// The advertised capability surface echoed in the session's agent object. The

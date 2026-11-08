@@ -121,12 +121,13 @@ impl SessionQueries {
             awaken_session_configuration_contract::SessionConfigurationInspection::from_baseline(
                 baseline,
             );
-        view.publication = baseline
-            .agent_revision
-            .and_then(|revision| {
+        view.publication = match baseline.agent_revision {
+            Some(revision) => {
                 self.executable_snapshot_at_revision(workspace, &baseline.agent_id, revision)
-            })
-            .map(awaken_session_configuration_contract::publication_inspection);
+            }
+            None => baseline.inline_agent_publication.as_deref().cloned(),
+        }
+        .map(awaken_session_configuration_contract::publication_inspection);
         view
     }
 
@@ -143,6 +144,18 @@ impl SessionQueries {
 
     pub(crate) fn capabilities_for(&self, thread: &str) -> Result<AgentCapabilities, RunError> {
         self.capabilities.as_ref().capabilities_for(thread)
+    }
+
+    /// The selected Runtime's publication of an Agent its Workspace does not
+    /// publish, which a Worker-placed inline Session freezes at creation.
+    pub(crate) fn unpublished_agent_publication(
+        &self,
+        agent_id: &str,
+        model_ref: &str,
+        delegate_ids: &[String],
+    ) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, RunError> {
+        self.capabilities
+            .unpublished_agent_publication(agent_id, model_ref, delegate_ids)
     }
 
     /// Derive the read handles from one already-selected executor at construction.

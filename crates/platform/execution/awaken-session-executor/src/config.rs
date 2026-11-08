@@ -35,8 +35,6 @@ use awaken_session_run_delivery::builtin_hand_tools;
 use awaken_session_run_delivery::{delegation_descriptor, hand_tool_descriptors};
 use awaken_tool_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 
-const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
-
 /// Return the contract's canonical recursive plain-text view of content blocks.
 pub fn block_text(content: &[ContentBlock]) -> String {
     extract_text(content)
@@ -384,11 +382,11 @@ pub(crate) fn server_config(
     let model = ModelBinding::parse("default", model_ref, "default")?;
     let tools = advertised_tools(client_tools, delegates, dynamic_descriptors);
     let snapshot = ExecutableAgentSnapshot::builder(agent_id)
-        .instructions(SYSTEM_PROMPT)
+        .instructions(awaken_session_execution_contract::UNPUBLISHED_AGENT_INSTRUCTIONS)
         .model(model)
         .model_candidates(Vec::new())
         .tools(tools)
-        .max_steps(20)
+        .max_steps(awaken_session_execution_contract::UNPUBLISHED_AGENT_MAX_STEPS)
         .plugins(plugin_ids.iter().cloned())
         .plugin_config(plugin_config.iter().map(|(k, v)| (k.clone(), v.clone())))
         .agent_bindings(awaken_runtime_contract::agent_bindings::AgentBindings {

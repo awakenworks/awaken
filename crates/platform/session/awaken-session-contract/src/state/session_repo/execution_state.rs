@@ -83,8 +83,12 @@ impl SessionExecutionState {
             return false;
         }
         match next {
-            Self::Terminated => true,
-            Self::ActivationFailed => !matches!(self, Self::Idle),
+            // Every live state may fail terminally: the Session's frozen
+            // inputs can no longer admit execution. A realization failure
+            // while Idle is absorbed by its caller instead (the resident
+            // Session stays usable); from Idle this edge is taken only by a
+            // permanently refused Run admission, which no retry can admit.
+            Self::Terminated | Self::ActivationFailed => true,
             Self::Activating => {
                 matches!(self, Self::Preparing | Self::Running | Self::Rescheduling)
             }

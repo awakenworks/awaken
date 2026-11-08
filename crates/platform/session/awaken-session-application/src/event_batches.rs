@@ -35,6 +35,7 @@ use std::sync::Arc;
 
 use super::{SessionMutationError, mutation::repository_failure};
 
+mod refused_run;
 mod selection;
 
 use selection::{adjacent_system_input, preceding_event_runtime_target, select_session_event};
@@ -1414,7 +1415,7 @@ impl SessionEventBatchCommands {
                 }
 
                 let accompanying_system = adjacent_system_input(session, &batch_id, &operation_id);
-                let admission = self
+                let admission = match self
                     .admit_session_user_run(SessionUserRunCommand {
                         session_id: session.session_id.clone(),
                         agent_id: session
@@ -1428,14 +1429,29 @@ impl SessionEventBatchCommands {
                         data_subject_id,
                         traceparent,
                     })
-                    .await?;
+                    .await
+                {
+                    Ok(admission) => admission,
+                    Err(refusal) => {
+                        return self
+                            .settle_refused_user_run(&session.session_id, refusal)
+                            .await;
+                    }
+                };
                 self.settle_event_batch_wake(session, &batch_id).await?;
 
                 let activation = match admission {
                     AdmittedSessionRun::Reserved(delivery)
                     | AdmittedSessionRun::AlreadyReserved(delivery)
                     | AdmittedSessionRun::AlreadyActivated(delivery) => {
-                        coordination_runtime.activate_session_run(delivery).await?
+                        match coordination_runtime.activate_session_run(delivery).await {
+                            Ok(activation) => activation,
+                            Err(refusal) => {
+                                return self
+                                    .settle_refused_user_run(&session.session_id, refusal)
+                                    .await;
+                            }
+                        }
                     }
                     AdmittedSessionRun::RecoveryClaimed { .. } => {
                         return Ok(EventBatchProgress::Pending);

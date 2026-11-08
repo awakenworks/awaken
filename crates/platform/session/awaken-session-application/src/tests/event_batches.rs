@@ -48,6 +48,7 @@ pub(super) struct EventBatchRuntime {
         Mutex<BTreeMap<String, (u64, crate::session_resource::ResolvedSessionResources)>>,
     reservation_outcomes: Mutex<VecDeque<SessionRunReservation>>,
     fail_reservation: AtomicBool,
+    fail_reservation_transiently: AtomicBool,
     fail_activation_once: AtomicBool,
     complete_activation_once: AtomicBool,
     activated: Mutex<BTreeMap<String, u64>>,
@@ -309,6 +310,11 @@ impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRunti
             .push(format!("reserve:{}", command.run_id.0));
         if self.fail_reservation.load(Ordering::SeqCst) {
             return Err(RunError::bad_request("scripted reservation rejection"));
+        }
+        if self.fail_reservation_transiently.load(Ordering::SeqCst) {
+            return Err(RunError::unavailable(
+                "scripted reservation dependency outage",
+            ));
         }
         if let Some(outcome) = self.reservation_outcomes.lock().unwrap().pop_front() {
             return Ok(outcome);
@@ -5359,92 +5365,6 @@ async fn user_run_activity_rejects_a_root_changed_after_projection_recovery() {
 }
 
 #[test]
-fn rejected_user_reservation_cannot_orphan_an_accompanying_system() {
-    // Coverage rationale: the async case below owns S1 and its E1-E4 oracle.
-    // The shared executor changes stack placement only.
-    run_composed_async_test(rejected_user_reservation_cannot_orphan_an_accompanying_system_case);
-}
-
-async fn rejected_user_reservation_cannot_orphan_an_accompanying_system_case() {
-    // Constraint/Invariant: the authoritative Session inputs and repository CAS
-    // documented here remain the only decision source; no parallel ledger is admitted.
-    // Cause/effect graph: C1 the complete initial batch is valid; C2 durable Run
-    // projection recovery succeeds; C3 reservation rejects before an activity
-    // receipt. Effects: E1 reconciliation reports the failure; E2 projection
-    // precedes reservation but no operation receipt is committed; E3 neither
-    // System nor User is reserved/committed; E4 no activation occurs.
-    // Decision rule S1=C1+C2+C3=>E1+E2+E3+E4.
-    let repository: Arc<dyn crate::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("test repository"),
-    );
-    let runtime = Arc::new(EventBatchRuntime::default());
-    runtime.fail_reservation.store(true, Ordering::SeqCst);
-    let session = planned_session(
-        "system-after-admission",
-        vec![
-            SessionEventInput::UserMessage {
-                content: vec![ContentBlock::text("driver")],
-            },
-            SessionEventInput::SystemMessage {
-                content: vec![ContentBlock::text("context")],
-            },
-        ],
-    );
-    let run_id = match &session.event_batches[0].events[0].event {
-        awaken_session_contract::SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
-        _ => unreachable!("S1 User command"),
-    };
-    create(repository.as_ref(), session).await;
-    let app = application_with_runtime(
-        runtime.clone(),
-        repository,
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-
-    let report = app.event_batches.reconcile_event_batches().await;
-    assert_eq!(report.failures.len(), 1, "S1/E1");
-    let trace = runtime.trace.lock().unwrap().clone();
-    let projection = trace
-        .iter()
-        .position(|entry| entry.starts_with("project:system-after-admission:"))
-        .expect("S1/E2 projection");
-    let reservation = trace
-        .iter()
-        .position(|entry| entry == &format!("reserve:{}", run_id.0))
-        .expect("S1/E2 rejected reservation");
-    assert!(projection < reservation, "S1/E2");
-    let operation = awaken_session_execution_contract::session_run_activity_operation_id(
-        &awaken_session_types::SessionId::from("system-after-admission"),
-        &run_id,
-    );
-    assert!(
-        app.activities
-            .recover_activity_for_operation(
-                &SessionId::from("system-after-admission"),
-                &operation,
-                None
-            )
-            .await
-            .expect("S1/E2 receipt query")
-            .is_none(),
-        "S1/E2 no orphan activity"
-    );
-    assert!(runtime.reserved.lock().unwrap().is_empty(), "S1/E3");
-    assert!(runtime.committed.lock().unwrap().is_empty(), "S1/E3");
-    assert!(
-        runtime
-            .trace
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|entry| !entry.starts_with("activate:")),
-        "S1/E4"
-    );
-}
-
-#[test]
 fn activity_repair_replays_the_same_complete_system_user_reservation() {
     // The shared test executor changes stack placement only; the case below
     // remains the single cause/effect oracle for this recovery boundary.
@@ -5823,6 +5743,7 @@ use awaiting_ticket::{tool_reply_input, tool_reply_input_for_target};
 mod concurrent_consumption;
 mod frozen_projection;
 mod pause_transaction;
+mod refused_run_admission;
 
 #[test]
 fn postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict_fixture_admission() {

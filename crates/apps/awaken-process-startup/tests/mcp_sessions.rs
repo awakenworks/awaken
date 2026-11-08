@@ -65,11 +65,10 @@ async fn build_all_in_one_router() -> awaken_process_startup::ColocatedTestProce
     .await
 }
 
-/// The tests that pin inline (unpublished) Agent Sessions, whose initial MCP
-/// realization fails at Session create, run on the local claim pool. Their
-/// registered-Worker forms (`registered_worker_*` below) publish the Agent,
-/// because a Worker-placed Session executes a pinned Agent publication, and
-/// observe the realization failure on the Session after its first Run.
+/// The tests that pin the local claim pool's create-time MCP realization (an
+/// initial realization failure fails Session create) run on that pool. Their
+/// registered-Worker forms (`registered_worker_*` below) observe the
+/// realization failure on the Session after its first Run instead.
 async fn build_local_placement_router() -> Router {
     awaken_process_startup::build_all_in_one_router_with_model(
         Arc::new(McpToolModel),
@@ -505,7 +504,8 @@ async fn session_inline_mcp_server_with_vault_credential_converses_across_runs()
     // tool results and final messages below, without abort or a second factory.
     // M1/M2 share the original transport, Vault and idle-boundary assertions.
     let url = mock_calc_mcp().await;
-    let app = build_local_placement_router().await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
     let vault_id = vault_with_calc_credential(&app, &url).await;
 
     // Session-inline binding: the session names the server, the vault supplies
@@ -573,6 +573,191 @@ async fn session_inline_mcp_server_with_vault_credential_converses_across_runs()
         agent_messages(&events).iter().any(|m| m.contains("42")),
         "second Run's final message reports 42"
     );
+    shut_down_registered_worker_process(process).await;
+}
+
+/// Serve one mock `calc` MCP server whose authorized `tools/call` requests
+/// are counted, so a test can tell which server a Run actually used.
+async fn counting_calc_mcp() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = calls.clone();
+    let app = Router::new().route(
+        "/",
+        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let counted = counted.clone();
+            async move {
+                if body["method"] == "tools/call" {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                rpc(headers, Json(body)).await
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind counting mock mcp");
+    let addr = listener.local_addr().expect("counting mock mcp addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve counting mock mcp");
+    });
+    (format!("http://{addr}/"), calls)
+}
+
+/// The publication the Session froze, as its execution evidence reports it.
+async fn frozen_publication(app: &Router, session: &str) -> (StatusCode, Value) {
+    let (status, evidence) = call(
+        app,
+        "GET",
+        &format!("/v1/awaken/sessions/{session}/execution-evidence?include_inspection=true"),
+        None,
+    )
+    .await;
+    (status, evidence["configuration"]["publication"].clone())
+}
+
+/// An inline Agent on the registered Worker. Causes: C1 a Session names the
+/// unpublished `assistant` with Session-level MCP and tool overrides; C2 its
+/// Agent is updated mid-Session (`agent.mcp_servers` moves to another server);
+/// C3 the Session is deleted. Effects: E1 creation freezes one Session-scoped
+/// publication (its content address is reported by the Session's evidence)
+/// and the Session converses on the Worker; E2 the Workspace's published-Agent
+/// catalog never lists or resolves it; E3 the update is the Session overlay a
+/// published Agent's update also is: the frozen publication is never mutated
+/// (same content address) and the next Run uses the new server only; E4 the
+/// publication is addressable only through its Session, so deleting the
+/// Session leaves nothing that addresses it. Decision rules: I1=C1=>E1+E2;
+/// I2=C1+C2=>E3; I3=C1+C3=>E4.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_worker_inline_agent_publication_is_frozen_session_scoped_and_erased_with_its_session()
+ {
+    let (first_url, first_calls) = counting_calc_mcp().await;
+    let (second_url, second_calls) = counting_calc_mcp().await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
+    let vault_id = vault_with_calc_credential(&app, &first_url).await;
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "mcp_oauth",
+            "mcp_server_url": second_url,
+            "access_token": CALC_TOKEN
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // I1: creation freezes the inline Agent; the Session converses on it.
+    let (s, session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": always_allow_mcp_agent_with_server("assistant", "calc", &first_url),
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+            "vault_ids": [vault_id],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{session}");
+    let id = session["id"].as_str().unwrap().to_string();
+    let (s, frozen) = frozen_publication(&app, &id).await;
+    assert_eq!(s, StatusCode::OK, "{frozen}");
+    let fingerprint = frozen["fingerprint"]
+        .as_str()
+        .filter(|fingerprint| !fingerprint.is_empty() && *fingerprint != "assistant")
+        .unwrap_or_else(|| panic!("I1 a content-addressed frozen publication: {frozen}"))
+        .to_string();
+    let (s, receipt) = send_user_message(&app, &id, "add 2 3").await;
+    assert_eq!(s, StatusCode::OK);
+    let events = wait_for_session_events(&app, &id, &receipt, "the inline Agent's first Run").await;
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "agent.mcp_tool_result" && e["content"][0]["text"] == "5"),
+        "I1 the inline Agent's Run used its MCP server: {events:?}"
+    );
+    assert_eq!(
+        first_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "I1"
+    );
+
+    // I1: the published-Agent catalog never holds the frozen publication.
+    let (s, listed) = call(&app, "GET", "/v1/agents", None).await;
+    assert_eq!(s, StatusCode::OK, "{listed}");
+    assert!(
+        listed["data"]
+            .as_array()
+            .expect("Agent catalog page")
+            .iter()
+            .all(|agent| agent["id"] != "assistant" && agent["name"] != "assistant"),
+        "I1 the catalog does not list the inline Agent: {listed}"
+    );
+    let (s, resolved) = call(&app, "GET", "/v1/agents/assistant", None).await;
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "I1 the catalog does not resolve it: {resolved}"
+    );
+
+    // I2: an update replaces the Session overlay; the publication is never mutated.
+    let (s, updated) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({
+            "agent": {
+                "mcp_servers": [{ "name": "calc", "type": "url", "url": second_url }],
+                "tools": always_allow_mcp_tools("calc")
+            }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{updated}");
+    assert_eq!(
+        updated["agent"]["mcp_servers"],
+        json!([{ "name": "calc", "type": "url", "url": second_url }]),
+        "I2 the update is the Session's Agent"
+    );
+    let (s, after_update) = frozen_publication(&app, &id).await;
+    assert_eq!(s, StatusCode::OK, "{after_update}");
+    assert_eq!(
+        after_update["fingerprint"], fingerprint,
+        "I2 the frozen publication keeps its content address"
+    );
+    let (s, receipt) = send_user_message(&app, &id, "add 40 2").await;
+    assert_eq!(s, StatusCode::OK);
+    let events =
+        wait_for_session_events(&app, &id, &receipt, "the updated inline Agent's Run").await;
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "agent.mcp_tool_result" && e["content"][0]["text"] == "42"),
+        "I2 the next Run uses the updated server: {events:?}"
+    );
+    assert_eq!(
+        (
+            first_calls.load(std::sync::atomic::Ordering::SeqCst),
+            second_calls.load(std::sync::atomic::Ordering::SeqCst)
+        ),
+        (1, 1),
+        "I2 only the updated server served the next Run"
+    );
+
+    // I3: the publication lives only in its Session.
+    let (s, deleted) = call(&app, "DELETE", &format!("/v1/sessions/{id}"), None).await;
+    assert_eq!(s, StatusCode::OK, "{deleted}");
+    let (s, gone) = frozen_publication(&app, &id).await;
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "I3 nothing addresses it after delete: {gone}"
+    );
+    shut_down_registered_worker_process(process).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1551,8 +1736,9 @@ async fn mcp_oauth_validate_attempts_the_refresh_exchange_over_the_management_ro
 // a refused realization is a terminal Session failure observed through the
 // public projection instead of a create-time HTTP error.
 //
-// Worker-placed Sessions execute a pinned Agent publication, so these
-// scenarios publish the calculator Agent instead of naming an inline one.
+// Worker-placed Sessions execute a pinned Agent publication: these scenarios
+// publish the calculator Agent, and an inline Agent's Session freezes its own
+// Session-scoped publication at creation (the inline tests above).
 // ---------------------------------------------------------------------------
 
 /// The co-located Worker drains and deregisters before its private surface
