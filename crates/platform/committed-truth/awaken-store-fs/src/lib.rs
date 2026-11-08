@@ -114,15 +114,29 @@ fn recovery_replay_preserves_complete_entry_and_time() {
 /// A filesystem `CommitCoordinator` + `CheckpointReader`. Durable truth is the
 /// append-only log; reads are served from an in-memory model rebuilt from it.
 pub struct FsCommitCoordinator {
+    durable: Arc<CommitLog>,
+    /// Serializes every commit's inspection, stamp, durable append and
+    /// application, in acquisition order (Tokio's mutex is FIFO). A commit
+    /// takes the guard owned and hands it to the blocking job that runs that
+    /// critical section, so the next commit is admitted only after the
+    /// previous one has been applied, wherever it ran and even if its caller
+    /// went away while it ran.
+    write_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// Everything the commit critical section touches. It is shared with the
+/// blocking job that runs the section, so it lives as long as that job even
+/// when the coordinator is dropped first.
+struct CommitLog {
     log: InvariantLock<File>,
     inner: MemoryCommitCoordinator,
     /// Stamps each appended record's `committed_at_unix_ms`, the same clock the
     /// in-memory read model is built over.
     clock: Arc<dyn awaken_time::WallClock>,
-    write_lock: tokio::sync::Mutex<()>,
-    // The OS lock is retained for the complete coordinator lifetime. Migration,
-    // replay, append admission, and append acknowledgement therefore share one
-    // cross-process ownership boundary instead of racing through separate locks.
+    // The OS lock is retained for the complete coordinator lifetime, and for
+    // any commit still running after it. Migration, replay, append admission,
+    // and append acknowledgement therefore share one cross-process ownership
+    // boundary instead of racing through separate locks.
     _lifecycle_lock: ExclusiveFileLock,
 }
 
@@ -299,11 +313,24 @@ fn migrate_log_if_needed(lock: &ExclusiveFileLock) -> std::io::Result<()> {
 impl FsCommitCoordinator {
     /// Open (creating if needed) a store rooted at `dir`, replaying the committed
     /// log into the read model. A torn final line is discarded (crash recovery).
+    ///
+    /// The whole open (lock, migration, replay, torn-tail repair and their
+    /// `fsync`s) runs on the blocking pool, as every commit does.
     pub async fn open(
         dir: impl AsRef<Path>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> std::io::Result<Self> {
-        let dir = dir.as_ref();
+        let dir = dir.as_ref().to_path_buf();
+        off_async_worker(Self::open_in_place(dir, clock))
+            .await
+            .unwrap_or_else(|not_run| Err(std::io::Error::other(not_run)))
+    }
+
+    async fn open_in_place(
+        dir: PathBuf,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> std::io::Result<Self> {
+        let dir = dir.as_path();
         std::fs::create_dir_all(dir)?;
         let path: PathBuf = dir.join(LOG_FILE);
         let lifecycle_lock = try_lock_exclusive(&dir.join(LOG_LOCK_FILE))?;
@@ -363,12 +390,80 @@ impl FsCommitCoordinator {
             sync_directory(dir)?;
         }
         Ok(Self {
-            log: InvariantLock::new(log),
-            inner: replay.finish(),
-            clock,
-            write_lock: tokio::sync::Mutex::new(()),
-            _lifecycle_lock: lifecycle_lock,
+            durable: Arc::new(CommitLog {
+                log: InvariantLock::new(log),
+                inner: replay.finish(),
+                clock,
+                _lifecycle_lock: lifecycle_lock,
+            }),
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
+    }
+
+    /// The in-memory read model, rebuilt from the log and advanced by every
+    /// applied commit.
+    fn inner(&self) -> &MemoryCommitCoordinator {
+        &self.durable.inner
+    }
+
+    /// Run one commit critical section whole on the blocking pool while
+    /// holding the commit lock. The lock is taken here, on the caller's task,
+    /// so waiting for it stays cancellable and does nothing; once taken it
+    /// moves into the job, which releases it only after the section returns.
+    /// A caller dropped while the job runs therefore never leaves a record
+    /// appended but unapplied, and never lets the next commit inspect a model
+    /// that the running one has yet to advance.
+    async fn under_commit_lock<T, Fut>(
+        &self,
+        section: impl FnOnce(Arc<CommitLog>) -> Fut,
+    ) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
+    {
+        let writing = Arc::clone(&self.write_lock).lock_owned().await;
+        let section = section(Arc::clone(&self.durable));
+        off_async_worker(async move {
+            let _writing = writing;
+            section.await
+        })
+        .await
+        .unwrap_or_else(|not_run| Err(Error::Rejected(not_run)))
+    }
+}
+
+impl CommitLog {
+    /// One ordinary commit's critical section, under the commit lock.
+    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
+        // The private inner model cannot change between inspection and apply:
+        // every writer holds the commit lock and the retained lifecycle lock
+        // excludes another process. Reuse its complete shape, terminal, global
+        // sequence, and event-cursor admission before writing any durable byte.
+        self.inner.inspect_commit(&commit)?;
+        // Durable first: append + fsync the record before it is acknowledged, so a
+        // crash after ack cannot lose it and a crash before ack replays nothing.
+        let committed_at_unix_ms = Some(awaken_time::WallClockExt::now_ms(&*self.clock));
+        self.append(&StoredCommitLogEntry {
+            committed_at_unix_ms,
+            entry: CommitLogEntry::Commit(commit.clone()),
+        })?;
+        // Then advance the read model; sequence matches the replayed order.
+        self.inner.commit_at(commit, committed_at_unix_ms).await
+    }
+
+    /// One idempotent operation's critical section, under the commit lock.
+    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
+        if let Some(duplicate) = self.inner.inspect_operation(&operation)? {
+            return Ok(duplicate);
+        }
+        let committed_at_unix_ms = Some(awaken_time::WallClockExt::now_ms(&*self.clock));
+        self.append(&StoredCommitLogEntry {
+            committed_at_unix_ms,
+            entry: CommitLogEntry::Operation(operation.clone()),
+        })?;
+        self.inner
+            .commit_operation_at(operation, committed_at_unix_ms)
+            .await
     }
 
     fn append(&self, entry: &StoredCommitLogEntry) -> Result<(), Error> {
@@ -389,69 +484,46 @@ impl FsCommitCoordinator {
 #[async_trait]
 impl Coordinator for FsCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
-        let _writing = self.write_lock.lock().await;
-        // The private inner model cannot change between inspection and apply:
-        // every writer holds this append lock and the retained lifecycle lock
-        // excludes another process. Reuse its complete shape, terminal, global
-        // sequence, and event-cursor admission before writing any durable byte.
-        self.inner.inspect_commit(&commit)?;
-        // Durable first: append + fsync the record before it is acknowledged, so a
-        // crash after ack cannot lose it and a crash before ack replays nothing.
-        let committed_at_unix_ms = Some(awaken_time::WallClockExt::now_ms(&*self.clock));
-        self.append(&StoredCommitLogEntry {
-            committed_at_unix_ms,
-            entry: CommitLogEntry::Commit(commit.clone()),
-        })?;
-        // Then advance the read model; sequence matches the replayed order.
-        self.inner.commit_at(commit, committed_at_unix_ms).await
+        self.under_commit_lock(|log| async move { log.commit(commit).await })
+            .await
     }
 }
 
 #[async_trait]
 impl OperationCoordinator for FsCommitCoordinator {
     async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
-        let _writing = self.write_lock.lock().await;
-        if let Some(duplicate) = self.inner.inspect_operation(&operation)? {
-            return Ok(duplicate);
-        }
-        let committed_at_unix_ms = Some(awaken_time::WallClockExt::now_ms(&*self.clock));
-        self.append(&StoredCommitLogEntry {
-            committed_at_unix_ms,
-            entry: CommitLogEntry::Operation(operation.clone()),
-        })?;
-        self.inner
-            .commit_operation_at(operation, committed_at_unix_ms)
+        self.under_commit_lock(|log| async move { log.commit_operation(operation).await })
             .await
     }
 }
 
 impl CommittedThreadView for FsCommitCoordinator {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
-        self.inner.committed_messages(thread_id)
+        self.inner().committed_messages(thread_id)
     }
 
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
-        self.inner.resume_ticket(run_id)
+        self.inner().resume_ticket(run_id)
     }
 
     fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
-        self.inner.open_wait_for_thread(thread_id)
+        self.inner().open_wait_for_thread(thread_id)
     }
 
     fn run(&self, run_id: &RunId) -> Option<RunRecord> {
-        self.inner.run(run_id)
+        self.inner().run(run_id)
     }
 
     fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
-        self.inner.latest_run(thread_id)
+        self.inner().latest_run(thread_id)
     }
 
     fn run_state(&self, run_id: &RunId) -> Option<RunState> {
-        self.inner.run_state(run_id)
+        self.inner().run_state(run_id)
     }
 
     fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
-        self.inner.committed_state(thread_id)
+        self.inner().committed_state(thread_id)
     }
 }
 
@@ -463,7 +535,7 @@ impl CheckpointReader for FsCommitCoordinator {
         from: Option<u64>,
         limit: usize,
     ) -> Result<Vec<EventRecord>, String> {
-        self.inner.list_events(scope, from, limit).await
+        self.inner().list_events(scope, from, limit).await
     }
 }
 
@@ -474,7 +546,7 @@ impl RunRecoverySource for FsCommitCoordinator {
         thread_id: &ThreadId,
         claimed_run_id: &RunId,
     ) -> Result<RunRecoverySnapshot, RecoveryError> {
-        self.inner
+        self.inner()
             .recovery_snapshot(thread_id, claimed_run_id)
             .await
     }
@@ -518,54 +590,137 @@ impl FsStreamCheckpointStore {
     }
 }
 
+/// Each operation runs whole on the blocking pool ([`off_async_worker`]) inside
+/// its checkpoint file's lock ([`checkpoint_file_lock`]). The body of each is
+/// the synchronous one it always was: the same reads, writes, `fsync`s and
+/// renames in the same order. Taking the lock before the job and releasing it
+/// only when the job returns keeps the operations on one checkpoint in caller
+/// order even when a caller drops its future while the job still runs: a
+/// dropped `put` lands whole before the next operation on that run begins,
+/// never after it.
 #[async_trait]
 impl StreamCheckpointStore for FsStreamCheckpointStore {
     async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint> {
-        let bytes = match std::fs::read(self.path_for(run_id)) {
-            Ok(bytes) => bytes,
-            // Only a missing file is evidence of absence. Any other I/O failure
-            // leaves us ignorant of whether a partial is on disk.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Observed::Absent,
-            Err(error) => return Observed::Unknown(UnknownCause::Storage(error.to_string())),
-        };
-        // A file that exists but will not decode is corruption, not emptiness.
-        match serde_json::from_slice(&bytes) {
-            Ok(checkpoint) => Observed::Present(checkpoint),
-            Err(error) => Observed::Unknown(UnknownCause::Storage(error.to_string())),
-        }
+        let path = self.path_for(run_id);
+        let held = checkpoint_file_lock(&path).await;
+        off_async_worker(async move {
+            let _held = held;
+            let bytes = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                // Only a missing file is evidence of absence. Any other I/O failure
+                // leaves us ignorant of whether a partial is on disk.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Observed::Absent;
+                }
+                Err(error) => return Observed::Unknown(UnknownCause::Storage(error.to_string())),
+            };
+            // A file that exists but will not decode is corruption, not emptiness.
+            match serde_json::from_slice(&bytes) {
+                Ok(checkpoint) => Observed::Present(checkpoint),
+                Err(error) => Observed::Unknown(UnknownCause::Storage(error.to_string())),
+            }
+        })
+        .await
+        .unwrap_or_else(|not_run| Observed::Unknown(UnknownCause::Storage(not_run)))
     }
 
     async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError> {
         let path = self.path_for(&checkpoint.run_id);
         let json = serde_json::to_vec(&checkpoint)
             .map_err(|error| StreamCheckpointError::Storage(error.to_string()))?;
-        // Atomic replace: write a sibling temp, fsync it, then rename over the
-        // target so a reader never observes a partial write.
-        // Each writer owns a distinct sibling temp. A fixed `.tmp` name lets two
-        // same-run puts rename/remove one another's in-progress file.
-        let sequence = CHECKPOINT_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let tmp = path.with_extension(format!("json.{}.{}.tmp", std::process::id(), sequence));
-        let write = (|| -> std::io::Result<()> {
-            let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-            file.write_all(&json)?;
-            file.sync_all()?;
-            std::fs::rename(&tmp, &path)?;
-            sync_directory(&self.dir)
-        })();
-        if let Err(error) = write {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(StreamCheckpointError::Storage(error.to_string()));
-        }
-        Ok(())
+        let dir = self.dir.clone();
+        let held = checkpoint_file_lock(&path).await;
+        off_async_worker(async move {
+            let _held = held;
+            // Atomic replace: write a sibling temp, fsync it, then rename over the
+            // target so a reader never observes a partial write.
+            // Each writer owns a distinct sibling temp. A fixed `.tmp` name lets two
+            // same-run puts rename/remove one another's in-progress file.
+            let sequence = CHECKPOINT_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let tmp = path.with_extension(format!("json.{}.{}.tmp", std::process::id(), sequence));
+            let write = (|| -> std::io::Result<()> {
+                let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+                file.write_all(&json)?;
+                file.sync_all()?;
+                std::fs::rename(&tmp, &path)?;
+                sync_directory(&dir)
+            })();
+            if let Err(error) = write {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(StreamCheckpointError::Storage(error.to_string()));
+            }
+            Ok(())
+        })
+        .await
+        .unwrap_or_else(|not_run| Err(StreamCheckpointError::Storage(not_run)))
     }
 
     async fn delete(&self, run_id: &str) -> Result<(), StreamCheckpointError> {
-        match std::fs::remove_file(self.path_for(run_id)) {
-            Ok(()) => sync_directory(&self.dir)
-                .map_err(|error| StreamCheckpointError::Storage(error.to_string())),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(StreamCheckpointError::Storage(error.to_string())),
+        let path = self.path_for(run_id);
+        let dir = self.dir.clone();
+        let held = checkpoint_file_lock(&path).await;
+        off_async_worker(async move {
+            let _held = held;
+            match std::fs::remove_file(&path) {
+                Ok(()) => sync_directory(&dir)
+                    .map_err(|error| StreamCheckpointError::Storage(error.to_string())),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(StreamCheckpointError::Storage(error.to_string())),
+            }
+        })
+        .await
+        .unwrap_or_else(|not_run| Err(StreamCheckpointError::Storage(not_run)))
+    }
+}
+
+/// The lock of one checkpoint file, shared by every [`FsStreamCheckpointStore`]
+/// in this process (a host may open several over one directory). Locks are
+/// FIFO and held only by an operation that waits for or runs under them, so
+/// the table keeps at most one live entry per file some operation is using.
+static CHECKPOINT_FILE_LOCKS: std::sync::LazyLock<
+    awaken_sync::LeafLock<
+        std::collections::HashMap<PathBuf, std::sync::Weak<tokio::sync::Mutex<()>>>,
+    >,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Wait (cancellably, doing nothing) for the lock of the checkpoint at `path`.
+/// The returned guard is moved into the operation's blocking job.
+async fn checkpoint_file_lock(path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = {
+        let mut locks = CHECKPOINT_FILE_LOCKS.lock();
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(path).and_then(std::sync::Weak::upgrade) {
+            lock
+        } else {
+            let lock = Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+            lock
         }
+    };
+    lock.lock_owned().await
+}
+
+/// The one scheduling boundary for this crate's synchronous file I/O, the same
+/// shape as the Local sandbox's auxiliary creation: the operation runs whole on
+/// the blocking pool, driven there by the caller's runtime, so a stalled
+/// `fsync` holds a blocking thread instead of the async worker that renews the
+/// caller's leases. Dropping the awaiting future does not cut the operation
+/// short: the blocking job owns it to its end. A panic inside it is resumed on
+/// the caller, as it was inline. `Err` means the job never started (its
+/// runtime was shutting down), so nothing was read or written. Awaited outside
+/// a Tokio runtime there is no blocking pool, and the operation runs in place.
+async fn off_async_worker<T, Fut>(operation: Fut) -> Result<T, String>
+where
+    T: Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return Ok(operation.await);
+    };
+    match tokio::task::spawn_blocking(move || runtime.block_on(operation)).await {
+        Ok(value) => Ok(value),
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => Err(format!("filesystem store operation did not run: {error}")),
     }
 }
 
