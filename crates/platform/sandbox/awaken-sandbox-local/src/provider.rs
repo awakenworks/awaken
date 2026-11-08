@@ -390,6 +390,22 @@ impl LocalProvider {
     /// Realize a current durable Local sandbox under one aggregate-owned fence.
     /// A rebuild must additionally supply the exact V2 source handle; a plain
     /// create may not infer takeover authority from an absent same-spec root.
+    ///
+    /// A fenced creation without mounts is the same durable directory work as
+    /// [`Self::create_sandbox`]'s, and each of its marker writes, root
+    /// mutations and Ready publication runs inside the borrowed authority's
+    /// synchronous critical section, the one that revokes or replaces the
+    /// generation. The writes cannot leave that section, so the authority has
+    /// to be on the thread that does them; it is borrowed, so that thread
+    /// cannot be a `'static` blocking job. On a multi-thread runtime the
+    /// creation therefore runs whole in [`tokio::task::block_in_place`]: the
+    /// worker hands its queued tasks, a lease heartbeat among them, to another
+    /// thread before it blocks, and the creation runs on this stack with this
+    /// borrow, unsplit, so every authority admission and every `fsync` is
+    /// where it was. It still completes inside the caller's one poll, exactly
+    /// as inline: a dropped caller can only drop it before it starts or after
+    /// it ends. Mounts resolve through async sources a caller may abandon, and
+    /// a current-thread runtime has no worker to hand off to; both stay inline.
     pub async fn create_sandbox_for_effect(
         &self,
         spec: &pc::SandboxSpec,
@@ -400,8 +416,27 @@ impl LocalProvider {
         if let Some(handle) = source_handle {
             handle.local_payload()?;
         }
-        self.create_sandbox_inner(spec, Some((effect_fence, authority)), source_handle)
-            .await
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime)
+                if spec.mounts.is_empty()
+                    && matches!(
+                        runtime.runtime_flavor(),
+                        tokio::runtime::RuntimeFlavor::MultiThread
+                    ) =>
+            {
+                tokio::task::block_in_place(move || {
+                    runtime.block_on(self.create_sandbox_inner(
+                        spec,
+                        Some((effect_fence, authority)),
+                        source_handle,
+                    ))
+                })
+            }
+            _ => {
+                self.create_sandbox_inner(spec, Some((effect_fence, authority)), source_handle)
+                    .await
+            }
+        }
     }
 
     async fn create_sandbox_inner(
@@ -1926,6 +1961,9 @@ impl LocalSandbox {
     }
 }
 
+#[cfg(test)]
+#[path = "provider/fenced_creation_tests.rs"]
+mod fenced_creation_tests;
 #[cfg(test)]
 #[path = "provider/path_boundary_tests.rs"]
 mod path_boundary_tests;
