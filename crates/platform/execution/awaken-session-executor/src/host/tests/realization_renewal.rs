@@ -615,6 +615,68 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn slow_renewal_inside_the_remaining_proof_still_renews() {
+    /* Renewal budget cause/effect table: C1 Control answers after the nominal
+     * request timeout (TTL 300s -> 50s) but before the lease's remaining
+     * proof (60s); C2 the prior lease is live. Effect: E1 the reply is applied
+     * and the Session stays installed, because the lease contract bounds one
+     * renewal by `renewal_request_budget(remaining)`, not the nominal timeout.
+     *
+     * | Rule | reply after | nominal | remaining proof | Effect |
+     * |---|---:|---:|---:|---|
+     * | B1 | 55s | 50s | 60s | renewed (E1) |
+     * Tokio time is paused; the 55s gate release is virtual. Before the fix the
+     * nominal 50s deadline cut this reply off and failed the renewal.
+     */
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *control.renewal_gate.lock().unwrap() = Some(gate.clone());
+    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_session_realization_control(control.clone())
+        .with_authority(
+            crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
+    let now = awaken_session_realization::test_support::wall_clock_now_ms();
+    let lease = crate::session_resource::SessionRealizationLease {
+        owner: "worker-a".into(),
+        runtime_incarnation: "worker-a:incarnation".into(),
+        epoch: 1,
+        expires_at_unix_ms: now.saturating_add(90_000),
+    };
+    control
+        .renewals
+        .lock()
+        .unwrap()
+        .insert("slow-renewal".into(), lease.clone());
+    host.run_assembly
+        .install_session_realization_lease("slow-renewal", lease)
+        .unwrap();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(55)).await;
+        gate.add_permits(1);
+    });
+    let renewed = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        host.run_assembly.renew_due_session_realizations(
+            awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(300_000),
+        ),
+    )
+    .await
+    .expect("B1 completes inside the remaining proof")
+    .expect("B1 a slow reply inside the proof is not a failure");
+    assert_eq!(renewed, 1, "B1/E1");
+    assert!(
+        host.run_assembly
+            .installed_sessions
+            .contains("slow-renewal"),
+        "B1/E1"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn per_request_deadlines_release_every_renewal_capacity_slot() {
     use std::sync::atomic::Ordering;
 

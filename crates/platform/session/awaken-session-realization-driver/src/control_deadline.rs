@@ -161,7 +161,6 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
         })
     }
 
-    #[tracing::instrument(name = "session.realization.control", skip_all, fields(operation, phase = "queue", queue_wait_ms = tracing::field::Empty, request_ms = tracing::field::Empty, outcome = tracing::field::Empty))]
     async fn call<T>(
         &self,
         operation: &'static str,
@@ -169,7 +168,41 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
             Output = Result<T, awaken_session_execution_contract::SessionRealizationControlFailure>,
         >,
     ) -> Result<T, awaken_session_execution_contract::SessionRealizationControlFailure> {
-        let deadline = awaken_time::mono::MonoDeadline::after(self.request_timeout);
+        self.call_within(operation, self.request_timeout, future)
+            .await
+    }
+
+    /// Renew one exact lease within the caller's renewal budget: the whole
+    /// remaining proof, never more than one proof window
+    /// (`AuthorityLeaseTiming::renewal_request_budget`). A reply inside that
+    /// proof can still be applied, so the nominal request timeout would only
+    /// discard a valid but slow renewal. Capacity stays on the shared scheduler.
+    pub async fn renew_session_realization_within(
+        &self,
+        command: awaken_session_execution_contract::RenewSessionRealization,
+        budget: std::time::Duration,
+    ) -> Result<
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        self.call_within(
+            "renew",
+            budget,
+            self.inner.renew_session_realization(command),
+        )
+        .await
+    }
+
+    #[tracing::instrument(name = "session.realization.control", skip_all, fields(operation, phase = "queue", queue_wait_ms = tracing::field::Empty, request_ms = tracing::field::Empty, outcome = tracing::field::Empty))]
+    async fn call_within<T>(
+        &self,
+        operation: &'static str,
+        request_timeout: std::time::Duration,
+        future: impl std::future::Future<
+            Output = Result<T, awaken_session_execution_contract::SessionRealizationControlFailure>,
+        >,
+    ) -> Result<T, awaken_session_execution_contract::SessionRealizationControlFailure> {
+        let deadline = awaken_time::mono::MonoDeadline::after(request_timeout);
         let queued_at = awaken_time::mono::now();
         let mut request_started = None;
         let expired = |phase: &str,

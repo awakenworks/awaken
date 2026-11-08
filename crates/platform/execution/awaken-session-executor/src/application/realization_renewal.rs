@@ -4,7 +4,6 @@
 
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
 use awaken_session_execution_contract::ObservedSessionRealizationLease;
-use awaken_session_execution_contract::SessionRealizationControl as _;
 use awaken_session_execution_contract::SessionRealizationControlFailure;
 use awaken_session_realization_driver::DeadlineSessionRealizationControl;
 #[cfg(any(target_os = "linux", test))]
@@ -30,6 +29,7 @@ impl crate::RunAssembly {
         session_id: String,
         lease: crate::session_resource::SessionRealizationLease,
         requested_expiry_unix_ms: u64,
+        request_budget: std::time::Duration,
     ) -> Result<bool, SessionExecutionError> {
         let realizations = self.installed_sessions.realizations();
         // Cause/effect decision table: C1 this lease was selected by the due-only
@@ -74,12 +74,13 @@ impl crate::RunAssembly {
                 let request_started = awaken_authority_clock::authority_proof_started()
                     .map_err(|error| (SessionExecutionError::internal(error.to_string()), true))?;
                 control
-                    .renew_session_realization(
+                    .renew_session_realization_within(
                         awaken_session_execution_contract::RenewSessionRealization {
                             session_id: awaken_session_types::SessionId::from(&session_id),
                             asserted_lease: lease.clone(),
                             requested_expires_at_unix_ms: requested_expiry_unix_ms,
                         },
+                        request_budget,
                     )
                     .await
                     .map(|renewed_lease| renewed_lease.observed(request_started))
@@ -272,9 +273,14 @@ impl crate::RunAssembly {
             std::time::Duration,
         )| { left.2.cmp(&right.2).then_with(|| left.0.cmp(&right.0)) };
         due.sort_by(order);
-        let outcomes =
-            futures_util::future::join_all(due.into_iter().map(|(session_id, lease, _)| {
+        let outcomes = futures_util::future::join_all(due.into_iter().map(
+            |(session_id, lease, remaining)| {
                 let control = &control;
+                // A slow reply inside the remaining proof still renews; only an
+                // exhausted proof falls back to the nominal request bound.
+                let request_budget = timing
+                    .renewal_request_budget(remaining)
+                    .unwrap_or_else(|| timing.request_timeout());
                 // The exact asserted expiry is a Control-clock coordinate.
                 // Extend that coordinate, never add a Worker wall-clock value.
                 let requested_expiry_unix_ms = lease.expires_at_unix_ms.saturating_add(
@@ -286,11 +292,13 @@ impl crate::RunAssembly {
                         session_id,
                         lease,
                         requested_expiry_unix_ms,
+                        request_budget,
                     )
                     .await
                 }
-            }))
-            .await;
+            },
+        ))
+        .await;
         let mut renewed = 0;
         let mut first_error = None;
         for outcome in outcomes {
