@@ -36,9 +36,40 @@ pub struct PreparedProcess {
     /// Exact selected Worker authentication port shared by hosted private routes.
     pub worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
-    pub admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
+    /// What this process lends its co-located Worker (AllInOne only).
+    pub colocated_worker: crate::ColocatedWorkerInputs,
     /// The process's one wall clock, shared with an embedded Worker.
     pub clock: Arc<dyn awaken_time::WallClock>,
+    /// The Control model-configuration ports a scenario process resolves its
+    /// host model through; absent when this role owns no Control stores.
+    #[cfg(any(test, feature = "test-support"))]
+    pub model_configuration: Option<ModelConfigurationHandles>,
+}
+
+/// The exact Control stores the admin config API writes provider connections,
+/// credentials and inference profiles into, with the installation Workspace
+/// they are scoped to. Consumers reuse these handles; they never reopen them.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone)]
+pub struct ModelConfigurationHandles {
+    pub catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
+    pub credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+    pub secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    pub profiles: Arc<dyn awaken_config_resolver::InferenceProfileStore>,
+    pub workspace: String,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ModelConfigurationHandles {
+    pub(super) fn of(stores: &crate::ProcessStores) -> Option<Self> {
+        stores.control.as_ref().map(|control| Self {
+            catalog: control.catalog.clone(),
+            credentials: control.credentials.clone(),
+            secrets: control.secrets.clone(),
+            profiles: control.profiles.clone(),
+            workspace: stores.platform_workspace.clone(),
+        })
+    }
 }
 
 pub(super) struct ProcessRouters {
@@ -50,7 +81,7 @@ pub(super) struct ProcessRouters {
         Option<Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>>,
     pub(super) worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
-    pub(super) admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
+    pub(super) colocated_worker: crate::ColocatedWorkerInputs,
 }
 
 impl ProcessRouters {
@@ -79,7 +110,10 @@ impl ProcessRouters {
             service_lifecycle,
             event_batch_cutover_validation,
             worker_authenticator: None,
-            admin_tools,
+            colocated_worker: crate::ColocatedWorkerInputs {
+                admin_tools,
+                ..Default::default()
+            },
         }
     }
 

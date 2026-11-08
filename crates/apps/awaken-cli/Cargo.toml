@@ -57,7 +57,6 @@ awaken-deployment-config.workspace = true
 awaken-protocol-acp = { workspace = true, features = ["real-acp"] }
 awaken-acp-catalog.workspace = true
 awaken-run-executor-acp = { workspace = true, features = ["real-acp"] }
-awaken-tool-contract.workspace = true
 awaken-tool-relay.workspace = true
 # The Session execution a local claim pool co-locates: the deployment's
 # Session environment, the Memory mount data plane over the Resources source
@@ -91,6 +90,7 @@ awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-provisioning-contract.workspace = true
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-observability.workspace = true
+awaken-tool-contract.workspace = true
 tempfile = "3"
 
 [lints]

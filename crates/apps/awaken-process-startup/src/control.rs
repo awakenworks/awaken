@@ -421,8 +421,10 @@ async fn prepare_control_process_with_model_supply_and_installations(
         event_batch_cutover_validation: prepared.event_batch_cutover_validation,
         coordinator_authorities: None,
         worker_authenticator: prepared.worker_authenticator,
-        admin_tools: prepared.admin_tools,
+        colocated_worker: prepared.colocated_worker,
         clock,
+        #[cfg(any(test, feature = "test-support"))]
+        model_configuration: None,
     })
 }
 

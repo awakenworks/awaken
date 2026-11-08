@@ -766,7 +766,8 @@ function systemLines(parsed) {
 
 // `opts`: `{ behavior, models, failuresBeforeSuccess, alwaysFail, failArrivalKind,
 // faultStatus, faultBodyMode, delayMs, firstDelayMs, listenHost }`. `models` enables the same fixture's
-// Anthropic model-directory endpoint for Provider Connection tests.
+// Anthropic model-directory endpoint for Provider Connection tests; the returned
+// `models` array is that directory and may grow.
 // `behavior` (default `'default'`) selects a named model or a test callback
 // returning the same {text}/{tool}/{tools} reply, optionally asynchronously.
 // Its third argument is an AbortSignal for response connection closure, so a
@@ -790,6 +791,9 @@ export function startFakeAnthropic(apiKey, opts = {}) {
   if (!['complete', 'truncated'].includes(faultBodyMode)) {
     throw new Error(`unknown fake-anthropic fault body mode: ${faultBodyMode}`);
   }
+  // The model directory is mutable: an operator-side harness may make the
+  // provider offer the model it is about to bind (`configureModelUpstream`).
+  const directory = [...models];
   const reply_of = typeof behavior === 'function' ? behavior : BEHAVIORS[behavior];
   if (!reply_of) throw new Error(`unknown fake-anthropic behavior: ${behavior}`);
   // `receivedRequests` is the arrival-side ledger; `requests` below is the
@@ -819,13 +823,13 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         emitError(res, 401, 'authentication_error', 'invalid x-api-key');
         return false;
       };
-      if (req.method === 'GET' && pathname.startsWith('/v1/models') && models.length > 0) {
+      if (req.method === 'GET' && pathname.startsWith('/v1/models') && directory.length > 0) {
         if (!authorize()) return;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
-          data: models.map((id) => ({ id })),
+          data: directory.map((id) => ({ id })),
           has_more: false,
-          last_id: models.at(-1) ?? null,
+          last_id: directory.at(-1) ?? null,
         }));
         return;
       }
@@ -943,6 +947,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
           requests: state.requests,
           receivedRequests: state.receivedRequests,
           arrivals: state.arrivals,
+          models: directory,
           get unauthorized() {
             return state.unauthorized;
           },

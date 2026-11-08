@@ -55,6 +55,8 @@ import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = await availablePort(Number(process.env.E2E_PORT));
 const CALC_TOKEN = 'calc-persist-bearer-token'; // awaken-allow(secret):
+// The management scenario's own host model, which every publication pins.
+const HOST_MODEL = 'management';
 // 64 hex chars = the 32-byte AEAD key typed control_seal_key requires.
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 
@@ -88,7 +90,7 @@ async function main() {
   let server = null;
   try {
     // ---- lifetime A: author everything ------------------------------------
-    let { server: a, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) });
+    let { server: a, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management', modelUpstream: { authTokenFile: path.join(dir, 'admin-token') } }) });
     server = a;
     await waitForPort(PORT);
     const adminTokenPath = path.join(dir, 'admin-token');
@@ -180,7 +182,7 @@ async function main() {
       model: {
         mode: 'pinned',
         provider_identity_ref: 'default',
-        model_ref: 'fake-haiku',
+        model_ref: HOST_MODEL,
         backend_ref: 'default',
       },
       mcp_servers: [{
@@ -247,7 +249,7 @@ async function main() {
     // ---- restart: kill the process, respawn over the same dir + key -------
     await stopServer(server);
     server = null;
-    ({ server, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) }));
+    ({ server, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management', modelUpstream: { authTokenFile: path.join(dir, 'admin-token') } }) }));
     await waitForPort(PORT);
     assert.equal(fs.readFileSync(adminTokenPath, 'utf8').trim(), adminToken, 'admin identity persisted');
     const client2 = new Anthropic({ apiKey: null, authToken: adminToken, baseURL: base });
@@ -283,7 +285,7 @@ async function main() {
     assert.ok(restoredProfiles.includes(userProfile.id));
     const restoredModels = [];
     for await (const model of client2.beta.models.list()) restoredModels.push(model.id);
-    assert.ok(restoredModels.includes('fake-haiku'));
+    assert.ok(restoredModels.includes(HOST_MODEL));
     pass('official SDK Agent/UserProfile/Models projections survive process replacement');
 
     const restoredDeploymentEnvironment = await client2.beta.environments.retrieve(

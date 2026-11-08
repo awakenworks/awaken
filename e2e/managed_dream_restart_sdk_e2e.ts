@@ -20,9 +20,10 @@ import { cleanupFixtureTree, deploymentEnv, pass, realServerEnv, spawnServer, st
 
 const BETAS = ['managed-agents-2026-04-01'] as const;
 const PORT = Number(process.env.E2E_PORT ?? 38_447);
-// realServerEnv publishes this exact provider-backed reference into the Dream
-// scenario resolver; using a different authoring id must fail readiness.
-const MODEL = 'fake-haiku';
+// The Dream scenario resolver's own model reference (the harness binds it to
+// the fake upstream through the `default` inference profile); using a different
+// authoring id must fail readiness.
+const MODEL = 'claude-sonnet-5';
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 
 const client = (baseURL: string) => new Anthropic({ apiKey: 'e2e-dummy', baseURL });

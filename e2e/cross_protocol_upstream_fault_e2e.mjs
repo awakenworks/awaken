@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import {
-  fakeAnthropicServerEnv,
+  modelUpstreamEnv,
   withServer,
   pass,
   waitForSessionEventReceipt,
@@ -119,7 +119,7 @@ async function withFaultyUpstream(faultOpts, port, fn) {
       'real',
       port,
       (base) => fn(base, upstream),
-      fakeAnthropicServerEnv(upstream, { ANTHROPIC_API_KEY: FAKE_KEY }),
+      modelUpstreamEnv(upstream, { apiKey: FAKE_KEY }),
     );
   } finally {
     upstream.close();

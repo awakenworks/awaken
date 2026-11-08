@@ -138,6 +138,10 @@ async function main() {
       assert.equal(texts.filter((t) => t.startsWith('model=fast')).length, 2, `R5: route changed, got ${texts}`);
       assert.ok(!texts.some((t) => t.startsWith('model=slow')), `R5: rejected model leaked, got ${texts}`);
       pass('unknown per-event model is rejected without route mutation (R5)');
+    }, {}, {
+      // Each label binds its own profile, so the upstream sees the label as
+      // the model name it echoes back.
+      modelUpstream: { profiles: { fast: 'fast', slow: 'slow', default: 'default' } },
     });
 
     console.log('E2E PASS: Session-scoped model routing + strict event schema (R1/R2/R5/R6).');

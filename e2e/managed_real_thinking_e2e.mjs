@@ -11,13 +11,14 @@
 // step-by-step prompt below. The reasoning text itself is intentionally NOT on the
 // wire (the marker carries none); the answer still lands in `agent.message`.
 //
-// Gated: skips without a real key. Run: (from e2e/, with KIMI env)
-//   ANTHROPIC_API_KEY=sk-kimi-... ANTHROPIC_BASE_URL=https://api.kimi.com/coding/v1/ \
-//   ANTHROPIC_MODEL=kimi-for-coding node managed_real_thinking_e2e.mjs
+// Gated: skips without a real key. Run: (from e2e/, with a live key in the
+// controller environment or ~/.bashrc; it reaches the server only through the
+// config-plane API)  node managed_real_thinking_e2e.mjs
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withServer, modelUpstreamEnv } from './harness.mjs';
+import { liveAnthropicCompatibleUpstream } from './model_upstream.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38254);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -32,8 +33,9 @@ function assertContentlessThinking(mark, label) {
 }
 
 async function main() {
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.KIMI_API_KEY) {
-    console.log('SKIP managed_real_thinking_e2e: no ANTHROPIC_API_KEY / KIMI_API_KEY set.');
+  const live = liveAnthropicCompatibleUpstream();
+  if (!live) {
+    console.log('SKIP managed_real_thinking_e2e: no live Anthropic-compatible key (ANTHROPIC_API_KEY or ~/.bashrc).');
     return;
   }
   try {
@@ -148,7 +150,7 @@ async function main() {
       pass('answer lands in agent.message (5 cents); thinking precedes it');
 
       console.log('E2E PASS: real-model thinking preview is start-only, durable, and not replayed after reconnect.');
-    });
+    }, modelUpstreamEnv(null, live));
   } catch (err) {
     console.error('E2E FAIL:', err);
     process.exit(1);

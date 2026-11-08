@@ -91,7 +91,7 @@ pub use crate::process_admin::{
 pub use awaken_coordinator::{
     ColocatedExecution, ColocatedExecutionInputs, InferenceSelection, PreparedColocatedExecution,
 };
-pub use colocated_worker::{ColocatedWorker, ColocatedWorkerPreparation};
+pub use colocated_worker::{ColocatedWorker, ColocatedWorkerInputs, ColocatedWorkerPreparation};
 pub use console_assets::mount as mount_console;
 pub use console_assets::mount_with_navigation as mount_console_with_navigation;
 pub use control::{
@@ -178,6 +178,8 @@ impl ControlServices {
     }
 }
 mod prepared_process;
+#[cfg(any(test, feature = "test-support"))]
+pub use prepared_process::ModelConfigurationHandles;
 use prepared_process::ProcessRouters;
 pub use prepared_process::{CoordinatorAuthorityHandles, PreparedProcess};
 
@@ -458,7 +460,7 @@ async fn prepare_all_in_one_process_with_model_supply_on_worker(
             worker,
             upstream,
             deployment.clone(),
-            prepared.admin_tools.clone(),
+            prepared.colocated_worker.clone(),
             prepared.clock.clone(),
         )
         .await

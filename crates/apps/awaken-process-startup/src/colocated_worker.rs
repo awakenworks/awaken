@@ -18,6 +18,24 @@ use awaken_worker_contract::WorkerShutdown;
 
 use crate::config::ResolvedDeployment;
 
+/// What the AllInOne process lends its co-located Worker at every incarnation:
+/// capabilities the Coordinator process holds and the Worker composition
+/// cannot obtain by itself. Consumer: the launcher's Worker build
+/// (`awaken-cli` `PreparedLocalWorker`). They are in-process handles; none of
+/// them crosses the Worker transport, so a remote Worker never receives them.
+#[derive(Clone, Default)]
+pub struct ColocatedWorkerInputs {
+    /// The process's administrative tools.
+    pub admin_tools: Vec<Arc<dyn RawTool>>,
+    /// Whether this process supplies Awaken Cloud brokered models.
+    pub cloud_models_enabled: bool,
+    /// The process's Awaken Cloud brokered-inference client, authenticated by
+    /// the process's Cloud identity (login session or Developer Key). Absent
+    /// when Cloud models are disabled or no Cloud identity is configured.
+    pub brokered_inference:
+        Option<Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>>,
+}
+
 /// Prepares the co-located Worker of an AllInOne deployment. Consumer: the
 /// AllInOne service lifecycle, which calls it once, before serving, on the
 /// process root task (the preparation future need not be `Send`: it opens the
@@ -50,7 +68,7 @@ pub trait ColocatedWorker: Send + Sync {
         &self,
         upstream: String,
         deployment: &ResolvedDeployment,
-        admin_tools: &[Arc<dyn RawTool>],
+        inputs: &ColocatedWorkerInputs,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<(), String>;
 
@@ -62,7 +80,7 @@ pub trait ColocatedWorker: Send + Sync {
         &self,
         upstream: String,
         deployment: &ResolvedDeployment,
-        admin_tools: &[Arc<dyn RawTool>],
+        inputs: &ColocatedWorkerInputs,
         clock: Arc<dyn awaken_time::WallClock>,
         shutdown: tokio::sync::watch::Receiver<Option<WorkerShutdown>>,
     ) -> Result<Result<(), String>, String>;

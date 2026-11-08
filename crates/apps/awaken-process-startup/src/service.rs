@@ -487,7 +487,7 @@ async fn serve_prepared_process(
     let process_clock = process.clock.clone();
     let local_setup = process.local_setup;
     let service_lifecycle = process.service_lifecycle;
-    let admin_tools = process.admin_tools.clone();
+    let worker_inputs = process.colocated_worker.clone();
     let public_app = process.public_router.layer(axum::middleware::from_fn(
         awaken_protocol_managed::enforce_managed_beta,
     ));
@@ -559,7 +559,7 @@ async fn serve_prepared_process(
             .expect("AllInOne binds its private Worker surface");
         let clock = process_clock.clone();
         prepared
-            .validate(upstream, &deployment, &admin_tools, clock)
+            .validate(upstream, &deployment, &worker_inputs, clock)
             .await?;
     }
     if role == ServiceRole::AllInOne {
@@ -652,7 +652,7 @@ async fn serve_prepared_process(
     let worker = tokio::spawn(async move {
         supervise_local_worker(
             prepared_worker,
-            admin_tools,
+            worker_inputs,
             worker_url,
             worker_deployment,
             worker_shutdown_rx,
@@ -858,7 +858,7 @@ pub(crate) async fn spawn_colocated_worker(
     worker: Arc<dyn crate::ColocatedWorker>,
     upstream: String,
     deployment: ResolvedDeployment,
-    admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
+    inputs: crate::ColocatedWorkerInputs,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Result<(), String> {
     let (server_shutdown, server_stop) = tokio::sync::oneshot::channel::<()>();
@@ -876,7 +876,7 @@ pub(crate) async fn spawn_colocated_worker(
             .map_err(|error| format!("private server task: {error}"))?
     };
     if let Err(error) = worker
-        .validate(upstream.clone(), &deployment, &admin_tools, clock.clone())
+        .validate(upstream.clone(), &deployment, &inputs, clock.clone())
         .await
     {
         let _ = server_shutdown.send(());
@@ -887,7 +887,7 @@ pub(crate) async fn spawn_colocated_worker(
         let (worker_shutdown, worker_stop) = tokio::sync::watch::channel(None);
         let supervised = tokio::spawn(supervise_local_worker(
             worker,
-            admin_tools,
+            inputs,
             upstream,
             deployment,
             worker_stop,
@@ -917,7 +917,7 @@ fn local_worker_restart_delay(attempt: u32) -> std::time::Duration {
 
 async fn supervise_local_worker(
     prepared: Arc<dyn crate::ColocatedWorker>,
-    admin_tools: Vec<Arc<dyn awaken_tool_contract::tool::RawTool>>,
+    inputs: crate::ColocatedWorkerInputs,
     upstream: String,
     deployment: ResolvedDeployment,
     mut shutdown: tokio::sync::watch::Receiver<Option<awaken_worker_contract::WorkerShutdown>>,
@@ -932,7 +932,7 @@ async fn supervise_local_worker(
             .run_incarnation(
                 upstream.clone(),
                 &deployment,
-                &admin_tools,
+                &inputs,
                 clock.clone(),
                 shutdown.clone(),
             )
@@ -1205,8 +1205,9 @@ mod tests {
             event_batch_cutover_validation: None,
             coordinator_authorities: None,
             worker_authenticator: None,
-            admin_tools: Vec::new(),
+            colocated_worker: Default::default(),
             clock: awaken_time::system_clock(),
+            model_configuration: None,
         }
     }
 
@@ -1641,8 +1642,9 @@ mod tests {
             event_batch_cutover_validation: Some(source.clone()),
             coordinator_authorities: None,
             worker_authenticator: None,
-            admin_tools: Vec::new(),
+            colocated_worker: Default::default(),
             clock: awaken_time::system_clock(),
+            model_configuration: None,
         };
         let controller = configured_process_admin_controller(&process);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
