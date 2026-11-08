@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use crate::common::api_version::{ApiWire, ManagedApiVersion};
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::agent::{
@@ -266,9 +267,10 @@ async fn authorize_agent_geo(
 
 async fn create_agent(
     State(state): State<Arc<AgentRegistryState>>,
+    api_version: ManagedApiVersion,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
     ManagedJson(params): ManagedJson<AgentCreateParams>,
-) -> Result<Json<Agent>, WireError> {
+) -> Result<Json<ApiWire<Agent>>, WireError> {
     authorize_agent_geo(
         &state,
         &scope,
@@ -279,47 +281,52 @@ async fn create_agent(
         .repository
         .create(&scope, params)
         .await
-        .map(Json)
+        .map(|agent| Json(api_version.wrap(agent)))
         .map_err(wire_error)
 }
 
 async fn retrieve_agent(
     State(state): State<Arc<AgentRegistryState>>,
+    api_version: ManagedApiVersion,
     Path(id): Path<String>,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
     ManagedQuery(query): ManagedQuery<AgentRetrieveParams>,
-) -> Result<Json<Agent>, WireError> {
+) -> Result<Json<ApiWire<Agent>>, WireError> {
     state
         .repository
         .retrieve(&scope, &id, query.version)
         .await
-        .map(Json)
+        .map(|agent| Json(api_version.wrap(agent)))
         .map_err(wire_error)
 }
 
 async fn list_agents(
     State(state): State<Arc<AgentRegistryState>>,
+    api_version: ManagedApiVersion,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
     ManagedQuery(params): ManagedQuery<AgentListParams>,
-) -> Result<Json<PageCursor<Agent>>, WireError> {
+) -> Result<Json<ApiWire<PageCursor<Agent>>>, WireError> {
     state
         .repository
         .list(&scope, &params)
         .await
         .map(|agents| {
-            Json(paginate(agents, &params.page_query(), |agent| {
-                agent.id.as_str()
-            }))
+            Json(
+                api_version.wrap(paginate(agents, &params.page_query(), |agent| {
+                    agent.id.as_str()
+                })),
+            )
         })
         .map_err(wire_error)
 }
 
 async fn update_agent(
     State(state): State<Arc<AgentRegistryState>>,
+    api_version: ManagedApiVersion,
     Path(id): Path<String>,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
     ManagedJson(params): ManagedJson<AgentUpdateParams>,
-) -> Result<Json<Agent>, WireError> {
+) -> Result<Json<ApiWire<Agent>>, WireError> {
     let inference_geo = match params.model.as_ref() {
         Some(model) => model.clone().into_config().inference_geo,
         None => {
@@ -337,15 +344,16 @@ async fn update_agent(
         .repository
         .update(&scope, &id, params)
         .await
-        .map(Json)
+        .map(|agent| Json(api_version.wrap(agent)))
         .map_err(wire_error)
 }
 
 async fn archive_agent(
     State(state): State<Arc<AgentRegistryState>>,
+    api_version: ManagedApiVersion,
     Path(id): Path<String>,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
-) -> Result<Json<Agent>, WireError> {
+) -> Result<Json<ApiWire<Agent>>, WireError> {
     let agent = state
         .repository
         .archive(&scope, &id)
@@ -360,23 +368,24 @@ async fn archive_agent(
                 Json(ErrorResponse::new("api_error", error)),
             )
         })?;
-    Ok(Json(agent))
+    Ok(Json(api_version.wrap(agent)))
 }
 
 async fn list_versions(
     State(state): State<Arc<AgentRegistryState>>,
+    api_version: ManagedApiVersion,
     Path(id): Path<String>,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
     ManagedQuery(page): ManagedQuery<PageQuery>,
-) -> Result<Json<PageCursor<Agent>>, WireError> {
+) -> Result<Json<ApiWire<PageCursor<Agent>>>, WireError> {
     state
         .repository
         .versions(&scope, &id)
         .await
         .map(|versions| {
-            Json(paginate_by(versions, &page, |agent| {
+            Json(api_version.wrap(paginate_by(versions, &page, |agent| {
                 agent.version.to_string()
-            }))
+            })))
         })
         .map_err(wire_error)
 }
@@ -559,6 +568,116 @@ mod tests {
         let status = response.status();
         let body = response.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn agent_api_date_and_execution_identity_are_checked_before_repository_effects() {
+        // Causes: C1 absent/legacy/current/invalid date; C2 omitted/null/default/
+        // AWS/unknown/extra-field identity. Effects: D1 supported dates and
+        // default identities -> one write; D2 only current response carries
+        // identity; D3 invalid dates/unsupported identity -> 400 + zero writes.
+        // The Cartesian rows isolate each selector and prove a positive witness
+        // alongside every refusal. Read/list/version/archive use the same DTO.
+        for date in [
+            None,
+            Some("2023-06-01"),
+            Some("2026-10-21"),
+            Some("2099-01-01"),
+        ] {
+            for (identity, admitted) in [
+                (None, true),
+                (Some(json!(null)), true),
+                (Some(json!({"type":"service_account"})), true),
+                (
+                    Some(
+                        json!({"type":"aws_role", "role_arn":"arn:aws:iam::123456789012:role/unsupported"}),
+                    ),
+                    false,
+                ),
+                (Some(json!({"type":"future"})), false),
+                (
+                    Some(json!({"type":"service_account", "role_arn":"not-ignored"})),
+                    false,
+                ),
+            ] {
+                let repository = Arc::new(FakeRepository::new());
+                let app = agents_router(Arc::new(AgentRegistryState::from_repository(
+                    repository.clone(),
+                )));
+                let mut body = json!({"name":"date", "model":"model"});
+                if let Some(identity) = identity {
+                    body["execution_identity"] = identity;
+                }
+                let mut builder = Request::post("/v1/agents")
+                    .header("content-type", "application/json")
+                    .extension(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                        "workspace-policy".into(),
+                    ));
+                if let Some(date) = date {
+                    builder = builder.header("anthropic-version", date);
+                }
+                let response = app
+                    .clone()
+                    .oneshot(builder.body(Body::from(body.to_string())).unwrap())
+                    .await
+                    .unwrap();
+                let allows = admitted && date != Some("2099-01-01");
+                assert_eq!(
+                    response.status(),
+                    if allows {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::BAD_REQUEST
+                    },
+                    "date={date:?} body={body}"
+                );
+                assert_eq!(
+                    repository.writes.load(Ordering::SeqCst),
+                    usize::from(allows)
+                );
+                let value: serde_json::Value = serde_json::from_slice(
+                    &response.into_body().collect().await.unwrap().to_bytes(),
+                )
+                .unwrap();
+                if allows {
+                    assert_eq!(
+                        value.get("execution_identity").is_some(),
+                        date == Some("2026-10-21")
+                    );
+                    for path in [
+                        "/v1/agents",
+                        "/v1/agents/agent-policy",
+                        "/v1/agents/agent-policy/versions",
+                    ] {
+                        let mut builder = Request::get(path).extension(
+                            awaken_runtime_contract::runs::scope::WorkspaceScope(
+                                "workspace-policy".into(),
+                            ),
+                        );
+                        if let Some(date) = date {
+                            builder = builder.header("anthropic-version", date);
+                        }
+                        let response = app
+                            .clone()
+                            .oneshot(builder.body(Body::empty()).unwrap())
+                            .await
+                            .unwrap();
+                        assert_eq!(response.status(), StatusCode::OK);
+                        let value: serde_json::Value = serde_json::from_slice(
+                            &response.into_body().collect().await.unwrap().to_bytes(),
+                        )
+                        .unwrap();
+                        let row = value.get("data").map(|data| &data[0]).unwrap_or(&value);
+                        assert_eq!(
+                            row.get("execution_identity").is_some(),
+                            date == Some("2026-10-21")
+                        );
+                    }
+                } else {
+                    assert_eq!(value["error"]["type"], "invalid_request_error");
+                }
+            }
+        }
     }
 
     #[tokio::test]

@@ -1,5 +1,6 @@
 //! Shared Managed wire mechanics; no domain state belongs here.
 
+pub(crate) mod api_version;
 pub(crate) mod headers;
 mod response_context;
 pub(crate) mod scope;

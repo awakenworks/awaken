@@ -375,3 +375,15 @@ responses against its committed awaiting state and idempotency identity.
   (`crates/apps/awaken-control/src/authz_tests.rs:1156-1161`). D6's
   "Organization is cloud-only" stands.
 - `awaken-coordinator-local` is now `awaken-coordinator`.
+
+## 2026-11-09 amendment: Key-created Workspace is the flat API default
+
+A customer Key created for one Workspace calls the ordinary Managed `/v1/...`
+paths with one product origin. The authenticated binding supplies the Workspace;
+clients do not repeat it in a URL or Header. Explicit Workspace addressing and
+`anthropic-workspace-id` remain selectors constrained by that binding, with
+conflicts rejected before effects. The same HTTP selector projection and
+`resolve_scope` kernel serve every PEP; the underlying Session, authorization,
+repository partitions and aggregate owners do not change. Organization-wide
+management remains subject to its existing PDP, and an installation ownership
+fallback cannot override a bound credential.

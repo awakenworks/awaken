@@ -240,16 +240,23 @@ pub(super) struct SessionListPage {
     prev_page: Option<String>,
 }
 
+impl crate::common::api_version::ApiProjection for SessionListPage {
+    fn project_identity(&self, value: &mut serde_json::Value) {
+        crate::common::api_version::project_rows(&self.data, value);
+    }
+}
+
 impl SessionListPage {
     pub(super) fn history_time_v2(
         &self,
         times: &std::collections::HashMap<String, crate::state::SessionRootTimeEvidence>,
+        api_version: crate::common::api_version::ManagedApiVersion,
     ) -> serde_json::Value {
         let mut page = serde_json::to_value(self).expect("Session page serializes");
         let rows = page["data"].as_array_mut().expect("Session page has data");
         for (row, session) in rows.iter_mut().zip(&self.data) {
             let time = times.get(&session.id).expect("paged Session has evidence");
-            *row = super::session_time_v2(session, *time);
+            *row = super::session_time_v2(session, *time, api_version);
         }
         page
     }

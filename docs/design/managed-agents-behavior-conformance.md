@@ -11,6 +11,56 @@ Those establish that the **shapes** agree. This document is about the **promises
 behind the shapes**, which a golden snapshot cannot reach: in a promise failure
 the wire shape is still valid.
 
+## One protocol over local and hosted runtime selection
+
+Local Awaken and Cloud consume the same Managed HTTP adapter and Session
+Application. The frozen Agent publication selects Native, ACP or remote/A2A
+execution through existing backend contracts; an HTTP API version or SDK
+telemetry must never choose or replace that backend. Cloud composes admission,
+model custody, Worker placement and infrastructure around those same owners.
+
+`managed_sdk_runtime_matrix_e2e.mjs` owns cross-SDK Session handoff over Native
+and ACP. `managed_native_acp_runtime_matrix_e2e.mjs` derives every ACP runtime
+column from `awaken-acp-catalog`; it verifies selected backend, event batches,
+stream/reconnect, tool results and process recovery. These deterministic
+subprocess scenarios are protocol evidence. Executable discovery, provider
+credentials, actual harness behavior and mounted resources still require the
+catalog-derived live runtime matrix and deployed Worker/Sandbox acceptance.
+A catalog entry or successful API list cannot substitute for that execution.
+
+Static ownership stays SDK -> Managed protocol -> frozen Agent/Session ->
+existing runtime adapter. Dynamically, admitted input commits once, the selected
+backend executes, and committed events drive replies, tools, interrupt and
+recovery; unsupported backend capabilities fail through the existing explicit
+admission rather than switching to another runtime. There is no harness-specific
+Managed router or additional Session store.
+
+## Explicit API-date projection
+
+The HTTP edge accepts the legacy API date `2023-06-01` and the reviewed
+`2026-10-21` date used by newer official SDKs. Missing dates retain the legacy
+raw-client contract. Repeated, malformed and unknown dates fail with 400;
+SDK telemetry never chooses a response schema.
+
+The existing Managed Agent, Session, Thread and Event DTOs remain the sole
+projection inputs. The newer date adds their required `execution_identity`
+from the existing service-account execution model, including frozen child
+snapshots and Session updates on replay/SSE. The legacy serializer stays exact.
+This deployment has no AWS role realization: an explicit AWS role request must
+fail before repository or execution effects; it must never be accepted and
+silently executed as a service account. No new identity store, executor or
+parallel Session history is introduced.
+
+Static ownership is the Managed HTTP date parser and DTO projection -> existing
+Agent publication / committed Session facts. Dynamic behavior is parse date ->
+existing authentication, tenancy and admission -> existing command/read ->
+selected wire projection; invalid dates and unsupported identity requests stop
+before effects. Timestamp provenance and SDK-beta selectors remain independent.
+
+The exact full supported SDK matrix remains owned by the generated oracle.
+Accepting another API date and verifying common SDK lifecycles does not promote
+an entire newer SDK release or certify every newly added method/helper.
+
 ## Historical time provenance
 
 ### Local executable Models projection

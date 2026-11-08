@@ -23,16 +23,17 @@
 //! out-of-tenant request is denied even for an `admin` token.
 
 mod org_admission;
+mod workspace;
 pub use org_admission::{
     OrgAdmission, OrgAdmissionEdge, OrgAdmissionEncoding, OrgRateLimiter, admit_by_org_bucket,
     decide_org_admission,
 };
+pub use workspace::{WorkspaceSelectionError, request_workspace_scope};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, MutexGuard};
 
 use async_trait::async_trait;
-use awaken_agent_contract::ScopeId;
 use awaken_iam_contract::{
     ActionKey, AuthorizationDecision, AuthorizationRequest, PrincipalRef, ScopeRef, Timestamp,
     WorkspaceId,
@@ -43,7 +44,6 @@ use awaken_iam_core::{
 };
 use awaken_iam_preset::named_role_catalog;
 use awaken_sync::InvariantLock;
-use awaken_tenancy::{Authority, ScopeClaim, resolve_scope};
 use axum::body::{Body, to_bytes};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
@@ -747,15 +747,14 @@ pub async fn guard(
     // *selection*. `resolve_scope` applies the fence: a selection the token does
     // not cover is rejected here, before the policy engine is consulted, and it
     // can never widen the token's reach.
-    let token_scope = ScopeId::from(token_workspace.0.as_str());
-    let authority = Authority::bound(token_scope.clone());
-    let mut claims = vec![ScopeClaim::FromToken(token_scope)];
-    if let Some(tenancy) = request.extensions().get::<RequestTenancy>() {
-        claims.push(ScopeClaim::FromPath(tenancy.workspace_id.clone()));
-    }
-    let workspace_id = match resolve_scope(&authority, &claims) {
-        Ok(scope) => scope.0,
-        Err(_) => return reject(StatusCode::FORBIDDEN, "not authorized for this scope"),
+    let workspace_id = match request_workspace_scope(&request, Some(&token_workspace.0)) {
+        Ok(Some(scope)) => scope,
+        Ok(None) | Err(WorkspaceSelectionError::ConflictingSelector) => {
+            return reject(StatusCode::FORBIDDEN, "not authorized for this scope");
+        }
+        Err(WorkspaceSelectionError::InvalidSelector) => {
+            return reject(StatusCode::BAD_REQUEST, "invalid Workspace selector");
+        }
     };
     let scope = request_scope(&workspace_id);
     let action = session_action(request.method().as_str());

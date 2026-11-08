@@ -10,7 +10,7 @@
 //!
 //! - [`ScopeId`] — the opaque tenant handle (today it denotes a workspace; the
 //!   core never interprets it, so a future Org tier changes nothing here).
-//! - [`ScopeClaim`] — a scope *claimed* by one ingress vehicle (token, path, or
+//! - [`ScopeClaim`] — a scope *claimed* by one ingress vehicle (token, path, Header, or
 //!   domain), before authorization.
 //! - [`Authority`] — the set of scopes an authenticated principal may act in
 //!   (a narrow token is a singleton; a broad org principal reaches a set, filled
@@ -103,6 +103,8 @@ pub enum ScopeClaim {
     FromPath(String),
     /// A scope selected by the request host (e.g. `{ws}.host`, ADR-0048 D7).
     FromDomain(String),
+    /// An explicit HTTP Workspace selector, never credential authority.
+    FromHeader(String),
 }
 
 impl ScopeClaim {
@@ -112,7 +114,9 @@ impl ScopeClaim {
     #[must_use]
     pub fn selection(&self) -> Option<ScopeId> {
         match self {
-            ScopeClaim::FromPath(s) | ScopeClaim::FromDomain(s) => Some(ScopeId(s.clone())),
+            ScopeClaim::FromPath(s) | ScopeClaim::FromDomain(s) | ScopeClaim::FromHeader(s) => {
+                Some(ScopeId(s.clone()))
+            }
             ScopeClaim::FromToken(_) => None,
         }
     }
@@ -207,6 +211,20 @@ enum KernelRejection {
     NoAuthority,
 }
 
+fn selection_index<T: Eq>(selections: &[T]) -> Result<Option<usize>, KernelRejection> {
+    if selections.is_empty() {
+        return Ok(None);
+    }
+    if selections[1..]
+        .iter()
+        .all(|selected| selected == &selections[0])
+    {
+        Ok(Some(0))
+    } else {
+        Err(KernelRejection::SelectionRequired)
+    }
+}
+
 fn resolve_indices<T: Eq>(
     authority: &[T],
     selections: &[T],
@@ -214,25 +232,29 @@ fn resolve_indices<T: Eq>(
     if authority.is_empty() {
         return Err(KernelRejection::NoAuthority);
     }
-    if selections.is_empty() {
-        return if authority.len() == 1 {
-            Ok(Resolution::Authority(0))
-        } else {
-            Err(KernelRejection::SelectionRequired)
-        };
-    }
     for (index, selected) in selections.iter().enumerate() {
         if !authority.iter().any(|scope| scope == selected) {
             return Err(KernelRejection::NotAuthorized(index));
         }
     }
-    if selections[1..]
-        .iter()
-        .all(|selected| selected == &selections[0])
-    {
-        Ok(Resolution::Selection(0))
-    } else {
-        Err(KernelRejection::SelectionRequired)
+    match selection_index(selections)? {
+        Some(index) => Ok(Resolution::Selection(index)),
+        None if authority.len() == 1 => Ok(Resolution::Authority(0)),
+        None => Err(KernelRejection::SelectionRequired),
+    }
+}
+
+/// Reconcile only explicit selectors for an authenticated principal whose reach
+/// is checked by its PDP. This supplies no authority or authorization receipt;
+/// the caller must authorize the selected scope before performing any effect.
+/// Bound credentials use [`resolve_scope`] instead. Both paths share the same
+/// selector-agreement kernel, so Header/path/domain order cannot select a scope.
+pub fn select_scope(claims: &[ScopeClaim]) -> Result<Option<ScopeId>, ScopeRejection> {
+    let selections: Vec<ScopeId> = claims.iter().filter_map(ScopeClaim::selection).collect();
+    match selection_index(&selections) {
+        Ok(Some(index)) => Ok(Some(selections[index].clone())),
+        Ok(None) => Ok(None),
+        Err(_) => Err(ScopeRejection::SelectionRequired),
     }
 }
 
@@ -357,8 +379,29 @@ mod tests {
     }
 
     #[test]
-    fn only_path_and_domain_are_selections() {
+    fn only_path_domain_and_header_are_selections() {
+        // Decision rows: token is authority (never selection); path, domain
+        // and Header are untrusted selectors. Each vehicle uses the same
+        // agreement kernel, with and without a later PDP authority check.
         assert_eq!(ScopeClaim::FromToken(ws("a")).selection(), None);
+        assert_eq!(
+            ScopeClaim::FromHeader("a".into()).selection(),
+            Some(ws("a"))
+        );
+        for first in ["a", "b"] {
+            for second in ["a", "b"] {
+                let claims = [
+                    ScopeClaim::FromHeader(first.into()),
+                    ScopeClaim::FromPath(second.into()),
+                ];
+                assert_eq!(select_scope(&claims).is_ok(), first == second);
+                assert_eq!(
+                    resolve_scope(&Authority::bound(ws("a")), &claims).is_ok(),
+                    first == "a" && second == "a"
+                );
+            }
+        }
+        assert_eq!(select_scope(&[ScopeClaim::FromToken(ws("a"))]), Ok(None));
         assert_eq!(ScopeClaim::FromPath("a".into()).selection(), Some(ws("a")));
         assert_eq!(
             ScopeClaim::FromDomain("a".into()).selection(),

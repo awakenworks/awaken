@@ -288,11 +288,24 @@ impl ModelInput {
     }
 }
 
+/// The supported default execution principal. A customer AWS role has no
+/// realization in this service and is rejected by the closed decoder before
+/// any Agent repository mutation; it is never silently downgraded.
+/// SDK: inline — `AgentCreateParams.execution_identity` in API 2026-10-21
+/// (`BetaManagedAgentsServiceAccountExecutionIdentityParams`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ServiceAccountExecutionIdentity {
+    ServiceAccount {},
+}
+
 /// `AgentCreateParams` — the `POST /v1/agents` body. Every statically-known SDK
 /// union is decoded before the repository is called.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentCreateParams {
+    #[serde(default)]
+    pub execution_identity: Option<ServiceAccountExecutionIdentity>,
     pub name: String,
     pub model: ModelInput,
     #[serde(default)]
@@ -316,6 +329,8 @@ pub struct AgentCreateParams {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentUpdateParams {
+    #[serde(default)]
+    pub execution_identity: Option<ServiceAccountExecutionIdentity>,
     #[serde(default)]
     pub version: Option<u64>,
     #[serde(default)]

@@ -1013,3 +1013,12 @@
   the retained source TerminalCleanup already sees, instead of an unresolved
   deletion that a Running Session re-claimed indefinitely. No guard, PVC or
   receipt changes.
+
+
+## 2026-11-09 — Preserve Key tenancy through SDK first use
+
+- [ADR-0051](../adr/0051-tenancy-edge-aspect-one-opaque-scope-id.md)
+  owns reconciliation of verified Key bindings and explicit selectors. The
+  [Managed behavior owner](../design/managed-agents-behavior-conformance.md)
+  records explicit API-date projection; source tests and deployed qualification
+  retain separate evidence boundaries.

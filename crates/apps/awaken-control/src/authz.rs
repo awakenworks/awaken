@@ -1122,21 +1122,10 @@ pub async fn management_guard(
         }
     };
 
-    // Workspace path fence (ADR-0048 D3 / ADR-0051): a `/v1/workspaces/{ws}/…`
-    // request is rewritten to its flat form by `workspace_path_scope`, which stamps
-    // the path `{ws}` as `RequestTenancy`. It is a *selection*; a narrow management
-    // token can only select its own workspace, so — like the query/body fence — it
-    // must equal the token's workspace (else a token could author resources owned
-    // by an arbitrary workspace via the path).
-    if let Some(tenancy) = req
-        .extensions()
-        .get::<awaken_authz_enforce::RequestTenancy>()
-        && tenancy.workspace_id != workspace.0
-    {
-        return awaken_protocol_managed::with_managed_workspace_header(
-            forbidden("workspace path does not match the API token's workspace"),
-            &workspace.0,
-        );
+    // Flat routes default to the verified credential binding. Path/Header
+    // selectors must agree with that binding before any policy or handler effect.
+    if let Err(error) = awaken_authz_enforce::request_workspace_scope(&req, Some(&workspace.0)) {
+        return workspace_selection_rejection(error);
     }
     // Workspace fence: wherever the request names a workspace_id (query string
     // or a top-level JSON body field), it must equal the token's workspace.
@@ -1225,9 +1214,9 @@ pub async fn management_guard(
 }
 
 /// Management PEP for Awaken Cloud identity. The request's explicit bearer
-/// overrides the cached single-user login. Scope comes only from trusted edge
-/// resolution; a missing scope is denied instead of falling back to a compiled
-/// workspace constant.
+/// overrides the cached single-user login. A bound credential supplies its own
+/// scope; explicit selectors must agree. An unbound principal still requires
+/// an edge-selected scope and the existing PDP, never a fabricated grant.
 pub async fn cloud_management_guard(
     State(authz): State<Arc<RemoteManagementAuthz>>,
     mut req: Request,
@@ -1289,29 +1278,17 @@ pub async fn cloud_management_guard(
         return forbidden("legacy Tunnel API requires an Admin API key");
     }
     let principal = authenticated.principal;
-    let workspace = req
-        .extensions()
-        .get::<awaken_authz_enforce::RequestTenancy>()
-        .map(|scope| scope.workspace_id.clone())
-        .or_else(|| {
-            req.extensions()
-                .get::<awaken_runtime_contract::runs::scope::WorkspaceScope>()
-                .map(|scope| scope.0.clone())
-        });
-    let Some(workspace) = workspace else {
-        return forbidden("no trusted workspace context was resolved");
+    let workspace = match awaken_authz_enforce::request_workspace_scope(
+        &req,
+        authenticated
+            .workspace
+            .as_ref()
+            .map(|bound| bound.0.as_str()),
+    ) {
+        Ok(Some(workspace)) => workspace,
+        Ok(None) => return forbidden("no trusted workspace context was resolved"),
+        Err(error) => return workspace_selection_rejection(error),
     };
-
-    if authenticated
-        .workspace
-        .as_ref()
-        .is_some_and(|bound| bound.0 != workspace)
-    {
-        return awaken_protocol_managed::with_managed_workspace_header(
-            forbidden("the API key does not allow this workspace"),
-            &workspace,
-        );
-    }
 
     if let Some(authority) = req
         .extensions()
@@ -1546,6 +1523,24 @@ fn forbidden(message: &str) -> Response {
         Json(ErrorResponse::new("permission_error", message)),
     )
         .into_response()
+}
+
+fn workspace_selection_rejection(error: awaken_authz_enforce::WorkspaceSelectionError) -> Response {
+    use awaken_authz_enforce::WorkspaceSelectionError;
+    let response = match error {
+        WorkspaceSelectionError::ConflictingSelector => {
+            forbidden("Workspace selectors conflict with each other or the API key binding")
+        }
+        WorkspaceSelectionError::InvalidSelector => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                "invalid Workspace selector",
+            )),
+        )
+            .into_response(),
+    };
+    awaken_protocol_managed::with_unscoped_managed_response_context(response)
 }
 
 fn unauthenticated(message: &str) -> Response {
