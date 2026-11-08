@@ -29,6 +29,42 @@ fn execute(
     process.status().unwrap()
 }
 
+/// A private workspace whose published read-only trees (B3) are removed with
+/// it: `TempDir` cannot unlink entries of a directory without write bits, so
+/// owner access is restored first, never through a symlink.
+#[cfg(unix)]
+struct Workspace(tempfile::TempDir);
+
+#[cfg(unix)]
+impl Workspace {
+    fn new() -> Self {
+        Self(tempfile::tempdir().unwrap())
+    }
+
+    fn path(&self) -> &std::path::Path {
+        self.0.path()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        fn restore_owner_access(path: &std::path::Path) {
+            let Ok(metadata) = fs::symlink_metadata(path) else {
+                return;
+            };
+            if metadata.is_dir() {
+                let mode = metadata.permissions().mode() | 0o700;
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+                for entry in fs::read_dir(path).into_iter().flatten().flatten() {
+                    restore_owner_access(&entry.path());
+                }
+            }
+        }
+        restore_owner_access(self.0.path());
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn small_trees_use_one_transfer_and_one_fenced_publication() {
@@ -38,7 +74,7 @@ fn small_trees_use_one_transfer_and_one_fenced_publication() {
     // nested, Unicode and shell-special paths => exact bytes, not shell code.
     // B3 executable/non-executable => preserved execute bit and no write bits.
     for count in [0, 1, 50] {
-        let workspace = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new();
         let mut files = (0..count)
             .map(|i| (format!("nested/{i}.bin"), vec![0, 255, i as u8], false))
             .collect::<Vec<_>>();
@@ -93,7 +129,7 @@ fn small_trees_use_one_transfer_and_one_fenced_publication() {
 fn large_tree_batches_preserve_old_tree_until_final_publication() {
     // B4 bytes exceed argv bound => bounded chunks, first setup once, final
     // publication once. Every intermediate success preserves the old tree.
-    let workspace = tempfile::tempdir().unwrap();
+    let workspace = Workspace::new();
     let root = workspace.path().join("bundle");
     fs::create_dir(&root).unwrap();
     fs::write(root.join("old"), b"old").unwrap();
@@ -153,7 +189,7 @@ fn failed_append_or_publication_preserves_old_tree_and_allows_cleanup() {
     // B6 decoding fails after a previous batch, or final rename fails after
     // moving the old root => reject, restore/retain old root, remove only stage.
     for publication_failure in [false, true] {
-        let workspace = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new();
         let root = workspace.path().join("bundle");
         fs::create_dir(&root).unwrap();
         fs::write(root.join("old"), b"old").unwrap();
@@ -199,7 +235,7 @@ fn symlink_roots_and_stages_are_never_followed() {
     // B7 symlink ancestor or pre-existing stage => reject without touching its
     // target; cleanup likewise cannot chmod/remove through a stage symlink.
     for ancestor in [false, true] {
-        let workspace = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new();
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("sentinel"), b"unchanged").unwrap();
         let (stage, batches) = commands(
