@@ -1684,15 +1684,17 @@ async fn fresh_claim_drives_a_run_to_completion() {
     let _ = DispatchOutcome::Done;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen() {
     // W4 A reaches a real executing tool and then is SIGKILLed (no Drop/ACK).
     // W5 reopen independent dispatch/commit DBs and reclaim the expired logical
     // lease => physical slot remains occupied, no B model/tool entry, unchanged
     // execution output. W6 cancellation of B's wait also cannot clear A's slot.
-    // This is the fail-closed outcome: process death alone is not an adapter's
-    // durable proof that an arbitrary external operation stopped. The existing
-    // cooperative-return test owns the successful quiescence/NeverReplay path.
+    // The parent prepares durable fixture state before starting the crash
+    // child. The child's paused monotonic clock isolates its physical lease
+    // from host scheduling/fsync pressure; the existing ManualClock controls
+    // only durable lease expiry. Keep the original 1s lease and 10s crash
+    // deadline: no longer deadline stands in for the tool-entry handshake.
     const MODE: &str = "AWAKEN_PHYSICAL_CRASH_ROOT";
     if let Ok(root) = std::env::var(MODE) {
         let root = std::path::Path::new(&root);
@@ -1709,27 +1711,50 @@ async fn killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen(
             .await
             .unwrap(),
         );
-        let (runtime, calls) = blocking_tool_runtime(Arc::new(tokio::sync::Semaphore::new(0)));
-        dispatch
-            .enqueue(RunDispatch::new(activation("crash-physical")))
-            .await
-            .unwrap();
+        let (runtime, _calls, entered) = harness::blocking_tool_runtime_with_entry_signal(
+            Arc::new(tokio::sync::Semaphore::new(0)),
+        );
+        tokio::time::pause();
         let worker =
             DispatchWorker::new(runtime, dispatch, commit, "process-a").with_lease_ms(LEASE);
-        let driving = tokio::spawn(async move { worker.tick(harness::at(&clock, 0)).await });
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while calls.load(Ordering::SeqCst) == 0 {
-                tokio::task::yield_now().await;
+        let mut driving = tokio::spawn(async move { worker.tick(harness::at(&clock, 0)).await });
+        // Publish the marker on the tool's own entry signal. A drive that ends
+        // first never reaches the tool, so it fails here with its outcome
+        // instead of leaving the parent to time out on a missing marker.
+        loop {
+            tokio::select! {
+                () = entered.notified() => break,
+                outcome = &mut driving => panic!("W4 drive ended before tool entry: {outcome:?}"),
+                () = tokio::task::yield_now() => {}
             }
-        })
-        .await
-        .unwrap();
+        }
         assert!(!driving.is_finished());
         std::fs::write(root.join("marker"), b"tool-entered").unwrap();
-        tokio::time::sleep(Duration::from_secs(30)).await;
-        panic!("parent failed to kill child");
+        // The exact physical future stays alive until SIGKILL; do not let a
+        // paused runtime auto-advance its renewal timers after the marker.
+        loop {
+            std::thread::park();
+        }
     }
     let root = tempfile::tempdir().unwrap();
+    let setup_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let setup = SqliteDispatchStore::open(
+        root.path().join("dispatch.db").to_str().unwrap(),
+        setup_clock,
+    )
+    .await
+    .unwrap();
+    let setup_commit = awaken_store_sqlite::SqliteCommitCoordinator::open(
+        root.path().join("commit.db").to_str().unwrap(),
+    )
+    .await
+    .unwrap();
+    setup
+        .enqueue(RunDispatch::new(activation("crash-physical")))
+        .await
+        .unwrap();
+    drop(setup);
+    drop(setup_commit);
     let status = awaken_reliability_testkit::CrashProcess::new(
         "killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen",
         root.path().join("marker"),

@@ -82,7 +82,15 @@ async fn pending_adoption_guard_releases_the_shared_pool_before_resolution() {
         .unwrap();
     pool.close().await;
 
-    let one = PgPoolOptions::new()
+    // P0 setup authenticates a real PostgreSQL connection before P1 tests
+    // contention. sqlx uses the same 100ms timer for both; cold SCRAM in a
+    // debug build can itself consume that timer. Freeze only setup time and
+    // keep polling real I/O so Tokio never auto-advances to that deadline.
+    // P1 retains its original 100ms bound; P2/P3 and every truth assertion stay
+    // unchanged. A cold connection failure remains a fixture failure.
+    tokio::time::pause();
+    let database_url = harness::database_url();
+    let connecting = PgPoolOptions::new()
         .max_connections(1)
         .acquire_timeout(std::time::Duration::from_millis(100))
         .after_connect(move |conn, _| {
@@ -92,9 +100,15 @@ async fn pending_adoption_guard_releases_the_shared_pool_before_resolution() {
                 Ok(())
             })
         })
-        .connect(&harness::database_url())
-        .await
-        .unwrap();
+        .connect(&database_url);
+    tokio::pin!(connecting);
+    let one = loop {
+        tokio::select! {
+            result = &mut connecting => break result.unwrap(),
+            () = tokio::task::yield_now() => {}
+        }
+    };
+    tokio::time::resume();
     let store = PostgresDispatchStore::with_existing_pool(one.clone())
         .await
         .unwrap();
