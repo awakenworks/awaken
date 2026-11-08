@@ -7,7 +7,7 @@
 //! MCP server/toolset binding — reads back and still *resolves* (the credential materializes
 //! from the sealed blob store). A rebuild under the WRONG key fails closed at
 //! materialization (`Seal` → 422) while the secret-free config rows stay
-//! readable. Uses `build_durable_all_in_one_router` (explicit dir + key), not
+//! readable. Uses `ColocatedTestStores::Durable` (explicit dir + key), not
 //! env vars, so the test cannot race other tests on process-global state.
 
 use awaken_agent_config::{ScopeId, ScopedConfigRegistry};
@@ -18,7 +18,6 @@ use awaken_model_catalog::{
     Provider, ProviderId,
 };
 use awaken_model_catalog_store::SqliteCatalogRepo;
-use awaken_process_startup::build_durable_all_in_one_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -109,12 +108,15 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     let cred_id;
     let platform_workspace;
     {
-        let app = build_durable_all_in_one_router(
-            dir.path(),
-            &KEY,
-            Box::new(awaken_cli::LocalExecution::default()),
+        let process = awaken_cli::start_test_all_in_one(
+            awaken_process_startup::ColocatedTestStores::Durable {
+                dir: dir.path(),
+                key: &KEY,
+            },
+            None,
         )
         .await;
+        let app = process.public_router.clone();
 
         let audit_probe_body = serde_json::to_vec(&json!({
             "context_window": 4096
@@ -252,12 +254,15 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     } // drop router A: "process" ends
 
     // ---- lifetime B: same dir, same key — everything is still there -------
-    let app = build_durable_all_in_one_router(
-        dir.path(),
-        &KEY,
-        Box::new(awaken_cli::LocalExecution::default()),
+    let process = awaken_cli::start_test_all_in_one(
+        awaken_process_startup::ColocatedTestStores::Durable {
+            dir: dir.path(),
+            key: &KEY,
+        },
+        None,
     )
     .await;
+    let app = process.public_router.clone();
 
     let (s, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;
     assert_eq!(s, StatusCode::OK);
@@ -354,12 +359,16 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
 
     // ---- lifetime C: same dir, WRONG key — fails closed, rows readable ----
     drop(app);
-    let app = build_durable_all_in_one_router(
-        dir.path(),
-        &WRONG_KEY,
-        Box::new(awaken_cli::LocalExecution::default()),
+    drop(process);
+    let process = awaken_cli::start_test_all_in_one(
+        awaken_process_startup::ColocatedTestStores::Durable {
+            dir: dir.path(),
+            key: &WRONG_KEY,
+        },
+        None,
     )
     .await;
+    let app = process.public_router.clone();
 
     // The secret-free config rows are untouched by the key...
     let (s, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;

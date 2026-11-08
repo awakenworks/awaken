@@ -11,10 +11,7 @@
 //! tokens hydrate across a restart over the same directory; and WITHOUT the
 //! guard the plane stays exactly as open as before (regression pin).
 
-use awaken_process_startup::{
-    ADMIN_TOKEN_FILE, BOOTSTRAP_WORKSPACE, TokenSpec, build_durable_all_in_one_router,
-    build_secured_all_in_one_router as build_isolated_secured_all_in_one_router,
-};
+use awaken_process_startup::{ADMIN_TOKEN_FILE, BOOTSTRAP_WORKSPACE, TokenSpec};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -35,6 +32,8 @@ struct SharedSecuredDeployment {
     app: axum::Router,
     iam: std::sync::Arc<awaken_process_startup::ManagementAuthz>,
     admin_token: String,
+    /// Keeps the co-located Worker running for every test sharing it.
+    _process: awaken_process_startup::ColocatedTestProcess,
     _directory: tempfile::TempDir,
 }
 
@@ -64,17 +63,25 @@ async fn shared_secured_all_in_one_router(
     let deployment = SHARED_SECURED_DEPLOYMENT
         .get_or_init(|| async {
             let directory = tempfile::tempdir().expect("shared deployment directory");
-            let (app, iam) = build_isolated_secured_all_in_one_router(
-                directory.path(),
-                key,
-                Box::new(awaken_cli::LocalExecution::default()),
+            let process = awaken_cli::start_test_all_in_one(
+                awaken_process_startup::ColocatedTestStores::Secured {
+                    dir: directory.path(),
+                    key,
+                },
+                None,
             )
             .await;
+            let app = process.public_router.clone();
+            let iam = process
+                .authz
+                .clone()
+                .expect("a secured process carries its embedded IAM");
             let admin_token = admin_token(directory.path());
             SharedSecuredDeployment {
                 app,
                 iam,
                 admin_token,
+                _process: process,
                 _directory: directory,
             }
         })
@@ -657,12 +664,19 @@ fn minted_tokens_survive_a_restart_over_the_same_directory() {
         let bootstrap;
         let developer;
         {
-            let (app, iam) = build_isolated_secured_all_in_one_router(
-                dir.path(),
-                &KEY,
-                Box::new(awaken_cli::LocalExecution::default()),
+            let process = awaken_cli::start_test_all_in_one(
+                awaken_process_startup::ColocatedTestStores::Secured {
+                    dir: dir.path(),
+                    key: &KEY,
+                },
+                None,
             )
             .await;
+            let app = process.public_router.clone();
+            let iam = process
+                .authz
+                .clone()
+                .expect("a secured process carries its embedded IAM");
             bootstrap = admin_token(dir.path());
             developer = iam
                 .mint_service_token(TokenSpec {
@@ -686,12 +700,15 @@ fn minted_tokens_survive_a_restart_over_the_same_directory() {
         } // drop router A: "process" ends
 
         // ---- lifetime B: same dir — hydration, not re-bootstrap ----------------
-        let (app, _iam) = build_isolated_secured_all_in_one_router(
-            dir.path(),
-            &KEY,
-            Box::new(awaken_cli::LocalExecution::default()),
+        let process = awaken_cli::start_test_all_in_one(
+            awaken_process_startup::ColocatedTestStores::Secured {
+                dir: dir.path(),
+                key: &KEY,
+            },
+            None,
         )
         .await;
+        let app = process.public_router.clone();
 
         // The directory hydrated, so no fresh bootstrap overwrote the token file.
         assert_eq!(admin_token(dir.path()), bootstrap);
@@ -728,12 +745,15 @@ fn without_the_guard_the_management_plane_stays_open() {
         // Regression pin: typed open identity mode has no guard and is
         // byte-identical to the pre-IAM behavior — no token, everything works.
         let dir = tempfile::tempdir().unwrap();
-        let app = build_durable_all_in_one_router(
-            dir.path(),
-            &KEY,
-            Box::new(awaken_cli::LocalExecution::default()),
+        let process = awaken_cli::start_test_all_in_one(
+            awaken_process_startup::ColocatedTestStores::Durable {
+                dir: dir.path(),
+                key: &KEY,
+            },
+            None,
         )
         .await;
+        let app = process.public_router.clone();
 
         let (s, _) = call(&app, "GET", "/v1/config/catalog", None, None).await;
         assert_eq!(s, StatusCode::OK);

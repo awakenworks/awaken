@@ -203,12 +203,15 @@ NON_PRODUCT_APIS = (
             TEST_SUPPORT_GATE,
         )
         for name in (
-            "build_ephemeral_all_in_one_router",
             "prepare_all_in_one_process_with_scenario_model",
             "build_all_in_one_router_with_model",
-            "build_durable_all_in_one_router",
-            "build_secured_all_in_one_router",
         )
+    ),
+    (
+        "awaken_cli::start_all_in_one_with_worker",
+        CLI_LIB_SOURCE,
+        r"\bmod\s+colocated_test_process\b",
+        TEST_SUPPORT_GATE,
     ),
     (
         "awaken_cli::scenario_process",
@@ -225,6 +228,7 @@ NON_PRODUCT_APIS = (
         )
         for name in (
             "build_all_in_one_service_with_host_customizer",
+            "start_test_all_in_one",
         )
     ),
     (

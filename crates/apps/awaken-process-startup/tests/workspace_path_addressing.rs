@@ -5,18 +5,21 @@
 
 use std::sync::Arc;
 
-use awaken_process_startup::build_all_in_one_router_with_model;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-async fn build_all_in_one_router() -> axum::Router {
-    build_all_in_one_router_with_model(
-        Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-        "kimi",
-        Box::new(awaken_cli::LocalExecution::default()),
+async fn build_all_in_one_router() -> awaken_process_startup::ColocatedTestProcess {
+    // Sessions run on the co-located registered Worker over loopback, the
+    // topology the `awaken` launcher ships.
+    awaken_cli::start_test_all_in_one(
+        awaken_process_startup::ColocatedTestStores::Volatile,
+        Some((
+            Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
+            "kimi",
+        )),
     )
     .await
 }
@@ -45,7 +48,8 @@ async fn call(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workspace_path_addresses_and_isolates_the_agent_registry() {
-    let app = build_all_in_one_router().await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
 
     // Author an agent under ws_a via the D3 path form: the middleware rewrites
     // `/v1/workspaces/ws_a/agents` → `/v1/agents` and stamps the scope ws_a, so the
@@ -99,7 +103,8 @@ async fn workspace_path_addresses_and_isolates_the_agent_registry() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_flat_management_request_is_untouched_by_the_path_middleware() {
-    let app = build_all_in_one_router().await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
     // A flat create (no workspace path) owns under the seeded default and lists there.
     let (status, agent) = call(
         &app,
@@ -116,7 +121,8 @@ async fn a_flat_management_request_is_untouched_by_the_path_middleware() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workspace_path_isolates_inference_profiles() {
-    let app = build_all_in_one_router().await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
     let body = json!({
         "primary": {
             "target": { "model_id": "kimi" },

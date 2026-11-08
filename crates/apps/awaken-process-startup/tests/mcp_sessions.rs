@@ -45,7 +45,6 @@ use awaken_credential_vault::{
     OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
 };
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher};
-use awaken_process_startup::build_all_in_one_router_with_model;
 use awaken_protocol_managed_testkit::DurableFact;
 use awaken_scenario_host::McpToolModel;
 use awaken_session_configuration_contract::{
@@ -56,8 +55,23 @@ use awaken_session_configuration_contract::{
 // calls the MCP tool on `add <a> <b>` — that is a test concern, so it injects the
 // (mock) `McpToolModel` through the test-only seam. Production uses the provider-free
 // `NoModelConfiguredExecutor`; the mock never ships in the management process.
-async fn build_all_in_one_router() -> Router {
-    build_all_in_one_router_with_model(
+async fn build_all_in_one_router() -> awaken_process_startup::ColocatedTestProcess {
+    // Sessions run on the co-located registered Worker over loopback, the
+    // topology the `awaken` launcher ships.
+    awaken_cli::start_test_all_in_one(
+        awaken_process_startup::ColocatedTestStores::Volatile,
+        Some((Arc::new(McpToolModel), "management")),
+    )
+    .await
+}
+
+/// The tests that pin inline initial MCP realization failure at Session
+/// create and mid-connect OAuth refresh run on the local claim pool: today
+/// only that placement installs the MCP credential refresh factory
+/// (`ColocatedExecutionInputs::credential_refresh`). They move to the
+/// registered Worker once it carries that capability.
+async fn build_local_placement_router() -> Router {
+    awaken_process_startup::build_all_in_one_router_with_model(
         Arc::new(McpToolModel),
         "management",
         Box::new(awaken_cli::LocalExecution::default()),
@@ -491,7 +505,7 @@ async fn session_inline_mcp_server_with_vault_credential_converses_across_runs()
     // tool results and final messages below, without abort or a second factory.
     // M1/M2 share the original transport, Vault and idle-boundary assertions.
     let url = mock_calc_mcp().await;
-    let app = build_all_in_one_router().await;
+    let app = build_local_placement_router().await;
     let vault_id = vault_with_calc_credential(&app, &url).await;
 
     // Session-inline binding: the session names the server, the vault supplies
@@ -573,7 +587,8 @@ async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers
     // parallel binding; K2 the observer is read-only. Decision rules:
     // P1=C1+C2+C3&&!C4=>E1+E2+E3; P2=C1+C2+C3+C4=>E1+E2+E3+E4.
     let url = mock_calc_mcp().await;
-    let app = build_all_in_one_router().await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
     let vault_id = vault_with_calc_credential(&app, &url).await;
 
     // Author one typed Agent definition and publish its immutable executable
@@ -648,7 +663,7 @@ async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_vault_credential_fails_initial_mcp_realization_loudly() {
     let url = mock_calc_mcp().await;
-    let app = build_all_in_one_router().await;
+    let app = build_local_placement_router().await;
 
     // The session names the server but binds NO vault: the prepared bearer is
     // None, so the mock answers 401 at the handshake.
@@ -761,7 +776,7 @@ async fn expired_mcp_oauth_token_is_refreshed_mid_connect_and_resealed() {
         ..OauthMock::default()
     }));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
-    let app = build_all_in_one_router().await;
+    let app = build_local_placement_router().await;
     let vault_id =
         vault_with_refreshable_credential(&app, &url, "expired-token", json!({ "type": "none" }))
             .await;
@@ -853,7 +868,7 @@ async fn refused_refresh_exchange_fails_initial_realization_with_the_challenge()
     // `token_response: None` = the token endpoint answers 400 invalid_grant.
     let mock = Arc::new(Mutex::new(OauthMock::default()));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
-    let app = build_all_in_one_router().await;
+    let app = build_local_placement_router().await;
     let vault_id =
         vault_with_refreshable_credential(&app, &url, "expired-token", json!({ "type": "none" }))
             .await;
@@ -906,7 +921,7 @@ async fn expired_token_run_succeeds_with_client_secret_basic_refresh() {
         ..OauthMock::default()
     }));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
-    let app = build_all_in_one_router().await;
+    let app = build_local_placement_router().await;
     let vault_id = vault_with_refreshable_credential(
         &app,
         &url,
@@ -968,7 +983,7 @@ async fn expired_token_run_succeeds_with_client_secret_post_refresh() {
         ..OauthMock::default()
     }));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
-    let app = build_all_in_one_router().await;
+    let app = build_local_placement_router().await;
     let vault_id = vault_with_refreshable_credential(
         &app,
         &url,
@@ -1023,7 +1038,7 @@ async fn wrong_client_secret_refuses_initial_realization_and_surfaces_the_challe
         ..OauthMock::default()
     }));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
-    let app = build_all_in_one_router().await;
+    let app = build_local_placement_router().await;
     let vault_id = vault_with_refreshable_credential(
         &app,
         &url,
@@ -1309,7 +1324,8 @@ async fn ext_mcp_probe_classifies_valid_invalid_and_unknown() {
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_oauth_validate_live_probes_over_the_management_router() {
     let url = mock_calc_mcp().await;
-    let app = build_all_in_one_router().await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
     let (s, vault) = call(
         &app,
         "POST",
@@ -1399,7 +1415,8 @@ async fn mcp_oauth_validate_attempts_the_refresh_exchange_over_the_management_ro
     let refusing = Arc::new(Mutex::new(OauthMock::default()));
     let issuing_url = mock_oauth_calc_mcp(issuing.clone()).await;
     let refusing_url = mock_oauth_calc_mcp(refusing.clone()).await;
-    let app = build_all_in_one_router().await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
     let (s, vault) = call(
         &app,
         "POST",

@@ -9,26 +9,9 @@ use crate::process_stores::EnvironmentStore;
 /// Ephemeral deployment stores: everything in process memory (dev / e2e default).
 #[cfg(any(test, feature = "test-support"))]
 pub(super) async fn in_memory_process_stores() -> ProcessStores {
-    in_memory_process_stores_with_credentials().await.0
-}
-
-/// [`in_memory_process_stores`] plus the Worker's view of its credential
-/// vault, so a co-located Worker reads the very stores the Control plane
-/// authors.
-#[cfg(any(test, feature = "test-support"))]
-pub(super) async fn in_memory_process_stores_with_credentials() -> (
-    ProcessStores,
-    awaken_control::InferenceMaterializationStores,
-) {
     // The ephemeral process's one wall clock.
     let clock = awaken_time::system_clock();
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-    let secrets: Arc<dyn awaken_credential_vault::SecretStore> =
-        Arc::new(awaken_credential_vault::InMemorySecretStore::new());
-    let worker_view = awaken_control::InferenceMaterializationStores {
-        credentials: credentials.clone(),
-        secrets: secrets.clone(),
-    };
     let sessions = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -42,14 +25,14 @@ pub(super) async fn in_memory_process_stores_with_credentials() -> (
     let data_subjects = Arc::new(awaken_data_subject_store::InMemoryDataSubjectRepo::new());
     let captured_content =
         Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new(clock.clone()));
-    let stores = ProcessStores {
+    ProcessStores {
         workspace_root: None,
         platform_workspace: awaken_deployment_config::mint_local_workspace(),
         clock: clock.clone(),
         control: Some(ControlStores {
             catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
             credentials,
-            secrets,
+            secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
             profiles: admin.clone(),
             mcp_config: admin.clone(),
             telemetry_config: admin.clone(),
@@ -83,8 +66,7 @@ pub(super) async fn in_memory_process_stores_with_credentials() -> (
             captured_content_eraser: captured_content,
             environment_work: Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock.clone())).into(),
         }),
-    };
-    (stores, worker_view)
+    }
 }
 
 #[cfg(test)]

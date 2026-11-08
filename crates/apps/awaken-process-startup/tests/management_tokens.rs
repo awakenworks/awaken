@@ -12,10 +12,7 @@
 //! scoped (404 unknown id); and the bootstrap token can be rotated away —
 //! revoke it with a freshly minted admin token and only the successor works.
 
-use awaken_process_startup::{
-    BOOTSTRAP_WORKSPACE, TokenSpec,
-    build_secured_all_in_one_router as build_isolated_secured_all_in_one_router,
-};
+use awaken_process_startup::{BOOTSTRAP_WORKSPACE, TokenSpec};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -31,6 +28,8 @@ struct SharedSecuredDeployment {
     app: axum::Router,
     iam: std::sync::Arc<awaken_process_startup::ManagementAuthz>,
     admin_token: String,
+    /// Keeps the co-located Worker running for every test sharing it.
+    _process: awaken_process_startup::ColocatedTestProcess,
     _directory: tempfile::TempDir,
 }
 
@@ -60,17 +59,25 @@ async fn shared_secured_all_in_one_router(
     let deployment = SHARED_SECURED_DEPLOYMENT
         .get_or_init(|| async {
             let directory = tempfile::tempdir().expect("shared deployment directory");
-            let (app, iam) = build_isolated_secured_all_in_one_router(
-                directory.path(),
-                key,
-                Box::new(awaken_cli::LocalExecution::default()),
+            let process = awaken_cli::start_test_all_in_one(
+                awaken_process_startup::ColocatedTestStores::Secured {
+                    dir: directory.path(),
+                    key,
+                },
+                None,
             )
             .await;
+            let app = process.public_router.clone();
+            let iam = process
+                .authz
+                .clone()
+                .expect("a secured process carries its embedded IAM");
             let admin_token = admin_token(directory.path());
             SharedSecuredDeployment {
                 app,
                 iam,
                 admin_token,
+                _process: process,
                 _directory: directory,
             }
         })
@@ -176,12 +183,15 @@ async fn mint_http(
 fn the_org_bootstrap_binding_rejects_an_unregistered_workspace() {
     run_local_deployment(async {
         let dir = tempfile::tempdir().unwrap();
-        let (app, _iam) = build_isolated_secured_all_in_one_router(
-            dir.path(),
-            &KEY,
-            Box::new(awaken_cli::LocalExecution::default()),
+        let process = awaken_cli::start_test_all_in_one(
+            awaken_process_startup::ColocatedTestStores::Secured {
+                dir: dir.path(),
+                key: &KEY,
+            },
+            None,
         )
         .await;
+        let app = process.public_router.clone();
         let bootstrap = admin_token(dir.path());
 
         // The bootstrap is Org-bound, but wrkspc_two is not registered below that
@@ -429,12 +439,15 @@ fn revocation_is_immediate_and_survives_a_restart() {
         let revoked_cleartext;
         let keeper_cleartext;
         {
-            let (app, _iam) = build_isolated_secured_all_in_one_router(
-                dir.path(),
-                &KEY,
-                Box::new(awaken_cli::LocalExecution::default()),
+            let process = awaken_cli::start_test_all_in_one(
+                awaken_process_startup::ColocatedTestStores::Secured {
+                    dir: dir.path(),
+                    key: &KEY,
+                },
+                None,
             )
             .await;
+            let app = process.public_router.clone();
             bootstrap = admin_token(dir.path());
             let (revoked, revoked_id) =
                 mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
@@ -495,12 +508,15 @@ fn revocation_is_immediate_and_survives_a_restart() {
 
         // Restart over the same dir: the revocation hydrated from the rewritten
         // row — still 401 — and the untouched tokens still authenticate.
-        let (app, _iam) = build_isolated_secured_all_in_one_router(
-            dir.path(),
-            &KEY,
-            Box::new(awaken_cli::LocalExecution::default()),
+        let process = awaken_cli::start_test_all_in_one(
+            awaken_process_startup::ColocatedTestStores::Secured {
+                dir: dir.path(),
+                key: &KEY,
+            },
+            None,
         )
         .await;
+        let app = process.public_router.clone();
         let (s, _) = call(
             &app,
             "GET",
@@ -528,12 +544,15 @@ fn revocation_is_immediate_and_survives_a_restart() {
 fn the_bootstrap_token_rotates_to_a_minted_successor() {
     run_local_deployment(async {
         let dir = tempfile::tempdir().unwrap();
-        let (app, _iam) = build_isolated_secured_all_in_one_router(
-            dir.path(),
-            &KEY,
-            Box::new(awaken_cli::LocalExecution::default()),
+        let process = awaken_cli::start_test_all_in_one(
+            awaken_process_startup::ColocatedTestStores::Secured {
+                dir: dir.path(),
+                key: &KEY,
+            },
+            None,
         )
         .await;
+        let app = process.public_router.clone();
         let bootstrap = admin_token(dir.path());
 
         // Mint the successor with the FULL admin role, then use the successor to
