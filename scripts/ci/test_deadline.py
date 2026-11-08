@@ -179,7 +179,10 @@ case "$1" in
 esac
 """)
         cargo.chmod(0o755)
-        environment = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
+        # This fixture is the ordinary-platform row: no host observer exists.
+        # Do not borrow the developer's installed observer or an outer grant.
+        environment = dict({key: value for key, value in os.environ.items()
+                            if not key.startswith("AWAKEN_")}, PATH=f"{root}:{os.defpath}",
                            TMPDIR=str(root), FIXTURE_ADMISSION_DELAY=str(delay),
                            FIXTURE_ADMISSION_STATUS=str(status), FIXTURE_READY=str(int(ready)))
         environment.pop("FIXTURE_ADMITTED", None)
@@ -218,6 +221,19 @@ esac
                 )
                 self.assertEqual(result.returncode, status, result.stderr)
                 self.assertEqual(result.stdout.split("\0")[:-1], list(arguments))
+
+    def test_plain_cargo_without_host_keeps_deadlines_without_fabricating_a_grant(self):
+        # N1 no host policy is installed on the fixture PATH. The documented
+        # ordinary-platform path still runs under the existing execution
+        # deadline, preserves the command's status and exports no host grant.
+        # No scheduler or installation is inferred from a Cargo executable.
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.cargo_fixture(
+                Path(tmp), ["bash", "-c", 'test -z "${AWAKEN_CARGO_ADMITTED:-}" || exit 95; '
+                            'test -z "${AWAKEN_ADMISSION_GRANTED_AT:-}" || exit 96; exit 23'],
+                admit=True, delay=0,
+            )
+            self.assertEqual(result.returncode, 23, result.stderr)
 
     def test_cargo_admission_refusal_preserves_status_without_execution(self):
         # A3: C1 queued admission; C2 preflight refuses with 75. Effects: return
@@ -812,7 +828,15 @@ class AdmissionQueueTests(unittest.TestCase):
     def host(self, root, capabilities, grant):
         host = root / "host"
         host.mkdir()
-        (host / "cargo").write_text("""#!/usr/bin/env bash
+        # The real installation exposes one policy under both names. Keep
+        # that identity in the fixture as well; capabilities are a mode of the
+        # same program, not a parallel fake admission implementation.
+        policy = """#!/usr/bin/env bash
+if [ "${0##*/}" = awaken-build-admission ]; then
+  [ "$1" = --capabilities ] || exit 2
+  printf '%s\\n' '__CAPABILITIES__'
+  exit 0
+fi
 if [ "${AWAKEN_CARGO_ADMITTED:-}" != 1 ]; then
   sleep "$FIXTURE_QUEUE"
   export AWAKEN_CARGO_ADMITTED=1
@@ -822,13 +846,12 @@ if [ "${AWAKEN_CARGO_ADMITTED:-}" != 1 ]; then
 fi
 entry=$(command -v "cargo-$1") || exit 97
 exec "$entry" "$@"
-""")
-        (host / "awaken-build-admission").write_text(
-            "#!/bin/sh\n[ \"$1\" = --capabilities ] || exit 2\nprintf '%s\\n' '" + json.dumps(capabilities) + "'\n")
+""".replace("__CAPABILITIES__", json.dumps(capabilities))
         for name in ("cargo", "awaken-build-admission"):
+            (host / name).write_text(policy)
             (host / name).chmod(0o755)
         return dict({key: value for key, value in os.environ.items()
-                     if not key.startswith(("AWAKEN_CARGO", "AWAKEN_ADMISSION", "AWAKEN_DEADLINE"))},
+                     if not key.startswith(("AWAKEN_CARGO", "AWAKEN_ADMISSION", "AWAKEN_DEADLINE", "AWAKEN_HOST_"))},
                     PATH=f"{host}:{os.environ['PATH']}", TMPDIR=str(root),
                     FIXTURE_QUEUE=str(self.QUEUE), FIXTURE_GRANT=str(int(grant)))
 

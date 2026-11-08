@@ -2,27 +2,13 @@
 # Portable command deadline for Linux and macOS. The caller keeps `set -e`
 # policy; this helper returns 124 on timeout, matching GNU coreutils `timeout`.
 
-# A full qualification requires the host's admitted Cargo entry, even when a
-# toolchain setup action prepended rustup's native Cargo to PATH. Both installed
-# names contain the same host policy; the observer itself is never an executor.
-# Keep this selection local to the full gate: ordinary developer deadlines do
-# not require the qualified Linux host installation.
+# Full gates require the same host entry that ordinary --admit selects.
+# deadline.py owns that selection and its identity check; this public shell
+# name remains the strict entry for callers that require a qualified host.
 awaken_host_cargo_directory() {
-  local observer="${AWAKEN_HOST_ADMISSION:-}" directory
-  if [ -z "$observer" ]; then
-    observer=$(command -v awaken-build-admission) || {
-      echo "full gate requires the canonical awaken-build-admission command" >&2
-      return 75
-    }
-  fi
-  directory=$(cd -- "$(dirname -- "$observer")" && pwd -P) || return 75
-  observer="$directory/$(basename -- "$observer")"
-  if [ ! -x "$observer" ] || [ ! -x "$directory/cargo" ] ||
-     ! cmp -s -- "$observer" "$directory/cargo"; then
-    echo "full gate requires cargo and awaken-build-admission installed from the same host policy" >&2
-    return 75
-  fi
-  printf '%s\n' "$directory"
+  local directory
+  directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || return 75
+  python3 "$directory/deadline.py" --host-cargo-directory
 }
 
 # One line: who holds the host build slots now and how many wait. Prefers the
@@ -144,7 +130,6 @@ run_with_deadline() (
     # deadline.py owns which host schedulers can run the cooperative root.
     python3 "$deadline_dir/deadline.py" --require-cooperative \
       "$host_cargo_directory/awaken-build-admission" || return 75
-    PATH="$host_cargo_directory:$PATH"
     export AWAKEN_ADMISSION_MODE=cooperative AWAKEN_BUILD_WORKLOAD_KIND=formal
   fi
   case "$(uname -s)" in

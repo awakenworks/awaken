@@ -4,6 +4,7 @@ import os
 import shutil
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -97,14 +98,63 @@ exec "$entry" "$@"
                 self.assertEqual(result.stdout.split("\0")[:-1], list(arguments))
                 self.assertFalse((root / "unexpected").exists())
 
+    def test_generic_admit_selects_the_same_host_when_rustup_shadows_cargo(self):
+        # S1 observer remains discoverable after native Cargo on PATH; S2 the
+        # ordinary Python/Shell --admit entries run without a full-gate caller
+        # selecting Cargo first. Both must execute the matching host policy,
+        # export its actual admission and preserve status/argv; native Cargo
+        # must never run. Existing full-gate rows own required-host refusal.
+        for entry in ("python", "shell"):
+            with self.subTest(entry=entry), tempfile.TemporaryDirectory(prefix="admit shadow ") as tmp:
+                root = Path(tmp)
+                _, env = self.fixture(root)
+                child = ["bash", "-c", 'test "$AWAKEN_CARGO_ADMITTED" = 1 || exit 95; printf admitted']
+                command = ([sys.executable, str(ROOT / "scripts/ci/deadline.py"), "--admit", "1", "--", *child]
+                           if entry == "python" else
+                           ["bash", "--noprofile", "--norc", "-c",
+                            'source "$1"; shift; run_with_deadline --admit 1 "$@"',
+                            "generic-admit", str(HELPER), *child])
+                result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=12)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "admitted")
+                self.assertFalse((root / "wrong-cargo-ran").exists(), "S1 native Cargo cannot replace admission")
+
+    def test_generic_admit_refuses_a_broken_or_missing_explicit_host_before_execution(self):
+        # S3 observer found but its Cargo is absent/different, or an explicit
+        # observer names a missing file => 75, no native-Cargo fallback and no
+        # command. Unlike N1's absent optional host, a configured broken host
+        # cannot silently become an ordinary unadmitted platform.
+        for damage in ("missing cargo", "different cargo", "missing override"):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory(prefix="broken admit ") as tmp:
+                root = Path(tmp)
+                host, env = self.fixture(root)
+                if damage == "missing cargo":
+                    (host / "cargo").unlink()
+                elif damage == "different cargo":
+                    (host / "cargo").write_text("#!/bin/sh\nexit 0\n")
+                else:
+                    env["AWAKEN_HOST_ADMISSION"] = str(root / "missing observer")
+                marker = root / "executed"
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "scripts/ci/deadline.py"), "--admit", "1", "--", "touch", str(marker)],
+                    env=env, capture_output=True, text=True, timeout=12,
+                )
+                self.assertEqual(result.returncode, 75, result.stderr)
+                self.assertFalse(marker.exists())
+                self.assertFalse((root / "wrong-cargo-ran").exists())
+
     def test_explicit_observer_override_selects_its_matching_host_entry(self):
-        with tempfile.TemporaryDirectory(prefix="full gate ") as tmp:
-            root = Path(tmp)
-            host, env = self.fixture(root)
-            env["AWAKEN_HOST_ADMISSION"] = str(host / "awaken-build-admission")
-            env["PATH"] = str(root / "rustup first") + os.pathsep + os.environ["PATH"]
-            result = self.invoke(root, env, "bash", "-c", 'test "$AWAKEN_CARGO_ADMITTED" = 1')
-            self.assertEqual(result.returncode, 0, result.stderr)
+        # S4 absolute/relative observer overrides select the same normalized
+        # pair even when the observer directory is absent from the caller PATH.
+        for relative in (False, True):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory(prefix="full gate ") as tmp:
+                root = Path(tmp)
+                host, env = self.fixture(root)
+                observer = host / "awaken-build-admission"
+                env["AWAKEN_HOST_ADMISSION"] = os.path.relpath(observer) if relative else str(observer)
+                env["PATH"] = str(root / "rustup first") + os.pathsep + os.environ["PATH"]
+                result = self.invoke(root, env, "bash", "-c", 'test "$AWAKEN_CARGO_ADMITTED" = 1')
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_missing_or_different_host_cargo_refuses_before_any_command(self):
         for missing in (True, False):

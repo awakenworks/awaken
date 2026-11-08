@@ -121,18 +121,31 @@ def queue_state(ledger: Path | None, now: float | None = None) -> tuple[float, l
     return excluded, queued
 
 
-def host_grant_policy(environment) -> dict | None:
-    """The queue-bound inputs when the host exports admission grants, else None.
+def host_cargo_directory(environment, *, required: bool = False) -> Path | None:
+    """Select the one host policy independently of a Rustup Cargo on PATH."""
+    observer = environment.get("AWAKEN_HOST_ADMISSION") or shutil.which(
+        "awaken-build-admission", path=environment.get("PATH"))
+    if not observer:
+        if required:
+            raise ValueError("full gate requires the canonical awaken-build-admission command")
+        return None
+    try:
+        directory = Path(observer).absolute().parent.resolve()
+        observer = directory / Path(observer).name
+        cargo = directory / "cargo"
+        if (not os.access(observer, os.X_OK) or not os.access(cargo, os.X_OK)
+                or observer.read_bytes() != cargo.read_bytes()):
+            raise OSError("host policy entries differ")
+    except (OSError, RuntimeError, ValueError) as error:
+        raise ValueError("full gate requires cargo and awaken-build-admission installed from the same host policy") from error
+    return directory
 
-    The host installs `awaken-build-admission` beside `cargo`. An older tool (no
-    `grant_environment`), a missing observer or a plain Cargo returns None.
-    """
-    cargo = shutil.which("cargo", path=environment.get("PATH"))
-    if cargo is None:
+
+def host_grant_policy(environment, directory: Path | None) -> dict | None:
+    """Queue-bound inputs from the selected policy; legacy/no host has none."""
+    if directory is None:
         return None
-    observer = Path(cargo).parent / "awaken-build-admission"
-    if not (observer.is_file() and os.access(observer, os.X_OK)):
-        return None
+    observer = directory / Path(environment.get("AWAKEN_HOST_ADMISSION") or "awaken-build-admission").name
     try:
         value = json.loads(subprocess.run([str(observer), "--capabilities"], env=environment,
                                           capture_output=True, text=True, timeout=30).stdout)
@@ -418,6 +431,13 @@ def admitted(raw_seconds: str, command: list[str]) -> int:
         return 2
     environment = dict(os.environ)
     try:
+        directory = host_cargo_directory(environment)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return RESOURCE_EXIT
+    if directory is not None:
+        environment["PATH"] = str(directory) + os.pathsep + environment.get("PATH", "")
+    try:
         shim = Path(tempfile.mkdtemp(prefix="awaken-cargo-deadline."))
     except OSError as error:
         print(f"cannot create the Cargo deadline entry: {error}", file=sys.stderr)
@@ -425,9 +445,10 @@ def admitted(raw_seconds: str, command: list[str]) -> int:
     try:
         (shim / "cargo-awaken-ci-deadline").symlink_to(Path(__file__).resolve())
         environment["PATH"] = str(shim) + os.pathsep + environment.get("PATH", "")
-        argv = ["cargo", "awaken-ci-deadline", raw_seconds, "--", *command]
+        cargo = str(directory / "cargo") if directory is not None else "cargo"
+        argv = [cargo, "awaken-ci-deadline", raw_seconds, "--", *command]
         # An already admitted job's Cargo inherits its slot and never queues.
-        policy = None if environment.get("AWAKEN_CARGO_ADMITTED") == "1" else host_grant_policy(environment)
+        policy = None if environment.get("AWAKEN_CARGO_ADMITTED") == "1" else host_grant_policy(environment, directory)
         if policy is None:
             return run(None, argv, environment=environment)
         bound = max(seconds, policy["wait_seconds"]) + QUEUE_MARGIN_SECONDS
@@ -443,6 +464,13 @@ def ledger_command(argv: list[str]) -> int | None:
         if len(argv) < 5 or argv[3] != "--":
             return 2
         return admitted(argv[2], argv[4:])
+    if option == "--host-cargo-directory" and len(argv) == 2:
+        try:
+            print(host_cargo_directory(os.environ, required=True))
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return RESOURCE_EXIT
+        return 0
     if option == "--require-cooperative" and len(argv) == 3:
         return require_cooperative_admission(argv[2])
     if option == "--open-ledger" and len(argv) == 2:
