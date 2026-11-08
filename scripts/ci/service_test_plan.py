@@ -310,6 +310,11 @@ def runner_commands(row: Row) -> list[str]:
 
 
 TRACED = {"postgres": (["--require-docker"], ["--storage-observations"]), "reliability": (["--require-tools"],)}
+# E1-E3 are Unix-only, like the other POSIX self-test parts (`skipIf(os.name == "nt", ...)`): the
+# trace runs the group's Bash script with Bash stand-in tools first on a POSIX PATH. The groups
+# themselves run only in the Linux gate; every other row of this self-test runs on native Windows.
+TRACE_UNIX_ONLY = ("E1-E3 run the group's Bash script with Bash stand-in tools on a POSIX PATH; "
+                   "the postgres and reliability groups run only in the Linux gate")
 
 
 def equivalence(root: Path = ROOT) -> list[str]:
@@ -464,7 +469,10 @@ def self_test() -> int:
         validate(real, ROOT)
         counts = {group: sum(row.group == group for row in real) for group in GROUPS}
         expect(counts["postgres"] >= 40 and counts["reliability"] >= 20, f"real row counts {counts}")
-        failures += equivalence(ROOT)
+        if os.name == "nt":
+            print(f"service_test_plan self-test: skip E1-E3 on native Windows: {TRACE_UNIX_ONLY}")
+        else:
+            failures += equivalence(ROOT)
     except PlanError as error:
         failures.append(f"real table: {error}")
     caller = (ROOT / "scripts/ci/check-all.sh").read_text(encoding="utf-8")
@@ -473,7 +481,8 @@ def self_test() -> int:
     for failure in failures:
         print(f"service_test_plan self-test: FAIL {failure}", file=sys.stderr)
     if not failures:
-        print("service_test_plan self-test: R1-R3, S1-S5, T1-T5, D1-D4, U1-U8, E1-E3 and the shell helper hold")
+        traced = "" if os.name == "nt" else ", E1-E3"
+        print(f"service_test_plan self-test: R1-R3, S1-S5, T1-T5, D1-D4, U1-U8{traced} and the shell helper hold")
     return 1 if failures else 0
 
 
