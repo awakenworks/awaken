@@ -239,9 +239,60 @@ pub fn extract_text(blocks: &[ContentBlock]) -> String {
     out
 }
 
+/// Replace each image nested in a `ToolResult` with a text note, leaving every
+/// other block and the result's pairing untouched. Returns how many images were
+/// replaced, so a caller can tell a rewrite from a no-op. Images a user attached
+/// directly to a message are not tool output and stay where they are.
+pub fn elide_tool_result_images(blocks: &mut [ContentBlock], note: &str) -> usize {
+    let mut elided = 0;
+    for block in blocks {
+        if let ContentBlock::ToolResult { content, .. } = block {
+            for nested in content {
+                if matches!(nested, ContentBlock::Image { .. }) {
+                    *nested = ContentBlock::text(note);
+                    elided += 1;
+                }
+            }
+        }
+    }
+    elided
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eliding_replaces_only_images_inside_tool_results() {
+        // Cause/effect table: image inside a ToolResult => note, count 1; sibling
+        // text and the tool_use_id => unchanged; image directly on the message
+        // => unchanged, since it is the user's content rather than tool output.
+        let mut blocks = vec![
+            ContentBlock::image_url("https://example.invalid/user.png"),
+            ContentBlock::tool_result(
+                "c1",
+                vec![
+                    ContentBlock::text("Image p1.png"),
+                    ContentBlock::image_base64("image/png", "AA=="),
+                ],
+            ),
+        ];
+        assert_eq!(elide_tool_result_images(&mut blocks, "[gone]"), 1);
+        assert_eq!(
+            blocks,
+            vec![
+                ContentBlock::image_url("https://example.invalid/user.png"),
+                ContentBlock::tool_result(
+                    "c1",
+                    vec![
+                        ContentBlock::text("Image p1.png"),
+                        ContentBlock::text("[gone]")
+                    ],
+                ),
+            ]
+        );
+        assert_eq!(elide_tool_result_images(&mut blocks, "[gone]"), 0);
+    }
 
     #[test]
     fn blocks_round_trip_with_a_tagged_shape() {

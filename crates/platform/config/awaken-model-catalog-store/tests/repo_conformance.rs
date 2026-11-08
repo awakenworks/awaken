@@ -220,6 +220,7 @@ async fn put_model_attributes_round_trips(repo: &dyn CatalogRepo) {
         ModelAttributes {
             context_window: Some(200_000),
             max_output_tokens: Some(64_000),
+            supports_image_input: None,
             provenance: Default::default(),
         },
     )
@@ -231,6 +232,7 @@ async fn put_model_attributes_round_trips(repo: &dyn CatalogRepo) {
         ModelAttributes {
             context_window: Some(190_000),
             max_output_tokens: None,
+            supports_image_input: None,
             provenance: Default::default(),
         },
     )
@@ -287,6 +289,7 @@ async fn brokered_projection_persists_attributes_without_deleting_manual_truth(
         ModelAttributes {
             context_window: Some(200_000),
             max_output_tokens: Some(64_000),
+            supports_image_input: None,
             provenance: Default::default(),
         }
         .stamped(ModelAttributeSource::Manual, 2_001),

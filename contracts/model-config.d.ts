@@ -954,6 +954,12 @@ export interface ModelAttributes {
   provenance?: {
     [k: string]: ModelAttributeProvenance;
   };
+  /**
+   * Whether the model accepts image input. `Some(false)` makes every route to
+   * this model answer a tool's image with an explicit error; absent means the
+   * catalog does not say, and images are sent.
+   */
+  supports_image_input?: boolean | null;
   [k: string]: unknown;
 }
 /**
@@ -1543,6 +1549,7 @@ export interface ProviderDriverDescriptor {
 export interface PutModelAttributesRequest {
   context_window?: number | null;
   max_output_tokens?: number | null;
+  supports_image_input?: boolean | null;
 }
 /**
  * Renew an exact described source under the original hosted operation identity.

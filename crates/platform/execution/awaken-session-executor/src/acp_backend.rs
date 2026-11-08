@@ -310,6 +310,7 @@ mod tests {
                 processing_placement: None,
             }),
             unspecified_reasoning: Default::default(),
+            image_input: Default::default(),
             acp: None,
         };
 
