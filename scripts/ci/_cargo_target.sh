@@ -49,6 +49,16 @@ awaken_gate_temp_root() {
   esac
 }
 
+# A test can leave a read-only directory behind (a fixture made with
+# `set_readonly`), and `rm` cannot unlink entries of a directory it may not
+# write. Restore owner access to every directory first; `find` does not follow
+# symlinks, so nothing outside the stale entry changes mode. `\;` runs chmod
+# before find descends, which also opens a directory left without `x`.
+awaken_remove_stale_gate_temp() {
+  find "$1" -type d ! -perm -u=rwx -exec chmod u+rwx -- {} \; 2>/dev/null
+  rm -rf -- "$1"
+}
+
 awaken_configure_gate_temp() {
   local repository_root="$1" temp_root entry run
   case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
@@ -67,7 +77,7 @@ awaken_configure_gate_temp() {
   for entry in "$temp_root"/*; do
     run="${entry##*/}"
     [[ "$run" =~ ^[0-9]+$ ]] && [ -d "$entry" ] && [ ! -L "$entry" ] || continue
-    kill -0 "$run" 2>/dev/null || ps -p "$run" >/dev/null 2>&1 || rm -rf -- "$entry"
+    kill -0 "$run" 2>/dev/null || ps -p "$run" >/dev/null 2>&1 || awaken_remove_stale_gate_temp "$entry"
   done
   if ! mkdir -p -- "$temp_root/$$" 2>/dev/null || [ ! -w "$temp_root/$$" ]; then
     echo "gate temp: $temp_root/$$ is not writable; make $temp_root writable or set TMPDIR" \
@@ -211,13 +221,24 @@ awaken_gate_temp_self_test() (
   [ "$status" -eq 74 ] && [[ "$actual" == *"TMPDIR=$fixture/absent is not a writable directory"* ]] ||
     { echo "T2 a missing TMPDIR was not refused: $status $actual" >&2; return 1; }
   # Stale runs: a finished process's directory goes, a live one and a foreign name stay.
+  # S2 a stale run holding a read-only tree (a test's `set_readonly` fixture) is
+  # still removed, a symlink inside it keeps its target's mode, and a live run's
+  # read-only tree is untouched.
   sleep 0 & dead=$!; wait "$dead"
   sleep 30 & live=$!
-  mkdir -p "$outside/gate-tmp/$dead/x" "$outside/gate-tmp/$live" "$outside/gate-tmp/keep-me"
-  (TMPDIR=; unset CARGO_TARGET_DIR; awaken_configure_gate_temp "$checkout") || { kill "$live"; return 1; }
+  mkdir -p "$outside/gate-tmp/$dead/x" "$outside/gate-tmp/$live/ro/inner" "$outside/gate-tmp/keep-me" "$fixture/linked"
+  mkdir -p "$outside/gate-tmp/$dead/.tmpA/.skills/example/scripts"
+  : > "$outside/gate-tmp/$dead/.tmpA/.skills/example/scripts/run.sh"
+  ln -s "$fixture/linked" "$outside/gate-tmp/$dead/.tmpA/.skills/example/escape"
+  chmod 555 "$fixture/linked" "$outside/gate-tmp/$dead/.tmpA/.skills/example/scripts" \
+    "$outside/gate-tmp/$dead/.tmpA/.skills/example" "$outside/gate-tmp/$live/ro/inner" "$outside/gate-tmp/$live/ro"
+  (TMPDIR=; unset CARGO_TARGET_DIR; awaken_configure_gate_temp "$checkout" 2>/dev/null) || { kill "$live"; return 1; }
   [ ! -e "$outside/gate-tmp/$dead" ] && [ -d "$outside/gate-tmp/$live" ] && [ -d "$outside/gate-tmp/keep-me" ] ||
-    { kill "$live"; echo "stale-run cleanup removed the wrong directories" >&2; return 1; }
+    { kill "$live"; echo "stale-run cleanup removed the wrong directories or left a read-only stale run" >&2; return 1; }
+  [ ! -w "$outside/gate-tmp/$live/ro" ] && [ -d "$outside/gate-tmp/$live/ro/inner" ] && [ ! -w "$fixture/linked" ] ||
+    { kill "$live"; echo "stale-run cleanup changed a live run or followed a symlink out of the entry" >&2; return 1; }
   kill "$live"; wait "$live" 2>/dev/null
+  chmod 755 "$outside/gate-tmp/$live/ro" "$outside/gate-tmp/$live/ro/inner" "$fixture/linked"
   # T5 a temp root that cannot be created is refused by name (root ignores modes).
   if [ "$(id -u)" -ne 0 ]; then
     rm -rf -- "$outside/gate-tmp"; chmod 555 "$outside"; status=0
@@ -229,7 +250,7 @@ awaken_gate_temp_self_test() (
   # doctor.sh --self-test (T8) proves the entry points that select no Cargo
   # target still call this; naming them here would make every edit to them
   # trigger the Rust hook, whose inputs include this file.
-  echo "Gate temp placement: T1-T5 and stale-run cleanup passed"
+  echo "Gate temp placement: T1-T5 and stale-run cleanup (read-only stale trees included) passed"
 )
 
 awaken_public_api_target_self_test() {
