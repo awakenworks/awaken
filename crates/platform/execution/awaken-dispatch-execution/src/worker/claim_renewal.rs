@@ -198,17 +198,20 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
                             next_attempt = next_regular_renewal;
                         }
                         Ok(Ok(LeaseRenewalOutcome::CancellationRequested)) => {
+                            // The Dispatch row remains the sole authority. This
+                            // projects its exact cancelled-attempt observation
+                            // into Runtime's already-installed cooperative token.
+                            task_attempt_cancellation
+                                .cancel(RenewalStop::DurableCancellation.cause());
+                            // The existing observation follows synchronous token
+                            // delivery. It proves neither physical quiescence nor
+                            // termination of an external Provider request.
                             tracing::info!(
                                 run_id = %claim.run_id.0,
                                 owner = %claim.owner,
                                 lease_epoch = claim.epoch,
                                 "durable cancellation requested for exact physical attempt"
                             );
-                            // The Dispatch row remains the sole authority. This
-                            // projects its exact cancelled-attempt observation
-                            // into Runtime's already-installed cooperative token.
-                            task_attempt_cancellation
-                                .cancel(RenewalStop::DurableCancellation.cause());
                             break;
                         }
                         Ok(Ok(LeaseRenewalOutcome::Lost)) => {

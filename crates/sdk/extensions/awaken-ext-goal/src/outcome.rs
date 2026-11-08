@@ -9,7 +9,10 @@
 use async_trait::async_trait;
 use awaken_agent_contract::audit::model_request::TokenUsage;
 use awaken_agent_contract::{
-    agent::{message::Message, run::Id as RunId},
+    agent::{
+        message::Message,
+        run::{Id as RunId, RunState},
+    },
     thread::read::transcript::{TranscriptRange, TranscriptSnapshotRef},
 };
 use awaken_runtime_contract::ExecutableAgentSnapshot;
@@ -148,6 +151,12 @@ pub struct GradingInput {
 pub enum GraderError {
     Execution(String),
     InvalidOutput(String),
+    /// A fault already observed on the exact Judge Run's committed boundary.
+    /// The Outcome controller alone combines it with durable cancellation.
+    RunFault {
+        run_id: RunId,
+        state: RunState,
+    },
     Interrupted,
 }
 
@@ -156,9 +165,18 @@ impl std::fmt::Display for GraderError {
         match self {
             Self::Execution(message) => write!(formatter, "Grader execution failed: {message}"),
             Self::InvalidOutput(message) => write!(formatter, "invalid Grader output: {message}"),
+            Self::RunFault { state, .. } => write!(
+                formatter,
+                "Grader execution failed: {}",
+                grader_run_fault_message(state)
+            ),
             Self::Interrupted => formatter.write_str("Grader execution was interrupted"),
         }
     }
+}
+
+pub(crate) fn grader_run_fault_message(state: &RunState) -> String {
+    format!("Judge Run ended in {state:?}")
 }
 
 impl std::error::Error for GraderError {}

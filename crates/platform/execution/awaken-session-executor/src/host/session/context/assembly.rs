@@ -514,6 +514,12 @@ pub(super) async fn assemble(
                 )
             })
     });
+    // A rebuilt context joins the Session's one foreground record instead of
+    // starting a second one; install creates the Session when absent, exactly
+    // as the context installation below does.
+    let foreground = host
+        .installed_sessions
+        .install_with(thread, |installed| installed.run.foreground.clone())?;
     let ctx = Arc::new(SessionCtx {
         runtime,
         delivery,
@@ -529,7 +535,7 @@ pub(super) async fn assemble(
         thread_id,
         env,
         skill_registry,
-        foreground: Arc::default(),
+        foreground,
         projection: tokio::sync::Mutex::new(()),
         outcome: tokio::sync::Mutex::new(()),
         command: tokio::sync::Mutex::new(()),

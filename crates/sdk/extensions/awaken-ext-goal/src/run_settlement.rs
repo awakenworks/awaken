@@ -1,8 +1,8 @@
 // @formal surface requirement=runtime.outcomes.outcome_lifecycle
-// @formal reason: Static owner: the Outcome classification of a terminal Worker or acknowledgment Run
+// @formal reason: Static owner: the Outcome classification of a terminal Worker, Judge or acknowledgment Run
 // @formal reason: from its committed state and durable settlement; an exhaustive decision table test
 // @formal reason: covers every row. This is a product-requirement classification, not a proof claim.
-//! How an Outcome classifies one terminal Worker or acknowledgment Run.
+//! How an Outcome classifies one terminal Worker, Judge or acknowledgment Run.
 //!
 //! The committed Run state is the terminal authority for the Run itself. One
 //! fact it cannot carry is a user interrupt that reached a Run whose
@@ -26,7 +26,7 @@ pub enum RunSettlement {
     Settled { cancellation_requested: bool },
 }
 
-/// The Run port an Outcome drives its Worker and acknowledgment Runs through:
+/// The Run port an Outcome drives its Worker, Judge and acknowledgment Runs through:
 /// execution, plus the settlement read the committed Run state cannot answer.
 #[async_trait::async_trait]
 pub trait OutcomeRuns: RunExecutor {
@@ -38,7 +38,7 @@ pub trait OutcomeRuns: RunExecutor {
     ) -> awaken_runtime_contract::execution::Result<RunSettlement>;
 }
 
-/// The Outcome transition one terminal Worker or acknowledgment Run selects.
+/// The Outcome transition one terminal Worker, Judge or acknowledgment Run selects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RunVerdict {
     Completed,

@@ -185,10 +185,13 @@ impl WorkerPlacedSessions {
     /// claiming Worker settles each cancelled Run.
     pub(crate) async fn interrupt_thread(&self, thread: &str) -> Result<(), RunError> {
         let commit = self.ports.reads.commit_for_read(thread).await?;
-        let executable = self
+        let mut executable = self
             .threads
             .executable_session_dispatch_runs(thread, &ThreadId(thread.to_owned()), &commit)
             .await?;
+        if let Some(grader) = self.executable_outcome_grader_run(thread, &commit).await? {
+            executable.push(grader);
+        }
         let control = self.threads.durable_run_control()?;
         for run_id in executable {
             control

@@ -10,6 +10,7 @@
 //! ordinary Run and observed until it settles: no execution context opens on
 //! the Coordinator.
 
+use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::{
     DispatchReads as _, SessionRunAdmissionObservation, SessionRunAdmissionReads as _,
@@ -19,9 +20,11 @@ use awaken_ext_goal::controller::{Controller, Error as ControllerError};
 use awaken_ext_goal::grader::{
     AgentGrader, DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent_from_worker,
 };
-use awaken_ext_goal::outcome::{Definition, Grade, Grader, GraderError, GradingInput, Id};
+use awaken_ext_goal::outcome::{
+    Definition, Grade, Grader, GraderError, GradingInput, Id, Phase, State as OutcomeState,
+};
 use awaken_ext_goal::run_settlement::{OutcomeRuns, RunSettlement};
-use awaken_ext_goal::state::{Binding, grader_thread_id};
+use awaken_ext_goal::state::{Binding, ThreadOutcomeState, grader_thread_id};
 use awaken_runtime_contract::runs::RunError;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use awaken_session_execution_contract::OutcomeDrive;
@@ -181,6 +184,37 @@ impl Grader for DispatchedGrader<'_> {
     }
 }
 
+// The committed aggregate names the one grading Run that belongs to this
+// Outcome even though that Run executes on its own Thread. Other stages are
+// already selected by ordinary primary-Thread interruption.
+fn active_grading_run(
+    state: Option<&OutcomeState>,
+) -> Result<Option<(ThreadId, RunId)>, ControllerError> {
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    match &state.phase {
+        Phase::Evaluating {
+            iteration,
+            grader_run_id,
+            ..
+        } => {
+            if grader_run_id
+                != &awaken_ext_goal::state::grader_run_id(&state.outcome_id, *iteration)
+            {
+                return Err(ControllerError::Persistence(
+                    "active Outcome grading Run does not match its frozen id and iteration".into(),
+                ));
+            }
+            Ok(Some((
+                grader_thread_id(&state.outcome_id, *iteration),
+                grader_run_id.clone(),
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
 enum OutcomeCommand<'a> {
     Prepare {
         outcome_id: &'a str,
@@ -197,6 +231,35 @@ enum OutcomeCommandResult {
 }
 
 impl WorkerPlacedSessions {
+    /// The exact active grading Run, selected through the same dispatch and
+    /// committed-terminal rules as every interrupted Session Thread. No second
+    /// active-Run index is kept beside the Outcome aggregate.
+    pub(super) async fn executable_outcome_grader_run(
+        &self,
+        session: &str,
+        commit: &crate::SessionCommit,
+    ) -> Result<Option<RunId>, RunError> {
+        let thread = ThreadId(session.to_owned());
+        let active = ThreadOutcomeState::new(&thread, commit, commit)
+            .active()
+            .await
+            .map_err(|error| {
+                outcome_controller_error(ControllerError::Persistence(error.to_string()))
+            })?;
+        let Some((grader_thread, expected_run)) =
+            active_grading_run(active.as_ref().map(|aggregate| &aggregate.state))
+                .map_err(outcome_controller_error)?
+        else {
+            return Ok(None);
+        };
+        let grader_commit = self.ports.reads.commit_for_read(&grader_thread.0).await?;
+        let executable = self
+            .threads
+            .executable_dispatch_runs_for_thread(None, &grader_thread, &grader_commit)
+            .await?;
+        Ok(executable.into_iter().find(|run| *run == expected_run))
+    }
+
     async fn execute_outcome_command(
         &self,
         thread: &str,
@@ -393,6 +456,103 @@ mod admission_adapter_tests {
             },
             retained_request: Ok(None),
         }
+    }
+
+    #[test]
+    fn interruption_selects_only_the_active_outcomes_exact_grading_run() {
+        // Causes: C1 absent/present active aggregate; C2 its phase; C3 the
+        // Evaluating phase's exact stored Run and iteration. Effects: E1 only
+        // Evaluating selects its own grader Thread/Run; E2 absent, Defined,
+        // primary Worker, acknowledgment and terminal phases add no target.
+        // The shared executable_dispatch_runs_for_thread owns dispatch affinity,
+        // executable states and committed-terminal exclusion; this projection
+        // neither repeats those rules nor turns an absent dispatch into work.
+        // | Rule | Active phase                   | Effect |
+        // | R0   | no aggregate                   | E2     |
+        // | R1   | Defined                        | E2     |
+        // | R2   | RunningWorker                  | E2     |
+        // | R3   | Evaluating, exact C3            | E1     |
+        // | R4   | Acknowledging                  | E2     |
+        // | R5   | Completed                      | E2     |
+        // | R6   | Errored                        | E2     |
+        // | R7   | Evaluating, foreign grader id  | refuse, no foreign cancellation |
+        use awaken_agent_contract::agent::run::Id as RunId;
+        use awaken_ext_goal::outcome::{
+            EvaluationResult, ExecutionFailure, Id, Phase, State, WorkerRunKind,
+        };
+        let selected = RunId("outcome/active/grader/2/run".into());
+        let rows = [
+            ("R0", None, None),
+            ("R1", Some(Phase::Defined), None),
+            (
+                "R2",
+                Some(Phase::RunningWorker {
+                    iteration: 0,
+                    run_id: RunId("primary".into()),
+                    kind: WorkerRunKind::Initial,
+                }),
+                None,
+            ),
+            (
+                "R3",
+                Some(Phase::Evaluating {
+                    iteration: 2,
+                    grader_run_id: selected.clone(),
+                    message_start: 0,
+                }),
+                Some((
+                    awaken_agent_contract::ThreadId("outcome/active/grader/2".into()),
+                    selected,
+                )),
+            ),
+            (
+                "R4",
+                Some(Phase::Acknowledging {
+                    run_id: RunId("ack".into()),
+                }),
+                None,
+            ),
+            (
+                "R5",
+                Some(Phase::Completed {
+                    result: EvaluationResult::Interrupted,
+                }),
+                None,
+            ),
+            (
+                "R6",
+                Some(Phase::Errored {
+                    failure: ExecutionFailure::WorkerFailed("failed".into()),
+                }),
+                None,
+            ),
+        ];
+        for (rule, phase, expected) in rows {
+            let state = phase.map(|phase| State {
+                phase,
+                ..State::new(Id("active".into()), 0)
+            });
+            assert_eq!(
+                super::active_grading_run(state.as_ref()).unwrap(),
+                expected,
+                "{rule}"
+            );
+        }
+        let foreign = State {
+            phase: Phase::Evaluating {
+                iteration: 2,
+                grader_run_id: RunId("outcome/foreign/grader/2/run".into()),
+                message_start: 0,
+            },
+            ..State::new(Id("active".into()), 0)
+        };
+        assert!(
+            matches!(
+                super::active_grading_run(Some(&foreign)),
+                Err(awaken_ext_goal::controller::Error::Persistence(_))
+            ),
+            "R7 a foreign Run is never cancellation authority"
+        );
     }
 
     #[test]

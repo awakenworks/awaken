@@ -1015,6 +1015,31 @@ impl CoordinatedThreads {
     }
 }
 
+fn select_executable_dispatch_runs(
+    rows: Vec<awaken_dispatch_contract::DispatchSummary>,
+    parent: Option<&ThreadId>,
+    thread: &ThreadId,
+    mut run_state: impl FnMut(&RunId) -> Option<RunState>,
+) -> Vec<RunId> {
+    rows.into_iter()
+        .filter(|dispatch| {
+            dispatch.thread_id == *thread
+                && dispatch.session_thread_id.as_ref() == parent
+                && matches!(
+                    dispatch.state,
+                    awaken_dispatch_contract::DispatchState::Reserved
+                        | awaken_dispatch_contract::DispatchState::ReservationLeased
+                        | awaken_dispatch_contract::DispatchState::Pending
+                        | awaken_dispatch_contract::DispatchState::Leased
+                        | awaken_dispatch_contract::DispatchState::Awaiting
+                        | awaken_dispatch_contract::DispatchState::DeadLetter
+                )
+        })
+        .filter(|dispatch| !run_state(&dispatch.run_id).is_some_and(|state| state.is_terminal()))
+        .map(|dispatch| dispatch.run_id)
+        .collect()
+}
+
 impl CoordinatedThreads {
     /// Persist interruption of every executable dispatch for one logical child.
     /// A row whose Run already committed `Ended` is the worker's current
@@ -1061,33 +1086,30 @@ impl CoordinatedThreads {
         commit: &crate::SessionCommit,
     ) -> Result<Vec<RunId>, RunError> {
         let parent = ThreadId(session_id.to_string());
+        self.executable_dispatch_runs_for_thread(Some(&parent), logical_thread_id, commit)
+            .await
+    }
+
+    /// The same exact-affinity query for Session Runs and an ordinary grading
+    /// Thread whose owning Outcome supplied its identity. `None` selects only
+    /// ordinary roots; it is never a wildcard or a Session-affinity fallback.
+    pub(crate) async fn executable_dispatch_runs_for_thread(
+        &self,
+        parent: Option<&ThreadId>,
+        logical_thread_id: &ThreadId,
+        commit: &crate::SessionCommit,
+    ) -> Result<Vec<RunId>, RunError> {
         let rows = self
             .owner()?
             .list_dispatches()
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
-        Ok(rows
-            .into_iter()
-            .filter(|dispatch| {
-                dispatch.thread_id == *logical_thread_id
-                    && dispatch.session_thread_id.as_ref() == Some(&parent)
-                    && matches!(
-                        dispatch.state,
-                        awaken_dispatch_contract::DispatchState::Reserved
-                            | awaken_dispatch_contract::DispatchState::ReservationLeased
-                            | awaken_dispatch_contract::DispatchState::Pending
-                            | awaken_dispatch_contract::DispatchState::Leased
-                            | awaken_dispatch_contract::DispatchState::Awaiting
-                            | awaken_dispatch_contract::DispatchState::DeadLetter
-                    )
-            })
-            .filter(|dispatch| {
-                !commit
-                    .run_state(&dispatch.run_id)
-                    .is_some_and(|state| state.is_terminal())
-            })
-            .map(|dispatch| dispatch.run_id)
-            .collect())
+        Ok(select_executable_dispatch_runs(
+            rows,
+            parent,
+            logical_thread_id,
+            |run| commit.run_state(run),
+        ))
     }
 
     /// Rebuild the sole durable resume target for a foreground root Run whose
@@ -1432,5 +1454,170 @@ impl awaken_session_execution_contract::SessionCoordinationReads for Coordinated
         command: &awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<awaken_session_execution_contract::SessionAgentMessageCommand, RunError> {
         CoordinatedThreads::validate_session_agent_message_source(self, command).await
+    }
+}
+
+#[cfg(test)]
+mod interruption_selection_tests {
+    use super::{RunId, RunState, ThreadId, select_executable_dispatch_runs};
+    use awaken_agent_contract::agent::run::EndCause;
+    use awaken_dispatch_contract::{DispatchState, DispatchSummary};
+
+    fn row(thread: &str, affinity: Option<&str>, state: DispatchState) -> DispatchSummary {
+        DispatchSummary {
+            run_id: RunId("selected-run".into()),
+            thread_id: ThreadId(thread.into()),
+            session_thread_id: affinity.map(|id| ThreadId(id.into())),
+            session_activity_epoch: None,
+            reservation_deadline_ms: None,
+            state,
+            cancellation_requested: false,
+            attempt_count: 0,
+            sandbox_bound: false,
+            physical_attempt_active: true,
+        }
+    }
+
+    fn assert_selection(
+        rule: &str,
+        parent: Option<&ThreadId>,
+        actual: DispatchSummary,
+        committed: Option<RunState>,
+        selected: bool,
+        read: bool,
+    ) {
+        let mut read_count = 0;
+        let targets = select_executable_dispatch_runs(
+            vec![actual],
+            parent,
+            &ThreadId("grade".into()),
+            |run| {
+                assert_eq!(run.0, "selected-run", "{rule} exact Run read");
+                read_count += 1;
+                committed.clone()
+            },
+        );
+        assert_eq!(
+            targets,
+            if selected {
+                vec![RunId("selected-run".into())]
+            } else {
+                Vec::new()
+            },
+            "{rule}"
+        );
+        assert_eq!(
+            read_count,
+            usize::from(read),
+            "{rule} unrelated truth is not read"
+        );
+    }
+
+    #[test]
+    fn dispatch_interruption_preserves_exact_affinity_and_committed_terminals() {
+        // Causes: C1 exact logical Thread; C2 exact optional Session affinity;
+        // C3 executable dispatch state; C4 the Run has committed a terminal.
+        // Effects: E1 only C1+C2+C3+!C4 selects its exact Run; E2 a foreign
+        // Thread/parent, missing Session affinity or non-executable row never
+        // reaches the committed reader; E3 C4 is excluded even if its row is
+        // still Leased before settle. None is an exact ordinary-root partition,
+        // never a wildcard. The same selector serves every caller.
+        // | Rule | Thread | Expected / actual affinity | State        | Run     | Selected/read |
+        // | O1   | exact  | None / None                | executable   | live    | yes/yes       |
+        // | O2   | exact  | None / Some(parent)        | executable   | live    | no/no         |
+        // | S1   | exact  | Some(parent) / same        | executable   | live    | yes/yes       |
+        // | S2   | exact  | Some(parent) / None        | executable   | live    | no/no         |
+        // | S3   | exact  | Some(parent) / foreign     | executable   | live    | no/no         |
+        // | F1   | foreign| exact                      | executable   | live    | no/no         |
+        // | T1   | exact  | exact                      | Leased       | Ended   | no/yes        |
+        // | T2   | exact  | exact                      | Awaiting     | Awaiting| yes/yes       |
+        // | D1   | exact  | exact                      | Superseded   | any     | no/no         |
+        // Completed dispatches are tombstones, not listable DispatchState rows.
+        let logical = ThreadId("grade".into());
+        let parent = ThreadId("parent".into());
+        for state in [
+            DispatchState::Reserved,
+            DispatchState::ReservationLeased,
+            DispatchState::Pending,
+            DispatchState::Leased,
+            DispatchState::Awaiting,
+            DispatchState::DeadLetter,
+        ] {
+            let selected = select_executable_dispatch_runs(
+                vec![row("grade", None, state)],
+                None,
+                &logical,
+                |_| None,
+            );
+            assert_eq!(selected, vec![RunId("selected-run".into())], "O1 {state:?}");
+        }
+        for (rule, expected_parent, actual, committed, selected, read) in [
+            (
+                "O2",
+                None,
+                row("grade", Some("parent"), DispatchState::Leased),
+                None,
+                false,
+                false,
+            ),
+            (
+                "S1",
+                Some(&parent),
+                row("grade", Some("parent"), DispatchState::Leased),
+                None,
+                true,
+                true,
+            ),
+            (
+                "S2",
+                Some(&parent),
+                row("grade", None, DispatchState::Leased),
+                None,
+                false,
+                false,
+            ),
+            (
+                "S3",
+                Some(&parent),
+                row("grade", Some("foreign"), DispatchState::Leased),
+                None,
+                false,
+                false,
+            ),
+            (
+                "F1",
+                None,
+                row("foreign-grade", None, DispatchState::Leased),
+                None,
+                false,
+                false,
+            ),
+            (
+                "T1",
+                None,
+                row("grade", None, DispatchState::Leased),
+                Some(RunState::Ended(EndCause::NaturalEnd)),
+                false,
+                true,
+            ),
+            (
+                "T2",
+                None,
+                row("grade", None, DispatchState::Awaiting),
+                Some(RunState::Awaiting),
+                true,
+                true,
+            ),
+            (
+                "D1",
+                None,
+                row("grade", None, DispatchState::Superseded),
+                None,
+                false,
+                false,
+            ),
+        ] {
+            assert_selection(rule, expected_parent, actual, committed, selected, read);
+        }
     }
 }

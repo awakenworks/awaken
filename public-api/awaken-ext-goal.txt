@@ -94,6 +94,9 @@ pub enum awaken_ext_goal::outcome::GraderError
 pub awaken_ext_goal::outcome::GraderError::Execution(alloc::string::String)
 pub awaken_ext_goal::outcome::GraderError::Interrupted
 pub awaken_ext_goal::outcome::GraderError::InvalidOutput(alloc::string::String)
+pub awaken_ext_goal::outcome::GraderError::RunFault
+pub awaken_ext_goal::outcome::GraderError::RunFault::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_ext_goal::outcome::GraderError::RunFault::state: awaken_agent_contract::agent::run::RunState
 impl core::error::Error for awaken_ext_goal::outcome::GraderError
 impl core::fmt::Display for awaken_ext_goal::outcome::GraderError
 pub fn awaken_ext_goal::outcome::GraderError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result

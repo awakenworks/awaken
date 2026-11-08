@@ -9,7 +9,9 @@
 // commits; C5=terminal/inactive aggregates are scanned
 // after restart; C6=User interrupt targets an active Outcome; C7=Judge decision,
 // schema, or Provider execution fails; C8=the pinned Judge is inference-only and
-// therefore owns no physical Environment capability. Effects: E1=C1 is processed without
+// therefore owns no physical Environment capability; C9=the supported composition
+// is SDK explicit-Judge or registered Worker with its worker-derived Judge.
+// Effects: E1=C1 is processed without
 // duplicate execution; E2=C3 remains unprocessed/retryable until C1 terminates;
 // E3=C4 retains the exact id and projects Indeterminate without replaying the
 // unknown Judge or repeating the committed Worker;
@@ -23,7 +25,8 @@
 // | R2 | C1+C3 | E2 then two ordered terminal Outcomes |
 // | R3 | C1+C4+C8 | E3+E7, no partial Outcome span |
 // | R4 | C5 terminal/inactive | E4 |
-// | R5 | C1+C6 at Worker/Judge/ack | E5 |
+// | R5a | C1+C6 at Worker/Judge/ack + SDK Judge configuration | E5 |
+// | R5b | C1+C6 at Worker/Judge/ack + registered default Judge | E5 |
 // | R6 | C7 decision / infrastructure | failed report / E6 |
 // Constraints/invariant: one retained command/id and committed Thread truth own
 // recovery; replay, concurrent supervisors, and interrupts may not duplicate
@@ -34,6 +37,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
+// @ts-ignore -- shared JS fixture deliberately serves both JS and TS scenarios.
+import { BEHAVIORS } from './fixtures/fake_anthropic_fixture.mjs';
 import type {
   BetaManagedAgentsSendSessionEvents,
   BetaManagedAgentsSessionEvent,
@@ -138,17 +143,58 @@ async function interruptAt(
   rubric: string,
   maxIterations: number,
   phase: string,
+  registeredWorker = false,
 ) {
-  const upstream = await startUpstream('revise', { delayMs: 700 });
-  const spawned = spawnServer('outcome-matrix', port, {
-    ...realServerEnv('revise', upstream, { mode: 'outcome-matrix' }),
+  // Phase-hold rule: C1 the request of the interrupted phase reaches the
+  // Provider; C2 the interrupt receipt is processed; C3 the server closes that
+  // request. E1 the request stays in flight until C2 or C3, so the interrupt is
+  // accepted while the phase is active, however slowly the host runs; E2 after
+  // C2 it is answered normally, so a phase the interrupt did not stop
+  // continues and the assertions below fail. Every other request is answered
+  // at once. A fixed Provider delay could not order C2 before the phase ends.
+  let releaseHeld = () => {};
+  const held = new Promise<void>((resolve) => { releaseHeld = resolve; });
+  const upstream = await startUpstream(
+    async (parsed: unknown, ordinal: number, signal: AbortSignal) => {
+      if (ordinal === requestOrdinal) {
+        await new Promise<void>((resolve) => {
+          void held.then(resolve);
+          signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+      }
+      return BEHAVIORS.revise(parsed);
+    },
+  );
+  // R5a keeps the SDK's explicit Judge fixture. R5b selects the existing
+  // AllInOne management composition and its registered Worker; it derives the
+  // Judge from the frozen Worker Agent, with no SDK customizer or local pool.
+  const mode = registeredWorker ? 'management' : 'outcome-matrix';
+  const workerLog = registeredWorker ? { buf: '' } : null;
+  const spawned = spawnServer(mode, port, {
+    ...realServerEnv('revise', upstream, {
+      mode,
+      ...(registeredWorker ? { placement: 'worker' } : {}),
+    }),
     SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
-    AWAKEN_OUTCOME_JUDGE_RUNTIME: 'native',
-  });
+    ...(!registeredWorker ? { AWAKEN_OUTCOME_JUDGE_RUNTIME: 'native' } : {
+      RUST_LOG: 'warn,awaken_dispatch_execution::worker::claim_renewal=info',
+    }),
+  }, process.env, workerLog);
   try {
     await waitForPort(port);
     const client = clientFor(spawned.baseUrl);
     const session = await createSession(client);
+    if (registeredWorker) {
+      // Topology precondition for R5b: the production operations boundary
+      // refuses Coordinator execution. A silently selected local pool would
+      // reconcile instead and fail this assertion before driving the Outcome.
+      const reconciliation = await fetch(
+        `${spawned.baseUrl}/v1/durable/threads/${session.id}/reconcile`,
+        { method: 'POST' },
+      );
+      assert.equal(reconciliation.status, 400);
+      assert.match(await reconciliation.text(), /a Coordinator executes no Run/u);
+    }
     const accepted = outcomeReceipt(await defineOutcome(client, session.id, rubric, maxIterations));
     await waitForValue(
       () => upstream.received,
@@ -171,6 +217,35 @@ async function interruptAt(
         event.result !== 'interrupted'),
       `${phase} interrupt receipt must precede a non-interrupted terminal Outcome`,
     );
+    await waitForValue(
+      () => listEvents(client, session.id),
+      (history: BetaManagedAgentsSessionEvent[]) => history.some((event) =>
+        event.id === acceptedInterrupt.id && event.processed_at != null),
+      `${phase} interrupt receipt to be processed while its request is in flight`,
+      { timeoutMs: 30_000, pollMs: 50 },
+    );
+    if (registeredWorker) {
+      // A processed Event proves durable intent. The exact claim's existing
+      // renewal observation is emitted AFTER its cooperative token is set;
+      // observe that ack before releasing the Provider response. This orders
+      // cancellation before reply completion without claiming physical or
+      // Provider termination. A missing/wrong Run ack cannot pass this row.
+      const runId = requestOrdinal === 1
+        ? `outcome/${accepted.outcome_id}/worker/0`
+        : requestOrdinal === 2
+          ? `outcome/${accepted.outcome_id}/grader/0/run`
+          : `outcome/${accepted.outcome_id}/ack`;
+      await waitForValue(
+        () => workerLog?.buf ?? '',
+        (log: string) => log.replace(/\x1b\[[0-9;]*m/gu, '').split('\n').some((line) =>
+          line.includes('durable cancellation requested for exact physical attempt')
+            && /\brun_id=([^\s]+)/u.exec(line)?.[1] === runId
+            && line.includes('owner=') && /\blease_epoch=\d+/u.test(line)),
+        `${phase} exact registered attempt to receive its cancellation token`,
+        { timeoutMs: 30_000, pollMs: 50 },
+      );
+    }
+    releaseHeld();
     // Interrupt projection rule: C1 the exact interrupt receipt is processed;
     // C2 the synthetic interrupted cycle is anchored by the same terminal
     // commit and canonical ordering may place C2 before C1. E1 both facts are
@@ -191,8 +266,9 @@ async function interruptAt(
       ['interrupted'],
       `${phase} projects one interrupted terminal and no competing result`,
     );
-    pass(`user.interrupt cancels an Outcome during ${phase}`);
+    pass(`${registeredWorker ? 'registered Worker' : 'SDK'} user.interrupt cancels an Outcome during ${phase}`);
   } finally {
+    releaseHeld();
     await stopServer(spawned.server).catch(() => {});
     upstream.close();
   }
@@ -520,7 +596,10 @@ async function main() {
   await executionFailurePath(BASE_PORT + 7, 'outcome-judge');
   await competingOutcomeCommands(BASE_PORT + 8);
   await recoverAfterJudgeCrash(BASE_PORT + 5);
-  console.log('E2E PASS: Managed Outcome interruption, Judge failures, and crash recovery.');
+  await interruptAt(BASE_PORT + 9, 1, 'FINAL', 3, 'Worker', true);
+  await interruptAt(BASE_PORT + 10, 2, 'FINAL', 3, 'Judge', true);
+  await interruptAt(BASE_PORT + 11, 3, 'NEVER_PRESENT_TOKEN', 1, 'acknowledgment', true);
+  console.log('E2E PASS: SDK Outcome recovery and registered Worker interruption.');
 }
 
 main().catch((error) => {

@@ -52,6 +52,13 @@ pub(crate) struct InstalledSession {
 #[derive(Default)]
 pub(crate) struct SessionRunBinding {
     pub context: Option<Arc<crate::host::SessionCtx>>,
+    /// The Session's one foreground Run record. A context is a rebuildable
+    /// cache entry (a claim with other frozen inputs, or an execution request
+    /// over a coordination envelope, replaces it), so the record lives here and
+    /// every context generation of this Session shares it: a signal an Outcome
+    /// grader lent through one generation is the signal an interrupt selects
+    /// through the next, and the Outcome live-owner fence reads one identity.
+    pub foreground: Arc<crate::host::ForegroundRunRecord>,
     pub deferred_executor: Option<Arc<dyn awaken_tool_contract::tool::ToolExecutor>>,
     /// Current durable dispatch claim used by claim-fenced Resource effects.
     /// This process-local projection is replaced at every claimed resolve; the

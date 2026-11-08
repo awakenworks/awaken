@@ -210,3 +210,57 @@ async fn delayed_interruption_preserves_the_successor(
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interruption_reaches_a_signal_lent_through_an_earlier_context_generation() {
+    // C1 the Session's resident context is replaced by a new generation (a
+    // claim with other frozen inputs, or an execution request over a
+    // coordination envelope, rebuilds it); C2 an auxiliary attempt (an Outcome
+    // grader) lent its signal through the earlier generation while no Run was
+    // installed; C3 Session interruption selects through the resident context.
+    // E1 every generation holds the installed Session's one foreground record;
+    // E2 the interruption signals the lent attempt.
+    // | Rule | Causes   | Effects |
+    // | R1   | C1       | E1      |
+    // | R2   | C1+C2+C3 | E2      |
+    let model = Arc::new(GatedModel {
+        gate: Arc::new(tokio::sync::Notify::new()),
+        reached: Arc::new(tokio::sync::Notify::new()),
+        calls: AtomicUsize::new(0),
+    });
+    let host = (crate::SessionExecutorBuilder::ephemeral(model, "scripted").await)
+        .build()
+        .expect("validated Host dependencies");
+    let thread = "lent-signal-across-generations";
+    let earlier = host
+        .run_assembly
+        .ctx_for(thread, None)
+        .await
+        .expect("earlier generation");
+    host.run_assembly
+        .installed_sessions
+        .modify_run(thread, |run| run.context = None)
+        .expect("installed Sessions")
+        .expect("installed Session");
+    let resident = host
+        .run_assembly
+        .ctx_for(thread, None)
+        .await
+        .expect("resident generation");
+    assert!(!Arc::ptr_eq(&earlier, &resident), "C1 a new generation");
+    assert!(
+        Arc::ptr_eq(&earlier.foreground, &resident.foreground),
+        "R1 one foreground record per installed Session"
+    );
+
+    let lent = awaken_runtime_contract::CancellationToken::new();
+    assert!(
+        earlier.foreground.lend_auxiliary(lent.clone()).unwrap(),
+        "C2 lent while no Run is installed"
+    );
+    host.session_runs
+        .interrupt(thread)
+        .await
+        .expect("interrupt the idle Session");
+    assert!(lent.is_cancelled(), "R2 the lent attempt is interrupted");
+}

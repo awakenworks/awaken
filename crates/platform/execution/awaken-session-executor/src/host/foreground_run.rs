@@ -39,9 +39,9 @@ impl From<ForegroundRunPoisoned> for crate::SessionExecutionError {
 
 /// The foreground Run of one Session and the signal that interrupts it.
 ///
-/// Shared by `Arc` only where an auxiliary attempt (an Outcome grader) lends
-/// its signal to the Session it serves; every other holder is the Session's
-/// own context.
+/// Owned by the installed Session and shared by `Arc` with every context
+/// generation built for it, and with an auxiliary attempt (an Outcome grader)
+/// that lends its signal to the Session it serves.
 #[derive(Debug, Default)]
 pub(crate) struct ForegroundRunRecord(awaken_sync::InvariantLock<ForegroundRun>);
 

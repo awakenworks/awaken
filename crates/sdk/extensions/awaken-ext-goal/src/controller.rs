@@ -27,7 +27,7 @@ use awaken_runtime_contract::{RunActivation, RuntimeRunContext};
 
 use crate::outcome::{
     Definition, Evaluation, EvaluationResult, ExecutionFailure, Grade, GradeDecision, Grader,
-    GraderError, GradingInput, Id, Phase, State, WorkerRunKind,
+    GraderError, GradingInput, Id, Phase, State, WorkerRunKind, grader_run_fault_message,
 };
 use crate::run_settlement::{OutcomeRuns, RunVerdict, Undecided, classify_run};
 use crate::state::{
@@ -428,18 +428,23 @@ impl<'a> Controller<'a> {
                     let input = self.grading_input(&aggregate, iteration, message_start)?;
                     let grade = match self.grader.grade(&aggregate.binding.grader, &input).await {
                         Ok(grade) => grade,
-                        Err(GraderError::Interrupted) => {
-                            aggregate.state.interrupt();
-                            self.commit(expected, &aggregate.state, None).await?;
-                            continue;
-                        }
                         Err(error) => {
+                            if self.grading_was_interrupted(&grader_run_id, &error).await? {
+                                aggregate.state.interrupt();
+                                self.commit(expected, &aggregate.state, None).await?;
+                                continue;
+                            }
                             let failure = match error {
                                 GraderError::InvalidOutput(message) => {
                                     ExecutionFailure::InvalidGraderOutput(message)
                                 }
                                 GraderError::Execution(message) => {
                                     ExecutionFailure::GraderUnavailable(message)
+                                }
+                                GraderError::RunFault { state, .. } => {
+                                    ExecutionFailure::GraderUnavailable(grader_run_fault_message(
+                                        &state,
+                                    ))
                                 }
                                 GraderError::Interrupted => unreachable!(),
                             };
@@ -560,7 +565,32 @@ impl<'a> Controller<'a> {
         })
     }
 
-    /// Classify one terminal Worker or acknowledgment Run (see
+    async fn grading_was_interrupted(
+        &self,
+        expected_run: &RunId,
+        error: &GraderError,
+    ) -> Result<bool, Error> {
+        match error {
+            GraderError::Interrupted => Ok(true),
+            GraderError::RunFault { run_id, state } => {
+                if run_id != expected_run
+                    || !matches!(classify_run(state, None), Err(Undecided::NeedsSettlement))
+                {
+                    return Err(Error::Domain(
+                        "Grader fault must name the exact expected Judge Run and a committed fault"
+                            .into(),
+                    ));
+                }
+                Ok(matches!(
+                    self.verdict(run_id, state).await?,
+                    RunVerdict::Interrupted
+                ))
+            }
+            GraderError::Execution(_) | GraderError::InvalidOutput(_) => Ok(false),
+        }
+    }
+
+    /// Classify one terminal Outcome Run (see
     /// [`classify_run`]); only a fault reads the durable settlement, and a
     /// settlement that is not durable yet leaves the Run to a later drive.
     async fn verdict(&self, run_id: &RunId, state: &RunState) -> Result<RunVerdict, Error> {
@@ -853,6 +883,7 @@ mod tests {
             read::recovery::{RecoveryError, RunRecoverySnapshot, RunRecoverySource},
         },
     };
+    use awaken_runtime_contract::ExecutableAgentSnapshot;
     use awaken_runtime_contract::execution::RunExecutor;
     use awaken_store_inmem::MemoryCommitCoordinator;
 
@@ -868,6 +899,7 @@ mod tests {
         lost_response_after_commit: Mutex<Option<RunId>>,
         executions: AtomicUsize,
         settlement: Mutex<RunSettlement>,
+        settlement_reads: Mutex<Vec<RunId>>,
     }
 
     impl World {
@@ -882,6 +914,7 @@ mod tests {
                 settlement: Mutex::new(RunSettlement::Settled {
                     cancellation_requested: false,
                 }),
+                settlement_reads: Mutex::new(Vec::new()),
             }
         }
 
@@ -1075,8 +1108,9 @@ mod tests {
     impl OutcomeRuns for World {
         async fn settlement(
             &self,
-            _run_id: &RunId,
+            run_id: &RunId,
         ) -> awaken_runtime_contract::execution::Result<RunSettlement> {
+            self.settlement_reads.lock().unwrap().push(run_id.clone());
             Ok(*self.settlement.lock().unwrap())
         }
     }
@@ -1182,8 +1216,15 @@ mod tests {
     }
 
     async fn drive(world: &World, max_iterations: u32) -> Result<Report, Error> {
+        drive_with_grader(world, max_iterations, &RangeGrader).await
+    }
+
+    async fn drive_with_grader(
+        world: &World,
+        max_iterations: u32,
+        grader: &dyn Grader,
+    ) -> Result<Report, Error> {
         let thread = ThreadId("worker-thread".into());
-        let grader = RangeGrader;
         Controller::new(
             &thread,
             world,
@@ -1191,7 +1232,7 @@ mod tests {
             world,
             world,
             RuntimeRunContext::new(),
-            &grader,
+            grader,
         )
         .define_or_resume(
             Id("outcome-1".into()),
@@ -1391,6 +1432,231 @@ mod tests {
                 );
             }
         }
+    }
+
+    struct PartitionedGrader<'a>(&'a World);
+
+    #[async_trait]
+    impl Grader for PartitionedGrader<'_> {
+        async fn grade(
+            &self,
+            snapshot: &ExecutableAgentSnapshot,
+            input: &GradingInput,
+        ) -> Result<Grade, GraderError> {
+            crate::grader::AgentGrader::new(self.0, self.0, RuntimeRunContext::new())
+                .grade(snapshot, input)
+                .await
+        }
+    }
+
+    struct RefusingGrader(GraderError);
+
+    #[async_trait]
+    impl Grader for RefusingGrader {
+        async fn grade(
+            &self,
+            _snapshot: &ExecutableAgentSnapshot,
+            _input: &GradingInput,
+        ) -> Result<Grade, GraderError> {
+            Err(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn judge_fault_uses_the_same_durable_cancel_verdict_across_commit_partitions() {
+        // C1 Judge committed Error/Indeterminate on its OWN Thread partition;
+        // C2 the same dispatch authority records cancel=true/false. E1 true
+        // interrupts the Outcome; E2 false retains GraderUnavailable; E3 the
+        // original Judge fault stays committed exactly once, with no retry.
+        // J1/J2={Error,Indeterminate}+true=>E1+E3;
+        // J3/J4={Error,Indeterminate}+false=>E2+E3. The root reader deliberately
+        // cannot read the Judge: typed RunFault carries the one committed fact.
+        let id = grader_run_id(&Id("outcome-1".into()), 0);
+        for cause in [
+            EndCause::Indeterminate,
+            EndCause::Error(awaken_agent_contract::agent::run::Failure::CapabilityBound),
+        ] {
+            for cancelled in [false, true] {
+                let root = World::new(&["draft"]).with_settlement(RunSettlement::Settled {
+                    cancellation_requested: cancelled,
+                });
+                let fault = RunState::Ended(cause.clone());
+                let judge = World::new(&[]).with_states(vec![fault.clone()]);
+                let grader = PartitionedGrader(&judge);
+                let result = drive_with_grader(&root, 3, &grader).await;
+                if cancelled {
+                    assert_eq!(
+                        result.unwrap().iterations.last().unwrap().result,
+                        EvaluationResult::Interrupted,
+                        "J1/J2"
+                    );
+                    let thread = ThreadId("worker-thread".into());
+                    let committed = Controller::committed_projection_from_state(
+                        &ThreadOutcomeState::new(&thread, &root, &root),
+                        &Id("outcome-1".into()),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(
+                        matches!(committed, Some(CommittedOutcome::Completed(report))
+                        if report.iterations.last().unwrap().result == EvaluationResult::Interrupted),
+                        "terminal replay uses the existing committed projection"
+                    );
+                } else {
+                    assert!(
+                        matches!(
+                            result,
+                            Err(Error::Execution(ExecutionFailure::GraderUnavailable(_)))
+                        ),
+                        "J3/J4"
+                    );
+                }
+                assert_eq!(root.run_state(&id), None, "the root owns no Judge commit");
+                assert_eq!(judge.run_state(&id), Some(fault), "E3 original Run fault");
+                assert_eq!(
+                    judge.executions.load(Ordering::SeqCst),
+                    1,
+                    "E3 no execution replay"
+                );
+                assert_eq!(
+                    judge.commits.lock().unwrap().len(),
+                    1,
+                    "E3 one Run fault commit"
+                );
+                assert_eq!(
+                    *root.settlement_reads.lock().unwrap(),
+                    vec![id.clone()],
+                    "only the exact Judge settlement is read"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unsettled_judge_fault_defers_then_interrupts_without_reexecuting_the_judge() {
+        // J5 C={committed Judge fault, dispatch settlement unavailable yet} =>
+        // E={WorkerRunning for that exact Judge, Outcome remains active, no
+        // permanent failure}; J6 after that same settlement becomes cancel=true
+        // => Interrupted, same fault, no replay and no additional Run commit.
+        let root = World::new(&["draft"]).with_settlement(RunSettlement::Unsettled);
+        let fault = RunState::Ended(EndCause::Indeterminate);
+        let judge = World::new(&[]).with_states(vec![fault.clone()]);
+        let grader = PartitionedGrader(&judge);
+        let id = grader_run_id(&Id("outcome-1".into()), 0);
+        let result = drive_with_grader(&root, 3, &grader).await;
+        assert!(
+            matches!(result, Err(Error::WorkerRunning { run_id }) if run_id == id),
+            "J5"
+        );
+        let thread = ThreadId("worker-thread".into());
+        let active = ThreadOutcomeState::new(&thread, &root, &root)
+            .active()
+            .await
+            .unwrap();
+        assert!(
+            matches!(active.unwrap().state.phase, Phase::Evaluating { .. }),
+            "J5 active"
+        );
+        *root.settlement.lock().unwrap() = RunSettlement::Settled {
+            cancellation_requested: true,
+        };
+        let report = drive_with_grader(&root, 3, &grader).await.unwrap();
+        assert_eq!(
+            report.iterations.last().unwrap().result,
+            EvaluationResult::Interrupted,
+            "J6"
+        );
+        assert_eq!(
+            judge.run_state(&id),
+            Some(fault),
+            "J6 original fault preserved"
+        );
+        assert_eq!(judge.executions.load(Ordering::SeqCst), 1, "J6 no replay");
+        assert_eq!(judge.commits.lock().unwrap().len(), 1, "J6 no new fault");
+    }
+
+    #[tokio::test]
+    async fn foreign_or_nonfault_judge_evidence_never_reads_cancellation_authority() {
+        // J7 foreign Run id + fault; J8 exact id + nonfault (NaturalEnd,
+        // Running, Awaiting, Cancelled) => typed domain refusal BEFORE any
+        // settlement read. A custom Grader cannot interrupt from a foreign Run
+        // or turn a valid natural result into a fault payload.
+        let id = grader_run_id(&Id("outcome-1".into()), 0);
+        let mut payloads = vec![(
+            RunId("foreign".into()),
+            RunState::Ended(EndCause::Indeterminate),
+        )];
+        payloads.extend(
+            [
+                RunState::Ended(EndCause::NaturalEnd),
+                RunState::Running,
+                RunState::Awaiting,
+                RunState::Ended(EndCause::Cancelled),
+            ]
+            .map(|state| (id.clone(), state)),
+        );
+        for (run_id, state) in payloads {
+            let root = World::new(&["draft"]).with_settlement(RunSettlement::Settled {
+                cancellation_requested: true,
+            });
+            let result = drive_with_grader(
+                &root,
+                3,
+                &RefusingGrader(GraderError::RunFault { run_id, state }),
+            )
+            .await;
+            assert!(matches!(result, Err(Error::Domain(_))), "J7/J8 fail closed");
+            assert!(
+                root.settlement_reads.lock().unwrap().is_empty(),
+                "J7/J8 no foreign read"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn natural_invalid_grade_and_prerun_refusal_keep_their_original_failures() {
+        // J9 natural committed Judge + invalid JSON + even a later cancel fact
+        // => InvalidGraderOutput, no settlement read. J10 a pre-Run execution
+        // refusal with no committed Judge => GraderUnavailable, no invented
+        // fault/cancel lookup. NaturalEnd and absence are distinct from faults.
+        let root = World::new(&["draft"]).with_settlement(RunSettlement::Settled {
+            cancellation_requested: true,
+        });
+        let judge = World::new(&["not-json"]);
+        let result = drive_with_grader(&root, 3, &PartitionedGrader(&judge)).await;
+        assert!(
+            matches!(
+                result,
+                Err(Error::Execution(ExecutionFailure::InvalidGraderOutput(_)))
+            ),
+            "J9"
+        );
+        assert!(
+            root.settlement_reads.lock().unwrap().is_empty(),
+            "J9 no cancel lookup"
+        );
+        assert_eq!(
+            judge.run_state(&grader_run_id(&Id("outcome-1".into()), 0)),
+            Some(RunState::Ended(EndCause::NaturalEnd)),
+            "J9 natural truth remains natural"
+        );
+        let root = World::new(&["draft"]);
+        let result = drive_with_grader(
+            &root,
+            3,
+            &RefusingGrader(GraderError::Execution("refused before Run".into())),
+        )
+        .await;
+        assert!(
+            matches!(result,
+            Err(Error::Execution(ExecutionFailure::GraderUnavailable(ref reason)))
+                if reason == "refused before Run"),
+            "J10"
+        );
+        assert!(
+            root.settlement_reads.lock().unwrap().is_empty(),
+            "J10 no invented fault"
+        );
     }
 
     #[tokio::test]

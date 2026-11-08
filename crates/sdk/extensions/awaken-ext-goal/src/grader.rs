@@ -171,7 +171,7 @@ impl Grader for AgentGrader<'_> {
             state.expect("checked as present")
         } else {
             let mut activation = RunActivation::new(
-                run_id,
+                run_id.clone(),
                 thread_id.clone(),
                 snapshot.clone(),
                 vec![Message::text(
@@ -191,6 +191,15 @@ impl Grader for AgentGrader<'_> {
         };
         if state == RunState::Ended(EndCause::Cancelled) {
             return Err(GraderError::Interrupted);
+        }
+        if matches!(
+            &state,
+            RunState::Ended(EndCause::Error(_) | EndCause::Indeterminate)
+        ) {
+            // Keep the fact read on this Judge's own partition. A Session's
+            // root reader cannot observe it; the controller still owns the
+            // Outcome verdict and its existing durable-settlement read.
+            return Err(GraderError::RunFault { run_id, state });
         }
         if state != RunState::Ended(EndCause::NaturalEnd) {
             return Err(GraderError::Execution(format!(
