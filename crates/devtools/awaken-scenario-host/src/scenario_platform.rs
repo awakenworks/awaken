@@ -440,7 +440,11 @@ pub(super) fn fixed_host_model_publication(
 }
 
 impl PublishedAgentSnapshotSource for FixedAgentPublication {
-    fn current(&self, workspace: &str, agent_id: &AgentId) -> Option<ExecutableAgentSnapshot> {
+    fn current(
+        &self,
+        workspace: &str,
+        agent_id: &AgentId,
+    ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError> {
         self.snapshots.current(workspace, agent_id)
     }
 
@@ -448,7 +452,7 @@ impl PublishedAgentSnapshotSource for FixedAgentPublication {
         &self,
         workspace: &str,
         fingerprint: &awaken_runtime_contract::resolved::CatalogFingerprint,
-    ) -> Option<ExecutableAgentSnapshot> {
+    ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError> {
         self.snapshots.exact(workspace, fingerprint)
     }
 
@@ -457,7 +461,7 @@ impl PublishedAgentSnapshotSource for FixedAgentPublication {
         workspace: &str,
         agent_id: &AgentId,
         source_revision: u64,
-    ) -> Option<ExecutableAgentSnapshot> {
+    ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError> {
         self.snapshots
             .at_revision(workspace, agent_id, source_revision)
     }
@@ -469,7 +473,9 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
         workspace_id: &str,
         agent_id: &str,
     ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
-        let snapshot = self.current(workspace_id, &AgentId(agent_id.to_string()))?;
+        let snapshot = self
+            .current(workspace_id, &AgentId(agent_id.to_string()))
+            .expect("static publication source is readable")?;
         let bindings = &snapshot.resolved_spec.plugin_config.agent;
         let mcp_servers = bindings
             .mcp_servers
@@ -544,6 +550,7 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
             &AgentId(agent_id.to_string()),
             source_revision,
         )
+        .expect("static publication source is readable")
     }
 }
 
@@ -574,6 +581,7 @@ mod tests {
         let publication = fixed_host_backend_publication("acp-agent", "acp:claude", Vec::new());
         let snapshot = publication
             .current("workspace", &AgentId("acp-agent".into()))
+            .expect("readable static source")
             .expect("fixed publication");
         assert!(matches!(
             snapshot.resolved_spec.model_binding.provisioning(),
@@ -601,6 +609,7 @@ mod tests {
         );
         let snapshot = publication
             .current("workspace", &AgentId("acp-agent".into()))
+            .expect("readable static source")
             .expect("fixed publication");
         let servers =
             AcpSpec::from_plugin_config(snapshot.resolved_spec.plugin_config.plugins()).mcp_servers;

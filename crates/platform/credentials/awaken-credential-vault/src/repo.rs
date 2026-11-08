@@ -92,7 +92,7 @@ mod token_publication;
 pub use token_publication::{
     TOKEN_ACQUISITION_STATE_SLOT, TokenPublicationState, abandon_token_publication,
     claim_token_publication, publish_acquired_tokens, recover_token_publication,
-    token_publication_state,
+    token_publication_state, token_publication_successor,
 };
 mod cleanup;
 pub(crate) use application_mcp::application_mcp_issuer_generation;

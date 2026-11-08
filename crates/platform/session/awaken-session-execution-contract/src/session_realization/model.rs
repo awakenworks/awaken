@@ -521,6 +521,10 @@ pub struct FailSessionRealization {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_run_id: Option<awaken_agent_contract::agent::run::Id>,
     pub reason: String,
+    /// Stable class code of the failed effect (its `RunError` code). Absent
+    /// from a Worker that predates it; the reason alone is then recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 /// Exact active or pending Resource target authorized by one Session realization lease.
@@ -736,6 +740,70 @@ mod worker_observation_tests {
                 .unwrap()
                 .is_none(),
             "P protocol floor"
+        );
+    }
+}
+
+#[cfg(test)]
+mod failure_report_compatibility {
+    use super::*;
+
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct LegacyFailureReport {
+        session_id: crate::SessionId,
+        lease: SessionRealizationLease,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prepared_resource_revision: Option<u64>,
+        #[serde(default)]
+        retryable: bool,
+        #[serde(
+            rename = "capacity_unavailable",
+            default,
+            skip_serializing_if = "std::ops::Not::not"
+        )]
+        not_ready: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_run_id: Option<awaken_agent_contract::agent::run::Id>,
+        reason: String,
+    }
+
+    #[test]
+    fn the_optional_failure_class_is_compatible_in_both_report_directions() {
+        // Cause/effect table: C1 a new Worker reports its class to an old
+        // Control -> the original struct decoder reads every original field
+        // and ignores the additive code; C2 an old Worker omits the class ->
+        // new Control defaults it to None and preserves the original fields.
+        let report = FailSessionRealization {
+            session_id: "compatibility".into(),
+            lease: SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "worker:1".into(),
+                epoch: 1,
+                expires_at_unix_ms: 200,
+            },
+            prepared_resource_revision: None,
+            retryable: true,
+            not_ready: false,
+            source_run_id: None,
+            reason: "mcp server `offline`: connection refused".into(),
+            code: Some("mcp_connection_failed".into()),
+        };
+        let mut wire = serde_json::to_value(&report).unwrap();
+        let old: LegacyFailureReport = serde_json::from_value(wire.clone()).unwrap();
+        wire.as_object_mut().unwrap().remove("code");
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            wire,
+            "C1 every old field unchanged"
+        );
+        let decoded: FailSessionRealization = serde_json::from_value(wire).unwrap();
+        assert_eq!(
+            decoded,
+            FailSessionRealization {
+                code: None,
+                ..report
+            },
+            "C2 default only the new field"
         );
     }
 }

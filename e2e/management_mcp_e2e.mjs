@@ -438,7 +438,32 @@ async function main() {
         'retrying',
         `F3: the failure is final — ${JSON.stringify(offlineErrors)}`,
       );
-      pass('F3: an unreachable MCP target fails the Session loudly on its first Run');
+      // The final error carries the classified cause the Session recorded when
+      // its realization retry budget was spent: the connection class, the
+      // server's name, and the transport failure — not a generic refusal.
+      const [offlineFailure] = offlineErrors;
+      assert.equal(
+        offlineFailure.type,
+        'mcp_connection_failed_error',
+        `F3: the connection failure class survives — ${JSON.stringify(offlineFailure)}`,
+      );
+      assert.equal(
+        offlineFailure.retry_status?.type,
+        'exhausted',
+        `F3: the realization retry budget is spent — ${JSON.stringify(offlineFailure)}`,
+      );
+      assert.equal(
+        offlineFailure.mcp_server_name,
+        'offline',
+        `F3: names the server — ${JSON.stringify(offlineFailure)}`,
+      );
+      assert.ok(
+        offlineFailure.message?.includes('mcp server `offline`') &&
+          offlineFailure.message?.includes('Transport error') &&
+          !offlineFailure.message?.includes('Session realization is terminal'),
+        `F3: the failure carries the transport cause — ${offlineFailure.message}`,
+      );
+      pass('F3: an unreachable MCP target fails the Session loudly on its first Run, naming the server and cause');
 
     }, {}, { placement: 'worker' });
 

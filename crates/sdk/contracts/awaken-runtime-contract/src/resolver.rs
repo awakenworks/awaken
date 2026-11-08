@@ -13,6 +13,9 @@ pub enum Error {
     SnapshotNotFound,
     #[error("invalid delegation publication graph")]
     InvalidDelegationGraph,
+    /// The source could not answer the lookup; no absence was established.
+    #[error("published Agent snapshot source is unavailable: {0}")]
+    SourceUnavailable(String),
 }
 
 pub trait RunResolver {
@@ -39,17 +42,20 @@ pub trait AgentSnapshotCatalog {
 /// the exact immutable publication recorded in the Run's resume ticket, so a
 /// later publish cannot change the behavior of an already-created Run.
 pub trait PublishedAgentSnapshotSource: Send + Sync {
+    /// Resolve the current publication once. `Ok(None)` establishes absence;
+    /// `Err` means the source could not answer and must never become absence.
     fn current(
         &self,
         workspace: &str,
         agent_id: &crate::snapshot::AgentId,
-    ) -> Option<crate::snapshot::ExecutableAgentSnapshot>;
+    ) -> Result<Option<crate::snapshot::ExecutableAgentSnapshot>, Error>;
 
+    /// Resolve one immutable fingerprint with the same absence/error split.
     fn exact(
         &self,
         workspace: &str,
         fingerprint: &crate::resolved::CatalogFingerprint,
-    ) -> Option<crate::snapshot::ExecutableAgentSnapshot>;
+    ) -> Result<Option<crate::snapshot::ExecutableAgentSnapshot>, Error>;
 
     /// Resolve the publication compiled from one exact authoring revision.
     /// Embedded sources without revision history may leave this unsupported;
@@ -60,8 +66,8 @@ pub trait PublishedAgentSnapshotSource: Send + Sync {
         _workspace: &str,
         _agent_id: &crate::snapshot::AgentId,
         _source_revision: u64,
-    ) -> Option<crate::snapshot::ExecutableAgentSnapshot> {
-        None
+    ) -> Result<Option<crate::snapshot::ExecutableAgentSnapshot>, Error> {
+        Ok(None)
     }
 }
 
@@ -80,17 +86,11 @@ pub fn resolve_delegate_snapshot(
             .ok_or(Error::InvalidDelegationGraph);
     }
     let source = source.ok_or(Error::SnapshotNotFound)?;
-    let snapshot = binding
-        .source_revision
-        .and_then(|revision| source.at_revision(workspace, &binding.agent_id, revision))
-        .or_else(|| {
-            binding
-                .source_revision
-                .is_none()
-                .then(|| source.current(workspace, &binding.agent_id))
-                .flatten()
-        })
-        .ok_or(Error::SnapshotNotFound)?;
+    let snapshot = match binding.source_revision {
+        Some(revision) => source.at_revision(workspace, &binding.agent_id, revision)?,
+        None => source.current(workspace, &binding.agent_id)?,
+    }
+    .ok_or(Error::SnapshotNotFound)?;
     if snapshot.root_agent_id != binding.agent_id {
         return Err(Error::InvalidDelegationGraph);
     }
@@ -194,16 +194,16 @@ impl PublishedAgentSnapshotSource for StaticPublishedAgentSnapshots {
         &self,
         _workspace: &str,
         agent_id: &crate::snapshot::AgentId,
-    ) -> Option<crate::snapshot::ExecutableAgentSnapshot> {
-        self.current.get(agent_id).cloned()
+    ) -> Result<Option<crate::snapshot::ExecutableAgentSnapshot>, Error> {
+        Ok(self.current.get(agent_id).cloned())
     }
 
     fn exact(
         &self,
         _workspace: &str,
         fingerprint: &crate::resolved::CatalogFingerprint,
-    ) -> Option<crate::snapshot::ExecutableAgentSnapshot> {
-        self.exact.get(fingerprint).cloned()
+    ) -> Result<Option<crate::snapshot::ExecutableAgentSnapshot>, Error> {
+        Ok(self.exact.get(fingerprint).cloned())
     }
 
     fn at_revision(
@@ -211,10 +211,11 @@ impl PublishedAgentSnapshotSource for StaticPublishedAgentSnapshots {
         _workspace: &str,
         agent_id: &crate::snapshot::AgentId,
         source_revision: u64,
-    ) -> Option<crate::snapshot::ExecutableAgentSnapshot> {
-        self.revisions
+    ) -> Result<Option<crate::snapshot::ExecutableAgentSnapshot>, Error> {
+        Ok(self
+            .revisions
             .get(&(agent_id.clone(), source_revision))
-            .cloned()
+            .cloned())
     }
 }
 
@@ -296,6 +297,7 @@ mod tests {
         assert_eq!(
             source
                 .at_revision("workspace", &AgentId("writer".into()), 1)
+                .expect("G3 readable source")
                 .expect("G3 exact v1"),
             writer_v1,
             "G3/E3"
@@ -303,6 +305,7 @@ mod tests {
         assert_eq!(
             source
                 .current("workspace", &AgentId("writer".into()))
+                .expect("G3 readable source")
                 .expect("G3 current v2"),
             writer_v2,
             "G3/E3"

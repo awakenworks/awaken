@@ -185,7 +185,10 @@ impl SessionAggregate {
     pub fn configuration(
         &mut self,
     ) -> Result<SessionConfigurationOperations<'_>, SessionAggregateCommandError> {
-        if self.state.is_terminal() || self.state.execution != SessionExecutionState::Idle {
+        if !crate::state::session_admits_update(
+            &self.state,
+            crate::state::SessionUpdateKind::Authoring,
+        ) {
             return Err(SessionAggregateCommandError::ConfigurationNotIdle);
         }
         Ok(SessionConfigurationOperations { aggregate: self })

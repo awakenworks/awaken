@@ -6,7 +6,8 @@
 //!
 //! Lifecycle recovery retries an accepted Event batch until its Run is
 //! admitted. A refusal no retry can admit (a bad request from projection or
-//! delivery, a classified invariant, a missing pinned publication) must not
+//! delivery, a classified invariant, a pinned publication its store proves
+//! absent) must not
 //! re-queue forever: the Session's frozen inputs can no longer admit
 //! execution, so the Session fails terminally with that refusal as its
 //! durable cause. Its accepted batches then resolve through the terminal
@@ -41,8 +42,8 @@ pub(super) enum RefusedRunSettlement {
 /// Decision table (causes → effect):
 /// | Rule | refusal class | Session execution | effect |
 /// |---|---|---|---|
-/// | R1 | NotReady or Retryable (Unavailable, Conflict, unclassified internal), or the Session's budget pause (`budget_reached`, which an allowance raise lifts) | live | `Retry`: queued, retried with the recovery backoff |
-/// | R2 | Terminal (BadRequest, classified internal, permanent conflict) | live (Preparing, Activating, Running, Rescheduling, Idle) | `FailSession`: ActivationFailed carrying the refusal; one terminal `session.error`; status terminated; batches resolve terminally |
+/// | R1 | NotReady or Retryable (Unavailable, Conflict, unclassified internal, a pinned publication whose store could not answer), or the Session's budget pause (`budget_reached`, which an allowance raise lifts) | live | `Retry`: queued, retried with the recovery backoff |
+/// | R2 | Terminal (BadRequest, classified internal, permanent conflict, a pinned publication its store proves absent) | live (Preparing, Activating, Running, Rescheduling, Idle) | `FailSession`: ActivationFailed carrying the refusal; one terminal `session.error`; status terminated; batches resolve terminally |
 /// | R3 | any | terminal | `Terminal`: nothing to fail; the terminal root resolves its batches |
 pub(super) fn refused_run_settlement(
     error: &RunError,
@@ -83,7 +84,12 @@ impl SessionEventBatchCommands {
             // sources this failure: the projection reports the refusal itself.
             session
                 .lifecycle()
-                .fail_terminally_at(refusal.to_string(), self.clock.now_ms(), None)
+                .fail_terminally_at(
+                    refusal.to_string(),
+                    Some(refusal.code.clone()),
+                    self.clock.now_ms(),
+                    None,
+                )
                 .map_err(|error| RunError::internal(error.to_string()))?;
             match self
                 .mutations
@@ -141,13 +147,17 @@ mod tests {
             RunError::conflict("lost a race"),
             RunError::internal("unclassified fault"),
             crate::SessionActivityError::BudgetReached.run_error(),
+            // R1: the publication store could not answer; the pinned
+            // publication may exist, so the Run is retried, never failed.
+            awaken_session_execution_contract::CanonicalPublicationError::PublicationSourceUnavailable(
+                awaken_runtime_contract::AgentSnapshotError::SourceUnavailable("store offline".into()),
+            )
+            .into(),
         ];
         let permanent = [
             RunError::bad_request("a Worker-placed Session requires a pinned Agent publication"),
-            RunError::classified(
-                "session_realization_invariant_violated",
-                "frozen Session Agent publication is unavailable",
-            ),
+            // R2: the store answered and holds no such publication.
+            awaken_session_execution_contract::CanonicalPublicationError::MissingPublication.into(),
             RunError::conflict_classified(
                 awaken_session_execution_contract::SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE,
                 "nothing to rebuild from",

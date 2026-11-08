@@ -445,28 +445,27 @@ impl crate::RunAssembly {
             })?
             .unwrap_or(false);
         let workspace = self.capabilities.thread_workspace(thread)?;
-        let published_backend_is_acp = published_snapshot
-            .cloned()
-            .or_else(|| {
-                self.capabilities
-                    .agent
-                    .agent_publications
-                    .as_ref()
-                    .and_then(|source| {
-                        source.current(
-                            &workspace,
-                            &awaken_runtime_contract::snapshot::AgentId(
-                                agent.unwrap_or("assistant").to_string(),
-                            ),
-                        )
-                    })
-            })
-            .is_some_and(|snapshot| {
-                awaken_runtime_contract::resolved::Backend::from_ref(
-                    snapshot.resolved_spec.model_binding.identity().2,
-                )
-                .is_acp()
-            });
+        let publication = match published_snapshot {
+            Some(snapshot) => Some(snapshot.clone()),
+            None => self.capabilities.agent.agent_publications.as_ref()
+                .map(|source| source.current(
+                    &workspace,
+                    &awaken_runtime_contract::snapshot::AgentId(agent.unwrap_or("assistant").to_string()),
+                ))
+                .transpose()
+                .map_err(|error| crate::SessionExecutionError::from(
+                    awaken_runtime_contract::runs::RunError::from(
+                        awaken_session_execution_contract::CanonicalPublicationError::PublicationSourceUnavailable(error)
+                    )
+                ))?
+                .flatten(),
+        };
+        let published_backend_is_acp = publication.is_some_and(|snapshot| {
+            awaken_runtime_contract::resolved::Backend::from_ref(
+                snapshot.resolved_spec.model_binding.identity().2,
+            )
+            .is_acp()
+        });
         let selected_backend_is_acp = realizations
             .frozen(thread)?
             .backend_ref

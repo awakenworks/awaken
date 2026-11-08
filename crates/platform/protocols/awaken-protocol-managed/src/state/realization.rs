@@ -1120,6 +1120,7 @@ mod tests {
             not_ready: false,
             source_run_id: None,
             reason: "stage failed".into(),
+            code: None,
         };
         failed_state
             .application
@@ -1172,7 +1173,7 @@ mod tests {
                 })
                 .await,
             Err(SessionRealizationControlFailure::Terminal),
-            "F5"
+            "F5 an unclassified failure carries no cause"
         );
     }
 }

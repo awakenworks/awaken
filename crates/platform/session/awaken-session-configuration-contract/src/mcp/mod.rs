@@ -497,12 +497,51 @@ impl SessionMcpAttachmentSet {
     /// Fence crash recovery to a new Session lease before any Runtime effect.
     /// Requested generations enter Realizing; already Realizing or Active
     /// generations retain their durable visibility while replacing only the
-    /// expired process-local realization claim.
+    /// expired process-local realization claim. Only a viable same-source
+    /// credential advance retires its predecessor to the existing drain path;
+    /// a Failed successor cannot supersede it.
     pub fn claim_recovery(
         &mut self,
         generation: &McpGeneration,
         claim: McpRealizationClaim,
     ) -> Result<(), McpAttachmentError> {
+        let index = exact_index(&self.attachments, generation)?;
+        let current = &self.attachments[index];
+        // Only a typed advance of this credential source makes reopening its
+        // predecessor impossible. Ordinary target/name replacement keeps the
+        // existing recovery and receipt-validation contract. This does not
+        // authorize an advance: the Session's original credential owner has
+        // already admitted the successor before it enters the desired set.
+        let retired_credential = current.realization.is_some()
+            && self
+                .desired_attachments()
+                .into_iter()
+                .find(|desired| desired.name == current.name)
+                .is_some_and(|desired| {
+                    matches!(
+                        desired.state,
+                        McpAttachmentState::Requested
+                            | McpAttachmentState::Realizing
+                            | McpAttachmentState::Active
+                    ) && desired.generation != *generation
+                        && current
+                            .credential
+                            .as_ref()
+                            .zip(desired.credential.as_ref())
+                            .is_some_and(|(old, new)| {
+                                old.credential.id == new.credential.id
+                                    && new.credential.revision > old.credential.revision
+                            })
+                });
+        if retired_credential
+            && matches!(
+                current.state,
+                McpAttachmentState::Realizing | McpAttachmentState::Active
+            )
+        {
+            self.attachments[index].state = McpAttachmentState::Draining;
+            return self.bump_revision();
+        }
         let attachment = exact_mut(&mut self.attachments, generation)?;
         match attachment.state {
             McpAttachmentState::Requested => {
@@ -1765,6 +1804,229 @@ mod tests {
             "N6"
         );
         assert_eq!(requested, before, "N6");
+    }
+
+    #[test]
+    fn recovery_retires_only_a_predecessor_with_a_viable_successor() {
+        // Causes: old generation Active or Realizing; the same logical name's
+        // desired same-source credential successor Requested, Realizing, Active or Failed. Effects:
+        // E1 a viable successor -> predecessor Draining with the exact old
+        // physical receipt, zero restaging; E2 Failed/Draining successor -> recover the
+        // predecessor under the new claim. This prevents both stale-credential
+        // reopen and a false Complete after dropping every usable MCP handle.
+        // | Rule | desired successor | old Active/Realizing | effect |
+        // | Q1 | Requested/Realizing | either | E1 |
+        // | Q2 | Active | Realizing | E1 |
+        // | Q3 | Failed/Draining | either (constraint below) | E2 |
+        // Constraint: activation already drains an old Active generation, so
+        // old Active + Active/Draining successor is handled by the existing R4 refusal.
+        let claim = |id: &str, epoch| McpRealizationClaim {
+            realization_id: id.into(),
+            runtime_incarnation: format!("worker-{epoch}"),
+            lease_epoch: epoch,
+            lease_expires_at_unix_ms: 200,
+            stage_idempotency_key: id.into(),
+        };
+        for old_active in [false, true] {
+            for successor_state in [
+                McpAttachmentState::Requested,
+                McpAttachmentState::Realizing,
+                McpAttachmentState::Active,
+                McpAttachmentState::Failed,
+                McpAttachmentState::Draining,
+            ] {
+                if old_active
+                    && matches!(
+                        successor_state,
+                        McpAttachmentState::Active | McpAttachmentState::Draining
+                    )
+                {
+                    continue;
+                }
+                let selected = holder("spiffe://awaken.test/worker");
+                let mut old_access = credential(selected.clone());
+                old_access.credential.revision = 1;
+                let mut set = SessionMcpAttachmentSet::from_initial(
+                    vec![draft("a", "https://a.test/mcp", Some(old_access.clone()))],
+                    Some(selected.clone()),
+                )
+                .unwrap();
+                let previous = set.attachments[0].generation.clone();
+                let old_receipt = claim("old", 1);
+                set.claim_realization(&previous, old_receipt.clone())
+                    .unwrap();
+                if old_active {
+                    set.activate(&previous, "old").unwrap();
+                }
+                let mut new_access = old_access;
+                new_access.credential.revision = 2;
+                let changed = draft("a", "https://a.test/mcp", Some(new_access));
+                set.request_full_replacement(vec![changed], Some(selected))
+                    .unwrap();
+                let successor = set.desired_attachments()[0].generation.clone();
+                if successor_state != McpAttachmentState::Requested {
+                    set.claim_realization(&successor, claim("successor", 1))
+                        .unwrap();
+                    match successor_state {
+                        McpAttachmentState::Active => {
+                            set.activate(&successor, "successor").unwrap()
+                        }
+                        McpAttachmentState::Draining => {
+                            set.activate(&successor, "successor").unwrap();
+                            set.begin_drain(&successor).unwrap();
+                        }
+                        McpAttachmentState::Failed => set
+                            .fail_realization(&successor, "successor", "replacement failed")
+                            .unwrap(),
+                        _ => {}
+                    }
+                }
+                let next = claim("new", 9);
+                set.claim_recovery(&previous, next.clone()).unwrap();
+                let previous = &set.attachments[0];
+                if matches!(
+                    successor_state,
+                    McpAttachmentState::Failed | McpAttachmentState::Draining
+                ) {
+                    assert_eq!(
+                        previous.state,
+                        if old_active {
+                            McpAttachmentState::Active
+                        } else {
+                            McpAttachmentState::Realizing
+                        },
+                        "Q3 predecessor retained"
+                    );
+                    assert_eq!(
+                        previous.realization.as_ref(),
+                        Some(&next),
+                        "Q3 recovered under current lease"
+                    );
+                } else {
+                    assert_eq!(
+                        previous.state,
+                        McpAttachmentState::Draining,
+                        "Q1/Q2 {successor_state:?}"
+                    );
+                    assert_eq!(
+                        previous.realization.as_ref(),
+                        Some(&old_receipt),
+                        "Q1/Q2 original physical receipt, never a fabricated new one"
+                    );
+                }
+            }
+        }
+        // Q4: an ordinary replacement/removal has no credential advance.
+        // It retains the original recovery contract: stage the old generation
+        // under the new lease, so its supplied receipt is still validated.
+        let mut set = SessionMcpAttachmentSet::from_initial(
+            vec![draft("a", "https://a.test/mcp", None)],
+            None,
+        )
+        .unwrap();
+        let previous = set.attachments[0].generation.clone();
+        let old_receipt = claim("removed", 1);
+        set.claim_realization(&previous, old_receipt.clone())
+            .unwrap();
+        set.activate(&previous, "removed").unwrap();
+        set.request_full_replacement(vec![draft("b", "https://b.test/mcp", None)], None)
+            .unwrap();
+        assert_eq!(
+            set.attachments[0].state,
+            McpAttachmentState::Active,
+            "Q4 switch pending"
+        );
+        set.claim_recovery(&previous, claim("new", 9)).unwrap();
+        assert_eq!(
+            set.attachments[0].state,
+            McpAttachmentState::Active,
+            "Q4 ordinary replacement still stages the old generation"
+        );
+        assert_eq!(
+            set.attachments[0].realization.as_ref(),
+            Some(&claim("new", 9)),
+            "Q4 recovered receipt remains mandatory"
+        );
+        assert_eq!(
+            set.desired_attachments()[0].name,
+            "b",
+            "Q4 replacement is retained"
+        );
+        // Q5: changing only target, using a different source, or replaying/
+        // regressing the same pin is not the credential-retirement partition.
+        for (rule, id, revision) in [
+            ("equal", "credential-1", 3),
+            ("foreign", "other-source", 4),
+            ("older", "credential-1", 2),
+        ] {
+            let selected = holder("spiffe://awaken.test/worker");
+            let old = credential(selected.clone());
+            let mut set = SessionMcpAttachmentSet::from_initial(
+                vec![draft("a", "https://a.test/v1", Some(old.clone()))],
+                Some(selected.clone()),
+            )
+            .unwrap();
+            let previous = set.attachments[0].generation.clone();
+            set.claim_realization(&previous, claim("old", 1)).unwrap();
+            set.activate(&previous, "old").unwrap();
+            let mut next = old;
+            next.credential.id = id.into();
+            next.credential.revision = revision;
+            set.request_full_replacement(
+                vec![draft("a", "https://a.test/v2", Some(next))],
+                Some(selected),
+            )
+            .unwrap();
+            let recovered = claim("new", 9);
+            set.claim_recovery(&previous, recovered.clone()).unwrap();
+            assert_eq!(
+                set.attachments[0].state,
+                McpAttachmentState::Active,
+                "Q5 {rule} retains original recovery"
+            );
+            assert_eq!(
+                set.attachments[0].realization.as_ref(),
+                Some(&recovered),
+                "Q5 {rule} still requires its recovered receipt"
+            );
+        }
+        // Q6: an historical Active root with no old physical claim cannot
+        // fabricate a drain reference. Retain ordinary recovery/Stage; a real
+        // resolver must reconstruct that projection or refuse it explicitly.
+        let selected = holder("spiffe://awaken.test/worker");
+        let mut old = credential(selected.clone());
+        old.credential.revision = 1;
+        let mut set = SessionMcpAttachmentSet::from_initial(
+            vec![draft("a", "https://a.test/mcp", Some(old.clone()))],
+            Some(selected.clone()),
+        )
+        .unwrap();
+        let previous = set.attachments[0].generation.clone();
+        set.claim_realization(&previous, claim("old", 1)).unwrap();
+        set.activate(&previous, "old").unwrap();
+        set.attachments[0].realization = None; // explicit historical unknown evidence
+        old.credential.revision = 2;
+        set.request_full_replacement(
+            vec![draft("a", "https://a.test/mcp", Some(old))],
+            Some(selected),
+        )
+        .unwrap();
+        let recovered = claim("new", 9);
+        set.claim_recovery(&previous, recovered.clone()).unwrap();
+        assert_eq!(
+            set.attachments[0].state,
+            McpAttachmentState::Active,
+            "Q6 unknown predecessor still requires Stage"
+        );
+        assert_eq!(
+            set.attachments[0].realization.as_ref(),
+            Some(&recovered),
+            "Q6 ordinary recovery, not fabricated historical evidence"
+        );
+        assert!(
+            !set.attachments[0].publication_acknowledged,
+            "Q6 cannot Complete before a real Stage receipt"
+        );
     }
 
     #[test]

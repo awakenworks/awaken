@@ -365,6 +365,18 @@ impl SessionRealizations {
                 let (owner_scope, mut session) = self
                     .session_for_realization(&command.session_id, true)
                     .await?;
+                // Exact MCP successor adoption belongs to ordinary realization.
+                // Continuation retains its frozen credential pins and generations.
+                let adopted = if session.environment.admits_realization_effects() {
+                    self.credentials
+                        .adopt_mcp_refresh_successors(&owner_scope, &mut session)
+                        .await
+                        .map_err(|error| {
+                            SessionRealizationControlFailure::Unavailable(error.to_string())
+                        })?
+                } else {
+                    false
+                };
                 let target = &command.target;
                 if !session.environment.admits_realization_effects() {
                     crate::continuation::verify_registered_target(
@@ -394,11 +406,14 @@ impl SessionRealizations {
                 let (assigned, activate_pending_resources) = match decision {
                     awaken_session_contract::SessionRealizationBegin::Unchanged {
                         activate_pending_resources,
-                    } => {
+                    } if !adopted => {
                         return self
                             .next_action(owner_scope, &session, false, activate_pending_resources)
                             .await;
                     }
+                    awaken_session_contract::SessionRealizationBegin::Unchanged {
+                        activate_pending_resources,
+                    } => (false, activate_pending_resources),
                     awaken_session_contract::SessionRealizationBegin::Claimed {
                         assigned,
                         activate_pending_resources,
@@ -787,11 +802,6 @@ impl SessionRealizations {
                     .note_retryable_failure(command.reason.clone())
                     .map_err(unavailable)?;
             }
-            session.assignment().record_failure(
-                command.reason.clone(),
-                self.clock.now_ms(),
-                command.source_run_id.clone(),
-            );
             command.record_bounded_failure(&mut session, self.realization_retry_budget)?;
             let retry_initial = {
                 match command
@@ -811,6 +821,16 @@ impl SessionRealizations {
                     awaken_session_execution_contract::RealizationFailureOutcome::Absorb => false,
                 }
             };
+            // The durable cause keeps the effect's class. An absorbed failure
+            // of a non-Idle root makes the Session terminal below, so a
+            // retryable one records its spent-budget class.
+            let made_terminal = !retry_initial && session.execution != SessionExecutionState::Idle;
+            session.assignment().record_failure(
+                command.reason.clone(),
+                command.recorded_code(made_terminal),
+                self.clock.now_ms(),
+                command.source_run_id.clone(),
+            );
             // The driver closed this generation locally, so every successor
             // (a retry, Idle recovery, terminal cleanup) needs a new epoch; a
             // live lease would hand the closed one back to cleanup, which the

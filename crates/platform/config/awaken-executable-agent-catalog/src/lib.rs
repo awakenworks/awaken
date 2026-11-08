@@ -212,11 +212,7 @@ impl ExecutableAgentCatalog {
 
     /// Fail-closed: a poisoned catalog resolves no fingerprint.
     pub fn exact(&self, workspace_id: &str, fingerprint: &str) -> Option<ExecutableAgentSnapshot> {
-        let state = self.read_state().ok()?;
-        state
-            .fingerprints
-            .get(&(workspace_id.to_owned(), fingerprint.to_owned()))
-            .cloned()
+        self.try_exact(workspace_id, fingerprint).ok().flatten()
     }
 
     /// Fail-closed: a poisoned catalog reports every Agent unavailable.
@@ -241,6 +237,18 @@ impl ExecutableAgentCatalog {
         &self,
     ) -> Result<RwLockWriteGuard<'_, CatalogState>, ExecutableAgentRegistrationError> {
         self.state.write().map_err(catalog_poisoned)
+    }
+
+    fn try_exact(
+        &self,
+        workspace_id: &str,
+        fingerprint: &str,
+    ) -> Result<Option<ExecutableAgentSnapshot>, ExecutableAgentRegistrationError> {
+        Ok(self
+            .read_state()?
+            .fingerprints
+            .get(&(workspace_id.to_owned(), fingerprint.to_owned()))
+            .cloned())
     }
 
     fn try_current(
@@ -678,7 +686,7 @@ impl ExecutableAgentRegistrar for ReferenceIndexedExecutableAgentRegistrar {
         let preview = self.catalog.preview_registration(registration.clone())?;
         let is_current_replay = self
             .catalog
-            .current(&registration.workspace_id, &registration.agent_id)
+            .try_current(&registration.workspace_id, &registration.agent_id)?
             .as_ref()
             == Some(&registration);
         let holder = agent_holder(&registration.workspace_id, &registration.agent_id);
@@ -761,17 +769,26 @@ impl ExecutableAgentRegistrar for LocalExecutableAgentRegistrar {
 }
 
 impl PublishedAgentSnapshotSource for ExecutableAgentCatalog {
-    fn current(&self, workspace: &str, agent_id: &AgentId) -> Option<ExecutableAgentSnapshot> {
-        ExecutableAgentCatalog::current(self, workspace, &agent_id.0)
-            .map(|registration| registration.snapshot)
+    fn current(
+        &self,
+        workspace: &str,
+        agent_id: &AgentId,
+    ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError> {
+        ExecutableAgentCatalog::try_current(self, workspace, &agent_id.0)
+            .map(|registration| registration.map(|registration| registration.snapshot))
+            .map_err(|error| {
+                awaken_runtime_contract::AgentSnapshotError::SourceUnavailable(error.to_string())
+            })
     }
 
     fn exact(
         &self,
         workspace: &str,
         fingerprint: &CatalogFingerprint,
-    ) -> Option<ExecutableAgentSnapshot> {
-        ExecutableAgentCatalog::exact(self, workspace, &fingerprint.0)
+    ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError> {
+        ExecutableAgentCatalog::try_exact(self, workspace, &fingerprint.0).map_err(|error| {
+            awaken_runtime_contract::AgentSnapshotError::SourceUnavailable(error.to_string())
+        })
     }
 
     fn at_revision(
@@ -779,9 +796,12 @@ impl PublishedAgentSnapshotSource for ExecutableAgentCatalog {
         workspace: &str,
         agent_id: &AgentId,
         source_revision: u64,
-    ) -> Option<ExecutableAgentSnapshot> {
-        ExecutableAgentCatalog::at_revision(self, workspace, &agent_id.0, source_revision)
-            .map(|registration| registration.snapshot)
+    ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError> {
+        ExecutableAgentCatalog::try_at_revision(self, workspace, &agent_id.0, source_revision)
+            .map(|registration| registration.map(|registration| registration.snapshot))
+            .map_err(|error| {
+                awaken_runtime_contract::AgentSnapshotError::SourceUnavailable(error.to_string())
+            })
     }
 }
 

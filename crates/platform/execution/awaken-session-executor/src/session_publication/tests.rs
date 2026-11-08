@@ -60,7 +60,11 @@ struct Publications {
 }
 
 impl PublishedAgentSnapshotSource for Publications {
-    fn current(&self, workspace: &str, agent: &AgentId) -> Option<ExecutableAgentSnapshot> {
+    fn current(
+        &self,
+        workspace: &str,
+        agent: &AgentId,
+    ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError> {
         self.reads.lock().unwrap().push((workspace.into(), None));
         self.values.current(workspace, agent)
     }
@@ -69,7 +73,7 @@ impl PublishedAgentSnapshotSource for Publications {
         &self,
         workspace: &str,
         fingerprint: &awaken_runtime_contract::resolved::CatalogFingerprint,
-    ) -> Option<ExecutableAgentSnapshot> {
+    ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError> {
         self.values.exact(workspace, fingerprint)
     }
 
@@ -78,7 +82,7 @@ impl PublishedAgentSnapshotSource for Publications {
         workspace: &str,
         agent: &AgentId,
         revision: u64,
-    ) -> Option<ExecutableAgentSnapshot> {
+    ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError> {
         self.reads
             .lock()
             .unwrap()

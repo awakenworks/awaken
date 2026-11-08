@@ -285,6 +285,43 @@ async fn oauth_rpc(
     calc_rpc_result(&body)
 }
 
+/// R2/R4: a subsequent Run reuses the receipt-adopted credential generation.
+/// R3: after the issuer invalidates that bearer it refreshes once more. The
+/// tool result and exact grant count distinguish reuse from a hidden retry.
+async fn assert_refreshed_mcp_turn(app: &Router, id: &str, mock: &Mutex<OauthMock>, grants: usize) {
+    let (status, receipt) = send_user_message(app, id, "add 40 2").await;
+    assert_eq!(status, StatusCode::OK);
+    let events = wait_for_session_events(
+        app,
+        id,
+        &receipt,
+        "the same Session's refreshed Run to settle",
+    )
+    .await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event["type"] == "agent.mcp_tool_result"
+                && event["content"][0]["text"] == "42"),
+        "refreshed tool result: {events:?}"
+    );
+    let observed = mock.lock().unwrap();
+    assert_eq!(
+        observed.grants.len(),
+        grants,
+        "one grant per invalidated bearer"
+    );
+    assert_eq!(
+        observed
+            .requests
+            .iter()
+            .filter(|(_, bearer)| bearer == "Bearer expired-token")
+            .count(),
+        1,
+        "the initial expired bearer is never reused"
+    );
+}
+
 /// The mock token endpoint: records the raw form-encoded grant (and its
 /// `Authorization` header), enforces the scenario's client authentication
 /// ([`MockClientAuth`]), and either issues the configured response (whose
@@ -1014,6 +1051,9 @@ async fn expired_mcp_oauth_token_is_refreshed_mid_connect_and_resealed() {
             .expect("a tools/call reached the mock");
         assert_eq!(tool_call.1, "Bearer new-token");
     }
+
+    // R2: the same Session adopts the exact receipt successor for its next Run.
+    assert_refreshed_mcp_turn(&app, &id, mock.as_ref(), 1).await;
 
     // The fresh access token was RESEALED under the credential row: a second
     // session on the same credential materializes `new-token` and connects
@@ -2002,6 +2042,20 @@ async fn registered_worker_refreshes_an_expired_mcp_oauth_token_mid_connect_and_
         assert_eq!(tool_call.1, "Bearer new-token");
     }
 
+    // R2: the same Session adopts the exact receipt successor for its next Run.
+    assert_refreshed_mcp_turn(&app, &id, mock.as_ref(), 1).await;
+
+    // R3/R4: invalidate the first issued bearer; refresh v2 -> v3 and then
+    // start one more Run that must adopt v3 without a third exchange.
+    {
+        let mut issuer = mock.lock().unwrap();
+        issuer.valid_tokens.clear();
+        issuer.token_response =
+            Some(json!({ "access_token": "new-token-2", "token_type": "Bearer" })); // awaken-allow(secret):
+    }
+    assert_refreshed_mcp_turn(&app, &id, mock.as_ref(), 2).await;
+    assert_refreshed_mcp_turn(&app, &id, mock.as_ref(), 2).await;
+
     // The resealed access token serves a second Session with no new grant.
     let id2 = create_published_mcp_session(&app, "calc-agent", &vault_id).await;
     let (s, receipt) = send_user_message(&app, &id2, "add 40 2").await;
@@ -2023,8 +2077,8 @@ async fn registered_worker_refreshes_an_expired_mcp_oauth_token_mid_connect_and_
         let m = mock.lock().unwrap();
         assert_eq!(
             m.grants.len(),
-            1,
-            "the resealed token connects the second session with no new grant"
+            2,
+            "the twice-resealed token connects the second session with no new grant"
         );
         assert!(
             !m.requests[m.requests.len().saturating_sub(4)..]

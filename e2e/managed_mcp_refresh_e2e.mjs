@@ -10,7 +10,7 @@
 // connect with zero additional grants, and `mcpOAuthValidate` now live-probes
 // it `valid`. The invalid arm pins the fail-closed side: a wrong token with NO
 // refresh validates `invalid` (http_status 401) and fails Session realization
-// before activation with an api_error naming the challenge. The confidential-client arm
+// on its first registered-Worker Run with one terminal session.error naming the challenge. The confidential-client arm
 // enters an mcp_oauth credential whose refresh uses `client_secret_basic`: the
 // client_secret is sealed (never echoed by any route), and the grant carries
 // the RFC 6749 §2.3.1 `Authorization: Basic
@@ -318,31 +318,40 @@ async function main() {
       assert.deepEqual(badValidation.refresh, { http_response: null, status: 'no_refresh_token' });
       pass('mcpOAuthValidate (wrong token, no refresh) -> invalid, mcp_probe initialize/401, refresh no_refresh_token');
 
-      // Cause-effect graph for exact-generation staging:
-      // C1 access token accepted -> E1 stage and activate
-      // !C1 + C2 exact refresh succeeds -> E2 reseal, stage, and activate
-      // !C1 + !C2 -> E3 reject creation without publishing the generation
-      //
-      // | Rule | C1 accepted | C2 refresh succeeds | Result            |
-      // | O1   | yes         | -                   | activate          |
-      // | O2   | no          | yes                 | refresh + activate|
-      // | O3   | no          | no                  | reject creation   |
-      await assert.rejects(
-        () => client.beta.sessions.create({
-          agent: mcpAgent(fixtureB.url),
-          environment_id: 'env_local',
-          vault_ids: [vault2.id],
-          betas: BETAS,
-        }),
-        (err) => {
-          assert.equal(err.status, 500, `an api_error envelope — got ${err.status}: ${err.message}`);
-          const envelope = err.error?.error ?? err.error;
-          assert.equal(envelope.type, 'api_error', JSON.stringify(err.error));
-          assert.ok(envelope.message.includes('mcp server `calc`'), envelope.message);
-          assert.ok(envelope.message.includes('auth challenge: HTTP 401'), envelope.message);
-          return true;
-        },
+      // Cause/effect graph for registered-Worker exact-generation staging:
+      // C1 accepted token -> activate; !C1 + C2 exact refresh succeeds ->
+      // reseal and activate; !C1 + !C2 -> create remains accepted, its first
+      // Run fails terminally before any MCP tool executes. Creation does not
+      // perform physical realization on the shipped Worker topology.
+      // | Rule | C1 accepted | C2 refresh | result |
+      // | O1 | yes | - | activate |
+      // | O2 | no | succeeds | refresh + activate |
+      // | O3 | no | absent | one terminal error naming server/challenge; no tool effect |
+      const wrongProbesBeforeRun = fixtureB.tokenRequests[WRONG_TOKEN] ?? 0;
+      const rejectedSession = await client.beta.sessions.create({
+        agent: mcpAgent(fixtureB.url),
+        environment_id: 'env_local',
+        vault_ids: [vault2.id],
+        betas: BETAS,
+      });
+      const rejectedTurn = await sendMessage(
+        client, rejectedSession.id, 'add 1 2',
+        ({ delta }) => delta.some((event) => event.type === 'session.status_terminated'),
+        'O3 first Worker Run commits the terminal MCP authentication failure',
       );
+      const failures = rejectedTurn.delta.filter((event) => event.type === 'session.error');
+      assert.equal(failures.length, 1, 'O3 exactly one terminal failure');
+      const failure = failures[0].error;
+      assert.equal(failure.type, 'mcp_authentication_failed_error');
+      assert.equal(failure.retry_status?.type, 'terminal');
+      assert.equal(failure.mcp_server_name, 'calc');
+      assert.ok(failure.message.includes('mcp server `calc`'), failure.message);
+      assert.ok(failure.message.includes('auth challenge: HTTP 401'), failure.message);
+      assert.ok(!JSON.stringify(failure).includes(WRONG_TOKEN), 'O3 never echoes the bearer');
+      assert.ok(rejectedTurn.delta.every((event) => event.type !== 'agent.mcp_tool_result'), 'O3 no tool effect');
+      const terminated = await client.beta.sessions.retrieve(rejectedSession.id, { betas: BETAS });
+      assert.equal(terminated.status, 'terminated');
+      assert.ok(fixtureB.tokenRequests[WRONG_TOKEN] > wrongProbesBeforeRun, 'O3 the first Worker Run probed the exact failed pin');
       assert.equal(fixtureB.grants.length, 0, 'no refresh config -> no grant was ever attempted');
       assert.ok(fixtureB.tokenRequests[WRONG_TOKEN] > 0, 'the exact pinned token reached only its target');
       pass('O3: wrong token without refresh rejects realization before Session activation');
@@ -536,7 +545,7 @@ async function main() {
         status: 'failed',
       });
       pass('mcpOAuthValidate exchanges after a refused probe: succeeded -> re-probed valid; refused grant -> failed with the endpoint response');
-    });
+    }, {}, { placement: 'worker' });
 
     console.log('E2E PASS: mcp_oauth refresh exchange (public + confidential client), reseal persistence, and live validate round-trip through the official @anthropic-ai/sdk.');
     process.exitCode = 0;

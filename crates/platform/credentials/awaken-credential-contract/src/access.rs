@@ -51,6 +51,18 @@ pub trait SessionCredentialSource: Send + Sync {
         workspace_id: &str,
         request: SessionCredentialAccessRequest,
     ) -> Result<CredentialAccess, String>;
+
+    /// The revision an OAuth refresh published as the exact successor of
+    /// `pinned`, proven by its sealed publication receipt; `None` when the pin
+    /// is current or no receipt names it as predecessor. A source that holds
+    /// no receipts keeps the default and never advances a pin.
+    async fn refresh_successor(
+        &self,
+        _workspace_id: &str,
+        _pinned: &awaken_agent_contract::credential::CredentialRef,
+    ) -> Result<Option<u64>, String> {
+        Ok(None)
+    }
 }
 
 /// Plaintext admitted at one write-only Credential boundary.

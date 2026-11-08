@@ -1358,6 +1358,7 @@ async fn idle_unpublished_mcp_failures_end_by_class_and_budget() {
                             not_ready,
                             source_run_id: None,
                             reason: "sealed credential envelope is expired".into(),
+                            code: None,
                         },
                     )
                     .await

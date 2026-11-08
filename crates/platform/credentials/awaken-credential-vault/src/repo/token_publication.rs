@@ -80,6 +80,38 @@ pub async fn token_publication_state(
     Ok(Some(state))
 }
 
+/// The Vault law of refresh adoption: the exact successor one token
+/// publication made of `pinned`, or none. A newer source revision alone never
+/// authorizes another generation; only the sealed publication receipt whose
+/// predecessor is exactly `pinned` and whose successor is the current source
+/// does. Any later revision (a second refresh, a manual rotation) names
+/// another predecessor and is refused.
+///
+/// | Rule | same source id | current revision | receipt | effect |
+/// |---|---|---|---|---|
+/// | A1 | yes | = pinned | any | none: the pin is current |
+/// | A2 | yes | ≠ pinned | predecessor = pinned (successor = current by construction) | the receipt |
+/// | A3 | yes | ≠ pinned | absent, stale (another generation's), or predecessor ≠ pinned | none |
+/// | A4 | no | any | any | none |
+///
+/// A store that cannot be read is an error, never a refusal or an adoption.
+pub async fn token_publication_successor(
+    source: &CredentialSource,
+    store: &dyn SecretStore,
+    pinned: &awaken_agent_contract::credential::CredentialRef,
+) -> Result<Option<TokenPublicationState>, CredentialError> {
+    if source.id.0 != pinned.id || u64::try_from(source.version).ok() == Some(pinned.revision) {
+        return Ok(None);
+    }
+    match token_publication_state(source, store).await {
+        Ok(state) => Ok(state.filter(|state| state.predecessor.as_ref() == Some(pinned))),
+        // A receipt of another generation (a later manual rotation kept the
+        // slot) names no successor of this source revision.
+        Err(CredentialError::InvalidSource(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Claim before contacting a rotating token issuer. A replacement id is
 /// deterministic caller intent; business owners still serialize cross-id
 /// replacements through their existing canonical Credential Resource claim.
@@ -333,4 +365,155 @@ pub async fn publish_acquired_tokens(
         cache_partition: None,
     };
     Ok((committed.after, token))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::repo::{CredentialAcquisitionPhase, InMemoryCredentialRepo};
+    use crate::{InMemorySecretStore, OAUTH_REFRESH_TOKEN_SLOT};
+    use awaken_agent_contract::credential::CredentialRef;
+    use awaken_credential_contract::IssuedCredentialTokens;
+    use std::collections::BTreeMap;
+
+    struct Clock;
+    impl WallClock for Clock {
+        fn now(&self) -> awaken_time::UtcTime {
+            awaken_time::UtcTime::from_epoch_ms(1_000)
+        }
+    }
+
+    async fn refresh(
+        source: &CredentialSource,
+        store: &dyn SecretStore,
+        repo: &dyn CredentialRepo,
+    ) -> CredentialSource {
+        let intent = claim_token_publication(source, None, "profile".into(), true, repo, &Clock)
+            .await
+            .unwrap();
+        let dispatched = repo
+            .transition_acquisition(&intent, CredentialAcquisitionPhase::Dispatched, 1_000)
+            .await
+            .unwrap();
+        publish_acquired_tokens(
+            dispatched,
+            IssuedCredentialTokens {
+                additional_fields: Default::default(),
+                access_token: RedactedString::new("issued-access"),
+                refresh_token: None,
+                access_expires_at_unix_ms: Some(500_000),
+                refresh_expires_at_unix_ms: None,
+            },
+            None,
+            store,
+            repo,
+            &Clock,
+        )
+        .await
+        .unwrap()
+        .0
+    }
+
+    #[tokio::test]
+    async fn refresh_adoption_names_only_the_exact_successor_of_the_pin() {
+        // Rows A1-A4 of `token_publication_successor`, over two real
+        // refresh publications (v1 -> v2 -> v3) and a manual rotation.
+        let store = InMemorySecretStore::new();
+        let repo = InMemoryCredentialRepo::new();
+        let v1 = crate::repo::enter_credential_with_materials(
+            crate::CredentialCreateParams {
+                workspace_id: "adoption".into(),
+                kind: CredentialKind::Vault,
+                provider_id: None,
+                env_key: None,
+                secret: Some(RedactedString::new("original-access")),
+                oauth_command: None,
+            },
+            BTreeMap::from([(
+                OAUTH_REFRESH_TOKEN_SLOT.into(),
+                RedactedString::new("original-refresh"),
+            )]),
+            &store,
+            &repo,
+            &Clock,
+        )
+        .await
+        .unwrap();
+        let pin = |revision| CredentialRef {
+            id: v1.id.0.clone(),
+            revision,
+        };
+        assert!(
+            token_publication_successor(&v1, &store, &pin(1))
+                .await
+                .unwrap()
+                .is_none(),
+            "A1 the pin is current"
+        );
+        let v2 = refresh(&v1, &store, &repo).await;
+        let adopted = token_publication_successor(&v2, &store, &pin(1))
+            .await
+            .unwrap()
+            .expect("A2 the refresh's receipt names the pin");
+        assert_eq!(
+            adopted.successor,
+            pin(2),
+            "A2 exactly the published successor"
+        );
+        assert!(
+            token_publication_successor(&v2, &store, &pin(0))
+                .await
+                .unwrap()
+                .is_none(),
+            "A3 another predecessor"
+        );
+        let v3 = refresh(&v2, &store, &repo).await;
+        assert!(
+            token_publication_successor(&v3, &store, &pin(1))
+                .await
+                .unwrap()
+                .is_none(),
+            "A3 a second refresh is not the successor of the first pin"
+        );
+        assert_eq!(
+            token_publication_successor(&v3, &store, &pin(2))
+                .await
+                .unwrap()
+                .map(|state| state.successor),
+            Some(pin(3)),
+            "A2 each pin adopts its own successor"
+        );
+        let rotated = crate::repo::rotate_credential_materials_exact(
+            &v3.id,
+            v3.version,
+            crate::repo::CredentialMaterialPatch {
+                primary: Some(RedactedString::new("operator-access")),
+                auxiliary: BTreeMap::new(),
+                descriptor: None,
+            },
+            &store,
+            &repo,
+            &Clock,
+        )
+        .await
+        .unwrap();
+        assert!(
+            token_publication_successor(&rotated, &store, &pin(3))
+                .await
+                .unwrap()
+                .is_none(),
+            "A3 a manual rotation is no refresh successor"
+        );
+        let other = CredentialRef {
+            id: "another-source".into(),
+            revision: 2,
+        };
+        assert!(
+            token_publication_successor(&v2, &store, &other)
+                .await
+                .unwrap()
+                .is_none(),
+            "A4 another source"
+        );
+    }
 }

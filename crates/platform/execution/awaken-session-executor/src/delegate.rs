@@ -296,6 +296,7 @@ impl HostRunDelegationService {
     ) -> Result<ExecutableAgentSnapshot, DelegationExecutionError> {
         self.publications
             .exact(&self.workspace, fingerprint)
+            .map_err(|error| DelegationExecutionError::new(error.to_string()))?
             .ok_or_else(|| {
                 DelegationExecutionError::new(format!(
                     "delegated Run snapshot {:?} is unavailable",
@@ -902,33 +903,45 @@ mod durable_cancel_tests {
     }
 
     impl PublishedAgentSnapshotSource for TestPublications {
-        fn current(&self, _workspace: &str, agent_id: &AgentId) -> Option<ExecutableAgentSnapshot> {
-            (self.0.root_agent_id == *agent_id).then(|| self.0.clone())
+        fn current(
+            &self,
+            _workspace: &str,
+            agent_id: &AgentId,
+        ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError>
+        {
+            Ok((self.0.root_agent_id == *agent_id).then(|| self.0.clone()))
         }
 
         fn exact(
             &self,
             _workspace: &str,
             fingerprint: &CatalogFingerprint,
-        ) -> Option<ExecutableAgentSnapshot> {
-            (self.0.fingerprint == *fingerprint).then(|| self.0.clone())
+        ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError>
+        {
+            Ok((self.0.fingerprint == *fingerprint).then(|| self.0.clone()))
         }
     }
 
     impl PublishedAgentSnapshotSource for VersionedPublications {
-        fn current(&self, _workspace: &str, agent_id: &AgentId) -> Option<ExecutableAgentSnapshot> {
-            (self.current.root_agent_id == *agent_id).then(|| self.current.clone())
+        fn current(
+            &self,
+            _workspace: &str,
+            agent_id: &AgentId,
+        ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError>
+        {
+            Ok((self.current.root_agent_id == *agent_id).then(|| self.current.clone()))
         }
 
         fn exact(
             &self,
             _workspace: &str,
             fingerprint: &CatalogFingerprint,
-        ) -> Option<ExecutableAgentSnapshot> {
-            [&self.first, &self.current]
+        ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError>
+        {
+            Ok([&self.first, &self.current]
                 .into_iter()
                 .find(|snapshot| snapshot.fingerprint == *fingerprint)
-                .cloned()
+                .cloned())
         }
 
         fn at_revision(
@@ -936,9 +949,12 @@ mod durable_cancel_tests {
             _workspace: &str,
             agent_id: &AgentId,
             source_revision: u64,
-        ) -> Option<ExecutableAgentSnapshot> {
-            (source_revision == 1 && self.first.root_agent_id == *agent_id)
-                .then(|| self.first.clone())
+        ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError>
+        {
+            Ok(
+                (source_revision == 1 && self.first.root_agent_id == *agent_id)
+                    .then(|| self.first.clone()),
+            )
         }
     }
 

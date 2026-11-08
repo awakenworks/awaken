@@ -86,10 +86,20 @@ fn draft(name: &str) -> McpAttachmentDraft {
 }
 
 /// Three attachments: Requested, Realizing and Active under `old`.
-fn attachments(old: &SessionRealizationLease) -> SessionMcpAttachmentSet {
+fn attachments(
+    old: &SessionRealizationLease,
+    credential: Option<awaken_agent_contract::credential::CredentialAccess>,
+) -> SessionMcpAttachmentSet {
+    let selected = credential.as_ref().map(|_| {
+        awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
+            "spiffe://awaken.test/worker",
+        )
+    });
+    let mut c = draft("c");
+    c.credential = credential;
     let mut set =
-        SessionMcpAttachmentSet::from_initial(vec![draft("a"), draft("b"), draft("c")], None)
-            .unwrap();
+        SessionMcpAttachmentSet::from_initial(vec![draft("a"), draft("b"), c], selected).unwrap();
     for (index, id) in [(1, "realizing"), (2, "active")] {
         let generation = set.attachments[index].generation.clone();
         set.claim_realization(
@@ -281,7 +291,7 @@ fn begin_reuses_a_live_lease_and_claims_only_requested_generations() {
     let mut aggregate = with(
         SessionExecutionState::Preparing,
         Some(current.clone()),
-        attachments(&current),
+        attachments(&current, None),
     );
     let before = aggregate.clone();
     assert_eq!(
@@ -363,7 +373,7 @@ fn begin_assigns_a_successor_and_reclaims_every_live_generation() {
         ),
     ];
     for (row, current, incarnation, reassign, execution, epoch, counted) in rows {
-        let mut aggregate = with(execution, current, attachments(&old));
+        let mut aggregate = with(execution, current, attachments(&old, None));
         let before = aggregate.clone();
         let target = request("owner", incarnation, reassign, None);
         assert_eq!(
@@ -566,7 +576,7 @@ fn reassign_installs_the_successor_generation_or_refuses_unchanged() {
         aggregate.lifecycle().archive("archived", 1).unwrap();
         aggregate
             .assignment()
-            .record_failure("prior failure".into(), 7, None);
+            .record_failure("prior failure".into(), None, 7, None);
         let before = aggregate.clone();
         let installed = aggregate
             .assignment()
@@ -721,4 +731,108 @@ fn an_untrustworthy_persisted_lease_generation_is_one_permanent_integrity_refusa
         Some(1),
         "I7"
     );
+}
+
+#[test]
+fn recovery_never_reopens_the_retired_credential_predecessor() {
+    // Causes: C1 a same-source credential successor replaces an Active MCP generation;
+    // C2 realization grants a new Worker incarnation or reuses the live one.
+    // Effects: E1 on replacement ownership, only the desired head is recovered
+    // and the predecessor enters the existing drain protocol with its exact
+    // old receipt (never reopened against a retired credential); E2 on a warm
+    // live Worker, the predecessor stays visible until normal activation;
+    // E3 without a successor the existing Active head is recovered normally.
+    // | Rule | successor | new incarnation | old generation | new head |
+    // | R1 | yes | yes | Draining, old receipt | Realizing, new lease |
+    // | R2 | yes | no | Active, old receipt | Realizing, live lease |
+    // | R3 | no | yes | Active, new receipt | same head |
+    // | R4 | no | no | Active, old receipt | same head |
+    for (rule, successor, replacement) in [
+        ("R1", true, true),
+        ("R2", true, false),
+        ("R3", false, true),
+        ("R4", false, false),
+    ] {
+        let old = lease("owner", "owner:1", nth(1), 500);
+        let holder = awaken_agent_contract::credential::PlaintextHolder::new(
+            awaken_agent_contract::credential::PlaintextBoundary::Worker,
+            "spiffe://awaken.test/worker",
+        );
+        let access = awaken_agent_contract::credential::CredentialAccess::new(
+            awaken_agent_contract::credential::CredentialRef {
+                id: "refresh-source".into(),
+                revision: 1,
+            },
+            awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+            awaken_agent_contract::credential::CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+            awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
+                holder.clone(),
+                awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
+            ),
+        );
+        let mut set = attachments(&old, Some(access.clone()));
+        let predecessor = set.attachments[2].generation.clone();
+        let claim = set.attachments[2].realization.clone().unwrap();
+        set.acknowledge_publication(&predecessor, "active").unwrap();
+        if successor {
+            let mut changed = draft("c");
+            let mut advanced = access;
+            advanced.credential.revision = 2;
+            changed.credential = Some(advanced);
+            set.request_full_replacement(vec![draft("a"), draft("b"), changed], Some(holder))
+                .unwrap();
+        }
+        let mut root = with(SessionExecutionState::Idle, Some(old.clone()), set);
+        root.assignment()
+            .begin(
+                request(
+                    "owner",
+                    if replacement { "owner:2" } else { "owner:1" },
+                    false,
+                    None,
+                ),
+                NOW,
+            )
+            .unwrap();
+        let previous = &root.mcp.attachments[2];
+        if successor {
+            assert_eq!(
+                previous.state,
+                if replacement {
+                    McpAttachmentState::Draining
+                } else {
+                    McpAttachmentState::Active
+                },
+                "{rule}"
+            );
+            assert_eq!(
+                previous.realization.as_ref(),
+                Some(&claim),
+                "{rule} preserves physical receipt"
+            );
+            let head = root
+                .mcp
+                .desired_attachments()
+                .into_iter()
+                .find(|a| a.name == "c")
+                .unwrap();
+            assert_eq!(head.generation.version(), 2, "{rule}");
+            assert_eq!(head.state, McpAttachmentState::Realizing, "{rule}");
+            assert_eq!(
+                head.realization.as_ref().unwrap().lease_epoch,
+                if replacement { 2 } else { 1 },
+                "{rule}"
+            );
+        } else {
+            assert_eq!(previous.state, McpAttachmentState::Active, "{rule}");
+            assert_eq!(
+                previous.realization.as_ref().unwrap().lease_epoch,
+                if replacement { 2 } else { 1 },
+                "{rule}"
+            );
+        }
+    }
 }

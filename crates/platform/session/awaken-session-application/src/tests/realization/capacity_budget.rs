@@ -60,6 +60,7 @@ async fn capacity_failures_keep_preparing_without_consuming_the_durable_budget()
             not_ready,
             source_run_id: None,
             reason: "exceeded quota: compute".into(),
+            code: None,
         };
 
     for round in 1..=5 {
@@ -141,11 +142,27 @@ async fn conflict_and_unclassified_internal_failures_retry_until_the_durable_bud
     // | B1 | conflict / unclassified internal | first failure | E1 |
     // | B2 | conflict / unclassified internal | budget spent | E2 |
     // | B3 | classified internal | first failure | E3 |
+    // | B4 | an unreachable MCP server (`mcp_connection_failed`) | budget spent | E2 |
+    // E2/E3 also carry the classified cause the root recorded into the
+    // Terminal refusal: the failure's message and its class, where a retryable
+    // class whose budget is spent records its spent twin
+    // (`terminal_realization_failure_code`), so the absorbing claim reports
+    // the cause instead of a generic refusal.
     use awaken_runtime_contract::runs::RunError;
     /// Row name, the failed effect's Run error, failures until it absorbs.
     type Row = (&'static str, fn() -> RunError, usize);
-    let rows: [Row; 3] = [
+    let rows: [Row; 4] = [
         ("conflict", || RunError::conflict("raced"), 2),
+        (
+            "mcp-unreachable",
+            || {
+                RunError::unavailable_classified(
+                    "mcp_connection_failed",
+                    "mcp server `offline`: connection refused",
+                )
+            },
+            2,
+        ),
         ("unclassified", || RunError::internal("unknown"), 2),
         (
             "classified",
@@ -214,13 +231,34 @@ async fn conflict_and_unclassified_internal_failures_retry_until_the_durable_bud
                 );
             }
         }
+        let effect = failure();
+        let retryable = awaken_session_execution_contract::effect_failure_disposition(&effect)
+            != awaken_session_execution_contract::SessionRealizationControlDisposition::Terminal;
+        let expected_code = awaken_session_execution_contract::terminal_realization_failure_code(
+            &effect.code,
+            retryable,
+        );
+        let expected_message = effect.to_string();
+        let after = repo.get(&id).await.unwrap();
+        assert_eq!(
+            awaken_session_contract::session_classified_realization_failure(&after),
+            Some((expected_code, expected_message.as_str())),
+            "{name}: durable cause belongs to the Session root"
+        );
         assert!(
             matches!(
                 begin(failures_to_absorb + 1).await,
                 Err(awaken_session_execution_contract::SessionRealizationControlFailure::Terminal)
             ),
-            "{name}: the next claim's begin is terminal, so the claim absorbs the Run"
+            "{name}: a later claim keeps the existing unit Terminal wire"
         );
+        if name == "mcp-unreachable" {
+            assert_eq!(
+                expected_code,
+                awaken_session_execution_contract::MCP_CONNECTION_EXHAUSTED_CODE,
+                "B4 a spent connection retry is no longer retrying"
+            );
+        }
     }
 }
 
@@ -303,6 +341,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
             not_ready: false,
             source_run_id: None,
             reason: "worker unavailable".into(),
+            code: None,
         })
         .await
         .expect("R1 retryable failure");
@@ -347,6 +386,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
             not_ready: false,
             source_run_id: None,
             reason: "worker unavailable again".into(),
+            code: None,
         })
         .await
         .expect("R3 exhausted");
@@ -408,6 +448,7 @@ async fn failed_nonterminal_realization_expires_assignment_before_same_incarnati
                     not_ready: false,
                     source_run_id: None,
                     reason: "external stage failed".into(),
+                    code: None,
                 };
                 let mut stale = command.clone();
                 stale.lease.epoch -= 1;
@@ -552,6 +593,7 @@ async fn running_recovery_failures_spend_the_budget_their_claims_never_count() {
             not_ready,
             source_run_id: None,
             reason: "Kubernetes Sandbox Pod deletion is indeterminate".into(),
+            code: None,
         };
     for round in 1..=3 {
         let lease = begin(round).await;

@@ -1,3 +1,8 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: The existing timeline projection joins immutable Session failure metadata to
+// @formal reason: its exact source Run; it changes no state and opens no material. Prefix readiness,
+// @formal reason: event identity/order, source partitions and warm/cold parity are unit-tested,
+// @formal reason: not claimed as a solver proof of the transport or physical execution.
 //! The terminal fact of a durable Session activation failure.
 
 use awaken_agent_contract::RunLifecycleEvent;
@@ -66,8 +71,33 @@ pub fn activation_failure_projection(
                 FactProvenance::ParentTerminal,
             ),
             SessionEventKind::ActivationFailed {
+                code: awaken_session_contract::session_classified_realization_failure(persisted)
+                    .map(|(code, _)| code.to_owned()),
                 message: message.to_string(),
             },
         )),
+    })
+}
+
+/// A root Run's realization failure is recorded on its Session before the Run
+/// terminal commits. Join only those exact coordinates; an unrelated historical
+/// Run, a child, an unknown physical outcome, or an unclassified legacy root
+/// retains the Run's own fault. No wire cause or text parsing decides ownership.
+pub(crate) fn source_realization_fault(
+    persisted: &PersistedSession,
+    terminal: &RunLifecycleEvent,
+) -> Option<crate::RunFault> {
+    if persisted.execution != SessionExecutionState::ActivationFailed
+        || terminal.thread_id.0 != persisted.session_id
+        || persisted.realization_progress().failure_source_run_id() != Some(&terminal.run_id)
+        || !matches!(terminal.state, RunState::Ended(EndCause::Error(_)))
+    {
+        return None;
+    }
+    let (code, message) =
+        awaken_session_contract::session_classified_realization_failure(persisted)?;
+    Some(crate::RunFault::Failed {
+        code: code.to_owned(),
+        message: message.to_owned(),
     })
 }

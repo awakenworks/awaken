@@ -53,7 +53,8 @@ impl SessionLifecycleOperations<'_> {
     }
 
     /// Fail the Session terminally because its frozen inputs can no longer
-    /// admit execution: record `cause` as the durable failure (with the Run
+    /// admit execution: record `cause` and its class `code` as the durable
+    /// failure (with the Run
     /// whose terminal sources it, if one was reserved) and enter
     /// ActivationFailed in one command, closing any Running interval.
     ///
@@ -65,6 +66,7 @@ impl SessionLifecycleOperations<'_> {
     pub fn fail_terminally_at(
         &mut self,
         cause: String,
+        code: Option<String>,
         now: u64,
         source_run_id: Option<awaken_agent_contract::agent::run::Id>,
     ) -> Result<bool, SessionExecutionTransitionError> {
@@ -78,6 +80,7 @@ impl SessionLifecycleOperations<'_> {
         }
         let progress = &mut self.aggregate.state.realization_progress;
         progress.last_error = Some(cause);
+        progress.last_error_code = code;
         progress.failed_at_unix_ms = Some(now);
         progress.failure_source_run_id = source_run_id.map(Box::new);
         self.transition_execution_at(failed, now)

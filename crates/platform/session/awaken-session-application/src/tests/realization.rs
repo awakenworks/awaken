@@ -5032,6 +5032,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
                 "running-realization-run".into(),
             )),
             reason: "permanent realization failure".into(),
+            code: None,
         })
         .await
         .expect("R4 terminal realization failure");
@@ -5076,6 +5077,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
             not_ready: false,
             source_run_id: None,
             reason: "permanent realization failure".into(),
+            code: None,
         })
         .await
         .unwrap();

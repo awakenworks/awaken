@@ -419,6 +419,7 @@ impl SessionAssignmentOperations<'_> {
         if count_initial_attempt {
             state.realization_progress.attempts = attempts;
             state.realization_progress.last_error = None;
+            state.realization_progress.last_error_code = None;
             state.realization_progress.failed_at_unix_ms = None;
             state.realization_progress.failure_source_run_id = None;
             state.realization_progress.uncounted_failures = 0;
@@ -505,15 +506,18 @@ impl SessionAssignmentOperations<'_> {
         Ok(())
     }
 
-    /// Record a failed effect without changing the selected lease identity.
+    /// Record a failed effect and its stable class code, without changing the
+    /// selected lease identity.
     pub fn record_failure(
         &mut self,
         reason: String,
+        code: Option<String>,
         now: u64,
         source_run_id: Option<awaken_agent_contract::agent::run::Id>,
     ) {
         let progress = &mut self.aggregate.state.realization_progress;
         progress.last_error = Some(reason);
+        progress.last_error_code = code;
         progress.failed_at_unix_ms = Some(now);
         progress.failure_source_run_id = source_run_id.map(Box::new);
     }

@@ -160,8 +160,13 @@ fn credential_adoption_requires_idle_or_a_proven_unattempted_preparation() {
                 _ => unreachable!(),
             }
             let before = changed.clone();
-            assert!(
-                !crate::state::session_can_adopt_mcp_credential_lifecycle(&changed),
+            // An unstarted, unreserved Managed preparation is admitted as an
+            // Idle root is (`session_admits_update` U3); with a reserved Run
+            // only the Frozen-preparation exception could admit it.
+            let unstarted_managed = cause == "not_frozen" && !reserved;
+            assert_eq!(
+                crate::state::session_can_adopt_mcp_credential_lifecycle(&changed),
+                unstarted_managed,
                 "R3/R4 {cause}"
             );
             assert_eq!(changed, before, "read-only query");
@@ -349,6 +354,127 @@ fn pending_mcp_generation_fences_new_activity_until_exact_publication_acknowledg
         ),
         SessionActivityAdmissionPlan::Open(2)
     );
+}
+
+#[test]
+fn session_update_admission_follows_its_kind_by_execution_decision_table() {
+    // Causes: K the update kind (Authoring: title/metadata/tools/public MCP/
+    // budget raise or removal; BudgetTightening; CredentialLifecycle); S the
+    // root's execution: Idle, unstarted Preparing (created, nothing realized,
+    // empty materialization history recorded, no reserved Run), started
+    // Preparing (each single realization fact or a reserved Run), Running,
+    // Activating, Rescheduling, terminal. Effect: admit or NotIdle.
+    //
+    // | Rule | kind | Idle | unstarted Preparing | started/other live | terminal |
+    // |---|---|---|---|---|---|
+    // | U1 | Authoring | admit | admit | NotIdle | NotIdle |
+    // | U2 | BudgetTightening | admit | admit | admit | NotIdle |
+    // | U3 | CredentialLifecycle | admit | admit | NotIdle (Managed policy) | NotIdle |
+    //
+    // Negative controls: every started fact alone flips U1/U3 to NotIdle.
+    use crate::state::{SessionUpdateKind as Kind, session_admits_update as admits};
+    let mut unstarted = fresh_root(SessionExecutionState::Preparing, 0).into_snapshot();
+    unstarted.created_at_unix_ms = Some(1);
+    assert!(
+        crate::state::session_is_unstarted_preparation(&unstarted),
+        "fixture is an unstarted preparation"
+    );
+    let mut idle = unstarted.clone();
+    idle.execution = SessionExecutionState::Idle;
+    let lease = crate::state::SessionRealizationLease {
+        owner: "worker".into(),
+        runtime_incarnation: "worker:1:boot".into(),
+        epoch: 1,
+        expires_at_unix_ms: 500,
+    };
+    let mut started = Vec::new();
+    for cause in [
+        "owner",
+        "attempt",
+        "failure",
+        "unknown_history",
+        "reserved_run",
+        "no_creation",
+    ] {
+        let mut changed = unstarted.clone();
+        match cause {
+            "owner" => changed.realization = Some(lease.clone()),
+            "attempt" => changed.realization_progress.attempts = 1,
+            "failure" => changed.realization_progress.last_error = Some("failed".into()),
+            "unknown_history" => changed.environment_materialization = None,
+            "reserved_run" => {
+                let mut aggregate = SessionAggregate::try_from(changed).unwrap();
+                assert_eq!(
+                    aggregate.activity().open(
+                        None,
+                        true,
+                        false,
+                        1,
+                        0,
+                        Some((
+                            "operation",
+                            &awaken_agent_contract::ThreadId("controlled".into()),
+                            &awaken_agent_contract::RunId("reserved".into())
+                        ))
+                    ),
+                    SessionActivityAdmissionPlan::Open(1)
+                );
+                changed = aggregate.into_snapshot();
+            }
+            "no_creation" => changed.created_at_unix_ms = None,
+            _ => unreachable!(),
+        }
+        assert!(
+            !crate::state::session_is_unstarted_preparation(&changed),
+            "{cause} starts the Session"
+        );
+        started.push((cause, changed));
+    }
+    let mut other_live = Vec::new();
+    for execution in [
+        SessionExecutionState::Activating,
+        SessionExecutionState::Running,
+        SessionExecutionState::Rescheduling,
+    ] {
+        let mut changed = idle.clone();
+        changed.execution = execution;
+        other_live.push((execution.as_str(), changed));
+    }
+    let mut terminal = Vec::new();
+    for execution in [
+        SessionExecutionState::ActivationFailed,
+        SessionExecutionState::Terminated,
+    ] {
+        let mut changed = unstarted.clone();
+        changed.execution = execution;
+        terminal.push((execution.as_str(), changed));
+    }
+    for (kind, idle_like, live) in [
+        (Kind::Authoring, true, false),
+        (Kind::BudgetTightening, true, true),
+        (Kind::CredentialLifecycle, true, false),
+    ] {
+        assert_eq!(admits(&idle, kind), idle_like, "{kind:?} Idle");
+        assert_eq!(admits(&unstarted, kind), idle_like, "{kind:?} unstarted");
+        for (cause, session) in &started {
+            assert_eq!(admits(session, kind), live, "{kind:?} started by {cause}");
+        }
+        for (state, session) in &other_live {
+            assert_eq!(admits(session, kind), live, "{kind:?} {state}");
+        }
+        for (state, session) in &terminal {
+            assert!(!admits(session, kind), "{kind:?} terminal {state}");
+        }
+    }
+    // The aggregate's configuration capability is the same U1 decision.
+    for (session, admitted) in [(unstarted.clone(), true), (started[0].1.clone(), false)] {
+        let mut aggregate = SessionAggregate::try_from(session).unwrap();
+        assert_eq!(
+            aggregate.configuration().is_ok(),
+            admitted,
+            "U1 aggregate gate"
+        );
+    }
 }
 
 #[test]

@@ -36,14 +36,24 @@ pub fn session_is_unattempted_profiled_preparation(session: &PersistedSession) -
 /// Physical preparation facts shared by archive admission and credential
 /// adoption. A reserved Run is logical activity, not a realization effect.
 fn session_has_unattempted_profiled_environment(session: &PersistedSession) -> bool {
+    session.frozen_baseline().is_some_and(|baseline| {
+        baseline.mutation_policy
+            == awaken_session_configuration_contract::resource::SessionMutationPolicy::Frozen
+    }) && session.resources.active.inputs().is_empty()
+        && session.resources.active.skills().is_empty()
+        && session.resources.repository_retirements.is_empty()
+        && session_preparation_admitted_no_effect(session)
+}
+
+/// A created, Preparing root whose realization has admitted or attempted no
+/// effect: no materialization, lease, attempt or failure, no Resource
+/// activation or MCP generation past its request. Run reservation is outside
+/// this predicate; each caller decides whether a reserved Run fences it.
+fn session_preparation_admitted_no_effect(session: &PersistedSession) -> bool {
     !session
         .environment_materialization
         .as_deref()
         .is_some_and(crate::state::SessionEnvironmentMaterialization::has_admitted)
-        && session.frozen_baseline().is_some_and(|baseline| {
-            baseline.mutation_policy
-                == awaken_session_configuration_contract::resource::SessionMutationPolicy::Frozen
-        })
         && session.created_at_unix_ms.is_some()
         && session.execution == SessionExecutionState::Preparing
         && matches!(
@@ -53,9 +63,6 @@ fn session_has_unattempted_profiled_environment(session: &PersistedSession) -> b
         && session.realization.is_none()
         && session.realization_progress.attempts == 0
         && session.realization_progress.last_error.is_none()
-        && session.resources.active.inputs().is_empty()
-        && session.resources.active.skills().is_empty()
-        && session.resources.repository_retirements.is_empty()
         && session.resources.activations.iter().all(|activation| {
             activation.state == crate::state::ActivationState::Prepared
                 && activation.attempts == 0
@@ -72,17 +79,88 @@ fn session_has_unattempted_profiled_environment(session: &PersistedSession) -> b
         })
 }
 
+/// Whether the Session has not started: a Preparing root whose realization
+/// admitted no effect, whose empty materialization history is recorded
+/// (missing history is unknown), and which holds no reserved Run or Running
+/// interval. Nothing has consumed its configuration yet, so it accepts the
+/// updates an Idle root accepts. A registered-Worker Session stays here until
+/// a Worker claims its first Run.
+#[must_use]
+pub fn session_is_unstarted_preparation(session: &PersistedSession) -> bool {
+    !session.is_terminal()
+        && session_preparation_admitted_no_effect(session)
+        && session
+            .environment_materialization()
+            .is_some_and(crate::state::SessionEnvironmentMaterialization::is_empty)
+        && !session.has_active_activities()
+        && session.running_interval.is_none()
+}
+
+/// What one Session update command changes, for its execution-state admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionUpdateKind {
+    /// Title, metadata, tools, a public MCP replacement, or a budget raise,
+    /// removal or any change beside another field.
+    Authoring,
+    /// Only lowers an Active budget threshold.
+    BudgetTightening,
+    /// Server-owned credential lifecycle adoption of the MCP set.
+    CredentialLifecycle,
+}
+
+/// The one execution-state admission of a Session update.
+///
+/// | Rule | kind | Idle | unstarted Preparing | other live (started Preparing, Activating, Running, Rescheduling) | terminal |
+/// |---|---|---|---|---|---|
+/// | U1 | Authoring | admit | admit | NotIdle | NotIdle |
+/// | U2 | BudgetTightening | admit | admit | admit | NotIdle |
+/// | U3 | CredentialLifecycle | admit | admit | admit only for an unattempted Frozen preparation with recorded empty materialization (reserved Runs allowed) | NotIdle |
+///
+/// An unstarted Session is admitted exactly as an Idle one: no realization
+/// effect, reserved Run or Running interval has read its configuration, so
+/// the committed root is what its first realization reads.
+#[must_use]
+pub fn session_admits_update(session: &PersistedSession, kind: SessionUpdateKind) -> bool {
+    if session.is_terminal() {
+        return false;
+    }
+    let idle_like = session.execution == SessionExecutionState::Idle
+        || session_is_unstarted_preparation(session);
+    match kind {
+        SessionUpdateKind::Authoring => idle_like,
+        SessionUpdateKind::BudgetTightening => true,
+        SessionUpdateKind::CredentialLifecycle => {
+            idle_like
+                || (session_has_unattempted_profiled_environment(session)
+                    && session
+                        .environment_materialization()
+                        .is_some_and(crate::state::SessionEnvironmentMaterialization::is_empty))
+        }
+    }
+}
+
 /// Credential-only adoption may advance an unattempted frozen preparation even
 /// after Run reservation. Missing materialization history is unknown. Callers
 /// still validate same-source/topology monotonicity and recheck under root CAS.
 #[must_use]
 pub fn session_can_adopt_mcp_credential_lifecycle(session: &PersistedSession) -> bool {
-    !session.is_terminal()
-        && (session.execution == SessionExecutionState::Idle
-            || (session_has_unattempted_profiled_environment(session)
-                && session
-                    .environment_materialization()
-                    .is_some_and(crate::state::SessionEnvironmentMaterialization::is_empty)))
+    session_admits_update(session, SessionUpdateKind::CredentialLifecycle)
+}
+
+/// The recorded class and message of the Session's realization failure.
+#[must_use]
+pub fn session_classified_realization_failure(session: &PersistedSession) -> Option<(&str, &str)> {
+    let progress = &session.realization_progress;
+    Some((
+        progress
+            .last_error_code
+            .as_deref()
+            .filter(|code| !code.trim().is_empty())?,
+        progress
+            .last_error
+            .as_deref()
+            .filter(|message| !message.trim().is_empty())?,
+    ))
 }
 
 /// The aggregate's one terminality law: execution and retention are distinct

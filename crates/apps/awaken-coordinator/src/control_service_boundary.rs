@@ -33,6 +33,7 @@ const AUDIT_COMMIT_PATH: &str = "/internal/v1/control/audit/commit";
 const VAULT_EXISTS_PATH: &str = "/internal/v1/control/credentials/vault-exists";
 const MCP_SOURCE_PATH: &str = "/internal/v1/control/credentials/mcp-source";
 const MCP_ACCESS_PATH: &str = "/internal/v1/control/credentials/mcp-access";
+const REFRESH_SUCCESSOR_PATH: &str = "/internal/v1/control/credentials/refresh-successor";
 const CREDENTIAL_ACCESS_PATH: &str = "/internal/v1/control/credentials/access";
 const REPOSITORY_ADMISSION_PATH: &str = "/internal/v1/control/credentials/repository-admission";
 const WEBHOOK_DELIVER_PATH: &str = "/internal/v1/control/webhooks/deliver";
@@ -95,6 +96,13 @@ struct SourceCommand {
     target: awaken_agent_contract::McpTarget,
     selected_holder: awaken_agent_contract::credential::PlaintextHolder,
     binding: awaken_credential_contract::CredentialMaterialBinding,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RefreshSuccessorCommand {
+    workspace_id: String,
+    pinned: awaken_agent_contract::credential::CredentialRef,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -212,6 +220,7 @@ pub fn router_with_authenticator(
         .route(VAULT_EXISTS_PATH, post(vault_exists))
         .route(MCP_SOURCE_PATH, post(mcp_source))
         .route(MCP_ACCESS_PATH, post(mcp_access))
+        .route(REFRESH_SUCCESSOR_PATH, post(refresh_successor))
         .route(CREDENTIAL_ACCESS_PATH, post(credential_access))
         .route(REPOSITORY_ADMISSION_PATH, post(repository_admission))
         .route(WEBHOOK_DELIVER_PATH, post(deliver_webhook))
@@ -331,6 +340,18 @@ async fn mcp_access(
         )
         .await;
     response(result)
+}
+
+async fn refresh_successor(
+    State(state): State<ControlServiceState>,
+    Json(command): Json<RefreshSuccessorCommand>,
+) -> axum::response::Response {
+    response(
+        state
+            .credentials
+            .refresh_successor(&command.workspace_id, &command.pinned)
+            .await,
+    )
 }
 
 async fn credential_access(
@@ -648,6 +669,21 @@ impl SessionCredentialSource for HttpControlServiceClient {
         .await
     }
 
+    async fn refresh_successor(
+        &self,
+        workspace_id: &str,
+        pinned: &awaken_agent_contract::credential::CredentialRef,
+    ) -> Result<Option<u64>, String> {
+        self.post(
+            REFRESH_SUCCESSOR_PATH,
+            &RefreshSuccessorCommand {
+                workspace_id: workspace_id.to_owned(),
+                pinned: pinned.clone(),
+            },
+        )
+        .await
+    }
+
     async fn credential_access_for_source(
         &self,
         source_id: &CredentialSourceId,
@@ -936,8 +972,9 @@ mod tests {
         ));
         let credential_repo =
             Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+        let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
         let credentials = Arc::new(awaken_protocol_managed::VaultState::new(
-            Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+            secrets.clone(),
             credential_repo.clone(),
             awaken_time::system_clock(),
             None,
@@ -1078,6 +1115,136 @@ mod tests {
             !client.has_vault("workspace-a", "missing").await.unwrap(),
             "R3"
         );
+        // R13 cause/effect graph: a sealed publication receipt is the only
+        // evidence that can advance a pin; authentication and Workspace must
+        // also match. Two consecutive real Vault refresh publications cross
+        // this production HTTP router/client, with no material in the reply.
+        // | Rule | cause | result |
+        // | R13a | no receipt, or already-current pin | None |
+        // | R13b | receipt predecessor exactly pinned, same Workspace | exact successor |
+        // | R13c | other predecessor or Workspace | None |
+        // | R13d | rejected service identity or transport unavailable | Err, never None |
+        let clock = awaken_time::system_clock();
+        let mut refresh_source = awaken_credential_vault::repo::enter_credential_with_materials(
+            awaken_credential_vault::CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: awaken_credential_vault::CredentialKind::Vault,
+                provider_id: None,
+                env_key: None,
+                secret: Some(awaken_agent_contract::RedactedString::new("test-access")), // awaken-allow(secret):
+                oauth_command: None,
+            },
+            std::collections::BTreeMap::from([(
+                awaken_credential_vault::OAUTH_REFRESH_TOKEN_SLOT.into(),
+                awaken_agent_contract::RedactedString::new("test-refresh"), // awaken-allow(secret):
+            )]),
+            secrets.as_ref(),
+            credential_repo.as_ref(),
+            clock.as_ref(),
+        )
+        .await
+        .unwrap();
+        let pin = |revision| awaken_agent_contract::credential::CredentialRef {
+            id: refresh_source.id.0.clone(),
+            revision,
+        };
+        assert_eq!(
+            client
+                .refresh_successor("workspace-a", &pin(0))
+                .await
+                .unwrap(),
+            None,
+            "R13a no receipt"
+        );
+        assert!(
+            unauthorized
+                .refresh_successor("workspace-a", &pin(1))
+                .await
+                .is_err(),
+            "R13d auth"
+        );
+        for predecessor in [1, 2] {
+            let intent = awaken_credential_vault::repo::claim_token_publication(
+                &refresh_source,
+                None,
+                "test-profile".into(),
+                true,
+                credential_repo.as_ref(),
+                clock.as_ref(),
+            )
+            .await
+            .unwrap();
+            let dispatched = awaken_credential_vault::repo::CredentialRepo::transition_acquisition(
+                credential_repo.as_ref(),
+                &intent,
+                awaken_credential_vault::repo::CredentialAcquisitionPhase::Dispatched,
+                clock.now().as_epoch_ms(),
+            )
+            .await
+            .unwrap();
+            refresh_source = awaken_credential_vault::repo::publish_acquired_tokens(
+                dispatched,
+                awaken_credential_contract::IssuedCredentialTokens {
+                    additional_fields: Default::default(),
+                    access_token: awaken_agent_contract::RedactedString::new("test-issued-access"), // awaken-allow(secret):
+                    refresh_token: None,
+                    access_expires_at_unix_ms: None,
+                    refresh_expires_at_unix_ms: None,
+                },
+                None,
+                secrets.as_ref(),
+                credential_repo.as_ref(),
+                clock.as_ref(),
+            )
+            .await
+            .unwrap()
+            .0;
+            let pinned = awaken_agent_contract::credential::CredentialRef {
+                id: refresh_source.id.0.clone(),
+                revision: predecessor,
+            };
+            assert_eq!(
+                client
+                    .refresh_successor("workspace-a", &pinned)
+                    .await
+                    .unwrap(),
+                Some(predecessor + 1),
+                "R13b exact successor"
+            );
+            assert_eq!(
+                client
+                    .refresh_successor("workspace-b", &pinned)
+                    .await
+                    .unwrap(),
+                None,
+                "R13c Workspace"
+            );
+            let wrong = awaken_agent_contract::credential::CredentialRef {
+                revision: predecessor - 1,
+                ..pinned.clone()
+            };
+            assert_eq!(
+                client
+                    .refresh_successor("workspace-a", &wrong)
+                    .await
+                    .unwrap(),
+                None,
+                "R13c predecessor"
+            );
+            let current = awaken_agent_contract::credential::CredentialRef {
+                revision: predecessor + 1,
+                ..pinned
+            };
+            assert_eq!(
+                client
+                    .refresh_successor("workspace-a", &current)
+                    .await
+                    .unwrap(),
+                None,
+                "R13a current"
+            );
+        }
+
         assert_eq!(
             awaken_data_governance_contract::DataSubjectConsentSource::consent_ceiling(
                 &client,
@@ -1428,5 +1595,19 @@ mod tests {
             "R4"
         );
         server.abort();
+        let _ = server.await;
+        assert!(
+            client
+                .refresh_successor(
+                    "workspace-a",
+                    &awaken_agent_contract::credential::CredentialRef {
+                        id: refresh_source.id.0,
+                        revision: 2,
+                    }
+                )
+                .await
+                .is_err(),
+            "R13d transport is not receipt absence"
+        );
     }
 }

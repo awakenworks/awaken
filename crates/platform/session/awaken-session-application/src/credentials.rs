@@ -206,6 +206,90 @@ impl SessionCredentials {
     // boxed. An unoptimized poll frame reserves a slot for every inline callee
     // it awaits and never reuses it; nested inline, one Managed request needed
     // more than a 2 MiB thread stack (see `tests/stack_boundaries.rs`).
+    /// Advance each MCP credential pin of `session` to the exact successor an
+    /// OAuth refresh published of it, on the working aggregate only; the
+    /// caller commits it in its own root CAS. The revision is the Vault law's
+    /// ([`SessionCredentialSource::refresh_successor`]): only the receipt
+    /// whose predecessor is exactly the pin. Each advance goes through the
+    /// credential-lifecycle replacement law (same source, monotonic, no
+    /// topology change), one source at a time. Returns whether a pin moved.
+    ///
+    /// | Rule | credential source | pinned revision | refresh receipt | effect |
+    /// |---|---|---|---|---|
+    /// | P1 | absent | any | any | unchanged |
+    /// | P2 | present | current | - | unchanged |
+    /// | P3 | present | superseded | predecessor = pin | the attachment re-pinned to that successor |
+    /// | P4 | present | superseded | none, or another predecessor | unchanged: staging refuses the stale pin |
+    pub(crate) async fn adopt_mcp_refresh_successors(
+        &self,
+        owner_scope: &str,
+        session: &mut SessionAggregate,
+    ) -> Result<bool, RunError> {
+        let Some(source) = self.credential_source.as_ref() else {
+            return Ok(false);
+        };
+        let Some(baseline) = session.frozen_baseline() else {
+            return Ok(false);
+        };
+        let holder = baseline
+            .environment
+            .credential_realization
+            .mcp_holder
+            .clone();
+        let vault_ids = baseline.mcp_authoring.ordered_vault_ids.clone();
+        let mut successors = std::collections::BTreeMap::new();
+        for attachment in session.mcp.desired_attachments() {
+            let Some(access) = attachment.credential.as_ref() else {
+                continue;
+            };
+            if successors.contains_key(&access.credential.id) {
+                continue;
+            }
+            let found = source
+                .refresh_successor(owner_scope, &access.credential)
+                .await;
+            if let Some(revision) = found.map_err(RunError::unavailable)? {
+                successors.insert(access.credential.id.clone(), revision);
+            }
+        }
+        for (source_id, revision) in &successors {
+            let candidates = session
+                .mcp
+                .desired_attachments()
+                .into_iter()
+                .map(|attachment| crate::McpAttachmentCandidate {
+                    name: attachment.name.clone(),
+                    target: crate::McpAttachmentCandidateTarget::Normalized(
+                        attachment.target.clone(),
+                    ),
+                    prompts_as_skills: attachment.prompts_as_skills,
+                    published_credential: attachment.credential.as_ref().map(|access| {
+                        if &access.credential.id == source_id {
+                            (source_id.clone(), *revision)
+                        } else {
+                            (access.credential.id.clone(), access.credential.revision)
+                        }
+                    }),
+                    origin: attachment.origin,
+                })
+                .collect();
+            let drafts = self
+                .normalize_mcp_drafts(owner_scope, candidates, &vault_ids, &holder)
+                .await?;
+            crate::update::validate_credential_lifecycle_replacement(
+                &session.mcp,
+                source_id,
+                false,
+                &drafts,
+            )?;
+            session
+                .mcp()
+                .request_full_replacement(drafts, Some(holder.clone()))
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
+        }
+        Ok(!successors.is_empty())
+    }
+
     pub fn ensure_repository_credentials_pinned<'a>(
         &'a self,
         owner_scope: &'a str,

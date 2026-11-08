@@ -40,8 +40,10 @@ fails the gate instead of passing silently; fixing it is the intended outcome.
 ### D2 Tightening an Active budget is admitted on a live root
 
 `SessionBudgetOperations::update_limit` admits a lower threshold for an Active
-budget whenever the root is not terminal. Loosening and removal still wait for
-Idle. The update command admits a budget-only tightening (no title, metadata,
+budget whenever the root is not terminal. Loosening and removal use the
+ordinary authoring admission: Idle, or a created and unreserved Preparing root
+whose recorded empty materialization history and absent realization facts prove
+that execution has not started. The update command admits a budget-only tightening (no title, metadata,
 tools or MCP change) while a Run executes. The next model request is then
 decided under the current limit, and the frozen model and price pins are
 unchanged.

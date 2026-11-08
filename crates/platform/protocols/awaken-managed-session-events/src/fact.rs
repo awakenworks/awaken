@@ -68,6 +68,7 @@ pub enum SessionEventKind {
     },
     /// Initial activation failed with this durable cause.
     ActivationFailed {
+        code: Option<String>,
         message: String,
     },
     /// One evaluation iteration of an Outcome began grading.

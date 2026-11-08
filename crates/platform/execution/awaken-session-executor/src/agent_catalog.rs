@@ -418,11 +418,16 @@ mod tests {
             .expect("H1 exact non-root closure");
         use awaken_runtime_contract::PublishedAgentSnapshotSource as _;
         assert!(
-            source.current("workspace", &root.root_agent_id).is_none(),
+            source
+                .current("workspace", &root.root_agent_id)
+                .unwrap()
+                .is_none(),
             "H1/E1 root remains exclusively in RunActivation"
         );
         assert_eq!(
-            source.current("workspace", &auxiliary.root_agent_id),
+            source
+                .current("workspace", &auxiliary.root_agent_id)
+                .unwrap(),
             Some(auxiliary.clone()),
             "H1/E1"
         );

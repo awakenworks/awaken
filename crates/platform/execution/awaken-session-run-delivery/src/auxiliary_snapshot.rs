@@ -45,10 +45,12 @@ pub fn resolve_auxiliary_snapshot(
     fallback: ExecutableAgentSnapshot,
     instructions_override: Option<&str>,
 ) -> Result<ExecutableAgentSnapshot, String> {
-    let published = publications.current(
-        workspace_id,
-        &awaken_runtime_contract::snapshot::AgentId(agent_id.to_string()),
-    );
+    let published = publications
+        .current(
+            workspace_id,
+            &awaken_runtime_contract::snapshot::AgentId(agent_id.to_string()),
+        )
+        .map_err(|error| error.to_string())?;
     let mut snapshot = match published {
         Some(snapshot) if snapshot.root_agent_id.0 == agent_id => snapshot,
         Some(snapshot) => {
@@ -98,16 +100,18 @@ mod tests {
                 &self,
                 _workspace: &str,
                 agent_id: &awaken_runtime_contract::snapshot::AgentId,
-            ) -> Option<ExecutableAgentSnapshot> {
-                (self.1 || agent_id.0 == self.0.root_agent_id.0).then(|| self.0.clone())
+            ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError>
+            {
+                Ok((self.1 || agent_id.0 == self.0.root_agent_id.0).then(|| self.0.clone()))
             }
 
             fn exact(
                 &self,
                 _workspace: &str,
                 _fingerprint: &awaken_runtime_contract::resolved::CatalogFingerprint,
-            ) -> Option<ExecutableAgentSnapshot> {
-                None
+            ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError>
+            {
+                Ok(None)
             }
 
             fn at_revision(
@@ -115,8 +119,9 @@ mod tests {
                 _workspace: &str,
                 _agent_id: &awaken_runtime_contract::snapshot::AgentId,
                 _source_revision: u64,
-            ) -> Option<ExecutableAgentSnapshot> {
-                None
+            ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError>
+            {
+                Ok(None)
             }
         }
 

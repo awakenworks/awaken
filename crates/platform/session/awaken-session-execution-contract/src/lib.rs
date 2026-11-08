@@ -185,9 +185,10 @@ pub use session_realization::{
     ClaimedSessionCredentialPreparationContext, ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
     ENVIRONMENT_PROVISIONING_CODE, ENVIRONMENT_REJECTED_CODE, ENVIRONMENT_UNAVAILABLE_CODE,
     FailSessionRealization, FrozenAgentPublicationDecision, FrozenProjectionReceipt,
-    FrozenResourceTransitionUse, FrozenSessionProjection, ObservedSessionRealizationLease,
-    ProjectionReceiptRefusal, RealizationFailureOutcome, RenewSessionRealization,
-    SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE, SESSION_REALIZATION_NOT_READY_CODE,
+    FrozenResourceTransitionUse, FrozenSessionProjection, MCP_CONNECTION_EXHAUSTED_CODE,
+    ObservedSessionRealizationLease, ProjectionReceiptRefusal, RealizationFailureOutcome,
+    RenewSessionRealization, SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE,
+    SESSION_PUBLICATION_SOURCE_UNAVAILABLE_CODE, SESSION_REALIZATION_NOT_READY_CODE,
     STALE_PROJECTION_CODE, SessionCheckpointArtifactControl, SessionContinuationReceipt,
     SessionFileReadAuthorization, SessionPreparationAssignment, SessionPreparationControl,
     SessionPreparationPlacement, SessionProjectionInstallMode, SessionProjectionSynchronizer,
@@ -210,7 +211,8 @@ pub use session_realization::{
     project_effective_agent_publication, provisioning_disposition,
     realization_generation_authorizes, requires_local_environment,
     resolve_canonical_session_projection, session_realization_exclusion_admits,
-    synchronize_or_supersede, terminal_cleanup_worker_requirements, unpublished_agent_publication,
+    synchronize_or_supersede, terminal_cleanup_worker_requirements,
+    terminal_realization_failure_code, unpublished_agent_publication,
     validate_terminal_no_create_witness,
 };
 pub use source_retention::{

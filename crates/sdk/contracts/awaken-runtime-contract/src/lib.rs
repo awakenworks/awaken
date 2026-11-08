@@ -72,6 +72,7 @@ pub use resolved::{
     CatalogFingerprint, ImageInput, InferenceEndpoint, ModelBinding, ProviderExecutionProfile,
     ResolvedSpec, UnspecifiedReasoning,
 };
+pub use resolver::Error as AgentSnapshotError;
 pub use resolver::{
     AgentSnapshotResolver, PublishedAgentSnapshotSource, RunResolver,
     StaticPublishedAgentSnapshots, freeze_delegation_publications, resolve_delegate_snapshot,

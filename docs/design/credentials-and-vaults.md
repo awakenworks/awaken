@@ -33,6 +33,16 @@ return a private token lease and a secret-free publication receipt. The consumer
 adopts a successor only through its original reference owner. A cached token does
 not bypass revocation or grant new authority.
 
+For MCP OAuth refresh, the Session's next realization consults the same sealed
+publication receipt and advances only a pin that is its exact predecessor.
+Adoption and MCP generation intent commit in the original Session root CAS.
+A replacement Worker drains a same-source advanced credential's predecessor
+instead of reopening its retired pin; ordinary target replacement retains its
+existing Stage and receipt checks; a warm Worker keeps its existing projection until the
+successor activates. Split Coordinator queries the same Vault decision through
+the authenticated private Control credential boundary, receiving only an optional
+revision. Missing receipts refuse adoption; unreadable authorities remain errors.
+
 The material WAL is extended rather than supplemented for external acquisition:
 the acquisition marker distinguishes an unattempted request, dispatched request,
 confirmed-unsent request, explicit rejection and uncertain result. A lost response after durable Ready/publication is
@@ -619,8 +629,12 @@ materialization evidence, an admitted effect or a begun realization stays fenced
 The existing credential-lifecycle update still validates unchanged topology and
 monotonic same-source pins, commits through the original root CAS, and requests
 the existing realization/reconciliation path. Coordinator adoption and Session
-updates consume the same state-owned admission query; public replacement and
-other configuration edits retain their Idle rule. A racing realization changes
+updates consume the same state-owned admission query. Ordinary authoring,
+including title and metadata, also admits a created, unreserved Preparing root
+only when recorded empty materialization history and the absence of realization
+facts prove that nothing has consumed its configuration. Started preparations
+and other live execution retain the Idle requirement; budget-only tightening
+retains its existing nonterminal exception. A racing realization changes
 the root revision, so the ordinary CAS retry rechecks the query. Publication
 acknowledgement still determines convergence; changing a pin alone is not proof
 that a Worker adopted it. No new state, queue, timer or recovery authority is added.

@@ -248,8 +248,8 @@ impl WorkerPlacedSessions {
     fn capabilities_in(
         &self,
         workspace: &str,
-    ) -> awaken_session_configuration_contract::AgentCapabilities {
-        awaken_session_configuration_contract::AgentCapabilities {
+    ) -> Result<awaken_session_configuration_contract::AgentCapabilities, RunError> {
+        Ok(awaken_session_configuration_contract::AgentCapabilities {
             builtin_tools: crate::builtin_hand_tools()
                 .into_iter()
                 .map(|(name, ask)| awaken_session_configuration_contract::BuiltinTool { name, ask })
@@ -258,8 +258,8 @@ impl WorkerPlacedSessions {
             // Skills are listed by the Skill catalog, not advertised here.
             custom_tools: Vec::new(),
             skills: Vec::new(),
-            delegates: self.ports.projections.default_delegates(workspace),
-        }
+            delegates: self.ports.projections.default_delegates(workspace)?,
+        })
     }
 }
 
@@ -268,7 +268,7 @@ impl awaken_session_execution_contract::CapabilityRuntime for WorkerPlacedSessio
     fn capabilities(
         &self,
     ) -> Result<awaken_session_configuration_contract::AgentCapabilities, RunError> {
-        Ok(self.capabilities_in(self.ports.projections.local_workspace()))
+        self.capabilities_in(self.ports.projections.local_workspace())
     }
 
     /// | Rule | projection | advertised delegates |
@@ -284,7 +284,7 @@ impl awaken_session_execution_contract::CapabilityRuntime for WorkerPlacedSessio
             || self.ports.projections.local_workspace().to_owned(),
             |projection| projection.workspace().to_owned(),
         );
-        let mut capabilities = self.capabilities_in(&workspace);
+        let mut capabilities = self.capabilities_in(&workspace)?;
         if let Some(projection) = projection {
             capabilities.delegates = projection.baseline().delegate_ids.clone();
         }

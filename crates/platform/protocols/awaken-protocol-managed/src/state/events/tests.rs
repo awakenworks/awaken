@@ -1480,7 +1480,8 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         source_run_id: Option<RunId>,
         initial_lifecycle: Vec<RunLifecycleEvent>,
         late_lifecycle: Vec<RunLifecycleEvent>,
-    ) -> Vec<(String, String, Option<String>)> {
+        classified_code: Option<&str>,
+    ) -> Vec<(String, String, Option<String>, serde_json::Value)> {
         let repository = Arc::new(ephemeral_session_repo().await);
         let mut persisted = crate::state::tests::sample_persisted(session_id);
         persisted.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
@@ -1491,7 +1492,13 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         let mut aggregate = awaken_session_contract::SessionAggregate::try_from(persisted)
             .expect("valid failed Session fixture");
         aggregate.assignment().record_failure(
-            "broader Session realization failure".into(),
+            if classified_code.is_some() {
+                "mcp server `offline`: connection refused"
+            } else {
+                "broader Session realization failure"
+            }
+            .into(),
+            classified_code.map(str::to_owned),
             100,
             source_run_id,
         );
@@ -1548,9 +1555,12 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
                 .data
                 .into_iter()
                 .filter_map(|event| match event.kind {
-                    OutboundKind::SessionError { error } => {
-                        Some((event.id, error.message, event.processed_at))
-                    }
+                    OutboundKind::SessionError { error } => Some((
+                        event.id,
+                        error.message.clone(),
+                        event.processed_at,
+                        serde_json::to_value(error).unwrap(),
+                    )),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -1589,7 +1599,7 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     }
 
     assert_eq!(
-        project("activation-ownerless", None, vec![], vec![]).await[0].1,
+        project("activation-ownerless", None, vec![], vec![], None).await[0].1,
         "broader Session realization failure",
         "AF1/E1"
     );
@@ -1604,12 +1614,13 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
             error_state("precise Run lifecycle failure"),
         ),
         vec![],
+        None,
     )
     .await;
     assert_eq!(
         exact
             .iter()
-            .map(|(_, message, _)| message.as_str())
+            .map(|(_, message, _, _)| message.as_str())
             .collect::<Vec<_>>(),
         vec!["precise Run lifecycle failure"],
         "AF2/E2"
@@ -1631,19 +1642,20 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
             3,
             RunState::Ended(EndCause::NaturalEnd),
         ),
+        None,
     )
     .await;
     assert_eq!(distinct.len(), 2, "AF3/E4");
     assert!(
         distinct
             .iter()
-            .any(|(_, message, _)| message == "broader Session realization failure"),
+            .any(|(_, message, _, _)| message == "broader Session realization failure"),
         "AF3/E4 source Run ended without owning the Session failure"
     );
     assert!(
         distinct
             .iter()
-            .any(|(_, message, _)| message == "historical Run failure"),
+            .any(|(_, message, _, _)| message == "historical Run failure"),
         "AF3/E4 distinct historical Run failure"
     );
     let late_run = RunId("activation-late-error".into());
@@ -1657,10 +1669,68 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
             1,
             error_state("late source Run failure"),
         ),
+        None,
     )
     .await;
     assert_eq!(late.len(), 1, "AF4/E3 exactly one settled error");
     assert_eq!(late[0].1, "late source Run failure", "AF4/E5");
+
+    // AF9: the exact root source uses the classified durable cause in its
+    // original RootLifecycleError identity. A pending source must still wait;
+    // the late and immediate prefixes agree with the same cold/warm result.
+    // AF10: an unsourced classified failure uses the existing activation fact.
+    let source = RunId("classified-source".into());
+    let id = "activation-classified";
+    let source_error = || {
+        terminal_run(
+            id,
+            &source,
+            1,
+            error_state("Session realization is terminal"),
+        )
+    };
+    let legacy = project(id, Some(source.clone()), source_error(), vec![], None).await;
+    let classified = project(
+        id,
+        Some(source.clone()),
+        source_error(),
+        vec![],
+        Some("mcp_connection_exhausted"),
+    )
+    .await;
+    let delayed = project(
+        id,
+        Some(source.clone()),
+        vec![],
+        source_error(),
+        Some("mcp_connection_exhausted"),
+    )
+    .await;
+    assert_eq!(
+        classified, delayed,
+        "AF9 pending source emits no provisional error"
+    );
+    assert_eq!(classified.len(), 1, "AF9 exactly one public error");
+    assert_eq!(
+        classified[0].0, legacy[0].0,
+        "AF9 unchanged RootLifecycleError identity"
+    );
+    assert_eq!(
+        classified[0].3["type"], "mcp_connection_failed_error",
+        "AF9"
+    );
+    assert_eq!(classified[0].3["mcp_server_name"], "offline", "AF9");
+    assert_eq!(classified[0].3["retry_status"]["type"], "exhausted", "AF9");
+    let unsourced = project(
+        "activation-classified-unsourced",
+        None,
+        vec![],
+        vec![],
+        Some("mcp_connection_exhausted"),
+    )
+    .await;
+    assert_eq!(unsourced.len(), 1, "AF10");
+    assert_eq!(unsourced[0].3["mcp_server_name"], "offline", "AF10");
 
     let mut child_source = crate::state::tests::sample_persisted("activation-child");
     child_source.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
@@ -1688,6 +1758,26 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
         .unwrap(),
         awaken_managed_session_events::ActivationFailureProjection::Ready { error: Some(_) }
     ));
+    // AF11: a child's terminal cannot replace the parent activation error;
+    // its stored class remains on the parent's distinct activation fact.
+    let mut classified_child = serde_json::to_value(&child_source).unwrap();
+    classified_child["realization_progress"]["last_error_code"] = "mcp_connection_exhausted".into();
+    let classified_child = serde_json::from_value(classified_child).unwrap();
+    let projection = awaken_managed_session_events::activation_failure_projection(
+        &classified_child,
+        &terminal_run(
+            "child-thread",
+            &child_run,
+            1,
+            error_state("child Run failure"),
+        ),
+    )
+    .unwrap();
+    assert!(
+        matches!(projection, awaken_managed_session_events::ActivationFailureProjection::Ready { error: Some(fact) }
+        if matches!(&fact.kind, awaken_managed_session_events::SessionEventKind::ActivationFailed { code, .. } if code.as_deref() == Some("mcp_connection_exhausted"))),
+        "AF11 parent cause retained"
+    );
     let healthy = crate::state::tests::sample_persisted("activation-not-failed");
     assert!(matches!(
         awaken_managed_session_events::activation_failure_projection(&healthy, &[]).unwrap(),

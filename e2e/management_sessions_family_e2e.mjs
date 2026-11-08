@@ -36,7 +36,7 @@
 //
 // | Rule | Initial state | Command | Effect |
 // |---|---|---|---|
-// | U7 | live | archive | terminated tombstone with `archived_at` |
+// | U7 | live + Idle | archive | terminated tombstone with `archived_at` |
 // | U8 | live | delete | `session_deleted`; retrieve returns 404 |
 // | U9 | archived + terminated | delete | `session_deleted`; retrieve returns 404 |
 //
@@ -603,6 +603,21 @@ async function main() {
       pass('beta.sessions.resources.delete');
 
       // -- archive + delete --------------------------------------------------
+      // U7 requires actual Idle. On the registered Worker, create and the
+      // preceding authoring calls do not execute a Run. Establish that
+      // precondition through the existing local fake upstream and one exact
+      // no-tool User receipt; archive semantics remain unchanged.
+      const idleReceipt = await client.beta.sessions.events.send(session.id, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello' }] }],
+        betas: BETAS,
+      });
+      const idleTurn = await waitForSessionEventReceipt(
+        client, session.id, idleReceipt.data[0]?.id, BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'session.status_idle' && event.stop_reason?.type === 'end_turn'),
+        'U7 the first Worker Run establishes the Idle archive precondition',
+      );
+      assert.ok(idleTurn.delta.some((event) => event.type === 'agent.message'), 'U7 fake upstream replied');
+      assert.ok(idleTurn.delta.every((event) => event.type !== 'agent.tool_use' && event.type !== 'agent.mcp_tool_use'), 'U7 no tool effect');
       const archived = await client.beta.sessions.archive(session.id, { betas: BETAS });
       assert.ok(archived.archived_at, 'archived session carries archived_at');
       const archivedDelete = await client.beta.sessions.delete(session.id, { betas: BETAS });
@@ -626,7 +641,7 @@ async function main() {
         (err) => err.status === 404,
       );
       pass('U7-U9 archive/delete terminal decision table');
-    });
+    }, {}, { placement: 'worker' });
 
     console.log('E2E PASS: the sessions family (update/list/delete/archive + threads + resources) round-trips through @anthropic-ai/sdk.');
     process.exitCode = 0;

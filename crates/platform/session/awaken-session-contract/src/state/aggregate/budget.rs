@@ -62,10 +62,12 @@ impl SessionBudgetOperations<'_> {
     /// (ADR-0103).
     pub fn update_limit(&mut self, limit: Option<u64>) -> Result<(), SessionAggregateCommandError> {
         let state = &self.aggregate.state;
-        if state.is_terminal()
-            || (state.execution != super::SessionExecutionState::Idle
-                && !budget_limit_tightens(&state.budget, limit))
-        {
+        let kind = if budget_limit_tightens(&state.budget, limit) {
+            crate::state::SessionUpdateKind::BudgetTightening
+        } else {
+            crate::state::SessionUpdateKind::Authoring
+        };
+        if !crate::state::session_admits_update(state, kind) {
             return Err(SessionAggregateCommandError::ConfigurationNotIdle);
         }
         let next = match (&self.aggregate.state.budget, limit) {

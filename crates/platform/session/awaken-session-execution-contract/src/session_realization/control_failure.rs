@@ -273,6 +273,33 @@ mod tests {
     }
 
     #[test]
+    fn terminal_wire_keeps_the_legacy_unit_decoder_contract() {
+        // C1 existing unit Terminal -> the exact old JSON and decoder work.
+        // C2 adding a detail object would make the old decoder fail. This
+        // negative control is why the durable cause is projected from the
+        // Session root instead of extending this Worker wire variant.
+        #[derive(Debug, PartialEq, serde::Deserialize)]
+        #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+        enum LegacyFailure {
+            Terminal,
+        }
+        let wire = serde_json::to_value(SessionRealizationControlFailure::Terminal).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"kind":"terminal"}),
+            "C1 unchanged wire"
+        );
+        assert_eq!(
+            serde_json::from_value::<LegacyFailure>(wire).unwrap(),
+            LegacyFailure::Terminal,
+            "C1 old decoder"
+        );
+        assert!(serde_json::from_value::<LegacyFailure>(serde_json::json!({
+            "kind":"terminal", "detail":{"code":"mcp_connection_exhausted", "message":"server offline"}
+        })).is_err(), "C2 a payload on the old unit variant is incompatible");
+    }
+
+    #[test]
     fn environment_rejections_project_onto_one_control_failure() {
         // Decision table R1-R4: R1 a terminal Session => Terminal; R2 a lost
         // realization lease => StaleOwnership; R3 movement the Session may

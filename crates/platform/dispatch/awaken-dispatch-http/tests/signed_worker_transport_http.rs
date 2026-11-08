@@ -2416,6 +2416,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 not_ready: false,
                 source_run_id: None,
                 reason: "test failure".into(),
+                code: None,
             },
         )
         .await

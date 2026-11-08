@@ -3,7 +3,7 @@
 mod support;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_deployment_application::{
@@ -34,35 +34,66 @@ use support::wait_for_session_events;
 
 /// Failure injection over the existing immutable catalog. Session authoring
 /// continues to read the catalog directly; only the Host publication transport
-/// can be made unavailable after the create projection has committed.
+/// changes after the create projection has committed: it can become
+/// unreachable (the store cannot answer, so the publication may exist) or
+/// answer that the publication is absent.
 struct TogglePublishedAgents {
     catalog: Arc<ExecutableAgentCatalog>,
-    available: AtomicBool,
+    state: AtomicU8,
+}
+
+const PUBLICATIONS_AVAILABLE: u8 = 0;
+const PUBLICATIONS_UNREACHABLE: u8 = 1;
+const PUBLICATIONS_ABSENT: u8 = 2;
+
+impl TogglePublishedAgents {
+    fn set(&self, state: u8) {
+        self.state.store(state, Ordering::Release);
+    }
+
+    fn lookup<T>(
+        &self,
+        read: impl FnOnce() -> Result<Option<T>, awaken_runtime_contract::AgentSnapshotError>,
+    ) -> Result<Option<T>, awaken_runtime_contract::AgentSnapshotError> {
+        match self.state.load(Ordering::Acquire) {
+            PUBLICATIONS_AVAILABLE => read(),
+            PUBLICATIONS_UNREACHABLE => Err(
+                awaken_runtime_contract::AgentSnapshotError::SourceUnavailable(
+                    "publication transport is down".into(),
+                ),
+            ),
+            _ => Ok(None),
+        }
+    }
 }
 
 impl awaken_runtime_contract::PublishedAgentSnapshotSource for TogglePublishedAgents {
-    fn current(&self, workspace: &str, agent_id: &AgentId) -> Option<ExecutableAgentSnapshot> {
-        self.available.load(Ordering::Acquire).then(|| {
-            awaken_runtime_contract::PublishedAgentSnapshotSource::current(
-                self.catalog.as_ref(),
-                workspace,
-                agent_id,
-            )
-        })?
-    }
-
     fn exact(
         &self,
         workspace: &str,
         fingerprint: &awaken_runtime_contract::CatalogFingerprint,
-    ) -> Option<ExecutableAgentSnapshot> {
-        self.available.load(Ordering::Acquire).then(|| {
+    ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError> {
+        self.lookup(|| {
             awaken_runtime_contract::PublishedAgentSnapshotSource::exact(
                 self.catalog.as_ref(),
                 workspace,
                 fingerprint,
             )
-        })?
+        })
+    }
+
+    fn current(
+        &self,
+        workspace: &str,
+        agent_id: &AgentId,
+    ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError> {
+        self.lookup(|| {
+            awaken_runtime_contract::PublishedAgentSnapshotSource::current(
+                self.catalog.as_ref(),
+                workspace,
+                agent_id,
+            )
+        })
     }
 
     fn at_revision(
@@ -70,15 +101,15 @@ impl awaken_runtime_contract::PublishedAgentSnapshotSource for TogglePublishedAg
         workspace: &str,
         agent_id: &AgentId,
         source_revision: u64,
-    ) -> Option<ExecutableAgentSnapshot> {
-        self.available.load(Ordering::Acquire).then(|| {
+    ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError> {
+        self.lookup(|| {
             awaken_runtime_contract::PublishedAgentSnapshotSource::at_revision(
                 self.catalog.as_ref(),
                 workspace,
                 agent_id,
                 source_revision,
             )
-        })?
+        })
     }
 }
 
@@ -159,28 +190,30 @@ async fn publish_assistant(
 async fn initial_event_failure_preserves_the_committed_deployment_session() {
     // FMECA/cause-effect graph: C1 a valid frozen Agent and user-then-system
     // initial Event plan commit one Session root; C2 the Runtime publication
-    // transport becomes unavailable only after that create projection commits;
-    // C3 the same
-    // DeploymentRun is retried after response loss. Effects: E1 launch returns
-    // the committed Session, E2 C2 leaves that Session visible: its frozen
-    // publication is missing, which no retry can admit, so lifecycle execution
-    // settles the Session terminally with that refusal as its durable cause
-    // instead of re-queueing it forever (`refused_run_settlement` R2),
-    // E3 C3 meets that one terminal Session: the replay reports its terminal
-    // occupation and creates no second Session. K1 DeploymentRun records Session creation,
-    // while the Session root is the sole Event/lifecycle authority; no follow-up
-    // launch executor or compensating delete exists. Rules: D1 C1 -> E1;
-    // D2 C1+C2 -> E2; D3 C1+C2+C3 -> E3.
+    // transport becomes unreachable only after that create projection commits;
+    // C3 the same DeploymentRun is retried after response loss; C4 the
+    // publication store then answers that the frozen publication is absent.
+    // Effects: E1 launch returns the committed Session; E2 C2 is a transient
+    // outage, so lifecycle execution keeps the batch queued and the Session
+    // live (`refused_run_settlement` R1); E3 C3 returns that same Session;
+    // E4 C4 is a definitive absence no retry can admit, so lifecycle
+    // execution settles the Session terminally with that refusal as its
+    // durable cause (R2); E5 a replay after C4 meets the one terminal Session
+    // and creates no second one. K1 DeploymentRun records Session creation,
+    // while the Session root is the sole Event/lifecycle authority; no
+    // follow-up launch executor or compensating delete exists.
+    // Rules: D1 C1 -> E1; D2 C1+C2 -> E2; D3 C1+C2+C3 -> E3;
+    // D4 C1+C4 -> E4; D5 C1+C4+C3 -> E5.
     // L1/L2b observation rule: after that real Session exists, the original
     // narrow role returns the Runtime root subscription and rejects an
     // unlinked child with its original typed error. Neither observation writes
-    // a root or changes the D2 publication-transport failure/replay causes.
+    // a root or changes the publication-transport failure/replay causes.
     // The existing streaming cases separately assert actual HTTP preview bytes;
     // construction.rs owns the original neutral Runtime's None partition.
     let catalog = Arc::new(ExecutableAgentCatalog::new());
     let runtime_publications = Arc::new(TogglePublishedAgents {
         catalog: catalog.clone(),
-        available: AtomicBool::new(true),
+        state: AtomicU8::new(PUBLICATIONS_AVAILABLE),
     });
     let (host, resources) = build_unmounted_platform_with_agent_publications(
         Arc::new(EchoModel),
@@ -273,9 +306,51 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
         "L2b"
     );
 
-    runtime_publications
-        .available
-        .store(false, Ordering::Release);
+    runtime_publications.set(PUBLICATIONS_UNREACHABLE);
+    let error = Box::pin(
+        managed
+            .sessions
+            .event_batches()
+            .drive_session_event_batches(&awaken_session_types::SessionId::from(&session_id), None),
+    )
+    .await
+    .expect_err("D2 lifecycle execution must observe the unreachable publication store");
+    assert!(
+        error.to_string().contains("publication"),
+        "D2 expected publication failure: {error}"
+    );
+    assert_eq!(
+        error.code,
+        awaken_session_execution_contract::SESSION_PUBLICATION_SOURCE_UNAVAILABLE_CODE,
+        "D2 the outage keeps its retryable class: {error:?}"
+    );
+    let live = awaken_session_application::SessionRootReads::session(
+        managed.sessions.queries().as_ref(),
+        &awaken_session_types::SessionId::from(&session_id),
+    )
+    .await
+    .expect("D2 the committed Session root remains");
+    assert!(
+        !live.execution.is_terminal(),
+        "D2 a transient outage never fails the Session: {:?}",
+        live.execution
+    );
+    assert_eq!(
+        managed.managed.get_session(&session_id).unwrap().id,
+        session_id,
+        "D2/E2"
+    );
+    assert!(
+        matches!(
+            launcher.launch(request.clone()).await,
+            DeploymentLaunchOutcome::Created {
+                session_id: replayed
+            } if replayed == session_id
+        ),
+        "D3/E3"
+    );
+
+    runtime_publications.set(PUBLICATIONS_ABSENT);
     Box::pin(
         managed
             .sessions
@@ -283,30 +358,30 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
             .drive_session_event_batches(&awaken_session_types::SessionId::from(&session_id), None),
     )
     .await
-    .expect("D2 lifecycle execution settles the unavailable publication terminally");
+    .expect("D4 lifecycle execution settles the absent publication terminally");
     let failed = awaken_session_application::SessionRootReads::session(
         managed.sessions.queries().as_ref(),
         &awaken_session_types::SessionId::from(&session_id),
     )
     .await
-    .expect("D2 the committed Session root remains");
+    .expect("D4 the committed Session root remains");
     assert_eq!(
         failed.execution,
         awaken_session_contract::SessionExecutionState::ActivationFailed,
-        "D2 terminal"
+        "D4 terminal"
     );
     assert!(
         failed
             .realization_progress()
             .last_error()
             .is_some_and(|cause| cause.contains("publication")),
-        "D2 the missing publication is the durable cause: {:?}",
+        "D4 the missing publication is the durable cause: {:?}",
         failed.realization_progress().last_error()
     );
     assert_eq!(
         managed.managed.get_session(&session_id).unwrap().id,
         session_id,
-        "D2/E2"
+        "D4/E4"
     );
     // The replayed DeploymentRun meets its own, now terminally failed,
     // Session: create replay reports that terminal occupation and never
@@ -321,12 +396,12 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
                 }
             } if message == "session_create_terminal_conflict"
         ),
-        "D3/E3: {replayed:?}"
+        "D5/E5: {replayed:?}"
     );
     assert_eq!(
         managed.managed.get_session(&session_id).unwrap().id,
         session_id,
-        "D3/E3 the one Session of the run remains"
+        "D5/E5 the one Session of the run remains"
     );
 }
 

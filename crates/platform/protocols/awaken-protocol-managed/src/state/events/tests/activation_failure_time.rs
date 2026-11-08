@@ -29,6 +29,7 @@ async fn failed_terminal_times_survive_archive_and_cold_reconstruction() {
                     .expect("valid failed Session fixture");
                 aggregate.assignment().record_failure(
                     "activation failed".into(),
+                    None,
                     now,
                     source_run_id.clone(),
                 );

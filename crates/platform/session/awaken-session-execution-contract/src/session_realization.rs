@@ -31,7 +31,8 @@ pub use agent_publication_projection::{
     project_effective_agent_publication,
 };
 pub use canonical_publication::{
-    CanonicalPublicationError, CanonicalSessionPublication, resolve_canonical_session_projection,
+    CanonicalPublicationError, CanonicalSessionPublication,
+    SESSION_PUBLICATION_SOURCE_UNAVAILABLE_CODE, resolve_canonical_session_projection,
 };
 pub use inline_agent_publication::{
     UNPUBLISHED_AGENT_INSTRUCTIONS, UNPUBLISHED_AGENT_MAX_STEPS, unpublished_agent_publication,
@@ -62,10 +63,11 @@ pub use control_failure::{
 mod effect_failure;
 pub use effect_failure::{
     ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, ENVIRONMENT_PROVISIONING_CODE,
-    ENVIRONMENT_REJECTED_CODE, ENVIRONMENT_UNAVAILABLE_CODE, RealizationFailureOutcome,
-    SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE, SessionRealizationEffectFailure,
-    effect_failure_disposition, environment_effect_error, is_environment_effect_code,
-    is_not_ready_code, is_permanent_conflict_code, provisioning_disposition,
+    ENVIRONMENT_REJECTED_CODE, ENVIRONMENT_UNAVAILABLE_CODE, MCP_CONNECTION_EXHAUSTED_CODE,
+    RealizationFailureOutcome, SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE,
+    SessionRealizationEffectFailure, effect_failure_disposition, environment_effect_error,
+    is_environment_effect_code, is_not_ready_code, is_permanent_conflict_code,
+    provisioning_disposition, terminal_realization_failure_code,
 };
 pub use lease_receipt::{ObservedSessionRealizationLease, SessionRealizationLeaseReceipt};
 mod terminal_cleanup_authorization;

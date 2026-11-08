@@ -84,9 +84,9 @@ pub enum RetryStatus {
 /// (`unknown_error` plus the classified `model_rate_limited_error` /
 /// `model_request_failed_error`), each a human-readable `message` plus the
 /// `retry_status` the client keys recovery on. The neutral runtime's stable fault
-/// `code` selects the variant; the Session aggregate's terminal
-/// `activation_failed` classification remains an `unknown_error` but is not
-/// retryable. An unrecognized code honestly falls back to `unknown_error`.
+/// `code` selects the variant; an unclassified historical Session
+/// `activation_failed` remains an `unknown_error` and is not retryable, while a
+/// classified durable realization failure keeps its original error family. An unrecognized code honestly falls back to `unknown_error`.
 /// `BetaManagedAgentsUnknownError` | `BetaManagedAgentsModelRateLimitedError` |
 /// `BetaManagedAgentsModelRequestFailedError` and their siblings: the SDK
 /// declares one interface per error `type`, all with the same fields, so one
@@ -163,6 +163,15 @@ impl SessionError {
                     .as_ref()
                     .map_or("unknown_error", |_| "mcp_authentication_failed_error"),
                 RetryStatus::Terminal,
+            ),
+            // The Session spent its realization retry budget on an
+            // unreachable server and failed for good: the same connection
+            // class, no longer retrying.
+            "mcp_connection_exhausted" => (
+                mcp_server_name
+                    .as_ref()
+                    .map_or("unknown_error", |_| "mcp_connection_failed_error"),
+                RetryStatus::Exhausted,
             ),
             "rate_limited" | "model_admission_rate_limited" => {
                 ("model_rate_limited_error", RetryStatus::Exhausted)
@@ -277,6 +286,8 @@ mod tests {
     /// | R13  | content_filtered          | irrelevant        | model_request_failed_error      | absent          | terminal     |
     /// | R15  | session_environment_rebuild_source_unavailable | irrelevant | unknown_error | absent | terminal |
     /// | R16  | mcp_credential_refresh_unavailable | no | unknown_error | absent | terminal |
+    /// | R17  | mcp_connection_exhausted  | yes               | mcp_connection_failed_error     | the name        | exhausted    |
+    /// | R18  | mcp_connection_exhausted  | no                | unknown_error                   | absent          | exhausted    |
     /// R8/R9 a classified, exhausted model request preserves its cause and
     /// stays usable; it is not the separate ExecutionUnknown/terminal decision.
     /// R10-R13 known permanent model refusals stay terminal, never retry-exhausted.
@@ -285,12 +296,31 @@ mod tests {
     /// from failed for good: terminal, not retry-exhausted.
     /// R16 a Worker without the MCP credential-refresh capability cannot
     /// gain it by retrying: terminal, not retry-exhausted.
+    /// R17/R18 a Session that spent its realization retry budget on an
+    /// unreachable server keeps the connection class and server name but is
+    /// retry-exhausted, never advertised as retrying (contrast R3/R4).
     /// R5-R7 distinguish rate, overload and hard usage causes at the existing
     /// classifier. All three have no MCP server field; a terminal Run with an
     /// exhausted retry budget must not be advertised as retrying.
     #[test]
     fn classified_faults_select_only_sdk_variants_their_fields_can_satisfy() {
         let cases = [
+            (
+                "R17",
+                "mcp_connection_exhausted",
+                "run failed: mcp server `offline` at http://127.0.0.1:1/mcp: connection refused",
+                "mcp_connection_failed_error",
+                Some("offline"),
+                RetryStatus::Exhausted,
+            ),
+            (
+                "R18",
+                "mcp_connection_exhausted",
+                "connection refused",
+                "unknown_error",
+                None,
+                RetryStatus::Exhausted,
+            ),
             (
                 "R1",
                 "mcp_authentication_failed",

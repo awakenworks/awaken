@@ -85,6 +85,11 @@ impl SessionPublicationSelection {
             CanonicalPublicationError::MissingPublication => {
                 RealizationError::invariant("frozen Session Agent publication is unavailable")
             }
+            // The store could not answer: the publication may exist, so the
+            // realization stays retryable under the neutral classification.
+            error @ CanonicalPublicationError::PublicationSourceUnavailable(_) => {
+                RealizationError::Run(error.into())
+            }
             CanonicalPublicationError::PublicationMismatch {
                 expected_agent,
                 expected_revision,

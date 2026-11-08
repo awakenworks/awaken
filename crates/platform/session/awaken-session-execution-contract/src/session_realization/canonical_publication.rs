@@ -25,9 +25,13 @@ pub enum CanonicalPublicationError {
     /// The Session's model override carries a publication foreign to its Workspace.
     #[error("frozen Session model override publication is invalid: {0}")]
     ModelOverridePublication(awaken_session_configuration_contract::SessionModelResolutionError),
-    /// The frozen Agent publication the coordinates require is absent.
+    /// The frozen Agent publication the coordinates require is definitively
+    /// absent: its store answered and holds no such publication.
     #[error("frozen Session Agent publication is unavailable")]
     MissingPublication,
+    /// The publication store could not answer, so the publication may exist.
+    #[error("frozen Session Agent publication could not be fetched: {0}")]
+    PublicationSourceUnavailable(awaken_runtime_contract::AgentSnapshotError),
     /// A publication exists but does not match the frozen coordinates.
     #[error(
         "Session Agent/model publication does not match its frozen coordinates \
@@ -55,10 +59,22 @@ impl From<CanonicalPublicationError> for RunError {
             | CanonicalPublicationError::PublicationMismatch { .. } => {
                 RunError::classified("session_realization_invariant_violated", error.to_string())
             }
+            CanonicalPublicationError::PublicationSourceUnavailable(_) => {
+                RunError::unavailable_classified(
+                    SESSION_PUBLICATION_SOURCE_UNAVAILABLE_CODE,
+                    error.to_string(),
+                )
+            }
             CanonicalPublicationError::Projection(error) => error,
         }
     }
 }
+
+/// Stable `RunError` code of a publication lookup whose store could not
+/// answer. It is retryable: the publication may exist, unlike
+/// `session_realization_invariant_violated` for a definitively absent one.
+pub const SESSION_PUBLICATION_SOURCE_UNAVAILABLE_CODE: &str =
+    "session_publication_source_unavailable";
 
 /// The effective publication and exact model candidate of one Session.
 pub type CanonicalSessionPublication = (
@@ -75,6 +91,7 @@ pub type CanonicalSessionPublication = (
 /// | Rule | model override publication | publication decision | Effect |
 /// |---|---|---|---|
 /// | S1 | foreign to the Workspace | - | `ModelOverridePublication` |
+/// | S0 | absent or valid | the store could not answer the lookup | `PublicationSourceUnavailable` (retryable) |
 /// | S2 | absent or valid | `MissingRequired` | `MissingPublication` |
 /// | S3 | absent or valid | `Mismatch` | `PublicationMismatch` naming both sides |
 /// | S4 | absent or valid | `Unpinned`, `OptionalMissing`, `Exact` | the projected publication; the candidate is the override's primary, else the publication's binding |
@@ -85,23 +102,27 @@ pub fn resolve_canonical_session_projection(
     delivered: Option<ExecutableAgentSnapshot>,
     skill_pins: Option<&[ResolvedSkillBinding]>,
 ) -> Result<CanonicalSessionPublication, CanonicalPublicationError> {
-    let agent = coordinates.agent();
-    let frozen_revision = coordinates.agent_revision();
-    let installed = delivered.or_else(|| {
-        publications.and_then(|source| {
-            let agent_id = AgentId(agent.to_string());
-            match frozen_revision {
-                Some(revision) => source.at_revision(workspace, &agent_id, revision),
-                None => source.current(workspace, &agent_id),
-            }
-        })
-    });
+    // S1 is a local invariant, independent of a publication store outage.
     let model_override = coordinates.model_override();
     if let Some(publication) = model_override.and_then(|override_| override_.publication.as_ref()) {
         publication
             .validate_for_workspace(workspace)
             .map_err(CanonicalPublicationError::ModelOverridePublication)?;
     }
+    let agent = coordinates.agent();
+    let frozen_revision = coordinates.agent_revision();
+    let installed = match (delivered, publications) {
+        (Some(delivered), _) => Some(delivered),
+        (None, None) => None,
+        (None, Some(source)) => {
+            let agent_id = AgentId(agent.to_string());
+            match frozen_revision {
+                Some(revision) => source.at_revision(workspace, &agent_id, revision),
+                None => source.current(workspace, &agent_id),
+            }
+            .map_err(CanonicalPublicationError::PublicationSourceUnavailable)?
+        }
+    };
     match coordinates.publication_decision(installed.as_ref()) {
         FrozenAgentPublicationDecision::Unpinned
         | FrozenAgentPublicationDecision::OptionalMissing
@@ -164,6 +185,51 @@ mod tests {
     use crate::{SessionBaseline, SessionBaselineInputs, SessionRuntimePlacement};
     use awaken_runtime_contract::StaticPublishedAgentSnapshots;
     use awaken_runtime_contract::resolved::ModelBinding;
+
+    /// A publication store that cannot answer any lookup.
+    struct UnreachablePublications;
+
+    impl awaken_runtime_contract::PublishedAgentSnapshotSource for UnreachablePublications {
+        fn exact(
+            &self,
+            _: &str,
+            _: &awaken_runtime_contract::CatalogFingerprint,
+        ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError>
+        {
+            Err(
+                awaken_runtime_contract::AgentSnapshotError::SourceUnavailable(
+                    "store offline".into(),
+                ),
+            )
+        }
+
+        fn current(
+            &self,
+            _: &str,
+            _: &AgentId,
+        ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError>
+        {
+            Err(
+                awaken_runtime_contract::AgentSnapshotError::SourceUnavailable(
+                    "store offline".into(),
+                ),
+            )
+        }
+
+        fn at_revision(
+            &self,
+            _: &str,
+            _: &AgentId,
+            _: u64,
+        ) -> Result<Option<ExecutableAgentSnapshot>, awaken_runtime_contract::AgentSnapshotError>
+        {
+            Err(
+                awaken_runtime_contract::AgentSnapshotError::SourceUnavailable(
+                    "store offline".into(),
+                ),
+            )
+        }
+    }
 
     fn snapshot(agent: &str) -> ExecutableAgentSnapshot {
         ExecutableAgentSnapshot::builder(agent)
@@ -258,6 +324,64 @@ mod tests {
             "S2 code"
         );
 
+        // S2 vs S0: the same pinned lookup through a source that answers
+        // "absent" is the permanent refusal; through a source whose store
+        // could not answer it is the retryable one, never MissingPublication.
+        let empty = StaticPublishedAgentSnapshots::try_new([]).expect("empty catalog");
+        let absent = resolve_canonical_session_projection(
+            Some(&empty),
+            "workspace",
+            CanonicalSessionProjection::Baseline(&worker),
+            None,
+            None,
+        )
+        .expect_err("S2 a store that holds no such revision");
+        assert!(
+            matches!(absent, CanonicalPublicationError::MissingPublication),
+            "S2 definitive absence"
+        );
+        let unreachable = resolve_canonical_session_projection(
+            Some(&UnreachablePublications),
+            "workspace",
+            CanonicalSessionProjection::Baseline(&worker),
+            None,
+            None,
+        )
+        .expect_err("S0 a store that could not answer");
+        assert!(
+            matches!(
+                &unreachable,
+                CanonicalPublicationError::PublicationSourceUnavailable(_)
+            ),
+            "S0 {unreachable}"
+        );
+        let unreachable = RunError::from(unreachable);
+        assert_eq!(
+            unreachable.code, SESSION_PUBLICATION_SOURCE_UNAVAILABLE_CODE,
+            "S0 code"
+        );
+        assert_eq!(
+            crate::effect_failure_disposition(&unreachable),
+            crate::SessionRealizationControlDisposition::Retryable,
+            "S0 is retryable"
+        );
+        // A delivered publication needs no lookup: an unreachable store
+        // cannot refuse the exact publication the caller already holds.
+        let mut pinned = snapshot("agent");
+        pinned.metadata.source.agent_id = AgentId("agent".into());
+        pinned.metadata.source.revision = 2;
+        assert!(
+            resolve_canonical_session_projection(
+                Some(&UnreachablePublications),
+                "workspace",
+                CanonicalSessionProjection::Baseline(&worker),
+                Some(pinned),
+                None,
+            )
+            .is_ok(),
+            "S0 never applies to a delivered publication"
+        );
+
         // S3: a delivered publication of another Agent never stands in.
         let mismatch = resolve_canonical_session_projection(
             None,
@@ -315,6 +439,23 @@ mod tests {
             RunError::from(invalid).code,
             "session_realization_evidence_invalid",
             "S1 code"
+        );
+        // S1 + S0: an invalid override is refused before any unavailable
+        // publication source can misclassify it as a retryable dependency.
+        let invalid_during_outage = resolve_canonical_session_projection(
+            Some(&UnreachablePublications),
+            "workspace",
+            CanonicalSessionProjection::Baseline(&overridden),
+            None,
+            None,
+        )
+        .expect_err("S1 wins independently of source availability");
+        assert!(
+            matches!(
+                invalid_during_outage,
+                CanonicalPublicationError::ModelOverridePublication(_)
+            ),
+            "S1 + S0 keeps the invariant refusal"
         );
     }
 }

@@ -418,6 +418,7 @@ async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources
                 not_ready: false,
                 source_run_id: None,
                 reason: "read unavailable".into(),
+                code: None,
             })
             .await;
         let after = repo.get(&SessionId::from(id)).await.unwrap();

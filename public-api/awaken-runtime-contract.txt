@@ -1457,25 +1457,26 @@ pub enum awaken_runtime_contract::resolver::Error
 pub awaken_runtime_contract::resolver::Error::FingerprintMismatch
 pub awaken_runtime_contract::resolver::Error::InvalidDelegationGraph
 pub awaken_runtime_contract::resolver::Error::SnapshotNotFound
+pub awaken_runtime_contract::resolver::Error::SourceUnavailable(alloc::string::String)
 pub struct awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots
 impl awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots
 pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::try_new(impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>) -> core::result::Result<Self, awaken_runtime_contract::resolver::Error>
 impl awaken_runtime_contract::resolver::PublishedAgentSnapshotSource for awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots
-pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
+pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
 pub trait awaken_runtime_contract::resolver::AgentSnapshotCatalog
 pub fn awaken_runtime_contract::resolver::AgentSnapshotCatalog::list_snapshots(&self) -> alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId>
 pub trait awaken_runtime_contract::resolver::AgentSnapshotResolver
 pub fn awaken_runtime_contract::resolver::AgentSnapshotResolver::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
 pub trait awaken_runtime_contract::resolver::PublishedAgentSnapshotSource: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-pub fn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-pub fn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
+pub fn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
 impl awaken_runtime_contract::resolver::PublishedAgentSnapshotSource for awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots
-pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
+pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
 pub trait awaken_runtime_contract::resolver::RunResolver
 pub fn awaken_runtime_contract::resolver::RunResolver::resolve(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> core::result::Result<awaken_runtime_contract::resolved::ResolvedRun, awaken_runtime_contract::resolver::Error>
 pub fn awaken_runtime_contract::resolver::freeze_delegation_publications(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, core::option::Option<&dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>, &str) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
@@ -1848,6 +1849,11 @@ pub fn awaken_runtime_contract::terminal::RunTerminalObserver::observer_id(&self
 pub fn awaken_runtime_contract::terminal::committed_terminal_projection(&dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> awaken_runtime_contract::terminal::CommittedTerminalProjection
 pub async fn awaken_runtime_contract::terminal::deliver_committed_terminal(&[alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>], &awaken_runtime_contract::terminal::CommittedTerminalRun) -> alloc::vec::Vec<awaken_runtime_contract::terminal::RunTerminalDeliveryFailure>
 pub async fn awaken_runtime_contract::terminal::redeliver_committed_terminal(&dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, &[alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>], &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<alloc::vec::Vec<awaken_runtime_contract::terminal::RunTerminalDeliveryFailure>>
+pub enum awaken_runtime_contract::AgentSnapshotError
+pub awaken_runtime_contract::AgentSnapshotError::FingerprintMismatch
+pub awaken_runtime_contract::AgentSnapshotError::InvalidDelegationGraph
+pub awaken_runtime_contract::AgentSnapshotError::SnapshotNotFound
+pub awaken_runtime_contract::AgentSnapshotError::SourceUnavailable(alloc::string::String)
 pub enum awaken_runtime_contract::AttemptExecutorRegistryError
 pub awaken_runtime_contract::AttemptExecutorRegistryError::DuplicateBackend(alloc::string::String)
 pub awaken_runtime_contract::AttemptExecutorRegistryError::InvalidBackendRef(alloc::string::String)
@@ -2414,9 +2420,9 @@ pub struct awaken_runtime_contract::StaticPublishedAgentSnapshots
 impl awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots
 pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::try_new(impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>) -> core::result::Result<Self, awaken_runtime_contract::resolver::Error>
 impl awaken_runtime_contract::resolver::PublishedAgentSnapshotSource for awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots
-pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
+pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
 pub const awaken_runtime_contract::A2A_RUNTIME_CAPABILITY: &str
 pub const awaken_runtime_contract::DEFAULT_MAX_STEPS: core::option::Option<usize>
 pub const awaken_runtime_contract::NATIVE_RUNTIME_CAPABILITY: &str
@@ -2449,13 +2455,13 @@ pub fn awaken_runtime_contract::Plugin::manifest(&self) -> awaken_runtime_contra
 pub fn awaken_runtime_contract::Plugin::resolve(&self) -> awaken_runtime_contract::Contributions
 pub fn awaken_runtime_contract::Plugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::Contributions, awaken_runtime_contract::plugin::PluginConfigError>
 pub trait awaken_runtime_contract::PublishedAgentSnapshotSource: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::PublishedAgentSnapshotSource::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-pub fn awaken_runtime_contract::PublishedAgentSnapshotSource::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-pub fn awaken_runtime_contract::PublishedAgentSnapshotSource::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
+pub fn awaken_runtime_contract::PublishedAgentSnapshotSource::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::PublishedAgentSnapshotSource::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::PublishedAgentSnapshotSource::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
 impl awaken_runtime_contract::resolver::PublishedAgentSnapshotSource for awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots
-pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
+pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
 pub trait awaken_runtime_contract::RunAttemptExecutor: awaken_runtime_contract::execution::RunExecutor
 pub fn awaken_runtime_contract::RunAttemptExecutor::cancel<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::diagnostic::Result<()>> + core::marker::Send + 'async_trait)>> where Self: core::marker::Sync + 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::RunAttemptExecutor::physical_attempt_recovery(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::execution::AttemptRecoveryMode

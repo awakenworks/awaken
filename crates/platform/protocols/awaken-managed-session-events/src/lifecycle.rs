@@ -99,18 +99,22 @@ pub fn root_terminal_idle_key(session_id: &str, terminal: &RunLifecycleEvent) ->
 /// its own committed lifecycle and audit. The idle names the answerable call
 /// of the boundary's own accepted pause, never a live ticket.
 ///
-/// The fault depends only on the Run's own committed prefix. A later Outcome
+/// The fault comes from the Run's committed prefix, with the durable Session
+/// realization cause only when it names this exact failed root Run. A later Outcome
 /// terminal never retracts it: the Run terminal commits before the Outcome
 /// terminal, so a read between the two has already published the fault, and
 /// committed public history only grows. The Outcome appends its own verdict.
 pub fn root_terminal_facts(
-    session_id: &str,
+    persisted: &awaken_session_contract::PersistedSession,
     terminal: &RunLifecycleEvent,
     root: Option<&RunRecoverySnapshot>,
     historical_pending: &HashMap<RunLifecycleCursor, Pending>,
     index: &crate::OrderIndex<'_>,
 ) -> Result<RootTerminalFacts, ProjectionError> {
-    let error = run_fault(terminal, root)?.map(|fault| {
+    let session_id = persisted.session_id.as_str();
+    let fault = crate::activation::source_realization_fault(persisted, terminal)
+        .map_or_else(|| run_fault(terminal, root), |fault| Ok(Some(fault)))?;
+    let error = fault.map(|fault| {
         DerivedSessionEvent::new(
             EventIdentity::new(
                 session_id,

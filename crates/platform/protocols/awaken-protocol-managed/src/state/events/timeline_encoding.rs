@@ -193,9 +193,11 @@ pub(super) fn encode_fact(
             from_agent_name: Some(child_name(record, thread_id)?),
             content: vec![ContentBlock::text(text.clone())],
         },
-        SessionEventKind::ActivationFailed { message } => OutboundKind::SessionError {
+        SessionEventKind::ActivationFailed { code, message } => OutboundKind::SessionError {
             error: SessionError::classify(
-                awaken_session_contract::SessionExecutionState::ActivationFailed.as_str(),
+                code.as_deref().unwrap_or(
+                    awaken_session_contract::SessionExecutionState::ActivationFailed.as_str(),
+                ),
                 message.clone(),
             ),
         },

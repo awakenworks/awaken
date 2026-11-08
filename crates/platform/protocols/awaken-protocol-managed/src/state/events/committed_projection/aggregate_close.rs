@@ -38,7 +38,7 @@ impl ManagedState {
                 continue;
             }
             let facts = awaken_managed_session_events::root_terminal_facts(
-                &record.session.id,
+                persisted,
                 terminal,
                 evidence.root.as_ref(),
                 historical_pending,

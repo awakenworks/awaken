@@ -59,7 +59,7 @@ pub struct SessionRealizationProgress {
     /// Immutable creation-time request for registered-Worker preparation
     /// before any model Run. Historical Sessions and ordinary interactive
     /// Sessions do not opt in; the root remains the only scheduling truth.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) run_free_initial_preparation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) failed_at_unix_ms: Option<u64>,
@@ -67,6 +67,11 @@ pub struct SessionRealizationProgress {
     pub(crate) attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) last_error: Option<String>,
+    /// Stable class code of `last_error` (a `RunError` code), when its
+    /// reporter classified it. Absent on historical roots and on causes
+    /// reported without a class, so their wire shape is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_error_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) failure_source_run_id: Option<Box<awaken_agent_contract::agent::run::Id>>,
     /// Consecutive failed effects of assignments that counted no initial
@@ -114,10 +119,6 @@ impl SessionRealizationProgress {
     pub fn failure_source_run_id(&self) -> Option<&awaken_agent_contract::agent::run::Id> {
         self.failure_source_run_id.as_deref()
     }
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]

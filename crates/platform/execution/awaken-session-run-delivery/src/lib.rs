@@ -118,7 +118,7 @@ pub use session_inputs::{
     client_result_for_ticket, resume_activation, session_system_message,
     session_thread_reply_result,
 };
-pub use session_projections::{DispatchProjection, SessionProjections};
+pub use session_projections::{DispatchProjection, SessionProjections, default_agent_delegate_ids};
 pub use session_run_activation::{activate_session_run_reservation, read_settled_phase};
 pub use session_run_reservation::{
     SESSION_RUN_RESERVATION_TTL_MS, SessionRunInputs, reserve_session_run,

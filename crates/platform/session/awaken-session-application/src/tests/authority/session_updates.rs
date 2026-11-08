@@ -605,3 +605,180 @@ async fn legacy_credential_renewal_without_idempotency_commits_operational_mcp_w
 {
     assert_unkeyed_credential_renewal(true).await;
 }
+
+/// A Vault double whose OAuth refresh published `successor` of the pinned
+/// revision 3 (or nothing): the only receipt the adoption may follow.
+struct RefreshedMcpCredentialSource {
+    successor: Option<u64>,
+}
+
+#[async_trait::async_trait]
+impl awaken_credential_contract::SessionCredentialSource for RefreshedMcpCredentialSource {
+    async fn has_vault(&self, _: &str, _: &str) -> Result<bool, String> {
+        unreachable!("an exact pin never discovers Vaults")
+    }
+
+    async fn mcp_credential_source_for_url(
+        &self,
+        _: &str,
+        _: &[String],
+        _: &str,
+    ) -> Result<Option<awaken_credential_contract::CredentialSourceId>, String> {
+        unreachable!("an exact pin never falls back to URL discovery")
+    }
+
+    async fn mcp_access_for_source(
+        &self,
+        source: &awaken_credential_contract::CredentialSourceId,
+        _: &str,
+        _: &McpTarget,
+        holder: &awaken_agent_contract::credential::PlaintextHolder,
+        _: &awaken_credential_contract::CredentialMaterialBinding,
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, String> {
+        assert_eq!(source.0, RENEWAL_SOURCE);
+        Ok(renewal_access(
+            self.successor
+                .expect("only an adopted successor is re-pinned"),
+            holder,
+        ))
+    }
+
+    async fn credential_access_for_source(
+        &self,
+        _: &awaken_credential_contract::CredentialSourceId,
+        _: &str,
+        _: awaken_credential_contract::SessionCredentialAccessRequest,
+    ) -> Result<awaken_agent_contract::credential::CredentialAccess, String> {
+        unreachable!("MCP adoption uses the MCP credential role")
+    }
+
+    async fn refresh_successor(
+        &self,
+        _: &str,
+        pinned: &awaken_agent_contract::credential::CredentialRef,
+    ) -> Result<Option<u64>, String> {
+        assert_eq!(pinned.id, RENEWAL_SOURCE);
+        Ok(self.successor.filter(|_| pinned.revision == 3))
+    }
+}
+
+#[tokio::test]
+async fn a_new_realization_adopts_exactly_the_refresh_successor_of_each_mcp_pin() {
+    // Causes: C1 the Vault's refresh receipt names the pin (3 -> 4) or none;
+    // C2 the realization pass begins a new lease or continues a live one
+    // (the registered Worker's next Run continues its lease).
+    // Effects: E1 the begin's root CAS re-pins the attachment to exactly 4
+    // through a new MCP generation, so the directive stages the successor;
+    // E2 the pin and generation stay unchanged.
+    //
+    // | Rule | receipt | live lease | effect |
+    // |---|---|---|---|
+    // | P3 | 3 -> 4 | no | E1 |
+    // | P3c | 3 -> 4 | yes (continuation) | E1 |
+    // | P4 | none | no | E2 (staging then refuses the stale pin itself) |
+    for (rule, successor, continuation) in [
+        ("P3", Some(4), false),
+        ("P3c", Some(4), true),
+        ("P4", None, false),
+    ] {
+        let id = format!("refresh-adoption-{rule}");
+        let repo = authority_repository("refresh adoption SQLite repository").await;
+        let original = persisted(&id, false, "idle");
+        let baseline = original.frozen_baseline().unwrap().clone();
+        let holder = baseline
+            .environment
+            .credential_realization
+            .mcp_holder
+            .clone();
+        let target = McpTarget::parse_http("https://docs.example.test/mcp").unwrap();
+        let mcp = crate::session_mcp::SessionMcpAttachmentSet::from_initial(
+            vec![
+                awaken_session_configuration_contract::mcp::McpAttachmentDraft {
+                    name: "docs".into(),
+                    target,
+                    prompts_as_skills: false,
+                    credential: Some(renewal_access(3, &holder)),
+                    origin: crate::session_mcp::McpAttachmentOrigin::Session,
+                },
+            ],
+            Some(holder),
+        )
+        .unwrap();
+        let mut session = PersistedSession::frozen_with_budget(
+            &id,
+            baseline,
+            original.resources,
+            mcp,
+            original.title,
+            original.metadata,
+            original.tools,
+            original.budget,
+        );
+        session.execution = SessionExecutionState::Idle;
+        create(repo.as_ref(), session).await;
+        let session_id = SessionId::from(id.as_str());
+        let mut app = SessionApplicationBuilder::fixture(
+            Arc::new(NoopRuntime),
+            Arc::new(NoopMcpRealizer),
+            crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
+            Arc::new(RecordingEnvironmentSource::default()),
+            {
+                let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+            },
+            Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        )
+        .build()
+        .unwrap();
+        app.set_credential_source(Arc::new(RefreshedMcpCredentialSource { successor }));
+        let begin = |app: &crate::SessionApplication| {
+            let request = awaken_session_execution_contract::BeginSessionRealization {
+                expected_resources: None,
+                session_id: id.as_str().into(),
+                target: awaken_session_execution_contract::SessionRealizationTarget {
+                    owner: "worker".into(),
+                    runtime_incarnation: "worker/1".into(),
+                    lease_expires_at_unix_ms: u64::MAX,
+                    reassign_existing_lease: false,
+                },
+            };
+            let realizations = app.realizations.clone();
+            async move {
+                awaken_session_execution_contract::SessionRealizationControl::begin_session_realization(
+                    realizations.as_ref(),
+                    request,
+                )
+                .await
+            }
+        };
+        if continuation {
+            // A live lease already owns this realization before the refresh.
+            app.set_credential_source(Arc::new(RefreshedMcpCredentialSource { successor: None }));
+            begin(&app).await.expect("first begin");
+            app.set_credential_source(Arc::new(RefreshedMcpCredentialSource { successor }));
+        }
+        let before = repo.get(&session_id).await.unwrap();
+        let generation_before = before.mcp.desired_attachments()[0].generation.clone();
+        begin(&app).await.expect("begin");
+        let after = repo.get(&session_id).await.unwrap();
+        let desired = after.mcp.desired_attachments();
+        assert_eq!(desired.len(), 1, "{rule}");
+        let pin = desired[0].credential.as_ref().unwrap();
+        assert_eq!(pin.credential.id, RENEWAL_SOURCE, "{rule}");
+        if successor.is_some() {
+            assert_eq!(pin.credential.revision, 4, "{rule} exactly the successor");
+            assert_ne!(
+                desired[0].generation, generation_before,
+                "{rule} a new generation stages the successor"
+            );
+            assert_eq!(
+                after.configured_mcp_servers(),
+                before.configured_mcp_servers(),
+                "{rule} topology unchanged"
+            );
+        } else {
+            assert_eq!(pin.credential.revision, 3, "{rule} the pin stays");
+            assert_eq!(desired[0].generation, generation_before, "{rule}");
+        }
+    }
+}

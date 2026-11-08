@@ -116,10 +116,12 @@ pub use session_repo::{
     SessionMutationValidationError, SessionPlacementClass, SessionPublicStatus,
     SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
     SessionRunActivityAdmissionRecord, SessionScan, SessionScanCursor, SessionScanQuery,
-    SessionTombstone, SessionWorkerObligation, session_activity_settlement_plan,
-    session_budget_pause_absorbs_interrupt, session_budget_pause_may_absorb_interrupt,
-    session_can_adopt_mcp_credential_lifecycle, session_is_budget_paused, session_is_terminal,
-    session_is_unattempted_profiled_preparation, validate_complete_run_activity,
+    SessionTombstone, SessionUpdateKind, SessionWorkerObligation, session_activity_settlement_plan,
+    session_admits_update, session_budget_pause_absorbs_interrupt,
+    session_budget_pause_may_absorb_interrupt, session_can_adopt_mcp_credential_lifecycle,
+    session_classified_realization_failure, session_is_budget_paused, session_is_terminal,
+    session_is_unattempted_profiled_preparation, session_is_unstarted_preparation,
+    validate_complete_run_activity,
 };
 pub use terminal_cleanup::{
     SessionCleanupCommand, SessionCleanupDisposalCommand, SessionCleanupDisposalReceipt,

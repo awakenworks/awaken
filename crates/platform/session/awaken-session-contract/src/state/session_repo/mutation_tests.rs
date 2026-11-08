@@ -1324,6 +1324,7 @@ fn terminal_failure_command_follows_its_decision_table() {
         let mut aggregate = crate::state::SessionAggregate::try_from(root.clone()).unwrap();
         let result = aggregate.lifecycle().fail_terminally_at(
             "refused permanently".into(),
+            Some("refused_code".into()),
             700,
             source.clone(),
         );
@@ -1334,6 +1335,11 @@ fn terminal_failure_command_follows_its_decision_table() {
                 assert_eq!(after.execution, State::ActivationFailed, "{rule} {from}");
                 let progress = after.realization_progress();
                 assert_eq!(progress.last_error(), Some("refused permanently"), "{rule}");
+                assert_eq!(
+                    crate::session_classified_realization_failure(&after),
+                    Some(("refused_code", "refused permanently")),
+                    "{rule}"
+                );
                 assert_eq!(progress.failed_at_unix_ms(), Some(700), "{rule}");
                 assert_eq!(progress.failure_source_run_id(), source.as_ref(), "{rule}");
             }

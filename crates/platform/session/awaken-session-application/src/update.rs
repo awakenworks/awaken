@@ -13,7 +13,7 @@ use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::SessionToolConfiguration;
 use awaken_session_configuration_contract::mcp::McpAttachmentState;
 use awaken_session_configuration_contract::resource::realization_lease_is_live_at;
-use awaken_session_contract::{IdempotencyRecord, PersistedSession, SessionExecutionState};
+use awaken_session_contract::{IdempotencyRecord, PersistedSession};
 use awaken_session_contract::{SessionFieldUpdate, SessionUpdateChanges};
 use awaken_session_types::SessionRevision;
 
@@ -180,7 +180,7 @@ fn realization_failure_after_commit(
     }
 }
 
-fn validate_credential_lifecycle_replacement(
+pub(crate) fn validate_credential_lifecycle_replacement(
     mcp: &crate::session_mcp::SessionMcpAttachmentSet,
     source_id: &str,
     revoked: bool,
@@ -355,19 +355,25 @@ fn compile_update_tool_settings(
         &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
     >,
 ) -> Result<SessionUpdateCommand, SessionUpdateError> {
-    if session.execution != SessionExecutionState::Idle
-        && !is_budget_only_tightening(command, session)
-        && !(matches!(
-            command.mcp_update,
-            Some(SessionMcpUpdate::CredentialLifecycle { .. })
-        ) && (awaken_session_contract::session_can_adopt_mcp_credential_lifecycle(session)
-            || preparation.is_some_and(|context| {
-                session.admits_claimed_mcp_credential_preparation(
-                    context.thread_id(),
-                    &context.activation().run_id,
-                )
-            })))
-    {
+    let kind = if matches!(
+        command.mcp_update,
+        Some(SessionMcpUpdate::CredentialLifecycle { .. })
+    ) {
+        awaken_session_contract::SessionUpdateKind::CredentialLifecycle
+    } else if is_budget_only_tightening(command, session) {
+        awaken_session_contract::SessionUpdateKind::BudgetTightening
+    } else {
+        awaken_session_contract::SessionUpdateKind::Authoring
+    };
+    let claimed_credential = kind
+        == awaken_session_contract::SessionUpdateKind::CredentialLifecycle
+        && preparation.is_some_and(|context| {
+            session.admits_claimed_mcp_credential_preparation(
+                context.thread_id(),
+                &context.activation().run_id,
+            )
+        });
+    if !awaken_session_contract::session_admits_update(session, kind) && !claimed_credential {
         return Err(SessionUpdateError::NotIdle);
     }
     if command.if_match.unwrap_or(session.revision) != session.revision {

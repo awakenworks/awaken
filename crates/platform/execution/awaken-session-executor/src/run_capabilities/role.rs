@@ -35,7 +35,10 @@ impl RunCapabilities {
             // direct compatibility adapter and cannot truthfully satisfy a
             // Managed AgentSkillBinding.
             skills: self.tools.skills.managed_ids_in(workspace)?,
-            delegates: self.delegate_ids_in(workspace),
+            delegates: awaken_session_run_delivery::default_agent_delegate_ids(
+                self.agent.agent_publications.as_deref(),
+                workspace,
+            )?,
         })
     }
 }

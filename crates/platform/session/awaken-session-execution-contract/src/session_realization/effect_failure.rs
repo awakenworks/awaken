@@ -108,6 +108,33 @@ pub const ENVIRONMENT_REJECTED_CODE: &str = "environment_rejected";
 pub const SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE: &str =
     "session_environment_rebuild_source_unavailable";
 
+/// Stable code of an MCP server connection failure (`awaken-session-mcp`).
+const MCP_CONNECTION_FAILED_CODE: &str = "mcp_connection_failed";
+
+/// Stable code of an MCP server connection failure on which the Session's
+/// realization retry budget was spent: the Session failed terminally on it
+/// and nothing retries it again.
+pub const MCP_CONNECTION_EXHAUSTED_CODE: &str = "mcp_connection_exhausted";
+
+/// The class code a realization failure keeps once it made the Session
+/// terminal. A retryable effect whose retry budget is spent is no longer
+/// "being retried"; only a class a client reads as retrying needs a spent
+/// twin, every other code is already final.
+///
+/// | Rule | effect code | retries exhausted | recorded code |
+/// |---|---|---|---|
+/// | X1 | `mcp_connection_failed` | yes | `mcp_connection_exhausted` |
+/// | X2 | `mcp_connection_failed` | no | `mcp_connection_failed` |
+/// | X3 | any other | either | unchanged |
+#[must_use]
+pub fn terminal_realization_failure_code(code: &str, retries_exhausted: bool) -> &str {
+    if retries_exhausted && code == MCP_CONNECTION_FAILED_CODE {
+        MCP_CONNECTION_EXHAUSTED_CODE
+    } else {
+        code
+    }
+}
+
 /// The closed set of permanent state-conflict codes. An ordinary `Conflict`
 /// is a lost compare-and-swap race that a fresh read may win, so it retries;
 /// a code listed here names a conflict with committed state that no retry can
@@ -276,7 +303,18 @@ impl FailSessionRealization {
             not_ready: disposition == SessionRealizationControlDisposition::NotReady,
             source_run_id,
             reason: error.to_string(),
+            code: Some(error.code.clone()),
         }
+    }
+
+    /// The class code Control records for this failure: the effect's own
+    /// code, or its spent-budget class when this retryable failure made the
+    /// Session terminal ([`terminal_realization_failure_code`]).
+    #[must_use]
+    pub fn recorded_code(&self, made_terminal: bool) -> Option<String> {
+        self.code.as_deref().map(|code| {
+            terminal_realization_failure_code(code, made_terminal && self.retryable).to_owned()
+        })
     }
 
     /// Classify the current root without mutating its compatible DTO. The
@@ -513,6 +551,81 @@ fn provisioning_defers_only_before_the_providers_deadline() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_spent_retryable_failure_records_its_terminal_class() {
+        // Rows X1-X3 of `terminal_realization_failure_code`, and the class a
+        // report records through `FailSessionRealization::recorded_code`:
+        // the spent twin only when a retryable report made the Session
+        // terminal; a terminal-class or retried report keeps its own code.
+        assert_eq!(
+            terminal_realization_failure_code("mcp_connection_failed", true),
+            MCP_CONNECTION_EXHAUSTED_CODE,
+            "X1"
+        );
+        assert_eq!(
+            terminal_realization_failure_code("mcp_connection_failed", false),
+            "mcp_connection_failed",
+            "X2"
+        );
+        for exhausted in [false, true] {
+            for code in [
+                "mcp_authentication_failed",
+                "environment_unavailable",
+                "internal",
+            ] {
+                assert_eq!(
+                    terminal_realization_failure_code(code, exhausted),
+                    code,
+                    "X3"
+                );
+            }
+        }
+        let report = |error: &RunError| {
+            FailSessionRealization::for_effect(
+                "session".into(),
+                crate::SessionRealizationLease {
+                    owner: "worker".into(),
+                    runtime_incarnation: "worker:1".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: 1,
+                },
+                None,
+                None,
+                error,
+            )
+        };
+        let unreachable = report(&RunError::unavailable_classified(
+            "mcp_connection_failed",
+            "mcp server `offline`: connection refused",
+        ));
+        assert_eq!(
+            unreachable.recorded_code(true).as_deref(),
+            Some(MCP_CONNECTION_EXHAUSTED_CODE),
+            "made terminal after its budget"
+        );
+        assert_eq!(
+            unreachable.recorded_code(false).as_deref(),
+            Some("mcp_connection_failed"),
+            "retried"
+        );
+        let rejected = report(&RunError::classified(
+            "mcp_connection_failed",
+            "a terminal-class report of the same code",
+        ));
+        assert_eq!(
+            rejected.recorded_code(true).as_deref(),
+            Some("mcp_connection_failed"),
+            "a non-retryable report spent no retry budget"
+        );
+        let mut legacy = unreachable;
+        legacy.code = None;
+        assert_eq!(
+            legacy.recorded_code(true),
+            None,
+            "an older Worker reports no class"
+        );
+    }
 
     #[test]
     fn uncounted_recovery_and_run_free_failures_spend_the_same_budget() {

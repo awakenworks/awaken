@@ -1224,10 +1224,12 @@ fn compile_complete_test_session_projection(
         .agent_publications
         .as_ref()
         .and_then(|source| {
-            source.current(
-                &workspace_id,
-                &awaken_runtime_contract::snapshot::AgentId(agent_id.clone()),
-            )
+            source
+                .current(
+                    &workspace_id,
+                    &awaken_runtime_contract::snapshot::AgentId(agent_id.clone()),
+                )
+                .expect("fixture publication source is readable")
         });
     let primary = publication.as_ref().map_or_else(
         || {

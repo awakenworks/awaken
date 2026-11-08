@@ -427,27 +427,8 @@ impl SessionProjections {
     }
 
     /// The delegation roster of the Workspace default Agent.
-    #[must_use]
-    pub fn default_delegates(&self, workspace: &str) -> Vec<String> {
-        self.publications
-            .as_ref()
-            .and_then(|source| {
-                source.current(
-                    workspace,
-                    &awaken_runtime_contract::snapshot::AgentId("assistant".into()),
-                )
-            })
-            .map(|snapshot| {
-                snapshot
-                    .resolved_spec
-                    .plugin_config
-                    .agent
-                    .delegates
-                    .into_iter()
-                    .map(|binding| binding.agent_id.0)
-                    .collect()
-            })
-            .unwrap_or_default()
+    pub fn default_delegates(&self, workspace: &str) -> Result<Vec<String>, RunError> {
+        default_agent_delegate_ids(self.publications.as_deref(), workspace)
     }
 
     /// The shared Agent publication source, for admission that freezes it.
@@ -476,6 +457,32 @@ impl SessionProjections {
         })?;
         crate::session_activation_snapshot(publication, Some(projection.tools()), true)
     }
+}
+
+/// Project the Workspace default Agent's delegation roster from its one
+/// publication source. Coordinator and Worker capability views share this
+/// lookup; an unavailable source must never look like an empty roster.
+pub fn default_agent_delegate_ids(
+    source: Option<&dyn PublishedAgentSnapshotSource>,
+    workspace: &str,
+) -> Result<Vec<String>, RunError> {
+    let publication = source
+        .map(|source| source.current(workspace, &awaken_runtime_contract::snapshot::AgentId("assistant".into())))
+        .transpose()
+        .map_err(|error| RunError::from(
+            awaken_session_execution_contract::CanonicalPublicationError::PublicationSourceUnavailable(error)
+        ))?
+        .flatten();
+    Ok(publication.map_or_else(Vec::new, |snapshot| {
+        snapshot
+            .resolved_spec
+            .plugin_config
+            .agent
+            .delegates
+            .into_iter()
+            .map(|binding| binding.agent_id.0)
+            .collect()
+    }))
 }
 
 #[cfg(test)]
@@ -664,6 +671,75 @@ mod tests {
             )
             .expect("L2 primary"),
             "L2 primary snapshot"
+        );
+    }
+}
+
+#[cfg(test)]
+mod publication_failure_tests {
+    use super::*;
+
+    struct Publications(bool);
+    impl PublishedAgentSnapshotSource for Publications {
+        fn current(
+            &self,
+            _: &str,
+            _: &awaken_runtime_contract::snapshot::AgentId,
+        ) -> Result<
+            Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
+            awaken_runtime_contract::AgentSnapshotError,
+        > {
+            if self.0 {
+                Err(
+                    awaken_runtime_contract::AgentSnapshotError::SourceUnavailable(
+                        "store offline".into(),
+                    ),
+                )
+            } else {
+                Ok(None)
+            }
+        }
+        fn exact(
+            &self,
+            _: &str,
+            _: &awaken_runtime_contract::CatalogFingerprint,
+        ) -> Result<
+            Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
+            awaken_runtime_contract::AgentSnapshotError,
+        > {
+            unreachable!("a default roster resolves current exactly once")
+        }
+    }
+
+    #[test]
+    fn the_default_roster_distinguishes_an_absent_publication_from_a_failed_lookup() {
+        // Cause/effect table: R1 no publication source -> empty roster;
+        // R2 a readable source proves the default Agent absent -> empty;
+        // R3 the same source cannot answer -> the original retryable lookup
+        // error, never an empty roster that hides a configured delegate.
+        assert!(
+            default_agent_delegate_ids(None, "workspace")
+                .unwrap()
+                .is_empty(),
+            "R1"
+        );
+        assert!(
+            default_agent_delegate_ids(Some(&Publications(false)), "workspace")
+                .unwrap()
+                .is_empty(),
+            "R2"
+        );
+        let failure =
+            default_agent_delegate_ids(Some(&Publications(true)), "workspace").unwrap_err();
+        assert_eq!(
+            failure.code,
+            awaken_session_execution_contract::SESSION_PUBLICATION_SOURCE_UNAVAILABLE_CODE,
+            "R3"
+        );
+        assert_eq!(
+            awaken_session_execution_contract::effect_failure_disposition(&failure),
+            awaken_session_execution_contract::SessionRealizationControlDisposition::Retryable,
+            "R3"
         );
     }
 }

@@ -137,6 +137,35 @@ impl VaultCredentialAccess {
         self.repository.get(source_id).await
     }
 
+    /// The exact successor revision an OAuth refresh published of `pinned`
+    /// in `workspace_id` ([`crate::repo::token_publication_successor`]). A
+    /// described acquisition profile must also be the one that published it.
+    pub async fn refresh_successor(
+        &self,
+        workspace_id: &str,
+        pinned: &awaken_agent_contract::credential::CredentialRef,
+    ) -> Result<Option<u64>, CredentialError> {
+        let source = self.source(&CredentialSourceId(pinned.id.clone())).await?;
+        if source.workspace_id != workspace_id || source.status != crate::CredentialStatus::Active {
+            return Ok(None);
+        }
+        let Some(state) =
+            crate::repo::token_publication_successor(&source, self.secrets.as_ref(), pinned)
+                .await?
+        else {
+            return Ok(None);
+        };
+        if let Some(profile) = source
+            .descriptor
+            .as_ref()
+            .and_then(|descriptor| descriptor.acquisition.as_ref())
+            && profile.fingerprint().ok().as_ref() != Some(&state.profile_fingerprint)
+        {
+            return Ok(None);
+        }
+        Ok(Some(state.successor.revision))
+    }
+
     /// The authoritative Managed child of a credential source.
     pub async fn credential_of_source(
         &self,
@@ -546,6 +575,16 @@ impl SessionCredentialSource for VaultCredentialAccess {
         request: SessionCredentialAccessRequest,
     ) -> Result<awaken_agent_contract::credential::CredentialAccess, String> {
         VaultCredentialAccess::credential_access_for_source(self, source_id, workspace_id, request)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn refresh_successor(
+        &self,
+        workspace_id: &str,
+        pinned: &awaken_agent_contract::credential::CredentialRef,
+    ) -> Result<Option<u64>, String> {
+        self.refresh_successor(workspace_id, pinned)
             .await
             .map_err(|error| error.to_string())
     }

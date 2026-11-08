@@ -120,8 +120,11 @@ impl<'a> RunPublicationClosure<'a> {
             if owner_ids.contains(&agent_id) {
                 continue;
             }
-            let snapshot =
-                source.and_then(|source| source.current(workspace_id, &AgentId(agent_id.clone())));
+            let snapshot = source
+                .map(|source| source.current(workspace_id, &AgentId(agent_id.clone())))
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .flatten();
             let Some(snapshot) = snapshot else {
                 if required {
                     return Err(format!(

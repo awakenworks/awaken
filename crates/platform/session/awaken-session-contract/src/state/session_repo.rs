@@ -51,9 +51,10 @@ pub use mutation::{
     SessionTombstone,
 };
 pub use persisted_session::{
-    PersistedSession, SessionEventDispatchSettlementEffect,
-    session_can_adopt_mcp_credential_lifecycle, session_is_terminal,
-    session_is_unattempted_profiled_preparation,
+    PersistedSession, SessionEventDispatchSettlementEffect, SessionUpdateKind,
+    session_admits_update, session_can_adopt_mcp_credential_lifecycle,
+    session_classified_realization_failure, session_is_terminal,
+    session_is_unattempted_profiled_preparation, session_is_unstarted_preparation,
 };
 pub use placement::{
     SessionPlacementClass, SessionPublicStatus, session_budget_pause_absorbs_interrupt,

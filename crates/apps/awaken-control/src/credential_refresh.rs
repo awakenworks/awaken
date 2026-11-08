@@ -398,20 +398,20 @@ impl VaultRefresher {
         if !exact {
             // Explicit refresh adoption requires a direct publication receipt;
             // a newer row alone never authorizes reading another generation.
-            let state = awaken_credential_vault::repo::token_publication_state(
-                &source,
-                self.factory.secrets.as_ref(),
-            )
-            .await
-            .ok()
-            .flatten();
             let parent = awaken_agent_contract::credential::CredentialRef {
                 id: self.credential_id.0.clone(),
                 revision: access.credential_revision,
             };
+            let state = awaken_credential_vault::repo::token_publication_successor(
+                &source,
+                self.factory.secrets.as_ref(),
+                &parent,
+            )
+            .await
+            .ok()
+            .flatten();
             if !state.as_ref().is_some_and(|v| {
-                v.predecessor.as_ref() == Some(&parent)
-                    && profile.fingerprint().ok().as_ref() == Some(&v.profile_fingerprint)
+                profile.fingerprint().ok().as_ref() == Some(&v.profile_fingerprint)
             }) {
                 return ExchangeReport::failed(None);
             }
